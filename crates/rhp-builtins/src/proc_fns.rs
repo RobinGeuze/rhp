@@ -28,35 +28,6 @@ fn write_ref(arg: Option<&Value>, value: Value) {
     }
 }
 
-/// php's `zend_zval_value_name` (used in ValueError/TypeError messages).
-fn value_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => value_name(&r.borrow()),
-    }
-}
-
-/// The type name php's zpp TypeErrors print (`zend_zval_value_name`, with the
-/// class name for objects).
-pub(crate) fn zpp_type_name(host: &dyn Host, v: &Value) -> String {
-    match v {
-        Value::Object(_) => host
-            .object_class_name(v)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        Value::Closure(_) => "Closure".into(),
-        other => value_name(other).into(),
-    }
-}
-
 /// php's `zend_parse_arg_long_weak` (`Z_PARAM_LONG`, coercive mode): ints
 /// pass, bools/null become 0/1/0, integral-range floats and fully numeric
 /// strings are truncated; anything else is a TypeError
@@ -94,7 +65,7 @@ pub(crate) fn zpp_long(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         ))
     })
 }
@@ -117,7 +88,7 @@ pub(crate) fn zpp_string(
         _ => Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         ))),
     }
 }
@@ -698,7 +669,7 @@ fn fn_pclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "pclose(): Argument #1 ($handle) must be of type resource, {} given",
-                value_name(other)
+                crate::argparse::zval_value_name(host, other)
             )))
         }
     };
@@ -739,7 +710,7 @@ fn proc_arg<'h>(
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($process) must be of type resource, {} given",
-            value_name(&v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     let is_proc = matches!(&v, Value::Resource(r) if r.type_name == "process");
@@ -911,7 +882,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Value::Null | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #1 ($command) must be of type array|string, {} given",
-                value_name(&cmd_v)
+                crate::argparse::zval_value_name(host, &cmd_v)
             )))
         }
         other => conv::to_string_bytes(other),
@@ -923,7 +894,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #2 ($descriptor_spec) must be of type array, {} given",
-                value_name(&other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -1033,7 +1004,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                                     "ValueError",
                                     format!(
                                         "Redirection target must be of type int, {} given",
-                                        value_name(&other)
+                                        crate::argparse::zval_value_name(host, &other)
                                     ),
                                 ))
                             }

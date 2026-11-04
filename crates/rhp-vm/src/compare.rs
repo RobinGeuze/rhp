@@ -207,27 +207,9 @@ impl Vm {
         };
         Thrown::type_error(format!(
             "Unsupported operand types: {} {sigil} {}",
-            self.zval_type_name(x),
-            self.zval_type_name(y)
+            rhp_builtins::zval_type_name(self, x),
+            rhp_builtins::zval_type_name(self, y)
         ))
-    }
-
-    /// `zend_zval_type_name`: the class name for objects, else the type.
-    fn zval_type_name(&self, v: &Value) -> String {
-        match v {
-            Value::Object(h) => {
-                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
-            }
-            Value::Closure(_) => "Closure".into(),
-            Value::Ref(r) => self.zval_type_name(&r.borrow()),
-            Value::Null => "null".into(),
-            Value::Bool(_) => "bool".into(),
-            Value::Int(_) => "int".into(),
-            Value::Float(_) => "float".into(),
-            Value::Str(_) => "string".into(),
-            Value::Array(_) => "array".into(),
-            Value::Resource(_) => "resource".into(),
-        }
     }
 
     /// `zendi_try_get_long`: `None` when `v` has no integer value (an array,

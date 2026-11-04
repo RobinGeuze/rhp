@@ -721,7 +721,7 @@ impl Vm {
             }
             Err(()) => Err(Thrown::type_error(format!(
                 "Cannot assign {} to property {}::${} of type {}",
-                self.zval_value_name(&deref(&val)),
+                rhp_builtins::zval_value_name(self, &deref(&val)),
                 String::from_utf8_lossy(self.class(decl).name.as_bytes()),
                 String::from_utf8_lossy(name.as_bytes()),
                 self.type_string_resolved(&ty, Some(decl), Some(cls))

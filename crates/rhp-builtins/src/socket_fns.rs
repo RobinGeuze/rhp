@@ -18,9 +18,10 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::argparse::zval_value_name;
 use crate::ext::openssl::xp_ssl::{self, SslSock};
 use crate::fdstream::{poll_fd, FdStream, SockInfo};
-use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
+use crate::proc_fns::{zpp_long, zpp_string};
 use crate::streams::errno;
 use crate::{Host, Thrown};
 
@@ -78,7 +79,7 @@ fn zpp_double_or_null(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type ?float, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            zval_value_name(host, &v)
         ))
     })
 }
@@ -1492,7 +1493,7 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
         Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_))) => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 ($enable) must be of type bool, {} given",
-                zpp_type_name(host, &v)
+                zval_value_name(host, &v)
             )))
         }
         Some(v) => conv::to_bool(&v),
@@ -1513,7 +1514,7 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
                     } else {
                         Thrown::type_error(format!(
                             "{fname}(): Argument #4 ($session_stream) must be of type resource or null, {} given",
-                            zpp_type_name(host, &v)
+                            zval_value_name(host, &v)
                         ))
                     }
                 })?

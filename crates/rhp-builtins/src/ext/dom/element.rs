@@ -1018,7 +1018,7 @@ fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
                     "{}(): Argument #{} must be of type DOMNode|string, {} given",
                     cx.fname,
                     i + 1,
-                    crate::ext::zpp::given_type(cx.host, &v)
+                    crate::argparse::zval_type_name(cx.host, &v)
                 )));
             }
         }

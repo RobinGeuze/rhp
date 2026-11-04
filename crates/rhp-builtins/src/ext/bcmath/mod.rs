@@ -459,7 +459,7 @@ fn fn_bcround(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // $mode takes a RoundingMode, which rhp does not implement: anything a
     // php script can pass is a zpp TypeError, except a RoundingMode case.
     if let Some(mode) = args.get(2).map(deref) {
-        let name = crate::argparse::value_name(host, &mode);
+        let name = crate::argparse::zval_value_name(host, &mode);
         if name.eq_ignore_ascii_case("RoundingMode") {
             return Err(Thrown::unsupported(
                 "bcround() argument #3 ($mode)",

@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use rhp_semantics::{deref, ops};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::argparse::array_param;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -40,42 +41,12 @@ fn key_intstr(v: &Value) -> Option<ArrayKey> {
     }
 }
 
-fn want_array(v: Value, func: &str) -> Result<PhpArray, Thrown> {
-    match v {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{}(): Argument must be of type array, {} given",
-            func,
-            other.type_name_lower_()
-        ))),
-    }
-}
-
-trait TypeNameLower_ {
-    fn type_name_lower_(&self) -> &'static str;
-}
-impl TypeNameLower_ for Value {
-    fn type_name_lower_(&self) -> &'static str {
-        match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) | Value::Closure(_) => "object",
-            Value::Resource(_) => "resource",
-            Value::Ref(r) => r.borrow().type_name_lower_(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // array_slice
 // ---------------------------------------------------------------------------
 
-fn fn_array_slice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_slice")?;
+fn fn_array_slice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_slice")?;
     let offset = conv::to_int(&deref(&args[1]));
     let length = match args.get(2) {
         None => None,
@@ -136,8 +107,8 @@ fn fn_array_slice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_flip
 // ---------------------------------------------------------------------------
 
-fn fn_array_flip(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_flip")?;
+fn fn_array_flip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_flip")?;
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         if let Some(nk) = key_intstr(v) {
@@ -190,8 +161,8 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_fill_keys
 // ---------------------------------------------------------------------------
 
-fn fn_array_fill_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let keys = want_array(deref(&args[0]), "array_fill_keys")?;
+fn fn_array_fill_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let keys = array_param(host, args, 0, "array_fill_keys")?;
     let val = deref(&args[1]);
     let mut out = PhpArray::new();
     for (_, kv) in keys.iter() {
@@ -204,9 +175,9 @@ fn fn_array_fill_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_combine
 // ---------------------------------------------------------------------------
 
-fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let keys = want_array(deref(&args[0]), "array_combine")?;
-    let values = want_array(deref(&args[1]), "array_combine")?;
+fn fn_array_combine(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let keys = array_param(host, args, 0, "array_combine")?;
+    let values = array_param(host, args, 1, "array_combine")?;
     if keys.len() != values.len() {
         return Err(Thrown::error(
             "ValueError",
@@ -226,7 +197,7 @@ fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
-    let a = want_array(deref(&args[1]), "array_search")?;
+    let a = array_param(host, args, 1, "array_search")?;
     let strict = args
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
@@ -249,7 +220,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // ---------------------------------------------------------------------------
 
 fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_unique")?;
+    let a = array_param(host, args, 0, "array_unique")?;
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(2);
     if flags != 2 && a.len() > 1 {
         // SORT_REGULAR / SORT_NUMERIC / SORT_LOCALE_STRING: php sorts and drops
@@ -298,8 +269,8 @@ fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 
 const HT_MAX_SIZE: i128 = 1073741824; // 0x40000000
 
-fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_pad")?;
+fn fn_array_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_pad")?;
     let size = conv::to_int(&deref(&args[1]));
     let val = deref(&args[2]);
 
@@ -358,16 +329,16 @@ fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_key_first / array_key_last
 // ---------------------------------------------------------------------------
 
-fn fn_array_key_first(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_key_first")?;
+fn fn_array_key_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_key_first")?;
     Ok(a.iter()
         .next()
         .map(|(k, _)| k.to_value())
         .unwrap_or(Value::Null))
 }
 
-fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_key_last")?;
+fn fn_array_key_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_key_last")?;
     Ok(a.iter()
         .last()
         .map(|(k, _)| k.to_value())
@@ -378,8 +349,8 @@ fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // array_is_list
 // ---------------------------------------------------------------------------
 
-fn fn_array_is_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_is_list")?;
+fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_is_list")?;
     let mut expected: i64 = 0;
     for (k, _) in a.iter() {
         match k {
@@ -394,12 +365,12 @@ fn fn_array_is_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_diff / array_intersect (string comparison)
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(deref(&args[0]), "array_diff")?;
+fn fn_array_diff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_diff")?;
     // Union of the string forms of every subsequent array's values.
     let mut others: HashSet<Vec<u8>> = HashSet::new();
-    for arg in &args[1..] {
-        let o = want_array(deref(arg), "array_diff")?;
+    for i in 1..args.len() {
+        let o = array_param(host, args, i, "array_diff")?;
         for (_, v) in o.iter() {
             others.insert(conv::to_string_bytes(v));
         }
@@ -413,11 +384,11 @@ fn fn_array_diff(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn fn_array_intersect(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(deref(&args[0]), "array_intersect")?;
+fn fn_array_intersect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_intersect")?;
     let mut sets: Vec<HashSet<Vec<u8>>> = Vec::new();
-    for arg in &args[1..] {
-        let o = want_array(deref(arg), "array_intersect")?;
+    for i in 1..args.len() {
+        let o = array_param(host, args, i, "array_intersect")?;
         sets.push(o.iter().map(|(_, v)| conv::to_string_bytes(v)).collect());
     }
     let mut out = PhpArray::new();
@@ -465,7 +436,7 @@ fn column_prop(host: &mut dyn Host, row: &Value, key: &Value) -> Result<Option<V
 }
 
 fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let rows = want_array(deref(&args[0]), "array_column")?;
+    let rows = array_param(host, args, 0, "array_column")?;
     let column_key = deref(&args[1]);
     let column_null = matches!(column_key, Value::Null);
     let column_ak = ArrayKey::from_value(&column_key);
@@ -523,8 +494,8 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_chunk
 // ---------------------------------------------------------------------------
 
-fn fn_array_chunk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_chunk")?;
+fn fn_array_chunk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_chunk")?;
     let size = conv::to_int(&deref(&args[1]));
     if size < 1 {
         return Err(Thrown::error(
@@ -563,8 +534,8 @@ fn fn_array_chunk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_count_values
 // ---------------------------------------------------------------------------
 
-fn fn_array_count_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_count_values")?;
+fn fn_array_count_values(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_count_values")?;
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
         let Some(k) = key_intstr(v) else { continue };

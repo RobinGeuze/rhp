@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, value_name};
+use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, zval_value_name};
 use crate::const_modules::CONST_MODULES;
 use crate::ini_table::INI_TABLE;
 use crate::{Host, Thrown};
@@ -61,7 +61,7 @@ fn relation(
         other => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                value_name(host, other)
+                zval_value_name(host, other)
             )))
         }
     };

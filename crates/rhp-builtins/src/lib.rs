@@ -1346,6 +1346,7 @@ const BODY_MIN: &[(&str, usize)] = &[
     ("openssl_cms_verify", 2),
 ];
 
+pub use argparse::{zval_type_name, zval_value_name};
 pub use php_fns::{apply_env_overrides, env_overrides};
 
 /// The php version this engine reports (`PHP_VERSION`).
@@ -2354,12 +2355,12 @@ fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value,
             }
             Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-                argparse::value_name(host, &obj)
+                argparse::zval_value_name(host, &obj)
             )))
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-            other.type_name_lower()
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -2432,7 +2433,7 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
         let Value::Array(a) = &args[0] else {
             return Err(Thrown::type_error(format!(
                 "{name}(): Argument #1 ($value) must be of type array, {} given",
-                type_name_of(host, &args[0])
+                argparse::zval_value_name(host, &args[0])
             )));
         };
         let mut it = a.iter().map(|(_, v)| deref(v));
@@ -2584,7 +2585,7 @@ fn array_binop(
         match operand {
             Some(n) => acc = op(&acc, &n)?,
             None => {
-                let ty = type_name_of(host, &v);
+                let ty = argparse::zval_type_name(host, &v);
                 warn(
                     host,
                     fname,
@@ -3074,7 +3075,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         other => Err(Thrown::type_error(format!(
             "get_class(): Argument #1 ($object) must be of type object, {} given",
-            argparse::value_name(host, &other)
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -3166,7 +3167,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         }
         Some(other) => Err(Thrown::type_error(format!(
             "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            argparse::value_name(host, &other)
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -3343,39 +3344,4 @@ fn fn_chr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         )?;
     }
     Ok(Value::str(vec![(c & 0xff) as u8]))
-}
-
-// small helper on Value for error messages
-trait TypeNameLower {
-    fn type_name_lower(&self) -> &'static str;
-}
-impl TypeNameLower for Value {
-    fn type_name_lower(&self) -> &'static str {
-        match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) | Value::Closure(_) => "object",
-            Value::Resource(_) => "resource",
-            Value::Ref(r) => r.borrow().type_name_lower(),
-        }
-    }
-}
-
-/// `zend_zval_value_name`: the class name for objects, `true`/`false` for
-/// bools, else the type name.
-pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
-    match deref(v) {
-        Value::Bool(true) => "true".into(),
-        Value::Bool(false) => "false".into(),
-        Value::Closure(_) => "Closure".into(),
-        o @ Value::Object(_) => host
-            .object_class_name(&o)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        other => other.type_name_lower().into(),
-    }
 }

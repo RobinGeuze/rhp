@@ -1319,7 +1319,7 @@ impl Vm {
             )),
             v => err(format!(
                 "Value of type {} is not callable",
-                builtins::php_fns::zend_type_name(v)
+                rhp_builtins::zval_type_name(self, v)
             )),
         }
     }

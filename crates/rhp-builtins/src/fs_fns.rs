@@ -28,28 +28,6 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
     }
 }
 
-/// php's zpp type name for an argument in a TypeError ("string", "int", the
-/// class name for objects, …).
-fn given(host: &dyn Host, v: &Value) -> String {
-    match v {
-        Value::Null => "null".into(),
-        // zend_zval_value_name: booleans show their value.
-        Value::Bool(true) => "true".into(),
-        Value::Bool(false) => "false".into(),
-        Value::Int(_) => "int".into(),
-        Value::Float(_) => "float".into(),
-        Value::Str(_) => "string".into(),
-        Value::Array(_) => "array".into(),
-        Value::Closure(_) => "Closure".into(),
-        Value::Object(_) => host
-            .object_class_name(v)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        Value::Resource(_) => "resource".into(),
-        Value::Ref(r) => given(host, &r.borrow()),
-    }
-}
-
 /// A `Z_PARAM_PATH` argument: a string without NUL bytes.
 fn path_param(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8>, Thrown> {
     let p = str_arg(args, i);
@@ -78,7 +56,7 @@ pub(crate) fn stream_param(
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
             i + 1,
-            given(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     match host.stream_kind(&v) {
@@ -250,7 +228,7 @@ fn dir_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, 
         other => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($dir_handle) must be of type resource or null, {} given",
-                given(host, &other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -1878,7 +1856,7 @@ fn do_chown(
             let what = if group { "group" } else { "user" };
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 (${what}) must be of type string|int, {} given",
-                given(host, other)
+                crate::argparse::zval_value_name(host, other)
             )));
         }
     };

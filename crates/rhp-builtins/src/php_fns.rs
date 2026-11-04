@@ -426,21 +426,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match coerced {
         Some(c) => Ok(c),
         None => {
-            let given = match &v {
-                Value::Null => "null".to_string(),
-                Value::Bool(_) => "bool".to_string(),
-                Value::Int(_) => "int".to_string(),
-                Value::Float(_) => "float".to_string(),
-                Value::Str(_) => "string".to_string(),
-                Value::Array(_) => "array".to_string(),
-                Value::Closure(_) => "Closure".to_string(),
-                Value::Resource(_) => "resource".to_string(),
-                o @ Value::Object(_) => String::from_utf8_lossy(&crate::dump::c_str(
-                    host.object_class_name(o).unwrap_or_default(),
-                ))
-                .into_owned(),
-                Value::Ref(_) => unreachable!(),
-            };
+            let given = crate::argparse::zval_value_name(host, &v);
             Err(Thrown::type_error(format!(
                 "{}(): Argument #{} (${}) must be of type {}, {} given",
                 String::from_utf8_lossy(&func),
@@ -745,22 +731,6 @@ fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let entry = (name.to_vec(), value.map(|v| v.to_vec()));
     ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
     Ok(Value::Bool(true))
-}
-
-/// zend_zval_type_name (`int`, `bool`, `string`, `null`, …).
-pub fn zend_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Resource(_) => "resource",
-        Value::Closure(_) => "Closure",
-        Value::Object(_) => "object",
-        Value::Ref(r) => zend_type_name(&r.borrow()),
-    }
 }
 
 /// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.

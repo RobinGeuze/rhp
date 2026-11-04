@@ -373,7 +373,7 @@ unsafe extern "C" fn cancel_callback(_za: *mut sys::zip_t, ud: *mut c_void) -> c
                 None => Err(Thrown::type_error(format!(
                     "Return value of callback provided to ZipArchive::registerCancelCallback() \
                      must be of type int, {} returned",
-                    crate::ext::zpp::given_type(h, &r)
+                    crate::argparse::zval_value_name(h, &r)
                 ))),
             }
         })

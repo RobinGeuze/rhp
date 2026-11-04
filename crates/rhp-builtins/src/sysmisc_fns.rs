@@ -5,24 +5,13 @@
 //! `cli_get_process_title`, `gethostname`, `gethostbyname`, `getmyuid`/
 //! `getmygid`/`getmyinode`, `get_current_user`.
 
-use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, int_param, str_param, value_name};
+use crate::argparse::{array_param, bool_param, int_param, str_param};
 use crate::{Host, Thrown};
 
-fn want_array(host: &dyn Host, args: &[Value], func: &str) -> Result<PhpArray, Thrown> {
-    match deref(&args[0]) {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #1 ($array) must be of type array, {} given",
-            value_name(host, &other)
-        ))),
-    }
-}
-
 fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(host, args, "array_first")?;
+    let a = array_param(host, args, 0, "array_first")?;
     Ok(a.iter()
         .next()
         .map(|(_, v)| v.clone())
@@ -30,7 +19,7 @@ fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(host, args, "array_last")?;
+    let a = array_param(host, args, 0, "array_last")?;
     Ok(a.iter()
         .last()
         .map(|(_, v)| v.clone())

@@ -21,7 +21,7 @@ use std::sync::{Once, OnceLock};
 
 use rhp_values::{conv, Value};
 
-use crate::ext::zpp::{deref, given_type};
+use crate::ext::zpp::deref;
 use crate::{warn, Host, Thrown};
 
 /// The key and certificate classes' handlers: no clone, not comparable.
@@ -589,7 +589,7 @@ pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thro
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
-                        given_type(host, &o)
+                        crate::argparse::zval_value_name(host, &o)
                     ),
                 )),
             }
@@ -648,11 +648,7 @@ pub(super) fn obj_or_str(
 /// zpp's "must be of type T, X given" (`zend_zval_value_name`).
 pub(super) fn type_error(host: &dyn Host, fname: &str, i: usize, v: &Value) -> Thrown {
     let (pname, ty) = param(fname, i);
-    let given = match deref(v) {
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        v => given_type(host, &v),
-    };
+    let given = crate::argparse::zval_value_name(host, v);
     Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type {ty}, {given} given",
         i + 1

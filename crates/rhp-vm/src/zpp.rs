@@ -67,7 +67,7 @@ impl Vm {
                     Got::Keep => {}
                     Got::Set(v) => args[i] = v,
                     Got::Fail => {
-                        let given = self.zval_value_name(&deref(&args[i]));
+                        let given = rhp_builtins::zval_value_name(self, &deref(&args[i]));
                         let ty = sp.kind.expected(sp.nullable).unwrap_or(sp.ty);
                         return Err(Thrown::type_error(format!(
                             "{name}(): Argument #{}{} must be of type {ty}, {given} given",

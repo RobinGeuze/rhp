@@ -419,7 +419,7 @@ fn fn_set_streams_context(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let Value::Resource(r) = &arg else {
         return Err(Thrown::type_error(format!(
             "libxml_set_streams_context(): Argument #1 ($context) must be of type resource, {} given",
-            crate::ext::zpp::given_type(host, &arg)
+            crate::argparse::zval_value_name(host, &arg)
         )));
     };
     if r.type_name != "stream-context" {

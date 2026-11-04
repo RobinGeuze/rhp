@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::value_name;
+use crate::argparse::zval_value_name;
 use crate::ext::zpp::{self, deref};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, Op, PropPurpose};
 use crate::{Host, Thrown};
@@ -267,7 +267,7 @@ fn num_arg(
         None => Err(Thrown::type_error(format!(
             "{func}(): Argument #{} (${name}) must be of type {NUM_TYPE}, {} given",
             i + 1,
-            value_name(host, &v)
+            zval_value_name(host, &v)
         ))),
     }
 }
@@ -317,7 +317,7 @@ fn str_or_long_arg(
         Thrown::type_error(format!(
             "{func}(): Argument #{} (${name}) must be of type string|int, {} given",
             i + 1,
-            value_name(host, v)
+            zval_value_name(host, v)
         ))
     };
     match &v {
@@ -358,7 +358,7 @@ fn str_arg(
         Thrown::type_error(format!(
             "{func}(): Argument #{} (${name}) must be of type string, {} given",
             i + 1,
-            value_name(host, v)
+            zval_value_name(host, v)
         ))
     };
     if let Value::Str(s) = &v {
@@ -403,7 +403,7 @@ fn bool_arg(
         Thrown::type_error(format!(
             "{func}(): Argument #{} (${name}) must be of type bool, {} given",
             i + 1,
-            value_name(host, v)
+            zval_value_name(host, v)
         ))
     };
     match &v {
@@ -1275,7 +1275,7 @@ fn gmp_this(host: &dyn Host, args: &[Value], func: &str) -> Result<Rc<GmpNum>, T
         Some(h) => Ok(gmp_num(&h)),
         None => Err(Thrown::type_error(format!(
             "{func}(): Argument #1 ($num) must be of type GMP, {} given",
-            value_name(host, &v)
+            zval_value_name(host, &v)
         ))),
     }
 }
@@ -1380,7 +1380,7 @@ fn fn_gmp_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             let v = other.unwrap_or(Value::Null);
             return Err(Thrown::type_error(format!(
                 "GMP::__unserialize(): Argument #1 ($data) must be of type array, {} given",
-                value_name(host, &v)
+                zval_value_name(host, &v)
             )));
         }
     };
@@ -1607,7 +1607,7 @@ fn operand_or_error(host: &mut dyn Host, v: &Value) -> Result<Arg, Thrown> {
         Some(n) => Ok(n),
         None => Err(Thrown::type_error(format!(
             "Number must be of type {NUM_TYPE}, {} given",
-            value_name(host, v)
+            zval_value_name(host, v)
         ))),
     }
 }
@@ -1725,11 +1725,7 @@ fn shift_operands(
         Op::Shl => "<<",
         _ => ">>",
     };
-    // zend_zval_type_name: the class for an object, "bool" for a bool.
-    let type_name = |host: &dyn Host, v: &Value| match deref(v) {
-        Value::Bool(_) => "bool".to_string(),
-        other => crate::proc_fns::zpp_type_name(host, &other),
-    };
+    let type_name = crate::argparse::zval_type_name;
     let unsupported = |host: &dyn Host| {
         Thrown::type_error(format!(
             "Unsupported operand types: {} {sigil} {}",

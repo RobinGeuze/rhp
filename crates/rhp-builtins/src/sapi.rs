@@ -897,7 +897,7 @@ fn setcookie_common(
         Some(Value::Object(_) | Value::Resource(_) | Value::Closure(_)) => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #3 ($expires_or_options) must be of type array|int, {} given",
-                crate::argparse::value_name(host, &deref(&args[2]))
+                crate::argparse::zval_value_name(host, &deref(&args[2]))
             )));
         }
         Some(_) => {

@@ -861,7 +861,7 @@ struct Options {
 /// php_zip_parse_options; `Err` for php's exceptions.
 fn parse_options(cx: &mut Cx<'_>, options: &PhpArray, o: &mut Options) -> Result<(), Thrown> {
     let get = |k: &str| options.get(&ArrayKey::from_bytes(k.as_bytes())).map(deref);
-    let tname = |cx: &Cx<'_>, v: &Value| crate::ext::zpp::given_type(cx.host, v);
+    let tname = |cx: &Cx<'_>, v: &Value| crate::argparse::zval_value_name(cx.host, v);
     let warn_type = |cx: &mut Cx<'_>, opt: &str, want: &str, v: &Value| {
         let t = tname(cx, v);
         cx.warn(&format!(
@@ -1403,7 +1403,7 @@ fn extract_to(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
             return Err(Thrown::type_error(format!(
                 "{}(): Argument #2 ($files) must be of type array|string|null, {} given",
                 cx.fname,
-                crate::ext::zpp::given_type(cx.host, v)
+                crate::argparse::zval_value_name(cx.host, v)
             )))
         }
     }

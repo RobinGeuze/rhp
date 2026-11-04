@@ -3,16 +3,27 @@
 //! argument instead of silently coercing.
 
 use rhp_semantics::deref;
-use rhp_values::{conv, Value};
+use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};
 
-/// php's `zend_zval_value_name`: the type word used in "..., X given".
-pub(crate) fn value_name(host: &dyn Host, v: &Value) -> String {
+/// php's `zend_zval_value_name`, the word zpp and most "…, X given"
+/// messages use: the class for an object (cut at a NUL, as `%s` prints an
+/// anonymous class), `true`/`false` for a bool, else the type.
+pub fn zval_value_name(host: &dyn Host, v: &Value) -> String {
     match deref(v) {
-        Value::Null => "null".into(),
         Value::Bool(true) => "true".into(),
         Value::Bool(false) => "false".into(),
+        other => zval_type_name(host, &other),
+    }
+}
+
+/// php's `zend_zval_type_name`: [`zval_value_name`], but `bool` for both
+/// bools (operator errors, typed properties, a few extension messages).
+pub fn zval_type_name(host: &dyn Host, v: &Value) -> String {
+    match deref(v) {
+        Value::Null => "null".into(),
+        Value::Bool(_) => "bool".into(),
         Value::Int(_) => "int".into(),
         Value::Float(_) => "float".into(),
         Value::Str(_) => "string".into(),
@@ -21,7 +32,7 @@ pub(crate) fn value_name(host: &dyn Host, v: &Value) -> String {
         Value::Resource(_) => "resource".into(),
         o @ Value::Object(_) => host
             .object_class_name(&o)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
+            .map(|n| String::from_utf8_lossy(&crate::dump::c_str(n)).into_owned())
             .unwrap_or_else(|| "object".into()),
         Value::Ref(_) => unreachable!(),
     }
@@ -44,7 +55,7 @@ pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>,
                 "Error",
                 format!(
                     "Object of class {} could not be converted to string",
-                    value_name(host, &o)
+                    zval_value_name(host, &o)
                 ),
             ))
         }
@@ -88,7 +99,7 @@ pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Throw
                 crate::E_WARNING,
                 &format!(
                     "Object of class {} could not be converted to int",
-                    value_name(host, &o)
+                    zval_value_name(host, &o)
                 ),
             )?;
             Ok(1)
@@ -100,7 +111,7 @@ pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Throw
 fn type_error(host: &dyn Host, func: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{func}(): Argument #{n} (${pname}) must be of type {want}, {} given",
-        value_name(host, v)
+        zval_value_name(host, v)
     ))
 }
 
@@ -124,6 +135,31 @@ pub(crate) fn str_param(
             None => Err(type_error(host, func, i + 1, pname, "string", &v)),
         },
         _ => Ok(conv::to_string_bytes(&v)),
+    }
+}
+
+/// An `array` parameter. The VM's zpp has checked it for a call from user
+/// code; a prelude caller passing anything else gets php's TypeError.
+pub(crate) fn array_param(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    func: &str,
+) -> Result<PhpArray, Thrown> {
+    match args.get(i).map(deref) {
+        Some(Value::Array(a)) => Ok(a),
+        v => {
+            let label = crate::signatures::function(func.as_bytes())
+                .and_then(|f| f.params.get(i))
+                .filter(|p| !p.variadic())
+                .map(|p| format!(" (${})", p.name))
+                .unwrap_or_default();
+            Err(Thrown::type_error(format!(
+                "{func}(): Argument #{}{label} must be of type array, {} given",
+                i + 1,
+                zval_value_name(host, &v.unwrap_or(Value::Null))
+            )))
+        }
     }
 }
 

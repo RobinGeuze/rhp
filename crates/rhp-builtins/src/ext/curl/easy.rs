@@ -2099,7 +2099,7 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
             let v = other.unwrap_or(Value::Null);
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #2 ($options) must be of type array, {} given",
-                crate::argparse::value_name(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )));
         }
     };

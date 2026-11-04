@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::ext::zpp::{deref, given_type, long_arg};
+use crate::ext::zpp::{deref, long_arg};
 use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::{Host, Thrown};
 
@@ -156,7 +156,7 @@ fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($parser) must be of type XMLParser, {} given",
         i + 1,
-        given_type(host, &v)
+        crate::argparse::zval_value_name(host, &v)
     )))
 }
 
@@ -990,7 +990,7 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if !matches!(new_this, Value::Object(_)) {
         return Err(Thrown::type_error(format!(
             "{F}(): Argument #2 ($object) must be of type object, {} given",
-            given_type(host, &new_this)
+            crate::argparse::zval_value_name(host, &new_this)
         )));
     }
     const SET_VIA: [&str; 10] = [
@@ -1185,7 +1185,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if !matches!(value, Value::Bool(_) | Value::Int(_) | Value::Str(_)) {
         let msg = format!(
             "Argument #3 ($value) must be of type string|int|bool, {} given",
-            given_type(host, &value)
+            crate::argparse::zval_type_name(host, &value)
         );
         crate::warn(host, F, &msg)?;
     }

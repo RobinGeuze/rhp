@@ -17,7 +17,7 @@ use std::rc::Rc;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::{value_name, zval_get_string};
+use crate::argparse::{zval_get_string, zval_value_name};
 use crate::ext::libxml::node::{self as lxn, ClassType, NodeObject};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::ext::libxml::{self as lx, ffi};
@@ -696,7 +696,7 @@ fn prop_dim_write(
                 return Err(Thrown::type_error(format!(
                     "It's not possible to assign a complex type to {}, {} given",
                     if attribs { "attributes" } else { "properties" },
-                    value_name(cx.host, other)
+                    zval_value_name(cx.host, other)
                 )));
             }
         },

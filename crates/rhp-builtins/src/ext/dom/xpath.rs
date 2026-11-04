@@ -382,7 +382,7 @@ pub fn register_php_functions(cx: &mut Cx, this: &Value, args: &[Value]) -> Resu
                 return Err(Thrown::type_error(format!(
                     "{}(): Argument #1 ($restrict) must be of type array|string|null, {} given",
                     cx.fname,
-                    crate::ext::zpp::given_type(cx.host, &v)
+                    crate::argparse::zval_value_name(cx.host, &v)
                 )));
             }
             let name = crate::ext::libxml::io::to_string(cx.host, &v)?;

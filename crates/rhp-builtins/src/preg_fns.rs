@@ -901,7 +901,7 @@ fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result
         other => {
             return Err(Thrown::type_error(format!(
             "preg_replace_callback_array(): Argument #1 ($pattern) must be of type array, {} given",
-            crate::argparse::value_name(host, &other)
+            crate::argparse::zval_value_name(host, &other)
         )))
         }
     };

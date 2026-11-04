@@ -629,7 +629,7 @@ fn double_arg(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::argparse::value_name(host, v)
+            crate::argparse::zval_value_name(host, v)
         ))
     };
     Ok(Some(match &v {

@@ -14,8 +14,9 @@ use std::rc::Rc;
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
+use crate::argparse::zval_value_name;
 use crate::object::{ClassHandlers, ObjectHandlers};
-use crate::proc_fns::{zpp_long, zpp_type_name};
+use crate::proc_fns::zpp_long;
 use crate::streams::errno;
 use crate::{Host, Thrown};
 
@@ -61,7 +62,7 @@ fn socket_arg(
         "{fname}(): Argument #{} ($socket) must be of type {}Socket, {} given",
         i + 1,
         if nullable { "?" } else { "" },
-        zpp_type_name(host, &v)
+        zval_value_name(host, &v)
     )))
 }
 
@@ -261,7 +262,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let Some(a) = option_table(&value) else {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is SO_LINGER, {} given",
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let onoff = table_entry(&a, "l_onoff", fname)?;
@@ -292,7 +293,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is {}, {} given",
                 if opt == libc::SO_RCVTIMEO as i64 { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" },
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let sec = table_entry(&a, "sec", fname)?;

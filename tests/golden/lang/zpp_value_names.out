@@ -1,0 +1,22 @@
+0: TypeError: strlen(): Argument #1 ($string) must be of type string, class@anonymous given
+1: TypeError: array_sum(): Argument #1 ($array) must be of type array, true given
+2: TypeError: count(): Argument #1 ($value) must be of type Countable|array, true given
+3: TypeError: count(): Argument #1 ($value) must be of type Countable|array, stdClass given
+4: TypeError: max(): Argument #1 ($value) must be of type array, false given
+5: TypeError: pclose(): Argument #1 ($handle) must be of type resource, ArrayObject given
+6: TypeError: proc_close(): Argument #1 ($process) must be of type resource, true given
+7: TypeError: pcntl_signal(): Argument #2 ($handler) must be of type callable|int, ArrayObject given
+8: TypeError: pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, ArrayObject given
+9: TypeError: unserialize(): Option "allowed_classes" must be an array of class names, true given
+10: TypeError: unserialize(): Option "allowed_classes" must be of type array|bool, ArrayObject given
+11: Error: Object of class ArrayObject could not be converted to string
+12: TypeError: libxml_set_streams_context(): Argument #1 ($context) must be of type resource, true given
+13: TypeError: iconv_mime_encode(): Argument #3 ($options) must be of type array, true given
+14: TypeError: XMLWriter::toStream(): Argument #1 ($stream) must be of type resource, false given
+15: TypeError: xml_parse(): Argument #1 ($parser) must be of type XMLParser, true given
+16: TypeError: zip_read(): Argument #1 ($zip) must be of type resource, true given
+17: TypeError: DOMNode::C14N(): Argument #3 ($xpath) "query" option must be a string, true given
+18: TypeError: DOMElement::append(): Argument #1 must be of type DOMNode|string, bool given
+19: TypeError: Exception::__construct(): Argument #3 ($previous) must be of type ?Throwable, true given
+20: TypeError: Unsupported operand types: class@anonymous + int
+21: Error: Call to undefined function true()

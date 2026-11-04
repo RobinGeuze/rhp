@@ -16,22 +16,12 @@
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::argparse::array_param;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-
-/// Require an array argument (after deref), or a `TypeError` naming the position.
-fn want_array(v: &Value, func: &str, argn: usize) -> Result<PhpArray, Thrown> {
-    match deref(v) {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #{argn} must be of type array, {} given",
-            other.type_name_lower()
-        ))),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // array_diff_assoc / array_intersect_assoc
@@ -41,11 +31,11 @@ fn want_array(v: &Value, func: &str, argn: usize) -> Result<PhpArray, Thrown> {
 // match).
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff_assoc(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_diff_assoc", 1)?;
+fn fn_array_diff_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_diff_assoc")?;
     let mut others = Vec::with_capacity(args.len() - 1);
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_diff_assoc", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_diff_assoc")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -61,11 +51,11 @@ fn fn_array_diff_assoc(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     Ok(Value::Array(out))
 }
 
-fn fn_array_intersect_assoc(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_intersect_assoc", 1)?;
+fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_intersect_assoc")?;
     let mut others = Vec::with_capacity(args.len() - 1);
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_intersect_assoc", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_intersect_assoc")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -111,10 +101,10 @@ fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
     }
 }
 
-fn fn_array_replace_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = want_array(&args[0], "array_replace_recursive", 1)?;
-    for (i, arg) in args[1..].iter().enumerate() {
-        let a = want_array(arg, "array_replace_recursive", i + 2)?;
+fn fn_array_replace_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = array_param(host, args, 0, "array_replace_recursive")?;
+    for i in 1..args.len() {
+        let a = array_param(host, args, i, "array_replace_recursive")?;
         replace_recursive_into(&mut out, &a);
     }
     Ok(Value::Array(out))
@@ -128,7 +118,7 @@ fn fn_array_replace_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value,
 // ---------------------------------------------------------------------------
 
 fn fn_array_find(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(&args[0], "array_find", 1)?;
+    let a = array_param(host, args, 0, "array_find")?;
     let cb = &args[1];
     for (k, v) in a.iter() {
         if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
@@ -139,7 +129,7 @@ fn fn_array_find(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_find_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(&args[0], "array_find_key", 1)?;
+    let a = array_param(host, args, 0, "array_find_key")?;
     let cb = &args[1];
     for (k, v) in a.iter() {
         if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
@@ -150,7 +140,7 @@ fn fn_array_find_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 }
 
 fn fn_array_any(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(&args[0], "array_any", 1)?;
+    let a = array_param(host, args, 0, "array_any")?;
     let cb = &args[1];
     for (k, v) in a.iter() {
         if conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
@@ -161,7 +151,7 @@ fn fn_array_any(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_array_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(&args[0], "array_all", 1)?;
+    let a = array_param(host, args, 0, "array_all")?;
     let cb = &args[1];
     for (k, v) in a.iter() {
         if !conv::to_bool(&host.call_callable(cb, &[v.clone(), k.to_value()])?) {
@@ -190,25 +180,6 @@ fn fn_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 // small helper on Value for error messages (mirrors lib.rs)
 // ---------------------------------------------------------------------------
-
-trait TypeNameLower {
-    fn type_name_lower(&self) -> &'static str;
-}
-impl TypeNameLower for Value {
-    fn type_name_lower(&self) -> &'static str {
-        match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) | Value::Closure(_) => "object",
-            Value::Resource(_) => "resource",
-            Value::Ref(r) => r.borrow().type_name_lower(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // registration

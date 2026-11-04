@@ -1687,7 +1687,7 @@ impl Vm {
             Ok(Some(c)) => Ok(c),
             Err(()) => Err(Thrown::type_error(format!(
                 "Cannot assign {} to property {}::${} of type {}",
-                self.zval_value_name(&v),
+                rhp_builtins::zval_value_name(self, &v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
                 crate::types::type_string(ty),
@@ -1707,11 +1707,7 @@ impl Vm {
             Ok(None) => Ok(v),
             Ok(Some(c)) => Ok(c),
             Err(()) => {
-                // zend_zval_type_name: like the value name, but bools are "bool".
-                let tn = match &v {
-                    Value::Bool(_) => "bool".to_string(),
-                    other => self.zval_value_name(other),
-                };
+                let tn = rhp_builtins::zval_type_name(self, &v);
                 Err(Thrown::type_error(format!(
                     "Cannot assign {} to class constant {}::{} of type {}",
                     tn,
@@ -1720,15 +1716,6 @@ impl Vm {
                     crate::types::type_string(ty),
                 )))
             }
-        }
-    }
-
-    /// php's `zend_zval_value_name`.
-    pub(crate) fn zval_value_name(&self, v: &Value) -> String {
-        match v {
-            Value::Bool(true) => "true".into(),
-            Value::Bool(false) => "false".into(),
-            other => self.value_debug_type(other),
         }
     }
 

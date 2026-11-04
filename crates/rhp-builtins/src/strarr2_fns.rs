@@ -10,6 +10,7 @@
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::argparse::array_param;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -43,30 +44,6 @@ fn charmask(chars: &[u8]) -> [bool; 256] {
         }
     }
     mask
-}
-
-fn want_array(v: &Value, func: &str, argn: usize) -> Result<PhpArray, Thrown> {
-    match deref(v) {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #{argn} must be of type array, {} given",
-            type_name_lower(&other)
-        ))),
-    }
-}
-
-fn type_name_lower(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => type_name_lower(&r.borrow()),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -423,11 +400,11 @@ fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_diff_key / array_intersect_key
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_diff_key", 1)?;
+fn fn_array_diff_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_diff_key")?;
     let mut others = Vec::new();
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_diff_key", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_diff_key")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -438,11 +415,11 @@ fn fn_array_diff_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Array(out))
 }
 
-fn fn_array_intersect_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_intersect_key", 1)?;
+fn fn_array_intersect_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_intersect_key")?;
     let mut others = Vec::new();
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_intersect_key", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_intersect_key")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -457,10 +434,10 @@ fn fn_array_intersect_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 // array_replace
 // ---------------------------------------------------------------------------
 
-fn fn_array_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = want_array(&args[0], "array_replace", 1)?;
-    for (i, arg) in args[1..].iter().enumerate() {
-        let a = want_array(arg, "array_replace", i + 2)?;
+fn fn_array_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = array_param(host, args, 0, "array_replace")?;
+    for i in 1..args.len() {
+        let a = array_param(host, args, i, "array_replace")?;
         for (k, v) in a.iter() {
             out.insert(k.clone(), v.clone());
         }
@@ -507,10 +484,10 @@ fn merge_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
     }
 }
 
-fn fn_array_merge_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_merge_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
-    for (i, arg) in args.iter().enumerate() {
-        let a = want_array(arg, "array_merge_recursive", i + 1)?;
+    for i in 0..args.len() {
+        let a = array_param(host, args, i, "array_merge_recursive")?;
         merge_recursive_into(&mut out, &a);
     }
     Ok(Value::Array(out))

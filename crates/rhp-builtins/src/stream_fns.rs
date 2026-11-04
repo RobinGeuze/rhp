@@ -58,7 +58,7 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         Value::Resource(r) => Ok(Value::str(r.type_name)),
         other => Err(Thrown::type_error(format!(
             "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
-            crate::argparse::value_name(host, &other)
+            crate::argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -140,7 +140,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($context) must be of type resource, {} given",
-            crate::argparse::value_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     host.resolve_stream_context(&v).ok_or_else(|| {
@@ -159,7 +159,7 @@ fn fn_stream_context_set_params(host: &mut dyn Host, args: &[Value]) -> Result<V
             let v = other.unwrap_or(Value::Null);
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 ($params) must be of type array, {} given",
-                crate::argparse::value_name(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )));
         }
     };
@@ -231,7 +231,7 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Some(v) => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
-                crate::argparse::value_name(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )))
         }
     };

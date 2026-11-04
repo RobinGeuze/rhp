@@ -21,21 +21,6 @@ use rhp_values::{conv, Value};
 use crate::proc_fns::zpp_long;
 use crate::{Host, Thrown};
 
-fn value_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => value_name(&r.borrow()),
-    }
-}
-
 #[derive(Default)]
 struct PcntlState {
     async_signals: bool,
@@ -438,7 +423,7 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         return Err(Thrown::type_error(format!(
             "pcntl_signal(): Argument #2 ($handler) must be of type callable|int, {} given",
-            value_name(&handler)
+            crate::argparse::zval_value_name(host, &handler)
         )));
     }
     let queue_handler = signal_handler
@@ -630,7 +615,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         other => {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) must be of type array, {} given",
-                value_name(&other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -651,7 +636,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         let Some(n) = crate::ext::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
-                value_name(&v)
+                crate::argparse::zval_value_name(host, &v)
             )));
         };
         if !(1..NUM_SIGNALS).contains(&n) {

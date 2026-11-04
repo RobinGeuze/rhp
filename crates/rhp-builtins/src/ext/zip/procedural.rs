@@ -78,7 +78,7 @@ fn resource_arg(
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
         i + 1,
-        crate::ext::zpp::given_type(host, &v)
+        crate::argparse::zval_value_name(host, &v)
     )))
 }
 

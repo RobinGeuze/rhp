@@ -202,7 +202,7 @@ fn new_object(host: &mut dyn Host, class: &str) -> Result<(Value, ObjectHandle),
 fn type_err(host: &dyn Host, f: &str, n: usize, pname: &str, class: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{f}(): Argument #{n} (${pname}) must be of type {class}, {} given",
-        crate::argparse::value_name(host, &deref(v))
+        crate::argparse::zval_value_name(host, &deref(v))
     ))
 }
 

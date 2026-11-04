@@ -958,7 +958,7 @@ fn fn_mb_substitute_character(host: &mut dyn Host, args: &[Value]) -> Result<Val
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 (${}) must be of type string|int|null, {} given",
                 pname(f, 0),
-                crate::argparse::value_name(host, &arg)
+                crate::argparse::zval_value_name(host, &arg)
             )));
         }
         Value::Float(x) if x.is_nan() || !(-TWO_63..TWO_63).contains(x) => {

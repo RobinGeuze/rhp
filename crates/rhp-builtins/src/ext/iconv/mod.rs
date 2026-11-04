@@ -1551,7 +1551,7 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         Some(v) => {
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #3 ($options) must be of type array, {} given",
-                crate::ext::zpp::given_type(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )))
         }
     };

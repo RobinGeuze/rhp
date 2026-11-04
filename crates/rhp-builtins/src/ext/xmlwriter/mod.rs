@@ -14,7 +14,7 @@ use rhp_values::{conv, Value};
 use crate::ext::libxml::io::Io;
 use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
-use crate::ext::zpp::{deref, given_type};
+use crate::ext::zpp::deref;
 use crate::object::{ClassHandlers, CloneObj, ObjectHandlers};
 use crate::{Host, Thrown};
 
@@ -797,7 +797,7 @@ fn fn_to(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if !matches!(stream, Value::Resource(_)) {
                 return Err(Thrown::type_error(format!(
                     "{F}(): Argument #1 ($stream) must be of type resource, {} given",
-                    given_type(host, &stream)
+                    crate::argparse::zval_value_name(host, &stream)
                 )));
             }
             if host.stream_kind(&stream).is_none() {

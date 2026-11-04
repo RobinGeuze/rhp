@@ -182,7 +182,7 @@ pub(super) fn fn_curl_share_init_persistent(
             let v = other.unwrap_or(Value::Null);
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($share_options) must be of type array, {} given",
-                crate::argparse::value_name(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )));
         }
     };
@@ -207,7 +207,7 @@ pub(super) fn fn_curl_share_init_persistent(
         let Some(option) = try_get_long(host, &entry)? else {
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($share_options) must contain only int values, {} given",
-                crate::argparse::value_name(host, &entry)
+                crate::argparse::zval_value_name(host, &entry)
             )));
         };
         if option == sys::php("CURL_LOCK_DATA_COOKIE") {

@@ -260,7 +260,7 @@ impl Vm {
                                 i + 1,
                                 pname,
                                 self.type_string_resolved(ty, ctx, frame.called_class),
-                                self.zval_value_name(&deref(&cur)),
+                                rhp_builtins::zval_value_name(self, &deref(&cur)),
                                 site.unwrap_or_default(),
                             ),
                         ),
@@ -333,28 +333,10 @@ impl Vm {
                         "{}(): Return value must be of type {}, {} returned",
                         fname,
                         self.type_string_resolved(ty, ctx, called),
-                        self.zval_value_name(&deref(&v)),
+                        rhp_builtins::zval_value_name(self, &deref(&v)),
                     ),
                 ))
             }
-        }
-    }
-
-    pub(crate) fn value_debug_type(&self, v: &Value) -> String {
-        match v {
-            Value::Object(h) => self
-                .class_name(h.borrow().class)
-                .map(|n| String::from_utf8_lossy(&n).into_owned())
-                .unwrap_or_else(|| "object".into()),
-            Value::Closure(_) => "Closure".into(),
-            Value::Null => "null".into(),
-            Value::Bool(_) => "bool".into(),
-            Value::Int(_) => "int".into(),
-            Value::Float(_) => "float".into(),
-            Value::Str(_) => "string".into(),
-            Value::Array(_) => "array".into(),
-            Value::Resource(_) => "resource".into(),
-            Value::Ref(r) => self.value_debug_type(&r.borrow()),
         }
     }
 

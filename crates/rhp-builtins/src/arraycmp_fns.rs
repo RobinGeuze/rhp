@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::value_name;
+use crate::argparse::zval_value_name;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ fn parse_args(
                     ),
                     other => format!(
                         "no array or string given ({} given)",
-                        value_name(host, other)
+                        zval_value_name(host, other)
                     ),
                 }
             )));
@@ -337,7 +337,7 @@ fn parse_args(
                     "{func}(): Argument #{}{} must be of type array, {} given",
                     i + 1,
                     if i == 0 { " ($array)" } else { "" },
-                    value_name(host, &other)
+                    zval_value_name(host, &other)
                 )));
             }
         }

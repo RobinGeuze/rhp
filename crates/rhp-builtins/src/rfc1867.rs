@@ -1307,7 +1307,7 @@ fn parse_options(host: &mut dyn Host, opts: &PhpArray) -> Result<BodyOptions, Th
                     "ValueError",
                     format!(
                         "Invalid {} value in $options argument",
-                        crate::argparse::value_name(host, other)
+                        crate::argparse::zval_value_name(host, other)
                     ),
                 ))
             }
@@ -1336,7 +1336,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         Some(other) => {
             return Err(Thrown::type_error(format!(
                 "request_parse_body(): Argument #1 ($options) must be of type ?array, {} given",
-                crate::argparse::value_name(host, &other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };

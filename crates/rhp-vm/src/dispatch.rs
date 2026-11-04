@@ -267,7 +267,7 @@ impl Vm {
                     if let Value::Object(_) | Value::Closure(_) = v {
                         return Err(Thrown::type_error(format!(
                             "Cannot perform bitwise not on {}",
-                            self.zval_value_name(&v)
+                            rhp_builtins::zval_value_name(self, &v)
                         )));
                     }
                     self.reg_set(top, dst, ops::bitwise_not(&v));
@@ -1625,7 +1625,7 @@ impl Vm {
             arr @ Value::Array(_) => Err(Thrown::type_error(format!(
                 "Cannot {} {}",
                 what.to_ascii_lowercase(),
-                self.zval_value_name(&arr)
+                rhp_builtins::zval_value_name(self, &arr)
             ))),
             // increment_function: `do_operation(ADD, 1)`, else the object
             // as a number (`cast_object(_IS_NUMBER)`), else a TypeError.
@@ -1644,7 +1644,7 @@ impl Vm {
                     None => Err(Thrown::type_error(format!(
                         "Cannot {} {}",
                         what.to_ascii_lowercase(),
-                        self.zval_value_name(&obj)
+                        rhp_builtins::zval_value_name(self, &obj)
                     ))),
                 }
             }
@@ -1668,7 +1668,7 @@ impl Vm {
             other => {
                 let msg = format!(
                     "Only arrays and Traversables can be unpacked, {} given",
-                    self.zval_value_name(&other)
+                    rhp_builtins::zval_value_name(self, &other)
                 );
                 return Err(
                     if args || matches!(other, Value::Object(_) | Value::Closure(_)) {

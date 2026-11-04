@@ -801,7 +801,7 @@ fn canonicalization(
                     "{}(): Argument #{} ($xpath) \"query\" option must be a string, {} given",
                     cx.fname,
                     3 + mode,
-                    crate::ext::zpp::given_type(cx.host, &q)
+                    crate::argparse::zval_value_name(cx.host, &q)
                 )));
             };
             let cq = c(qs.as_bytes());

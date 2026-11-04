@@ -7,7 +7,7 @@
 use rhp_semantics::deref;
 use rhp_values::{ClassKind, Value};
 
-use crate::argparse::{bool_param, str_param, value_name};
+use crate::argparse::{bool_param, str_param, zval_value_name};
 use crate::{Host, Thrown};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
@@ -72,7 +72,7 @@ fn fn_get_class_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let Some(class) = class else {
         return Err(Thrown::type_error(format!(
             "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            value_name(host, &v)
+            zval_value_name(host, &v)
         )));
     };
     host.reflect_op(b"methods_visible", &[Value::str(class)])
@@ -87,7 +87,7 @@ fn fn_get_class_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
             b"Array".to_vec()
         }
-        Value::Object(_) | Value::Closure(_) => value_name(host, &v).into_bytes(),
+        Value::Object(_) | Value::Closure(_) => zval_value_name(host, &v).into_bytes(),
         other => rhp_values::conv::to_string_bytes(other),
     };
     let found = match &v {

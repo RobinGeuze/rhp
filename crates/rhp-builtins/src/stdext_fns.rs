@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::argparse::{int_or_null_param, int_param, str_param, value_name};
+use crate::argparse::{int_or_null_param, int_param, str_param, zval_value_name};
 use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
@@ -257,7 +257,7 @@ fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "array_rand(): Argument #1 ($array) must be of type array, {} given",
-                value_name(host, &other)
+                zval_value_name(host, &other)
             )))
         }
     };
@@ -323,7 +323,7 @@ fn fn_array_change_key_case(host: &mut dyn Host, args: &[Value]) -> Result<Value
         other => {
             return Err(Thrown::type_error(format!(
                 "array_change_key_case(): Argument #1 ($array) must be of type array, {} given",
-                value_name(host, &other)
+                zval_value_name(host, &other)
             )))
         }
     };
@@ -471,7 +471,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 crate::E_WARNING,
                 &format!(
                     "Object of class {} could not be converted to {to}",
-                    value_name(host, &cur)
+                    zval_value_name(host, &cur)
                 ),
             )?;
         }
@@ -500,7 +500,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         "Error",
                         format!(
                             "Object of class {} could not be converted to string",
-                            value_name(host, &cur)
+                            zval_value_name(host, &cur)
                         ),
                     ))
                 }
@@ -867,7 +867,7 @@ fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(other) => {
             return Err(Thrown::type_error(format!(
                 "getopt(): Argument #2 ($long_options) must be of type array, {} given",
-                value_name(host, &other)
+                zval_value_name(host, &other)
             )))
         }
     };

@@ -26,7 +26,7 @@ use std::rc::Rc;
 use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::{Host, Thrown, TypeNameLower};
+use crate::{Host, Thrown};
 
 const INCOMPLETE: &[u8] = b"__PHP_Incomplete_Class";
 const INCOMPLETE_NAME: &[u8] = b"__PHP_Incomplete_Class_Name";
@@ -1011,7 +1011,7 @@ fn parse_f64(tok: &[u8]) -> Option<f64> {
 }
 
 /// The `allowed_classes` entry of unserialize()'s `$options`.
-fn allowed_option(opts: Option<&Value>) -> Result<Allowed, Thrown> {
+fn allowed_option(host: &mut dyn Host, opts: Option<&Value>) -> Result<Allowed, Thrown> {
     let Some(Value::Array(opts)) = opts.map(deref) else {
         return Ok(Allowed::All);
     };
@@ -1025,39 +1025,38 @@ fn allowed_option(opts: Option<&Value>) -> Result<Allowed, Thrown> {
         Some(Value::Array(list)) => {
             let mut names = Vec::new();
             for (_, v) in list.iter() {
-                match deref(v) {
-                    Value::Str(s) => {
-                        if !valid_class_name(s.as_bytes()) {
-                            return Err(Thrown::error(
-                                "ValueError",
-                                format!(
-                                    "unserialize(): Option \"allowed_classes\" must be an array of class names, \"{}\" given",
-                                    String::from_utf8_lossy(s.as_bytes())
-                                ),
-                            ));
-                        }
-                        names.push(s.as_bytes().to_ascii_lowercase())
-                    }
-                    other => {
-                        return Err(Thrown::type_error(format!(
-                            "unserialize(): Option \"allowed_classes\" must be an array of class names, {} given",
-                            other.type_name_lower()
-                        )))
-                    }
+                let v = deref(v);
+                // php: a string, or an object through its string cast.
+                if !matches!(v, Value::Str(_) | Value::Object(_)) {
+                    return Err(Thrown::type_error(format!(
+                        "unserialize(): Option \"allowed_classes\" must be an array of class names, {} given",
+                        crate::argparse::zval_value_name(host, &v)
+                    )));
                 }
+                let s = crate::argparse::zval_get_string(host, &v)?;
+                if !valid_class_name(&s) {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        format!(
+                            "unserialize(): Option \"allowed_classes\" must be an array of class names, \"{}\" given",
+                            String::from_utf8_lossy(&s)
+                        ),
+                    ));
+                }
+                names.push(s.to_ascii_lowercase())
             }
             Ok(Allowed::Only(names))
         }
         Some(other) => Err(Thrown::type_error(format!(
             "unserialize(): Option \"allowed_classes\" must be of type array|bool, {} given",
-            other.type_name_lower()
+            crate::argparse::zval_value_name(host, &other)
         ))),
     }
 }
 
 fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let bytes = conv::to_string_bytes(&deref(&args[0]));
-    let allowed = allowed_option(args.get(1))?;
+    let allowed = allowed_option(host, args.get(1))?;
     let mut p = Parser {
         host,
         b: &bytes,

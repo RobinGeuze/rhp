@@ -367,27 +367,19 @@ pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> 
             h.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
-        Value::Object(_) => {
-            let cls = h.object_class_name(v).unwrap_or_default();
-            let has = h
-                .resolve_class(&cls)
-                .is_some_and(|id| h.class_has_method(id, b"__tostring"));
-            if !has {
-                return Err(Thrown::error(
+        Value::Object(_) => match crate::object::to_string(h, v)? {
+            Some(s) => Ok(s),
+            None => {
+                let cls = h.object_class_name(v).unwrap_or_default();
+                Err(Thrown::error(
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
                         String::from_utf8_lossy(&cls)
                     ),
-                ));
+                ))
             }
-            let mut cb = PhpArray::new();
-            cb.push(v.clone());
-            cb.push(Value::str("__toString"));
-            Ok(conv::to_string_bytes(
-                &h.call_callable(&Value::Array(cb), &[])?,
-            ))
-        }
+        },
         other => Ok(conv::to_string_bytes(other)),
     }
 }

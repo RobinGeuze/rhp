@@ -25,3 +25,9 @@ try { gmp_add([], 1); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
 try { gmp_setbit($g, [], []); } catch (TypeError $e) { echo $e->getMessage(), "\n"; }
 print_r(gmp_init(12)); echo "\n";
 var_export(gmp_init(12)); echo "\n";
+$s = gmp_init(34);
+settype($s, "string");
+echo strval(gmp_init(3)), " ", $s, " ", implode(",", array_map('strval', [gmp_init(5), gmp_init(-6)])), "\n";
+echo implode(",", preg_replace('/1/', 'x', [gmp_init(12)])), " ", preg_replace_callback('/\d/', fn($m) => gmp_init(7), "a1"), " ",
+    count(preg_grep('/1/', [gmp_init(12), gmp_init(3)])), " ", implode(",", str_replace('1', 'x', [gmp_init(21)])), " ",
+    strip_tags("<1>a</1><2>b</2>", [gmp_init(1)]), "\n";

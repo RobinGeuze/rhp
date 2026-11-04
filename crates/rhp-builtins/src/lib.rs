@@ -2138,28 +2138,7 @@ fn fn_floatval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // zval_get_string: objects go through their cast handler (`__toString`).
-    let v = deref(&args[0]);
-    if let Value::Object(h) = &v {
-        let mut cb = PhpArray::new();
-        cb.push(v.clone());
-        cb.push(Value::str("__toString"));
-        let cb = Value::Array(cb);
-        if host.is_callable_value(&cb) {
-            return Ok(Value::str(conv::to_string_bytes(
-                &host.call_callable(&cb, &[])?,
-            )));
-        }
-        let class = host.class_name(h.borrow().class).unwrap_or_default();
-        return Err(Thrown::error(
-            "Error",
-            format!(
-                "Object of class {} could not be converted to string",
-                String::from_utf8_lossy(&class)
-            ),
-        ));
-    }
-    Ok(Value::str(conv::to_string_bytes(&args[0])))
+    Ok(Value::str(argparse::zval_get_string(host, &args[0])?))
 }
 
 fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

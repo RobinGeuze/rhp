@@ -327,7 +327,7 @@ fn str_or_long_arg(
         Value::Object(_) | Value::Closure(_) => {
             // zend_parse_arg_str_weak: the object's string cast.
             if !host.caller_strict_types() {
-                if let Some(s) = object_to_string(host, &v)? {
+                if let Some(s) = object::to_string(host, &v)? {
                     return Ok(Ok(s));
                 }
             }
@@ -380,7 +380,7 @@ fn str_arg(
             Ok(Vec::new())
         }
         Value::Bool(_) | Value::Int(_) | Value::Float(_) => Ok(conv::to_string_bytes(&v)),
-        Value::Object(_) | Value::Closure(_) => match object_to_string(host, &v)? {
+        Value::Object(_) | Value::Closure(_) => match object::to_string(host, &v)? {
             Some(s) => Ok(s),
             None => Err(wrong(host, &v)),
         },
@@ -423,19 +423,6 @@ fn bool_arg(
         Value::Int(_) | Value::Float(_) | Value::Str(_) => Ok(conv::to_bool(&v)),
         _ => Err(wrong(host, &v)),
     }
-}
-
-/// `cast_object(IS_STRING)` of an object: its class's handler, else
-/// `__toString()`.
-fn object_to_string(host: &mut dyn Host, v: &Value) -> Result<Option<Vec<u8>>, Thrown> {
-    let Some(h) = object::object_of(v) else {
-        return Ok(None);
-    };
-    let cast = match object::handlers_of(host, v).and_then(|t| t.cast_object) {
-        Some(f) => f(host, &h, CastTarget::Str)?,
-        None => host.std_cast_object(&h, CastTarget::Str)?,
-    };
-    Ok(cast.map(|s| conv::to_string_bytes(&s)))
 }
 
 /// `gmp_verify_base`.

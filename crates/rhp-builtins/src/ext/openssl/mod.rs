@@ -582,20 +582,16 @@ pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thro
         }
         Value::Object(_) => {
             let o = deref(v);
-            let stringable = host
-                .object_class_name(&o)
-                .and_then(|c| host.resolve_class(&c))
-                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
-            if !stringable {
-                return Err(Thrown::error(
+            match crate::object::to_string(host, &o)? {
+                Some(s) => Ok(s),
+                None => Err(Thrown::error(
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
                         given_type(host, &o)
                     ),
-                ));
+                )),
             }
-            crate::ext::zpp::str_arg(host, std::slice::from_ref(&o), 0, "", "")
         }
         o => Ok(conv::to_string_bytes(&o)),
     }
@@ -640,18 +636,10 @@ pub(super) fn obj_or_str(
         Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
             Ok(ObjOrStr::Str(conv::to_string_bytes(&v)))
         }
-        Value::Object(_) => {
-            let stringable = host
-                .object_class_name(&v)
-                .and_then(|c| host.resolve_class(&c))
-                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
-            if stringable {
-                return Ok(ObjOrStr::Str(crate::ext::zpp::str_arg(
-                    host, args, i, fname, pname,
-                )?));
-            }
-            Err(type_error(host, fname, i, &v))
-        }
+        Value::Object(_) => match crate::object::to_string(host, &v)? {
+            Some(s) => Ok(ObjOrStr::Str(s)),
+            None => Err(type_error(host, fname, i, &v)),
+        },
         _ => Err(type_error(host, fname, i, &v)),
     }
 }

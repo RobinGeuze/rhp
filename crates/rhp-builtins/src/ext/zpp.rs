@@ -42,7 +42,7 @@ fn type_err(host: &dyn Host, fname: &str, n: usize, pname: &str, want: &str, v: 
 }
 
 /// A `string` parameter (`Z_PARAM_STR`). Scalars and null coerce; arrays,
-/// resources and objects without `__toString` raise a `TypeError`.
+/// resources and objects without a string cast raise a `TypeError`.
 pub fn str_arg(
     host: &mut dyn Host,
     args: &[Value],
@@ -56,27 +56,10 @@ pub fn str_arg(
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
             Ok(conv::to_string_bytes(&v))
         }
-        Value::Object(_) => {
-            let cls = host.object_class_name(&v);
-            let has = cls
-                .as_deref()
-                .and_then(|c| host.resolve_class(c))
-                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
-            if has {
-                let r = host.call_callable(
-                    &Value::Array({
-                        let mut a = rhp_values::PhpArray::new();
-                        a.push(v.clone());
-                        a.push(Value::str("__toString"));
-                        a
-                    }),
-                    &[],
-                )?;
-                Ok(conv::to_string_bytes(&r))
-            } else {
-                Err(type_err(host, fname, i + 1, pname, "string", &v))
-            }
-        }
+        Value::Object(_) => match crate::object::to_string(host, &v)? {
+            Some(s) => Ok(s),
+            None => Err(type_err(host, fname, i + 1, pname, "string", &v)),
+        },
         _ => Err(type_err(host, fname, i + 1, pname, "string", &v)),
     }
 }

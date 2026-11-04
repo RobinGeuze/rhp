@@ -815,23 +815,7 @@ fn parse_string(
             )?;
             Some(Vec::new())
         }
-        Value::Object(_) => {
-            let cls = host.object_class_name(v).unwrap_or_default();
-            let has = host
-                .resolve_class(&cls)
-                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
-            if has {
-                Some(crate::ext::zpp::str_arg(
-                    host,
-                    std::slice::from_ref(v),
-                    0,
-                    fname,
-                    pname,
-                )?)
-            } else {
-                None
-            }
-        }
+        Value::Object(_) => crate::object::to_string(host, v)?,
         _ => None,
     })
 }

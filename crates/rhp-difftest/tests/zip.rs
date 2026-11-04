@@ -261,6 +261,89 @@ echo "after\n";
 }
 
 #[test]
+fn stream_edges_match_php() {
+    check(
+        "stream_edges",
+        r#"
+$f = "$d/e.zip";
+$z = new ZipArchive;
+$z->open($f, ZipArchive::CREATE);
+$z->addFromString('stored', '0123456789');
+$z->setCompressionName('stored', ZipArchive::CM_STORE);
+$z->addFromString('big', str_repeat("0123456789abcdef", 10000));
+$z->addFromString('secret', "a
+b
+c
+");
+$z->setEncryptionName('secret', ZipArchive::EM_AES_256, 'pw');
+$z->close();
+$z->open($f);
+$s = $z->getStream('stored');
+var_dump(fread($s, 3), fseek($s, -1), ftell($s), fread($s, 2));
+var_dump(fseek($s, 100), ftell($s));
+fclose($s);
+$s = $z->getStream('big');
+var_dump(strlen(stream_get_contents($s, 100000)), strlen(stream_get_contents($s, 20000, 150000)));
+var_dump(stream_get_contents($s, 5, 10));
+var_dump(ftruncate($s, 0));
+$o = fopen('php://memory', 'w+');
+var_dump(stream_copy_to_stream($s, $o, 10, 3));
+fclose($s);
+$ctx = stream_context_create(['zip' => ['password' => 'pw']]);
+var_dump(file("zip://$f#secret", 0, $ctx), copy("zip://$f#secret", "$d/out.txt", $ctx), file_get_contents("$d/out.txt"));
+var_dump(readfile("zip://$f#secret", false, $ctx));
+var_dump(file("zip://$f#nope"));
+"#,
+    );
+}
+
+#[test]
+fn implicit_close_matches_php() {
+    check(
+        "implicit_close",
+        r#"
+$f = "$d/i.zip";
+$z = new ZipArchive;
+var_dump($z->addFile("$d/missing.txt"), $z->replaceFile(__FILE__, 0));
+// a progress callback's exception comes out of the fclose that closes
+$z->open($f, ZipArchive::CREATE);
+$z->addFromString('a', 'a');
+$z->registerProgressCallback(0.5, function ($r) { throw new Exception("progress $r"); });
+$s = $z->getStream('a');
+unset($z);
+try { var_dump(fclose($s)); } catch (Exception $e) { echo 'caught ', $e->getMessage(), "
+"; }
+// a failed close names php's active function
+function mk($f) {
+    $z = new ZipArchive;
+    $z->open($f, ZipArchive::CREATE);
+    $z->addFromString('b', 'b');
+    $z->registerCancelCallback(fn () => -1);
+    return $z;
+}
+$z = mk($f);
+unset($z);
+class K { function m($f) { $z = mk($f); $z = null; echo "in m
+"; } }
+(new K)->m($f);
+// a subclass's __destruct runs before the close and its callbacks
+class MyZip extends ZipArchive {
+    function __destruct() { echo "destruct numFiles=", $this->numFiles, "
+"; }
+}
+$z = new MyZip;
+$z->open($f, ZipArchive::CREATE);
+$z->addFromString('c', 'c');
+$z->registerProgressCallback(0.5, function ($r) { echo "progress $r
+"; });
+unset($z);
+echo "end
+";
+"#,
+    );
+}
+
+#[test]
 fn procedural_api_matches_php() {
     check(
         "procedural",

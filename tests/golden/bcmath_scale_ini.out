@@ -40,3 +40,25 @@ array(1) {
   }
 }
 0 1
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, string given
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, string given
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, float given
+warning: Implicit conversion from float 2.5 to int loses precision
+string(1) "4"
+int(4)
+int(2)
+int(3)
+int(6)
+TypeError: bcadd(): Argument #3 ($scale) must be of type ?int, string given
+warning: Implicit conversion from float 1.5 to int loses precision
+3.0 3.00 1.414
+bcadd(): Argument #3 ($scale) must be between 0 and 2147483647
+bcsub(): Argument #3 ($scale) must be between 0 and 2147483647
+bcmul(): Argument #3 ($scale) must be between 0 and 2147483647
+bcdiv(): Argument #3 ($scale) must be between 0 and 2147483647
+bcmod(): Argument #3 ($scale) must be between 0 and 2147483647
+bcpow(): Argument #3 ($scale) must be between 0 and 2147483647
+bccomp(): Argument #3 ($scale) must be between 0 and 2147483647
+bcdivmod(): Argument #3 ($scale) must be between 0 and 2147483647
+bcpowmod(): Argument #4 ($scale) must be of type ?int, string given
+bcsqrt(): Argument #2 ($scale) must be between 0 and 2147483647

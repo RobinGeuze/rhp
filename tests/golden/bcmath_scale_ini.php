@@ -35,3 +35,37 @@ try {
 var_dump(bcscale(null), bcscale(7), bcscale(0));
 var_dump(ini_get_all('bcmath'));
 echo bcpow('2', '-2'), ' ', bcsqrt('2'), "\n";
+// $scale is a ?int: zpp coerces it (TypeError, deprecation) before the
+// range check and before the operands are read.
+bcscale(4);
+foreach (['abc', '5x', 1e20] as $bad) {
+    try {
+        bcscale($bad);
+    } catch (TypeError $e) {
+        echo get_class($e), ': ', $e->getMessage(), "\n";
+    }
+}
+var_dump(ini_get('bcmath.scale'), bcscale(2.5), bcscale('3'), bcscale(' 6'), bcscale(true));
+try {
+    bcadd('1', '2', 'abc');
+} catch (TypeError $e) {
+    echo get_class($e), ': ', $e->getMessage(), "\n";
+}
+echo bcadd('1', '2', 1.5), ' ', bcadd('1', '2', '2'), ' ', bcsqrt('2', '3'), "\n";
+foreach (['bcadd', 'bcsub', 'bcmul', 'bcdiv', 'bcmod', 'bcpow', 'bccomp', 'bcdivmod'] as $f) {
+    try {
+        $f('x', '1', -1);
+    } catch (ValueError $e) {
+        echo $e->getMessage(), "\n";
+    }
+}
+try {
+    bcpowmod('x', '1', '1', 'y');
+} catch (TypeError $e) {
+    echo $e->getMessage(), "\n";
+}
+try {
+    bcsqrt('x', -2);
+} catch (ValueError $e) {
+    echo $e->getMessage(), "\n";
+}

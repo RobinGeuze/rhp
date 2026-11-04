@@ -162,6 +162,20 @@ fn timezone_info() -> Result<Rc<Tz>, Thrown> {
     })
 }
 
+/// PHP_MINFO_FUNCTION(date)'s rows.
+pub(crate) fn info_rows() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("date/time support", b"enabled".to_vec()),
+        ("timelib version", timelib::version().as_bytes().to_vec()),
+        (
+            "\"Olson\" Timezone Database Version",
+            tzdb().version().to_vec(),
+        ),
+        ("Timezone Database", b"internal".to_vec()),
+        ("Default timezone", guess_timezone()),
+    ]
+}
+
 /// `php_time()`.
 fn php_time() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {

@@ -873,9 +873,27 @@ fn openssl(lib: &Lib) -> Result<(), String> {
         get("OPENSSL_VERSION_TEXT")?
     );
     println!("cargo:rustc-env=RHP_OPENSSL_VERSION_NUMBER={number}");
-    // The OPENSSL_NO_* defines xp_ssl.c checks, from opensslconf.h as php
-    // reads them.
-    let conf = include.join("openssl/configuration.h");
+    // The OPENSSL_NO_* defines xp_ssl.c checks, from the configuration
+    // header opensslconf.h includes (Debian/Ubuntu keep it in the multiarch
+    // directory).
+    let multiarch = {
+        let mut parts = target.split('-');
+        let arch = parts.next().unwrap_or("");
+        format!("{arch}-{}-{}", os, target.rsplit('-').next().unwrap_or(""))
+    };
+    let conf = [
+        include.join("openssl/configuration.h"),
+        include.join(&multiarch).join("openssl/configuration.h"),
+        include.join("openssl/opensslconf.h"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+    .ok_or_else(|| {
+        format!(
+            "no openssl/configuration.h under {} (or {multiarch}/)",
+            include.display()
+        )
+    })?;
     let conf_text = fs::read_to_string(&conf).unwrap_or_default();
     println!("cargo:rerun-if-changed={}", conf.display());
     let no: Vec<&str> = [

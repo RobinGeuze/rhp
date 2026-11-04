@@ -100,3 +100,56 @@ TypeError: Number must be of type GMP|string|int, CurlHandle given
 bool(true)
 bool(true)
 bool(false)
+-- operand order (convert_op1_op2_long, concat_function)
+TypeError: Unsupported operand types: array | GMP
+TypeError: Unsupported operand types: array % GMP
+TypeError: Unsupported operand types: stdClass % GMP
+TypeError: Unsupported operand types: stdClass ^ GMP
+TypeError: Unsupported operand types: stdClass << GMP
+TypeError: Unsupported operand types: string & GMP
+[8192] Implicit conversion from float 2.5 to int loses precision
+[8192] Implicit conversion from float 2.5 to int loses precision
+GMP 7
+[2] Array to string conversion
+'Array5'
+TypeError: Unsupported operand types: stdClass + int
+TypeError: Unsupported operand types: array + stdClass
+TypeError: Unsupported operand types: Closure * int
+TypeError: Unsupported operand types: stdClass * int
+TypeError: Cannot perform bitwise not on stdClass
+[2] A non-numeric value encountered
+TypeError: Unsupported operand types: string << GMP / ValueError
+-- GMP edges
+float(18014398509481984)
+float(-18014398509481984)
+GMP 0
+GMP -1
+GMP 1
+GMP 0
+GMP -1
+GMP 0
+[8192] Implicit conversion from float 1.5 to int loses precision
+GMP 6
+bool(false)
+bool(false)
+-- conversions
+[2] Object of class stdClass could not be converted to int
+[2] Object of class stdClass could not be converted to int
+[2] Object of class CurlHandle could not be converted to float
+int(1)
+int(1)
+float(1)
+[2] array_sum(): Addition is not supported on type array
+[2] array_sum(): Addition is not supported on type string
+int(2)
+int(6)
+bool(true)
+-- flags
+Exception: Serialization of 'class@anonymous' is not allowed
+ReflectionException: Class XMLParser is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class GMP is an internal class marked as final that cannot be instantiated without invoking its constructor
+ReflectionException: Class Closure is an internal class marked as final that cannot be instantiated without invoking its constructor
+'Directory'
+Error: Cannot create dynamic property CurlHandle::$z
+Error: Cannot create dynamic property CurlHandle::$q
+Error: Cannot create dynamic property CurlHandle::$w

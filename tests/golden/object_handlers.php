@@ -107,3 +107,59 @@ t(fn() => $a == $c1);
 var_dump(new DateTime('2020-01-01') == new DateTimeImmutable('2020-01-01'));
 var_dump(new DateTime('2020-01-01') < new DateTime('2021-01-01'));
 var_dump(new DateTime('2020-01-01') == new stdClass);
+
+// Diagnostics without the fixture's path.
+set_error_handler(function ($no, $msg) {
+    echo "[$no] $msg\n";
+    return true;
+});
+
+echo "-- operand order (convert_op1_op2_long, concat_function)\n";
+$arr = [];
+$s = 'abc';
+$fl = 2.5;
+$o = new stdClass;
+foreach ([
+    fn() => $arr | $a, fn() => $arr % $a, fn() => $o % $a, fn() => $o ^ $a, fn() => $o << $a,
+    fn() => $s & $a, fn() => $fl | $a, fn() => $arr . $a, fn() => $o + 1, fn() => [] + $o,
+    fn() => (function () {}) * 2, fn() => -$o, fn() => ~$o,
+] as $f) {
+    t($f);
+}
+try {
+    "5x" << $a;
+} catch (TypeError $e) {
+    echo get_class($e), ": ", $e->getMessage(), " / ", get_class($e->getPrevious()), "\n";
+}
+
+echo "-- GMP edges\n";
+var_dump((float) gmp_init("18014398509481987"), floatval(gmp_init("-18014398509481987")));
+foreach ([
+    fn() => gmp_init(7) >> 5000000000, fn() => gmp_init(-7) >> PHP_INT_MAX,
+    fn() => gmp_init(1) ** 5000000000, fn() => gmp_init(0) ** 5000000000,
+    fn() => gmp_init(-1) ** 5000000001, fn() => gmp_init(0) << 5000000000,
+] as $f) {
+    t($f);
+}
+t(fn() => array_map(fn($x) => $x + 1.5, [$a])[0]);
+$cl = function () {};
+var_dump($cl == $a, $cl < $a);
+
+echo "-- conversions\n";
+var_dump((int) $o, intval($o), (float) curl_init());
+$e = simplexml_load_string('<a><b/></a>')->c;
+$x = simplexml_load_string('<a>5</a>');
+var_dump(count(array_filter([gmp_init(0), $e, 1, $x])), array_sum([$x, 1, [], 'abc']));
+$h = new stdClass;
+$h->g = gmp_init(0);
+var_dump(empty($h->g));
+
+echo "-- flags\n";
+t(fn() => serialize(new class {}));
+foreach (['XMLParser', 'GMP', 'Closure', 'Directory'] as $cls) {
+    t(fn() => get_class((new ReflectionClass($cls))->newInstanceWithoutConstructor()));
+}
+$c2 = curl_init();
+t(function () use ($c2) { $c2->z[] = 1; });
+t(function () use ($c2) { $c2->q++; });
+t(function () use ($c2) { $r = &$c2->w; });

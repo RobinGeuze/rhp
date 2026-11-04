@@ -336,8 +336,11 @@ class RecursiveIteratorIterator implements OuterIterator {
         if ($this->__inIter) { $this->__inIter = false; $this->endIteration(); }
         return false;
     }
-    public function key(): mixed { return $this->__its[$this->__level]->key(); }
-    public function current(): mixed { return $this->__its[$this->__level]->current(); }
+    // SimpleXML's internal iterator (a subclass overriding nothing) has no
+    // current element past the end, where its current() and key() throw.
+    public function key(): mixed { $it = $this->__its[$this->__level]; return self::__sxeDone($it) ? null : $it->key(); }
+    public function current(): mixed { $it = $this->__its[$this->__level]; return self::__sxeDone($it) ? null : $it->current(); }
+    private static function __sxeDone($it): bool { return ($it::class === 'SimpleXMLElement' || $it::class === 'SimpleXMLIterator') && !$it->valid(); }
     public function next(): void { $this->__forward(); }
     public function getDepth(): int { return $this->__level; }
     public function getSubIterator(?int $level = null): ?RecursiveIterator {

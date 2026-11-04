@@ -43,6 +43,7 @@ pub mod zpp;
 pub(crate) fn class_handlers() -> Vec<&'static crate::object::ClassHandlers> {
     [
         curl::CLASSES,
+        dom::CLASSES,
         gmp::CLASSES,
         openssl::CLASSES,
         simplexml::CLASSES,

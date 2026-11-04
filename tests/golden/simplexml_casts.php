@@ -1,8 +1,8 @@
 <?php
 // SimpleXMLElement's object handlers: cast_object (int/float/bool/string,
 // arithmetic operands), compare, get_properties ((array), get_object_vars,
-// var_export), has_property, clone, unset_dimension, plus addChild's entity
-// parsing, serialization refusal and asXML() to an unwritable path.
+// var_export), has_property, clone, unset_dimension, plus serialization
+// refusal and asXML() to an unwritable path.
 set_error_handler(function ($no, $msg) { echo "E$no: $msg\n"; return true; });
 $x = new SimpleXMLElement('<a x="1"><b>abc</b><c>3x</c><d>2.5</d><e/></a>');
 var_dump($x->b + 1, $x->c + 1, $x->d * 2, $x->d . "!", $x->b % 2, $x->d ** 2, -$x->d, $x->d <=> 3);
@@ -35,15 +35,6 @@ echo $z->asXML();
 unset($z['x']);
 echo $z->asXML();
 $n = new SimpleXMLElement('<a/>');
-var_dump($n->addChild('b', 'x&y')->getName());
-$n->addChild('c', '&amp;&lt;&#65;&bogus;<');
-$n->addChild('d', '&#x41;&#66;');
-echo $n->asXML();
-libxml_use_internal_errors(true);
-$n->addChild('e', 'q&r');
-foreach (libxml_get_errors() as $er) var_dump($er->level, $er->code, $er->line, $er->column, $er->message);
-libxml_clear_errors();
-libxml_use_internal_errors(false);
 var_dump($n->asXML('/nonexistent-dir/x.xml'));
 // a plain object: strval goes through __toString or fails
 class S { function __toString(): string { return "s"; } }

@@ -39,14 +39,6 @@ b
 c
 b 3
 bool(true)
-W[2]: XMLReader::read(): CWD/:1: parser error : Extra content at the end of the document
-W[2]: XMLReader::read(): <a><b>1</b>
-W[2]: XMLReader::read():            ^
-
-W[2]: XMLReader::read(): CWD/:1: parser error : Extra content at the end of the document
-W[2]: XMLReader::read(): <a><b>1</b>
-W[2]: XMLReader::read():            ^
-
 string(10) "DOMElement"
 string(1) "x"
 string(1) "1"

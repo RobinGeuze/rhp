@@ -114,15 +114,44 @@ Notes:
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`dump::resolve_views`).
 - Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`… — DOM's, SimpleXML's, DatePeriod's and ZipArchive's
-  virtual properties still go through `__get`/`__set` in their prelude
-  classes, so `property_exists()`, `method_exists(…, '__get')` and
-  Reflection's property and method lists can differ from php, and a user
-  subclass that defines its own `__get`/`__set`/`__isset` replaces the
-  virtual properties, read-only checks included), `get_constructor`
-  (`Directory`), `get_gc`. DateInterval keeps
-  its fields as real properties instead, which its `get_properties_for`
-  and methods read back into the payload (ext/date/objects.rs).
+  `has_property`…), `get_constructor` (`Directory`), `get_gc`. DOM's,
+  SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
+  SimpleXML's dimensions) go through their prelude classes'
+  `__get`/`__set`/`__isset`/`__unset` and ArrayAccess methods, which call
+  the ported handlers. Two things make those stand-ins behave like php's
+  handlers:
+  - `host.magic_fetch()` says which fetch the running accessor serves:
+    `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
+    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`, `unset($o->a->b)`; php's
+    `BP_VAR_W`/`BP_VAR_UNSET`, where SimpleXML's `get_property_ptr_ptr`
+    creates a missing element), `Empty` for the `__isset` or
+    `offsetExists` of `empty()` (`check_empty`), else `Read`. Only the
+    accessor's own frame sees the mode; whatever it calls sees `Read`.
+  - Their frames never show in a trace: a built-in class's accessor whose
+    php stub has no such method is engine plumbing, and a frame it calls
+    gets the call site of the user frame below it. A stand-in
+    `__call`/`__callStatic` (XMLReader's `open`/`XML`, which php's
+    `get_method` runs statically or on an instance) shows as the stub
+    method it runs, or not at all for a name the stub lacks.
+
+  Known consequences until the engine routes real property and dimension
+  handlers:
+  - A user subclass that defines `__get`/`__set`/`__isset` (or
+    `offsetGet`…) replaces the stand-in, so it shadows every virtual
+    property, read-only checks included.
+  - `property_exists()`, `method_exists(…, '__get')` and Reflection's
+    property and method lists differ from php: they see no virtual
+    properties; SimpleXML implements `ArrayAccess`;
+    `ReflectionMethod('XMLReader', 'open')` and `method_exists()` find no
+    `open`/`XML`.
+  - `$sxe[null] = v` acts as `$sxe[] = v`: `offsetSet` cannot tell them
+    apart.
+  - `$sxe->new .= 'x'` and `$sxe->new++` on a missing element write the
+    result through `__set`; php's `get_property_ptr_ptr` hands out a
+    temporary and leaves an empty element.
+- DateInterval keeps its fields as real properties instead, which its
+  `get_properties_for` and methods read back into the payload
+  (ext/date/objects.rs).
 - php's `ce->unserialize` (the `C:` format) is a class field, not a
   handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
   `Serializable` class's `unserialize()` itself (serialize_fns).

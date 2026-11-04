@@ -34,6 +34,19 @@ thread_local! {
 /// triggers, which raise diagnostics as builtin `fname`. Rethrows what a
 /// callback stashed, and resumes a callback's panic.
 pub fn with_host<R>(host: &mut dyn Host, fname: &str, f: impl FnOnce() -> R) -> Result<R, Thrown> {
+    match with_host_keep(host, fname, f) {
+        (_, Some(t)) => Err(t),
+        (r, None) => Ok(r),
+    }
+}
+
+/// [`with_host`], handing back `f`'s result also when a callback threw, for
+/// a caller that has to free what the result owns.
+pub fn with_host_keep<R>(
+    host: &mut dyn Host,
+    fname: &str,
+    f: impl FnOnce() -> R,
+) -> (R, Option<Thrown>) {
     let raw: *mut (dyn Host + '_) = host;
     // SAFETY: the pointer is popped before `host`'s borrow ends, and `host`
     // is not used while `f` runs.
@@ -61,10 +74,7 @@ pub fn with_host<R>(host: &mut dyn Host, fname: &str, f: impl FnOnce() -> R) -> 
     if let Some(p) = frame.panic {
         std::panic::resume_unwind(p);
     }
-    match frame.pending {
-        Some(t) => Err(t),
-        None => Ok(r),
-    }
+    (r, frame.pending)
 }
 
 /// While the innermost [`with_host`] runs, `stop` ends its C operation

@@ -364,9 +364,16 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   loader, libxslt's error function) are set once, to a dispatcher that reads
   thread-local VM state: libxml2's entity loader runs php's loader on a
   thread whose VM installed the glue while a builtin is running, and
-  libxml2's own otherwise. Nothing on libxml2 loads external entities yet
-  (ext/xml keeps php's no-DTD-loading options), so the dispatcher and the
-  stream input hooks are first exercised when DOM moves to libxml2 (L3c).
+  libxml2's own otherwise. DOM's loads, validation and XInclude reach both
+  through `ffi::with_host`.
+- **libxml2 trees** belong to the objects that wrap them, counted as php
+  counts them (`ext/libxml/node.rs`, a port of libxml.c's node and document
+  references): a document goes with the last object that references it, a
+  detached subtree with the last object that wraps a node of it. DOM,
+  SimpleXML and XMLReader's `expand()` share these trees and counts, so
+  `simplexml_import_dom` and `dom_import_simplexml` hand out the same
+  nodes. Each object keeps its references in its payload; there are no
+  per-thread document tables. Trees never leave their VM's thread.
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no relative paths handed to a library that opens
   files itself (absolutize against the VM's cwd), no `putenv("TZ=…")`.
@@ -478,8 +485,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
 2. Declare the functions rhp calls in a hand-written `extern "C"` block
    (no bindgen). Put struct access and macros behind a small C shim with
    `_Static_assert` layout checks if needed (libxml2: `ext/libxml/sys.rs`
-   and `shim.c`; its structs are opaque to Rust because their layouts
-   differ between releases).
+   and `shim.c`; most of its structs are opaque to Rust because their
+   layouts differ between releases; the tree structs that have not changed
+   since 2.9 are mirrored, checked against the headers by a test).
 3. Add the `-dev` package to `.github/actions/native-deps`. If CI's php can
    link a release the distro has no `-dev` package for, add the library to
    its version comparison and to `build-from-source.sh`.

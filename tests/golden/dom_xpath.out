@@ -52,17 +52,9 @@ string(0.1 + 0.2)                        => '0.3'
 string(1e20 * 1)                         => '1e+20'
 string(10) "tests/Unit"
 string(4) "unit"
-W[2]: DOMXPath::query(): Undefined namespace prefix
-W[2]: Attempt to read property "length" on false
-NULL
 string(3) "two"
 float(3)
-W[2]: DOMXPath::query(): Undefined namespace prefix
 W[2]: DOMXPath::query(): Invalid expression
-W[2]: DOMXPath::evaluate(): xmlXPathCompOpEval: function foo not found
-W[2]: DOMXPath::evaluate(): Unregistered function
-bool(false)
-bool(false)
 bool(false)
 int(0)
 bool(true)

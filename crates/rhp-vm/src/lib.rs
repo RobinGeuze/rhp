@@ -94,6 +94,14 @@ impl From<Thrown> for IncludeError {
 pub struct Vm {
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
+    /// The fetch the next magic accessor or ArrayAccess call serves (php's
+    /// `BP_VAR_W` below a write, `check_empty` for `empty()`); the next
+    /// synchronous call takes it.
+    pending_magic_fetch: builtins::MagicFetch,
+    /// The fetch the running accessor serves ([`Host::magic_fetch`]), and
+    /// the stack index of that accessor's frame: code it calls runs in
+    /// frames above and sees a plain read.
+    magic_fetch: (usize, builtins::MagicFetch),
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
@@ -479,6 +487,15 @@ impl Host for Vm {
                 thrown
             }
             other => other,
+        }
+    }
+
+    fn magic_fetch(&self) -> builtins::MagicFetch {
+        let (frame, mode) = self.magic_fetch;
+        if frame + 1 == self.stack.len() {
+            mode
+        } else {
+            builtins::MagicFetch::Read
         }
     }
 
@@ -2745,6 +2762,8 @@ impl Vm {
         rhp_values::set_object_free_hook(builtins::object_freed);
         Vm {
             prop_guards: Default::default(),
+            pending_magic_fetch: Default::default(),
+            magic_fetch: Default::default(),
             output: output::Output::default(),
             stack: Vec::new(),
             functions: Vec::new(),
@@ -3271,6 +3290,7 @@ impl Vm {
         let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
             return Ok(true);
         };
+        self.pending_magic_fetch = builtins::MagicFetch::Empty;
         let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
         if !self.truthy(&r)? {
             return Ok(true);
@@ -3471,6 +3491,16 @@ impl Vm {
         r
     }
 
+    /// `f` (a property or element fetch) with `mode` for the accessor it
+    /// may call: the first synchronous call `f` makes takes it
+    /// ([`Self::run_proto_sync`]).
+    fn fetching_as<T>(&mut self, mode: builtins::MagicFetch, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.pending_magic_fetch = mode;
+        let r = f(self);
+        self.pending_magic_fetch = Default::default();
+        r
+    }
+
     /// php's static-property visibility check: a non-public static is reachable
     /// only from its declaring class (private) / a related class (protected);
     /// the error names the class the access was spelled against.
@@ -3632,8 +3662,13 @@ impl Vm {
         let e = self.class(cls);
         let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
-        // Engine-internal (prelude) code manages its own objects.
-        let prelude = is_prelude_proto(&self.stack[top].proto);
+        // Engine-internal (prelude) code manages its own objects, except
+        // that a stand-in `__set` writes on behalf of the user's code.
+        let f = &self.stack[top];
+        let prelude = is_prelude_proto(&f.proto)
+            && !(f.proto.name.as_bytes().eq_ignore_ascii_case(b"__set")
+                && f.defining_class
+                    .is_some_and(|c| is_handler_accessor(self.class(c).name.as_bytes(), b"__set")));
         // ZEND_ACC_NO_DYNAMIC_PROPERTIES: enums, readonly classes and the
         // internal `@strict-properties` classes.
         if e.kind == ClassKind::Enum || e.flags.is_readonly || (e.flags.no_dynamic && !prelude) {
@@ -5000,13 +5035,23 @@ impl Vm {
             }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
             MagicSplit::Nested(i, h, name) => {
-                let got = self.prop_fetch(top, Value::Object(h), name)?;
+                let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                    vm.prop_fetch(top, Value::Object(h), name)
+                })?;
+                let rest = &steps[i + 1..];
+                if let Value::Object(o) = deref(&got) {
+                    // An object holds on: its own magic or ArrayAccess
+                    // takes the rest of the path.
+                    let cell = Rc::new(RefCell::new(Value::Object(o)));
+                    return self
+                        .with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest, incdec));
+                }
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                 };
-                Ok(read_path(&got, &steps[i + 1..], &cx))
+                Ok(read_path(&got, rest, &cx))
             }
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
@@ -5243,7 +5288,9 @@ impl Vm {
         h: ObjectHandle,
         name: PhpStr,
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
-        let got = self.prop_fetch(top, Value::Object(h), name)?;
+        let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+            vm.prop_fetch(top, Value::Object(h), name)
+        })?;
         Ok(match got {
             Value::Ref(rc) => rc,
             other => Rc::new(RefCell::new(other)),
@@ -5516,6 +5563,47 @@ impl Vm {
         self.stack[i].proto.debug.file.is_empty()
     }
 
+    /// Frame `i` is engine plumbing with no php counterpart: a prelude
+    /// class's `__`-prefixed helper, or a magic method standing in for
+    /// php's property, dimension or `get_method` handlers. Traces leave it
+    /// out (see [`Self::dispatched_method`]).
+    fn is_plumbing_frame(&self, i: usize) -> bool {
+        let f = &self.stack[i];
+        f.include_kind.is_none()
+            && is_prelude_proto(&f.proto)
+            && (is_engine_helper_name(f.proto.name.as_bytes())
+                || f.defining_class.is_some_and(|c| {
+                    is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
+                }))
+    }
+
+    /// For a stand-in `__call`/`__callStatic` frame (XMLReader's `open` and
+    /// `XML`, static methods that php's `get_method` also runs on an
+    /// instance): the stub method it runs and that call's arguments, as a
+    /// trace shows them. None when the name is no such method: php fails
+    /// before any call.
+    fn dispatched_method(&self, i: usize) -> Option<(&'static str, PhpArray)> {
+        let f = &self.stack[i];
+        let lc = f.proto.name.as_bytes().to_ascii_lowercase();
+        if lc != b"__call" && lc != b"__callstatic" {
+            return None;
+        }
+        let class = self.class(f.defining_class?).name.clone();
+        let args = self.frame_args(i);
+        let mut it = args.iter().map(|(_, v)| v);
+        let Some(Value::Str(name)) = it.next() else {
+            return None;
+        };
+        let m = builtins::signatures::method(class.as_bytes(), name.as_bytes())?;
+        let mut shown = PhpArray::new();
+        if let Some(Value::Array(a)) = it.next() {
+            for (_, v) in a.iter() {
+                shown.push(deref(v));
+            }
+        }
+        Some((m.name, shown))
+    }
+
     /// A builtin called from frame `i` is still running (so a frame above `i`
     /// was invoked by it, i.e. from `[internal function]`).
     fn native_active_from(&self, i: usize) -> bool {
@@ -5722,21 +5810,42 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            // A prelude class's `__`-prefixed helper is engine plumbing with
-            // no php counterpart: it never shows in a trace.
-            if f.include_kind.is_none()
-                && is_prelude_proto(&f.proto)
-                && is_engine_helper_name(f.proto.name.as_bytes())
+            let shown_as = if self.is_plumbing_frame(i) {
+                match self.dispatched_method(i) {
+                    Some(m) => Some(m),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            // The call site is the nearest frame below that a trace shows.
+            let mut caller = i - 1;
+            while caller > 0
+                && self.is_plumbing_frame(caller)
+                && self.dispatched_method(caller).is_none()
             {
-                continue;
+                caller -= 1;
             }
             let mut e = PhpArray::new();
-            if !self.is_internal_frame(i - 1) && !self.native_active_from(i - 1) {
-                e.insert(k(b"file"), file_of(i - 1));
-                e.insert(k(b"line"), Value::Int(self.current_line(i - 1) as i64));
+            if !self.is_internal_frame(caller) && !self.native_active_from(caller) {
+                e.insert(k(b"file"), file_of(caller));
+                e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
             if let Some(kind) = f.include_kind {
                 e.insert(k(b"function"), Value::str(kind));
+            } else if let Some((name, args)) = shown_as {
+                let c = f.defining_class.expect("a method frame");
+                e.insert(k(b"function"), Value::str(name));
+                e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
+                let this = self.current_this(i);
+                let ty = if this.is_some() { "->" } else { "::" };
+                if let (true, Some(o)) = (provide_object, this) {
+                    e.insert(k(b"object"), Value::Object(o));
+                }
+                e.insert(k(b"type"), Value::str(ty));
+                if !ignore_args {
+                    e.insert(k(b"args"), Value::Array(args));
+                }
             } else {
                 e.insert(k(b"function"), Value::Str(f.proto.name.clone()));
                 if let Some(c) = f.defining_class {
@@ -6354,6 +6463,14 @@ impl Vm {
         }
     }
 
+    /// `offsetExists($key)` on an ArrayAccess object, as a bool.
+    fn aa_offset_exists(&mut self, h: &ObjectHandle, key: Value) -> Result<bool, Thrown> {
+        let cls = h.borrow().class;
+        let m = self.lookup_method(cls, b"offsetexists").unwrap();
+        let r = self.call_sync(&m, Some(h.clone()), cls, vec![key])?;
+        Ok(conv::to_bool(&r))
+    }
+
     /// Before a read-modify-write (compound assignment / `++`) through an
     /// ArrayAccess object that is not the leaf: fetch that element once (php's
     /// single FETCH_DIM_RW), and re-root the open cursor at the result so the
@@ -6514,7 +6631,11 @@ impl Vm {
         if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
             return Ok(cell);
         }
-        let got = self.aa_offset_get(h, key)?;
+        let fetch = match mode {
+            DimFetch::W | DimFetch::Rw => builtins::MagicFetch::Write,
+            DimFetch::Unset => builtins::MagicFetch::Read,
+        };
+        let got = self.fetching_as(fetch, |vm| vm.aa_offset_get(h, key))?;
         Ok(match got {
             Value::Ref(rc) => rc,
             other => {
@@ -7217,6 +7338,22 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_get(top, key);
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchW { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = match deref(&a) {
+                        Value::Object(h)
+                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
+                        {
+                            let step = CursorStep::Key(k.clone());
+                            let cell = self.aa_fetch_w(&h, &step, k, DimFetch::W)?;
+                            let v = cell.borrow().clone();
+                            v
+                        }
+                        _ => self.dim_read(&a, &k, DimMode::Read)?,
+                    };
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchIs { dst, arr, key } => {
@@ -7960,6 +8097,22 @@ impl Vm {
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
+                Instr::FetchPropW { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                        vm.prop_fetch(top, o, pname)
+                    })?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDynW { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                        vm.prop_fetch(top, o, pname)
+                    })?;
+                    self.reg_set(top, dst, v);
+                }
                 Instr::FetchPropIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
@@ -8040,12 +8193,8 @@ impl Vm {
                     let k = self.reg_get(top, key);
                     if let Value::Object(h) = &a {
                         if self.class_implements(h.borrow().class, b"ArrayAccess") {
-                            let m = self
-                                .lookup_method(h.borrow().class, b"offsetexists")
-                                .unwrap();
-                            let r =
-                                self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
-                            self.reg_set(top, dst, Value::Bool(conv::to_bool(&r)));
+                            let r = self.aa_offset_exists(h, k)?;
+                            self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
                     }
@@ -8066,6 +8215,26 @@ impl Vm {
                         ));
                     }
                     self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
+                }
+                Instr::EmptyDim { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let v = match &a {
+                        // zend_std_has_dimension(check_empty = 1).
+                        Value::Object(h)
+                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
+                        {
+                            self.pending_magic_fetch = builtins::MagicFetch::Empty;
+                            if self.aa_offset_exists(h, k.clone())? {
+                                self.aa_offset_get(h, k)?
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => self.dim_read(&a, &k, DimMode::Is)?,
+                    };
+                    let b = self.truthy(&v)?;
+                    self.reg_set(top, dst, Value::Bool(!b));
                 }
                 Instr::IssetProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
@@ -8953,8 +9122,26 @@ impl Vm {
     }
 
     /// Push a capture frame for `proto` and drive it to completion, returning
-    /// its value (re-entrant; exceptions handled within the sub-run).
+    /// its value (re-entrant; exceptions handled within the sub-run). The
+    /// call takes the pending magic fetch mode, which then holds for its
+    /// own frame only ([`Host::magic_fetch`]).
     fn run_proto_sync(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        this: Option<ObjectHandle>,
+        defining_class: Option<ClassId>,
+        called_class: Option<ClassId>,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        let mode = std::mem::take(&mut self.pending_magic_fetch);
+        let saved = std::mem::replace(&mut self.magic_fetch, (self.stack.len(), mode));
+        let r = self.run_proto_frame(proto, this, defining_class, called_class, args, caller);
+        self.magic_fetch = saved;
+        r
+    }
+
+    fn run_proto_frame(
         &mut self,
         proto: Rc<FunctionProto>,
         this: Option<ObjectHandle>,
@@ -11748,16 +11935,11 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
-                    if quiet {
-                        // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
-                        let ex = self.lookup_method(cls, b"offsetexists").unwrap();
-                        let r = self.call_sync(&ex, Some(h.clone()), cls, vec![key.clone()])?;
-                        if !conv::to_bool(&r) {
-                            return Ok(Value::Null);
-                        }
+                    // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
+                    if quiet && !self.aa_offset_exists(h, key.clone())? {
+                        return Ok(Value::Null);
                     }
-                    let m = self.lookup_method(cls, b"offsetget").unwrap();
-                    return self.call_sync(&m, Some(h.clone()), cls, vec![key.clone()]);
+                    return self.aa_offset_get(h, key.clone());
                 }
                 Err(Thrown::error(
                     "Error",
@@ -12742,6 +12924,27 @@ fn is_engine_helper_name(name: &[u8]) -> bool {
     ];
     let lc = name.to_ascii_lowercase();
     lc.starts_with(b"__") && !MAGIC.contains(&lc.as_slice())
+}
+
+/// A magic or ArrayAccess method of a built-in class whose php stub has no
+/// such method: the prelude's stand-in for php's property, dimension and
+/// `get_method` handlers (SimpleXML, DOM, XMLReader, SPL's forwarding).
+fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
+    const ACCESSORS: &[&[u8]] = &[
+        b"__get",
+        b"__set",
+        b"__isset",
+        b"__unset",
+        b"__call",
+        b"__callstatic",
+        b"offsetget",
+        b"offsetset",
+        b"offsetexists",
+        b"offsetunset",
+    ];
+    ACCESSORS.contains(&method.to_ascii_lowercase().as_slice())
+        && builtins::signatures::class(class).is_some()
+        && builtins::signatures::method(class, method).is_none()
 }
 
 fn array_key_to_value(k: &ArrayKey) -> Value {

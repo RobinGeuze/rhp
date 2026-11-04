@@ -150,6 +150,64 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: target/release/rhp-difftest golden --check --portable
 
+  # AddressSanitizer over the code that frees libxml2 trees: the php-src
+  # tests in tests/asan/phpts.txt and the stress scripts in tests/asan. rhp's
+  # Rust is instrumented, the C libraries are not; ASan's allocator still
+  # catches their double and invalid frees. Leak checking is off: rhp does
+  # not free everything at exit.
+  asan:
+    name: asan (libxml2 trees)
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+      RHP_ASAN: target/x86_64-unknown-linux-gnu/release
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned php-src commit
+        id: ref
+        run: echo "sha=$(grep -v '^#' tests/phpt/php-src.ref | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: php/php-src
+          ref: ${{ steps.ref.outputs.sha }}
+          path: php-src
+          persist-credentials: false
+          # As the phpt job: --check-known needs every ignored test present.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /Zend/tests/
+            /tests/
+            /ext/*/tests/
+            /sapi/*/tests/
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      # A dated nightly, bumped on purpose: a broken nightly does not turn
+      # every PR red, and the cache keeps the instrumented build.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-15
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: asan
+      # --target keeps the sanitizer off build scripts and proc macros.
+      - name: Build with AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo build --release --target x86_64-unknown-linux-gnu -p rhp-cli -p rhp-difftest
+      - name: Stress scripts
+        run: |
+          for f in tests/asan/*.php; do
+            out="$("$RHP_ASAN/rhp" "$f")"
+            echo "$f: $out"
+            [ "$out" = ok ]
+          done
+      - name: php-src tests
+        run: >-
+          "$RHP_ASAN/rhp-difftest" phpt --php-src php-src --rhp "$RHP_ASAN/rhp"
+          --timeout 60 --check-known tests/asan/phpts.txt
+
   # The committed generated tables still match their sources: php-src's
   # entity tables and intl stubs, and the Bison output in the php release tarball (the git
   # tag has none). The tarball is pinned in tools/php-dist.sha256 and cached

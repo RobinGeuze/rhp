@@ -380,6 +380,10 @@ pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> 
                 ))
             }
         },
+        Value::Closure(_) => Err(Thrown::error(
+            "Error",
+            "Object of class Closure could not be converted to string",
+        )),
         other => Ok(conv::to_string_bytes(other)),
     }
 }

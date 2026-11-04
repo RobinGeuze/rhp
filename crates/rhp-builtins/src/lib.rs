@@ -119,7 +119,9 @@ mod webenc_fns;
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
-    ext::curl::constant_deprecation(name).or_else(|| ext::date::constant_deprecation(name))
+    ext::curl::constant_deprecation(name)
+        .or_else(|| ext::date::constant_deprecation(name))
+        .or_else(|| ext::dom::constant_deprecation(name))
 }
 
 /// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`
@@ -180,6 +182,20 @@ pub enum ObCall {
     ImplicitFlush(bool),
     /// `flush()`: sapi_flush.
     SapiFlush,
+}
+
+/// The fetch a magic accessor serves ([`Host::magic_fetch`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MagicFetch {
+    /// A read (`BP_VAR_R`), or anything else.
+    #[default]
+    Read,
+    /// A write below the property or element (`BP_VAR_W`/`BP_VAR_RW`/
+    /// `BP_VAR_UNSET`: `$o->p->q = …`, `$o->p[] = …`, `$o[k][] = …`,
+    /// `&$o->p`, `unset($o->p->q)`).
+    Write,
+    /// `empty()`'s `__isset` or `offsetExists` (`check_empty`).
+    Empty,
 }
 
 /// The interpreter surface a builtin may use. Implemented by the VM (and by
@@ -266,6 +282,15 @@ pub trait Host {
     /// `strict_types=1` (zpp then coerces no scalars). Default: no.
     fn caller_strict_types(&self) -> bool {
         false
+    }
+
+    /// How the engine fetches the property or element whose magic accessor
+    /// (`__get`, `__isset`, `offsetGet`, `offsetExists`) is running, asked
+    /// from that accessor's own frame (anything it calls sees a read):
+    /// SimpleXML's handlers behave as php's `read_property` /
+    /// `has_property` do for that fetch. Default: a plain read.
+    fn magic_fetch(&self) -> MagicFetch {
+        MagicFetch::Read
     }
 
     /// php's `ZEND_ARG_USES_STRICT_TYPES()` as an object handler the engine

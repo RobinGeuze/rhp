@@ -267,6 +267,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// `DimFetch` as the object of a property write (`$a[k]->p = v`): an
+    /// ArrayAccess element is fetched for writing (`BP_VAR_W`), anything
+    /// else is read.
+    DimFetchW {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
     /// absent string offset reads as Null.
     DimFetchIs {
@@ -496,6 +504,20 @@ pub enum Instr {
         obj: Reg,
         name: Reg,
     },
+    /// `$o->p` as the object of a property write (`$o->p->q = v`): php's
+    /// BP_VAR_W fetch, which a magic `__get` serves as a write
+    /// (`Host::magic_fetch`).
+    FetchPropW {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropW` with the property name in a register.
+    FetchPropDynW {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
     /// `$o->p` in isset/empty/`??` context (php's BP_VAR_IS): an inaccessible
     /// or missing property is null without an error, via `__isset` then
     /// `__get` when defined.
@@ -632,6 +654,14 @@ pub enum Instr {
     /// `isset($c[$k])`: array element present and non-null, string offset in
     /// range, or `ArrayAccess::offsetExists`; else false.
     IssetDim {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
+    /// `empty($c[$k])`: `!DimFetchIs`, except that an ArrayAccess object is
+    /// asked php's `has_dimension(check_empty = 1)`: `offsetExists`, which
+    /// sees an `empty()` fetch (`Host::magic_fetch`), then `offsetGet`.
+    EmptyDim {
         dst: Reg,
         arr: Reg,
         key: Reg,

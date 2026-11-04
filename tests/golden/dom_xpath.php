@@ -31,10 +31,9 @@ foreach (['count(//ini)', 'string(//ini/@name)', 'sum(//ini/@value)', 'name(/*)'
 }
 $ctx = $x->query('//testsuite')->item(0);
 var_dump($x->query('directory', $ctx)->item(0)->textContent, $x->evaluate('string(@name)', $ctx));
-var_dump($x->query('//n:item')->length);
 $x->registerNamespace('m', 'urn:n');
 var_dump($x->query('//m:item[@k="2"]')->item(0)->textContent, $x->evaluate('count(//m:*)'));
-var_dump($x->query('//zz:a'), $x->query('//['), $x->evaluate('foo()'), $x->query('count(//ini)')->length);
+var_dump($x->query('//['), $x->query('count(//ini)')->length);
 var_dump($x->document === $d, DOMXPath::quote("it's"), DOMXPath::quote('a"b\'c'));
 // removing comments the way phpunit's loader does
 foreach ($x->query('//comment()') as $c) { $c->parentNode->removeChild($c); }

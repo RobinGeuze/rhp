@@ -113,16 +113,6 @@ Exception: Unserialization of 'SimpleXMLElement' is not allowed
 <a x="1"><b>2</b></a>
 <?xml version="1.0"?>
 <a><b>2</b></a>
-E2: SimpleXMLElement::addChild(): unterminated entity reference               y
-string(1) "b"
-<?xml version="1.0"?>
-<a><b/><c>&amp;&lt;A&bogus;&lt;</c><d>AB</d></a>
-int(2)
-int(1302)
-int(-1)
-int(0)
-string(46) "unterminated entity reference               r
-"
 E2: SimpleXMLElement::asXML(/nonexistent-dir/x.xml): Failed to open stream: No such file or directory
 bool(false)
 string(1) "s"

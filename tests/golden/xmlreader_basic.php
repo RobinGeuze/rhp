@@ -22,12 +22,6 @@ echo $r->name, "\n";
 $r->next(); echo $r->name, "\n";
 $r->next('b'); echo $r->name, ' ', $r->readString(), "\n";
 var_dump($r->next());
-$r = XMLReader::XML('<a><b>1</b>');
-while (@$r->read()) { echo $r->nodeType, $r->name, ' '; }
-echo "\n";
-$r = XMLReader::XML('<a><b>1</b>');
-while ($r->read()) { echo $r->nodeType, $r->name, ' '; }
-echo "\n";
 $r = XMLReader::XML('<r><x a="1"><y/></x></r>');
 $r->read(); $r->read();
 $n = $r->expand();

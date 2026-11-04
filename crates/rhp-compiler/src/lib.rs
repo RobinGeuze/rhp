@@ -3633,7 +3633,7 @@ impl ProtoBuilder {
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
                 Expression::Access(Access::Property(pa)) => {
-                    let obj = self.compile_expr(pa.object)?;
+                    let obj = self.compile_unset_object(pa.object)?;
                     match self.compile_selector(&pa.property)? {
                         Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
                         Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
@@ -4636,6 +4636,15 @@ impl ProtoBuilder {
                         Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
                     }
                     return Ok(dst);
+                }
+                if let Expression::ArrayAccess(aa) = e.value {
+                    if !is_globals_var(aa.array) {
+                        let arr = self.compile_quiet(aa.array)?;
+                        let key = self.compile_expr(aa.index)?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::EmptyDim { dst, arr, key });
+                        return Ok(dst);
+                    }
                 }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
                 let r = self.compile_quiet(e.value)?;
@@ -5979,6 +5988,56 @@ impl ProtoBuilder {
         }
     }
 
+    /// The object of a property write: a property access or ArrayAccess
+    /// element there is php's BP_VAR_W fetch (`$o->a->b = v` fetches
+    /// `$o->a` for writing).
+    fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        if let Expression::ArrayAccess(aa) = e {
+            if !is_globals_var(aa.array) {
+                let arr = self.compile_write_object(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetchW { dst, arr, key });
+                return Ok(dst);
+            }
+        }
+        let Expression::Access(Access::Property(pa)) = e else {
+            return self.compile_expr(e);
+        };
+        let obj = self.compile_write_object(pa.object)?;
+        let dst = self.alloc_temp();
+        match self.compile_selector(&pa.property)? {
+            Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
+            Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
+        }
+        Ok(dst)
+    }
+
+    /// The object of `unset($o->p)`: php fetches the properties along it
+    /// with BP_VAR_UNSET, which `get_property_ptr_ptr` serves like a write
+    /// (SimpleXML creates a missing element); elements are read.
+    fn compile_unset_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        match e {
+            Expression::ArrayAccess(aa) if !is_globals_var(aa.array) => {
+                let arr = self.compile_unset_object(aa.array)?;
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_unset_object(pa.object)?;
+                let dst = self.alloc_temp();
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            _ => self.compile_expr(e),
+        }
+    }
+
     fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
         match acc {
             Access::Property(pa) => {
@@ -6343,7 +6402,7 @@ impl ProtoBuilder {
             (&a.operator, a.lhs)
         {
             if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
-                let obj = self.compile_expr(pa.object)?;
+                let obj = self.compile_write_object(pa.object)?;
                 let name = self.intern_name(li.value);
                 let rhs = self.compile_expr(a.rhs)?;
                 self.emit(Instr::StoreProp {
@@ -6358,7 +6417,7 @@ impl ProtoBuilder {
                 &pa.property,
                 ClassLikeMemberSelector::Variable(_) | ClassLikeMemberSelector::Expression(_)
             ) {
-                let obj = self.compile_expr(pa.object)?;
+                let obj = self.compile_write_object(pa.object)?;
                 let name = match self.compile_selector(&pa.property)? {
                     Sel::Dyn(r) => r,
                     Sel::Static(_) => unreachable!(),

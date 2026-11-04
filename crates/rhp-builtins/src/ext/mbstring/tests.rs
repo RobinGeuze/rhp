@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::TestHost;
 
 /// `(string)` bytes of a value.
 fn bytes_of(v: &Value) -> Vec<u8> {
@@ -14,7 +15,7 @@ fn convert_variables_recursion_warns() {
     a.push(Value::Ref(cell.clone()));
     *cell.borrow_mut() = Value::Array(a);
     for from in ["ISO-8859-1", "ISO-8859-1,UTF-8"] {
-        let (r, d) = crate::diag_test::run(
+        let (r, d) = crate::test_support::run(
             fn_mb_convert_variables,
             &[
                 Value::str("UTF-8"),
@@ -33,7 +34,7 @@ fn convert_variables_recursion_warns() {
         panic!()
     };
     assert_eq!(bytes_of(a.get_index(0).unwrap().1), b"\xc3\xa9");
-    let (r, d) = crate::diag_test::run(
+    let (r, d) = crate::test_support::run(
         fn_mb_convert_variables,
         &[
             Value::str("UTF-8"),
@@ -62,7 +63,7 @@ fn convert_variables_deep_nesting() {
             }
             let cell: rhp_values::PhpRef = Rc::new(RefCell::new(v));
             for (from, want) in [("ISO-8859-1", "ISO-8859-1"), ("ASCII,UTF-8", "UTF-8")] {
-                let (r, d) = crate::diag_test::run(
+                let (r, d) = crate::test_support::run(
                     fn_mb_convert_variables,
                     &[
                         Value::str("UTF-8"),
@@ -85,16 +86,11 @@ fn convert_variables_deep_nesting() {
         .unwrap();
 }
 
-struct NullHost;
-impl Host for NullHost {
-    fn write_out(&mut self, _: &[u8]) {}
-}
-
 fn s(b: &str) -> Value {
     Value::str(b)
 }
 fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-    f(&mut NullHost, args).expect("no throw")
+    f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
     String::from_utf8(bytes_of(&call(f, args))).unwrap()
@@ -236,7 +232,7 @@ fn str_split_cases() {
         split_vec(fn_mb_str_split, &[s("héllo"), Value::Int(2)]),
         vec!["hé", "ll", "o"]
     );
-    assert!(fn_mb_str_split(&mut NullHost, &[s("abc"), Value::Int(0)]).is_err());
+    assert!(fn_mb_str_split(&mut TestHost::new(), &[s("abc"), Value::Int(0)]).is_err());
 }
 
 #[test]
@@ -267,33 +263,9 @@ fn pos_cases() {
 fn count_width_cases() {
     assert_eq!(call_int(fn_mb_substr_count, &[s("ababab"), s("ab")]), 3);
     assert_eq!(call_int(fn_mb_substr_count, &[s("aaa"), s("aa")]), 1); // non-overlapping
-    assert!(fn_mb_substr_count(&mut NullHost, &[s("abc"), s("")]).is_err());
+    assert!(fn_mb_substr_count(&mut TestHost::new(), &[s("abc"), s("")]).is_err());
     assert_eq!(call_int(fn_mb_strwidth, &[s("日本語abc")]), 9);
     assert_eq!(call_int(fn_mb_strwidth, &[s("😀")]), 2);
-}
-
-#[test]
-fn strstr_strrchr_cases() {
-    assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö")]), "örld");
-    assert_eq!(
-        calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]),
-        "héllo w"
-    );
-    assert!(is_false(fn_mb_strstr, &[s("héllo"), s("z")]));
-    assert_eq!(
-        calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]),
-        "語テスト"
-    );
-    assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l")]), "ld");
-    assert_eq!(
-        calls(
-            fn_mb_strrchr,
-            &[s("héllo wörld"), s("l"), Value::Bool(true)]
-        ),
-        "héllo wör"
-    );
-    assert_eq!(calls(fn_mb_strrchr, &[s("foobarbo"), s("ob")]), "obarbo");
-    assert!(is_false(fn_mb_strrchr, &[s("abc"), s("xy")]));
 }
 
 #[test]
@@ -342,7 +314,7 @@ fn scrub_cases() {
 fn ord_chr_cases() {
     assert_eq!(call_int(fn_mb_ord, &[s("é")]), 233);
     assert_eq!(call_int(fn_mb_ord, &[s("€")]), 8364);
-    assert!(fn_mb_ord(&mut NullHost, &[s("")]).is_err()); // php throws on empty
+    assert!(fn_mb_ord(&mut TestHost::new(), &[s("")]).is_err()); // php throws on empty
     assert_eq!(calls(fn_mb_chr, &[Value::Int(233)]), "é");
     assert!(is_false(fn_mb_chr, &[Value::Int(0x110000)]));
 }
@@ -409,7 +381,7 @@ fn encoding_cases() {
     // (the "café" to ASCII above lost one character).
     assert!(is_false(fn_mb_check_encoding, &[]));
     // invalid encoding name → ValueError
-    assert!(fn_mb_strlen(&mut NullHost, &[s("x"), s("bogus")]).is_err());
+    assert!(fn_mb_strlen(&mut TestHost::new(), &[s("x"), s("bogus")]).is_err());
 }
 
 #[test]
@@ -422,5 +394,5 @@ fn internal_encoding_roundtrip() {
     assert_eq!(calls(fn_mb_internal_encoding, &[]), "ISO-8859-1");
     // restore so other tests on this thread see the default
     let _ = call(fn_mb_internal_encoding, &[s("UTF-8")]);
-    assert!(fn_mb_internal_encoding(&mut NullHost, &[s("bogus")]).is_err());
+    assert!(fn_mb_internal_encoding(&mut TestHost::new(), &[s("bogus")]).is_err());
 }

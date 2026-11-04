@@ -308,19 +308,5 @@ impl Drop for NulCopy {
     }
 }
 
-/// The file the `iconv_open` rhp calls was loaded from.
 #[cfg(test)]
-pub fn library_path() -> Option<String> {
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-    // SAFETY: dladdr fills `info` for an address inside a loaded image.
-    let ok = unsafe { libc::dladdr(iconv_open as *const c_void, &mut info) };
-    if ok == 0 || info.dli_fname.is_null() {
-        return None;
-    }
-    // SAFETY: dladdr returned a NUL-terminated path.
-    Some(
-        unsafe { CStr::from_ptr(info.dli_fname) }
-            .to_string_lossy()
-            .into_owned(),
-    )
-}
+mod tests;

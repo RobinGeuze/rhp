@@ -1240,7 +1240,7 @@ fn operator_operand(host: &mut dyn Host, v: &Value) -> Result<Option<BigInt>, Th
             parse_str_auto(s.as_bytes())
                 .ok_or_else(|| Thrown::error("ValueError", "Number is not an integer string"))?,
         ),
-        _ if host.caller_strict_types() => None,
+        _ if host.arg_uses_strict_types() => None,
         Value::Bool(b) => Some(BigInt::from(b as i64)),
         Value::Float(f) if (-TWO_63..TWO_63).contains(&f) => {
             if f.fract() != 0.0 {

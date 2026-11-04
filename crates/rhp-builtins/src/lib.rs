@@ -251,6 +251,23 @@ pub trait Host {
         false
     }
 
+    /// php's `ZEND_ARG_USES_STRICT_TYPES()` as an object handler the engine
+    /// runs (`do_operation`, `compare`) sees it: the strictness of the
+    /// caller of php's current frame, which is the builtin running the
+    /// handler if there is one, else the code running the operator. Weak
+    /// when that caller is a builtin or there is none (the main script).
+    /// Default: no.
+    fn arg_uses_strict_types(&self) -> bool {
+        false
+    }
+
+    /// `thrown` raised while `previous` is pending: php makes `previous`
+    /// the new exception's previous one. An `exit` in `previous` wins.
+    /// Default: `thrown` alone.
+    fn chain_thrown(&mut self, thrown: Thrown, _previous: Thrown) -> Thrown {
+        thrown
+    }
+
     /// Inside an `@` region (error_reporting then reads as the fatal mask).
     fn silenced(&self) -> bool {
         false

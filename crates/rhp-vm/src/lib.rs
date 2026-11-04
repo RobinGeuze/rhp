@@ -453,6 +453,41 @@ impl Host for Vm {
             .is_some_and(|f| f.proto.strict_types)
     }
 
+    fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown {
+        match previous {
+            Thrown::Error { .. } | Thrown::Object(_) => {
+                let thrown = self.materialize(thrown, None);
+                let previous = self.materialize(previous, None);
+                self.chain_previous(&thrown, previous);
+                thrown
+            }
+            other => other,
+        }
+    }
+
+    fn arg_uses_strict_types(&self) -> bool {
+        let Some(top) = self.stack.len().checked_sub(1) else {
+            return false;
+        };
+        let strict = |i: usize| !self.is_internal_frame(i) && self.stack[i].proto.strict_types;
+        // The builtin frame `i` is running, if php gives it one.
+        let builtin_from = |i: usize| {
+            self.native_calls
+                .iter()
+                .rev()
+                .find(|n| n.caller == i)
+                .is_some_and(|n| !n.frameless_icall)
+        };
+        // A running builtin is php's current frame: its caller is `top`.
+        if builtin_from(top) {
+            return strict(top);
+        }
+        // Else `top` runs the handler and php asks its caller, which is weak
+        // when it is a builtin (a callback) or there is none.
+        top.checked_sub(1)
+            .is_some_and(|below| !builtin_from(below) && strict(below))
+    }
+
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)> {
         self.last_error.clone()
     }
@@ -2266,6 +2301,9 @@ struct NativeCall {
     args: *const [Value],
     /// Index of the frame that made the call.
     caller: usize,
+    /// php 8.4 runs the call without a frame of its own
+    /// (ZEND_FRAMELESS_ICALL), though traces still list it.
+    frameless_icall: bool,
 }
 
 /// Result of unwinding: a handler was installed, or the exception escaped the
@@ -6561,8 +6599,10 @@ impl Vm {
                         // unqualified call inside a namespace.
                         let frameless = fallback == rhp_bytecode::NO_NAME
                             && compiled_inline(&fname, argc as usize);
+                        let icall = frameless_icall(&fname, argc as usize);
                         self.mark_user_call_builtin(&fname, fallback);
-                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless);
+                        let out =
+                            self.call_builtin(top, lc, builtin, base, argc, frameless, icall);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);
@@ -10355,6 +10395,7 @@ impl Vm {
         self.long_op_object(op, &x, &y)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn call_builtin(
         &mut self,
         top: usize,
@@ -10363,6 +10404,7 @@ impl Vm {
         base: Reg,
         argc: u16,
         frameless: bool,
+        icall: bool,
     ) -> Result<Value, Thrown> {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
@@ -10378,7 +10420,7 @@ impl Vm {
                 }
             })
             .collect();
-        self.run_builtin_sig(builtin, sig, args, frameless)
+        self.run_builtin_sig(builtin, sig, args, frameless, icall)
     }
 
     /// Call a builtin by name with a pre-collected argument vector.
@@ -10544,7 +10586,7 @@ impl Vm {
         frameless: bool,
     ) -> Result<Value, Thrown> {
         let sig = builtins::signatures::function(builtin.name.as_bytes());
-        self.run_builtin_sig(builtin, sig, args, frameless)
+        self.run_builtin_sig(builtin, sig, args, frameless, false)
     }
 
     /// [`Vm::run_builtin`] with the builtin's stub signature.
@@ -10554,6 +10596,7 @@ impl Vm {
         sig: Option<&'static builtins::signatures::Func>,
         mut args: Vec<Value>,
         frameless: bool,
+        icall: bool,
     ) -> Result<Value, Thrown> {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero).
@@ -10583,6 +10626,7 @@ impl Vm {
             name: builtin.name,
             args: args.as_slice() as *const [Value],
             caller,
+            frameless_icall: icall,
         });
         let r = match count_error {
             Some(e) => Err(e),
@@ -10727,6 +10771,20 @@ fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
         b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
         b"array_key_exists" | b"call_user_func_array" => argc == 2,
         b"call_user_func" => argc >= 1,
+        _ => false,
+    }
+}
+
+/// php 8.4's frameless internal calls (ZEND_FRAMELESS_FUNCTION, by arity):
+/// they get no execute_data, so what they run sees their caller's frame.
+fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"dechex" | b"is_numeric" => argc == 1,
+        b"class_exists" | b"dirname" | b"implode" | b"trim" => argc == 1 || argc == 2,
+        b"in_array" | b"strpos" | b"strstr" | b"strtr" | b"substr" => argc == 2 || argc == 3,
+        b"max" | b"min" | b"preg_match" | b"property_exists" | b"str_contains"
+        | b"str_starts_with" => argc == 2,
+        b"preg_replace" | b"str_replace" => argc == 3,
         _ => false,
     }
 }

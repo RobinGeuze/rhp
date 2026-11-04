@@ -21,6 +21,7 @@ use crate::file::FileCtx;
 use crate::functions::compile_function;
 use crate::names::{flatten_namespaces, NsContext};
 use crate::prelude::prelude_classes;
+use crate::shrink::shrink_program;
 
 mod assign;
 mod builder;
@@ -37,6 +38,7 @@ mod hrh;
 mod names;
 mod oop;
 mod prelude;
+mod shrink;
 mod stmt;
 mod util;
 
@@ -190,7 +192,7 @@ fn compile_file(
         .into_iter()
         .map(|line| (8192, hrh::MESSAGE.to_string(), line))
         .collect();
-    Ok(Program {
+    let mut prog = Program {
         main: Rc::new(c.finish()?),
         functions,
         classes,
@@ -200,5 +202,7 @@ fn compile_file(
         cond_classes,
         compile_diags,
         compile_diags_reported: Default::default(),
-    })
+    };
+    shrink_program(&mut prog);
+    Ok(prog)
 }

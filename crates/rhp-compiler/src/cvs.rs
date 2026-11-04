@@ -3,7 +3,7 @@
 use rhp_frontend::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, ClassLikeConstantSelector,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForeachBody, ForeachTarget,
-    Node, PartialArgument, Statement, StringPart, Variable,
+    IndirectVariable, Literal, Node, PartialArgument, Statement, StringPart, Variable,
 };
 
 use crate::builder::ProtoBuilder;
@@ -356,13 +356,19 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    /// `$x` is a CV; `${expr}` and `$$x` read the variables of their name.
+    /// `$x` and `${'x'}` are CVs; `${expr}` and `$$x` read the variables of
+    /// their name.
     fn scan_variable(&mut self, v: &Variable) {
         match v {
             Variable::Direct(d) => {
                 self.cv(strip_dollar(d.name));
             }
-            Variable::Indirect(iv) => self.scan_expr_vars(iv.expression),
+            Variable::Indirect(iv) => match literal_var_name(iv) {
+                Some(name) => {
+                    self.cv(name);
+                }
+                None => self.scan_expr_vars(iv.expression),
+            },
             Variable::Nested(nv) => self.scan_variable(nv.variable),
         }
     }
@@ -450,6 +456,21 @@ impl ProtoBuilder<'_> {
     }
 }
 
+/// The name of `${'name'}`: php's compiler makes a constant string name the
+/// CV itself (zend_try_compile_cv), except `$this` and the superglobals.
+fn literal_var_name<'a>(iv: &IndirectVariable<'a>) -> Option<&'a [u8]> {
+    let mut e = iv.expression;
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    match e {
+        Expression::Literal(Literal::String(s)) => {
+            s.value.filter(|n| *n != b"this" && !is_superglobal(n))
+        }
+        _ => None,
+    }
+}
+
 /// Every `$var` name an arrow function's body uses (deduplicated, in source
 /// order): nested arrow functions' bodies included, so their free variables
 /// propagate upward.
@@ -486,9 +507,19 @@ fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
             }
             return;
         }
-        // `C::$p`: the `$p` is the property name, not a variable.
+        Node::IndirectVariable(iv) => {
+            if let Some(name) = literal_var_name(iv) {
+                f(name);
+                return;
+            }
+        }
+        // `C::$p`: the `$p` is the property name, not a variable; `C::$$p`
+        // reads `$p`.
         Node::StaticPropertyAccess(spa) => {
             visit_vars(Node::Expression(spa.class), arrows, f);
+            if !matches!(spa.property, Variable::Direct(_)) {
+                visit_vars(Node::Variable(&spa.property), arrows, f);
+            }
             return;
         }
         // php's find_implicit_binds: a nested arrow function's body.

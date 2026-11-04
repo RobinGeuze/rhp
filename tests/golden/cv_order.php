@@ -11,6 +11,7 @@ class D
 class C
 {
     public $p = 1;
+    public static $sp = 2;
     public static function sm($a = 0) { return 3; }
 }
 function id($v) { return $v; }
@@ -49,8 +50,14 @@ $ncl = fn() => function () use ($anc) {};
 $ac = new class($acx ?? 1) {
     public function __construct($v) {}
 };
-// variable variables
+// variable variables; a constant name in ${} is that CV
 $vv = ${$vn ?? 'o'};
+${'lit'} = 1;
+$vl = ${"lit2"} ?? 0;
+$lfa = fn() => ${'lit3'};
+// C::$$x reads $x, also inside an arrow function
+$spf = fn() => C::$$spn;
+$spg = fn() => C::${$spe ?? 'sp'};
 // while and for compile the body before the condition
 while ($wc ?? false) {
     $wb = 1;
@@ -82,7 +89,11 @@ static $st = $si ?? 1;
 $lsrc = $lsrc2 = $lg = $lk = $cf = $ca = $cg = $cb = $fo = $pn = $pv = $sc = $smn = $sa = 0;
 $cu = $au = $an = $anc = $acx = $vn = $wc = $wb = $fn = $fs = $fb = 0;
 $sw = $s1 = $s2 = $sb1 = $sb2 = $sd = $ms = $m1 = $m2 = $mb1 = $mb2 = $md = $dt = $si = 0;
+$lit2 = $lit3 = $spn = $spe = 0;
 globals_keys();
+$spn2 = 'sp';
+$lit4 = 5;
+echo (fn() => C::$$spn2)(), ' ', (fn() => ${'lit4'})(), "\n";
 
 // at shutdown
 [$xa, $xb] = $xpair ?? [new D('xa'), new D('xb')];

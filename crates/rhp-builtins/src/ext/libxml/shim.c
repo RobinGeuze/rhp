@@ -27,6 +27,9 @@
 #include <libxml/xmlwriter.h>
 #include <libxml/HTMLparser.h>
 #include <libxml/xmlsave.h>
+#include <libxml/valid.h>
+#include <libxml/xpath.h>
+#include <libxml/xpathInternals.h>
 #if defined(LIBXML_SCHEMAS_ENABLED) || defined(LIBXML_RELAXNG_ENABLED)
 #include <libxml/relaxng.h>
 #endif
@@ -373,5 +376,242 @@ void rhp_xml_output_hook_failed(xmlCharEncodingHandlerPtr encoder)
 /* ---- misc ---- */
 
 void rhp_xml_free(void *ptr) { xmlFree(ptr); }
+void *rhp_xml_malloc(size_t size) { return xmlMalloc(size); }
 
 const char *rhp_xml_uri_scheme(xmlURIPtr uri) { return uri->scheme; }
+const char *rhp_xml_uri_opaque(xmlURIPtr uri) { return uri->opaque; }
+
+/* ---- the tree structs sys.rs mirrors: its test compares this table ---- */
+
+const size_t rhp_xml_tree_layout[64] = {
+	sizeof(xmlNode),
+	offsetof(xmlNode, _private),
+	offsetof(xmlNode, type),
+	offsetof(xmlNode, name),
+	offsetof(xmlNode, children),
+	offsetof(xmlNode, last),
+	offsetof(xmlNode, parent),
+	offsetof(xmlNode, next),
+	offsetof(xmlNode, prev),
+	offsetof(xmlNode, doc),
+	offsetof(xmlNode, ns),
+	offsetof(xmlNode, content),
+	offsetof(xmlNode, properties),
+	offsetof(xmlNode, nsDef),
+	offsetof(xmlNode, psvi),
+	offsetof(xmlNode, line),
+	offsetof(xmlNode, extra),
+	offsetof(xmlAttr, next),
+	offsetof(xmlAttr, doc),
+	offsetof(xmlAttr, ns),
+	offsetof(xmlAttr, atype),
+	offsetof(xmlAttr, psvi),
+	sizeof(xmlNs),
+	offsetof(xmlNs, next),
+	offsetof(xmlNs, type),
+	offsetof(xmlNs, href),
+	offsetof(xmlNs, prefix),
+	offsetof(xmlNs, _private),
+	offsetof(xmlNs, context),
+	sizeof(xmlDoc),
+	offsetof(xmlDoc, compression),
+	offsetof(xmlDoc, standalone),
+	offsetof(xmlDoc, intSubset),
+	offsetof(xmlDoc, extSubset),
+	offsetof(xmlDoc, oldNs),
+	offsetof(xmlDoc, version),
+	offsetof(xmlDoc, encoding),
+	offsetof(xmlDoc, ids),
+	offsetof(xmlDoc, URL),
+	offsetof(xmlDoc, dict),
+	offsetof(xmlDoc, parseFlags),
+	offsetof(xmlDoc, properties),
+	sizeof(xmlDtd),
+	offsetof(xmlDtd, notations),
+	offsetof(xmlDtd, entities),
+	offsetof(xmlDtd, ExternalID),
+	offsetof(xmlDtd, SystemID),
+	offsetof(xmlDtd, pentities),
+	offsetof(xmlEntity, orig),
+	offsetof(xmlEntity, content),
+	offsetof(xmlEntity, length),
+	offsetof(xmlEntity, etype),
+	offsetof(xmlEntity, ExternalID),
+	offsetof(xmlEntity, SystemID),
+	offsetof(xmlEntity, URI),
+	sizeof(xmlNotation),
+	sizeof(xmlNodeSet),
+	offsetof(xmlNodeSet, nodeTab),
+	sizeof(xmlXPathObject),
+	offsetof(xmlXPathObject, nodesetval),
+	offsetof(xmlXPathObject, boolval),
+	offsetof(xmlXPathObject, floatval),
+	offsetof(xmlXPathObject, stringval),
+	offsetof(xmlXPathObject, index2),
+};
+
+/* ---- tree helpers with version differences ---- */
+
+/* php_libxml_node_free's XML_ENTITY_DECL case: 2.12 frees an entity with
+ * xmlFreeEntity, older releases by hand. */
+void rhp_xml_free_entity(xmlEntityPtr entity)
+{
+#if LIBXML_VERSION >= 21200
+	xmlFreeEntity(entity);
+#else
+	if (entity->children != NULL && entity->owner && entity == (xmlEntityPtr) entity->children->parent) {
+		xmlFreeNodeList(entity->children);
+	}
+	xmlDictPtr dict = entity->doc != NULL ? entity->doc->dict : NULL;
+	if (dict == NULL || !xmlDictOwns(dict, entity->name)) {
+		xmlFree((xmlChar *) entity->name);
+	}
+	if (dict == NULL || !xmlDictOwns(dict, entity->ExternalID)) {
+		xmlFree((xmlChar *) entity->ExternalID);
+	}
+	if (dict == NULL || !xmlDictOwns(dict, entity->SystemID)) {
+		xmlFree((xmlChar *) entity->SystemID);
+	}
+	if (dict == NULL || !xmlDictOwns(dict, entity->URI)) {
+		xmlFree((xmlChar *) entity->URI);
+	}
+	if (dict == NULL || !xmlDictOwns(dict, entity->content)) {
+		xmlFree(entity->content);
+	}
+	if (dict == NULL || !xmlDictOwns(dict, entity->orig)) {
+		xmlFree(entity->orig);
+	}
+	xmlFree(entity);
+#endif
+}
+
+/* The per-thread xmlSaveNoEmptyTags; returns the old value. */
+int rhp_xml_set_save_no_empty_tags(int v)
+{
+	int old = xmlSaveNoEmptyTags;
+	xmlSaveNoEmptyTags = v;
+	return old;
+}
+
+/* PHP_LIBXML_SANITIZE_GLOBALS / PHP_LIBXML_RESTORE_GLOBALS */
+void rhp_xml_sanitize_globals(int *saved)
+{
+	saved[0] = xmlLoadExtDtdDefaultValue;
+	xmlLoadExtDtdDefaultValue = 0;
+	saved[1] = xmlDoValidityCheckingDefaultValue;
+	xmlDoValidityCheckingDefaultValue = 0;
+	saved[2] = xmlPedanticParserDefault(0);
+	saved[3] = xmlSubstituteEntitiesDefault(0);
+	saved[4] = xmlLineNumbersDefault(0);
+	saved[5] = xmlKeepBlanksDefault(1);
+}
+
+void rhp_xml_restore_globals(const int *saved)
+{
+	xmlLoadExtDtdDefaultValue = saved[0];
+	xmlDoValidityCheckingDefaultValue = saved[1];
+	(void) xmlPedanticParserDefault(saved[2]);
+	(void) xmlSubstituteEntitiesDefault(saved[3]);
+	(void) xmlLineNumbersDefault(saved[4]);
+	(void) xmlKeepBlanksDefault(saved[5]);
+}
+
+int rhp_xml_output_buffer_error(xmlOutputBufferPtr out) { return out->error; }
+
+/* ---- php's error handlers on validation contexts (ext/dom/document.c) ---- */
+
+void rhp_xml_valid_ctxt_use_php_errors(xmlValidCtxtPtr cvp)
+{
+	cvp->userData = NULL;
+	cvp->error = (xmlValidityErrorFunc) rhp_xml_generic_error;
+	cvp->warning = (xmlValidityWarningFunc) rhp_xml_generic_error;
+}
+
+#ifdef LIBXML_SCHEMAS_ENABLED
+void rhp_xml_schema_parser_use_php_errors(xmlSchemaParserCtxtPtr parser)
+{
+	xmlSchemaSetParserErrors(parser, (xmlSchemaValidityErrorFunc) rhp_xml_generic_error,
+		(xmlSchemaValidityWarningFunc) rhp_xml_generic_error, parser);
+}
+
+void rhp_xml_schema_valid_use_php_errors(xmlSchemaValidCtxtPtr vptr)
+{
+	xmlSchemaSetValidErrors(vptr, (xmlSchemaValidityErrorFunc) rhp_xml_generic_error,
+		(xmlSchemaValidityWarningFunc) rhp_xml_generic_error, vptr);
+}
+
+void rhp_xml_relaxng_parser_use_php_errors(xmlRelaxNGParserCtxtPtr parser)
+{
+	xmlRelaxNGSetParserErrors(parser, (xmlRelaxNGValidityErrorFunc) rhp_xml_generic_error,
+		(xmlRelaxNGValidityWarningFunc) rhp_xml_generic_error, parser);
+}
+
+void rhp_xml_relaxng_valid_use_php_errors(xmlRelaxNGValidCtxtPtr vptr)
+{
+	xmlRelaxNGSetValidErrors(vptr, (xmlRelaxNGValidityErrorFunc) rhp_xml_generic_error,
+		(xmlRelaxNGValidityWarningFunc) rhp_xml_generic_error, vptr);
+}
+#endif
+
+/* An attribute declaration's default value (xmlAttribute grew in 2.13). */
+const xmlChar *rhp_xml_attribute_decl_default(xmlAttributePtr attr) { return attr->defaultValue; }
+
+/* xmlGenericError(xmlGenericErrorContext, msg) */
+void rhp_xml_generic_error_msg(const char *msg)
+{
+	xmlGenericError(xmlGenericErrorContext, "%s", msg);
+}
+
+/* ---- parser context fields for ext/dom's document parser ---- */
+
+const char *rhp_xml_ctxt_directory(xmlParserCtxtPtr ctxt) { return ctxt->directory; }
+
+/* Replaces ctxt->directory; takes ownership of dir (libxml2-allocated). */
+void rhp_xml_ctxt_set_directory(xmlParserCtxtPtr ctxt, char *dir)
+{
+	if (ctxt->directory != NULL) {
+		xmlFree((char *) ctxt->directory);
+	}
+	ctxt->directory = dir;
+}
+
+int rhp_xml_ctxt_well_formed(xmlParserCtxtPtr ctxt) { return ctxt->wellFormed; }
+
+xmlDocPtr rhp_xml_ctxt_take_doc(xmlParserCtxtPtr ctxt)
+{
+	xmlDocPtr doc = ctxt->myDoc;
+	ctxt->myDoc = NULL;
+	return doc;
+}
+
+/* ---- XPath contexts ---- */
+
+xmlNodePtr rhp_xml_xpath_node(xmlXPathContextPtr ctxt) { return ctxt->node; }
+void rhp_xml_xpath_set_node(xmlXPathContextPtr ctxt, xmlNodePtr node) { ctxt->node = node; }
+xmlDocPtr rhp_xml_xpath_doc(xmlXPathContextPtr ctxt) { return ctxt->doc; }
+
+xmlNsPtr *rhp_xml_xpath_namespaces(xmlXPathContextPtr ctxt, int *nr)
+{
+	*nr = ctxt->nsNr;
+	return ctxt->namespaces;
+}
+
+void rhp_xml_xpath_set_namespaces(xmlXPathContextPtr ctxt, xmlNsPtr *list, int nr)
+{
+	ctxt->namespaces = list;
+	ctxt->nsNr = nr;
+}
+
+void *rhp_xml_xpath_user_data(xmlXPathContextPtr ctxt) { return ctxt->userData; }
+void rhp_xml_xpath_set_user_data(xmlXPathContextPtr ctxt, void *data) { ctxt->userData = data; }
+xmlXPathContextPtr rhp_xml_xpath_parser_context(xmlXPathParserContextPtr ctxt) { return ctxt->context; }
+
+const xmlChar *rhp_xml_xpath_function(xmlXPathContextPtr ctxt, const xmlChar **uri)
+{
+	*uri = ctxt->functionURI;
+	return ctxt->function;
+}
+
+/* valuePop and valuePush are macros in 2.15. */
+xmlXPathObjectPtr rhp_xml_xpath_value_pop(xmlXPathParserContextPtr ctxt) { return valuePop(ctxt); }
+void rhp_xml_xpath_value_push(xmlXPathParserContextPtr ctxt, xmlXPathObjectPtr obj) { valuePush(ctxt, obj); }

@@ -2,9 +2,14 @@
 //! `shim.c`'s accessors. build.rs links the libxml2 that php links
 //! (docs/design/libraries.md) and compiles the shim against its headers.
 //!
-//! Structs are opaque: their layouts differ between libxml2 releases, so
-//! fields are read through the shim. The one exception is [`XmlErrorRaw`],
-//! which has not changed since 2.9 (a test checks it against the headers).
+//! Most structs are opaque: their layouts differ between libxml2 releases,
+//! so their fields are read through the shim. The tree structs that have
+//! not changed since 2.9 are mirrored here, because DOM walks them
+//! everywhere: [`XmlErrorRaw`], [`XmlNode`], [`XmlDoc`], [`XmlNs`],
+//! [`XmlDtd`], [`XmlNodeSet`], [`XmlXPathObject`], and the leading fields
+//! of [`XmlAttr`] and [`XmlEntity`], which grew at the end (never sized or
+//! allocated in Rust). A test compares every mirror with the headers rhp
+//! compiles the shim against.
 
 #![allow(non_snake_case, non_camel_case_types, dead_code)]
 
@@ -25,15 +30,219 @@ opaque!(
     xmlParserInput,
     xmlParserInputBuffer,
     xmlOutputBuffer,
-    xmlDoc,
-    xmlEntity,
     xmlURI,
     xmlTextWriter,
-    xmlCharEncodingHandler
+    xmlCharEncodingHandler,
+    xmlDict,
+    xmlHashTable,
+    xmlBuffer,
+    xmlSaveCtxt,
+    xmlValidCtxt,
+    xmlXPathContext,
+    xmlXPathParserContext,
+    xmlSchemaParserCtxt,
+    xmlSchema,
+    xmlSchemaValidCtxt,
+    xmlRelaxNGParserCtxt,
+    xmlRelaxNG,
+    xmlRelaxNGValidCtxt,
+    xmlDOMWrapCtxt
 );
 
 pub type xmlChar = u8;
 pub type Ctxt = *mut xmlParserCtxt;
+pub type xmlDoc = XmlDoc;
+pub type xmlEntity = XmlEntity;
+
+// xmlElementType
+pub const XML_ELEMENT_NODE: c_int = 1;
+pub const XML_ATTRIBUTE_NODE: c_int = 2;
+pub const XML_TEXT_NODE: c_int = 3;
+pub const XML_CDATA_SECTION_NODE: c_int = 4;
+pub const XML_ENTITY_REF_NODE: c_int = 5;
+pub const XML_ENTITY_NODE: c_int = 6;
+pub const XML_PI_NODE: c_int = 7;
+pub const XML_COMMENT_NODE: c_int = 8;
+pub const XML_DOCUMENT_NODE: c_int = 9;
+pub const XML_DOCUMENT_TYPE_NODE: c_int = 10;
+pub const XML_DOCUMENT_FRAG_NODE: c_int = 11;
+pub const XML_NOTATION_NODE: c_int = 12;
+pub const XML_HTML_DOCUMENT_NODE: c_int = 13;
+pub const XML_DTD_NODE: c_int = 14;
+pub const XML_ELEMENT_DECL: c_int = 15;
+pub const XML_ATTRIBUTE_DECL: c_int = 16;
+pub const XML_ENTITY_DECL: c_int = 17;
+pub const XML_NAMESPACE_DECL: c_int = 18;
+pub const XML_XINCLUDE_START: c_int = 19;
+pub const XML_XINCLUDE_END: c_int = 20;
+
+/// xmlAttributeType's XML_ATTRIBUTE_ID.
+pub const XML_ATTRIBUTE_ID: c_int = 2;
+/// xmlNsType's XML_LOCAL_NAMESPACE.
+pub const XML_LOCAL_NAMESPACE: c_int = XML_NAMESPACE_DECL;
+
+// xmlXPathObjectType
+pub const XPATH_UNDEFINED: c_int = 0;
+pub const XPATH_NODESET: c_int = 1;
+pub const XPATH_BOOLEAN: c_int = 2;
+pub const XPATH_NUMBER: c_int = 3;
+pub const XPATH_STRING: c_int = 4;
+
+/// `struct _xmlNode`.
+#[repr(C)]
+pub struct XmlNode {
+    pub _private: *mut c_void,
+    pub type_: c_int,
+    pub name: *const xmlChar,
+    pub children: *mut XmlNode,
+    pub last: *mut XmlNode,
+    pub parent: *mut XmlNode,
+    pub next: *mut XmlNode,
+    pub prev: *mut XmlNode,
+    pub doc: *mut XmlDoc,
+    pub ns: *mut XmlNs,
+    pub content: *mut xmlChar,
+    pub properties: *mut XmlAttr,
+    pub nsDef: *mut XmlNs,
+    pub psvi: *mut c_void,
+    pub line: u16,
+    pub extra: u16,
+}
+
+/// `struct _xmlAttr`, up to `psvi` (2.13 added a field after it).
+#[repr(C)]
+pub struct XmlAttr {
+    pub _private: *mut c_void,
+    pub type_: c_int,
+    pub name: *const xmlChar,
+    pub children: *mut XmlNode,
+    pub last: *mut XmlNode,
+    pub parent: *mut XmlNode,
+    pub next: *mut XmlAttr,
+    pub prev: *mut XmlAttr,
+    pub doc: *mut XmlDoc,
+    pub ns: *mut XmlNs,
+    pub atype: c_int,
+    pub psvi: *mut c_void,
+}
+
+/// `struct _xmlNs`.
+#[repr(C)]
+pub struct XmlNs {
+    pub next: *mut XmlNs,
+    pub type_: c_int,
+    pub href: *const xmlChar,
+    pub prefix: *const xmlChar,
+    pub _private: *mut c_void,
+    pub context: *mut XmlDoc,
+}
+
+/// `struct _xmlDoc`.
+#[repr(C)]
+pub struct XmlDoc {
+    pub _private: *mut c_void,
+    pub type_: c_int,
+    pub name: *mut c_char,
+    pub children: *mut XmlNode,
+    pub last: *mut XmlNode,
+    pub parent: *mut XmlNode,
+    pub next: *mut XmlNode,
+    pub prev: *mut XmlNode,
+    pub doc: *mut XmlDoc,
+    pub compression: c_int,
+    pub standalone: c_int,
+    pub intSubset: *mut XmlDtd,
+    pub extSubset: *mut XmlDtd,
+    pub oldNs: *mut XmlNs,
+    pub version: *const xmlChar,
+    pub encoding: *const xmlChar,
+    pub ids: *mut c_void,
+    pub refs: *mut c_void,
+    pub URL: *const xmlChar,
+    pub charset: c_int,
+    pub dict: *mut xmlDict,
+    pub psvi: *mut c_void,
+    pub parseFlags: c_int,
+    pub properties: c_int,
+}
+
+/// `struct _xmlDtd`.
+#[repr(C)]
+pub struct XmlDtd {
+    pub _private: *mut c_void,
+    pub type_: c_int,
+    pub name: *const xmlChar,
+    pub children: *mut XmlNode,
+    pub last: *mut XmlNode,
+    pub parent: *mut XmlDoc,
+    pub next: *mut XmlNode,
+    pub prev: *mut XmlNode,
+    pub doc: *mut XmlDoc,
+    pub notations: *mut xmlHashTable,
+    pub elements: *mut xmlHashTable,
+    pub attributes: *mut xmlHashTable,
+    pub entities: *mut xmlHashTable,
+    pub ExternalID: *const xmlChar,
+    pub SystemID: *const xmlChar,
+    pub pentities: *mut xmlHashTable,
+}
+
+/// `struct _xmlEntity`, up to `URI` (the fields after it changed).
+#[repr(C)]
+pub struct XmlEntity {
+    pub _private: *mut c_void,
+    pub type_: c_int,
+    pub name: *const xmlChar,
+    pub children: *mut XmlNode,
+    pub last: *mut XmlNode,
+    pub parent: *mut XmlDtd,
+    pub next: *mut XmlNode,
+    pub prev: *mut XmlNode,
+    pub doc: *mut XmlDoc,
+    pub orig: *mut xmlChar,
+    pub content: *mut xmlChar,
+    pub length: c_int,
+    pub etype: c_int,
+    pub ExternalID: *const xmlChar,
+    pub SystemID: *const xmlChar,
+    pub nexte: *mut XmlEntity,
+    pub URI: *const xmlChar,
+}
+
+/// `struct _xmlNotation`.
+#[repr(C)]
+pub struct XmlNotation {
+    pub name: *const xmlChar,
+    pub PublicID: *const xmlChar,
+    pub SystemID: *const xmlChar,
+}
+
+/// `struct _xmlNodeSet`.
+#[repr(C)]
+pub struct XmlNodeSet {
+    pub nodeNr: c_int,
+    pub nodeMax: c_int,
+    pub nodeTab: *mut *mut XmlNode,
+}
+
+/// `struct _xmlXPathObject`.
+#[repr(C)]
+pub struct XmlXPathObject {
+    pub type_: c_int,
+    pub nodesetval: *mut XmlNodeSet,
+    pub boolval: c_int,
+    pub floatval: f64,
+    pub stringval: *mut xmlChar,
+    pub user: *mut c_void,
+    pub index: c_int,
+    pub user2: *mut c_void,
+    pub index2: c_int,
+}
+
+pub type xmlXPathFunction = unsafe extern "C" fn(*mut xmlXPathParserContext, c_int);
+pub type xmlHashScanner = unsafe extern "C" fn(*mut c_void, *mut c_void, *const xmlChar);
+pub type xmlC14NIsVisibleCallback =
+    unsafe extern "C" fn(*mut c_void, *mut XmlNode, *mut XmlNode) -> c_int;
 
 /// `struct _xmlError`.
 #[repr(C)]
@@ -170,6 +379,323 @@ unsafe extern "C" {
 
     // tree
     pub fn xmlValidateName(value: *const xmlChar, space: c_int) -> c_int;
+    pub fn xmlValidateNCName(value: *const xmlChar, space: c_int) -> c_int;
+    pub fn xmlValidateQName(value: *const xmlChar, space: c_int) -> c_int;
+    pub fn xmlSplitQName2(name: *const xmlChar, prefix: *mut *mut xmlChar) -> *mut xmlChar;
+    pub fn xmlNewDoc(version: *const xmlChar) -> *mut XmlDoc;
+    pub fn xmlFreeDoc(doc: *mut XmlDoc);
+    pub fn xmlNewDocNode(
+        doc: *mut XmlDoc,
+        ns: *mut XmlNs,
+        name: *const xmlChar,
+        content: *const xmlChar,
+    ) -> *mut XmlNode;
+    pub fn xmlNewDocRawNode(
+        doc: *mut XmlDoc,
+        ns: *mut XmlNs,
+        name: *const xmlChar,
+        content: *const xmlChar,
+    ) -> *mut XmlNode;
+    pub fn xmlNewNode(ns: *mut XmlNs, name: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewDocText(doc: *const XmlDoc, content: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewDocTextLen(doc: *mut XmlDoc, content: *const xmlChar, len: c_int) -> *mut XmlNode;
+    pub fn xmlNewText(content: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewTextLen(content: *const xmlChar, len: c_int) -> *mut XmlNode;
+    pub fn xmlNewDocComment(doc: *mut XmlDoc, content: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewComment(content: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewCDataBlock(doc: *mut XmlDoc, content: *const xmlChar, len: c_int) -> *mut XmlNode;
+    pub fn xmlNewDocPI(
+        doc: *mut XmlDoc,
+        name: *const xmlChar,
+        content: *const xmlChar,
+    ) -> *mut XmlNode;
+    pub fn xmlNewPI(name: *const xmlChar, content: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewReference(doc: *const XmlDoc, name: *const xmlChar) -> *mut XmlNode;
+    pub fn xmlNewDocFragment(doc: *mut XmlDoc) -> *mut XmlNode;
+    pub fn xmlNewDocProp(
+        doc: *mut XmlDoc,
+        name: *const xmlChar,
+        value: *const xmlChar,
+    ) -> *mut XmlAttr;
+    pub fn xmlNewProp(
+        node: *mut XmlNode,
+        name: *const xmlChar,
+        value: *const xmlChar,
+    ) -> *mut XmlAttr;
+    pub fn xmlAddChildList(parent: *mut XmlNode, cur: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlNewNs(node: *mut XmlNode, href: *const xmlChar, prefix: *const xmlChar)
+        -> *mut XmlNs;
+    pub fn xmlFreeNs(ns: *mut XmlNs);
+    pub fn xmlFreeNode(node: *mut XmlNode);
+    pub fn xmlFreeNodeList(node: *mut XmlNode);
+    pub fn xmlFreeProp(attr: *mut XmlAttr);
+    pub fn xmlFreeDtd(dtd: *mut XmlDtd);
+    pub fn xmlUnlinkNode(node: *mut XmlNode);
+    pub fn xmlAddChild(parent: *mut XmlNode, cur: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlAddPrevSibling(cur: *mut XmlNode, elem: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlAddNextSibling(cur: *mut XmlNode, elem: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlReplaceNode(old: *mut XmlNode, cur: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlDocGetRootElement(doc: *const XmlDoc) -> *mut XmlNode;
+    pub fn xmlDocSetRootElement(doc: *mut XmlDoc, root: *mut XmlNode) -> *mut XmlNode;
+    pub fn xmlSetTreeDoc(tree: *mut XmlNode, doc: *mut XmlDoc);
+    pub fn xmlSearchNs(doc: *mut XmlDoc, node: *mut XmlNode, prefix: *const xmlChar) -> *mut XmlNs;
+    pub fn xmlSearchNsByHref(
+        doc: *mut XmlDoc,
+        node: *mut XmlNode,
+        href: *const xmlChar,
+    ) -> *mut XmlNs;
+    pub fn xmlGetNsList(doc: *const XmlDoc, node: *const XmlNode) -> *mut *mut XmlNs;
+    pub fn xmlReconciliateNs(doc: *mut XmlDoc, tree: *mut XmlNode) -> c_int;
+    pub fn xmlSetNs(node: *mut XmlNode, ns: *mut XmlNs);
+    pub fn xmlHasNsProp(
+        node: *const XmlNode,
+        name: *const xmlChar,
+        ns: *const xmlChar,
+    ) -> *mut XmlAttr;
+    pub fn xmlHasProp(node: *const XmlNode, name: *const xmlChar) -> *mut XmlAttr;
+    pub fn xmlSetProp(
+        node: *mut XmlNode,
+        name: *const xmlChar,
+        value: *const xmlChar,
+    ) -> *mut XmlAttr;
+    pub fn xmlSetNsProp(
+        node: *mut XmlNode,
+        ns: *mut XmlNs,
+        name: *const xmlChar,
+        value: *const xmlChar,
+    ) -> *mut XmlAttr;
+    pub fn xmlGetNsProp(
+        node: *const XmlNode,
+        name: *const xmlChar,
+        ns: *const xmlChar,
+    ) -> *mut xmlChar;
+    pub fn xmlGetNoNsProp(node: *const XmlNode, name: *const xmlChar) -> *mut xmlChar;
+    pub fn xmlNodeGetContent(node: *const XmlNode) -> *mut xmlChar;
+    pub fn xmlNodeSetContent(node: *mut XmlNode, content: *const xmlChar);
+    pub fn xmlNodeSetContentLen(node: *mut XmlNode, content: *const xmlChar, len: c_int);
+    pub fn xmlNodeAddContent(node: *mut XmlNode, content: *const xmlChar);
+    pub fn xmlNodeAddContentLen(node: *mut XmlNode, content: *const xmlChar, len: c_int);
+    pub fn xmlNodeListGetString(
+        doc: *mut XmlDoc,
+        list: *const XmlNode,
+        inline: c_int,
+    ) -> *mut xmlChar;
+    pub fn xmlNodeGetBase(doc: *const XmlDoc, node: *const XmlNode) -> *mut xmlChar;
+    pub fn xmlGetNodePath(node: *const XmlNode) -> *mut xmlChar;
+    pub fn xmlGetLineNo(node: *const XmlNode) -> c_long;
+    pub fn xmlDocCopyNode(node: *mut XmlNode, doc: *mut XmlDoc, extended: c_int) -> *mut XmlNode;
+    pub fn xmlCopyDtd(dtd: *mut XmlDtd) -> *mut XmlDtd;
+    pub fn xmlGetIntSubset(doc: *const XmlDoc) -> *mut XmlDtd;
+    pub fn xmlCreateIntSubset(
+        doc: *mut XmlDoc,
+        name: *const xmlChar,
+        external_id: *const xmlChar,
+        system_id: *const xmlChar,
+    ) -> *mut XmlDtd;
+    pub fn xmlTextConcat(node: *mut XmlNode, content: *const xmlChar, len: c_int) -> c_int;
+    pub fn xmlIsBlankNode(node: *const XmlNode) -> c_int;
+    pub fn xmlDOMWrapAdoptNode(
+        ctxt: *mut xmlDOMWrapCtxt,
+        source_doc: *mut XmlDoc,
+        node: *mut XmlNode,
+        dest_doc: *mut XmlDoc,
+        dest_parent: *mut XmlNode,
+        options: c_int,
+    ) -> c_int;
+    pub fn xmlGetID(doc: *mut XmlDoc, id: *const xmlChar) -> *mut XmlAttr;
+    pub fn xmlRemoveID(doc: *mut XmlDoc, attr: *mut XmlAttr) -> c_int;
+    pub fn xmlAddID(
+        ctxt: *mut xmlValidCtxt,
+        doc: *mut XmlDoc,
+        value: *const xmlChar,
+        attr: *mut XmlAttr,
+    ) -> *mut c_void;
+    pub fn xmlIsID(doc: *mut XmlDoc, elem: *mut XmlNode, attr: *mut XmlAttr) -> c_int;
+
+    // strings
+    pub fn xmlStrdup(s: *const xmlChar) -> *mut xmlChar;
+    pub fn xmlStrndup(s: *const xmlChar, len: c_int) -> *mut xmlChar;
+    pub fn xmlStrEqual(a: *const xmlChar, b: *const xmlChar) -> c_int;
+    pub fn xmlStrlen(s: *const xmlChar) -> c_int;
+    pub fn xmlUTF8Strlen(s: *const xmlChar) -> c_int;
+    pub fn xmlUTF8Strsize(s: *const xmlChar, len: c_int) -> c_int;
+    pub fn xmlUTF8Strpos(s: *const xmlChar, pos: c_int) -> *const xmlChar;
+    pub fn xmlUTF8Strsub(s: *const xmlChar, start: c_int, len: c_int) -> *mut xmlChar;
+    pub fn xmlUTF8Strndup(s: *const xmlChar, len: c_int) -> *mut xmlChar;
+    pub fn xmlStrcat(cur: *mut xmlChar, add: *const xmlChar) -> *mut xmlChar;
+
+    // dict and hash tables
+    pub fn xmlDictOwns(dict: *mut xmlDict, s: *const xmlChar) -> c_int;
+    pub fn xmlDictLookup(dict: *mut xmlDict, name: *const xmlChar, len: c_int) -> *const xmlChar;
+    pub fn xmlDictExists(dict: *mut xmlDict, name: *const xmlChar, len: c_int) -> *const xmlChar;
+    pub fn xmlDictReference(dict: *mut xmlDict) -> c_int;
+    pub fn xmlDictFree(dict: *mut xmlDict);
+    pub fn xmlHashLookup(table: *mut xmlHashTable, name: *const xmlChar) -> *mut c_void;
+    pub fn xmlHashSize(table: *mut xmlHashTable) -> c_int;
+    pub fn xmlHashScan(table: *mut xmlHashTable, f: xmlHashScanner, data: *mut c_void);
+    pub fn xmlHashRemoveEntry(
+        table: *mut xmlHashTable,
+        name: *const xmlChar,
+        dealloc: *mut c_void,
+    ) -> c_int;
+
+    // output
+    pub fn xmlAllocOutputBuffer(encoder: *mut xmlCharEncodingHandler) -> *mut xmlOutputBuffer;
+    pub fn xmlOutputBufferCreateFilename(
+        uri: *const c_char,
+        encoder: *mut xmlCharEncodingHandler,
+        compression: c_int,
+    ) -> *mut xmlOutputBuffer;
+    pub fn xmlOutputBufferCreateBuffer(
+        buffer: *mut xmlBuffer,
+        encoder: *mut xmlCharEncodingHandler,
+    ) -> *mut xmlOutputBuffer;
+    pub fn xmlOutputBufferFlush(out: *mut xmlOutputBuffer) -> c_int;
+    pub fn xmlOutputBufferGetContent(out: *mut xmlOutputBuffer) -> *const xmlChar;
+    pub fn xmlOutputBufferGetSize(out: *mut xmlOutputBuffer) -> usize;
+    pub fn xmlBufferCreate() -> *mut xmlBuffer;
+    pub fn xmlBufferFree(buf: *mut xmlBuffer);
+    pub fn xmlBufferContent(buf: *const xmlBuffer) -> *const xmlChar;
+    pub fn xmlBufferLength(buf: *const xmlBuffer) -> c_int;
+    pub fn xmlNodeDumpOutput(
+        buf: *mut xmlOutputBuffer,
+        doc: *mut XmlDoc,
+        cur: *mut XmlNode,
+        level: c_int,
+        format: c_int,
+        encoding: *const c_char,
+    );
+    pub fn xmlSaveToIO(
+        iowrite: Option<xmlOutputWriteCallback>,
+        ioclose: Option<xmlOutputCloseCallback>,
+        ioctx: *mut c_void,
+        encoding: *const c_char,
+        options: c_int,
+    ) -> *mut xmlSaveCtxt;
+    pub fn xmlSaveDoc(ctxt: *mut xmlSaveCtxt, doc: *mut XmlDoc) -> c_long;
+    pub fn xmlDocDumpMemory(doc: *mut XmlDoc, mem: *mut *mut xmlChar, size: *mut c_int);
+    pub fn xmlSaveClose(ctxt: *mut xmlSaveCtxt) -> c_int;
+    pub fn xmlSaveFormatFileEnc(
+        filename: *const c_char,
+        doc: *mut XmlDoc,
+        encoding: *const c_char,
+        format: c_int,
+    ) -> c_int;
+    pub fn xmlFindCharEncodingHandler(name: *const c_char) -> *mut xmlCharEncodingHandler;
+    pub fn xmlCharEncCloseFunc(handler: *mut xmlCharEncodingHandler) -> c_int;
+
+    // parsing documents
+    pub fn xmlCreateMemoryParserCtxt(buffer: *const c_char, size: c_int) -> Ctxt;
+    pub fn xmlCreateFileParserCtxt(filename: *const c_char) -> Ctxt;
+    pub fn xmlParseDocument(ctxt: Ctxt) -> c_int;
+    pub fn xmlSwitchToEncoding(ctxt: Ctxt, handler: *mut xmlCharEncodingHandler) -> c_int;
+    pub fn xmlCanonicPath(path: *const xmlChar) -> *mut xmlChar;
+    pub fn xmlParseBalancedChunkMemory(
+        doc: *mut XmlDoc,
+        sax: *mut c_void,
+        user_data: *mut c_void,
+        depth: c_int,
+        string: *const xmlChar,
+        lst: *mut *mut XmlNode,
+    ) -> c_int;
+    pub fn xmlInitParser();
+
+    // HTML
+    pub fn htmlCreateMemoryParserCtxt(buffer: *const c_char, size: c_int) -> Ctxt;
+    pub fn htmlCreateFileParserCtxt(filename: *const c_char, encoding: *const c_char) -> Ctxt;
+    pub fn htmlCtxtUseOptions(ctxt: Ctxt, options: c_int) -> c_int;
+    pub fn htmlParseDocument(ctxt: Ctxt) -> c_int;
+    pub fn htmlFreeParserCtxt(ctxt: Ctxt);
+    pub fn htmlDocDumpMemoryFormat(
+        doc: *mut XmlDoc,
+        mem: *mut *mut xmlChar,
+        size: *mut c_int,
+        format: c_int,
+    );
+    pub fn htmlNodeDumpFormatOutput(
+        buf: *mut xmlOutputBuffer,
+        doc: *mut XmlDoc,
+        cur: *mut XmlNode,
+        encoding: *const c_char,
+        format: c_int,
+    );
+    pub fn htmlSaveFileFormat(
+        filename: *const c_char,
+        doc: *mut XmlDoc,
+        encoding: *const c_char,
+        format: c_int,
+    ) -> c_int;
+    pub fn htmlGetMetaEncoding(doc: *mut XmlDoc) -> *const xmlChar;
+
+    // validation
+    pub fn xmlNewValidCtxt() -> *mut xmlValidCtxt;
+    pub fn xmlFreeValidCtxt(ctxt: *mut xmlValidCtxt);
+    pub fn xmlValidateDocument(ctxt: *mut xmlValidCtxt, doc: *mut XmlDoc) -> c_int;
+    pub fn xmlSchemaNewParserCtxt(url: *const c_char) -> *mut xmlSchemaParserCtxt;
+    pub fn xmlSchemaNewMemParserCtxt(
+        buffer: *const c_char,
+        size: c_int,
+    ) -> *mut xmlSchemaParserCtxt;
+    pub fn xmlSchemaParse(ctxt: *mut xmlSchemaParserCtxt) -> *mut xmlSchema;
+    pub fn xmlSchemaFreeParserCtxt(ctxt: *mut xmlSchemaParserCtxt);
+    pub fn xmlSchemaNewValidCtxt(schema: *mut xmlSchema) -> *mut xmlSchemaValidCtxt;
+    pub fn xmlSchemaSetValidOptions(ctxt: *mut xmlSchemaValidCtxt, options: c_int) -> c_int;
+    pub fn xmlSchemaValidateDoc(ctxt: *mut xmlSchemaValidCtxt, doc: *mut XmlDoc) -> c_int;
+    pub fn xmlSchemaFree(schema: *mut xmlSchema);
+    pub fn xmlSchemaFreeValidCtxt(ctxt: *mut xmlSchemaValidCtxt);
+    pub fn xmlRelaxNGNewParserCtxt(url: *const c_char) -> *mut xmlRelaxNGParserCtxt;
+    pub fn xmlRelaxNGNewMemParserCtxt(
+        buffer: *const c_char,
+        size: c_int,
+    ) -> *mut xmlRelaxNGParserCtxt;
+    pub fn xmlRelaxNGParse(ctxt: *mut xmlRelaxNGParserCtxt) -> *mut xmlRelaxNG;
+    pub fn xmlRelaxNGFreeParserCtxt(ctxt: *mut xmlRelaxNGParserCtxt);
+    pub fn xmlRelaxNGNewValidCtxt(schema: *mut xmlRelaxNG) -> *mut xmlRelaxNGValidCtxt;
+    pub fn xmlRelaxNGValidateDoc(ctxt: *mut xmlRelaxNGValidCtxt, doc: *mut XmlDoc) -> c_int;
+    pub fn xmlRelaxNGFree(schema: *mut xmlRelaxNG);
+    pub fn xmlRelaxNGFreeValidCtxt(ctxt: *mut xmlRelaxNGValidCtxt);
+    pub fn xmlXIncludeProcessFlags(doc: *mut XmlDoc, flags: c_int) -> c_int;
+    pub fn xmlC14NExecute(
+        doc: *mut XmlDoc,
+        is_visible: Option<xmlC14NIsVisibleCallback>,
+        user_data: *mut c_void,
+        mode: c_int,
+        inclusive_ns_prefixes: *mut *mut xmlChar,
+        with_comments: c_int,
+        buf: *mut xmlOutputBuffer,
+    ) -> c_int;
+    pub fn xmlC14NDocSaveTo(
+        doc: *mut XmlDoc,
+        nodes: *mut XmlNodeSet,
+        mode: c_int,
+        inclusive_ns_prefixes: *mut *mut xmlChar,
+        with_comments: c_int,
+        buf: *mut xmlOutputBuffer,
+    ) -> c_int;
+
+    // XPath
+    pub fn xmlXPathNewContext(doc: *mut XmlDoc) -> *mut xmlXPathContext;
+    pub fn xmlXPathFreeContext(ctxt: *mut xmlXPathContext);
+    pub fn xmlXPathRegisterNs(
+        ctxt: *mut xmlXPathContext,
+        prefix: *const xmlChar,
+        ns_uri: *const xmlChar,
+    ) -> c_int;
+    pub fn xmlXPathRegisterFuncNS(
+        ctxt: *mut xmlXPathContext,
+        name: *const xmlChar,
+        ns_uri: *const xmlChar,
+        f: Option<xmlXPathFunction>,
+    ) -> c_int;
+    pub fn xmlXPathEvalExpression(
+        s: *const xmlChar,
+        ctxt: *mut xmlXPathContext,
+    ) -> *mut XmlXPathObject;
+    pub fn xmlXPathFreeObject(obj: *mut XmlXPathObject);
+    pub fn xmlXPathNewString(s: *const xmlChar) -> *mut XmlXPathObject;
+    pub fn xmlXPathNewBoolean(v: c_int) -> *mut XmlXPathObject;
+    pub fn xmlXPathNewNodeSet(node: *mut XmlNode) -> *mut XmlXPathObject;
+    pub fn xmlXPathCastToString(obj: *mut XmlXPathObject) -> *mut xmlChar;
 
     // xmlwriter
     pub fn xmlNewTextWriter(out: *mut xmlOutputBuffer) -> *mut xmlTextWriter;
@@ -338,7 +864,68 @@ unsafe extern "C" {
     ) -> *mut xmlParserInput;
     pub fn rhp_xml_output_hook_failed(encoder: *mut xmlCharEncodingHandler);
     pub fn rhp_xml_free(ptr: *mut c_void);
+    pub fn rhp_xml_malloc(size: usize) -> *mut c_void;
     pub fn rhp_xml_uri_scheme(uri: *mut xmlURI) -> *const c_char;
+    pub fn rhp_xml_uri_opaque(uri: *mut xmlURI) -> *const c_char;
+
+    pub static rhp_xml_tree_layout: [usize; 64];
+    pub fn rhp_xml_free_entity(entity: *mut XmlEntity);
+    pub fn rhp_xml_set_save_no_empty_tags(v: c_int) -> c_int;
+    pub fn rhp_xml_sanitize_globals(saved: *mut c_int);
+    pub fn rhp_xml_restore_globals(saved: *const c_int);
+    pub fn rhp_xml_output_buffer_error(out: *mut xmlOutputBuffer) -> c_int;
+    pub fn rhp_xml_valid_ctxt_use_php_errors(ctxt: *mut xmlValidCtxt);
+    pub fn rhp_xml_schema_parser_use_php_errors(ctxt: *mut xmlSchemaParserCtxt);
+    pub fn rhp_xml_schema_valid_use_php_errors(ctxt: *mut xmlSchemaValidCtxt);
+    pub fn rhp_xml_relaxng_parser_use_php_errors(ctxt: *mut xmlRelaxNGParserCtxt);
+    pub fn rhp_xml_relaxng_valid_use_php_errors(ctxt: *mut xmlRelaxNGValidCtxt);
+    pub fn rhp_xml_ctxt_directory(ctxt: Ctxt) -> *const c_char;
+    pub fn rhp_xml_ctxt_set_directory(ctxt: Ctxt, dir: *mut c_char);
+    pub fn rhp_xml_ctxt_well_formed(ctxt: Ctxt) -> c_int;
+    pub fn rhp_xml_ctxt_take_doc(ctxt: Ctxt) -> *mut XmlDoc;
+    pub fn rhp_xml_xpath_node(ctxt: *mut xmlXPathContext) -> *mut XmlNode;
+    pub fn rhp_xml_xpath_set_node(ctxt: *mut xmlXPathContext, node: *mut XmlNode);
+    pub fn rhp_xml_xpath_doc(ctxt: *mut xmlXPathContext) -> *mut XmlDoc;
+    pub fn rhp_xml_xpath_namespaces(ctxt: *mut xmlXPathContext, nr: *mut c_int) -> *mut *mut XmlNs;
+    pub fn rhp_xml_xpath_set_namespaces(
+        ctxt: *mut xmlXPathContext,
+        list: *mut *mut XmlNs,
+        nr: c_int,
+    );
+    pub fn rhp_xml_xpath_user_data(ctxt: *mut xmlXPathContext) -> *mut c_void;
+    pub fn rhp_xml_xpath_set_user_data(ctxt: *mut xmlXPathContext, data: *mut c_void);
+    pub fn rhp_xml_xpath_parser_context(ctxt: *mut xmlXPathParserContext) -> *mut xmlXPathContext;
+    pub fn rhp_xml_xpath_function(
+        ctxt: *mut xmlXPathContext,
+        uri: *mut *const xmlChar,
+    ) -> *const xmlChar;
+    pub fn rhp_xml_xpath_value_pop(ctxt: *mut xmlXPathParserContext) -> *mut XmlXPathObject;
+    pub fn rhp_xml_xpath_value_push(ctxt: *mut xmlXPathParserContext, obj: *mut XmlXPathObject);
+    pub fn rhp_xml_generic_error_msg(msg: *const c_char);
+    pub fn rhp_xml_attribute_decl_default(attr: *mut c_void) -> *const xmlChar;
+}
+
+/// libxml2's `xmlFree` (a global function pointer, hence the shim).
+///
+/// # Safety
+/// `p` was allocated by libxml2 (or is NULL).
+pub unsafe fn xml_free<T>(p: *mut T) {
+    if !p.is_null() {
+        unsafe { rhp_xml_free(p.cast()) }
+    }
+}
+
+/// Bytes of a libxml2-allocated string, which is then freed.
+///
+/// # Safety
+/// `p` is NULL or a NUL-terminated string allocated by libxml2.
+pub unsafe fn take_string(p: *mut xmlChar) -> Option<Vec<u8>> {
+    if p.is_null() {
+        return None;
+    }
+    let v = unsafe { cstr(p) }.to_vec();
+    unsafe { rhp_xml_free(p.cast()) };
+    Some(v)
 }
 
 /// The bytes of a NUL-terminated C string (empty for NULL).
@@ -388,6 +975,78 @@ mod tests {
             offset_of!(XmlErrorRaw, node),
         ];
         assert_eq!(c, rust);
+    }
+
+    #[test]
+    fn tree_mirrors_match_the_headers() {
+        let c = unsafe { rhp_xml_tree_layout };
+        let rust: Vec<usize> = vec![
+            size_of::<XmlNode>(),
+            offset_of!(XmlNode, _private),
+            offset_of!(XmlNode, type_),
+            offset_of!(XmlNode, name),
+            offset_of!(XmlNode, children),
+            offset_of!(XmlNode, last),
+            offset_of!(XmlNode, parent),
+            offset_of!(XmlNode, next),
+            offset_of!(XmlNode, prev),
+            offset_of!(XmlNode, doc),
+            offset_of!(XmlNode, ns),
+            offset_of!(XmlNode, content),
+            offset_of!(XmlNode, properties),
+            offset_of!(XmlNode, nsDef),
+            offset_of!(XmlNode, psvi),
+            offset_of!(XmlNode, line),
+            offset_of!(XmlNode, extra),
+            offset_of!(XmlAttr, next),
+            offset_of!(XmlAttr, doc),
+            offset_of!(XmlAttr, ns),
+            offset_of!(XmlAttr, atype),
+            offset_of!(XmlAttr, psvi),
+            size_of::<XmlNs>(),
+            offset_of!(XmlNs, next),
+            offset_of!(XmlNs, type_),
+            offset_of!(XmlNs, href),
+            offset_of!(XmlNs, prefix),
+            offset_of!(XmlNs, _private),
+            offset_of!(XmlNs, context),
+            size_of::<XmlDoc>(),
+            offset_of!(XmlDoc, compression),
+            offset_of!(XmlDoc, standalone),
+            offset_of!(XmlDoc, intSubset),
+            offset_of!(XmlDoc, extSubset),
+            offset_of!(XmlDoc, oldNs),
+            offset_of!(XmlDoc, version),
+            offset_of!(XmlDoc, encoding),
+            offset_of!(XmlDoc, ids),
+            offset_of!(XmlDoc, URL),
+            offset_of!(XmlDoc, dict),
+            offset_of!(XmlDoc, parseFlags),
+            offset_of!(XmlDoc, properties),
+            size_of::<XmlDtd>(),
+            offset_of!(XmlDtd, notations),
+            offset_of!(XmlDtd, entities),
+            offset_of!(XmlDtd, ExternalID),
+            offset_of!(XmlDtd, SystemID),
+            offset_of!(XmlDtd, pentities),
+            offset_of!(XmlEntity, orig),
+            offset_of!(XmlEntity, content),
+            offset_of!(XmlEntity, length),
+            offset_of!(XmlEntity, etype),
+            offset_of!(XmlEntity, ExternalID),
+            offset_of!(XmlEntity, SystemID),
+            offset_of!(XmlEntity, URI),
+            size_of::<XmlNotation>(),
+            size_of::<XmlNodeSet>(),
+            offset_of!(XmlNodeSet, nodeTab),
+            size_of::<XmlXPathObject>(),
+            offset_of!(XmlXPathObject, nodesetval),
+            offset_of!(XmlXPathObject, boolval),
+            offset_of!(XmlXPathObject, floatval),
+            offset_of!(XmlXPathObject, stringval),
+            offset_of!(XmlXPathObject, index2),
+        ];
+        assert_eq!(c.to_vec(), rust);
     }
 
     /// This test binary is linked straight from the crate, not through the

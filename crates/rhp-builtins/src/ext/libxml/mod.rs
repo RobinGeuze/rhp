@@ -5,13 +5,14 @@
 //! once-per-process and once-per-thread libxml2 setup.
 //!
 //! [`sys`] declares the libxml2 calls, [`ffi`] is how C callbacks reach the
-//! VM. ext/xml and ext/xmlwriter run on libxml2. DOM, SimpleXML and XMLReader
+//! VM, [`node`] is php's ownership of libxml2 trees. ext/xml and ext/xmlwriter run on libxml2. DOM, SimpleXML and XMLReader
 //! still run on the hand-written parser and tree below (`parser`, `tree`,
 //! `xpath`, `xsd`, `charset`) and report into the same error store.
 
 pub mod charset;
 pub mod ffi;
 pub mod io;
+pub(crate) mod node;
 pub mod parser;
 pub mod sys;
 pub mod tree;
@@ -125,6 +126,24 @@ pub fn reset_state() {
     });
     thread_init();
     crate::ext::xml::reset_state();
+}
+
+/// php_libxml_issue_error's internal-errors half: record `msg` as an
+/// XML_ERR_INTERNAL_ERROR when internal errors are on; false otherwise.
+pub fn push_internal_error(msg: &str) -> bool {
+    STATE.with(|s| match s.borrow_mut().error_list.as_mut() {
+        Some(l) => {
+            l.push(plain_error(
+                sys::XML_ERR_ERROR,
+                sys::XML_ERR_INTERNAL_ERROR,
+                0,
+                0,
+                msg.to_string(),
+            ));
+            true
+        }
+        None => false,
+    })
 }
 
 /// php_libxml_uses_internal_errors

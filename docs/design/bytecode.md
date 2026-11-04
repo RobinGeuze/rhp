@@ -802,7 +802,7 @@ unaffected); 5–10 build the VM path and wire the runner.
    one explicit terminator per basic block. Never bury an opcode's semantics in
    the loop such that a helper can't be extracted — the JIT calls the same
    `ops::`/`NativeFn` on cold paths.
-10. **The goldens are the regression net.** Every `tests/golden/*.out` is php's
+10. **The goldens are the regression net.** Every `tests/golden/**/*.out` is php's
     own output, and the VM is held to all of them without needing the `php`
     binary (§6), so a VM regression fails CI even where no php is installed.
     Keep every golden green, and add a fixture alongside each fix.

@@ -300,7 +300,7 @@ Key design rules this encodes:
 ### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
 
 The harness in `crates/rhp-cli/tests/diff.rs` holds the VM strictly to
-committed `.out` files captured from the reference php, over `tests/golden/*.php`. Make
+committed `.out` files captured from the reference php, over `tests/golden/**/*.php`. Make
 the native backend subordinate to it:
 
 1. **Same fixtures, both backends.** Golden `.out`s are captured from php once.

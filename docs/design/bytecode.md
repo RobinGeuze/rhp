@@ -625,9 +625,10 @@ Whatever can start a frame records its unit beside its proto: the function
 and closure tables and the class initializer thunks hold a `UnitFn`, a
 `ResolvedMethod` has `unit` (a trait method keeps the trait's), and so do
 declaration slots and `ClassEntry`s. Nested thunks (parameter defaults,
-attribute arguments) run in their owner's unit. Function statics are keyed
-by (proto, unit, class, name), so a file included twice keeps two sets, as
-two compiles would.
+attribute arguments) run in their owner's unit; for a trait's property or
+constant that is the trait's. Function statics are keyed by (proto, unit,
+class, name), so a file included twice keeps two sets, as two compiles
+would.
 
 `run_frames` takes the running frame's proto (an `Rc` clone) only when a
 call or a return changes the top frame, not per instruction.

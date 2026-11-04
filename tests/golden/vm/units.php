@@ -23,6 +23,9 @@ class UsesMaker
     use Maker;
 }
 echo ((new UsesMaker)->make())(), " ", UsesMaker::$label, "\n";
+$a = (new ReflectionProperty('UsesMaker', 'tagged'))->getAttributes()[0]->newInstance();
+$b = (new ReflectionClassConstant('UsesMaker', 'TAGGED'))->getAttributes()[0]->newInstance();
+echo ($a->make)(), ", ", ($b->make)(), "\n";
 
 // One file, included three times: each include is a unit of its own.
 $rows = [];
@@ -48,3 +51,4 @@ for ($i = 0; $i < 3; $i++) {
     echo $c(), $c(), ' ';
 }
 echo "\n";
+

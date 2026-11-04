@@ -31,6 +31,10 @@ class Consts
 trait Maker
 {
     public static $label = PHP_EOL === "\n" ? 'trait static' : '?';
+    #[Tag(static function () { return 'trait property attribute'; })]
+    public $tagged = 1;
+    #[Tag(static function () { return 'trait constant attribute'; })]
+    const TAGGED = 1;
 
     public function make()
     {

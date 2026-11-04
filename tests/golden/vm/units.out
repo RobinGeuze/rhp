@@ -6,6 +6,7 @@ constant thunk
 nested class 12
 main closure main arrow
 trait closure trait static
+trait property attribute, trait constant attribute
 1,2,1
 1,2,1
 1,2,1

@@ -742,18 +742,20 @@ impl Vm {
     }
 
     /// Find the compiled declaration of property `name` of class `cid`
-    /// (searching its traits for a trait-imported one).
-    fn find_prop_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, bool)> {
+    /// (searching its traits for a trait-imported one). The last field is
+    /// the class or trait that declares it.
+    fn find_prop_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, bool, ClassId)> {
         let p = &self.classes[cid as usize].proto;
         if let Some(pp) = p.props.iter().find(|pp| pp.name.as_bytes() == name) {
             return Some((
                 pp.meta.clone(),
                 pp.promoted,
                 !matches!(pp.default, rhp_bytecode::PropDefaultProto::None),
+                cid,
             ));
         }
         if let Some(sp) = p.static_props.iter().find(|sp| sp.name.as_bytes() == name) {
-            return Some((sp.meta.clone(), false, sp.has_default));
+            return Some((sp.meta.clone(), false, sp.has_default, cid));
         }
         for &t in &self.classes[cid as usize].traits {
             if let Some(r) = self.find_prop_meta(t, name) {
@@ -763,13 +765,14 @@ impl Vm {
         None
     }
 
-    fn find_const_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool)> {
+    /// [`Vm::find_prop_meta`] for a class constant or enum case.
+    fn find_const_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, ClassId)> {
         let p = &self.classes[cid as usize].proto;
         if let Some(c) = p.constants.iter().find(|c| c.name.as_bytes() == name) {
-            return Some((c.meta.clone(), c.is_final));
+            return Some((c.meta.clone(), c.is_final, cid));
         }
         if let Some(c) = p.enum_cases.iter().find(|c| c.name.as_bytes() == name) {
-            return Some((c.meta.clone(), false));
+            return Some((c.meta.clone(), false, cid));
         }
         for &t in &self.classes[cid as usize].traits {
             if let Some(r) = self.find_const_meta(t, name) {
@@ -818,7 +821,7 @@ impl Vm {
         if vis == Visibility::Private && decl != cid {
             return Value::Null;
         }
-        let (meta, promoted, has_default_decl) =
+        let (meta, promoted, has_default_decl, _) =
             self.find_prop_meta(decl, name).unwrap_or_default();
         let internal = self.is_internal_class(decl);
         let mut a = PhpArray::new();
@@ -925,7 +928,7 @@ impl Vm {
             .get(name)
             .map(|c| c.value.clone())
             .unwrap_or(Value::Null);
-        let (meta, is_final) = self.find_const_meta(decl, name).unwrap_or_default();
+        let (meta, is_final, _) = self.find_const_meta(decl, name).unwrap_or_default();
         let is_case = self.classes[decl as usize]
             .proto
             .enum_cases
@@ -1014,7 +1017,7 @@ impl Vm {
                     let uninit = sp.ty.is_some()
                         && !self
                             .find_prop_meta(sp.declaring_class, name.as_bytes())
-                            .is_some_and(|(_, _, has)| has);
+                            .is_some_and(|(_, _, has, _)| has);
                     if uninit && !vars {
                         continue;
                     }
@@ -1106,13 +1109,16 @@ impl Vm {
             b"prop" | b"const" => {
                 let cid = self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(&k[1]))?;
                 let name = rhp_values::conv::to_string_bytes(&k[2]);
+                // A trait member's thunks run in the trait's unit.
                 let meta = if kind == b"prop" {
-                    self.find_prop_meta(cid, &name).map(|m| m.0)
+                    self.find_prop_meta(cid, &name).map(|m| (m.0, m.3))
                 } else {
-                    self.find_const_meta(cid, &name).map(|m| m.0)
+                    self.find_const_meta(cid, &name).map(|m| (m.0, m.2))
                 };
-                meta.and_then(|m| m.attributes.get(idx_of(&k[3])).cloned())
-                    .map(|a| (a, Some(cid), self.classes[cid as usize].unit))
+                meta.and_then(|(m, owner)| {
+                    let a = m.attributes.get(idx_of(&k[3])).cloned()?;
+                    Some((a, Some(cid), self.classes[owner as usize].unit))
+                })
             }
             b"fn" | b"param" => {
                 let sub = self.fn_subject(&k[1])?;

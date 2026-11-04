@@ -10,8 +10,8 @@
 //!
 //! The "linked" section holds the versions of the libraries rhp links
 //! itself. It must match any php 8.5 on the same machine (Homebrew's on the
-//! mac, setup-php's on CI): rhp has to link what php links. The ICU rows are
-//! left out when that php has no intl under `-n`.
+//! mac, setup-php's on CI): rhp has to link what php links. The ICU and
+//! OpenSSL rows are left out when that php has no intl or openssl under `-n`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -149,6 +149,15 @@ fn rhp_links_what_php_links() {
         );
         linked_ours.retain(|l| !l.starts_with("INTL_"));
         linked_theirs.retain(|l| !l.starts_with("INTL_"));
+    }
+    // Likewise a php without openssl prints no OpenSSL row.
+    let openssl = "phpinfo[OpenSSL Library Version]";
+    if !linked_theirs.iter().any(|l| l.starts_with(openssl)) {
+        eprintln!(
+            "{} -n has no openssl: OpenSSL version not compared",
+            php.display()
+        );
+        linked_ours.retain(|l| !l.starts_with(openssl));
     }
     assert_eq!(
         linked_ours,

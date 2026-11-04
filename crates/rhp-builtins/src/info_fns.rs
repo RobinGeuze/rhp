@@ -237,6 +237,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_core_ini(&mut o);
             } else if *e == "pcre" {
                 print_pcre(&mut o);
+            } else if *e == "openssl" {
+                print_openssl(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -313,6 +315,24 @@ fn print_pcre(o: &mut Info) {
                 String::from_utf8_lossy(&v).into_owned()
             }
         };
+        o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// PHP_MINFO_FUNCTION(openssl), then its ini entries.
+fn print_openssl(o: &mut Info) {
+    for (k, v) in crate::ext::openssl::info_rows() {
+        o.row(&[k, &v]);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in ["openssl.cafile", "openssl.capath", "openssl.libctx"] {
+        let show = |v: Option<Vec<u8>>| match v {
+            Some(v) => String::from_utf8_lossy(&v).into_owned(),
+            None => "no value".to_string(),
+        };
+        let local = crate::runtime_fns::ini_value(name.as_bytes()).flatten();
+        let master = crate::runtime_fns::ini_default_value(name.as_bytes()).flatten();
         o.row(&[name, &show(local), &show(master)]);
     }
 }

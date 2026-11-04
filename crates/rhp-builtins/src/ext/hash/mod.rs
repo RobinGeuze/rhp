@@ -19,7 +19,7 @@ use digest::Digest;
 use rhp_values::{conv, Value};
 
 mod haval;
-mod primitives;
+pub(crate) mod primitives;
 mod snefru;
 mod tiger;
 

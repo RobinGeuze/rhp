@@ -159,8 +159,8 @@ thread_local! {
 struct StartupDiags {
     /// Raised while the `-d` values were applied (module startup): the
     /// directive's INI_TABLE position (php applies them in registration
-    /// order), its name, the message.
-    startup: Vec<(usize, String, String)>,
+    /// order), its name, the level (E_WARNING or E_ERROR), the message.
+    startup: Vec<(usize, String, i64, String)>,
     /// Directives whose accepted startup value warned: php's handler warns
     /// again each time it restores that value.
     restore: HashMap<String, Vec<String>>,
@@ -331,11 +331,12 @@ fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
     (warnings, true)
 }
 
-/// The warnings raised while applying the startup (`-d`) ini values, once.
-pub fn take_startup_diagnostics() -> Vec<String> {
+/// The diagnostics raised while applying the startup (`-d`) ini values,
+/// once: (level, message).
+pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
     let mut diags = STARTUP_DIAGS.with(|d| std::mem::take(&mut d.borrow_mut().startup));
     diags.sort_by_key(|d| d.0);
-    diags.into_iter().map(|d| d.2).collect()
+    diags.into_iter().map(|d| (d.2, d.3)).collect()
 }
 
 /// The warnings raised at request end when startup values are restored
@@ -426,8 +427,18 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     let key = String::from_utf8_lossy(name).into_owned();
+    let mut level = crate::E_WARNING;
     let (warnings, stored) = if name == b"date.timezone" && !tz_valid(v) {
         (vec![invalid_timezone(v, "PHP Startup")], None)
+    } else if name == b"openssl.libctx" && !matches!(v, b"default" | b"custom") {
+        // OnUpdateLibCtx: an E_ERROR at startup, and the entry keeps
+        // "custom". (PHP_INI_PERDIR: ini_set can't reach the handler.)
+        level = 1;
+        let msg = format!(
+            "PHP Startup: OpenSSL libctx \"{}\" cannot be found",
+            String::from_utf8_lossy(v)
+        );
+        (vec![msg], None)
     } else if let Some(w) = crate::opcache_fns::startup_check(name, v) {
         crate::opcache_fns::accel_log(name, crate::opcache_fns::LOG_WARNING, w);
         (Vec::new(), None)
@@ -447,7 +458,7 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             d.restore.remove(&key);
         }
         d.startup
-            .extend(warnings.into_iter().map(|w| (pos, key.clone(), w)));
+            .extend(warnings.into_iter().map(|w| (pos, key.clone(), level, w)));
     });
     let Some(v) = stored else {
         INI.with(|m| m.borrow_mut().remove(&key));

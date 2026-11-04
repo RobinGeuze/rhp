@@ -1,0 +1,13 @@
+# openssl-sys links OpenSSL statically from the install php links; rhp-builtins'
+# build script checks that it did (docs/design/libraries.md). On macOS
+# openssl-sys finds Homebrew's openssl@4 itself. On Linux it would ask
+# pkg-config, which links a library under /usr dynamically, so it gets the
+# directories of Debian/Ubuntu's libssl-dev. Variables set in the environment
+# win over these.
+[env]
+OPENSSL_STATIC = "1"
+OPENSSL_NO_VENDOR = "1"
+X86_64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR = "/usr/lib/x86_64-linux-gnu"
+X86_64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR = "/usr/include"
+AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR = "/usr/lib/aarch64-linux-gnu"
+AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR = "/usr/include"

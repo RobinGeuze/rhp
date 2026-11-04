@@ -4,6 +4,7 @@ mod native;
 fn main() {
     println!("cargo:rerun-if-changed=build/native.rs");
     let linked = native::link_all();
+    native::check_openssl();
     let include = |name: &str| {
         linked
             .iter()

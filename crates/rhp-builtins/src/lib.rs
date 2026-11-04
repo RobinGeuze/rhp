@@ -137,6 +137,7 @@ pub fn object_freed(id: u32) {
     ext::sockets::object_freed();
     ext::xml::object_freed(id);
     ext::xmlwriter::object_freed(id);
+    ext::openssl::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and
@@ -150,6 +151,9 @@ pub fn is_opaque_handle_class(name: &[u8]) -> bool {
         b"CurlMultiHandle",
         b"CurlShareHandle",
         b"XMLParser",
+        b"OpenSSLCertificate",
+        b"OpenSSLCertificateSigningRequest",
+        b"OpenSSLAsymmetricKey",
     ]
     .iter()
     .any(|n| n.eq_ignore_ascii_case(name))

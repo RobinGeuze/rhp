@@ -38,10 +38,14 @@ pub mod zlib;
 pub mod zpp;
 
 /// Objects of the extension classes that install
-/// `zend_objects_not_comparable` (curl handles, `Socket`): the predicate
-/// behind [`rhp_semantics::ops::set_not_comparable_hook`].
+/// `zend_objects_not_comparable` (curl handles, `Socket`, the OpenSSL
+/// objects): the predicate behind
+/// [`rhp_semantics::ops::set_not_comparable_hook`].
 pub(crate) fn not_comparable_object(h: &rhp_values::ObjectHandle) -> bool {
-    curl::is_curl_object(h) || sockets::is_socket_object(h) || xml::is_parser_object(h)
+    curl::is_curl_object(h)
+        || sockets::is_socket_object(h)
+        || xml::is_parser_object(h)
+        || openssl::is_openssl_object(h)
 }
 
 /// Every discrete extension, in registration order.

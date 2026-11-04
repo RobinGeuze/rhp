@@ -23,7 +23,9 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `PCRE_VERSION` comes from `pcre2_config()`, `PCRE_VERSION_MAJOR`/`MINOR`
   from pcre2.h; `LIBXML_VERSION`/`LIBXML_DOTTED_VERSION` from xmlversion.h
   and `LIBXML_LOADED_VERSION` from `xmlParserVersion`; `INTL_ICU_VERSION`/
-  `INTL_ICU_DATA_VERSION` from ICU's uvernum.h. `version.rs` keeps
+  `INTL_ICU_DATA_VERSION` from ICU's uvernum.h;
+  `OPENSSL_VERSION_TEXT`/`NUMBER` from opensslv.h and phpinfo's "OpenSSL
+  Library Version" from `OpenSSL_version()`. `version.rs` keeps
   hard-coded values only for libraries rhp does not link yet; each goes when
   its library is linked.
 
@@ -32,7 +34,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, libxml2 on Linux; later gmp, openssl@4, curl |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libxml2 on Linux; later gmp, curl |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -61,6 +63,7 @@ Today rhp-builtins links:
 | PCRE2 (libpcre2-8) | static, Homebrew pcre2 | static, libpcre2-dev (CI: php's release, see below) |
 | libxml2 | dynamic, the SDK's /usr/lib/libxml2.2.dylib (php's; found with `xcrun --show-sdk-path`) | static, libxml2-dev (CI: php's release, see below) |
 | ICU (libicui18n, libicuuc, libicudata) | static, Homebrew icu4c@79 (keg-only; php's formula) | static, libicu-dev (CI: 78.2, the release php links) |
+| OpenSSL (libcrypto, libssl) | static, Homebrew openssl@4 | static, libssl-dev |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
@@ -82,6 +85,24 @@ its bundled zlib when it finds no system zlib, a silent fallback.
 rhp-csrc's code is the same on every machine, so it needs no row in
 `native.rs` or the native-deps action, only a C compiler (and `nm` for its
 test).
+
+**OpenSSL goes through openssl-sys**, for its declarations (no bindgen, no
+`vendored` feature); `ext/openssl/sys.rs` declares what it lacks. openssl-sys
+links OpenSSL itself, so its settings live in the repo's `.cargo/config.toml`:
+`OPENSSL_STATIC=1`, and on Linux the directories of Debian/Ubuntu's
+libssl-dev (`<TARGET>_OPENSSL_LIB_DIR`, `_INCLUDE_DIR`), because through
+pkg-config it would link a library under /usr dynamically. On macOS it
+finds Homebrew's openssl@4 on its own. `native::check_openssl` then fails the
+build unless openssl-sys used the headers of the OpenSSL php links (Homebrew's
+openssl@4, pkg-config's libcrypto), their version matches the .pc file, and
+both static archives are there. `OPENSSL_STATIC=0` links dynamically, for an
+experiment.
+
+php reports `OPENSSL_VERSION_TEXT` from the headers it was compiled against.
+A Homebrew bottle built before an openssl@4 update reports the older headers
+(php 8.5.12_1: 4.0.3, while the library and the headers rhp builds against
+are 4.1.0), so tests do not compare the header constants; the "linked" check
+compares the library version.
 
 **Never a silent fallback.** A missing library or static archive is a build
 error that says what to install. rhp does not use -sys crates that quietly
@@ -120,14 +141,15 @@ ICU off). A release with no recorded checksum fails the job; add its
 checksum.
 The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
-`otool -L target/release/rhp` (or `ldd`) shows no libpcre2 or libicu (and
-on Linux no libxml2); `nm` shows the `pcre2_*` symbols. rhp-builtins'
-`pcre2_is_linked_statically`, `libxml2_is_linked_statically` and
-`icu_is_linked_statically` tests check its own test binary, which is linked
-straight from the crate. The helper drops the library itself from a static
-link's `Libs.private`: a second, dynamic `-l` for it would override the
-static one. It also drops the ones that have rows of their own (ICU's
-libicuuc and libicudata), which those rows link statically.
+`otool -L target/release/rhp` (or `ldd`) shows no libpcre2, libicu, libssl
+or libcrypto (and on Linux no libxml2); `nm` shows the `pcre2_*` symbols.
+rhp-builtins' `pcre2_is_linked_statically`, `libxml2_is_linked_statically`,
+`icu_is_linked_statically` and `openssl_is_linked_statically` tests check its
+own test binary, which is linked straight from the crate. The helper drops
+the library itself from a static link's `Libs.private`: a second, dynamic
+`-l` for it would override the static one. It also drops the ones that have
+rows of their own (ICU's libicuuc and libicudata), which those rows link
+statically.
 
 ## Compiled from source: rhp-csrc
 
@@ -216,7 +238,11 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     pushes its `Host` on a thread-local stack;
   - every `extern "C"` callback runs its body in `ffi::guard`, which catches
     a panic (it must not unwind into C), stops the C operation and resumes
-    the panic after the C call returns;
+    the panic after the C call returns. OpenSSL calls its callbacks
+    (passphrase, name lists) without a host: ext/openssl's own `guard`
+    keeps the panic and `with_callbacks` resumes it once the C call
+    returns. A callback whose body only calls C (OpenSSL's free shims,
+    `d2i`) needs no guard;
   - a callback reaches PHP through `ffi::call_host`. What PHP throws is
     stashed and rethrown by `with_host` once the C call returns: php
     longjmps out of the library, rhp cannot. An exception leaves the C
@@ -235,6 +261,17 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     (`rhp_builtins::object_dtor`), which the engine runs with a host before
     `__destruct`, as php does. The object-free hook has no host; it frees
     only what php's `dtor_obj` would have skipped.
+- **OpenSSL's library context.** php 8.5 runs ext/openssl in its own
+  `OSSL_LIB_CTX` (`openssl.libctx=custom`, the default): one per thread
+  (module globals under ZTS), loaded with `CONF_modules_load_file_ex` from
+  the default openssl.cnf, and passed to the `*_ex` calls and fetches. rhp
+  does the same with raw FFI: a thread-local context created on first use
+  and freed with the thread, and `openssl.libctx=default` selects OpenSSL's
+  global one. The two differ only when openssl.cnf activates providers; the
+  calls php makes without a context (`EVP_PKEY_CTX_new`, `X509_REQ_new`,
+  phar's signature check) stay without one. Errors stay per thread: OpenSSL
+  keeps its queue in thread-local storage, and php's 16-entry ring
+  (`openssl_error_string`) is a thread-local too.
 - **Guard aborts.** A C library that can abort the process (libgmp on huge
   sizes) needs size checks first: with one VM per thread, an abort kills
   every request.

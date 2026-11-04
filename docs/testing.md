@@ -78,9 +78,10 @@ ones are listed in the phpt README). Once rhp optimizes, add a developer
 `--dump-bytecode` and per-pass snapshot tests modelled on php-src's
 `ext/opcache/tests/opt`.
 
-**ASan**: CI's `asan` job builds rhp with AddressSanitizer (nightly
-`-Zsanitizer=address`) and runs `tests/asan/*.php` and the php-src tests
-in `tests/asan/phpts.txt`, the code that frees libxml2 trees. Add a
+**ASan**: CI's `asan` job builds rhp with AddressSanitizer
+(`-Zsanitizer=address` on a dated nightly pinned in ci.yml) and runs
+`tests/asan/*.php` and the php-src tests in `tests/asan/phpts.txt`, the
+code that frees libxml2 trees. Bump the nightly on purpose. Add a
 script or a test there when you change how DOM, SimpleXML or XMLReader
 own nodes.
 

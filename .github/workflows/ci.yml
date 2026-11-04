@@ -183,7 +183,11 @@ jobs:
         with:
           php-version: '8.5'
       - uses: ./.github/actions/native-deps
-      - uses: dtolnay/rust-toolchain@nightly
+      # A dated nightly, bumped on purpose: a broken nightly does not turn
+      # every PR red, and the cache keeps the instrumented build.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-15
       - uses: Swatinem/rust-cache@v2
         with:
           key: asan

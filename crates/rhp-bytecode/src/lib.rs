@@ -33,6 +33,33 @@ pub enum CmpKind {
     Spaceship,
 }
 
+/// What php's compiler decides about a call by name (`Call`, `CallV`) that
+/// reaches a builtin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallFlags(u8);
+
+impl CallFlags {
+    /// php compiles the call to an opcode of its own
+    /// (zend_try_compile_special_func: `strlen`, the `is_*` checks, `count`,
+    /// …): it never shows in a trace, and a callback it runs is called from
+    /// the caller's line.
+    pub const INLINE: CallFlags = CallFlags(1);
+    /// A php 8.4 frameless internal call (ZEND_FRAMELESS_ICALL_n): the
+    /// builtin gets no frame of its own, so what it runs sees its caller's.
+    pub const ICALL: CallFlags = CallFlags(2);
+    /// `call_user_func()` / `call_user_func_array()` compiled to a user call
+    /// (ZEND_INIT_USER_CALL): the callback sees the caller's `strict_types`.
+    pub const USER_CALL: CallFlags = CallFlags(4);
+
+    pub const fn contains(self, other: CallFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn insert(&mut self, other: CallFlags) {
+        self.0 |= other.0;
+    }
+}
+
 /// One bytecode instruction. `Copy`, fixed-width, one variant per opcode.
 #[derive(Clone, Copy, Debug)]
 pub enum Instr {
@@ -352,13 +379,15 @@ pub enum Instr {
     /// builtin is called with `regs[base..base+argc]`.
     /// `fallback` is a second name to try if `name` misses (`NO_NAME` if none):
     /// an unqualified call inside a namespace resolves `Ns\name` first, then the
-    /// global `name` (PHP's fall-back-to-global rule).
+    /// global `name` (PHP's fall-back-to-global rule). `flags` apply when the
+    /// call reaches a builtin.
     Call {
         dst: Reg,
         name: NIdx,
         base: Reg,
         argc: u16,
         fallback: NIdx,
+        flags: CallFlags,
     },
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
     /// (used when a call site contains argument spread `...$x`).
@@ -367,6 +396,7 @@ pub enum Instr {
         name: NIdx,
         args: Reg,
         fallback: NIdx,
+        flags: CallFlags,
     },
     /// Dynamic call `$f(args)`: `callee` holds a closure / string name / callable
     /// array / `__invoke` object; call it with `regs[base..base+argc]`.

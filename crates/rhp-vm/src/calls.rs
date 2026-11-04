@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use rhp_builtins::object::CastTarget;
 use rhp_builtins::{self as builtins, Host};
-use rhp_bytecode::{ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
+use rhp_bytecode::{CallFlags, ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
 };
@@ -413,20 +413,6 @@ impl Vm {
         let (argv, named) = self.split_call_args(&arr)?;
         let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
         self.push_method_frame(&m, this, called, argv, dst)
-    }
-
-    /// php compiles a statically resolved `call_user_func()` /
-    /// `call_user_func_array()` into a direct user call (ZEND_INIT_USER_CALL),
-    /// so the callee sees the caller's `strict_types` and the call site; a
-    /// namespaced unqualified call (runtime resolution) stays an internal call.
-    pub(crate) fn mark_user_call_builtin(&mut self, fname: &[u8], fallback: NIdx) {
-        self.cuf_caller = None;
-        if fallback == rhp_bytecode::NO_NAME
-            && (fname.eq_ignore_ascii_case(b"call_user_func")
-                || fname.eq_ignore_ascii_case(b"call_user_func_array"))
-        {
-            self.cuf_caller = Some(self.caller_strict());
-        }
     }
 
     /// The strict-types mode of the current caller (top of stack), for argument
@@ -1904,6 +1890,7 @@ impl Vm {
     }
 
     /// `CallV`: call function `name` with the packed arguments array in `args`.
+    #[allow(clippy::too_many_arguments)] // the instruction's operands
     pub(crate) fn call_v(
         &mut self,
         top: usize,
@@ -1912,6 +1899,7 @@ impl Vm {
         name: NIdx,
         args: Reg,
         fallback: NIdx,
+        flags: CallFlags,
     ) -> Result<(), Thrown> {
         let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
         let Ok(user) = Self::engine_helper_call(proto, user, &fname) else {
@@ -1948,7 +1936,9 @@ impl Vm {
             if builtins::lookup(&name_str).is_none() {
                 return Err(undefined_function(&proto.names[name as usize]));
             }
-            self.mark_user_call_builtin(&fname, fallback);
+            self.cuf_caller = flags
+                .contains(CallFlags::USER_CALL)
+                .then(|| self.caller_strict());
             let out = self.invoke_builtin(&name_str, argv);
             self.cuf_caller = None;
             let out = out?;
@@ -2069,37 +2059,6 @@ pub(crate) fn native_method_count_error(
         st.max_args(),
         passed,
     )
-}
-
-/// Calls php compiles to dedicated opcodes instead of a function call
-/// (zend_try_compile_special_func): they never appear as a trace frame, and a
-/// callback they invoke is called from the caller's own line.
-pub(crate) fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
-    match lcname {
-        b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
-        | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
-        | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval" | b"doubleval"
-        | b"strval" | b"gettype" | b"count" | b"sizeof" => argc == 1,
-        b"get_class" => argc <= 1,
-        b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
-        b"array_key_exists" | b"call_user_func_array" => argc == 2,
-        b"call_user_func" => argc >= 1,
-        _ => false,
-    }
-}
-
-/// php 8.4's frameless internal calls (ZEND_FRAMELESS_FUNCTION, by arity):
-/// they get no execute_data, so what they run sees their caller's frame.
-pub(crate) fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
-    match lcname {
-        b"dechex" | b"is_numeric" => argc == 1,
-        b"class_exists" | b"dirname" | b"implode" | b"trim" => argc == 1 || argc == 2,
-        b"in_array" | b"strpos" | b"strstr" | b"strtr" | b"substr" => argc == 2 || argc == 3,
-        b"max" | b"min" | b"preg_match" | b"property_exists" | b"str_contains"
-        | b"str_starts_with" => argc == 2,
-        b"preg_replace" | b"str_replace" => argc == 3,
-        _ => false,
-    }
 }
 
 /// The method name of `$o->$m()` / `C::$m()`: php requires a string.

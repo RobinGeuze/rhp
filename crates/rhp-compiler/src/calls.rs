@@ -1,6 +1,6 @@
 //! Calls: function, method and static calls, argument passing and by-reference parameters.
 
-use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
+use rhp_bytecode::{CallFlags, ClassRef, Instr, NIdx, Reg};
 use rhp_frontend::cst::{Access, Argument, Expression, Identifier, Variable};
 use rhp_values::{Thrown, Value};
 
@@ -64,6 +64,7 @@ impl ProtoBuilder<'_> {
         // args into an array, emit CallV (the VM places named arguments).
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
+            let flags = user_call_flag(&name_bytes, fallback.as_deref());
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
@@ -72,6 +73,7 @@ impl ProtoBuilder<'_> {
                 name,
                 args,
                 fallback: fb,
+                flags,
             });
             return Ok(dst);
         }
@@ -268,6 +270,7 @@ impl ProtoBuilder<'_> {
                 ArgSlot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
             }
         }
+        let flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
         let name = self.intern_name(&name_bytes);
         let fb = self.intern_fallback(&fallback);
         let dst = self.alloc_temp();
@@ -277,6 +280,7 @@ impl ProtoBuilder<'_> {
             base,
             argc,
             fallback: fb,
+            flags,
         });
         Ok(dst)
     }
@@ -798,6 +802,34 @@ fn builtin_by_ref(cx: &FileCtx, name_lc: &[u8], argc: usize) -> Option<Vec<bool>
     Some((0..argc.max(f.params.len())).map(|i| f.by_ref(i)).collect())
 }
 
+/// What php's compiler decides about a call to `name` (as resolved) with
+/// `argc` positional arguments. `fallback` is the global name an unqualified
+/// call in a namespace falls back to; a builtin is only ever reached by its
+/// global name.
+fn call_flags(name: &[u8], fallback: Option<&[u8]>, argc: usize) -> CallFlags {
+    let global = fallback.unwrap_or(name).to_ascii_lowercase();
+    let mut flags = user_call_flag(name, fallback);
+    // Only for a name php resolves at compile time.
+    if fallback.is_none() && compiled_inline(&global, argc) {
+        flags.insert(CallFlags::INLINE);
+    }
+    if frameless_icall(&global, argc) {
+        flags.insert(CallFlags::ICALL);
+    }
+    flags
+}
+
+/// [`CallFlags::USER_CALL`] for a call to `name`.
+fn user_call_flag(name: &[u8], fallback: Option<&[u8]>) -> CallFlags {
+    let cuf = name.eq_ignore_ascii_case(b"call_user_func")
+        || name.eq_ignore_ascii_case(b"call_user_func_array");
+    if fallback.is_none() && cuf {
+        CallFlags::USER_CALL
+    } else {
+        CallFlags::default()
+    }
+}
+
 pub(crate) fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
@@ -858,6 +890,37 @@ fn variable_rooted_lvalue(e: &Expression) -> bool {
         Expression::Access(Access::StaticProperty(_)) => true,
         Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
         Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
+        _ => false,
+    }
+}
+
+/// Calls php compiles to dedicated opcodes instead of a function call
+/// (zend_try_compile_special_func): they never appear as a trace frame, and a
+/// callback they invoke is called from the caller's own line.
+pub(crate) fn compiled_inline(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+        | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+        | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval" | b"doubleval"
+        | b"strval" | b"gettype" | b"count" | b"sizeof" => argc == 1,
+        b"get_class" => argc <= 1,
+        b"get_called_class" | b"func_num_args" | b"func_get_args" => argc == 0,
+        b"array_key_exists" | b"call_user_func_array" => argc == 2,
+        b"call_user_func" => argc >= 1,
+        _ => false,
+    }
+}
+
+/// php 8.4's frameless internal calls (ZEND_FRAMELESS_FUNCTION, by arity):
+/// they get no execute_data, so what they run sees their caller's frame.
+pub(crate) fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
+    match lcname {
+        b"dechex" | b"is_numeric" => argc == 1,
+        b"class_exists" | b"dirname" | b"implode" | b"trim" => argc == 1 || argc == 2,
+        b"in_array" | b"strpos" | b"strstr" | b"strtr" | b"substr" => argc == 2 || argc == 3,
+        b"max" | b"min" | b"preg_match" | b"property_exists" | b"str_contains"
+        | b"str_starts_with" => argc == 2,
+        b"preg_replace" | b"str_replace" => argc == 3,
         _ => false,
     }
 }

@@ -7,13 +7,11 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_builtins::object::{CastTarget, Op};
-use rhp_bytecode::{ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
+use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
-use crate::calls::{
-    compiled_inline, dyn_method_name, frameless_icall, param_is_ref, undefined_function,
-};
+use crate::calls::{dyn_method_name, param_is_ref, undefined_function};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
@@ -489,6 +487,7 @@ impl Vm {
                     base,
                     argc,
                     fallback,
+                    flags,
                 } => {
                     let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
                     let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
@@ -510,14 +509,12 @@ impl Vm {
                         let Some(builtin) = builtins::lookup_lc(lc) else {
                             return Err(undefined_function(&proto.names[name as usize]));
                         };
-                        // php compiles a few calls to dedicated opcodes (no call
-                        // frame): only when resolvable at compile time, i.e. not an
-                        // unqualified call inside a namespace.
-                        let frameless = fallback == rhp_bytecode::NO_NAME
-                            && compiled_inline(&fname, argc as usize);
-                        let icall = frameless_icall(&fname, argc as usize);
-                        self.mark_user_call_builtin(&fname, fallback);
-                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless, icall);
+                        let inline = flags.contains(CallFlags::INLINE);
+                        let icall = flags.contains(CallFlags::ICALL);
+                        self.cuf_caller = flags
+                            .contains(CallFlags::USER_CALL)
+                            .then(|| self.caller_strict());
+                        let out = self.call_builtin(top, lc, builtin, base, argc, inline, icall);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);
@@ -1403,7 +1400,8 @@ impl Vm {
                     name,
                     args,
                     fallback,
-                } => self.call_v(top, &proto, dst, name, args, fallback)?,
+                    flags,
+                } => self.call_v(top, &proto, dst, name, args, fallback, flags)?,
                 Instr::NewV { dst, class, args } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);

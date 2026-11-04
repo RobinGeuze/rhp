@@ -107,9 +107,18 @@ impl Vm {
     }
 
     pub(crate) fn run_frames(&mut self) -> Result<Value, Thrown> {
+        // The running frame and its proto, taken again only when an
+        // instruction pushed or popped a frame (a call, a return): within
+        // one instruction the top frame changes only that way, since
+        // nested runs leave the stack as they found it.
+        let mut top = self.stack.len() - 1;
+        let mut proto = self.stack[top].proto.clone();
         loop {
-            let top = self.stack.len() - 1;
-            let proto = self.stack[top].proto.clone();
+            if self.stack.len() != top + 1 {
+                top = self.stack.len() - 1;
+                proto = self.stack[top].proto.clone();
+            }
+            debug_assert!(Rc::ptr_eq(&proto, &self.stack[top].proto));
             let pc = self.stack[top].pc;
             if self.mem.attention() {
                 self.oom_tick(top, pc)?;
@@ -930,7 +939,6 @@ impl Vm {
                 }
                 Instr::FinallyEnd => {
                     let pc = self.stack[top].pc as u32 - 1;
-                    let proto = self.stack[top].proto.clone();
                     let fin = proto
                         .exception_table
                         .iter()
@@ -966,7 +974,6 @@ impl Vm {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     let pc = self.stack[top].pc as u32 - 1;
-                    let proto = self.stack[top].proto.clone();
                     self.drop_left_finallies(top, &proto, pc);
                     if let Some(f) = enclosing_finally(&proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
@@ -974,7 +981,6 @@ impl Vm {
                 }
                 Instr::JmpFinally { target } => {
                     let pc = self.stack[top].pc as u32 - 1;
-                    let proto = self.stack[top].proto.clone();
                     self.drop_left_finallies(top, &proto, pc);
                     self.jump_through_finally(top, &proto, pc, target);
                 }

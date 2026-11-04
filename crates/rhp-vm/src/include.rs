@@ -473,7 +473,7 @@ impl Vm {
                 proto: proto.clone(),
                 unit,
             });
-            self.fn_names.insert(lc, idx);
+            self.add_fn_name(lc, idx);
         }
         // classes: a name already in use is not early-bound; redeclaring it is
         // fatal only when its declaration statement runs (`DeclareClass`).

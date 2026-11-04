@@ -71,6 +71,11 @@ pub struct Vm {
     units: Vec<UnitBase>,
     functions: Vec<UnitFn>,
     fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
+    /// Bumped by every function declaration (see [`Vm::add_fn_name`]).
+    fn_gen: u32,
+    /// Call sites by name already resolved, keyed by (proto address, pc):
+    /// php's run-time cache slots. See [`Vm::call_target`].
+    call_sites: rustc_hash::FxHashMap<(usize, u32), calls::CallSite>,
     /// Every unit's closure protos (and conditional functions), indexed by
     /// `ClosureData::fnidx`: a unit's `MakeClosure`/`DeclareFunc` operand
     /// plus its [`UnitBase::closures`].

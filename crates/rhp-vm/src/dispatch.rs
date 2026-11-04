@@ -11,7 +11,7 @@ use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc,
 use rhp_semantics::{cast_to_array, inc_dec_value, ops};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
-use crate::calls::{dyn_method_name, param_is_ref, undefined_function};
+use crate::calls::{dyn_method_name, param_is_ref, undefined_function, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
@@ -488,38 +488,27 @@ impl Vm {
                     argc,
                     fallback,
                     flags,
-                } => {
-                    let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-                    let Ok(user) = Self::engine_helper_call(&proto, user, &fname) else {
-                        return Err(undefined_function(&proto.names[name as usize]));
-                    };
-                    if let Some(reason) =
-                        builtins::is_refused(std::str::from_utf8(&fname).unwrap_or(""))
-                    {
-                        let shown = String::from_utf8_lossy(&fname).into_owned();
-                        return Err(Thrown::unsupported(format!("{shown}()"), reason));
-                    }
-                    if let Some(fnidx) = user {
+                } => match self.call_target(top, &proto, pc, name, fallback)? {
+                    CallTarget::User(i) => {
                         // User function: push a frame (args bound to its CVs).
-                        let callee = self.functions[fnidx].clone();
+                        let callee = self.functions[i].clone();
                         self.enter_user_call(top, callee, dst, base, argc)?;
-                    } else {
-                        // Builtin (`fname` is already lowercase).
-                        let lc = std::str::from_utf8(&fname).unwrap_or("");
-                        let Some(builtin) = builtins::lookup_lc(lc) else {
-                            return Err(undefined_function(&proto.names[name as usize]));
-                        };
+                    }
+                    CallTarget::Builtin(builtin, sig) => {
                         let inline = flags.contains(CallFlags::INLINE);
                         let icall = flags.contains(CallFlags::ICALL);
                         self.cuf_caller = flags
                             .contains(CallFlags::USER_CALL)
                             .then(|| self.caller_strict());
-                        let out = self.call_builtin(top, lc, builtin, base, argc, inline, icall);
+                        let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);
                     }
-                }
+                    CallTarget::Missing => {
+                        return Err(undefined_function(&proto.names[name as usize]));
+                    }
+                },
 
                 Instr::MakeClosure {
                     dst,
@@ -1372,7 +1361,7 @@ impl Vm {
                     }
                     let i = self.functions.len();
                     self.functions.push(f);
-                    self.fn_names.insert(lc, i);
+                    self.add_fn_name(lc, i);
                 }
 
                 Instr::BindRef { dst_cv, src_cv } => {
@@ -1401,7 +1390,10 @@ impl Vm {
                     args,
                     fallback,
                     flags,
-                } => self.call_v(top, &proto, dst, name, args, fallback, flags)?,
+                } => {
+                    let target = self.call_target(top, &proto, pc, name, fallback)?;
+                    self.call_v(top, dst, args, target, flags, &proto.names[name as usize])?;
+                }
                 Instr::NewV { dst, class, args } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let entry = self.class(cls);

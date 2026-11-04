@@ -1,7 +1,7 @@
 //! Calls: user frames and returns, argument binding, methods, callables and
 //! builtins.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use rhp_builtins::object::CastTarget;
 use rhp_builtins::{self as builtins, Host};
@@ -35,6 +35,30 @@ pub(crate) enum Callee {
     EnumStatic(ClassId, Vec<u8>),
 }
 
+/// What a call by name (`Call`, `CallV`) runs.
+#[derive(Clone, Copy)]
+pub(crate) enum CallTarget {
+    /// `Vm::functions[i]`.
+    User(usize),
+    Builtin(
+        &'static builtins::Builtin,
+        Option<&'static builtins::signatures::Func>,
+    ),
+    /// No function by that name: the call fails as undefined.
+    Missing,
+}
+
+/// A call site's resolution (see [`Vm::call_target`]).
+pub(crate) struct CallSite {
+    target: CallTarget,
+    /// The [`Vm::fn_gen`] it was resolved at, or 0 when no later function
+    /// declaration can change it.
+    gen: u32,
+    /// Holds the proto's allocation, so that no other proto takes its
+    /// address (half the key) while the entry exists.
+    _proto: Weak<FunctionProto>,
+}
+
 /// A builtin (native) call in progress, for exception traces: php shows the
 /// internal function as its own trace frame, called from `caller`'s line, and
 /// any user callback it invokes as `[internal function]`.
@@ -64,31 +88,93 @@ impl Vm {
         }
     }
 
-    /// Resolve a (possibly namespaced) function reference. Tries the primary
-    /// `name`, then `fallback` (the global name) if set, against user functions;
-    /// returns the user-function index if found, plus the lowercased name to use
-    /// for a builtin dispatch / refusal check (the last candidate tried, which is
-    /// the global name inside a namespace since builtins are not namespaced).
-    pub(crate) fn resolve_fn(
-        &self,
+    /// What the call by name at `pc` of `proto`, run by frame `top`, calls.
+    /// A call site keeps what it resolved to for the request (php's run-time
+    /// cache slot), unless a later function declaration could change it: a
+    /// call in a namespace that fell back to the global name, or a call that
+    /// reached a builtin (rhp lets a later declaration take a builtin's
+    /// name). An include's or eval's `{main}` is freed when it returns, so
+    /// its calls are resolved every time.
+    pub(crate) fn call_target(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        pc: usize,
         name: NIdx,
         fallback: NIdx,
-        names: &[PhpStr],
-    ) -> (Option<usize>, Vec<u8>) {
-        let p = names[name as usize].as_bytes().to_ascii_lowercase();
-        if let Some(&i) = self.fn_names.get(&p) {
-            return (Some(i), p);
+    ) -> Result<CallTarget, Thrown> {
+        if self.stack[top].include_kind.is_some() {
+            return Ok(self.resolve_call(proto, name, fallback)?.0);
         }
-        if fallback != rhp_bytecode::NO_NAME {
-            let f = names[fallback as usize].as_bytes().to_ascii_lowercase();
-            let idx = self.fn_names.get(&f).copied();
-            return (idx, f);
+        let key = (Rc::as_ptr(proto) as usize, pc as u32);
+        if let Some(site) = self.call_sites.get(&key) {
+            if site.gen == 0 || site.gen == self.fn_gen {
+                return Ok(site.target);
+            }
         }
-        (None, p)
+        let (target, stable) = self.resolve_call(proto, name, fallback)?;
+        if !matches!(target, CallTarget::Missing) {
+            let site = CallSite {
+                target,
+                gen: if stable { 0 } else { self.fn_gen },
+                _proto: Rc::downgrade(proto),
+            };
+            // Not counted: php allocates an op_array's run-time cache in one
+            // piece, so memory_get_usage() doesn't move when a call site is
+            // first reached.
+            rhp_values::mem::uncounted(|| self.call_sites.insert(key, site));
+        }
+        Ok(target)
+    }
+
+    /// [`Vm::call_target`] without the cache. Tries the (possibly
+    /// namespaced) `name`, then `fallback` (the global name) if set, against
+    /// user functions; a builtin is looked up under the last name tried.
+    /// The flag: the target is final for the request (a user function found
+    /// under `name` itself).
+    fn resolve_call(
+        &self,
+        proto: &FunctionProto,
+        name: NIdx,
+        fallback: NIdx,
+    ) -> Result<(CallTarget, bool), Thrown> {
+        let names = &proto.names;
+        let primary = names[name as usize].as_bytes().to_ascii_lowercase();
+        let (user, fname, own) = match self.fn_names.get(&primary) {
+            Some(&i) => (Some(i), primary, true),
+            None if fallback != rhp_bytecode::NO_NAME => {
+                let global = names[fallback as usize].as_bytes().to_ascii_lowercase();
+                (self.fn_names.get(&global).copied(), global, false)
+            }
+            None => (None, primary, false),
+        };
+        let Ok(user) = Self::engine_helper_call(proto, user, &fname) else {
+            return Err(undefined_function(&names[name as usize]));
+        };
+        if let Some(reason) = builtins::is_refused(std::str::from_utf8(&fname).unwrap_or("")) {
+            let shown = String::from_utf8_lossy(&fname).into_owned();
+            return Err(Thrown::unsupported(format!("{shown}()"), reason));
+        }
+        if let Some(i) = user {
+            return Ok((CallTarget::User(i), own));
+        }
+        let target = match builtins::lookup_lc(std::str::from_utf8(&fname).unwrap_or("")) {
+            Some(b) => CallTarget::Builtin(b, builtins::signatures::function(&fname)),
+            None => CallTarget::Missing,
+        };
+        Ok((target, false))
+    }
+
+    /// Name user function `idx` in php's function table. Call sites that
+    /// the new name can change are resolved again (see
+    /// [`Vm::call_target`]).
+    pub(crate) fn add_fn_name(&mut self, lc: Vec<u8>, idx: usize) {
+        self.fn_names.insert(lc, idx);
+        self.fn_gen = self.fn_gen.wrapping_add(1).max(1);
     }
 
     /// The user function a direct call from `caller` to `name` (resolved by
-    /// [`Vm::resolve_fn`] to `user`) runs, `None` for a builtin, or `Err`
+    /// [`Vm::resolve_call`] to `user`) runs, `None` for a builtin, or `Err`
     /// when the call must fail as undefined. `__`-prefixed builtins are
     /// engine helpers behind the prelude classes: prelude code always gets
     /// the builtin (a user function of that name doesn't shadow it), user
@@ -1577,8 +1663,8 @@ impl Vm {
     pub(crate) fn call_builtin(
         &mut self,
         top: usize,
-        name_lc: &str,
         builtin: &'static builtins::Builtin,
+        sig: Option<&'static builtins::signatures::Func>,
         base: Reg,
         argc: u16,
         frameless: bool,
@@ -1588,7 +1674,6 @@ impl Vm {
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
         use builtins::signatures::Signature;
-        let sig = builtins::signatures::function(name_lc.as_bytes());
         let args: Vec<Value> = (0..argc)
             .map(|i| {
                 if sig.is_some_and(|s| s.by_ref(i as usize)) {
@@ -1889,60 +1974,53 @@ impl Vm {
         Ok(())
     }
 
-    /// `CallV`: call function `name` with the packed arguments array in `args`.
-    #[allow(clippy::too_many_arguments)] // the instruction's operands
+    /// `CallV`: call `target` (the function `name` resolved to) with the
+    /// packed arguments array in `args`.
     pub(crate) fn call_v(
         &mut self,
         top: usize,
-        proto: &FunctionProto,
         dst: Reg,
-        name: NIdx,
         args: Reg,
-        fallback: NIdx,
+        target: CallTarget,
         flags: CallFlags,
+        name: &PhpStr,
     ) -> Result<(), Thrown> {
-        let (user, fname) = self.resolve_fn(name, fallback, &proto.names);
-        let Ok(user) = Self::engine_helper_call(proto, user, &fname) else {
-            return Err(undefined_function(&proto.names[name as usize]));
-        };
-        if let Some(reason) = builtins::is_refused(std::str::from_utf8(&fname).unwrap_or("")) {
-            let shown = String::from_utf8_lossy(&fname).into_owned();
-            return Err(Thrown::unsupported(format!("{shown}()"), reason));
-        }
         let arr = self.reg_get(top, args);
         let (argv, named) = self.split_call_args(&arr)?;
-        if let Some(fnidx) = user {
-            let callee = self.functions[fnidx].clone();
-            let argv = self.place_named_args(&callee.proto, None, argv, named)?;
-            self.push_user_frame(callee, argv, dst)?;
-        } else if !named.is_empty() {
-            // `call_user_func($f, ...named)` forwards them.
-            if fname.eq_ignore_ascii_case(b"call_user_func") && !argv.is_empty() {
-                let out = self.call_named(
-                    &argv[0],
-                    argv[1..].to_vec(),
-                    named,
-                    Some(self.caller_strict()),
-                )?;
+        match target {
+            CallTarget::User(i) => {
+                let callee = self.functions[i].clone();
+                let argv = self.place_named_args(&callee.proto, None, argv, named)?;
+                self.push_user_frame(callee, argv, dst)?;
+            }
+            _ if !named.is_empty() => {
+                // `call_user_func($f, ...named)` forwards them.
+                let cuf = matches!(target, CallTarget::Builtin(b, _) if b.name == "call_user_func");
+                if cuf && !argv.is_empty() {
+                    let out = self.call_named(
+                        &argv[0],
+                        argv[1..].to_vec(),
+                        named,
+                        Some(self.caller_strict()),
+                    )?;
+                    self.reg_set(top, dst, out);
+                } else {
+                    return Err(Thrown::unsupported(
+                        "named arguments to a builtin function",
+                        "deferred",
+                    ));
+                }
+            }
+            CallTarget::Builtin(builtin, sig) => {
+                self.cuf_caller = flags
+                    .contains(CallFlags::USER_CALL)
+                    .then(|| self.caller_strict());
+                let out = self.run_builtin_sig(builtin, sig, argv, false, false);
+                self.cuf_caller = None;
+                let out = out?;
                 self.reg_set(top, dst, out);
-            } else {
-                return Err(Thrown::unsupported(
-                    "named arguments to a builtin function",
-                    "deferred",
-                ));
             }
-        } else {
-            let name_str = String::from_utf8_lossy(&fname).into_owned();
-            if builtins::lookup(&name_str).is_none() {
-                return Err(undefined_function(&proto.names[name as usize]));
-            }
-            self.cuf_caller = flags
-                .contains(CallFlags::USER_CALL)
-                .then(|| self.caller_strict());
-            let out = self.invoke_builtin(&name_str, argv);
-            self.cuf_caller = None;
-            let out = out?;
-            self.reg_set(top, dst, out);
+            CallTarget::Missing => return Err(undefined_function(name)),
         }
         Ok(())
     }

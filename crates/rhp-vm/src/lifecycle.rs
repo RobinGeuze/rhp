@@ -49,6 +49,8 @@ impl Vm {
             units: Vec::new(),
             functions: Vec::new(),
             fn_names: HashMap::new(),
+            fn_gen: 1,
+            call_sites: Default::default(),
             closures: Vec::new(),
             decl_classes: Vec::new(),
             decl_runtime: std::collections::HashSet::new(),
@@ -617,8 +619,7 @@ impl Vm {
                 proto: proto.clone(),
                 unit: 0,
             });
-            self.fn_names
-                .insert(proto.name.as_bytes().to_ascii_lowercase(), idx);
+            self.add_fn_name(proto.name.as_bytes().to_ascii_lowercase(), idx);
         }
         // The main script is unit 0: register its anonymous closure /
         // arrow-function protos (indexed by fnidx).

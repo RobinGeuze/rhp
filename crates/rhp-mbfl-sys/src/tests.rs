@@ -128,6 +128,9 @@ fn conversion_case_and_cut() {
         encodings::utf16be().cut(b"\x00a\x00b", 1, 2),
         Some(b"\x00a".to_vec())
     );
+    // A cut at the end must not see the byte after the slice (bug49354).
+    let whole = b"D\xc3\xbc\xbc";
+    assert_eq!(encodings::utf8().cut(&whole[..3], 3, 100), Some(Vec::new()));
     assert_eq!(
         strcut("日本語".as_bytes(), encodings::utf8(), 1, 4),
         Some("日".as_bytes().to_vec())

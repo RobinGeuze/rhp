@@ -212,9 +212,12 @@ global allocator, so C allocations count against `memory_limit` as php's
 do. php 8.5's libmbfl grows its buffers with the fallible
 `safe_ferealloc`: past the limit it fails, the conversion stops, and the
 error waits for the VM's next check, as php delays it. The shim's version
-does the same (`rhp_values::mem::reserve_realloc`). Strings come back to
-Rust as copies, so a conversion briefly holds its result twice, where php
-holds it once.
+does the same (`rhp_values::mem::reserve_realloc`). emalloc blocks are
+allocated byte-aligned (the system allocator still returns them
+malloc-aligned; a block that isn't is allocated again 16-aligned), so a
+string the C returns becomes a Rust `Vec<u8>` in place
+(`rhp_csrc::emalloc_into_vec`), and mbstring reads its string arguments
+without copying them: a call holds its data once, as in php.
 
 ## Licences
 

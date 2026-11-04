@@ -12,6 +12,7 @@
 //! variants php's answer can depend on it, and rhp takes the path php
 //! takes for an unflagged string).
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -136,9 +137,25 @@ fn empty_error(fname: &str, i: usize) -> Thrown {
     value_error(fname, i, "must not be empty")
 }
 
+/// A string argument: the caller's string, shared rather than copied, as
+/// php's functions read their zend_string in place.
+#[derive(Default)]
+struct StrArg(PhpStr);
+
+impl std::ops::Deref for StrArg {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
 /// `Z_PARAM_STR`.
-fn str_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result<Vec<u8>, Thrown> {
-    zpp::str_arg(host, args, i, fname, pname(fname, i))
+fn str_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result<StrArg, Thrown> {
+    match args.get(i).map(deref) {
+        Some(Value::Str(s)) => Ok(StrArg(s)),
+        _ => zpp::str_arg(host, args, i, fname, pname(fname, i))
+            .map(|b| StrArg(PhpStr::from_bytes(b))),
+    }
 }
 
 /// `Z_PARAM_STR_OR_NULL`.
@@ -1191,31 +1208,26 @@ fn fn_mb_substr_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         return Err(empty_error(f, 1));
     }
     let enc = get_encoding(host, enc_name.as_deref(), 2, f)?;
-    let (h, n);
-    let (h, n): (&[u8], &[u8]) = if is_utf8(enc) {
+    let (h, n): (Cow<[u8]>, Cow<[u8]>) = if is_utf8(enc) {
         // php skips the conversion for strings it knows are valid UTF-8,
         // which converting leaves unchanged.
-        let raw = |s: &[u8]| enc == encodings::utf8() && std::str::from_utf8(s).is_ok();
-        h = if raw(&haystack) {
-            haystack.clone()
-        } else {
-            to_utf8_marked(&haystack, enc)
-        };
-        n = if raw(&needle) {
-            needle.clone()
-        } else {
-            to_utf8_marked(&needle, enc)
-        };
-        (&h, &n)
+        fn utf8(s: &[u8], enc: Enc) -> Cow<'_, [u8]> {
+            if enc == encodings::utf8() && std::str::from_utf8(s).is_ok() {
+                Cow::Borrowed(s)
+            } else {
+                Cow::Owned(to_utf8_marked(s, enc))
+            }
+        }
+        (utf8(&haystack, enc), utf8(&needle, enc))
     } else {
-        h = to_utf8_marked(&haystack, enc);
-        n = to_utf8_marked(&needle, enc);
+        let n = to_utf8_marked(&needle, enc);
         // Bytes that decode to nothing (escape sequences only).
         if n.is_empty() {
             return Err(empty_error(f, 1));
         }
-        (&h, &n)
+        (Cow::Owned(to_utf8_marked(&haystack, enc)), Cow::Owned(n))
     };
+    let (h, n) = (&h[..], &n[..]);
     let mut count = 0i64;
     if h.len() >= n.len() {
         let mut p = 0;
@@ -1339,12 +1351,13 @@ fn fn_mb_strwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 /// `mb_trim_string`: `input` from character `from`, cut to `width`
 /// columns with `marker` appended when it doesn't fit.
 fn trim_string(
-    input: &[u8],
-    marker: &[u8],
+    input_arg: &StrArg,
+    marker_arg: &StrArg,
     enc: Enc,
     mut from: usize,
     mut width: usize,
-) -> Vec<u8> {
+) -> Value {
+    let (input, marker): (&[u8], &[u8]) = (input_arg, marker_arg);
     let (mode, subst) = illegal_settings();
     let mut wchar = [0u32; 128];
     let mut rest = input;
@@ -1367,7 +1380,7 @@ fn trim_string(
                 if remaining_width < cw {
                     let marker_width = get_strwidth(marker, enc);
                     if width <= marker_width {
-                        return marker.to_vec();
+                        return Value::Str(marker_arg.0.clone());
                     }
                     width -= marker_width;
                     cut = Some((!first_call, ConvertBuf::new(width, subst, mode)));
@@ -1383,12 +1396,12 @@ fn trim_string(
         // It fits; bad byte sequences still become error markers.
         if !input_err {
             return if from == 0 {
-                input.to_vec()
+                Value::Str(input_arg.0.clone())
             } else {
-                get_substr(input, from, UNTIL_END, enc)
+                Value::str(get_substr(input, from, UNTIL_END, enc))
             };
         }
-        return get_substr_slow(input, from, UNTIL_END, enc);
+        return Value::str(get_substr_slow(input, from, UNTIL_END, enc));
     };
     if restart {
         rest = input;
@@ -1417,10 +1430,10 @@ fn trim_string(
         out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
     }
     if !marker.is_empty() && !buf.append(marker) {
-        return buf.result(enc);
+        return Value::str(buf.result(enc));
     }
     // Not marked as valid UTF-8: the marker may not be.
-    buf.result_raw()
+    Value::str(buf.result_raw())
 }
 
 /// `mb_strimwidth(string $string, int $start, int $width, string $trim_marker = "", ?string $encoding = null)`.
@@ -1432,7 +1445,7 @@ fn fn_mb_strimwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     let marker = if args.len() > 3 {
         str_arg(host, args, 3, f)?
     } else {
-        Vec::new()
+        StrArg::default()
     };
     let enc = enc_arg(host, args, 4, f)?;
     if from != 0 {
@@ -1459,13 +1472,7 @@ fn fn_mb_strimwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             return Err(value_error(f, 2, "is out of range"));
         }
     }
-    Ok(Value::str(trim_string(
-        &s,
-        &marker,
-        enc,
-        from as usize,
-        width as usize,
-    )))
+    Ok(trim_string(&s, &marker, enc, from as usize, width as usize))
 }
 
 // ---------------------------------------------------------------------------
@@ -1750,7 +1757,7 @@ fn fn_mb_str_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let pad = if args.len() > 2 {
         str_arg(host, args, 2, f)?
     } else {
-        b" ".to_vec()
+        StrArg(PhpStr::from(" "))
     };
     let pad_type = if args.len() > 3 {
         long_arg(host, args, 3, f)?
@@ -1760,7 +1767,7 @@ fn fn_mb_str_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let enc = enc_arg(host, args, 4, f)?;
     let input_len = get_strlen(&input, enc);
     if pad_to < 0 || pad_to as usize <= input_len {
-        return Ok(Value::str(input));
+        return Ok(Value::Str(input.0));
     }
     if pad.is_empty() {
         return Err(empty_error(f, 2));
@@ -1828,7 +1835,7 @@ fn fn_mb_scrub(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = str_arg(host, args, 0, f)?;
     let enc = enc_arg(host, args, 1, f)?;
     if enc == encodings::utf8() && std::str::from_utf8(&s).is_ok() {
-        return Ok(Value::str(s));
+        return Ok(Value::Str(s.0));
     }
     Ok(Value::str(convert_ex(&s, enc, enc)))
 }

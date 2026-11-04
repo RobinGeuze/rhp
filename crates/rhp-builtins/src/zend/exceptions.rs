@@ -49,7 +49,7 @@ fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
                 out.extend_from_slice(&conv::to_string_bytes(&case));
             } else {
                 out.extend_from_slice(b"Object(");
-                out.extend_from_slice(&crate::dump::c_str(name));
+                out.extend_from_slice(&crate::ext::standard::var::c_str(name));
                 out.push(b')');
             }
         }

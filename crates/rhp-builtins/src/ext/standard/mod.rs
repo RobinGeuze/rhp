@@ -3,3 +3,4 @@
 
 pub mod math;
 pub mod r#type;
+pub mod var;

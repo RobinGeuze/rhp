@@ -521,11 +521,6 @@ fn fn_getrusage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(a))
 }
 
-fn fn_memory_reset_peak_usage(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    rhp_values::mem::reset_peak();
-    Ok(Value::Null)
-}
-
 fn fn_sys_getloadavg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut l = [0f64; 3];
     if unsafe { libc::getloadavg(l.as_mut_ptr(), 3) } == -1 {
@@ -846,7 +841,6 @@ pub fn register(m: &mut crate::Registry) {
             ("array_multisort", fn_array_multisort),
             ("fnmatch", fn_fnmatch),
             ("getrusage", fn_getrusage),
-            ("memory_reset_peak_usage", fn_memory_reset_peak_usage),
             ("sys_getloadavg", fn_sys_getloadavg),
             ("getopt", fn_getopt),
             ("readline", fn_readline),

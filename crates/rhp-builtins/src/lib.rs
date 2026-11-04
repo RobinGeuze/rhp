@@ -19,7 +19,6 @@ use rhp_values::{PhpArray, Value};
 pub use rhp_values::Thrown;
 
 mod diag;
-pub(crate) mod dump;
 mod host;
 pub mod main;
 pub(crate) mod module;
@@ -69,7 +68,6 @@ mod printf_fns;
 mod proc_fns;
 mod query_fns;
 mod runtime_fns;
-mod serialize_fns;
 mod socket_fns;
 mod sort_fns;
 mod stdext_fns;
@@ -270,7 +268,7 @@ pub fn reset_request_state() {
     zend::virtual_cwd::reset_state();
     main::streams::reset_state();
     main::streams::plain_wrapper::reset_state();
-    dump::clear_views();
+    ext::standard::var::clear_views();
     sort_fns::reset_state();
     socket_fns::reset_state();
     ext::sockets::reset_state();
@@ -304,9 +302,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
         register(
             &mut m,
             &[
-                ("var_dump", fn_var_dump),
                 ("print_r", fn_print_r),
-                ("var_export", fn_var_export),
                 ("constant", fn_constant),
                 ("count", fn_count),
                 ("sizeof", fn_sizeof),
@@ -368,7 +364,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("html", Box::new(html::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("sort_fns", Box::new(sort_fns::register)),
-        ("serialize_fns", Box::new(serialize_fns::register)),
+        ("var", Box::new(ext::standard::var::register)),
         ("filter_fns", Box::new(filter_fns::register)),
         ("strcmp_fns", Box::new(strcmp_fns::register)),
         ("printf_fns", Box::new(printf_fns::register)),
@@ -770,30 +766,17 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 
 use rhp_values::ops::{self, deref};
 
-fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = Vec::new();
-    for a in args {
-        let r = dump::resolve_views(host, a, zend::object_handlers::PropPurpose::Debug);
-        if r.is_ok() {
-            dump::var_dump(host, &mut out, a, 0);
-        }
-        dump::clear_views();
-        if let Err(t) = r {
-            host.write_out(&out);
-            return Err(t);
-        }
-    }
-    host.write_out(&out);
-    Ok(Value::Null)
-}
-
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    let r = dump::resolve_views(host, &args[0], zend::object_handlers::PropPurpose::Debug);
+    let r = ext::standard::var::resolve_views(
+        host,
+        &args[0],
+        zend::object_handlers::PropPurpose::Debug,
+    );
     if r.is_ok() {
-        dump::print_r(host, &mut out, &args[0], 0);
+        ext::standard::var::print_r(host, &mut out, &args[0], 0);
     }
-    dump::clear_views();
+    ext::standard::var::clear_views();
     r?;
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {
@@ -801,32 +784,6 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     } else {
         host.write_out(&out);
         Ok(Value::Bool(true))
-    }
-}
-
-fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = Vec::new();
-    let r = dump::resolve_views(
-        host,
-        &args[0],
-        zend::object_handlers::PropPurpose::VarExport,
-    );
-    let circular = if r.is_ok() {
-        dump::var_export(host, &mut out, &args[0], 1)
-    } else {
-        0
-    };
-    dump::clear_views();
-    r?;
-    for _ in 0..circular {
-        host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
-    }
-    let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
-    if return_mode {
-        Ok(Value::str(out))
-    } else {
-        host.write_out(&out);
-        Ok(Value::Null)
     }
 }
 

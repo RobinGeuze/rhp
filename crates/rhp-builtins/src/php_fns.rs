@@ -324,21 +324,6 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
     Ok(Value::Null)
 }
 
-/// `memory_get_usage(bool $real_usage = false)`: zend_mm's `size`, or with
-/// `$real_usage` the chunks and huge blocks taken from the system.
-fn fn_memory_get_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let real =
-        crate::zend::zpp::bool_param(host, args, 0, "memory_get_usage", "real_usage", false)?;
-    Ok(Value::Int(rhp_values::mem::usage(real) as i64))
-}
-
-/// `memory_get_peak_usage(bool $real_usage = false)`.
-fn fn_memory_get_peak_usage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let real =
-        crate::zend::zpp::bool_param(host, args, 0, "memory_get_peak_usage", "real_usage", false)?;
-    Ok(Value::Int(rhp_values::mem::peak_usage(real) as i64))
-}
-
 fn fn_getmypid(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(std::process::id() as i64))
 }
@@ -706,8 +691,6 @@ pub fn register(m: &mut crate::Registry) {
             ("error_get_last", fn_error_get_last),
             ("error_clear_last", fn_error_clear_last),
             ("register_shutdown_function", fn_register_shutdown_function),
-            ("memory_get_usage", fn_memory_get_usage),
-            ("memory_get_peak_usage", fn_memory_get_peak_usage),
             ("set_time_limit", fn_set_time_limit),
             ("getmypid", fn_getmypid),
             ("php_ini_loaded_file", fn_php_ini_loaded_file),

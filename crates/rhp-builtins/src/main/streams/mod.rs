@@ -351,7 +351,7 @@ pub trait StreamWrapper: Any {
         _mode: &[u8],
         _options: &rhp_values::Value,
         _diags: &mut Vec<(i64, String)>,
-    ) -> Option<Option<crate::main::streams::ops::OpsStream>> {
+    ) -> Option<Option<ops::OpsStream>> {
         None
     }
     /// For wrapper-specific control ops (e.g. `Phar::mapPhar` reaching its own

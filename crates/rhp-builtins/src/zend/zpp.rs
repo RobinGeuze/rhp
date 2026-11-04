@@ -33,7 +33,7 @@ pub fn zval_type_name(host: &dyn Host, v: &Value) -> String {
         Value::Resource(_) => "resource".into(),
         o @ Value::Object(_) => host
             .object_class_name(&o)
-            .map(|n| String::from_utf8_lossy(&crate::dump::c_str(n)).into_owned())
+            .map(|n| String::from_utf8_lossy(&crate::ext::standard::var::c_str(n)).into_owned())
             .unwrap_or_else(|| "object".into()),
         Value::Ref(_) => unreachable!(),
     }
@@ -268,7 +268,7 @@ pub use rhp_values::ops::deref;
 fn type_err(host: &dyn Host, fname: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{fname}(): Argument #{n} (${pname}) must be of type {want}, {} given",
-        crate::zend::zpp::zval_value_name(host, v)
+        zval_value_name(host, v)
     ))
 }
 
@@ -388,7 +388,7 @@ fn long_arg_as(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::zend::zpp::zval_value_name(host, v)
+            zval_value_name(host, v)
         ))
     };
     if host.caller_strict_types() {
@@ -653,7 +653,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match coerced {
         Some(c) => Ok(c),
         None => {
-            let given = crate::zend::zpp::zval_value_name(host, &v);
+            let given = zval_value_name(host, &v);
             Err(Thrown::type_error(format!(
                 "{}(): Argument #{} (${}) must be of type {}, {} given",
                 String::from_utf8_lossy(&func),

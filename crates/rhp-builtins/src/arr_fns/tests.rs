@@ -6,7 +6,7 @@ use crate::test_support::TestHost;
 
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
-    crate::dump::var_dump(&TestHost::new(), &mut out, v, 0);
+    crate::ext::standard::var::var_dump(&TestHost::new(), &mut out, v, 0);
     String::from_utf8_lossy(&out).into_owned()
 }
 

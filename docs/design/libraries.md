@@ -60,8 +60,10 @@ rather than linking dynamically quietly.
 - libcurl's private dependencies on Debian/Ubuntu (nghttp2, libidn2,
   librtmp, OpenLDAP, libssh2, libpsl, MIT Kerberos, zstd, brotli, zlib):
   libcurl.a is linked statically, they are not. MIT Kerberos ships no
-  static archive, and librtmp and libidn2 are LGPL. Its OpenSSL is the
-  OpenSSL row's static one.
+  static archive, and librtmp and libidn2 are LGPL. libcurl itself uses
+  the OpenSSL row's static copy, but the shared libssh2 loads the distro's
+  libssl.so and libcrypto.so: the OpenSSL static-link test checks the
+  binary's own NEEDED entries, not ldd's closure.
 
 Today rhp-builtins links:
 

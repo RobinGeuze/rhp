@@ -991,10 +991,12 @@ mod tests {
             return;
         }
         let exe = std::env::current_exe().unwrap();
+        // Linux: the binary's own NEEDED entries. ldd would also list the
+        // libssl and libcrypto that libcurl's shared libssh2 loads.
         let (tool, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
             ("otool", &["-L"])
         } else {
-            ("ldd", &[])
+            ("readelf", &["-d"])
         };
         let Ok(out) = std::process::Command::new(tool)
             .args(args)

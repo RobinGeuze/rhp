@@ -421,6 +421,10 @@ mod tests {
         };
         let deps = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{tool} failed: {deps}");
-        assert!(!deps.contains("libicu"), "{deps}");
+        // Not "libicu": Homebrew's libcurl uses macOS's own libicucore, as
+        // php's does.
+        for lib in ["libicuuc", "libicui18n", "libicudata"] {
+            assert!(!deps.contains(lib), "{deps}");
+        }
     }
 }

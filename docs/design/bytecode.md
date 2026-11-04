@@ -421,6 +421,14 @@ the flattened class table's hash maps; see the note at the top.)
 
 ## 3. The VM (`rhp-vm`)
 
+> **Source layout (2026-11).** `crates/rhp-vm/src/lib.rs` holds the `Vm`
+> struct and `Frame`; the rest is split by concern: `dispatch` (the run loop,
+> one `match` over `Instr`), `calls`, `props`, `types`, `lvalue`,
+> `generators`, `include`, `errors` (diagnostics, traces, unwinding),
+> `lifecycle` (`Vm::new`, globals, shutdown), `host` (the `Host` impl) and
+> `streams` (the `StreamTable`), beside `classes`, `compare`, `output`,
+> `request`, `reflect`, `memory` and `opcache`. The sketches below predate it.
+
 ### 3.1 Vm struct
 
 ```rust

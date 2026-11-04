@@ -222,15 +222,12 @@ Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 |---|---|
 | rustfmt, clippy | `cargo fmt --check`, `cargo clippy -D warnings` |
 | test (no php) | the whole `cargo test --workspace --all-targets`, with php removed: goldens, CLI and curl fixtures, unit tests; live-php tests skip |
-| php 8.5 (live) | only what compares with php: rhp-difftest's tests, rhp-cli's live tests (listed in the job), the CGI fixtures against the real php-cgi, `cli -- --check`, `golden --check --portable` |
+| php 8.5 (live) | only what compares with php: rhp-difftest's tests, rhp-cli's tests except the goldens (the live tests, the CGI fixtures against the real php-cgi), `cli -- --check`, `golden --check --portable` |
 | release build | `cargo build --release -p rhp-cli -p rhp-difftest` once, as an artifact for the jobs below |
 | phpt ratchet K/3 | the ratchet in three shards (`phpt --shard K/3`) |
 | generated tables | every `gen … --check` |
 | app NAME | per pinned app: smoke test, lint ratchet, request diff |
 | asan | its own AddressSanitizer build: `tests/asan` |
-
-A new live-php test in rhp-cli has to be added to the php job's list;
-those in rhp-difftest run without one.
 
 ## Running
 

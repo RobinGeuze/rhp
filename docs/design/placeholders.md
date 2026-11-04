@@ -177,6 +177,12 @@ The original notes:
   which matches php's default.
 - **Full impl:** only needed if locale-sensitive functions (`strcoll`,
   locale-aware `printf`, `strftime`) are implemented; defer until then.
+  PCRE depends on it too: under a non-C `LC_CTYPE` php compiles patterns
+  with `pcre2_maketables` and keys its pattern cache on the locale, so
+  `/\w/` and `/i` see the locale's letters (`preg_match('/^\w$/', "\xE4")`
+  is 1 under `de_DE.ISO8859-1`). rhp's cache key needs the locale once
+  `setlocale` switches `LC_CTYPE`; while it is always `"C"` there is
+  nothing to key on.
 - **Effort/priority:** low / low.
 
 ### 1.9 `php_uname`

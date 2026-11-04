@@ -50,8 +50,8 @@ rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt"
 rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
-# CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
-# miniz_oxide so compressed bytes are identical to php's (which links zlib).
+# CRC-32. Backed by the system C zlib (build.rs refuses libz-sys's bundled
+# copy) rather than miniz_oxide so compressed bytes are identical to php's.
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
 # sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive; also

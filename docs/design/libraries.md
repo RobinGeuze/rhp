@@ -111,8 +111,14 @@ comes from that library.
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
-/usr/lib/libbz2 as the list above would have it. Known gap: libz-sys builds
-its bundled zlib when it finds no system zlib, a silent fallback.
+/usr/lib/libbz2 as the list above would have it. zlib is a listed
+exception to "static where possible": libz-sys can only link the system
+zlib dynamically (its `static` mode builds its own copy), so rhp links
+/usr/lib/libz on macOS and zlib1g on Linux dynamically, the library php
+links. libz-sys would build its bundled zlib when it finds no system one;
+rhp-builtins' build.rs fails instead (libz-sys reports the bundled build as
+`DEP_Z_ROOT`), and the `zraw` test `links_the_library_php_links` checks
+with `dladdr` that `zlibVersion` comes from the system library.
 rhp-csrc's and rhp-mbfl-sys's code is the same on every machine, so it
 needs no row in `native.rs` or the native-deps action, only a C compiler
 (and `nm` for their tests).

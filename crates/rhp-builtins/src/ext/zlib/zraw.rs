@@ -251,3 +251,6 @@ pub fn adler32(data: &[u8]) -> u32 {
     }
     sum as u32
 }
+
+#[cfg(test)]
+mod tests;

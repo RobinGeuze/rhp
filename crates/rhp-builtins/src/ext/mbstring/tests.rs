@@ -45,6 +45,46 @@ fn convert_variables_recursion_warns() {
     assert_eq!(bytes_of(&r.ok().unwrap()), b"ASCII");
 }
 
+/// Nesting deeper than any fixed limit converts, as in php (whose limit is
+/// its stack size). The walk keeps its stack on the heap; the big thread
+/// stack is for building and dropping the nested arrays.
+#[test]
+fn convert_variables_deep_nesting() {
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| {
+            const DEPTH: usize = 50_000;
+            let mut v = Value::str(b"\xe9".to_vec());
+            for _ in 0..DEPTH {
+                let mut a = PhpArray::new();
+                a.push(v);
+                v = Value::Array(a);
+            }
+            let cell: rhp_values::PhpRef = Rc::new(RefCell::new(v));
+            for (from, want) in [("ISO-8859-1", "ISO-8859-1"), ("ASCII,UTF-8", "UTF-8")] {
+                let (r, d) = crate::diag_test::run(
+                    fn_mb_convert_variables,
+                    &[
+                        Value::str("UTF-8"),
+                        Value::str(from),
+                        Value::Ref(cell.clone()),
+                    ],
+                );
+                assert!(d.is_empty(), "{d:?}");
+                assert_eq!(bytes_of(&r.ok().unwrap()), want.as_bytes());
+            }
+            let mut v = cell.borrow().clone();
+            for _ in 0..DEPTH {
+                let Value::Array(a) = v else { panic!() };
+                v = a.get_index(0).unwrap().1.clone();
+            }
+            assert_eq!(bytes_of(&v), b"\xc3\xa9");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 struct NullHost;
 impl Host for NullHost {
     fn write_out(&mut self, _: &[u8]) {}

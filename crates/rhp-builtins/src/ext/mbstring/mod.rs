@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use rhp_mbfl_sys::{self as mbfl, case_mode, encodings, illegal_mode, ConvertBuf, Encoding};
@@ -1844,160 +1844,220 @@ fn fn_mb_scrub(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // mb_convert_variables
 // ---------------------------------------------------------------------------
 
-/// Why a walk over the variables stopped: a cycle (php's
-/// `GC_IS_RECURSIVE` / `Z_IS_RECURSIVE` guards), memory_limit, or the
-/// stack limit.
-enum WalkErr {
-    Recursive,
-    StackLimit,
-}
+/// A walk over the variables stopped: at a cycle (php's `GC_IS_RECURSIVE` /
+/// `Z_IS_RECURSIVE` guards) or past memory_limit. php also stops at its
+/// stack limit; these walks keep their stack on the heap and need none.
+struct Stopped;
 
-/// Nesting depth standing in for php's `mb_check_stack_limit`.
-const WALK_DEPTH_LIMIT: usize = 10_000;
-
-/// The arrays/objects on the current walk path, by identity. Like php's
-/// protect/unprotect flags this only rejects true cycles: a value reached
-/// twice along different paths is walked (and converted) twice.
-type WalkPath = Vec<*const ()>;
-
-fn walk_enter(path: &mut WalkPath, id: *const (), depth: usize) -> Result<(), WalkErr> {
-    if depth > WALK_DEPTH_LIMIT {
-        return Err(WalkErr::StackLimit);
+/// The identity of a reference cell or object, which the walks track
+/// along the current path. Like php's protect/unprotect flags this only
+/// rejects true cycles: a value reached twice along different paths is
+/// walked (and converted) twice.
+fn walk_id(v: &Value) -> Option<*const ()> {
+    match v {
+        Value::Ref(r) => Some(Rc::as_ptr(r) as *const ()),
+        Value::Object(h) => Some(Rc::as_ptr(h) as *const ()),
+        _ => None,
     }
-    if path.contains(&id) {
-        return Err(WalkErr::Recursive);
-    }
-    path.push(id);
-    Ok(())
 }
 
 /// `mb_recursive_find_strings`: every string inside `v`, in php's order.
-fn find_strings(
-    v: &Value,
-    out: &mut Vec<Vec<u8>>,
-    path: &mut WalkPath,
-    depth: usize,
-) -> Result<(), WalkErr> {
-    match v {
-        Value::Str(s) => out.push(s.as_bytes().to_vec()),
-        Value::Ref(r) => {
-            walk_enter(path, Rc::as_ptr(r) as *const (), depth)?;
-            let inner = r.borrow().clone();
-            let res = find_strings(&inner, out, path, depth + 1);
-            path.pop();
-            res?;
-        }
-        Value::Array(a) => {
-            if depth > WALK_DEPTH_LIMIT {
-                return Err(WalkErr::StackLimit);
-            }
-            for (_, item) in a.iter() {
-                find_strings(item, out, path, depth + 1)?;
-            }
-        }
-        Value::Object(h) => {
-            walk_enter(path, Rc::as_ptr(h) as *const (), depth)?;
-            let props: Vec<Value> = h.borrow().properties.values().cloned().collect();
-            let res = props
-                .iter()
-                .try_for_each(|pv| find_strings(pv, out, path, depth + 1));
-            path.pop();
-            res?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// `mb_recursive_convert_variable` on one slot. A string reached through a
-/// reference *inside* an array or object is replaced by a plain string (php
-/// overwrites the slot's zval, dropping the reference); arrays and objects
-/// behind references are converted in place. A partial conversion stays when
-/// the walk hits a cycle or memory_limit, as in php.
-fn convert_slot(
-    slot: &mut Value,
-    from: Enc,
-    to: Enc,
-    path: &mut WalkPath,
-    depth: usize,
-) -> Result<(), WalkErr> {
-    if depth > WALK_DEPTH_LIMIT {
-        return Err(WalkErr::StackLimit);
-    }
-    match slot {
-        Value::Str(s) => {
-            *slot = Value::str(convert_ex(s.as_bytes(), to, from));
-            if has_oom() {
-                return Err(WalkErr::Recursive);
-            }
-            Ok(())
-        }
-        Value::Ref(r) => {
-            let r = r.clone();
-            let mut inner = r.borrow().clone();
-            if let Value::Str(s) = &inner {
-                *slot = Value::str(convert_ex(s.as_bytes(), to, from));
-                if has_oom() {
-                    return Err(WalkErr::Recursive);
+fn find_strings(v: &Value, out: &mut Vec<PhpStr>) -> Result<(), Stopped> {
+    // The containers on the current path, each with its next child.
+    let mut stack: Vec<(Value, usize)> = Vec::new();
+    let mut path: HashSet<*const ()> = HashSet::new();
+    let mut next = Some(v.clone());
+    loop {
+        if let Some(v) = next.take() {
+            match v {
+                Value::Str(s) => out.push(s),
+                Value::Array(_) => stack.push((v, 0)),
+                Value::Ref(_) | Value::Object(_) => {
+                    if !path.insert(walk_id(&v).expect("a reference or object")) {
+                        return Err(Stopped);
+                    }
+                    stack.push((v, 0));
                 }
-                return Ok(());
+                _ => {}
             }
-            convert_in_cell(&r, &mut inner, from, to, path, depth)
         }
-        Value::Array(a) => {
-            let keys: Vec<ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
-            for k in keys {
-                if let Some(item) = a.get_mut(&k) {
-                    convert_slot(item, from, to, path, depth + 1)?;
-                }
-            }
-            Ok(())
-        }
-        Value::Object(h) => {
-            let h = h.clone();
-            walk_enter(path, Rc::as_ptr(&h) as *const (), depth)?;
-            let res = convert_object(&h, from, to, path, depth);
-            path.pop();
-            res
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Convert the container held by reference cell `r` (whose value is `inner`)
-/// and store the result back, even when the walk stopped part way.
-fn convert_in_cell(
-    r: &rhp_values::PhpRef,
-    inner: &mut Value,
-    from: Enc,
-    to: Enc,
-    path: &mut WalkPath,
-    depth: usize,
-) -> Result<(), WalkErr> {
-    walk_enter(path, Rc::as_ptr(r) as *const (), depth)?;
-    let res = convert_slot(inner, from, to, path, depth + 1);
-    path.pop();
-    *r.borrow_mut() = std::mem::replace(inner, Value::Null);
-    res
-}
-
-fn convert_object(
-    h: &rhp_values::ObjectHandle,
-    from: Enc,
-    to: Enc,
-    path: &mut WalkPath,
-    depth: usize,
-) -> Result<(), WalkErr> {
-    let keys: Vec<PhpStr> = h.borrow().properties.keys().cloned().collect();
-    for k in keys {
-        let Some(mut pv) = h.borrow().properties.get(&k).cloned() else {
-            continue;
+        let Some((top, pos)) = stack.last_mut() else {
+            return Ok(());
         };
-        let res = convert_slot(&mut pv, from, to, path, depth + 1);
-        h.borrow_mut().properties.insert(k, pv);
-        res?;
+        let i = *pos;
+        *pos += 1;
+        next = match top {
+            Value::Array(a) => a.get_index(i).map(|(_, c)| c.clone()),
+            Value::Object(h) => h.borrow().properties.get_index(i).map(|(_, c)| c.clone()),
+            Value::Ref(r) => (i == 0).then(|| r.borrow().clone()),
+            _ => None,
+        };
+        if next.is_none() {
+            if let Some((done, _)) = stack.pop() {
+                if let Some(id) = walk_id(&done) {
+                    path.remove(&id);
+                }
+            }
+        }
     }
-    Ok(())
+}
+
+/// A container `convert_variable` is inside of. Its children are taken
+/// out one at a time and put back converted: array elements, object
+/// properties, or the value of a reference cell (taken out of the cell).
+enum Frame {
+    Array(PhpArray, usize),
+    Object(rhp_values::ObjectHandle, usize),
+    Cell(rhp_values::PhpRef, Value, bool),
+}
+
+impl Frame {
+    /// The next child, taken out of its slot.
+    fn next_child(&mut self) -> Option<Value> {
+        let take = |v: &mut Value| std::mem::replace(v, Value::Null);
+        match self {
+            Frame::Array(a, pos) => {
+                if *pos >= a.len() {
+                    return None;
+                }
+                let i = *pos;
+                *pos += 1;
+                a.make_mut().entries.get_index_mut(i).map(|(_, v)| take(v))
+            }
+            Frame::Object(h, pos) => {
+                let i = *pos;
+                *pos += 1;
+                h.borrow_mut()
+                    .properties
+                    .get_index_mut(i)
+                    .map(|(_, v)| take(v))
+            }
+            Frame::Cell(_, inner, visited) => {
+                (!std::mem::replace(visited, true)).then(|| take(inner))
+            }
+        }
+    }
+
+    /// Puts the child last taken out back, converted.
+    fn put_back(&mut self, v: Value) {
+        match self {
+            Frame::Array(a, pos) => {
+                if let Some((_, slot)) = a.make_mut().entries.get_index_mut(*pos - 1) {
+                    *slot = v;
+                }
+            }
+            Frame::Object(h, pos) => {
+                if let Some((_, slot)) = h.borrow_mut().properties.get_index_mut(*pos - 1) {
+                    *slot = v;
+                }
+            }
+            Frame::Cell(_, inner, _) => *inner = v,
+        }
+    }
+
+    /// The container once its children are done: a cell gets its value
+    /// back, and the value for the parent's slot is returned.
+    fn finish(self, path: &mut HashSet<*const ()>) -> Value {
+        let v = match self {
+            Frame::Array(a, _) => return Value::Array(a),
+            Frame::Object(h, _) => Value::Object(h),
+            Frame::Cell(r, inner, _) => {
+                *r.borrow_mut() = inner;
+                Value::Ref(r)
+            }
+        };
+        if let Some(id) = walk_id(&v) {
+            path.remove(&id);
+        }
+        v
+    }
+}
+
+/// `mb_recursive_convert_variable` on one argument. A string reached
+/// through a reference *inside* an array or object is replaced by a plain
+/// string (php overwrites the slot's zval, dropping the reference); arrays
+/// and objects behind references are converted in place. A partial
+/// conversion stays when the walk stops, as in php.
+fn convert_variable(var: &Value, from: Enc, to: Enc) -> Result<(), Stopped> {
+    let convert = |s: &PhpStr| Value::str(convert_ex(s.as_bytes(), to, from));
+    // php ZVAL_DEREFs each argument: a by-reference variable is converted
+    // in place, a string included.
+    if let Value::Ref(r) = var {
+        let s = match &*r.borrow() {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        };
+        if let Some(s) = s {
+            *r.borrow_mut() = convert(&s);
+            return if has_oom() { Err(Stopped) } else { Ok(()) };
+        }
+    }
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut path: HashSet<*const ()> = HashSet::new();
+    let mut next = Some(var.clone());
+    loop {
+        // Convert the child, or enter it.
+        if let Some(v) = next.take() {
+            let (back, stop) = match v {
+                Value::Str(s) => (convert(&s), has_oom()),
+                Value::Ref(r) => {
+                    let s = match &*r.borrow() {
+                        Value::Str(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                    if let Some(s) = s {
+                        (convert(&s), has_oom())
+                    } else if !path.insert(Rc::as_ptr(&r) as *const ()) {
+                        (Value::Ref(r), true)
+                    } else {
+                        let inner = std::mem::replace(&mut *r.borrow_mut(), Value::Null);
+                        stack.push(Frame::Cell(r, inner, false));
+                        continue;
+                    }
+                }
+                Value::Array(a) => {
+                    stack.push(Frame::Array(a, 0));
+                    continue;
+                }
+                Value::Object(h) => {
+                    if !path.insert(Rc::as_ptr(&h) as *const ()) {
+                        (Value::Object(h), true)
+                    } else {
+                        stack.push(Frame::Object(h, 0));
+                        continue;
+                    }
+                }
+                v => (v, false),
+            };
+            if let Some(parent) = stack.last_mut() {
+                parent.put_back(back);
+            }
+            if stop {
+                while let Some(frame) = stack.pop() {
+                    let v = frame.finish(&mut path);
+                    if let Some(parent) = stack.last_mut() {
+                        parent.put_back(v);
+                    }
+                }
+                return Err(Stopped);
+            }
+        }
+        // The next child of the innermost container, finishing the
+        // containers that have none left.
+        loop {
+            let Some(top) = stack.last_mut() else {
+                return Ok(());
+            };
+            if let Some(c) = top.next_child() {
+                next = Some(c);
+                break;
+            }
+            let v = stack.pop().expect("a frame").finish(&mut path);
+            if let Some(parent) = stack.last_mut() {
+                parent.put_back(v);
+            }
+        }
+    }
 }
 
 /// `mb_convert_variables(string $to_encoding, array|string $from_encoding, mixed &$var, mixed &...$vars)`.
@@ -2022,28 +2082,20 @@ fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     if list.is_empty() {
         return Err(value_error(f, 1, "must specify at least one encoding"));
     }
-    let walk_failed = |host: &mut dyn Host, e: WalkErr| -> Result<Value, Thrown> {
-        match e {
-            WalkErr::Recursive => {
-                warn(host, f, "Cannot handle recursive references")?;
-                Ok(Value::Bool(false))
-            }
-            WalkErr::StackLimit => Err(Thrown::error(
-                "Error",
-                "Maximum call stack size reached. Infinite recursion?",
-            )),
-        }
+    let stopped = |host: &mut dyn Host| -> Result<Value, Thrown> {
+        warn(host, f, "Cannot handle recursive references")?;
+        Ok(Value::Bool(false))
     };
     let from = if list.len() == 1 {
         list[0]
     } else {
         let mut strs = Vec::new();
         for v in &args[2..] {
-            if let Err(e) = find_strings(v, &mut strs, &mut Vec::new(), 0) {
-                return walk_failed(host, e);
+            if find_strings(v, &mut strs).is_err() {
+                return stopped(host);
             }
         }
-        let strs: Vec<&[u8]> = strs.iter().map(|s| &s[..]).collect();
+        let strs: Vec<&[u8]> = strs.iter().map(PhpStr::as_bytes).collect();
         match guess_encoding(&strs, &list, strict_detection(), !all) {
             Some(e) => e,
             None => {
@@ -2053,24 +2105,8 @@ fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         }
     };
     for v in &args[2..] {
-        // php ZVAL_DEREFs each argument: a by-reference variable is converted
-        // in place, a string included.
-        let mut path = Vec::new();
-        let res = match v {
-            Value::Ref(r) => {
-                let mut inner = r.borrow().clone();
-                if matches!(inner, Value::Str(_)) {
-                    let res = convert_slot(&mut inner, from, to, &mut path, 0);
-                    *r.borrow_mut() = inner;
-                    res
-                } else {
-                    convert_in_cell(r, &mut inner, from, to, &mut path, 0)
-                }
-            }
-            other => convert_slot(&mut other.clone(), from, to, &mut path, 0),
-        };
-        if let Err(e) = res {
-            return walk_failed(host, e);
+        if convert_variable(v, from, to).is_err() {
+            return stopped(host);
         }
     }
     Ok(Value::str(from.name()))

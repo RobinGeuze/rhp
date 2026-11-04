@@ -79,6 +79,9 @@ enum Func {
     Default,
     /// A user callback, resolved (in `ob_start`'s scope) when started.
     User(Value),
+    /// An extension's handler, started by its alias name
+    /// (`ob_iconv_handler`).
+    Internal(rhp_builtins::OutputHandlerFn),
 }
 
 pub(crate) struct Handler {
@@ -479,12 +482,44 @@ impl Vm {
             ctx.op |= OP_START;
         }
         self.output.running = Some(h.clone());
-        let user = match &h.borrow().func {
-            Func::User(cb) => Some(cb.clone()),
-            Func::Default => None,
+        let (user, internal) = match &h.borrow().func {
+            Func::User(cb) => (Some(cb.clone()), None),
+            Func::Internal(f) => (None, Some(*f)),
+            Func::Default => (None, None),
         };
         let mut still_have_handler = true;
         let status = match user {
+            None if internal.is_some() => {
+                let data = h.borrow().buf.clone();
+                let mut cx = rhp_builtins::OutputHandlerCtx {
+                    op: ctx.op,
+                    input: &data,
+                    output_sent: self.output.flags & O_SENT != 0,
+                    out: Vec::new(),
+                    immutable: false,
+                    diags: Vec::new(),
+                };
+                let ok = internal.is_some_and(|f| f(self, &mut cx));
+                if cx.immutable {
+                    h.borrow_mut().flags &= !(H_REMOVABLE | H_CLEANABLE);
+                }
+                // Raised while the handler still runs: the output they
+                // produce goes into its own buffer, which php drops.
+                for (level, msg) in std::mem::take(&mut cx.diags) {
+                    self.ob_diag(level, &msg);
+                }
+                if !self.output_activated() {
+                    return Status::Failure;
+                }
+                match (ok, cx.out.is_empty()) {
+                    (false, _) => Status::Failure,
+                    (true, true) => Status::NoData,
+                    (true, false) => {
+                        ctx.out = cx.out;
+                        Status::Success
+                    }
+                }
+            }
             // zend_call_function refuses while an out-of-memory error is
             // handled (php_error_cb discards the buffers then).
             Some(_) if self.mem.oom_handled() => Status::Failure,
@@ -696,11 +731,45 @@ impl Vm {
         if self.lock_error(OP_START) {
             return false;
         }
+        if self.handler_conflicts(&h.name) {
+            return false;
+        }
         h.level = self.output.handlers.len();
         let r = Rc::new(RefCell::new(h));
         self.output.handlers.push(r.clone());
         self.output.active = Some(r);
         true
+    }
+
+    /// The conflict check an extension registered for a handler named
+    /// `name` (php_output_handler_conflict_register): with output buffering
+    /// active, a handler it conflicts with must not be started already.
+    fn handler_conflicts(&mut self, name: &[u8]) -> bool {
+        let Some(alias) = rhp_builtins::output_handler_alias(name) else {
+            return false;
+        };
+        if self.ob_level() == 0 {
+            return false;
+        }
+        for set in alias.conflicts {
+            let started = self
+                .output
+                .handlers
+                .iter()
+                .any(|h| h.borrow().name == set.as_bytes());
+            if started {
+                // php_output_handler_conflict.
+                let new = String::from_utf8_lossy(name).into_owned();
+                let msg = if new == *set {
+                    format!("Output handler '{new}' cannot be used twice")
+                } else {
+                    format!("Output handler '{new}' conflicts with '{set}'")
+                };
+                self.ob_diag(E_WARNING, &msg);
+                return true;
+            }
+        }
+        false
     }
 
     /// php_output_start_user: `ob_start($callback, $chunk_size, $flags)`.
@@ -710,6 +779,10 @@ impl Vm {
         chunk: usize,
         flags: i64,
     ) -> Result<bool, Thrown> {
+        let alias = match crate::deref(callback) {
+            Value::Str(s) if !s.is_empty() => rhp_builtins::output_handler_alias(s.as_bytes()),
+            _ => None,
+        };
         let h = match crate::deref(callback) {
             Value::Null => Some(Handler::new(
                 DEFAULT_HANDLER_NAME.to_vec(),
@@ -717,6 +790,15 @@ impl Vm {
                 chunk,
                 ability_flags(flags),
             )),
+            // php_output_handler_create_internal through the alias.
+            _ if alias.is_some() => alias.map(|a| {
+                Handler::new(
+                    a.name.as_bytes().to_vec(),
+                    Func::Internal(a.func),
+                    chunk,
+                    ability_flags(flags),
+                )
+            }),
             cb => match self.check_callable(&cb)? {
                 Some(err) => {
                     self.ob_diag(E_WARNING, &err);

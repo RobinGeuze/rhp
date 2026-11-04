@@ -1595,24 +1595,45 @@ fn period_init_finish(
     Ok(())
 }
 
-/// zpp `l` in a quiet parse: the long, or `None` when the value doesn't
-/// convert in the caller's typing mode.
+/// zpp `l` in a quiet parse (`zend_parse_arg_long_weak`): the long, or
+/// `None` when the value doesn't convert in the caller's typing mode. A
+/// fractional float or float string converts with php's deprecation.
 fn quiet_long(
     host: &mut dyn Host,
     v: &Value,
     n: usize,
     pname: &str,
 ) -> Result<Option<i64>, Thrown> {
+    // ZEND_DOUBLE_FITS_LONG
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    let fits = |f: f64| (-TWO_63..TWO_63).contains(&f);
     Ok(match v {
         Value::Int(i) => Some(*i),
         _ if host.caller_strict_types() => None,
         Value::Bool(b) => Some(*b as i64),
-        Value::Float(f) if f.is_finite() && *f == f.trunc() && f.abs() < 9.2e18 => Some(*f as i64),
-        Value::Str(st) => match conv::scan_number(st.as_bytes()) {
-            Some((conv::Num::Int(i), len)) if len == st.len() => Some(i),
-            Some((conv::Num::Float(f), len))
-                if len == st.len() && f == f.trunc() && f.abs() < 9.2e18 =>
-            {
+        Value::Float(f) if fits(*f) => {
+            if f.fract() != 0.0 {
+                let shown =
+                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
+                host.emit_diagnostic(
+                    crate::E_DEPRECATED,
+                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                )?;
+            }
+            Some(*f as i64)
+        }
+        Value::Str(st) => match conv::numeric_string(st.as_bytes()) {
+            Some(conv::Num::Int(i)) => Some(i),
+            Some(conv::Num::Float(f)) if fits(f) => {
+                if f.fract() != 0.0 {
+                    host.emit_diagnostic(
+                        crate::E_DEPRECATED,
+                        &format!(
+                            "Implicit conversion from float-string \"{}\" to int loses precision",
+                            String::from_utf8_lossy(st.as_bytes())
+                        ),
+                    )?;
+                }
                 Some(f as i64)
             }
             _ => None,

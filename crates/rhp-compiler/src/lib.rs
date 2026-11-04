@@ -7145,18 +7145,24 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
 /// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
 /// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
 /// and special-cased function calls give TMP; they count as VAR here.)
-/// Constant folding, the costly part, runs only when CONST versus TMP
-/// decides, so long chains compile in linear time.
 fn php_swaps_operands(lhs: &Expression, rhs: &Expression) -> bool {
     match (php_operand_kind(lhs), php_operand_kind(rhs)) {
         (l, r) if l != r => l < r,
         // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
-        (Kind::ConstOrTmp, Kind::ConstOrTmp) => {
-            !is_magic_const(rhs)
-                && fold_const(rhs).is_err()
-                && (is_magic_const(lhs) || fold_const(lhs).is_ok())
-        }
+        (Kind::ConstOrTmp, Kind::ConstOrTmp) => !is_ct_const(rhs) && is_ct_const(lhs),
         _ => false,
+    }
+}
+
+/// Whether php's compiler folds `e` to a constant. A binary operation
+/// checks its right operand first, so the left spine of a long chain is
+/// not walked at every level.
+fn is_ct_const(e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => is_ct_const(p.expression),
+        Expression::MagicConstant(_) => true,
+        Expression::Binary(b) => is_ct_const(b.rhs) && is_ct_const(b.lhs) && fold_const(e).is_ok(),
+        _ => fold_const(e).is_ok(),
     }
 }
 
@@ -7190,14 +7196,6 @@ fn php_operand_kind(e: &Expression) -> Kind {
             | Construct::RequireOnce(_),
         ) => Kind::Var,
         _ => Kind::ConstOrTmp,
-    }
-}
-
-fn is_magic_const(e: &Expression) -> bool {
-    match e {
-        Expression::Parenthesized(p) => is_magic_const(p.expression),
-        Expression::MagicConstant(_) => true,
-        _ => false,
     }
 }
 

@@ -1,0 +1,422 @@
+== Europe/Amsterdam
+"last day of next month" => 1772286310
+"+1 week 2 days ago" => 1769089510
+"@1234567890.5" => 1234567890
+"@-1.5" => -2
+"first monday of 2026-02" => 1769986800
+"noon tomorrow" => 1769900400
+"tomorrow noon" => 1769943600
+"back of 7pm" => 1769883300
+"Sunday 00:00" => 1769900400
+"2026W53" => 1798412400
+"2008W27-3" => 1214949600
+"24:00" => 1769900400
+"2024-02-30" => 1709247600
+"2026-13-01" => false
+"+3 weekdays" => 1770212710
+"5 wednesdays ago" => 1766583910
+"+0 weekdays" => 1770039910
+"Monday next week" => 1769986800
+"6.1.2009 13:00+01:00" => 1231243200
+"1 Jan 1600 US\/Eastern" => false
+"MSK" => 1769859910
+"10\/Oct\/2000:13:55:36 -0700" => 971211336
+"Sat, 13 Mar 2010 11:22:33 +0100" => 1268475753
+"2026-10-25 02:30:00" => 1792891800
+"2026-03-29 02:30:00" => 1774747800
+"+99999999999999 years" => -5336536145681124922
+"@9223372036854775807" => 9223372036854775807
+"@99999999999999999999" => false
+"last sat of July 2008" => 1217023200
+"third friday" => 1771542000
+"midnight" => 1769814000
+"yesterday 14:00" => 1769778000
+"now" => 1769867110
+"+1 fortnight" => 1771076710
+"first day of next month" => 1769953510
+"last day of previous month" => 1767188710
+"noon\u0000junk" => false
+" " => false
+"" => false
+"garbage" => false
+"2026-01-01 Europe\/Paris" => 1767222000
+"2026-01-01 CEST" => 1767218400
+== America/New_York
+"last day of next month" => 1772286310
+"+1 week 2 days ago" => 1769089510
+"@1234567890.5" => 1234567890
+"@-1.5" => -2
+"first monday of 2026-02" => 1770008400
+"noon tomorrow" => 1769922000
+"tomorrow noon" => 1769965200
+"back of 7pm" => 1769904900
+"Sunday 00:00" => 1769922000
+"2026W53" => 1798434000
+"2008W27-3" => 1214971200
+"24:00" => 1769922000
+"2024-02-30" => 1709269200
+"2026-13-01" => false
+"+3 weekdays" => 1770212710
+"5 wednesdays ago" => 1766583910
+"+0 weekdays" => 1770039910
+"Monday next week" => 1770008400
+"6.1.2009 13:00+01:00" => 1231243200
+"1 Jan 1600 US\/Eastern" => false
+"MSK" => 1769838310
+"10\/Oct\/2000:13:55:36 -0700" => 971211336
+"Sat, 13 Mar 2010 11:22:33 +0100" => 1268475753
+"2026-10-25 02:30:00" => 1792909800
+"2026-03-29 02:30:00" => 1774765800
+"+99999999999999 years" => -5336536145681146522
+"@9223372036854775807" => 9223372036854775807
+"@99999999999999999999" => false
+"last sat of July 2008" => 1217044800
+"third friday" => 1771563600
+"midnight" => 1769835600
+"yesterday 14:00" => 1769799600
+"now" => 1769867110
+"+1 fortnight" => 1771076710
+"first day of next month" => 1769953510
+"last day of previous month" => 1767188710
+"noon\u0000junk" => false
+" " => false
+"" => false
+"garbage" => false
+"2026-01-01 Europe\/Paris" => 1767222000
+"2026-01-01 CEST" => 1767218400
+== Australia/Lord_Howe
+"last day of next month" => 1774878310
+"+1 week 2 days ago" => 1769089510
+"@1234567890.5" => 1234567890
+"@-1.5" => -2
+"first monday of 2026-02" => 1769950800
+"noon tomorrow" => 1769950800
+"tomorrow noon" => 1769994000
+"back of 7pm" => 1769933700
+"Sunday 00:00" => 1769864400
+"2026W53" => 1798376400
+"2008W27-3" => 1214919000
+"24:00" => 1769950800
+"2024-02-30" => 1709211600
+"2026-13-01" => false
+"+3 weekdays" => 1770126310
+"5 wednesdays ago" => 1767102310
+"+0 weekdays" => 1769953510
+"Monday next week" => 1769950800
+"6.1.2009 13:00+01:00" => 1231243200
+"1 Jan 1600 US\/Eastern" => false
+"MSK" => 1769895910
+"10\/Oct\/2000:13:55:36 -0700" => 971211336
+"Sat, 13 Mar 2010 11:22:33 +0100" => 1268475753
+"2026-10-25 02:30:00" => 1792855800
+"2026-03-29 02:30:00" => 1774711800
+"+99999999999999 years" => -5336536145681088922
+"@9223372036854775807" => 9223372036854775807
+"@99999999999999999999" => false
+"last sat of July 2008" => 1216992600
+"third friday" => 1771506000
+"midnight" => 1769864400
+"yesterday 14:00" => 1769828400
+"now" => 1769867110
+"+1 fortnight" => 1771076710
+"first day of next month" => 1772286310
+"last day of previous month" => 1769780710
+"noon\u0000junk" => false
+" " => false
+"" => false
+"garbage" => false
+"2026-01-01 Europe\/Paris" => 1767222000
+"2026-01-01 CEST" => 1767218400
+== Asia/Kolkata
+"last day of next month" => 1772286310
+"+1 week 2 days ago" => 1769089510
+"@1234567890.5" => 1234567890
+"@-1.5" => -2
+"first monday of 2026-02" => 1769970600
+"noon tomorrow" => 1769884200
+"tomorrow noon" => 1769927400
+"back of 7pm" => 1769867100
+"Sunday 00:00" => 1769884200
+"2026W53" => 1798396200
+"2008W27-3" => 1214937000
+"24:00" => 1769884200
+"2024-02-30" => 1709231400
+"2026-13-01" => false
+"+3 weekdays" => 1770212710
+"5 wednesdays ago" => 1766583910
+"+0 weekdays" => 1770039910
+"Monday next week" => 1769970600
+"6.1.2009 13:00+01:00" => 1231243200
+"1 Jan 1600 US\/Eastern" => false
+"MSK" => 1769876110
+"10\/Oct\/2000:13:55:36 -0700" => 971211336
+"Sat, 13 Mar 2010 11:22:33 +0100" => 1268475753
+"2026-10-25 02:30:00" => 1792875600
+"2026-03-29 02:30:00" => 1774731600
+"+99999999999999 years" => -5336536145681108722
+"@9223372036854775807" => 9223372036854775807
+"@99999999999999999999" => false
+"last sat of July 2008" => 1217010600
+"third friday" => 1771525800
+"midnight" => 1769797800
+"yesterday 14:00" => 1769761800
+"now" => 1769867110
+"+1 fortnight" => 1771076710
+"first day of next month" => 1769953510
+"last day of previous month" => 1767188710
+"noon\u0000junk" => false
+" " => false
+"" => false
+"garbage" => false
+"2026-01-01 Europe\/Paris" => 1767222000
+"2026-01-01 CEST" => 1767218400
+Europe/Amsterdam -1500000000: 20 Tue 20 Tuesday 2 th 2 170 25 June 06 Jun 6 30 0 1922 +1922 1922 1922 22 pm PM 930 10 22 10 22 39 32 000000 000 Europe/Amsterdam 1 +0119 +01:19 +01:19 NST 4772 1922-06-20T22:39:32+01:19 Tue, 20 Jun 1922 22:39:32 +0119 -1500000000 Y\
+Europe/Amsterdam -1: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 am AM 041 12 0 12 00 59 59 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 1970-01-01T00:59:59+01:00 Thu, 01 Jan 1970 00:59:59 +0100 -1 Y\
+Europe/Amsterdam 0: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 am AM 041 1 1 01 01 00 00 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 1970-01-01T01:00:00+01:00 Thu, 01 Jan 1970 01:00:00 +0100 0 Y\
+Europe/Amsterdam 1700000000: 14 Tue 14 Tuesday 2 th 2 317 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 pm PM 967 11 23 11 23 13 20 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 2023-11-14T23:13:20+01:00 Tue, 14 Nov 2023 23:13:20 +0100 1700000000 Y\
+Europe/Amsterdam 1792891799: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 2 2 02 02 29 59 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 2026-10-25T02:29:59+01:00 Sun, 25 Oct 2026 02:29:59 +0100 1792891799 Y\
+Europe/Amsterdam 1792891800: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 2 2 02 02 30 00 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 2026-10-25T02:30:00+01:00 Sun, 25 Oct 2026 02:30:00 +0100 1792891800 Y\
+Europe/Amsterdam 4102444800: 01 Fri 1 Friday 5 st 5 0 53 January 01 Jan 1 31 0 2099 +2100 2100 2100 00 am AM 041 1 1 01 01 00 00 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 2100-01-01T01:00:00+01:00 Fri, 01 Jan 2100 01:00:00 +0100 4102444800 Y\
+Europe/Amsterdam 32503680000: 01 Wed 1 Wednesday 3 st 3 0 01 January 01 Jan 1 31 0 3000 +3000 3000 3000 00 am AM 041 1 1 01 01 00 00 000000 000 Europe/Amsterdam 0 +0100 +01:00 +01:00 CET 3600 3000-01-01T01:00:00+01:00 Wed, 01 Jan 3000 01:00:00 +0100 32503680000 Y\
+America/St_Johns -1500000000: 20 Tue 20 Tuesday 2 th 2 170 25 June 06 Jun 6 30 0 1922 +1922 1922 1922 22 pm PM 930 6 18 06 18 49 08 000000 000 America/St_Johns 1 -0230 -02:30 -02:30 NDT -9052 1922-06-20T18:49:08-02:30 Tue, 20 Jun 1922 18:49:08 -0230 -1500000000 Y\
+America/St_Johns -1: 31 Wed 31 Wednesday 3 st 3 364 01 December 12 Dec 12 31 0 1970 +1969 1969 1969 69 pm PM 041 8 20 08 20 29 59 000000 000 America/St_Johns 0 -0330 -03:30 -03:30 NST -12600 1969-12-31T20:29:59-03:30 Wed, 31 Dec 1969 20:29:59 -0330 -1 Y\
+America/St_Johns 0: 31 Wed 31 Wednesday 3 st 3 364 01 December 12 Dec 12 31 0 1970 +1969 1969 1969 69 pm PM 041 8 20 08 20 30 00 000000 000 America/St_Johns 0 -0330 -03:30 -03:30 NST -12600 1969-12-31T20:30:00-03:30 Wed, 31 Dec 1969 20:30:00 -0330 0 Y\
+America/St_Johns 1700000000: 14 Tue 14 Tuesday 2 th 2 317 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 pm PM 967 6 18 06 18 43 20 000000 000 America/St_Johns 0 -0330 -03:30 -03:30 NST -12600 2023-11-14T18:43:20-03:30 Tue, 14 Nov 2023 18:43:20 -0330 1700000000 Y\
+America/St_Johns 1792891799: 24 Sat 24 Saturday 6 th 6 296 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 pm PM 104 10 22 10 22 59 59 000000 000 America/St_Johns 1 -0230 -02:30 -02:30 NDT -9000 2026-10-24T22:59:59-02:30 Sat, 24 Oct 2026 22:59:59 -0230 1792891799 Y\
+America/St_Johns 1792891800: 24 Sat 24 Saturday 6 th 6 296 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 pm PM 104 11 23 11 23 00 00 000000 000 America/St_Johns 1 -0230 -02:30 -02:30 NDT -9000 2026-10-24T23:00:00-02:30 Sat, 24 Oct 2026 23:00:00 -0230 1792891800 Y\
+America/St_Johns 4102444800: 31 Thu 31 Thursday 4 st 4 364 53 December 12 Dec 12 31 0 2099 +2099 2099 2099 99 pm PM 041 8 20 08 20 30 00 000000 000 America/St_Johns 0 -0330 -03:30 -03:30 NST -12600 2099-12-31T20:30:00-03:30 Thu, 31 Dec 2099 20:30:00 -0330 4102444800 Y\
+America/St_Johns 32503680000: 31 Tue 31 Tuesday 2 st 2 364 01 December 12 Dec 12 31 0 3000 +2999 2999 2999 99 pm PM 041 8 20 08 20 30 00 000000 000 America/St_Johns 0 -0330 -03:30 -03:30 NST -12600 2999-12-31T20:30:00-03:30 Tue, 31 Dec 2999 20:30:00 -0330 32503680000 Y\
+Asia/Kathmandu -1500000000: 21 Wed 21 Wednesday 3 st 3 171 25 June 06 Jun 6 30 0 1922 +1922 1922 1922 22 am AM 930 2 2 02 02 50 00 000000 000 Asia/Kathmandu 0 +0530 +05:30 +05:30 +0530 19800 1922-06-21T02:50:00+05:30 Wed, 21 Jun 1922 02:50:00 +0530 -1500000000 Y\
+Asia/Kathmandu -1: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 am AM 041 5 5 05 05 29 59 000000 000 Asia/Kathmandu 0 +0530 +05:30 +05:30 +0530 19800 1970-01-01T05:29:59+05:30 Thu, 01 Jan 1970 05:29:59 +0530 -1 Y\
+Asia/Kathmandu 0: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 am AM 041 5 5 05 05 30 00 000000 000 Asia/Kathmandu 0 +0530 +05:30 +05:30 +0530 19800 1970-01-01T05:30:00+05:30 Thu, 01 Jan 1970 05:30:00 +0530 0 Y\
+Asia/Kathmandu 1700000000: 15 Wed 15 Wednesday 3 th 3 318 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 am AM 967 3 3 03 03 58 20 000000 000 Asia/Kathmandu 0 +0545 +05:45 +05:45 +0545 20700 2023-11-15T03:58:20+05:45 Wed, 15 Nov 2023 03:58:20 +0545 1700000000 Y\
+Asia/Kathmandu 1792891799: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 7 7 07 07 14 59 000000 000 Asia/Kathmandu 0 +0545 +05:45 +05:45 +0545 20700 2026-10-25T07:14:59+05:45 Sun, 25 Oct 2026 07:14:59 +0545 1792891799 Y\
+Asia/Kathmandu 1792891800: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 7 7 07 07 15 00 000000 000 Asia/Kathmandu 0 +0545 +05:45 +05:45 +0545 20700 2026-10-25T07:15:00+05:45 Sun, 25 Oct 2026 07:15:00 +0545 1792891800 Y\
+Asia/Kathmandu 4102444800: 01 Fri 1 Friday 5 st 5 0 53 January 01 Jan 1 31 0 2099 +2100 2100 2100 00 am AM 041 5 5 05 05 45 00 000000 000 Asia/Kathmandu 0 +0545 +05:45 +05:45 +0545 20700 2100-01-01T05:45:00+05:45 Fri, 01 Jan 2100 05:45:00 +0545 4102444800 Y\
+Asia/Kathmandu 32503680000: 01 Wed 1 Wednesday 3 st 3 0 01 January 01 Jan 1 31 0 3000 +3000 3000 3000 00 am AM 041 5 5 05 05 45 00 000000 000 Asia/Kathmandu 0 +0545 +05:45 +05:45 +0545 20700 3000-01-01T05:45:00+05:45 Wed, 01 Jan 3000 05:45:00 +0545 32503680000 Y\
+Pacific/Chatham -1500000000: 21 Wed 21 Wednesday 3 st 3 171 25 June 06 Jun 6 30 0 1922 +1922 1922 1922 22 am AM 930 9 9 09 09 35 00 000000 000 Pacific/Chatham 0 +1215 +12:15 +12:15 +1215 44100 1922-06-21T09:35:00+12:15 Wed, 21 Jun 1922 09:35:00 +1215 -1500000000 Y\
+Pacific/Chatham -1: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 pm PM 041 12 12 12 12 44 59 000000 000 Pacific/Chatham 0 +1245 +12:45 +12:45 +1245 45900 1970-01-01T12:44:59+12:45 Thu, 01 Jan 1970 12:44:59 +1245 -1 Y\
+Pacific/Chatham 0: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 pm PM 041 12 12 12 12 45 00 000000 000 Pacific/Chatham 0 +1245 +12:45 +12:45 +1245 45900 1970-01-01T12:45:00+12:45 Thu, 01 Jan 1970 12:45:00 +1245 0 Y\
+Pacific/Chatham 1700000000: 15 Wed 15 Wednesday 3 th 3 318 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 am AM 967 11 11 11 11 58 20 000000 000 Pacific/Chatham 1 +1345 +13:45 +13:45 +1345 49500 2023-11-15T11:58:20+13:45 Wed, 15 Nov 2023 11:58:20 +1345 1700000000 Y\
+Pacific/Chatham 1792891799: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 pm PM 104 3 15 03 15 14 59 000000 000 Pacific/Chatham 1 +1345 +13:45 +13:45 +1345 49500 2026-10-25T15:14:59+13:45 Sun, 25 Oct 2026 15:14:59 +1345 1792891799 Y\
+Pacific/Chatham 1792891800: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 pm PM 104 3 15 03 15 15 00 000000 000 Pacific/Chatham 1 +1345 +13:45 +13:45 +1345 49500 2026-10-25T15:15:00+13:45 Sun, 25 Oct 2026 15:15:00 +1345 1792891800 Y\
+Pacific/Chatham 4102444800: 01 Fri 1 Friday 5 st 5 0 53 January 01 Jan 1 31 0 2099 +2100 2100 2100 00 pm PM 041 1 13 01 13 45 00 000000 000 Pacific/Chatham 1 +1345 +13:45 +13:45 +1345 49500 2100-01-01T13:45:00+13:45 Fri, 01 Jan 2100 13:45:00 +1345 4102444800 Y\
+Pacific/Chatham 32503680000: 01 Wed 1 Wednesday 3 st 3 0 01 January 01 Jan 1 31 0 3000 +3000 3000 3000 00 pm PM 041 1 13 01 13 45 00 000000 000 Pacific/Chatham 1 +1345 +13:45 +13:45 +1345 49500 3000-01-01T13:45:00+13:45 Wed, 01 Jan 3000 13:45:00 +1345 32503680000 Y\
+UTC -1500000000: 20 Tue 20 Tuesday 2 th 2 170 25 June 06 Jun 6 30 0 1922 +1922 1922 1922 22 pm PM 930 9 21 09 21 20 00 000000 000 UTC 0 +0000 +00:00 Z UTC 0 1922-06-20T21:20:00+00:00 Tue, 20 Jun 1922 21:20:00 +0000 -1500000000 Y\
+UTC -1: 31 Wed 31 Wednesday 3 st 3 364 01 December 12 Dec 12 31 0 1970 +1969 1969 1969 69 pm PM 041 11 23 11 23 59 59 000000 000 UTC 0 +0000 +00:00 Z UTC 0 1969-12-31T23:59:59+00:00 Wed, 31 Dec 1969 23:59:59 +0000 -1 Y\
+UTC 0: 01 Thu 1 Thursday 4 st 4 0 01 January 01 Jan 1 31 0 1970 +1970 1970 1970 70 am AM 041 12 0 12 00 00 00 000000 000 UTC 0 +0000 +00:00 Z UTC 0 1970-01-01T00:00:00+00:00 Thu, 01 Jan 1970 00:00:00 +0000 0 Y\
+UTC 1700000000: 14 Tue 14 Tuesday 2 th 2 317 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 pm PM 967 10 22 10 22 13 20 000000 000 UTC 0 +0000 +00:00 Z UTC 0 2023-11-14T22:13:20+00:00 Tue, 14 Nov 2023 22:13:20 +0000 1700000000 Y\
+UTC 1792891799: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 1 1 01 01 29 59 000000 000 UTC 0 +0000 +00:00 Z UTC 0 2026-10-25T01:29:59+00:00 Sun, 25 Oct 2026 01:29:59 +0000 1792891799 Y\
+UTC 1792891800: 25 Sun 25 Sunday 7 th 0 297 43 October 10 Oct 10 31 0 2026 +2026 2026 2026 26 am AM 104 1 1 01 01 30 00 000000 000 UTC 0 +0000 +00:00 Z UTC 0 2026-10-25T01:30:00+00:00 Sun, 25 Oct 2026 01:30:00 +0000 1792891800 Y\
+UTC 4102444800: 01 Fri 1 Friday 5 st 5 0 53 January 01 Jan 1 31 0 2099 +2100 2100 2100 00 am AM 041 12 0 12 00 00 00 000000 000 UTC 0 +0000 +00:00 Z UTC 0 2100-01-01T00:00:00+00:00 Fri, 01 Jan 2100 00:00:00 +0000 4102444800 Y\
+UTC 32503680000: 01 Wed 1 Wednesday 3 st 3 0 01 January 01 Jan 1 31 0 3000 +3000 3000 3000 00 am AM 041 12 0 12 00 00 00 000000 000 UTC 0 +0000 +00:00 Z UTC 0 3000-01-01T00:00:00+00:00 Wed, 01 Jan 3000 00:00:00 +0000 32503680000 Y\
+14 Tue 14 Tuesday 2 th 2 317 46 November 11 Nov 11 30 0 2023 +2023 2023 2023 23 pm PM 967 10 22 10 22 13 20 000000 000 UTC 0 +0000 +00:00 Z GMT 0 2023-11-14T22:13:20+00:00 Tue, 14 Nov 2023 22:13:20 +0000 1700000000 Y\
+string(0) ""
+string(1) " "
+string(5) "1970 "
+B=967 d=14 h=11 H=23 i=13 I=0 L=0 m=11 s=20 t=30 U=1700000000 w=2 W=46 y=23 Y=2023 z=317 Z=3600 o=2023 N=2 j=14 n=11 G=23 g=11 
+[2] idate(): Unrecognized date format token
+[2] idate(): Unrecognized date format token
+[2] idate(): Unrecognized date format token
+[2] idate(): idate format is one char
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+0,0,0,1,1,2026 => 1767222000 1767225600
+25,61,61,13,32,2025 => 1769994121 1769997721
+0,0,0,3,0,2024 => 1709161200 1709164800
+2,30,0,3,29,2026 => 1774747800 1774751400
+2,30,0,10,25,2026 => 1792891800 1792895400
+0,0,0,1,1,69 => 3124220400 3124224000
+0,0,0,1,1,70 => -3600 0
+0,0,0,1,1,100 => 946681200 946684800
+0,0,0,1,1,101 => -58979924372 -58979923200
+-1,-1,-1,-1,-1,1970 => -5450461 -5446861
+int(-62198794388)
+int(-62167257216)
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+array(9) {
+  [0]=>
+  int(40)
+  [1]=>
+  int(46)
+  [2]=>
+  int(5)
+  [3]=>
+  int(3)
+  [4]=>
+  int(6)
+  [5]=>
+  int(124)
+  [6]=>
+  int(3)
+  [7]=>
+  int(184)
+  [8]=>
+  int(1)
+}
+array(9) {
+  ["tm_sec"]=>
+  int(20)
+  ["tm_min"]=>
+  int(13)
+  ["tm_hour"]=>
+  int(17)
+  ["tm_mday"]=>
+  int(14)
+  ["tm_mon"]=>
+  int(10)
+  ["tm_year"]=>
+  int(123)
+  ["tm_wday"]=>
+  int(2)
+  ["tm_yday"]=>
+  int(317)
+  ["tm_isdst"]=>
+  int(0)
+}
+array(11) {
+  ["seconds"]=>
+  int(0)
+  ["minutes"]=>
+  int(20)
+  ["hours"]=>
+  int(17)
+  ["mday"]=>
+  int(20)
+  ["wday"]=>
+  int(2)
+  ["mon"]=>
+  int(6)
+  ["year"]=>
+  int(1922)
+  ["yday"]=>
+  int(170)
+  ["weekday"]=>
+  string(7) "Tuesday"
+  ["month"]=>
+  string(4) "June"
+  [0]=>
+  int(-1500000000)
+}
+"2026-02-30 25:61": {"year":2026,"month":2,"day":30,"hour":5,"minute":6,"second":0,"fraction":0,"warning_count":1,"warnings":{"17":"The parsed date was invalid"},"error_count":2,"errors":{"11":"Unexpected character","15":"Unexpected character"},"is_localtime":false}
+"next monday 10:00 Europe\/Paris": {"year":false,"month":false,"day":false,"hour":10,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":3,"tz_id":"Europe\/Paris","relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":0,"weekday":1}}
+"2006-12-12 10:00:00.5 +1 week +1 hour": {"year":2006,"month":12,"day":12,"hour":10,"minute":0,"second":0,"fraction":0.5,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false,"relative":{"year":0,"month":0,"day":7,"hour":1,"minute":0,"second":0}}
+"last day of next month": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false,"relative":{"year":0,"month":1,"day":0,"hour":0,"minute":0,"second":0,"last_day_of_month":true}}
+"first day of": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false,"relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":0,"first_day_of_month":true}}
+"+3 weekdays": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false,"relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":0,"weekdays":3}}
+"Tue, 01 Jan 2030 12:00:00 EST": {"year":2030,"month":1,"day":1,"hour":12,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":2,"zone":-18000,"is_dst":false,"tz_abbr":"EST","relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":0,"weekday":2}}
+"12:00 GMT+0230": {"year":false,"month":false,"day":false,"hour":12,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":1,"zone":9000,"is_dst":false}
+"@1234567890": {"year":1970,"month":1,"day":1,"hour":0,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":1,"zone":0,"is_dst":false,"relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":1234567890}}
+"x": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":2,"zone":-39600,"is_dst":false,"tz_abbr":"X"}
+"": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":1,"errors":["Empty string"],"is_localtime":false}
+"now\u0000junk": {"year":false,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":1,"errors":{"4":"The timezone could not be found in the database"},"is_localtime":true,"zone_type":0}
+"2026-01-01 Mars\/Phobos": {"year":2026,"month":1,"day":1,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":1,"errors":{"11":"The timezone could not be found in the database"},"is_localtime":true,"zone_type":0}
+"10\/Oct\/2000:13:55:36 -0700": {"year":2000,"month":10,"day":10,"hour":13,"minute":55,"second":36,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":1,"zone":-25200,"is_dst":false}
+"1 Jan 1600 US\/Eastern": {"year":1600,"month":1,"day":1,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":1,"warnings":{"14":"Double timezone specification"},"error_count":3,"errors":{"11":"The timezone could not be found in the database","13":"Unexpected character","20":"Double timezone specification"},"is_localtime":true,"zone_type":0}
+["Y-m-d H:i","2026-01-05 10:11 junk"]: {"year":2026,"month":1,"day":5,"hour":10,"minute":11,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":1,"errors":{"16":"Trailing data"},"is_localtime":false}
+["d\/m\/Y","31\/02\/2026"]: {"year":2026,"month":2,"day":31,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":1,"warnings":{"10":"The parsed date was invalid"},"error_count":0,"errors":[],"is_localtime":false}
+["!D, d M Y","Mon, 05 Jan 2026"]: {"year":2026,"month":1,"day":5,"hour":0,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false,"relative":{"year":0,"month":0,"day":0,"hour":0,"minute":0,"second":0,"weekday":1}}
+["U.u","1234567890.123456"]: {"year":2009,"month":2,"day":13,"hour":23,"minute":31,"second":30,"fraction":0.123456,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":1,"zone":0,"is_dst":false}
+["Y-m-d e","2026-01-01 Europe\/Amsterdam"]: {"year":2026,"month":1,"day":1,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":3,"tz_id":"Europe\/Amsterdam"}
+["H\\h i\\m","10h 15m"]: {"year":false,"month":false,"day":false,"hour":10,"minute":15,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false}
+["Y-m-d|","2026-01-01"]: {"year":2026,"month":1,"day":1,"hour":0,"minute":0,"second":0,"fraction":0,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false}
+["z Y","45 2026"]: {"year":2026,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":1,"errors":["A 'day of year' can only come after a year has been found"],"is_localtime":false}
+["Y-m-d T","2026-01-01 CEST"]: {"year":2026,"month":1,"day":1,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":true,"zone_type":2,"zone":3600,"is_dst":true,"tz_abbr":"CEST"}
+["Y\u0000m","2026"]: {"year":2026,"month":false,"day":false,"hour":false,"minute":false,"second":false,"fraction":false,"warning_count":0,"warnings":[],"error_count":0,"errors":[],"is_localtime":false}
+ValueError: date_parse_from_format(): Argument #2 ($datetime) must not contain any null bytes
+bool(true)
+string(16) "europe/AMSTERDAM"
+[8] date_default_timezone_set(): Timezone ID 'Mars/Phobos' is invalid
+[8] date_default_timezone_set(): Timezone ID '' is invalid
+bool(false)
+bool(false)
+string(16) "europe/AMSTERDAM"
+bool(true)
+string(3) "UTC"
+string(6) "2026.5"
+int(419)
+int(598)
+array(1) {
+  [0]=>
+  string(16) "Europe/Amsterdam"
+}
+array(1) {
+  [0]=>
+  string(3) "UTC"
+}
+int(59)
+timezone_identifiers_list(): Argument #2 ($countryCode) must be a two-letter ISO 3166-1 compatible country code when argument #1 ($timezoneGroup) is DateTimeZone::PER_COUNTRY
+string(13) "Europe/Berlin"
+string(12) "Europe/Paris"
+string(13) "Europe/London"
+string(16) "America/New_York"
+string(3) "UTC"
+bool(false)
+int(144)
+string(4) "acdt"
+array(3) {
+  ["dst"]=>
+  bool(true)
+  ["offset"]=>
+  int(7200)
+  ["timezone_id"]=>
+  string(13) "Europe/Berlin"
+}
+array(5) {
+  [0]=>
+  array(3) {
+    ["dst"]=>
+    bool(false)
+    ["offset"]=>
+    int(0)
+    ["timezone_id"]=>
+    string(13) "Etc/Universal"
+  }
+  [1]=>
+  array(3) {
+    ["dst"]=>
+    bool(false)
+    ["offset"]=>
+    int(0)
+    ["timezone_id"]=>
+    string(7) "Etc/UTC"
+  }
+  [2]=>
+  array(3) {
+    ["dst"]=>
+    bool(false)
+    ["offset"]=>
+    int(0)
+    ["timezone_id"]=>
+    string(8) "Etc/Zulu"
+  }
+  [3]=>
+  array(3) {
+    ["dst"]=>
+    bool(false)
+    ["offset"]=>
+    int(0)
+    ["timezone_id"]=>
+    string(3) "UTC"
+  }
+  [4]=>
+  array(3) {
+    ["dst"]=>
+    bool(false)
+    ["offset"]=>
+    int(0)
+    ["timezone_id"]=>
+    string(3) "UTC"
+  }
+}
+[2] ini_set(): Invalid date.timezone value 'Nowhere/Land', using 'Asia/Tokyo' instead
+string(3) "UTC"
+bool(false)
+string(10) "Asia/Tokyo"

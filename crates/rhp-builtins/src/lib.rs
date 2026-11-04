@@ -69,7 +69,6 @@ mod arrayset_fns;
 mod const_modules;
 mod class_fns;
 mod crypt_fns;
-mod datetime_fns;
 mod dt_oop_fns;
 mod ext;
 mod file_fns;
@@ -106,9 +105,7 @@ mod strarr2_fns;
 mod strcmp_fns;
 mod stream_fns;
 mod strsearch_fns;
-mod strtotime_fns;
 mod sysmisc_fns;
-mod tzdb;
 mod webenc_fns;
 pub(crate) mod zip_ext;
 
@@ -1231,6 +1228,7 @@ pub use runtime_fns::{apply_memory_limits, take_shutdown_diagnostics, take_start
 /// script run to the next on the same thread.
 pub fn reset_request_state() {
     ext::libxml::reset_state();
+    ext::date::reset_state();
     runtime_fns::reset_state();
     sysmisc_fns::reset_state();
     preg_fns::reset_state();
@@ -1355,9 +1353,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let rest: Vec<(&'static str, Registrar)> = vec![
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(html::register)),
-        ("datetime_fns", Box::new(datetime_fns::register)),
         ("dt_oop_fns", Box::new(dt_oop_fns::register)),
-        ("strtotime_fns", Box::new(strtotime_fns::register)),
         ("strarr2_fns", Box::new(strarr2_fns::register)),
         ("sort_fns", Box::new(sort_fns::register)),
         ("serialize_fns", Box::new(serialize_fns::register)),

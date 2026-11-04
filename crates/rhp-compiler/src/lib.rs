@@ -1859,6 +1859,20 @@ interface DateTimeInterface {
 }
 
 class DateTimeZone {
+    const AFRICA = 1;
+    const AMERICA = 2;
+    const ANTARCTICA = 4;
+    const ARCTIC = 8;
+    const ASIA = 16;
+    const ATLANTIC = 32;
+    const AUSTRALIA = 64;
+    const EUROPE = 128;
+    const INDIAN = 256;
+    const PACIFIC = 512;
+    const UTC = 1024;
+    const ALL = 2047;
+    const ALL_WITH_BC = 4095;
+    const PER_COUNTRY = 4096;
     public $name = 'UTC';
     public $off = 0;
     public function __construct($timezone = 'UTC') {

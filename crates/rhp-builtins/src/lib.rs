@@ -1409,6 +1409,7 @@ pub fn reset_request_state() {
     fdstream::reset_state();
     dump::clear_views();
     sort_fns::reset_state();
+    socket_fns::reset_state();
     ext::sockets::reset_state();
     ext::libxml::reset_state();
     ext::date::reset_state();

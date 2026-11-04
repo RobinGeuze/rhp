@@ -36,10 +36,9 @@ $calls = [
 ];
 
 // Body gaps, not zpp: number_format prints NAN, INF and huge floats its own
-// way, and range() has string-range rules of its own.
+// way.
 $skip = [
     'number_format (zpp int|float)' => ['NAN', 'INF', '"1e100"'],
-    'string|int|float' => ['"4x"', '"x"', '""', '"0x1A"'],
 ];
 
 foreach ($calls as $type => $call) {

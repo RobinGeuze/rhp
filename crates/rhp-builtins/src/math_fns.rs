@@ -125,7 +125,7 @@ fn php_round_helper(integral: f64, value: f64, exponent: f64, places: i32, mode:
 }
 
 /// Port of php 8.5's `_php_math_round`.
-fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
+pub(crate) fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
     if !value.is_finite() || value == 0.0 {
         return value;
     }

@@ -1,0 +1,12 @@
+Deprecated: ord(): Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead
+Deprecated: ord(): Providing an empty string is deprecated
+Deprecated: ord(): Providing an empty string is deprecated
+Deprecated: ord(): Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead
+Deprecated: ord(): Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead
+int(97)
+int(97)
+int(0)
+int(0)
+int(97)
+int(55)
+int(49)

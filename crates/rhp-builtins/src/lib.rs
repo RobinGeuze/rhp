@@ -2796,104 +2796,316 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-/// range()'s RANGE_CHECK_{LONG,DOUBLE}_INIT_ARRAY: a ValueError when the
-/// result would exceed HT_MAX_SIZE elements. (php prints the lower bound
-/// as start and the higher as end, whatever the direction.)
-fn range_size_check(
-    start: conv::Num,
-    end: conv::Num,
-    step: f64,
-    float: bool,
-) -> Result<(), Thrown> {
-    const HT_MAX_SIZE: u64 = 0x4000_0000;
-    let msg = "The supplied range exceeds the maximum array size by";
-    if let (false, conv::Num::Int(a), conv::Num::Int(b)) = (float, start, end) {
-        let (lo, hi) = (a.min(b), a.max(b));
-        let step = step as u64;
-        let size = (hi as u64).wrapping_sub(lo as u64) / step;
-        if size >= HT_MAX_SIZE - 1 {
-            return Err(Thrown::error(
-                "ValueError",
-                format!(
-                    "{msg} {} elements: start={lo}, end={hi}, step={step}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
-                    size - (HT_MAX_SIZE - 1)
-                ),
-            ));
+/// What php_range_process_input made of a range() bound, ordered as php's
+/// type codes (IS_LONG < IS_DOUBLE < IS_STRING < IS_ARRAY).
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum RangeIn {
+    Long,
+    Double,
+    /// A non-numeric string: its first byte.
+    Char,
+    /// A one-digit string: a char or an int, whichever the other bound is.
+    Digit,
+}
+
+fn range_value_error(n: usize, name: &str, msg: &str) -> Thrown {
+    Thrown::error(
+        "ValueError",
+        format!("range(): Argument #{n} (${name}) {msg}"),
+    )
+}
+
+/// php_range_process_input: the bound's kind with its int and float values.
+fn range_input(
+    host: &mut dyn Host,
+    v: &Value,
+    n: usize,
+    name: &str,
+) -> Result<(RangeIn, i64, f64), Thrown> {
+    let finite = |d: f64| {
+        if d.is_infinite() {
+            Err(range_value_error(
+                n,
+                name,
+                "must be a finite number, INF provided",
+            ))
+        } else if d.is_nan() {
+            Err(range_value_error(
+                n,
+                name,
+                "must be a finite number, NAN provided",
+            ))
+        } else {
+            Ok((RangeIn::Double, 0, d))
         }
-        return Ok(());
+    };
+    let s = match v {
+        Value::Str(s) => s.as_bytes(),
+        Value::Float(d) => return finite(*d),
+        // The VM's zpp leaves an int or a float, or a string.
+        other => {
+            let l = conv::to_int(other);
+            return Ok((RangeIn::Long, l, l as f64));
+        }
+    };
+    if s.is_empty() {
+        let msg = format!("Argument #{n} (${name}) must not be empty, casted to 0");
+        host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+        return Ok((RangeIn::Long, 0, 0.0));
     }
-    let (a, b) = (start.as_f64(), end.as_f64());
-    let (lo, hi) = (a.min(b), a.max(b));
+    match conv::numeric_string(s) {
+        Some(conv::Num::Float(d)) => finite(d),
+        Some(conv::Num::Int(l)) if s.len() == 1 => Ok((RangeIn::Digit, l, l as f64)),
+        Some(conv::Num::Int(l)) => Ok((RangeIn::Long, l, l as f64)),
+        None => {
+            if s.len() != 1 {
+                let msg = format!(
+                    "Argument #{n} (${name}) must be a single byte, subsequent bytes are ignored"
+                );
+                host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+            }
+            Ok((RangeIn::Char, 0, 0.0))
+        }
+    }
+}
+
+const HT_MAX_SIZE: u64 = 0x4000_0000;
+
+/// RANGE_CHECK_DOUBLE_INIT_ARRAY for `hi > lo`: the element count, or the
+/// ValueError for a range past HT_MAX_SIZE.
+fn range_size_double(hi: f64, lo: f64, step: f64) -> Result<usize, Thrown> {
     let size = (hi - lo) / step + 1.0;
     if size >= HT_MAX_SIZE as f64 {
         return Err(Thrown::error(
             "ValueError",
             format!(
-                "{msg} {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
+                "The supplied range exceeds the maximum array size by {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
                 size - HT_MAX_SIZE as f64
             ),
         ));
     }
-    Ok(())
+    Ok(math_fns::php_math_round(size, 0, 1) as usize)
 }
 
-fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // Numeric ranges only (char ranges deferred).
-    let start = conv::to_number(&deref(&args[0])).0;
-    let end = conv::to_number(&deref(&args[1])).0;
-    let step = args
-        .get(2)
-        .map(|v| conv::to_number(&deref(v)).0.as_f64().abs())
-        .unwrap_or(1.0);
-    if step == 0.0 {
+/// RANGE_CHECK_LONG_INIT_ARRAY for `hi > lo`.
+fn range_size_long(hi: i64, lo: i64, step: u64) -> Result<usize, Thrown> {
+    let size = (hi as u64).wrapping_sub(lo as u64) / step;
+    if size >= HT_MAX_SIZE - 1 {
         return Err(Thrown::error(
             "ValueError",
-            "range(): Argument #3 ($step) cannot be 0",
+            format!(
+                "The supplied range exceeds the maximum array size by {} elements: start={lo}, end={hi}, step={}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
+                size - (HT_MAX_SIZE - 1),
+                step as i64
+            ),
         ));
     }
-    for (n, name, v) in [(1, "start", start), (2, "end", end)] {
-        if let conv::Num::Float(f) = v {
-            if !f.is_finite() {
-                let shown = if f.is_nan() { "NAN" } else { "INF" };
-                return Err(Thrown::error(
-                    "ValueError",
-                    format!("range(): Argument #{n} (${name}) must be a finite number, {shown} provided"),
+    Ok(size as usize + 1)
+}
+
+/// php's range(): an int, float or character sequence from `$start` to
+/// `$end` by `abs($step)`, with php_range's argument checks.
+fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let boundary_error = || {
+        range_value_error(
+            3,
+            "step",
+            "must be less than the range spanned by argument #1 ($start) and argument #2 ($end)",
+        )
+    };
+    let negative_step_error =
+        || range_value_error(3, "step", "must be greater than 0 for increasing ranges");
+    let mut is_step_double = false;
+    let mut is_step_negative = false;
+    let mut step_double = 1.0;
+    let mut step: i64 = 1;
+    if let Some(user_step) = args.get(2).map(deref) {
+        if let Value::Float(d) = user_step {
+            if d.is_infinite() {
+                return Err(range_value_error(
+                    3,
+                    "step",
+                    "must be a finite number, INF provided",
                 ));
             }
+            if d.is_nan() {
+                return Err(range_value_error(
+                    3,
+                    "step",
+                    "must be a finite number, NAN provided",
+                ));
+            }
+            step_double = d;
+            if step_double < 0.0 {
+                is_step_negative = true;
+                step_double = -step_double;
+            }
+            // zend_dval_to_lval_silent, then zend_is_long_compatible
+            step = rhp_values::float_to_int(step_double);
+            is_step_double = step as f64 != step_double;
+        } else {
+            step = conv::to_int(&user_step);
+            if step < 0 {
+                if step == i64::MIN {
+                    return Err(range_value_error(
+                        3,
+                        "step",
+                        &format!("must be greater than {step}"),
+                    ));
+                }
+                is_step_negative = true;
+                step = -step;
+            }
+            step_double = step as f64;
+        }
+        if step_double == 0.0 {
+            return Err(range_value_error(3, "step", "cannot be 0"));
         }
     }
+    let start = deref(&args[0]);
+    let end = deref(&args[1]);
+    let (mut start_type, start_long, start_double) = range_input(host, &start, 1, "start")?;
+    let (mut end_type, end_long, end_double) = range_input(host, &end, 2, "end")?;
     let mut out = PhpArray::new();
-    let use_float = matches!(start, conv::Num::Float(_))
-        || matches!(end, conv::Num::Float(_))
-        || step.fract() != 0.0;
-    let (s, e) = (start.as_f64(), end.as_f64());
-    range_size_check(start, end, step, use_float)?;
-    // php sizes the result up front, fallibly.
-    let count = ((s - e).abs() / step).floor() + 1.0;
-    if count.is_finite()
-        && !rhp_values::mem::reserve_packed_array(count.min(u32::MAX as f64) as usize)
-    {
-        return Ok(Value::Null);
-    }
-    if s <= e {
-        let mut x = s;
-        while x <= e + 1e-9 {
-            out.push(if use_float {
-                Value::Float(x)
+
+    if start_type >= RangeIn::Char || end_type >= RangeIn::Char {
+        if start_type < RangeIn::Char || end_type < RangeIn::Char {
+            if start_type < RangeIn::Char {
+                if end_type != RangeIn::Digit {
+                    host.emit_diagnostic(
+                        E_WARNING,
+                        "range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
+                    )?;
+                }
+                end_type = RangeIn::Long;
             } else {
-                Value::Int(x as i64)
-            });
-            x += step;
+                if start_type != RangeIn::Digit {
+                    host.emit_diagnostic(
+                        E_WARNING,
+                        "range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
+                    )?;
+                }
+                start_type = RangeIn::Long;
+            }
+        } else if is_step_double {
+            if start_type == RangeIn::Char || end_type == RangeIn::Char {
+                host.emit_diagnostic(
+                    E_WARNING,
+                    "range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
+                )?;
+            }
+            start_type = RangeIn::Long;
+            end_type = RangeIn::Long;
+        } else {
+            // Both bounds are strings: a range of characters.
+            let first = |v: &Value| match v {
+                Value::Str(s) => s.as_bytes().first().copied().unwrap_or(0) as i64,
+                _ => 0,
+            };
+            let (mut low, high) = (first(&start), first(&end));
+            let char_value = |c: i64| Value::str(vec![c as u8]);
+            if low > high {
+                if low - high < step {
+                    return Err(boundary_error());
+                }
+                while low >= high {
+                    out.push(char_value(low));
+                    if low - step < 0 {
+                        break;
+                    }
+                    low -= step;
+                }
+            } else if high > low {
+                if is_step_negative {
+                    return Err(negative_step_error());
+                }
+                if high - low < step {
+                    return Err(boundary_error());
+                }
+                while low <= high {
+                    out.push(char_value(low));
+                    if low + step > 255 {
+                        break;
+                    }
+                    low += step;
+                }
+            } else {
+                out.push(char_value(low));
+            }
+            return Ok(Value::Array(out));
+        }
+    }
+
+    // php sizes the result up front, fallibly.
+    let reserve = |n: usize| rhp_values::mem::reserve_packed_array(n);
+    if start_type == RangeIn::Double || end_type == RangeIn::Double || is_step_double {
+        let (s, e) = (start_double, end_double);
+        if s > e {
+            if s - e < step_double {
+                return Err(boundary_error());
+            }
+            let size = range_size_double(s, e, step_double)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            let mut el = s;
+            let mut i = 0;
+            while i < size && el >= e {
+                out.push(Value::Float(el));
+                i += 1;
+                el = s - i as f64 * step_double;
+            }
+        } else if e > s {
+            if is_step_negative {
+                return Err(negative_step_error());
+            }
+            if e - s < step_double {
+                return Err(boundary_error());
+            }
+            let size = range_size_double(e, s, step_double)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            let mut el = s;
+            let mut i = 0;
+            while i < size && el <= e {
+                out.push(Value::Float(el));
+                i += 1;
+                el = s + i as f64 * step_double;
+            }
+        } else {
+            out.push(Value::Float(s));
         }
     } else {
-        let mut x = s;
-        while x >= e - 1e-9 {
-            out.push(if use_float {
-                Value::Float(x)
-            } else {
-                Value::Int(x as i64)
-            });
-            x -= step;
+        let (s, e) = (start_long, end_long);
+        let ustep = step as u64;
+        if s > e {
+            if (s as u64).wrapping_sub(e as u64) < ustep {
+                return Err(boundary_error());
+            }
+            let size = range_size_long(s, e, ustep)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            for i in 0..size as u64 {
+                out.push(Value::Int(s.wrapping_sub(i.wrapping_mul(ustep) as i64)));
+            }
+        } else if e > s {
+            if is_step_negative {
+                return Err(negative_step_error());
+            }
+            if (e as u64).wrapping_sub(s as u64) < ustep {
+                return Err(boundary_error());
+            }
+            let size = range_size_long(e, s, ustep)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            for i in 0..size as u64 {
+                out.push(Value::Int(s.wrapping_add(i.wrapping_mul(ustep) as i64)));
+            }
+        } else {
+            out.push(Value::Int(s));
         }
     }
     Ok(Value::Array(out))
@@ -3333,8 +3545,17 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
     }
 }
 
-fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_ord(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let b = conv::to_string_bytes(&deref(&args[0]));
+    match b.len() {
+        1 => {}
+        0 => deprecated(host, "ord", "Providing an empty string is deprecated")?,
+        _ => deprecated(
+            host,
+            "ord",
+            "Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead",
+        )?,
+    }
     Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
 }
 

@@ -389,7 +389,7 @@ impl FdStream {
         if self.tls_active() {
             // php_openssl_sockop_read
             let mut buf = vec![0u8; max.max(1)];
-            let n = crate::ext::openssl::xp_ssl::sockop_io(self, true, &mut buf, has_buffered);
+            let n = crate::ext::openssl::xp_ssl::sockop_read(self, &mut buf, has_buffered);
             return match n {
                 n if n > 0 => {
                     self.rbuf.extend_from_slice(&buf[..n as usize]);
@@ -800,8 +800,7 @@ impl FdStream {
     fn tls_write(&mut self, data: &[u8]) -> Option<usize> {
         let mut done = 0usize;
         while done < data.len() {
-            let mut chunk = data[done..].to_vec();
-            let n = crate::ext::openssl::xp_ssl::sockop_io(self, false, &mut chunk, false);
+            let n = crate::ext::openssl::xp_ssl::sockop_write(self, &data[done..]);
             if n <= 0 {
                 return if done == 0 && n < 0 { None } else { Some(done) };
             }

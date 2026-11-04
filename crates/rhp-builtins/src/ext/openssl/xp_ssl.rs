@@ -286,6 +286,10 @@ impl Drop for SslSock {
                 }
             }
         }
+        // a panic in a callback of SSL_shutdown, once everything is freed
+        if !std::thread::panicking() {
+            super::with_callbacks(|| ());
+        }
     }
 }
 
@@ -944,7 +948,10 @@ fn set_local_cert(ctx: *mut sys::SSL_CTX, opts: &Opts) -> bool {
         ));
         return false;
     };
-    if unsafe { sys::SSL_CTX_use_certificate_chain_file(ctx, resolved.as_ptr()) } != 1 {
+    if super::with_callbacks(|| unsafe {
+        sys::SSL_CTX_use_certificate_chain_file(ctx, resolved.as_ptr())
+    }) != 1
+    {
         warn(format!(
             "Unable to set local cert chain file `{}'; Check that your cafile/capath settings include details of your certificate and its issuer",
             shown(&certfile)
@@ -963,8 +970,9 @@ fn set_local_cert(ctx: *mut sys::SSL_CTX, opts: &Opts) -> bool {
             }
         }
     }
-    if unsafe { sys::SSL_CTX_use_PrivateKey_file(ctx, resolved.as_ptr(), sys::SSL_FILETYPE_PEM) }
-        != 1
+    if super::with_callbacks(|| unsafe {
+        sys::SSL_CTX_use_PrivateKey_file(ctx, resolved.as_ptr(), sys::SSL_FILETYPE_PEM)
+    }) != 1
     {
         warn(format!(
             "Unable to set private key file `{}'",
@@ -1072,7 +1080,10 @@ fn create_sni_server_ctx(cert: &CStr, key: &CStr) -> *mut sys::SSL_CTX {
         warn("Failed to create the SSL context");
         return ptr::null_mut();
     }
-    if unsafe { sys::SSL_CTX_use_certificate_chain_file(ctx, cert.as_ptr()) } != 1 {
+    if super::with_callbacks(|| unsafe {
+        sys::SSL_CTX_use_certificate_chain_file(ctx, cert.as_ptr())
+    }) != 1
+    {
         warn(format!(
             "Failed setting local cert chain file `{}'; check that your cafile/capath settings include details of your certificate and its issuer",
             String::from_utf8_lossy(cert.to_bytes())
@@ -1080,7 +1091,10 @@ fn create_sni_server_ctx(cert: &CStr, key: &CStr) -> *mut sys::SSL_CTX {
         unsafe { sys::SSL_CTX_free(ctx) };
         return ptr::null_mut();
     }
-    if unsafe { sys::SSL_CTX_use_PrivateKey_file(ctx, key.as_ptr(), sys::SSL_FILETYPE_PEM) } != 1 {
+    if super::with_callbacks(|| unsafe {
+        sys::SSL_CTX_use_PrivateKey_file(ctx, key.as_ptr(), sys::SSL_FILETYPE_PEM)
+    }) != 1
+    {
         warn(format!(
             "Failed setting private key from file `{}'",
             String::from_utf8_lossy(key.to_bytes())
@@ -1565,7 +1579,7 @@ pub fn enable_crypto(stream: &mut FdStream, opts: &Opts, activate: bool) -> (i32
                 captured = capture_peer_certs(t, peer, opts, &mut cap);
             }
             if !apply_peer_verification_policy(t, peer, opts) {
-                unsafe { sys::SSL_shutdown(t.ssl) };
+                super::with_callbacks(|| unsafe { sys::SSL_shutdown(t.ssl) });
                 n = -1;
             } else {
                 t.active = true;
@@ -1586,7 +1600,7 @@ pub fn enable_crypto(stream: &mut FdStream, opts: &Opts, activate: bool) -> (i32
         return (n, cap);
     } else if !activate && active {
         if let Some(t) = stream.tls.as_deref_mut() {
-            unsafe { sys::SSL_shutdown(t.ssl) };
+            super::with_callbacks(|| unsafe { sys::SSL_shutdown(t.ssl) });
             t.active = false;
         }
     }
@@ -1597,9 +1611,33 @@ pub fn enable_crypto(stream: &mut FdStream, opts: &Opts, activate: bool) -> (i32
 // I/O
 // ---------------------------------------------------------------------------
 
-/// `php_openssl_sockop_io` with the session active: the bytes read or
-/// written, `-1` on a timeout.
-pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental: bool) -> isize {
+/// `php_openssl_sockop_read` with the session active: the bytes read,
+/// `-1` on a timeout.
+pub fn sockop_read(stream: &mut FdStream, buf: &mut [u8], supplemental: bool) -> isize {
+    sockop_io(
+        stream,
+        true,
+        buf.as_mut_ptr() as *mut c_void,
+        buf.len(),
+        supplemental,
+    )
+}
+
+/// `php_openssl_sockop_write` with the session active: the bytes written,
+/// `-1` on a timeout.
+pub fn sockop_write(stream: &mut FdStream, buf: &[u8]) -> isize {
+    // SSL_write only reads from the buffer
+    sockop_io(stream, false, buf.as_ptr() as *mut c_void, buf.len(), false)
+}
+
+/// `php_openssl_sockop_io`: `len` bytes at `buf`, written to when `read`.
+fn sockop_io(
+    stream: &mut FdStream,
+    read: bool,
+    buf: *mut c_void,
+    len: usize,
+    supplemental: bool,
+) -> isize {
     let Some(raw) = stream.raw_fd() else {
         return -1;
     };
@@ -1609,7 +1647,7 @@ pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental
     };
     let mut retry = !supplemental;
     let began_blocked = sock.blocked;
-    let count = buf.len().min(c_int::MAX as usize) as c_int;
+    let count = len.min(c_int::MAX as usize) as c_int;
     let timeout = (began_blocked && !supplemental).then_some(sock.timeout.unwrap_or((-1, 0)));
     if timeout.is_some() || supplemental {
         set_blocking(raw, sock, false);
@@ -1630,9 +1668,7 @@ pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental
         unsafe { sys::ERR_clear_error() };
         let err_no;
         if read {
-            nr_bytes = super::with_callbacks(|| unsafe {
-                sys::SSL_read(t.ssl, buf.as_mut_ptr() as *mut c_void, count)
-            });
+            nr_bytes = super::with_callbacks(|| unsafe { sys::SSL_read(t.ssl, buf, count) });
             err_no = errno();
             if let Some(r) = t.shared().reneg.as_mut().filter(|r| r.should_close) {
                 if r.callback_due {
@@ -1648,7 +1684,7 @@ pub fn sockop_io(stream: &mut FdStream, read: bool, buf: &mut [u8], supplemental
                 break;
             }
         } else {
-            nr_bytes = unsafe { sys::SSL_write(t.ssl, buf.as_ptr() as *const c_void, count) };
+            nr_bytes = super::with_callbacks(|| unsafe { sys::SSL_write(t.ssl, buf, count) });
             err_no = errno();
         }
         let left = has_timeout.then(|| tv_left(timeout.unwrap_or_default(), elapsed));
@@ -1730,7 +1766,9 @@ impl SslSock {
             crate::fdstream::set_fd_blocking(raw, false);
         }
         let mut b = 0u8;
-        let n = unsafe { sys::SSL_peek(self.ssl, &mut b as *mut u8 as *mut c_void, 1) };
+        let n = super::with_callbacks(|| unsafe {
+            sys::SSL_peek(self.ssl, &mut b as *mut u8 as *mut c_void, 1)
+        });
         let alive = if n <= 0 {
             match unsafe { sys::SSL_get_error(self.ssl, n) } {
                 sys::SSL_ERROR_SYSCALL => errno() == libc::EAGAIN,

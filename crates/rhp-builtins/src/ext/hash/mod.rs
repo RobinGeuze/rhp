@@ -71,12 +71,12 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"ripemd256" => dg::<ripemd::Ripemd256>(data),
         b"ripemd320" => dg::<ripemd::Ripemd320>(data),
         b"whirlpool" => dg::<whirlpool::Whirlpool>(data),
-        b"tiger128,3" => tiger3(data, 16),
-        b"tiger160,3" => tiger3(data, 20),
-        b"tiger192,3" => tiger3(data, 24),
-        b"tiger128,4" => tiger::tiger4(data, 16),
-        b"tiger160,4" => tiger::tiger4(data, 20),
-        b"tiger192,4" => tiger::tiger4(data, 24),
+        b"tiger128,3" => tiger::tiger(data, 3, 16),
+        b"tiger160,3" => tiger::tiger(data, 3, 20),
+        b"tiger192,3" => tiger::tiger(data, 3, 24),
+        b"tiger128,4" => tiger::tiger(data, 4, 16),
+        b"tiger160,4" => tiger::tiger(data, 4, 20),
+        b"tiger192,4" => tiger::tiger(data, 4, 24),
         b"snefru" | b"snefru256" => snefru::snefru256(data).to_vec(),
         b"gost" => dg::<gost94::Gost94Test>(data),
         b"gost-crypto" => dg::<gost94::Gost94CryptoPro>(data),
@@ -276,16 +276,6 @@ fn parse_haval(algo: &[u8]) -> Option<(usize, usize)> {
     } else {
         None
     }
-}
-
-// ---------------------------------------------------------------------------
-// tiger (3-pass via the `tiger` crate, truncated to width)
-// ---------------------------------------------------------------------------
-
-fn tiger3(data: &[u8], width: usize) -> Vec<u8> {
-    // `::tiger` = the external crate (the local `tiger` module shadows the name).
-    let full = dg::<::tiger::Tiger>(data);
-    full[..width].to_vec()
 }
 
 // ---------------------------------------------------------------------------

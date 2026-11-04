@@ -1,919 +1,1836 @@
-//! Multibyte string builtins (an `mbstring` subset), focused on **UTF-8**.
+//! The mbstring extension: a port of php-src's ext/mbstring/mbstring.c
+//! (PHP-3.01) over php's own libmbfl and php_unicode.c, which rhp-mbfl-sys
+//! compiles from the pinned tag. Encodings, conversion, case mapping and
+//! the width table are libmbfl's; this module is the glue mbstring.c puts
+//! around them: argument handling, the per-request settings (MBSTRG), the
+//! substring/position logic and encoding detection.
 //!
-//! These functions treat their input bytes according to an *encoding* (default
-//! UTF-8) and operate on Unicode **codepoints**. UTF-8 is the dominant encoding
-//! and is decoded with php's exact error behaviour (see [`decode_utf8`]); the
-//! single-byte encodings `ASCII` and `ISO-8859-1` are also supported (byte ==
-//! codepoint). Any other encoding name is reported as invalid, matching php's
-//! `ValueError` (rhp does not implement the legacy CJK codecs).
-//!
-//! Case mapping (`mb_strtoupper` / `mb_strtolower` / `mb_convert_case`) is full
-//! Unicode: the per-codepoint mapping tables in [`mb_tables`] were generated from
-//! the local php 8.5.8 binary (its exact Unicode version), so casing is
-//! byte-identical over the whole range — accented Latin, German ß, the Greek
-//! Final_Sigma contextual rule, titlecase digraphs, ligatures, combining marks,
-//! CJK and astral emoji. `MB_CASE_*` modes (UPPER/LOWER/TITLE/FOLD and their
-//! `_SIMPLE` variants) are all handled.
-//!
-//! `mb_internal_encoding()` state is a module `thread_local`. Caveat: it lives
-//! for the lifetime of the thread, which for the per-run CLI process is exactly
-//! one script; it is **not** shared across threads and does not reach the host.
-//!
-//! Wire into `lib.rs` with `mod mb_fns;` and `mb_fns::register(&mut m);`.
+//! Not ported yet: the functions rhp does not register (mb_ereg* and the
+//! other mbstring.c functions without a counterpart here), the mbstring.*
+//! ini handlers, and php's `IS_STR_VALID_UTF8` string flag (a shortcut
+//! that gives the same result for UTF-8 itself; for the UTF-8-Mobile
+//! variants php's answer can depend on it, and rhp takes the path php
+//! takes for an unflagged string).
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_mbfl_sys::{self as mbfl, case_mode, encodings, illegal_mode, ConvertBuf, Encoding};
+use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::{warn, Builtin, Host, Thrown};
+use crate::ext::zpp::{self, deref};
+use crate::{deprecated, warn, Builtin, Host, Thrown};
 
-#[path = "mb_tables.rs"]
-mod mb_tables;
-mod rare_cp;
+type Enc = &'static Encoding;
+
+/// `MBFL_ENCTYPE_SBCS | MBFL_ENCTYPE_WCS2 | MBFL_ENCTYPE_WCS4`: the
+/// fixed-width flags; their value is the character's byte width.
+const FIXED_WIDTH: u32 = mbfl::ENCTYPE_SBCS | mbfl::ENCTYPE_WCS2 | mbfl::ENCTYPE_WCS4;
+/// `MBFL_SUBSTR_UNTIL_END`.
+const UNTIL_END: usize = usize::MAX;
+/// `MBFL_ERROR_NOT_FOUND`.
+const ERROR_NOT_FOUND: usize = usize::MAX;
+/// `MBFL_ERROR_OFFSET`.
+const ERROR_OFFSET: usize = usize::MAX - 15;
+
+/// `mbfl_is_error`.
+fn is_error(n: usize) -> bool {
+    n >= ERROR_OFFSET
+}
 
 // ---------------------------------------------------------------------------
-// small shared helpers
+// per-request state (MBSTRG)
 // ---------------------------------------------------------------------------
 
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
+/// The module globals php's functions read and set.
+struct State {
+    /// `current_internal_encoding`.
+    internal: Enc,
+    /// `current_filter_illegal_mode`.
+    illegal_mode: u32,
+    /// `current_filter_illegal_substchar`.
+    substchar: u32,
+    /// `illegalchars`: unconvertible characters seen this request.
+    illegalchars: usize,
+    /// `last_used_encoding_name` / `last_used_encoding`.
+    last_used: Option<(Vec<u8>, Enc)>,
+    /// `current_detect_order_list`.
+    detect_order: Vec<Enc>,
+    /// `all_encodings_list`: the array `mb_list_encodings()` returns, kept
+    /// so passing it back can be recognised.
+    all_encodings: Option<PhpArray>,
+}
+
+impl State {
+    fn new() -> State {
+        State {
+            internal: encodings::utf8(),
+            illegal_mode: illegal_mode::CHAR,
+            substchar: b'?' as u32,
+            illegalchars: 0,
+            last_used: None,
+            detect_order: default_detect_order(),
+            all_encodings: None,
+        }
     }
 }
 
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
-
-/// Sentinel codepoint for an illegal input sequence. Encodes to the substitute
-/// character `?` (0x3F), matching php's default `mb_substitute_character`.
-const ERR: u32 = 0xFFFF_FFFF;
-
-// ---------------------------------------------------------------------------
-// encodings
-// ---------------------------------------------------------------------------
-
-/// The encodings this subset supports.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Enc {
-    Utf8,
-    Ascii,
-    Latin1,
-}
-
-// The `mb_internal_encoding()` state (default UTF-8), per thread.
 thread_local! {
-    static INTERNAL: RefCell<Enc> = const { RefCell::new(Enc::Utf8) };
+    static STATE: RefCell<State> = RefCell::new(State::new());
 }
 
+fn st<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    STATE.with(|s| f(&mut s.borrow_mut()))
+}
+
+/// RINIT/RSHUTDOWN: a new request starts from the defaults.
 pub(crate) fn reset_state() {
-    INTERNAL.with(|c| *c.borrow_mut() = Enc::Utf8);
-    SUBST.with(|c| *c.borrow_mut() = Value::Int(0x3F));
+    st(|s| *s = State::new());
 }
 
-fn internal_enc() -> Enc {
-    INTERNAL.with(|c| *c.borrow())
+fn internal() -> Enc {
+    st(|s| s.internal)
 }
 
-/// Canonical name php reports for an encoding.
-fn enc_name(e: Enc) -> &'static str {
-    match e {
-        Enc::Utf8 => "UTF-8",
-        Enc::Ascii => "ASCII",
-        Enc::Latin1 => "ISO-8859-1",
+fn illegal_settings() -> (u32, u32) {
+    st(|s| (s.illegal_mode, s.substchar))
+}
+
+/// `default_detect_order_list` for mbstring.language=neutral
+/// (php_mb_default_identify_list_neut), which "auto" expands to.
+fn default_detect_order() -> Vec<Enc> {
+    vec![encodings::ascii(), encodings::utf8()]
+}
+
+/// `MBSTRG(strict_detection)`: the mbstring.strict_detection ini value.
+fn strict_detection() -> bool {
+    crate::ini_value(b"mbstring.strict_detection")
+        .flatten()
+        .is_some_and(|v| crate::runtime_fns::ini_parse_bool(&v))
+}
+
+/// php's `ZEND_HAS_OOM()`: an allocation crossed memory_limit, and the VM
+/// raises the error once the builtin returns.
+fn has_oom() -> bool {
+    rhp_values::mem::state().attention()
+}
+
+// ---------------------------------------------------------------------------
+// arguments
+// ---------------------------------------------------------------------------
+
+/// The name of parameter `i` (0-based) of `fname`, from its stub.
+fn pname(fname: &str, i: usize) -> &'static str {
+    crate::signatures::function(fname.as_bytes())
+        .and_then(|f| f.params.get(i))
+        .map_or("", |p| p.name)
+}
+
+fn value_error(fname: &str, i: usize, msg: &str) -> Thrown {
+    zpp::value_error(fname, i + 1, pname(fname, i), msg)
+}
+
+/// `zend_argument_must_not_be_empty_error`.
+fn empty_error(fname: &str, i: usize) -> Thrown {
+    value_error(fname, i, "must not be empty")
+}
+
+/// `Z_PARAM_STR`.
+fn str_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result<Vec<u8>, Thrown> {
+    zpp::str_arg(host, args, i, fname, pname(fname, i))
+}
+
+/// `Z_PARAM_STR_OR_NULL`.
+fn opt_str_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    zpp::opt_str_arg(host, args, i, fname, pname(fname, i))
+}
+
+/// `Z_PARAM_LONG`. The VM has already reported a null for a non-nullable
+/// parameter.
+fn long_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result<i64, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(0),
+        Some(_) => zpp::long_arg(host, args, i, fname, pname(fname, i)),
     }
 }
 
-/// Resolve an encoding name (case-insensitive) to a supported [`Enc`].
-fn resolve_enc(name: &[u8]) -> Option<Enc> {
-    let lower = name.to_ascii_lowercase();
-    match lower.as_slice() {
-        b"utf-8" | b"utf8" => Some(Enc::Utf8),
-        b"ascii" | b"us-ascii" => Some(Enc::Ascii),
-        _ if ASCII_ALIASES
-            .iter()
-            .any(|a| a.as_bytes().eq_ignore_ascii_case(&lower)) =>
-        {
-            Some(Enc::Ascii)
-        }
-        b"iso-8859-1" | b"iso8859-1" | b"latin1" | b"8859-1" | b"cp819" | b"l1" => {
-            Some(Enc::Latin1)
-        }
-        _ => None,
+/// `Z_PARAM_LONG_OR_NULL`.
+fn opt_long_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+) -> Result<Option<i64>, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => zpp::long_arg(host, args, i, fname, pname(fname, i)).map(Some),
     }
 }
 
-fn enc_error(fname: &str, argnum: usize, name: &[u8]) -> Thrown {
-    Thrown::error(
-        "ValueError",
-        format!(
-            "{}(): Argument #{} ($encoding) must be a valid encoding, \"{}\" given",
+/// `Z_PARAM_BOOL`.
+fn bool_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    default: bool,
+) -> Result<bool, Thrown> {
+    zpp::bool_arg_or(host, args, i, fname, pname(fname, i), default)
+}
+
+/// A C string argument as php's `char *` APIs see it: up to the first NUL.
+fn c_str(b: &[u8]) -> &[u8] {
+    &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]
+}
+
+/// `php_mb_get_encoding`: the named encoding (argument `i`, 0-based), or
+/// the internal encoding when there is none. Base64, QPrint, HTML-ENTITIES
+/// and UUENCODE raise their deprecation the first time in a row they are
+/// named.
+fn get_encoding(
+    host: &mut dyn Host,
+    name: Option<&[u8]>,
+    i: usize,
+    fname: &str,
+) -> Result<Enc, Thrown> {
+    let Some(name) = name else {
+        return Ok(internal());
+    };
+    let cached = st(|s| {
+        s.last_used
+            .as_ref()
+            .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, e)| *e)
+    });
+    if let Some(enc) = cached {
+        return Ok(enc);
+    }
+    let Some(enc) = Encoding::by_name(name) else {
+        return Err(value_error(
             fname,
-            argnum,
-            String::from_utf8_lossy(name)
-        ),
+            i,
+            &format!(
+                "must be a valid encoding, \"{}\" given",
+                String::from_utf8_lossy(c_str(name))
+            ),
+        ));
+    };
+    let mut notice = Ok(());
+    if enc.no() <= mbfl::no::QPRINT {
+        let msg = if enc == encodings::base64() {
+            Some("Handling Base64 via mbstring is deprecated; use base64_encode/base64_decode instead")
+        } else if enc == encodings::qprint() {
+            Some("Handling QPrint via mbstring is deprecated; use quoted_printable_encode/quoted_printable_decode instead")
+        } else if enc == encodings::html_ent() {
+            Some("Handling HTML entities via mbstring is deprecated; use htmlspecialchars, htmlentities, or mb_encode_numericentity/mb_decode_numericentity instead")
+        } else if enc == encodings::uuencode() {
+            Some("Handling Uuencode via mbstring is deprecated; use convert_uuencode/convert_uudecode instead")
+        } else {
+            None
+        };
+        if let Some(msg) = msg {
+            notice = deprecated(host, fname, msg);
+        }
+    }
+    // Cached even when an error handler threw: php carries on and throws
+    // once the builtin returns.
+    st(|s| s.last_used = Some((name.to_vec(), enc)));
+    notice.map(|()| enc)
+}
+
+/// An optional `?string $encoding` argument at `i`, resolved.
+fn enc_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result<Enc, Thrown> {
+    let name = opt_str_arg(host, args, i, fname)?;
+    get_encoding(host, name.as_deref(), i, fname)
+}
+
+/// `php_mb_parse_encoding_list`: a comma-separated list (one pair of
+/// enclosing double quotes allowed); "auto" (or any prefix of it, as php's
+/// strncasecmp compares) adds the default detect order once.
+fn parse_encoding_list(list: &[u8], fname: &str, i: usize) -> Result<Vec<Enc>, Thrown> {
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    let list = if list.len() > 2 && list[0] == b'"' && list[list.len() - 1] == b'"' {
+        &list[1..list.len() - 1]
+    } else {
+        list
+    };
+    let defaults = default_detect_order();
+    let size = 1 + list.iter().filter(|&&c| c == b',').count() + defaults.len();
+    let mut out = Vec::new();
+    let mut included_auto = false;
+    let mut rest = list;
+    loop {
+        let comma = rest.iter().position(|&c| c == b',');
+        let mut item = &rest[..comma.unwrap_or(rest.len())];
+        while let [b' ' | b'\t', tail @ ..] = item {
+            item = tail;
+        }
+        // php trims the end only while more than one byte is left.
+        while item.len() > 1 && matches!(item[item.len() - 1], b' ' | b'\t') {
+            item = &item[..item.len() - 1];
+        }
+        if strncasecmp_eq(item, b"auto") {
+            if !included_auto {
+                included_auto = true;
+                out.extend_from_slice(&defaults);
+            }
+        } else {
+            let Some(enc) = Encoding::by_name_ex(item) else {
+                return Err(value_error(
+                    fname,
+                    i,
+                    &format!(
+                        "contains invalid encoding \"{}\"",
+                        String::from_utf8_lossy(c_str(item))
+                    ),
+                ));
+            };
+            out.push(enc);
+        }
+        match comma {
+            Some(c) if out.len() < size => rest = &rest[c + 1..],
+            _ => break,
+        }
+    }
+    Ok(out)
+}
+
+/// `strncasecmp(s, lit, s.len()) == 0`, as C compares: up to `s.len()`
+/// bytes, stopping at a NUL in either string.
+fn strncasecmp_eq(s: &[u8], lit: &[u8]) -> bool {
+    for (k, &a) in s.iter().enumerate() {
+        let b = lit.get(k).copied().unwrap_or(0);
+        if !a.eq_ignore_ascii_case(&b) {
+            return false;
+        }
+        if a == 0 {
+            return true;
+        }
+    }
+    true
+}
+
+/// `php_mb_parse_encoding_array`: names from an array; "auto" adds the
+/// default detect order once.
+fn parse_encoding_array(
+    host: &mut dyn Host,
+    a: &PhpArray,
+    fname: &str,
+    i: usize,
+) -> Result<Vec<Enc>, Thrown> {
+    let mut out = Vec::new();
+    let mut included_auto = false;
+    for (_, v) in a.iter() {
+        let name = crate::argparse::zval_get_string(host, v)?;
+        if name.eq_ignore_ascii_case(b"auto") {
+            if !included_auto {
+                included_auto = true;
+                out.extend(default_detect_order());
+            }
+        } else {
+            match Encoding::by_name(&name) {
+                Some(enc) => out.push(enc),
+                None => {
+                    return Err(value_error(
+                        fname,
+                        i,
+                        &format!(
+                            "contains invalid encoding \"{}\"",
+                            String::from_utf8_lossy(c_str(&name))
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// An `array|string|null` encoding-list argument: `None` when null or
+/// absent; `Some((list, is_all_encodings))` otherwise.
+fn enc_list_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+) -> Result<Option<(Vec<Enc>, bool)>, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => {
+            let all = st(|s| {
+                s.all_encodings
+                    .as_ref()
+                    .is_some_and(|l| l.data_ptr() == a.data_ptr())
+            });
+            Ok(Some((parse_encoding_array(host, &a, fname, i)?, all)))
+        }
+        Some(_) => {
+            let s = str_arg(host, args, i, fname)?;
+            Ok(Some((parse_encoding_list(&s, fname, i)?, false)))
+        }
+    }
+}
+
+/// `remove_non_encodings_from_elist`: Base64, QPrint and the other byte
+/// encodings are never detected.
+fn remove_non_encodings(list: &mut Vec<Enc>) {
+    list.retain(|e| e.no() > mbfl::no::CHARSET_MIN);
+}
+
+/// `php_mb_is_no_encoding_utf8`: UTF-8 and its mobile variants.
+fn is_utf8(enc: Enc) -> bool {
+    (mbfl::no::UTF8..=mbfl::no::UTF8_SB).contains(&enc.no())
+}
+
+/// `php_mb_is_unsupported_no_encoding` (mb_ord, mb_chr).
+fn is_unsupported(enc: Enc) -> bool {
+    let n = enc.no();
+    (mbfl::no::INVALID..=mbfl::no::QPRINT).contains(&n)
+        || (mbfl::no::UTF7..=mbfl::no::UTF7IMAP).contains(&n)
+        || (mbfl::no::JIS..=mbfl::no::ISO2022JPMS).contains(&n)
+        || (mbfl::no::CP50220..=mbfl::no::CP50222).contains(&n)
+}
+
+// ---------------------------------------------------------------------------
+// conversion helpers
+// ---------------------------------------------------------------------------
+
+/// The codepoints of `input`, 128 at a time, as `to_wchar` delivers them.
+fn for_each_chunk(enc: Enc, input: &[u8], mut f: impl FnMut(&[u32], bool)) {
+    let mut buf = [0u32; 128];
+    let mut rest = input;
+    let mut state = 0;
+    while !rest.is_empty() {
+        let n = enc.to_wchar(&mut rest, &mut buf, &mut state);
+        f(&buf[..n], rest.is_empty());
+    }
+}
+
+/// `php_mb_convert_encoding_ex`: with the current substitute settings,
+/// counting unconvertible characters in `illegalchars`.
+fn convert_ex(input: &[u8], to: Enc, from: Enc) -> Vec<u8> {
+    let (mode, subst) = illegal_settings();
+    let (out, errors) = mbfl::fast_convert(input, from, to, subst, mode);
+    st(|s| s.illegalchars += errors as usize);
+    out
+}
+
+/// To UTF-8 with 0xFF marking each bad byte sequence, as mbstring.c does
+/// before searching.
+fn to_utf8_marked(input: &[u8], enc: Enc) -> Vec<u8> {
+    mbfl::fast_convert(input, enc, encodings::utf8(), 0, illegal_mode::BADUTF8).0
+}
+
+/// `mb_fast_strlen_utf8`: bytes that don't continue a UTF-8 sequence.
+fn fast_strlen_utf8(s: &[u8]) -> usize {
+    s.iter().filter(|&&c| (c as i8) >= -64).count()
+}
+
+/// `mb_get_strlen`.
+fn get_strlen(s: &[u8], enc: Enc) -> usize {
+    let char_len = enc.flag() & FIXED_WIDTH;
+    if char_len != 0 {
+        return s.len() / char_len as usize;
+    }
+    // php takes this path for strings it knows are valid UTF-8; the count
+    // is the same as decoding them.
+    if enc == encodings::utf8() && std::str::from_utf8(s).is_ok() {
+        return fast_strlen_utf8(s);
+    }
+    let mut len = 0;
+    for_each_chunk(enc, s, |w, _| len += w.len());
+    len
+}
+
+/// `mb_get_substr_slow`.
+fn get_substr_slow(input: &[u8], mut from: usize, mut len: usize, enc: Enc) -> Vec<u8> {
+    let (mode, subst) = illegal_settings();
+    // php sizes the buffer with `in_len - from`, which wraps when `from` is
+    // past the end (possible only for SJIS-mac, and then it under-allocates);
+    // the buffer grows as needed either way.
+    let mut buf = ConvertBuf::new(len.min(input.len().saturating_sub(from)), subst, mode);
+    let mut wchar = [0u32; 128];
+    let mut rest = input;
+    let mut state = 0;
+    while !rest.is_empty() && len != 0 {
+        let out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+        if from >= out_len {
+            from -= out_len;
+        } else {
+            let needed = (out_len - from).min(len);
+            enc.from_wchar(
+                &wchar[from..from + needed],
+                &mut buf,
+                rest.is_empty() || out_len >= len,
+            );
+            from = 0;
+            len -= needed;
+        }
+    }
+    buf.result(enc)
+}
+
+/// `mb_get_substr`: `len` characters from character `from`.
+fn get_substr(input: &[u8], from: usize, len: usize, enc: Enc) -> Vec<u8> {
+    if len == 0 || (from >= input.len() && enc != encodings::sjis_mac()) {
+        // Only MacJapanese decodes to more than one codepoint per byte.
+        return Vec::new();
+    }
+    let flag = enc.flag() & FIXED_WIDTH;
+    if flag != 0 {
+        let from = from.wrapping_mul(flag as usize);
+        let len = len.wrapping_mul(flag as usize);
+        if from >= input.len() {
+            return Vec::new();
+        }
+        let rest = &input[from..];
+        return rest[..len.min(rest.len())].to_vec();
+    }
+    get_substr_slow(input, from, len, enc)
+}
+
+/// `offset_to_pointer_utf8`: the byte position `offset` characters from
+/// the start (negative: from the end), or None when out of range.
+fn offset_to_pointer_utf8(s: &[u8], offset: isize) -> Option<usize> {
+    if offset < 0 {
+        let mut pos = s.len();
+        let mut offset = offset;
+        while offset < 0 {
+            if pos == 0 {
+                return None;
+            }
+            pos -= 1;
+            let c = s[pos];
+            if c < 0x80 || (c & 0xC0) != 0x80 {
+                offset += 1;
+            }
+        }
+        Some(pos)
+    } else {
+        let tbl = encodings::utf8()
+            .mblen_table()
+            .expect("UTF-8 has an mblen table");
+        let mut pos = 0usize;
+        for _ in 0..offset {
+            if pos >= s.len() {
+                return None;
+            }
+            pos += tbl[s[pos] as usize] as usize;
+        }
+        Some(pos.min(s.len()))
+    }
+}
+
+/// `zend_memnstr`: the first occurrence of `needle` in `h[from..end]`.
+fn memnstr(h: &[u8], from: usize, needle: &[u8], end: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(from);
+    }
+    let hay = &h[from..end];
+    if needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| from + p)
+}
+
+/// `zend_memnrstr`: the last occurrence of `needle` that ends by `end`
+/// and starts at `from` or later.
+fn memnrstr(h: &[u8], from: usize, needle: &[u8], end: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(end);
+    }
+    if end < from || needle.len() > end - from {
+        return None;
+    }
+    h[from..end]
+        .windows(needle.len())
+        .rposition(|w| w == needle)
+        .map(|p| from + p)
+}
+
+/// `mb_find_strpos`: the character position of `needle`, or an
+/// `MBFL_ERROR_*` value.
+fn find_strpos(haystack: &[u8], needle: &[u8], enc: Enc, offset: isize, reverse: bool) -> usize {
+    let (h, n);
+    let (h, n): (&[u8], &[u8]) = if !is_utf8(enc) {
+        h = to_utf8_marked(haystack, enc);
+        n = to_utf8_marked(needle, enc);
+        (&h, &n)
+    } else {
+        (haystack, needle)
+    };
+    let Some(off_ptr) = offset_to_pointer_utf8(h, offset) else {
+        return ERROR_OFFSET;
+    };
+    if h.len() < n.len() {
+        return ERROR_NOT_FOUND;
+    }
+    let found = if !reverse {
+        memnstr(h, off_ptr, n, h.len())
+    } else if offset >= 0 {
+        memnrstr(h, off_ptr, n, h.len())
+    } else {
+        let needle_len = fast_strlen_utf8(n);
+        let end = offset_to_pointer_utf8(&h[off_ptr..], needle_len as isize)
+            .map_or(h.len(), |p| off_ptr + p);
+        memnrstr(h, 0, n, end)
+    };
+    match found {
+        Some(p) => fast_strlen_utf8(&h[..p]),
+        None => ERROR_NOT_FOUND,
+    }
+}
+
+/// `php_mb_stripos`: simple case folding to UTF-8, then [`find_strpos`].
+fn stripos(reverse: bool, haystack: &[u8], needle: &[u8], offset: isize, enc: Enc) -> usize {
+    let fold = |s: &[u8]| {
+        mbfl::convert_case(
+            case_mode::FOLD_SIMPLE,
+            s,
+            enc,
+            encodings::utf8(),
+            illegal_mode::BADUTF8,
+            0,
+        )
+    };
+    find_strpos(
+        &fold(haystack),
+        &fold(needle),
+        encodings::utf8(),
+        offset,
+        reverse,
     )
 }
 
-/// Resolve the optional `$encoding` argument at `idx`, defaulting to the current
-/// internal encoding. A present-but-unknown name raises php's `ValueError`.
-fn arg_enc(args: &[Value], idx: usize, fname: &str, argnum: usize) -> Result<Enc, Thrown> {
-    match args.get(idx).map(deref) {
-        None | Some(Value::Null) => Ok(internal_enc()),
-        Some(v) => {
-            let b = conv::to_string_bytes(&v);
-            resolve_enc(&b).ok_or_else(|| enc_error(fname, argnum, &b))
+/// `handle_strpos_error`.
+fn strpos_error(fname: &str, n: usize) -> Result<Value, Thrown> {
+    if n == ERROR_OFFSET {
+        return Err(value_error(
+            fname,
+            2,
+            "must be contained in argument #1 ($haystack)",
+        ));
+    }
+    Ok(Value::Bool(false))
+}
+
+/// `character_width`.
+fn character_width(c: u32) -> usize {
+    if c < mbfl::FIRST_DOUBLEWIDTH_CODEPOINT {
+        return 1;
+    }
+    let t = mbfl::eaw_table();
+    let (mut lo, mut hi) = (0, t.len());
+    while lo < hi {
+        let probe = (lo + hi) / 2;
+        if c < t[probe][0] as u32 {
+            hi = probe;
+        } else if c > t[probe][1] as u32 {
+            lo = probe + 1;
+        } else {
+            return 2;
         }
     }
+    1
 }
 
-// ---------------------------------------------------------------------------
-// UTF-8 (and single-byte) decode / encode
-// ---------------------------------------------------------------------------
+/// `mb_get_strwidth`.
+fn get_strwidth(s: &[u8], enc: Enc) -> usize {
+    let mut width = 0;
+    for_each_chunk(enc, s, |w, _| {
+        width += w.iter().map(|&c| character_width(c)).sum::<usize>()
+    });
+    width
+}
 
-/// Decode UTF-8 into `(codepoint, byte_start, byte_len)` triples, reproducing
-/// php's mbstring error handling: each maximal ill-formed subpart becomes one
-/// [`ERR`] sentinel (one substitute on re-encode), consuming the valid prefix of
-/// a broken sequence and re-reading the offending byte. Matches php's chunking
-/// exactly (e.g. `ED A0 80` is three errors, `E2 82 28` is one error then `(`).
-fn decode_utf8_full(bytes: &[u8]) -> Vec<(u32, usize, usize)> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        let b = bytes[i];
-        if b < 0x80 {
-            out.push((b as u32, i, 1));
-            i += 1;
-            continue;
-        }
-        // (total length, valid range for the 2nd byte); 3rd/4th are always 80..BF.
-        let (len, lo2, hi2) = match b {
-            0xC2..=0xDF => (2, 0x80, 0xBF),
-            0xE0 => (3, 0xA0, 0xBF),
-            0xE1..=0xEC => (3, 0x80, 0xBF),
-            0xED => (3, 0x80, 0x9F),
-            0xEE..=0xEF => (3, 0x80, 0xBF),
-            0xF0 => (4, 0x90, 0xBF),
-            0xF1..=0xF3 => (4, 0x80, 0xBF),
-            0xF4 => (4, 0x80, 0x8F),
-            _ => {
-                // invalid lead byte (incl. lone continuation / overlong C0,C1 / F5+)
-                out.push((ERR, i, 1));
-                i += 1;
-                continue;
-            }
-        };
-        // second byte
-        if i + 1 >= n || !(lo2..=hi2).contains(&bytes[i + 1]) {
-            out.push((ERR, i, 1));
-            i += 1;
-            continue;
-        }
-        // remaining continuation bytes
-        let mut consumed = 2;
-        let mut ok = true;
-        while consumed < len {
-            let j = i + consumed;
-            if j >= n || !(0x80..=0xBF).contains(&bytes[j]) {
-                ok = false;
-                break;
-            }
-            consumed += 1;
-        }
-        if !ok {
-            out.push((ERR, i, consumed)); // drop the valid prefix of the broken sequence
-            i += consumed;
-            continue;
-        }
-        let cp = match len {
-            2 => ((b as u32 & 0x1F) << 6) | (bytes[i + 1] as u32 & 0x3F),
-            3 => {
-                ((b as u32 & 0x0F) << 12)
-                    | ((bytes[i + 1] as u32 & 0x3F) << 6)
-                    | (bytes[i + 2] as u32 & 0x3F)
-            }
-            _ => {
-                ((b as u32 & 0x07) << 18)
-                    | ((bytes[i + 1] as u32 & 0x3F) << 12)
-                    | ((bytes[i + 2] as u32 & 0x3F) << 6)
-                    | (bytes[i + 3] as u32 & 0x3F)
-            }
-        };
-        out.push((cp, i, len));
-        i += len;
+/// `mbstring_convert_case`, with the current substitute settings.
+fn convert_case(mode: i32, s: &[u8], enc: Enc) -> Vec<u8> {
+    let (illegal, subst) = illegal_settings();
+    mbfl::convert_case(mode, s, enc, enc, illegal, subst)
+}
+
+/// `php_mb_check_encoding`.
+fn check_encoding(s: &[u8], enc: Enc) -> bool {
+    if let Some(ok) = enc.check(s) {
+        return ok;
     }
-    out
-}
-
-fn decode_utf8(bytes: &[u8]) -> Vec<u32> {
-    decode_utf8_full(bytes)
-        .into_iter()
-        .map(|(cp, _, _)| cp)
-        .collect()
-}
-
-/// Decode UTF-8 for the **position** functions (`mb_strpos` family), which use a
-/// different illegal-byte rule than `mb_strlen`/`mb_substr`: a lone continuation
-/// byte (0x80..=0xBF) is **dropped** (contributes no character position), while a
-/// lead/invalid-lead error yields one [`ERR`] character. Verified against php.
-fn decode_utf8_pos(bytes: &[u8]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        let b = bytes[i];
-        if b < 0x80 {
-            out.push(b as u32);
-            i += 1;
-            continue;
-        }
-        if (0x80..=0xBF).contains(&b) {
-            i += 1; // lone continuation: no position emitted
-            continue;
-        }
-        let (len, lo2, hi2) = match b {
-            0xC2..=0xDF => (2, 0x80, 0xBF),
-            0xE0 => (3, 0xA0, 0xBF),
-            0xE1..=0xEC => (3, 0x80, 0xBF),
-            0xED => (3, 0x80, 0x9F),
-            0xEE..=0xEF => (3, 0x80, 0xBF),
-            0xF0 => (4, 0x90, 0xBF),
-            0xF1..=0xF3 => (4, 0x80, 0xBF),
-            0xF4 => (4, 0x80, 0x8F),
-            _ => {
-                out.push(ERR); // invalid lead (C0,C1,F5+): one position
-                i += 1;
-                continue;
-            }
-        };
-        if i + 1 >= n || !(lo2..=hi2).contains(&bytes[i + 1]) {
-            out.push(ERR);
-            i += 1;
-            continue;
-        }
-        let mut consumed = 2;
-        let mut ok = true;
-        while consumed < len {
-            let j = i + consumed;
-            if j >= n || !(0x80..=0xBF).contains(&bytes[j]) {
-                ok = false;
-                break;
-            }
-            consumed += 1;
-        }
-        if !ok {
-            out.push(ERR);
-            i += consumed;
-            continue;
-        }
-        let cp = match len {
-            2 => ((b as u32 & 0x1F) << 6) | (bytes[i + 1] as u32 & 0x3F),
-            3 => {
-                ((b as u32 & 0x0F) << 12)
-                    | ((bytes[i + 1] as u32 & 0x3F) << 6)
-                    | (bytes[i + 2] as u32 & 0x3F)
-            }
-            _ => {
-                ((b as u32 & 0x07) << 18)
-                    | ((bytes[i + 1] as u32 & 0x3F) << 12)
-                    | ((bytes[i + 2] as u32 & 0x3F) << 6)
-                    | (bytes[i + 3] as u32 & 0x3F)
-            }
-        };
-        out.push(cp);
-        i += len;
-    }
-    out
-}
-
-/// Decode for the position functions under `enc` (see [`decode_utf8_pos`]).
-fn decode_pos(enc: Enc, bytes: &[u8]) -> Vec<u32> {
-    match enc {
-        Enc::Utf8 => decode_utf8_pos(bytes),
-        Enc::Ascii | Enc::Latin1 => bytes.iter().map(|&b| b as u32).collect(),
-    }
-}
-
-/// Append the UTF-8 encoding of one codepoint to `out` ([`ERR`] / out-of-range →
-/// substitute `?`).
-fn encode_cp(cp: u32, out: &mut Vec<u8>) {
-    if cp == ERR || cp > 0x10FFFF {
-        out.push(b'?');
-    } else if cp < 0x80 {
-        out.push(cp as u8);
-    } else if cp < 0x800 {
-        out.push(0xC0 | (cp >> 6) as u8);
-        out.push(0x80 | (cp & 0x3F) as u8);
-    } else if cp < 0x10000 {
-        out.push(0xE0 | (cp >> 12) as u8);
-        out.push(0x80 | ((cp >> 6) & 0x3F) as u8);
-        out.push(0x80 | (cp & 0x3F) as u8);
-    } else {
-        out.push(0xF0 | (cp >> 18) as u8);
-        out.push(0x80 | ((cp >> 12) & 0x3F) as u8);
-        out.push(0x80 | ((cp >> 6) & 0x3F) as u8);
-        out.push(0x80 | (cp & 0x3F) as u8);
-    }
-}
-
-/// Decode a byte string into codepoints under `enc`.
-fn decode(enc: Enc, bytes: &[u8]) -> Vec<u32> {
-    match enc {
-        Enc::Utf8 => decode_utf8(bytes),
-        // ASCII: bytes >= 0x80 are MBFL_BAD_INPUT (mb_ascii_to_wchar).
-        Enc::Ascii => bytes
-            .iter()
-            .map(|&b| if b < 0x80 { b as u32 } else { ERR })
-            .collect(),
-        // ISO-8859-1: the byte value is the codepoint.
-        Enc::Latin1 => bytes.iter().map(|&b| b as u32).collect(),
-    }
-}
-
-/// Encode codepoints back to bytes under `enc` (unmappable → substitute `?`).
-fn encode(enc: Enc, cps: &[u32]) -> Vec<u8> {
-    match enc {
-        Enc::Utf8 => {
-            let mut out = Vec::with_capacity(cps.len());
-            for &cp in cps {
-                encode_cp(cp, &mut out);
-            }
-            out
-        }
-        Enc::Ascii => cps
-            .iter()
-            .map(|&cp| if cp < 0x80 { cp as u8 } else { b'?' })
-            .collect(),
-        Enc::Latin1 => cps
-            .iter()
-            .map(|&cp| if cp < 0x100 { cp as u8 } else { b'?' })
-            .collect(),
-    }
-}
-
-/// Per-character byte spans `(start, end)` under `enc`, for functions that slice
-/// the **original** bytes (preserving illegal sequences verbatim, as php does for
-/// `mb_substr` / `mb_str_pad`). Single-byte encodings yield one span per byte.
-fn char_spans(enc: Enc, bytes: &[u8]) -> Vec<(usize, usize)> {
-    match enc {
-        Enc::Utf8 => decode_utf8_full(bytes)
-            .into_iter()
-            .map(|(_, s, l)| (s, s + l))
-            .collect(),
-        Enc::Ascii | Enc::Latin1 => (0..bytes.len()).map(|i| (i, i + 1)).collect(),
-    }
-}
-
-/// Per-character byte spans used by `mb_str_split`, which chunks UTF-8 purely by
-/// the lead byte's expected length (ignoring continuation validity) and keeps the
-/// original bytes — a php quirk distinct from the strict chunking above.
-fn split_spans(enc: Enc, bytes: &[u8]) -> Vec<(usize, usize)> {
-    match enc {
-        Enc::Utf8 => {
-            let n = bytes.len();
-            let mut out = Vec::new();
-            let mut i = 0;
-            while i < n {
-                let len = match bytes[i] {
-                    0x00..=0x7F => 1,
-                    0xC2..=0xDF => 2,
-                    0xE0..=0xEF => 3,
-                    0xF0..=0xF4 => 4,
-                    _ => 1, // lone continuation, C0/C1, F5+
-                };
-                let end = (i + len).min(n);
-                out.push((i, end));
-                i = end;
-            }
-            out
-        }
-        Enc::Ascii | Enc::Latin1 => (0..bytes.len()).map(|i| (i, i + 1)).collect(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// case mapping (tables generated from php 8.5.8)
-// ---------------------------------------------------------------------------
-
-/// Greek capital sigma; the only codepoint with a default (non-locale)
-/// context-sensitive lowercase mapping (Final_Sigma).
-const SIGMA: u32 = 0x3A3;
-const FINAL_SIGMA: u32 = 0x3C2;
-
-fn lookup_full(table: &[(u32, u32, u32, u32)], cp: u32) -> Option<(u32, u32, u32)> {
-    table
-        .binary_search_by(|e| e.0.cmp(&cp))
-        .ok()
-        .map(|i| (table[i].1, table[i].2, table[i].3))
-}
-
-fn lookup_simple(table: &[(u32, u32)], cp: u32) -> Option<u32> {
-    table
-        .binary_search_by(|e| e.0.cmp(&cp))
-        .ok()
-        .map(|i| table[i].1)
-}
-
-fn in_ranges(table: &[(u32, u32)], cp: u32) -> bool {
-    table
-        .binary_search_by(|&(s, e)| {
-            if cp < s {
-                Ordering::Greater
-            } else if cp > e {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
-        })
-        .is_ok()
-}
-
-fn is_cased(cp: u32) -> bool {
-    in_ranges(mb_tables::CASED, cp)
-}
-fn is_case_ignorable(cp: u32) -> bool {
-    // php's case converter treats an illegal-input marker as transparent to word
-    // boundaries (unlike a literal '?'), so a cased letter after an error keeps
-    // the current word state.
-    cp == ERR || in_ranges(mb_tables::CASE_IGNORABLE, cp)
-}
-
-/// Push a full-mapping result (or the codepoint itself when unmapped).
-fn push_full(out: &mut Vec<u32>, table: &[(u32, u32, u32, u32)], cp: u32) {
-    match lookup_full(table, cp) {
-        Some((a, b, c)) => {
-            out.push(a);
-            if b != 0 {
-                out.push(b);
-            }
-            if c != 0 {
-                out.push(c);
-            }
-        }
-        None => out.push(cp),
-    }
-}
-
-/// Is the Σ at `cps[i]` a *final* sigma? True iff preceded by a cased char
-/// (skipping case-ignorable) and **not** followed by one.
-fn final_sigma(cps: &[u32], i: usize) -> bool {
-    let before = cps[..i]
-        .iter()
-        .rev()
-        .find(|&&c| !is_case_ignorable(c))
-        .map(|&c| is_cased(c))
-        .unwrap_or(false);
-    if !before {
+    // A wrong encoding usually shows in the first few characters.
+    let mut buf = [0u32; 128];
+    let mut rest = s;
+    let mut state = 0;
+    let n = enc.to_wchar(&mut rest, &mut buf[..8], &mut state);
+    if buf[..n].contains(&mbfl::BAD_INPUT) {
         return false;
     }
-    let after = cps[i + 1..]
-        .iter()
-        .find(|&&c| !is_case_ignorable(c))
-        .map(|&c| is_cased(c))
-        .unwrap_or(false);
-    !after
-}
-
-/// Lowercase one codepoint at index `i` (full mapping + Final_Sigma).
-fn push_lower_full(out: &mut Vec<u32>, cps: &[u32], i: usize) {
-    let cp = cps[i];
-    if cp == SIGMA && final_sigma(cps, i) {
-        out.push(FINAL_SIGMA);
-    } else {
-        push_full(out, mb_tables::MAP_LOWER, cp);
-    }
-}
-
-fn upper_full(cps: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(cps.len());
-    for &cp in cps {
-        push_full(&mut out, mb_tables::MAP_UPPER, cp);
-    }
-    out
-}
-
-fn lower_full(cps: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(cps.len());
-    for i in 0..cps.len() {
-        push_lower_full(&mut out, cps, i);
-    }
-    out
-}
-
-fn fold_full(cps: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(cps.len());
-    for &cp in cps {
-        push_full(&mut out, mb_tables::MAP_FOLD, cp);
-    }
-    out
-}
-
-fn title_full(cps: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(cps.len());
-    let mut in_word = false;
-    for i in 0..cps.len() {
-        let cp = cps[i];
-        if is_cased(cp) {
-            if in_word {
-                push_lower_full(&mut out, cps, i);
-            } else {
-                push_full(&mut out, mb_tables::MAP_TITLE, cp);
-                in_word = true;
-            }
-        } else if is_case_ignorable(cp) {
-            out.push(cp);
-        } else {
-            out.push(cp);
-            in_word = false;
+    while !rest.is_empty() {
+        let n = enc.to_wchar(&mut rest, &mut buf, &mut state);
+        if buf[..n].contains(&mbfl::BAD_INPUT) {
+            return false;
         }
     }
-    out
+    true
 }
 
-fn map_simple(cps: &[u32], table: &[(u32, u32)]) -> Vec<u32> {
-    cps.iter()
-        .map(|&cp| lookup_simple(table, cp).unwrap_or(cp))
-        .collect()
-}
-
-fn title_simple(cps: &[u32]) -> Vec<u32> {
-    let mut out = Vec::with_capacity(cps.len());
-    let mut in_word = false;
-    for &cp in cps {
-        if is_cased(cp) {
-            let t = if in_word {
-                lookup_simple(mb_tables::MAP_LOWER_SIMPLE, cp)
-            } else {
-                in_word = true;
-                lookup_simple(mb_tables::MAP_TITLE_SIMPLE, cp)
-            };
-            out.push(t.unwrap_or(cp));
-        } else if is_case_ignorable(cp) {
-            out.push(cp);
-        } else {
-            out.push(cp);
-            in_word = false;
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// mb_strlen / mb_substr
-// ---------------------------------------------------------------------------
-
-fn fn_mb_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_strlen", 2)?;
-    Ok(Value::Int(decode(enc, &bytes_of(&args[0])).len() as i64))
-}
-
-/// Clamp a php start/offset against codepoint `len`, returning an index 0..=len.
-fn clamp_start(start: i64, len: usize) -> usize {
-    let len = len as i64;
-    if start < 0 {
-        (len + start).max(0) as usize
+/// `mb_check_str_encoding`.
+fn check_str_encoding(s: &[u8], enc: Enc) -> bool {
+    if enc == encodings::utf8() {
+        std::str::from_utf8(s).is_ok()
     } else {
-        start.min(len) as usize
+        check_encoding(s, enc)
     }
-}
-
-fn fn_mb_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 3, "mb_substr", 4)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    let len = cps.len();
-    let start = clamp_start(conv::to_int(&deref(&args[1])), len);
-    let rest = len - start;
-    let take = match args.get(2).map(deref) {
-        None | Some(Value::Null) => rest,
-        Some(v) => {
-            let l = conv::to_int(&v);
-            if l < 0 {
-                rest.saturating_sub((-l) as usize)
-            } else {
-                (l as usize).min(rest)
-            }
-        }
-    };
-    // Re-encoded from codepoints, so illegal sequences become the substitute `?`
-    // (php's behaviour for mb_substr; mb_str_pad / mb_str_split keep raw bytes).
-    Ok(Value::str(encode(enc, &cps[start..start + take])))
 }
 
 // ---------------------------------------------------------------------------
-// mb_strtoupper / mb_strtolower / mb_convert_case
+// encoding detection
 // ---------------------------------------------------------------------------
 
-fn fn_mb_strtoupper(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_strtoupper", 2)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    Ok(Value::str(encode(enc, &upper_full(&cps))))
-}
-
-fn fn_mb_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_strtolower", 2)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    Ok(Value::str(encode(enc, &lower_full(&cps))))
-}
-
-fn fn_mb_convert_case(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mode = conv::to_int(&deref(&args[1]));
-    let enc = arg_enc(args, 2, "mb_convert_case", 3)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    // MB_CASE_*: UPPER=0 LOWER=1 TITLE=2 FOLD=3, and the _SIMPLE variants 4..7.
-    let out = match mode {
-        0 => upper_full(&cps),
-        1 => lower_full(&cps),
-        2 => title_full(&cps),
-        3 => fold_full(&cps),
-        4 => map_simple(&cps, mb_tables::MAP_UPPER_SIMPLE),
-        5 => map_simple(&cps, mb_tables::MAP_LOWER_SIMPLE),
-        6 => title_simple(&cps),
-        7 => map_simple(&cps, mb_tables::MAP_FOLD_SIMPLE),
-        _ => {
-            return Err(Thrown::error(
-                "ValueError",
-                "mb_convert_case(): Argument #2 ($mode) must be one of the MB_CASE_* constants",
-            ))
-        }
-    };
-    Ok(Value::str(encode(enc, &out)))
-}
-
-// ---------------------------------------------------------------------------
-// mb_str_split
-// ---------------------------------------------------------------------------
-
-fn fn_mb_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let chunk = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
-    let enc = arg_enc(args, 2, "mb_str_split", 3)?;
-    if chunk < 1 {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_str_split(): Argument #2 ($length) must be greater than 0",
-        ));
-    }
-    let bytes = bytes_of(&args[0]);
-    let spans = split_spans(enc, &bytes);
-    let chunk = chunk as usize;
-    let mut out = PhpArray::new();
-    let mut i = 0;
-    while i < spans.len() {
-        let end = (i + chunk).min(spans.len());
-        // one element spans from the first char's start to the last char's end,
-        // taken from the original bytes (illegal sequences kept verbatim).
-        out.push(Value::str(bytes[spans[i].0..spans[end - 1].1].to_vec()));
-        i = end;
-    }
-    Ok(Value::Array(out))
-}
-
-// ---------------------------------------------------------------------------
-// mb_strpos family
-// ---------------------------------------------------------------------------
-
-/// First occurrence of `needle` in `haystack` at or after `start` (codepoints).
-fn find_cps(haystack: &[u32], needle: &[u32], start: usize) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(start.min(haystack.len()));
-    }
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    (start..=haystack.len() - needle.len()).find(|&i| haystack[i..i + needle.len()] == *needle)
-}
-
-/// Last occurrence of `needle` with its start in `lo..=hi` (inclusive).
-fn rfind_cps(haystack: &[u32], needle: &[u32], lo: usize, hi: usize) -> Option<usize> {
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    let max_start = hi.min(haystack.len() - needle.len());
-    if max_start < lo {
-        return None;
-    }
-    (lo..=max_start)
-        .rev()
-        .find(|&i| haystack[i..i + needle.len()] == *needle)
-}
-
-/// Shared forward search for `mb_strpos` / `mb_stripos`. The case-insensitive
-/// variants fold with the strict decoder (continuations counted); the
-/// case-sensitive ones use the position decoder (continuations dropped) — a php
-/// quirk reproduced here.
-fn strpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 3, fname, 4)?;
-    let (mut haystack, mut needle) = if fold {
-        (
-            decode(enc, &bytes_of(&args[0])),
-            decode(enc, &bytes_of(&args[1])),
-        )
-    } else {
-        (
-            decode_pos(enc, &bytes_of(&args[0])),
-            decode_pos(enc, &bytes_of(&args[1])),
-        )
-    };
-    if fold {
-        haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
-        needle = map_simple(&needle, mb_tables::MAP_FOLD_SIMPLE);
-    }
-    let len = haystack.len() as i64;
-    let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if off < -len || off > len {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
-            ),
-        ));
-    }
-    let start = if off < 0 {
-        (len + off) as usize
-    } else {
-        off as usize
-    };
-    match find_cps(&haystack, &needle, start) {
-        Some(p) => Ok(Value::Int(p as i64)),
-        None => Ok(Value::Bool(false)),
-    }
-}
-
-/// Shared reverse search for `mb_strrpos` / `mb_strripos` (see [`strpos_impl`]
-/// for the case-sensitive vs case-insensitive decoder quirk).
-fn strrpos_impl(args: &[Value], fname: &str, fold: bool) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 3, fname, 4)?;
-    let (mut haystack, mut needle) = if fold {
-        (
-            decode(enc, &bytes_of(&args[0])),
-            decode(enc, &bytes_of(&args[1])),
-        )
-    } else {
-        (
-            decode_pos(enc, &bytes_of(&args[0])),
-            decode_pos(enc, &bytes_of(&args[1])),
-        )
-    };
-    if fold {
-        haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
-        needle = map_simple(&needle, mb_tables::MAP_FOLD_SIMPLE);
-    }
-    let len = haystack.len() as i64;
-    let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if off < -len || off > len {
-        return Err(Thrown::error(
-            "ValueError",
-            format!(
-                "{fname}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
-            ),
-        ));
-    }
-    // offset >= 0 restricts the match start to [offset, len]; offset < 0 restricts
-    // it to [0, len + offset].
-    let (lo, hi) = if off < 0 {
-        (0usize, (len + off) as usize)
-    } else {
-        (off as usize, haystack.len())
-    };
-    match rfind_cps(&haystack, &needle, lo, hi) {
-        Some(p) => Ok(Value::Int(p as i64)),
-        None => Ok(Value::Bool(false)),
-    }
-}
-
-fn fn_mb_strpos(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strpos_impl(args, "mb_strpos", false)
-}
-fn fn_mb_stripos(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strpos_impl(args, "mb_stripos", true)
-}
-fn fn_mb_strrpos(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strrpos_impl(args, "mb_strrpos", false)
-}
-fn fn_mb_strripos(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strrpos_impl(args, "mb_strripos", true)
-}
-
-// ---------------------------------------------------------------------------
-// mb_substr_count
-// ---------------------------------------------------------------------------
-
-fn fn_mb_substr_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 2, "mb_substr_count", 3)?;
-    let haystack = decode(enc, &bytes_of(&args[0]));
-    let needle = decode(enc, &bytes_of(&args[1]));
-    if needle.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_substr_count(): Argument #2 ($needle) must not be empty",
-        ));
-    }
-    let mut count = 0i64;
-    let mut i = 0;
-    while i + needle.len() <= haystack.len() {
-        if haystack[i..i + needle.len()] == *needle {
-            count += 1;
-            i += needle.len(); // non-overlapping, as php counts
-        } else {
-            i += 1;
-        }
-    }
-    Ok(Value::Int(count))
-}
-
-// ---------------------------------------------------------------------------
-// mb_strwidth
-// ---------------------------------------------------------------------------
-
-fn fn_mb_strwidth(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_strwidth", 2)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    let width: i64 = cps
-        .iter()
-        .map(|&cp| {
-            if in_ranges(mb_tables::WIDTH2, cp) {
-                2
-            } else {
-                1
-            }
-        })
-        .sum();
-    Ok(Value::Int(width))
-}
-
-/// Display width of one codepoint (1, or 2 for the East-Asian wide ranges).
-fn cp_width(cp: u32) -> i64 {
-    if in_ranges(mb_tables::WIDTH2, cp) {
-        2
+/// `estimate_demerits`.
+fn estimate_demerits(w: u32) -> u64 {
+    if w > 0xFFFF {
+        40
+    } else if (0x21..=0x2F).contains(&w) {
+        6
+    } else if (mbfl::rare_cp_bitvec()[(w >> 5) as usize] >> (w & 0x1F)) & 1 != 0 {
+        30
     } else {
         1
     }
 }
 
-// ---------------------------------------------------------------------------
-// mb_strstr / mb_strrchr
-// ---------------------------------------------------------------------------
+/// `struct candidate`.
+#[derive(Clone)]
+struct Candidate<'a> {
+    enc: Enc,
+    input: &'a [u8],
+    demerits: u64,
+    state: u32,
+    multiplier: f32,
+}
 
-/// The shared core of `mb_strstr` / `mb_strrchr` / `mb_stristr` /
-/// `mb_strrichr` (php's `php_mb_strstr_variants`): find the needle's codepoint
-/// position exactly as `mb_strpos` / `mb_stripos` (and their reverse forms)
-/// would with offset 0, then return the `mb_substr` before or from it.
-fn strstr_variant(args: &[Value], fname: &str, fold: bool, reverse: bool) -> Result<Value, Thrown> {
-    let before = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(false);
-    let enc = arg_enc(args, 3, fname, 4)?;
-    let hb = bytes_of(&args[0]);
-    let nb = bytes_of(&args[1]);
-    let (mut haystack, mut needle) = if fold {
-        (decode(enc, &hb), decode(enc, &nb))
-    } else {
-        (decode_pos(enc, &hb), decode_pos(enc, &nb))
-    };
-    if fold {
-        haystack = map_simple(&haystack, mb_tables::MAP_FOLD_SIMPLE);
-        needle = map_simple(&needle, mb_tables::MAP_FOLD_SIMPLE);
+/// `mb_guess_encoding_for_strings`.
+fn guess_encoding(
+    strings: &[&[u8]],
+    list: &[Enc],
+    strict: bool,
+    order_significant: bool,
+) -> Option<Enc> {
+    if list.is_empty() {
+        return None;
     }
-    let found = if reverse {
-        rfind_cps(&haystack, &needle, 0, haystack.len())
+    if list.len() == 1 {
+        if strict && strings.iter().rev().any(|s| !check_encoding(s, list[0])) {
+            return None;
+        }
+        return Some(list[0]);
+    }
+    if strings.len() == 1 && strings[0].is_empty() {
+        return Some(list[0]);
+    }
+    // init_candidate_array
+    let mut cands: Vec<Candidate> = Vec::with_capacity(list.len());
+    'next: for (i, &enc) in list.iter().enumerate() {
+        let mut demerits = 0;
+        if enc.has_check() {
+            for s in strings {
+                if enc.check(s) == Some(false) {
+                    if strict {
+                        continue 'next;
+                    }
+                    demerits += 500;
+                }
+            }
+        }
+        let multiplier = if order_significant {
+            (1.0 + (0.3 * i as f64) / list.len() as f64) as f32
+        } else {
+            1.0
+        };
+        cands.push(Candidate {
+            enc,
+            input: &[],
+            demerits,
+            state: 0,
+            multiplier,
+        });
+    }
+    for s in strings.iter().rev() {
+        // start_string: skip the byte order mark of UTF-8/16
+        for c in cands.iter_mut() {
+            c.input = s;
+            if c.enc == encodings::utf8() {
+                if s.starts_with(b"\xEF\xBB\xBF") {
+                    c.input = &s[3..];
+                }
+            } else if c.enc == encodings::utf16be() {
+                if s.starts_with(b"\xFE\xFF") {
+                    c.input = &s[2..];
+                }
+            } else if c.enc == encodings::utf16le() && s.starts_with(b"\xFF\xFE") {
+                c.input = &s[2..];
+            }
+        }
+        count_demerits(&mut cands, strict);
+        if cands.is_empty() {
+            return None;
+        }
+    }
+    let mut best = 0;
+    for i in 1..cands.len() {
+        if cands[i].demerits < cands[best].demerits {
+            best = i;
+        }
+    }
+    Some(cands[best].enc)
+}
+
+/// `count_demerits`.
+fn count_demerits(cands: &mut Vec<Candidate>, strict: bool) {
+    let mut buf = [0u32; 128];
+    let mut finished = cands.iter().filter(|c| c.input.is_empty()).count();
+    while (strict || cands.len() > 1) && finished < cands.len() {
+        // In reverse, so that removing a candidate moves none still to come.
+        let mut i = cands.len();
+        while i > 0 {
+            i -= 1;
+            let c = &mut cands[i];
+            if c.input.is_empty() {
+                continue;
+            }
+            let n = c.enc.to_wchar(&mut c.input, &mut buf, &mut c.state);
+            let mut eliminated = false;
+            for &w in buf[..n].iter().rev() {
+                if w == mbfl::BAD_INPUT {
+                    if strict {
+                        eliminated = true;
+                        break;
+                    }
+                    c.demerits += 1000;
+                } else {
+                    c.demerits += estimate_demerits(w);
+                }
+            }
+            if eliminated {
+                cands.remove(i);
+                continue;
+            }
+            if c.input.is_empty() {
+                finished += 1;
+            }
+        }
+    }
+    for c in cands.iter_mut() {
+        let d = c.demerits as f64 * c.multiplier as f64;
+        c.demerits = if d < u64::MAX as f64 {
+            d as u64
+        } else {
+            u64::MAX
+        };
+    }
+}
+
+/// `php_mb_convert_encoding`: from the one encoding given, or the one
+/// detected among several (None, after php's warning, when none fits).
+fn convert_detect(
+    host: &mut dyn Host,
+    fname: &str,
+    input: &[u8],
+    to: Enc,
+    from: &[Enc],
+) -> Result<Option<Vec<u8>>, Thrown> {
+    let from = if from.len() == 1 {
+        from[0]
     } else {
-        find_cps(&haystack, &needle, 0)
+        match guess_encoding(&[input], from, strict_detection(), true) {
+            Some(e) => e,
+            None => {
+                warn(host, fname, "Unable to detect character encoding")?;
+                return Ok(None);
+            }
+        }
     };
-    let Some(pos) = found else {
+    Ok(Some(convert_ex(input, to, from)))
+}
+
+// ---------------------------------------------------------------------------
+// settings
+// ---------------------------------------------------------------------------
+
+/// `mb_internal_encoding(?string $encoding = null)`.
+fn fn_mb_internal_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_internal_encoding";
+    match opt_str_arg(host, args, 0, f)? {
+        None => Ok(Value::str(internal().name())),
+        Some(name) => match Encoding::by_name(&name) {
+            Some(enc) => {
+                st(|s| s.internal = enc);
+                Ok(Value::Bool(true))
+            }
+            None => Err(value_error(
+                f,
+                0,
+                &format!(
+                    "must be a valid encoding, \"{}\" given",
+                    String::from_utf8_lossy(c_str(&name))
+                ),
+            )),
+        },
+    }
+}
+
+/// `php_mb_check_code_point`.
+fn valid_code_point(cp: i64) -> bool {
+    (0..0x110000).contains(&cp) && !(0xD800..=0xDFFF).contains(&cp)
+}
+
+/// `mb_substitute_character(string|int|null $substitute_character = null)`.
+fn fn_mb_substitute_character(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_substitute_character";
+    let arg = match args.first().map(deref) {
+        None | Some(Value::Null) => {
+            let (mode, subst) = illegal_settings();
+            return Ok(match mode {
+                illegal_mode::NONE => Value::str("none"),
+                illegal_mode::LONG => Value::str("long"),
+                illegal_mode::ENTITY => Value::str("entity"),
+                _ => Value::Int(subst as i64),
+            });
+        }
+        Some(v) => v,
+    };
+    // Z_PARAM_STR_OR_LONG: strings stay strings; other scalars try int
+    // first.
+    let cp = match &arg {
+        Value::Str(s) => {
+            let s = s.as_bytes();
+            let mode = if s.eq_ignore_ascii_case(b"none") {
+                illegal_mode::NONE
+            } else if s.eq_ignore_ascii_case(b"long") {
+                illegal_mode::LONG
+            } else if s.eq_ignore_ascii_case(b"entity") {
+                illegal_mode::ENTITY
+            } else {
+                return Err(value_error(
+                    f,
+                    0,
+                    "must be \"none\", \"long\", \"entity\" or a valid codepoint",
+                ));
+            };
+            st(|s| s.illegal_mode = mode);
+            return Ok(Value::Bool(true));
+        }
+        Value::Int(n) => *n,
+        _ => long_arg(host, args, 0, f)?,
+    };
+    if !valid_code_point(cp) {
+        return Err(value_error(f, 0, "is not a valid codepoint"));
+    }
+    st(|s| {
+        s.illegal_mode = illegal_mode::CHAR;
+        s.substchar = cp as u32;
+    });
+    Ok(Value::Bool(true))
+}
+
+/// `mb_list_encodings()`: one shared array per request.
+fn fn_mb_list_encodings(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let list = st(|s| {
+        s.all_encodings
+            .get_or_insert_with(|| {
+                let mut a = PhpArray::new();
+                for e in Encoding::supported() {
+                    a.push(Value::str(e.name()));
+                }
+                a
+            })
+            .clone()
+    });
+    Ok(Value::Array(list))
+}
+
+/// `mb_encoding_aliases(string $encoding)`.
+fn fn_mb_encoding_aliases(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_encoding_aliases";
+    let name = str_arg(host, args, 0, f)?;
+    let enc = get_encoding(host, Some(&name), 0, f)?;
+    let mut a = PhpArray::new();
+    for alias in enc.aliases() {
+        a.push(Value::str(alias));
+    }
+    Ok(Value::Array(a))
+}
+
+// ---------------------------------------------------------------------------
+// length, substrings, positions
+// ---------------------------------------------------------------------------
+
+/// `mb_str_split(string $string, int $length = 1, ?string $encoding = null)`.
+fn fn_mb_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_str_split";
+    let s = str_arg(host, args, 0, f)?;
+    let mut split_len = if args.len() > 1 {
+        long_arg(host, args, 1, f)?
+    } else {
+        1
+    };
+    let enc_name = opt_str_arg(host, args, 2, f)?;
+    if split_len <= 0 {
+        return Err(value_error(f, 1, "must be greater than 0"));
+    } else if split_len > (u32::MAX / 4) as i64 {
+        return Err(value_error(f, 1, "is too large"));
+    }
+    if split_len as usize > s.len() {
+        split_len = s.len() as i64;
+    }
+    let enc = get_encoding(host, enc_name.as_deref(), 2, f)?;
+    if s.is_empty() {
+        return Ok(Value::Array(PhpArray::new()));
+    }
+    let split_len = split_len as usize;
+    let mut out = PhpArray::new();
+    let char_len = (enc.flag() & FIXED_WIDTH) as usize;
+    if char_len != 0 {
+        let chunk_len = char_len * split_len;
+        let chunks = (s.len() / chunk_len).div_ceil(split_len);
+        if !rhp_values::mem::reserve_packed_array(chunks) {
+            return Ok(Value::Null);
+        }
+        for chunk in s.chunks(chunk_len) {
+            out.push(Value::str(chunk));
+            if has_oom() {
+                return Ok(Value::Null);
+            }
+        }
+    } else if let Some(tbl) = enc.mblen_table() {
+        if !rhp_values::mem::reserve_packed_array(s.len().div_ceil(split_len)) {
+            return Ok(Value::Null);
+        }
+        let mut p = 0;
+        while p < s.len() {
+            let start = p;
+            for _ in 0..split_len {
+                if p >= s.len() {
+                    break;
+                }
+                p += tbl[s[p] as usize] as usize;
+            }
+            p = p.min(s.len());
+            out.push(Value::str(&s[start..p]));
+            if has_oom() {
+                return Ok(Value::Null);
+            }
+        }
+    } else {
+        if !rhp_values::mem::reserve_packed_array(s.len().div_ceil(split_len)) {
+            return Ok(Value::Null);
+        }
+        let (mode, subst) = illegal_settings();
+        let mut wchar = [0u32; 128];
+        let mut rest = &s[..];
+        let mut state = 0;
+        let mut char_count = 0usize;
+        let mut buf: Option<ConvertBuf> = None;
+        while !rest.is_empty() {
+            if has_oom() {
+                return Ok(Value::Null);
+            }
+            let out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+            let mut i = 0;
+            if char_count != 0 {
+                let b = buf.as_mut().expect("a chunk is in progress");
+                if out_len >= split_len - char_count {
+                    enc.from_wchar(&wchar[..split_len - char_count], b, true);
+                    i += split_len - char_count;
+                    char_count = 0;
+                    out.push(Value::str(buf.take().unwrap().result(enc)));
+                } else {
+                    enc.from_wchar(&wchar[..out_len], b, rest.is_empty());
+                    char_count += out_len;
+                    continue;
+                }
+            }
+            while i < out_len {
+                if has_oom() {
+                    return Ok(Value::Null);
+                }
+                let mut b = ConvertBuf::new(split_len, subst, mode);
+                if out_len - i >= split_len {
+                    enc.from_wchar(&wchar[i..i + split_len], &mut b, true);
+                    i += split_len;
+                    out.push(Value::str(b.result(enc)));
+                } else {
+                    enc.from_wchar(&wchar[i..out_len], &mut b, rest.is_empty());
+                    char_count = out_len - i;
+                    buf = Some(b);
+                    break;
+                }
+            }
+        }
+        if char_count != 0 {
+            if let Some(b) = buf.take() {
+                out.push(Value::str(b.result(enc)));
+            }
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `mb_strlen(string $string, ?string $encoding = null)`.
+fn fn_mb_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strlen";
+    let s = str_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    Ok(Value::Int(get_strlen(&s, enc) as i64))
+}
+
+/// The shared argument handling of mb_strpos, mb_strrpos, mb_stripos and
+/// mb_strripos.
+fn strpos_common(
+    host: &mut dyn Host,
+    args: &[Value],
+    f: &str,
+    fold: bool,
+    reverse: bool,
+) -> Result<Value, Thrown> {
+    let haystack = str_arg(host, args, 0, f)?;
+    let needle = str_arg(host, args, 1, f)?;
+    let offset = if args.len() > 2 {
+        long_arg(host, args, 2, f)?
+    } else {
+        0
+    };
+    let enc = enc_arg(host, args, 3, f)?;
+    let offset = offset as isize;
+    let n = if fold {
+        stripos(reverse, &haystack, &needle, offset, enc)
+    } else {
+        find_strpos(&haystack, &needle, enc, offset, reverse)
+    };
+    if !is_error(n) {
+        Ok(Value::Int(n as i64))
+    } else {
+        strpos_error(f, n)
+    }
+}
+
+fn fn_mb_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strpos_common(host, args, "mb_strpos", false, false)
+}
+
+fn fn_mb_strrpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strpos_common(host, args, "mb_strrpos", false, true)
+}
+
+fn fn_mb_stripos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strpos_common(host, args, "mb_stripos", true, false)
+}
+
+fn fn_mb_strripos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strpos_common(host, args, "mb_strripos", true, true)
+}
+
+/// `php_mb_strstr_variants`.
+fn strstr_variant(
+    host: &mut dyn Host,
+    args: &[Value],
+    f: &str,
+    fold: bool,
+    reverse: bool,
+) -> Result<Value, Thrown> {
+    let haystack = str_arg(host, args, 0, f)?;
+    let needle = str_arg(host, args, 1, f)?;
+    let part = bool_arg(host, args, 2, f, false)?;
+    let enc = enc_arg(host, args, 3, f)?;
+    let n = if fold {
+        stripos(reverse, &haystack, &needle, 0, enc)
+    } else {
+        find_strpos(&haystack, &needle, enc, 0, reverse)
+    };
+    if is_error(n) {
         return Ok(Value::Bool(false));
+    }
+    Ok(Value::str(if part {
+        get_substr(&haystack, 0, n, enc)
+    } else {
+        get_substr(&haystack, n, UNTIL_END, enc)
+    }))
+}
+
+fn fn_mb_strstr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(host, args, "mb_strstr", false, false)
+}
+
+fn fn_mb_strrchr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(host, args, "mb_strrchr", false, true)
+}
+
+fn fn_mb_stristr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(host, args, "mb_stristr", true, false)
+}
+
+fn fn_mb_strrichr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    strstr_variant(host, args, "mb_strrichr", true, true)
+}
+
+/// `mb_substr_count(string $haystack, string $needle, ?string $encoding = null)`.
+fn fn_mb_substr_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_substr_count";
+    let haystack = str_arg(host, args, 0, f)?;
+    let needle = str_arg(host, args, 1, f)?;
+    let enc_name = opt_str_arg(host, args, 2, f)?;
+    if needle.is_empty() {
+        return Err(empty_error(f, 1));
+    }
+    let enc = get_encoding(host, enc_name.as_deref(), 2, f)?;
+    let (h, n);
+    let (h, n): (&[u8], &[u8]) = if is_utf8(enc) {
+        // php skips the conversion for strings it knows are valid UTF-8,
+        // which converting leaves unchanged.
+        let raw = |s: &[u8]| enc == encodings::utf8() && std::str::from_utf8(s).is_ok();
+        h = if raw(&haystack) {
+            haystack.clone()
+        } else {
+            to_utf8_marked(&haystack, enc)
+        };
+        n = if raw(&needle) {
+            needle.clone()
+        } else {
+            to_utf8_marked(&needle, enc)
+        };
+        (&h, &n)
+    } else {
+        h = to_utf8_marked(&haystack, enc);
+        n = to_utf8_marked(&needle, enc);
+        // Bytes that decode to nothing (escape sequences only).
+        if n.is_empty() {
+            return Err(empty_error(f, 1));
+        }
+        (&h, &n)
     };
-    // mb_get_substr over the original string (strict decoder, re-encoded).
-    let cps = decode(enc, &hb);
-    let pos = pos.min(cps.len());
-    let slice = if before { &cps[..pos] } else { &cps[pos..] };
-    Ok(Value::str(encode(enc, slice)))
+    let mut count = 0i64;
+    if h.len() >= n.len() {
+        let mut p = 0;
+        while let Some(at) = memnstr(h, p, n, h.len()) {
+            p = at + n.len();
+            count += 1;
+        }
+    }
+    Ok(Value::Int(count))
 }
 
-/// `mb_strstr($haystack, $needle, $before_needle = false, $encoding = null)`.
-fn fn_mb_strstr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strstr_variant(args, "mb_strstr", false, false)
+/// `mb_substr(string $string, int $start, ?int $length = null, ?string $encoding = null)`.
+fn fn_mb_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_substr";
+    let s = str_arg(host, args, 0, f)?;
+    let from = long_arg(host, args, 1, f)?;
+    let len = opt_long_arg(host, args, 2, f)?;
+    let enc_name = opt_str_arg(host, args, 3, f)?;
+    let range = format!("must be between {} and {}", i64::MIN + 1, i64::MAX);
+    if from == i64::MIN {
+        return Err(value_error(f, 1, &range));
+    }
+    if len == Some(i64::MIN) {
+        return Err(value_error(f, 2, &range));
+    }
+    let enc = get_encoding(host, enc_name.as_deref(), 3, f)?;
+    let mblen = if from < 0 || len.is_some_and(|l| l < 0) {
+        get_strlen(&s, enc)
+    } else {
+        0
+    };
+    let real_from = if from >= 0 {
+        from as usize
+    } else if ((-from) as usize) < mblen {
+        (mblen as i64 + from) as usize
+    } else {
+        0
+    };
+    let real_len = match len {
+        None => UNTIL_END,
+        Some(l) if l >= 0 => l as usize,
+        Some(l) if real_from < mblen && ((-l) as usize) < mblen - real_from => {
+            ((mblen - real_from) as i64 + l) as usize
+        }
+        Some(_) => 0,
+    };
+    Ok(Value::str(get_substr(&s, real_from, real_len, enc)))
 }
 
-/// `mb_strrchr($haystack, $needle, $before_needle = false, $encoding = null)`.
-fn fn_mb_strrchr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strstr_variant(args, "mb_strrchr", false, true)
+/// `mb_strcut(string $string, int $start, ?int $length = null, ?string $encoding = null)`.
+fn fn_mb_strcut(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strcut";
+    let s = str_arg(host, args, 0, f)?;
+    let mut from = long_arg(host, args, 1, f)?;
+    let len = opt_long_arg(host, args, 2, f)?;
+    let enc = enc_arg(host, args, 3, f)?;
+    let n = s.len() as i64;
+    let mut len = len.unwrap_or(n);
+    if from < 0 {
+        from = (n + from).max(0);
+    }
+    if len < 0 {
+        len = ((n - from) + len).max(0);
+    }
+    if from > n || len == 0 {
+        return Ok(Value::str(""));
+    }
+    let (from, mut len) = (from as usize, len as usize);
+    if enc.has_cut() {
+        return Ok(Value::str(enc.cut(&s, from, len).unwrap_or_default()));
+    }
+    let char_len = (enc.flag() & FIXED_WIDTH) as usize;
+    if char_len != 0 {
+        // Round `from` down to a multiple of the (power-of-two) width.
+        let from = from & !(char_len - 1);
+        if len > s.len() - from {
+            len = s.len() - from;
+        }
+        return Ok(Value::str(&s[from..from + (len & !(char_len - 1))]));
+    }
+    if let Some(tbl) = enc.mblen_table() {
+        let mut p = 0usize;
+        let mut m = 0usize;
+        while p < from {
+            m = tbl[s[p] as usize] as usize;
+            p += m;
+        }
+        if p > from {
+            p -= m;
+        }
+        let start = p;
+        let end = if len >= s.len() - start {
+            s.len()
+        } else {
+            let q = p + len;
+            while p < q {
+                m = tbl[s[p] as usize] as usize;
+                p += m;
+            }
+            if p > q {
+                p -= m;
+            }
+            p
+        };
+        return Ok(Value::str(&s[start..end]));
+    }
+    match mbfl::strcut(&s, enc, from, len) {
+        Some(r) => Ok(Value::str(r)),
+        None => Ok(Value::Null),
+    }
 }
 
-/// `mb_stristr($haystack, $needle, $before_needle = false, $encoding = null)`.
-fn fn_mb_stristr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strstr_variant(args, "mb_stristr", true, false)
+/// `mb_strwidth(string $string, ?string $encoding = null)`.
+fn fn_mb_strwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strwidth";
+    let s = str_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    Ok(Value::Int(get_strwidth(&s, enc) as i64))
 }
 
-/// `mb_strrichr($haystack, $needle, $before_needle = false, $encoding = null)`.
-fn fn_mb_strrichr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    strstr_variant(args, "mb_strrichr", true, true)
+/// `mb_trim_string`: `input` from character `from`, cut to `width`
+/// columns with `marker` appended when it doesn't fit.
+fn trim_string(
+    input: &[u8],
+    marker: &[u8],
+    enc: Enc,
+    mut from: usize,
+    mut width: usize,
+) -> Vec<u8> {
+    let (mode, subst) = illegal_settings();
+    let mut wchar = [0u32; 128];
+    let mut rest = input;
+    let mut state = 0;
+    let mut remaining_width = width;
+    let mut to_skip = from;
+    let mut first_call = true;
+    let mut input_err = false;
+    let mut out_len = 0;
+    // Where the cut starts: Some(true) to decode again from the start.
+    let mut cut: Option<(bool, ConvertBuf)> = None;
+    'scan: while !rest.is_empty() {
+        out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+        if out_len <= to_skip {
+            to_skip -= out_len;
+        } else {
+            for &w in &wchar[to_skip..out_len] {
+                let cw = character_width(w);
+                input_err |= w == mbfl::BAD_INPUT;
+                if remaining_width < cw {
+                    let marker_width = get_strwidth(marker, enc);
+                    if width <= marker_width {
+                        return marker.to_vec();
+                    }
+                    width -= marker_width;
+                    cut = Some((!first_call, ConvertBuf::new(width, subst, mode)));
+                    break 'scan;
+                }
+                remaining_width -= cw;
+            }
+            to_skip = 0;
+        }
+        first_call = false;
+    }
+    let Some((restart, mut buf)) = cut else {
+        // It fits; bad byte sequences still become error markers.
+        if !input_err {
+            return if from == 0 {
+                input.to_vec()
+            } else {
+                get_substr(input, from, UNTIL_END, enc)
+            };
+        }
+        return get_substr_slow(input, from, UNTIL_END, enc);
+    };
+    if restart {
+        rest = input;
+        state = 0;
+        out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+    }
+    'emit: loop {
+        if out_len <= from {
+            from -= out_len;
+        } else {
+            for i in from..out_len {
+                let cw = character_width(wchar[i]);
+                if width < cw {
+                    enc.from_wchar(&wchar[from..i], &mut buf, true);
+                    break 'emit;
+                }
+                width -= cw;
+            }
+            enc.from_wchar(&wchar[from..out_len], &mut buf, false);
+            from = 0;
+        }
+        if rest.is_empty() {
+            // Not reached: the scan found the string too wide.
+            break;
+        }
+        out_len = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+    }
+    if !marker.is_empty() && !buf.append(marker) {
+        return buf.result(enc);
+    }
+    // Not marked as valid UTF-8: the marker may not be.
+    buf.result_raw()
+}
+
+/// `mb_strimwidth(string $string, int $start, int $width, string $trim_marker = "", ?string $encoding = null)`.
+fn fn_mb_strimwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strimwidth";
+    let s = str_arg(host, args, 0, f)?;
+    let mut from = long_arg(host, args, 1, f)?;
+    let mut width = long_arg(host, args, 2, f)?;
+    let marker = if args.len() > 3 {
+        str_arg(host, args, 3, f)?
+    } else {
+        Vec::new()
+    };
+    let enc = enc_arg(host, args, 4, f)?;
+    if from != 0 {
+        let str_len = get_strlen(&s, enc) as i64;
+        if from < 0 {
+            from += str_len;
+        }
+        if from < 0 || from > str_len {
+            return Err(value_error(f, 1, "is out of range"));
+        }
+    }
+    if width < 0 {
+        deprecated(
+            host,
+            f,
+            "passing a negative integer to argument #3 ($width) is deprecated",
+        )?;
+        width += get_strwidth(&s, enc) as i64;
+        if from > 0 {
+            let trimmed = get_substr(&s, 0, from as usize, enc);
+            width -= get_strwidth(&trimmed, enc) as i64;
+        }
+        if width < 0 {
+            return Err(value_error(f, 2, "is out of range"));
+        }
+    }
+    Ok(Value::str(trim_string(
+        &s,
+        &marker,
+        enc,
+        from as usize,
+        width as usize,
+    )))
+}
+
+// ---------------------------------------------------------------------------
+// conversion
+// ---------------------------------------------------------------------------
+
+/// `mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null)`.
+fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_convert_encoding";
+    let input = deref(&args[0]);
+    let input = match input {
+        Value::Array(a) => Err(a),
+        _ => Ok(str_arg(host, args, 0, f)?),
+    };
+    let to_name = str_arg(host, args, 1, f)?;
+    let to = get_encoding(host, Some(&to_name), 1, f)?;
+    let mut from = match enc_list_arg(host, args, 2, f)? {
+        Some((list, _)) => list,
+        None => vec![internal()],
+    };
+    if from.len() > 1 {
+        remove_non_encodings(&mut from);
+    }
+    if from.is_empty() {
+        return Err(value_error(f, 2, "must specify at least one encoding"));
+    }
+    match input {
+        Ok(s) => Ok(match convert_detect(host, f, &s, to, &from)? {
+            Some(r) => Value::str(r),
+            None => Value::Bool(false),
+        }),
+        Err(a) => Ok(convert_recursive(host, &a, to, &from, &mut Vec::new())?
+            .map_or(Value::Array(PhpArray::new()), Value::Array)),
+    }
+}
+
+/// `php_mb_convert_encoding_recursive`: keys and string values converted,
+/// other scalars copied, arrays recursed, objects dropped with a warning.
+fn convert_recursive(
+    host: &mut dyn Host,
+    a: &PhpArray,
+    to: Enc,
+    from: &[Enc],
+    path: &mut Vec<usize>,
+) -> Result<Option<PhpArray>, Thrown> {
+    let f = "mb_convert_encoding";
+    let id = a.data_ptr();
+    if path.contains(&id) {
+        warn(host, f, "Cannot convert recursively referenced values")?;
+        return Ok(None);
+    }
+    path.push(id);
+    let mut out = PhpArray::new();
+    for (k, v) in a.iter() {
+        let key = match k {
+            ArrayKey::Str(s) => match convert_detect(host, f, s.as_bytes(), to, from)? {
+                Some(c) => ArrayKey::Str(PhpStr::from_bytes(c)),
+                None => continue,
+            },
+            k => k.clone(),
+        };
+        let nv = match deref(v) {
+            Value::Str(s) => match convert_detect(host, f, s.as_bytes(), to, from)? {
+                Some(c) => Value::str(c),
+                None => continue,
+            },
+            v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)) => v,
+            Value::Array(inner) => {
+                Value::Array(convert_recursive(host, &inner, to, from, path)?.unwrap_or_default())
+            }
+            _ => {
+                warn(host, f, "Object is not supported")?;
+                continue;
+            }
+        };
+        if out.get(&key).is_none() {
+            out.insert(key, nv);
+        }
+    }
+    path.pop();
+    Ok(Some(out))
+}
+
+/// `mb_convert_case(string $string, int $mode, ?string $encoding = null)`.
+fn fn_mb_convert_case(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_convert_case";
+    let s = str_arg(host, args, 0, f)?;
+    let mode = long_arg(host, args, 1, f)?;
+    let enc = enc_arg(host, args, 2, f)?;
+    if !(0..case_mode::MAX as i64).contains(&mode) {
+        return Err(value_error(f, 1, "must be one of the MB_CASE_* constants"));
+    }
+    Ok(Value::str(convert_case(mode as i32, &s, enc)))
+}
+
+/// `mb_strtoupper(string $string, ?string $encoding = null)`.
+fn fn_mb_strtoupper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strtoupper";
+    let s = str_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    Ok(Value::str(convert_case(case_mode::UPPER, &s, enc)))
+}
+
+/// `mb_strtolower(string $string, ?string $encoding = null)`.
+fn fn_mb_strtolower(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_strtolower";
+    let s = str_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    Ok(Value::str(convert_case(case_mode::LOWER, &s, enc)))
+}
+
+/// `mb_detect_encoding(string $string, array|string|null $encodings = null, bool $strict = false)`.
+fn fn_mb_detect_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_detect_encoding";
+    let s = str_arg(host, args, 0, f)?;
+    let (mut list, all) = match enc_list_arg(host, args, 1, f)? {
+        Some(l) => l,
+        None => (st(|s| s.detect_order.clone()), false),
+    };
+    let strict = if args.len() >= 3 {
+        bool_arg(host, args, 2, f, false)?
+    } else {
+        strict_detection()
+    };
+    if list.is_empty() {
+        return Err(value_error(f, 1, "must specify at least one encoding"));
+    }
+    remove_non_encodings(&mut list);
+    if list.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    Ok(match guess_encoding(&[&s], &list, strict, !all) {
+        Some(e) => Value::str(e.name()),
+        None => Value::Bool(false),
+    })
+}
+
+/// `mb_check_encoding(array|string|null $value = null, ?string $encoding = null)`.
+fn fn_mb_check_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_check_encoding";
+    let value = match args.first().map(deref) {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(Err(a)),
+        Some(_) => Some(Ok(str_arg(host, args, 0, f)?)),
+    };
+    let enc = enc_arg(host, args, 1, f)?;
+    match value {
+        Some(Err(a)) => Ok(Value::Bool(check_encoding_recursive(
+            host,
+            &a,
+            enc,
+            &mut Vec::new(),
+        )?)),
+        Some(Ok(s)) => Ok(Value::Bool(check_str_encoding(&s, enc))),
+        None => {
+            deprecated(
+                host,
+                f,
+                "Calling mb_check_encoding() without argument is deprecated",
+            )?;
+            Ok(Value::Bool(st(|s| s.illegalchars) == 0))
+        }
+    }
+}
+
+/// `php_mb_check_encoding_recursive`: string keys and values must be
+/// valid, arrays recurse, other scalars pass, anything else fails. An
+/// invalid key ends the walk; an invalid value doesn't (php's `break`
+/// leaves only the switch).
+fn check_encoding_recursive(
+    host: &mut dyn Host,
+    a: &PhpArray,
+    enc: Enc,
+    path: &mut Vec<usize>,
+) -> Result<bool, Thrown> {
+    let id = a.data_ptr();
+    if path.contains(&id) {
+        warn(
+            host,
+            "mb_check_encoding",
+            "Cannot not handle circular references",
+        )?;
+        return Ok(false);
+    }
+    path.push(id);
+    let mut valid = true;
+    for (k, v) in a.iter() {
+        if let ArrayKey::Str(s) = k {
+            if !check_str_encoding(s.as_bytes(), enc) {
+                valid = false;
+                break;
+            }
+        }
+        match deref(v) {
+            Value::Str(s) => {
+                if !check_str_encoding(s.as_bytes(), enc) {
+                    valid = false;
+                }
+            }
+            Value::Array(inner) => {
+                if !check_encoding_recursive(host, &inner, enc, path)? {
+                    valid = false;
+                }
+            }
+            Value::Int(_) | Value::Float(_) | Value::Null | Value::Bool(_) => {}
+            _ => valid = false,
+        }
+    }
+    path.pop();
+    Ok(valid)
+}
+
+/// `mb_ord(string $string, ?string $encoding = null)`.
+fn fn_mb_ord(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_ord";
+    let s = str_arg(host, args, 0, f)?;
+    let enc_name = opt_str_arg(host, args, 1, f)?;
+    if s.is_empty() {
+        return Err(empty_error(f, 0));
+    }
+    let enc = get_encoding(host, enc_name.as_deref(), 1, f)?;
+    if is_unsupported(enc) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "mb_ord() does not support the \"{}\" encoding",
+                String::from_utf8_lossy(enc.name())
+            ),
+        ));
+    }
+    // SJIS-Mac, UTF-7 and UTF7-IMAP need this much room.
+    let mut wchar = [0u32; mbfl::MIN_WCHAR_BUFSIZE];
+    let mut rest = &s[..];
+    let mut state = 0;
+    let n = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+    if n == 0 || wchar[0] == mbfl::BAD_INPUT {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Int(wchar[0] as i64))
+}
+
+/// `mb_chr(int $codepoint, ?string $encoding = null)`.
+fn fn_mb_chr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_chr";
+    let cp = long_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    if is_unsupported(enc) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "mb_chr() does not support the \"{}\" encoding",
+                String::from_utf8_lossy(enc.name())
+            ),
+        ));
+    }
+    if !(0..=0x10FFFF).contains(&cp) {
+        return Ok(Value::Bool(false));
+    }
+    if is_utf8(enc) {
+        if (0xD800..0xE000).contains(&cp) {
+            return Ok(Value::Bool(false));
+        }
+        let c = char::from_u32(cp as u32).expect("a scalar value");
+        return Ok(Value::str(c.to_string()));
+    }
+    let buf = (cp as u32).to_be_bytes();
+    let orig = st(|s| std::mem::take(&mut s.illegalchars));
+    let r = convert_ex(&buf, enc, encodings::ucs4be());
+    let failed = st(|s| std::mem::replace(&mut s.illegalchars, orig)) != 0;
+    Ok(if failed {
+        Value::Bool(false)
+    } else {
+        Value::str(r)
+    })
+}
+
+/// `mb_str_pad(string $string, int $length, string $pad_string = " ", int $pad_type = STR_PAD_RIGHT, ?string $encoding = null)`.
+fn fn_mb_str_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_str_pad";
+    let input = str_arg(host, args, 0, f)?;
+    let pad_to = long_arg(host, args, 1, f)?;
+    let pad = if args.len() > 2 {
+        str_arg(host, args, 2, f)?
+    } else {
+        b" ".to_vec()
+    };
+    let pad_type = if args.len() > 3 {
+        long_arg(host, args, 3, f)?
+    } else {
+        1
+    };
+    let enc = enc_arg(host, args, 4, f)?;
+    let input_len = get_strlen(&input, enc);
+    if pad_to < 0 || pad_to as usize <= input_len {
+        return Ok(Value::str(input));
+    }
+    if pad.is_empty() {
+        return Err(empty_error(f, 2));
+    }
+    if !(0..=2).contains(&pad_type) {
+        return Err(value_error(
+            f,
+            3,
+            "must be STR_PAD_LEFT, STR_PAD_RIGHT, or STR_PAD_BOTH",
+        ));
+    }
+    let pad_len = get_strlen(&pad, enc);
+    if pad_len == 0 {
+        // Possible with an invalidly encoded pad string.
+        return Err(empty_error(f, 2));
+    }
+    let num = pad_to as usize - input_len;
+    let (left, right) = match pad_type {
+        0 => (num, 0),
+        1 => (0, num),
+        _ => (num / 2, num - num / 2),
+    };
+    let overflow = || Thrown::error("Error", "String size overflow");
+    let (full_left, full_right) = (left / pad_len, right / pad_len);
+    let (left_bytes, right_bytes) = match (
+        full_left.checked_mul(pad.len()),
+        full_right.checked_mul(pad.len()),
+    ) {
+        (Some(l), Some(r)) => (l, r),
+        _ => return Err(overflow()),
+    };
+    let rem_left = get_substr(&pad, 0, left % pad_len, enc);
+    let rem_right = get_substr(&pad, 0, right % pad_len, enc);
+    // ZSTR_MAX_LEN
+    const MAX_LEN: usize = usize::MAX - 32;
+    if left_bytes > MAX_LEN - rem_left.len() || right_bytes > MAX_LEN - rem_right.len() {
+        return Err(overflow());
+    }
+    let left_bytes = left_bytes + rem_left.len();
+    let right_bytes = right_bytes + rem_right.len();
+    if left_bytes > MAX_LEN - right_bytes || input.len() > MAX_LEN - left_bytes - right_bytes {
+        return Err(overflow());
+    }
+    // zend_string_safe_falloc(1, len, pads)
+    let pads = (24 + left_bytes + right_bytes + 1 + 7) & !7;
+    if !rhp_values::mem::reserve_safe(1, input.len(), pads) {
+        return Ok(Value::Null);
+    }
+    let mut out = Vec::with_capacity(input.len() + left_bytes + right_bytes);
+    for _ in 0..full_left {
+        out.extend_from_slice(&pad);
+    }
+    out.extend_from_slice(&rem_left);
+    out.extend_from_slice(&input);
+    for _ in 0..full_right {
+        out.extend_from_slice(&pad);
+    }
+    out.extend_from_slice(&rem_right);
+    Ok(Value::str(out))
+}
+
+/// `mb_scrub(string $string, ?string $encoding = null)`.
+fn fn_mb_scrub(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_scrub";
+    let s = str_arg(host, args, 0, f)?;
+    let enc = enc_arg(host, args, 1, f)?;
+    if enc == encodings::utf8() && std::str::from_utf8(&s).is_ok() {
+        return Ok(Value::str(s));
+    }
+    Ok(Value::str(convert_ex(&s, enc, enc)))
 }
 
 // ---------------------------------------------------------------------------
@@ -921,7 +1838,8 @@ fn fn_mb_strrichr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Why a walk over the variables stopped: a cycle (php's
-/// `GC_IS_RECURSIVE` / `Z_IS_RECURSIVE` guards) or the stack limit.
+/// `GC_IS_RECURSIVE` / `Z_IS_RECURSIVE` guards), memory_limit, or the
+/// stack limit.
 enum WalkErr {
     Recursive,
     StackLimit,
@@ -988,7 +1906,7 @@ fn find_strings(
 /// reference *inside* an array or object is replaced by a plain string (php
 /// overwrites the slot's zval, dropping the reference); arrays and objects
 /// behind references are converted in place. A partial conversion stays when
-/// the walk hits a cycle, as in php.
+/// the walk hits a cycle or memory_limit, as in php.
 fn convert_slot(
     slot: &mut Value,
     from: Enc,
@@ -996,25 +1914,31 @@ fn convert_slot(
     path: &mut WalkPath,
     depth: usize,
 ) -> Result<(), WalkErr> {
+    if depth > WALK_DEPTH_LIMIT {
+        return Err(WalkErr::StackLimit);
+    }
     match slot {
         Value::Str(s) => {
-            *slot = Value::str(encode(to, &decode(from, s.as_bytes())));
+            *slot = Value::str(convert_ex(s.as_bytes(), to, from));
+            if has_oom() {
+                return Err(WalkErr::Recursive);
+            }
             Ok(())
         }
         Value::Ref(r) => {
             let r = r.clone();
             let mut inner = r.borrow().clone();
             if let Value::Str(s) = &inner {
-                *slot = Value::str(encode(to, &decode(from, s.as_bytes())));
+                *slot = Value::str(convert_ex(s.as_bytes(), to, from));
+                if has_oom() {
+                    return Err(WalkErr::Recursive);
+                }
                 return Ok(());
             }
             convert_in_cell(&r, &mut inner, from, to, path, depth)
         }
         Value::Array(a) => {
-            if depth > WALK_DEPTH_LIMIT {
-                return Err(WalkErr::StackLimit);
-            }
-            let keys: Vec<rhp_values::ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
+            let keys: Vec<ArrayKey> = a.iter().map(|(k, _)| k.clone()).collect();
             for k in keys {
                 if let Some(item) = a.get_mut(&k) {
                     convert_slot(item, from, to, path, depth + 1)?;
@@ -1057,7 +1981,7 @@ fn convert_object(
     path: &mut WalkPath,
     depth: usize,
 ) -> Result<(), WalkErr> {
-    let keys: Vec<rhp_values::PhpStr> = h.borrow().properties.keys().cloned().collect();
+    let keys: Vec<PhpStr> = h.borrow().properties.keys().cloned().collect();
     for k in keys {
         let Some(mut pv) = h.borrow().properties.get(&k).cloned() else {
             continue;
@@ -1069,139 +1993,27 @@ fn convert_object(
     Ok(())
 }
 
-/// `estimate_demerits`.
-fn estimate_demerits(w: u32) -> u64 {
-    if w > 0xFFFF {
-        40
-    } else if (0x21..=0x2F).contains(&w) {
-        6
-    } else if (rare_cp::RARE_CODEPOINT_BITVEC[(w >> 5) as usize] >> (w & 0x1F)) & 1 != 0 {
-        30
-    } else {
-        1
-    }
-}
-
-/// `mb_guess_encoding_for_strings` with `strict = false` (the default
-/// `mbstring.strict_detection`) and `order_significant = true`: every
-/// candidate survives; each bad input costs 1000 demerits, codepoints cost
-/// `estimate_demerits`, and the tally is scaled by the candidate's position
-/// weight after each string (strings are visited last to first). None of the
-/// supported encodings has a `check` hook.
-fn guess_encoding(strings: &[Vec<u8>], list: &[Enc]) -> Enc {
-    guess_encoding_ex(strings, list, false).unwrap_or(list[0])
-}
-
-/// `mb_guess_encoding_for_strings`: with `strict`, an encoding a string is
-/// invalid in drops out, and `None` means none is left.
-fn guess_encoding_ex(strings: &[Vec<u8>], list: &[Enc], strict: bool) -> Option<Enc> {
-    if list.len() == 1 {
-        if strict && strings.iter().any(|s| !is_valid(list[0], s)) {
-            return None;
-        }
-        return Some(list[0]);
-    }
-    if strings.len() == 1 && strings[0].is_empty() {
-        return Some(list[0]);
-    }
-    let mut removed = vec![false; list.len()];
-    let len = list.len();
-    let mult: Vec<f32> = (0..len)
-        .map(|i| (1.0 + (0.3 * i as f64) / len as f64) as f32)
-        .collect();
-    let mut demerits = vec![0u64; len];
-    for s in strings.iter().rev() {
-        for (i, &enc) in list.iter().enumerate() {
-            let bytes = if enc == Enc::Utf8 && s.starts_with(b"\xEF\xBB\xBF") {
-                &s[3..]
-            } else {
-                &s[..]
-            };
-            for cp in decode(enc, bytes) {
-                if cp == ERR && strict {
-                    removed[i] = true;
-                }
-                demerits[i] += if cp == ERR {
-                    1000
-                } else {
-                    estimate_demerits(cp)
-                };
-            }
-            let d = demerits[i] as f64 * mult[i] as f64;
-            demerits[i] = if d < u64::MAX as f64 {
-                d as u64
-            } else {
-                u64::MAX
-            };
-        }
-    }
-    let mut best: Option<usize> = None;
-    for i in 0..len {
-        if !removed[i] && best.is_none_or(|b| demerits[i] < demerits[b]) {
-            best = Some(i);
-        }
-    }
-    best.map(|b| list[b])
-}
-
-/// `mb_convert_variables($to_encoding, $from_encoding, &$var, &...$vars)`:
-/// convert every string in the variables in place; returns the (detected)
-/// source encoding name, or false when detection fails.
+/// `mb_convert_variables(string $to_encoding, array|string $from_encoding, mixed &$var, mixed &...$vars)`.
 fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_convert_variables";
-    let to_name = bytes_of(&args[0]);
-    let to = resolve_enc(&to_name).ok_or_else(|| {
-        Thrown::error(
-            "ValueError",
-            format!(
-                "mb_convert_variables(): Argument #1 ($to_encoding) must be a valid encoding, \"{}\" given",
-                String::from_utf8_lossy(&to_name)
-            ),
-        )
-    })?;
-    // from: string (comma list, "auto") or array of names
-    let names: Vec<Vec<u8>> = match deref(&args[1]) {
-        Value::Array(a) => a.iter().map(|(_, v)| bytes_of(v)).collect(),
-        v => conv::to_string_bytes(&v)
-            .split(|&c| c == b',')
-            .map(|p| p.trim_ascii().to_vec())
-            .collect(),
+    let to_name = str_arg(host, args, 0, f)?;
+    let to = get_encoding(host, Some(&to_name), 0, f)?;
+    let (list, all) = match deref(&args[1]) {
+        Value::Array(a) => {
+            let all = st(|s| {
+                s.all_encodings
+                    .as_ref()
+                    .is_some_and(|l| l.data_ptr() == a.data_ptr())
+            });
+            (parse_encoding_array(host, &a, f, 1)?, all)
+        }
+        _ => {
+            let s = str_arg(host, args, 1, f)?;
+            (parse_encoding_list(&s, f, 1)?, false)
+        }
     };
-    let mut list: Vec<Enc> = Vec::new();
-    for n in &names {
-        if n.eq_ignore_ascii_case(b"auto") {
-            for e in [Enc::Ascii, Enc::Utf8] {
-                if !list.contains(&e) {
-                    list.push(e);
-                }
-            }
-            continue;
-        }
-        if n.is_empty() && names.len() == 1 {
-            break;
-        }
-        match resolve_enc(n) {
-            Some(e) => {
-                if !list.contains(&e) {
-                    list.push(e)
-                }
-            }
-            None => {
-                return Err(Thrown::error(
-                    "ValueError",
-                    format!(
-                        "mb_convert_variables(): Argument #2 ($from_encoding) contains invalid encoding \"{}\"",
-                        String::from_utf8_lossy(n)
-                    ),
-                ))
-            }
-        }
-    }
     if list.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_convert_variables(): Argument #2 ($from_encoding) must specify at least one encoding",
-        ));
+        return Err(value_error(f, 1, "must specify at least one encoding"));
     }
     let walk_failed = |host: &mut dyn Host, e: WalkErr| -> Result<Value, Thrown> {
         match e {
@@ -1224,13 +2036,18 @@ fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value,
                 return walk_failed(host, e);
             }
         }
-        // non-strict detection always settles on a candidate, so php's
-        // "Unable to detect encoding" warning cannot arise here
-        guess_encoding(&strs, &list)
+        let strs: Vec<&[u8]> = strs.iter().map(|s| &s[..]).collect();
+        match guess_encoding(&strs, &list, strict_detection(), !all) {
+            Some(e) => e,
+            None => {
+                warn(host, f, "Unable to detect encoding")?;
+                return Ok(Value::Bool(false));
+            }
+        }
     };
     for v in &args[2..] {
         // php ZVAL_DEREFs each argument: a by-reference variable is converted
-        // in place, a string included
+        // in place, a string included.
         let mut path = Vec::new();
         let res = match v {
             Value::Ref(r) => {
@@ -1249,1033 +2066,340 @@ fn fn_mb_convert_variables(host: &mut dyn Host, args: &[Value]) -> Result<Value,
             return walk_failed(host, e);
         }
     }
-    Ok(Value::str(enc_name(from)))
+    Ok(Value::str(from.name()))
 }
 
 // ---------------------------------------------------------------------------
-// mb_strimwidth
+// HTML numeric entities
 // ---------------------------------------------------------------------------
 
-/// `mb_strimwidth($string, $start, $width, $trim_marker = "", $encoding = null)`:
-/// truncate `string` (from char offset `$start`) to display `$width` columns,
-/// appending `$trim_marker` when truncation occurs (the marker's width is counted
-/// against the budget). A negative `$width` is taken relative to the substring's
-/// full width (deprecated in php, but still supported).
-fn fn_mb_strimwidth(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 4, "mb_strimwidth", 5)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    let start = clamp_start(conv::to_int(&deref(&args[1])), cps.len());
-    let mut width = conv::to_int(&deref(&args[2]));
-    let marker = match args.get(3).map(deref) {
-        None | Some(Value::Null) => Vec::new(),
-        Some(v) => conv::to_string_bytes(&v),
-    };
-    let sub = &cps[start..];
-    let total: i64 = sub.iter().map(|&c| cp_width(c)).sum();
-    if width < 0 {
-        width = (total + width).max(0);
+/// `make_conversion_map`: the map as php's uint32 quadruples (low, high,
+/// offset, mask).
+fn conversion_map(
+    host: &mut dyn Host,
+    map: &PhpArray,
+    fname: &str,
+) -> Result<Vec<[u32; 4]>, Thrown> {
+    if !map.len().is_multiple_of(4) {
+        return Err(value_error(fname, 1, "must have a multiple of 4 elements"));
     }
-    if total <= width {
-        return Ok(Value::str(encode(enc, sub)));
-    }
-    let marker_w: i64 = decode(enc, &marker).iter().map(|&c| cp_width(c)).sum();
-    let budget = width - marker_w;
-    let mut acc = 0i64;
-    let mut end = 0usize;
-    for (idx, &c) in sub.iter().enumerate() {
-        let w = cp_width(c);
-        if acc + w > budget {
-            break;
-        }
-        acc += w;
-        end = idx + 1;
-    }
-    let mut out = encode(enc, &sub[..end]);
-    out.extend_from_slice(&marker);
-    Ok(Value::str(out))
-}
-
-// ---------------------------------------------------------------------------
-// mb_scrub
-// ---------------------------------------------------------------------------
-
-/// `mb_scrub($string, $encoding = null)`: replace every illegal byte sequence
-/// with the substitute character (`?`), by decoding then re-encoding.
-fn fn_mb_scrub(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_scrub", 2)?;
-    let cps = decode(enc, &bytes_of(&args[0]));
-    Ok(Value::str(encode(enc, &cps)))
-}
-
-// ---------------------------------------------------------------------------
-// mb_ord / mb_chr
-// ---------------------------------------------------------------------------
-
-fn fn_mb_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 1, "mb_ord", 2)?;
-    let raw = bytes_of(&args[0]);
-    // php 8 throws on a truly empty string (but returns false for a non-empty
-    // string that merely begins with an illegal sequence).
-    if raw.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_ord(): Argument #1 ($string) must not be empty",
-        ));
-    }
-    let cps = decode(enc, &raw);
-    match cps.first() {
-        Some(&cp) if cp != ERR => Ok(Value::Int(cp as i64)),
-        _ => Ok(Value::Bool(false)),
-    }
-}
-
-fn fn_mb_chr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let cp = conv::to_int(&deref(&args[0]));
-    let enc = arg_enc(args, 1, "mb_chr", 2)?;
-    // out of range, or a UTF-16 surrogate, yields false
-    if !(0..=0x10FFFF).contains(&cp) || (0xD800..=0xDFFF).contains(&cp) {
-        return Ok(Value::Bool(false));
-    }
-    Ok(Value::str(encode(enc, &[cp as u32])))
-}
-
-// ---------------------------------------------------------------------------
-// mb_str_pad
-// ---------------------------------------------------------------------------
-
-fn fn_mb_str_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let enc = arg_enc(args, 4, "mb_str_pad", 5)?;
-    let input = bytes_of(&args[0]);
-    let in_len = char_spans(enc, &input).len();
-    let target = conv::to_int(&deref(&args[1]));
-    let pad_bytes = match args.get(2).map(deref) {
-        None => b" ".to_vec(),
-        Some(v) => conv::to_string_bytes(&v),
-    };
-    let pad_type = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(1); // STR_PAD_RIGHT
-    if !(0..=2).contains(&pad_type) {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_str_pad(): Argument #4 ($pad_type) must be STR_PAD_LEFT, STR_PAD_RIGHT, or STR_PAD_BOTH",
-        ));
-    }
-    let need = (target.max(0) as usize).saturating_sub(in_len);
-    if need == 0 {
-        return Ok(Value::str(input));
-    }
-    let pad_spans = char_spans(enc, &pad_bytes);
-    if pad_spans.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            "mb_str_pad(): Argument #3 ($pad_string) must not be empty",
-        ));
-    }
-    // Build `count` pad characters by cycling the pad string's characters, each
-    // emitted as its original bytes.
-    let make = |count: usize| -> Vec<u8> {
-        let mut v = Vec::new();
-        for k in 0..count {
-            let (s, e) = pad_spans[k % pad_spans.len()];
-            v.extend_from_slice(&pad_bytes[s..e]);
-        }
-        v
-    };
-    let out = match pad_type {
-        0 => {
-            let mut v = make(need);
-            v.extend_from_slice(&input);
-            v
-        }
-        2 => {
-            let left = need / 2; // STR_PAD_BOTH: left gets the smaller half
-            let mut v = make(left);
-            v.extend_from_slice(&input);
-            v.extend(make(need - left));
-            v
-        }
-        _ => {
-            let mut v = input.clone();
-            v.extend(make(need));
-            v
-        }
-    };
-    Ok(Value::str(out))
-}
-
-// ---------------------------------------------------------------------------
-// mb_internal_encoding / mb_check_encoding / mb_convert_encoding
-// ---------------------------------------------------------------------------
-
-fn fn_mb_internal_encoding(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match args.first().map(deref) {
-        None | Some(Value::Null) => Ok(Value::str(enc_name(internal_enc()))),
-        Some(v) => {
-            let b = conv::to_string_bytes(&v);
-            match resolve_enc(&b) {
-                Some(e) => {
-                    INTERNAL.with(|c| *c.borrow_mut() = e);
-                    Ok(Value::Bool(true))
-                }
-                None => Err(enc_error("mb_internal_encoding", 1, &b)),
-            }
-        }
-    }
-}
-
-/// Is `bytes` valid in `enc`?
-fn is_valid(enc: Enc, bytes: &[u8]) -> bool {
-    match enc {
-        Enc::Utf8 => std::str::from_utf8(bytes).is_ok(),
-        Enc::Ascii => bytes.iter().all(|&b| b < 0x80),
-        Enc::Latin1 => true, // every byte sequence is valid Latin-1
-    }
-}
-
-fn fn_mb_check_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // No value given: php returns true.
-    let value = match args.first().map(deref) {
-        None | Some(Value::Null) => return Ok(Value::Bool(true)),
-        Some(v @ Value::Array(_)) => v,
-        Some(Value::Object(_) | Value::Closure(_) | Value::Resource(_)) => {
-            return Err(Thrown::type_error(format!(
-                "mb_check_encoding(): Argument #1 ($value) must be of type array|string|null, {} given",
-                crate::argparse::value_name(host, &deref(&args[0]))
-            )))
-        }
-        Some(v) => Value::str(conv::to_string_bytes(&v)),
-    };
-    let enc = arg_enc(args, 1, "mb_check_encoding", 2)?;
-    Ok(Value::Bool(check_encoding_value(
-        enc,
-        &value,
-        &mut Vec::new(),
-    )))
-}
-
-/// `php_mb_check_encoding_recursive`: string keys and values must be valid;
-/// nested arrays recurse; other scalars pass; anything else fails.
-fn check_encoding_value(enc: Enc, v: &Value, seen: &mut Vec<usize>) -> bool {
-    match deref(v) {
-        Value::Str(s) => is_valid(enc, s.as_bytes()),
-        Value::Array(a) => {
-            if seen.contains(&a.data_ptr()) {
-                return false;
-            }
-            seen.push(a.data_ptr());
-            let ok = a.iter().all(|(k, val)| {
-                (match k {
-                    rhp_values::ArrayKey::Str(s) => is_valid(enc, s.as_bytes()),
-                    rhp_values::ArrayKey::Int(_) => true,
-                }) && check_encoding_value(enc, val, seen)
-            });
-            seen.pop();
-            ok
-        }
-        Value::Int(_) | Value::Float(_) | Value::Null | Value::Bool(_) => true,
-        _ => false,
-    }
-}
-
-/// An encoding list argument (`"A,B"` string or array, `auto` expanding to
-/// the detect order): php's `php_mb_parse_encoding_list` /
-/// `php_mb_parse_encoding_array`. `arg` names the argument in errors.
-fn enc_list(f: &str, arg: &str, v: &Value) -> Result<Vec<Enc>, Thrown> {
-    let (names, is_array) = match &v {
-        Value::Array(a) => (a.iter().map(|(_, v)| bytes_of(v)).collect(), true),
-        v => (
-            conv::to_string_bytes(v)
-                .split(|&c| c == b',')
-                .map(|p| p.trim_ascii().to_vec())
-                .collect::<Vec<_>>(),
-            false,
-        ),
-    };
-    let mut list = Vec::new();
-    for n in &names {
-        if n.eq_ignore_ascii_case(b"auto") {
-            for e in [Enc::Ascii, Enc::Utf8] {
-                if !list.contains(&e) {
-                    list.push(e);
-                }
-            }
-            continue;
-        }
-        if n.is_empty() && !is_array && names.len() == 1 {
-            break;
-        }
-        match resolve_enc(n) {
-            Some(e) => {
-                if !list.contains(&e) {
-                    list.push(e)
+    let mut out = Vec::with_capacity(map.len() / 4);
+    let mut quad = [0u32; 4];
+    for (k, (_, v)) in map.iter().enumerate() {
+        match zpp::try_get_long(host, &deref(v))? {
+            Some(n) => {
+                quad[k % 4] = n as u32;
+                if k % 4 == 3 {
+                    out.push(quad);
                 }
             }
             None => {
-                return Err(Thrown::error(
-                    "ValueError",
-                    format!(
-                        "{f}(): {arg} contains invalid encoding \"{}\"",
-                        String::from_utf8_lossy(n)
-                    ),
+                return Err(value_error(
+                    fname,
+                    1,
+                    "must only be composed of values of type int",
                 ))
             }
         }
     }
-    if list.is_empty() {
-        return Err(Thrown::error(
-            "ValueError",
-            format!("{f}(): {arg} must specify at least one encoding"),
-        ));
-    }
-    Ok(list)
+    Ok(out)
 }
 
-/// `mb_convert_encoding(array|string $string, string $to, array|string|null $from)`.
-fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let f = "mb_convert_encoding";
-    let to_name = conv::to_string_bytes(&deref(&args[1]));
-    let to = resolve_enc(&to_name).ok_or_else(|| {
-        Thrown::error(
-            "ValueError",
-            format!(
-                "{f}(): Argument #2 ($to_encoding) must be a valid encoding, \"{}\" given",
-                String::from_utf8_lossy(&to_name)
-            ),
-        )
-    })?;
-    let from: Vec<Enc> = match args.get(2).map(deref) {
-        None | Some(Value::Null) => vec![internal_enc()],
-        Some(v) => enc_list(f, "Argument #3 ($from_encoding)", &v)?,
-    };
-    let conv_one = |s: &[u8]| -> Vec<u8> {
-        let enc = guess_encoding(&[s.to_vec()], &from);
-        encode(to, &decode(enc, s))
-    };
-    match deref(&args[0]) {
-        Value::Array(a) => convert_array_recursive(host, &a, &conv_one, &mut Vec::new()),
-        v => Ok(Value::str(conv_one(&conv::to_string_bytes(&v)))),
+/// The array argument at `i` (the VM has checked its type).
+fn array_arg(args: &[Value], i: usize) -> PhpArray {
+    match args.get(i).map(deref) {
+        Some(Value::Array(a)) => a,
+        _ => PhpArray::new(),
     }
 }
 
-/// `php_mb_convert_encoding_recursive`: keys and string values converted,
-/// scalars copied, nested arrays recursed, objects dropped with a warning.
-fn convert_array_recursive(
-    host: &mut dyn Host,
-    a: &PhpArray,
-    conv_one: &dyn Fn(&[u8]) -> Vec<u8>,
-    seen: &mut Vec<usize>,
-) -> Result<Value, Thrown> {
-    let id = a.data_ptr();
-    if seen.contains(&id) {
-        warn(
-            host,
-            "mb_convert_encoding",
-            "Cannot convert recursively referenced values",
-        )?;
-        return Ok(Value::Array(PhpArray::new()));
-    }
-    seen.push(id);
-    let mut out = PhpArray::new();
-    for (k, v) in a.iter() {
-        let key = match k {
-            rhp_values::ArrayKey::Str(s) => {
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(conv_one(s.as_bytes())))
+/// `html_numeric_entity_convert`.
+fn entity_convert(w: u32, map: &[[u32; 4]]) -> Option<u32> {
+    map.iter()
+        .find(|m| w >= m[0] && w <= m[1])
+        .map(|m| w.wrapping_add(m[2]) & m[3])
+}
+
+/// `html_numeric_entity_encode`.
+fn entity_encode(input: &[u8], enc: Enc, map: &[[u32; 4]], hex: bool) -> Vec<u8> {
+    let (mode, subst) = illegal_settings();
+    let mut buf = ConvertBuf::new(input.len(), subst, mode);
+    let mut wchar = [0u32; 32];
+    let mut converted: Vec<u32> = Vec::with_capacity(32 * 13);
+    let mut rest = input;
+    let mut state = 0;
+    while !rest.is_empty() {
+        let n = enc.to_wchar(&mut rest, &mut wchar, &mut state);
+        converted.clear();
+        for &w in &wchar[..n] {
+            match entity_convert(w, map) {
+                Some(mut w) => {
+                    converted.extend([b'&' as u32, b'#' as u32]);
+                    if hex {
+                        converted.push(b'x' as u32);
+                    }
+                    if w == 0 {
+                        converted.push(b'0' as u32);
+                    } else {
+                        let mut digits = Vec::new();
+                        if hex {
+                            while w > 0 {
+                                digits.push(b"0123456789ABCDEF"[(w & 0xF) as usize] as u32);
+                                w >>= 4;
+                            }
+                        } else {
+                            while w > 0 {
+                                digits.push(b'0' as u32 + w % 10);
+                                w /= 10;
+                            }
+                        }
+                        converted.extend(digits.iter().rev());
+                    }
+                    converted.push(b';' as u32);
+                }
+                None => converted.push(w),
             }
-            k => k.clone(),
-        };
-        let nv = match deref(v) {
-            Value::Str(s) => Value::str(conv_one(s.as_bytes())),
-            v @ (Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)) => v,
-            Value::Array(inner) => convert_array_recursive(host, &inner, conv_one, seen)?,
-            _ => {
-                warn(host, "mb_convert_encoding", "Object is not supported")?;
+        }
+        enc.from_wchar(&converted, &mut buf, rest.is_empty());
+    }
+    buf.result(enc)
+}
+
+/// `mb_encode_numericentity(string $string, array $map, ?string $encoding = null, bool $hex = false)`.
+fn fn_mb_encode_numericentity(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_encode_numericentity";
+    let s = str_arg(host, args, 0, f)?;
+    let map = array_arg(args, 1);
+    let enc_name = opt_str_arg(host, args, 2, f)?;
+    let hex = bool_arg(host, args, 3, f, false)?;
+    let enc = get_encoding(host, enc_name.as_deref(), 2, f)?;
+    let map = conversion_map(host, &map, f)?;
+    Ok(Value::str(entity_encode(&s, enc, &map, hex)))
+}
+
+/// `html_numeric_entity_deconvert`.
+fn entity_deconvert(number: u32, map: &[[u32; 4]]) -> Option<u32> {
+    map.iter().find_map(|m| {
+        let cp = number.wrapping_sub(m[2]);
+        (cp >= m[0] && cp <= m[1]).then_some(cp)
+    })
+}
+
+/// `html_numeric_entity_decode`.
+fn entity_decode(input: &[u8], enc: Enc, map: &[[u32; 4]]) -> Vec<u8> {
+    const DEC_MINLEN: usize = 3; // "&#" and a digit
+    const HEX_MINLEN: usize = 4; // "&#x" and a digit
+    const DEC_MAXLEN: usize = 12; // "&#" and 10 digits
+    const HEX_MAXLEN: usize = 11; // "&#x" and 8 digits
+    let amp = b'&' as u32;
+    let (mode, subst) = illegal_settings();
+    let mut buf = ConvertBuf::new(input.len(), subst, mode);
+    // One slot more than php's 128 for the '&' sentinel.
+    let mut wchar = [0u32; 128];
+    let mut converted: Vec<u32> = Vec::with_capacity(128);
+    let mut offset = 0usize;
+    let mut rest = input;
+    let mut state = 0;
+    let is_hex = |w: u32| matches!(w, 0x30..=0x39 | 0x41..=0x46 | 0x61..=0x66);
+    let is_dec = |w: u32| (0x30..=0x39).contains(&w);
+    while !rest.is_empty() {
+        let n = enc.to_wchar(&mut rest, &mut wchar[offset..127], &mut state);
+        let out_len = n + offset;
+        wchar[out_len] = amp;
+        let more = !rest.is_empty();
+        converted.clear();
+        let mut p = 0usize;
+        if offset == 0 {
+            while wchar[p] != amp {
+                p += 1;
+            }
+            if p == out_len {
+                enc.from_wchar(&wchar[..out_len], &mut buf, !more);
                 continue;
             }
-        };
-        if out.get(&key).is_none() {
-            out.insert(key, nv);
+            converted.extend_from_slice(&wchar[..p]);
         }
-    }
-    seen.pop();
-    Ok(Value::Array(out))
-}
-
-/// `mb_strcut(string $string, int $start, ?int $length = null, ?string $encoding = null)`:
-/// a byte-range cut, moved back onto character boundaries.
-fn fn_mb_strcut(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
-    let n = s.len() as i64;
-    let mut from = conv::to_int(&deref(&args[1]));
-    let mut len = match args.get(2).map(deref) {
-        None | Some(Value::Null) => n,
-        Some(v) => conv::to_int(&v),
-    };
-    let enc = arg_enc(args, 3, "mb_strcut", 4)?;
-    if from < 0 {
-        from = (n + from).max(0);
-    }
-    if len < 0 {
-        len = ((n - from) + len).max(0);
-    }
-    if from > n || len == 0 {
-        return Ok(Value::str(""));
-    }
-    let from = from as usize;
-    match enc {
-        Enc::Utf8 => {
-            let cont = |i: usize| s.get(i).is_some_and(|&b| (b as i8) < -64);
-            let mut start = from;
-            while start > 0 && cont(start) {
-                start -= 1;
-            }
-            let end = start as u128 + len as u128;
-            if end >= s.len() as u128 {
-                return Ok(Value::str(s[start..].to_vec()));
-            }
-            let mut end = end as usize;
-            while end > start && cont(end) {
-                end -= 1;
-            }
-            Ok(Value::str(s[start..end].to_vec()))
-        }
-        Enc::Ascii | Enc::Latin1 => {
-            let len = (len as usize).min(s.len() - from);
-            Ok(Value::str(s[from..from + len].to_vec()))
-        }
-    }
-}
-
-thread_local! {
-    /// `mb_substitute_character()` setting: a codepoint, or "none"/"long"/"entity".
-    static SUBST: RefCell<Value> = const { RefCell::new(Value::Int(0x3F)) };
-}
-
-/// `mb_substitute_character(string|int|null $substitute_character = null)`.
-fn fn_mb_substitute_character(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let f = "mb_substitute_character";
-    match args.first().map(deref) {
-        None | Some(Value::Null) => Ok(SUBST.with(|s| s.borrow().clone())),
-        Some(Value::Str(s)) if conv::scan_number(s.as_bytes()).is_none() => {
-            let l = s.as_bytes().to_ascii_lowercase();
-            match l.as_slice() {
-                b"none" | b"long" | b"entity" => {
-                    SUBST.with(|c| *c.borrow_mut() = Value::str(l));
-                    Ok(Value::Bool(true))
+        offset = 0;
+        // At an '&' (wchar[p]).
+        'amp: loop {
+            let mut p2 = p + 1;
+            if wchar[p2] == b'#' as u32 {
+                p2 += 1;
+                if wchar[p2] == b'x' as u32 {
+                    p2 += 1;
+                    while is_hex(wchar[p2]) {
+                        p2 += 1;
+                    }
+                    let len = p2 - p;
+                    if p2 == out_len && more && len <= HEX_MAXLEN {
+                        // Truncated by the buffer: again with the next one.
+                        wchar.copy_within(p..p2, 0);
+                        offset = len;
+                        break 'amp;
+                    } else if !(HEX_MINLEN..=HEX_MAXLEN).contains(&len) {
+                        converted.extend_from_slice(&wchar[p..p2]);
+                    } else {
+                        let mut value = 0u32;
+                        for &w in &wchar[p + 3..p2] {
+                            let d = if w <= b'9' as u32 {
+                                w - b'0' as u32
+                            } else if w >= b'a' as u32 {
+                                10 + w - b'a' as u32
+                            } else {
+                                10 + w - b'A' as u32
+                            };
+                            value = value.wrapping_mul(16).wrapping_add(d);
+                        }
+                        match entity_deconvert(value, map) {
+                            Some(cp) => {
+                                converted.push(cp);
+                                if wchar[p2] == b';' as u32 {
+                                    p2 += 1;
+                                }
+                            }
+                            None => converted.extend_from_slice(&wchar[p..p2]),
+                        }
+                    }
+                } else {
+                    while is_dec(wchar[p2]) {
+                        p2 += 1;
+                    }
+                    let len = p2 - p;
+                    if p2 == out_len && more && len <= DEC_MAXLEN {
+                        wchar.copy_within(p..p2, 0);
+                        offset = len;
+                        break 'amp;
+                    } else if !(DEC_MINLEN..=DEC_MAXLEN).contains(&len) {
+                        converted.extend_from_slice(&wchar[p..p2]);
+                    } else {
+                        let mut value = 0u32;
+                        let mut too_big = false;
+                        for &w in &wchar[p + 2..p2] {
+                            // Past 0x19999999, times 10 overflows.
+                            if value > 0x1999_9999 {
+                                too_big = true;
+                                break;
+                            }
+                            value = value.wrapping_mul(10).wrapping_add(w - b'0' as u32);
+                        }
+                        if too_big {
+                            converted.extend_from_slice(&wchar[p..p2]);
+                        } else {
+                            match entity_deconvert(value, map) {
+                                Some(cp) => {
+                                    converted.push(cp);
+                                    if wchar[p2] == b';' as u32 {
+                                        p2 += 1;
+                                    }
+                                }
+                                None => converted.extend_from_slice(&wchar[p..p2]),
+                            }
+                        }
+                    }
                 }
-                _ => Err(Thrown::error(
-                    "ValueError",
-                    format!("{f}(): Argument #1 ($substitute_character) must be \"none\", \"long\", \"entity\" or a valid codepoint"),
-                )),
+            } else if p2 == out_len && more {
+                // An '&' at the end of the buffer.
+                wchar[0] = amp;
+                offset = 1;
+                break 'amp;
+            } else {
+                converted.push(amp);
+            }
+            // The next stretch without an '&'.
+            p = p2;
+            while wchar[p2] != amp {
+                p2 += 1;
+            }
+            if p2 > p {
+                converted.extend_from_slice(&wchar[p..p2]);
+                p = p2;
+            }
+            if p >= out_len {
+                break 'amp;
             }
         }
-        Some(v) => {
-            let cp = conv::to_int(&v);
-            if !(0..=0x10FFFF).contains(&cp) || (0xD800..=0xDFFF).contains(&cp) {
-                return Err(Thrown::error(
-                    "ValueError",
-                    format!("{f}(): Argument #1 ($substitute_character) is not a valid codepoint"),
-                ));
-            }
-            SUBST.with(|c| *c.borrow_mut() = Value::Int(cp));
-            Ok(Value::Bool(true))
-        }
+        enc.from_wchar(&converted, &mut buf, !more);
     }
+    buf.result(enc)
 }
 
-/// php 8.5.8's `mb_list_encodings()`.
-const ALL_ENCODINGS: &[&str] = &[
-    "BASE64",
-    "UUENCODE",
-    "HTML-ENTITIES",
-    "Quoted-Printable",
-    "7bit",
-    "8bit",
-    "UCS-4",
-    "UCS-4BE",
-    "UCS-4LE",
-    "UCS-2",
-    "UCS-2BE",
-    "UCS-2LE",
-    "UTF-32",
-    "UTF-32BE",
-    "UTF-32LE",
-    "UTF-16",
-    "UTF-16BE",
-    "UTF-16LE",
-    "UTF-8",
-    "UTF-7",
-    "UTF7-IMAP",
-    "ASCII",
-    "EUC-JP",
-    "SJIS",
-    "eucJP-win",
-    "EUC-JP-2004",
-    "SJIS-Mobile#DOCOMO",
-    "SJIS-Mobile#KDDI",
-    "SJIS-Mobile#SOFTBANK",
-    "SJIS-mac",
-    "SJIS-2004",
-    "UTF-8-Mobile#DOCOMO",
-    "UTF-8-Mobile#KDDI-A",
-    "UTF-8-Mobile#KDDI-B",
-    "UTF-8-Mobile#SOFTBANK",
-    "CP932",
-    "SJIS-win",
-    "CP51932",
-    "JIS",
-    "ISO-2022-JP",
-    "ISO-2022-JP-MS",
-    "GB18030",
-    "GB18030-2022",
-    "Windows-1252",
-    "Windows-1254",
-    "ISO-8859-1",
-    "ISO-8859-2",
-    "ISO-8859-3",
-    "ISO-8859-4",
-    "ISO-8859-5",
-    "ISO-8859-6",
-    "ISO-8859-7",
-    "ISO-8859-8",
-    "ISO-8859-9",
-    "ISO-8859-10",
-    "ISO-8859-13",
-    "ISO-8859-14",
-    "ISO-8859-15",
-    "ISO-8859-16",
-    "EUC-CN",
-    "CP936",
-    "HZ",
-    "EUC-TW",
-    "BIG-5",
-    "CP950",
-    "EUC-KR",
-    "UHC",
-    "ISO-2022-KR",
-    "Windows-1251",
-    "CP866",
-    "KOI8-R",
-    "KOI8-U",
-    "ArmSCII-8",
-    "CP850",
-    "ISO-2022-JP-2004",
-    "ISO-2022-JP-MOBILE#KDDI",
-    "CP50220",
-    "CP50221",
-    "CP50222",
-];
-
-const ASCII_ALIASES: &[&str] = &[
-    "ANSI_X3.4-1968",
-    "iso-ir-6",
-    "ANSI_X3.4-1986",
-    "ISO_646.irv:1991",
-    "US-ASCII",
-    "ISO646-US",
-    "us",
-    "IBM367",
-    "IBM-367",
-    "cp367",
-    "csASCII",
-];
-
-fn fn_mb_list_encodings(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let mut a = PhpArray::new();
-    for e in ALL_ENCODINGS {
-        a.push(Value::str(*e));
-    }
-    Ok(Value::Array(a))
-}
-
-fn fn_mb_encoding_aliases(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = bytes_of(&args[0]);
-    let enc = resolve_enc(&name).ok_or_else(|| enc_error("mb_encoding_aliases", 1, &name))?;
-    let list: &[&str] = match enc {
-        Enc::Utf8 => &["utf8"],
-        Enc::Ascii => ASCII_ALIASES,
-        Enc::Latin1 => &["ISO8859-1", "latin1"],
-    };
-    let mut a = PhpArray::new();
-    for e in list {
-        a.push(Value::str(*e));
-    }
-    Ok(Value::Array(a))
-}
-
-// ---------------------------------------------------------------------------
-// mb_detect_encoding
-// ---------------------------------------------------------------------------
-
-/// `mb_detect_encoding($string, $encodings = null, $strict = false)`.
-///
-/// Pragmatic detector covering the common case: returns `"UTF-8"` for valid
-/// (non-ASCII-containing) UTF-8, `"ASCII"` for a 7-bit string, and `false` for
-/// bytes that are neither. The full php candidate-list machinery is not modelled.
-/// `mb_detect_encoding(string $string, array|string|null $encodings = null,
-/// bool $strict = false)`: php's demerit-scoring guess over the list
-/// (default: the detect order, ASCII then UTF-8).
-fn fn_mb_detect_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = crate::argparse::str_param(host, args, 0, "mb_detect_encoding", "string")?;
-    let list = match args.get(1).map(deref) {
-        None | Some(Value::Null) => vec![Enc::Ascii, Enc::Utf8],
-        Some(v) => enc_list("mb_detect_encoding", "Argument #2 ($encodings)", &v)?,
-    };
-    let strict = crate::argparse::bool_param(host, args, 2, "mb_detect_encoding", "strict", false)?;
-    Ok(match guess_encoding_ex(&[s], &list, strict) {
-        Some(e) => Value::str(enc_name(e)),
-        None => Value::Bool(false),
-    })
+/// `mb_decode_numericentity(string $string, array $map, ?string $encoding = null)`.
+fn fn_mb_decode_numericentity(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_decode_numericentity";
+    let s = str_arg(host, args, 0, f)?;
+    let map = array_arg(args, 1);
+    let enc = enc_arg(host, args, 2, f)?;
+    let map = conversion_map(host, &map, f)?;
+    Ok(Value::str(entity_decode(&s, enc, &map)))
 }
 
 // ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
-/// Register all multibyte builtins into the shared table.
+/// Register the mbstring builtins.
 pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
+    let fns: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
+        ("mb_internal_encoding", fn_mb_internal_encoding, 0, Some(1)),
+        (
+            "mb_substitute_character",
+            fn_mb_substitute_character,
+            0,
+            Some(1),
+        ),
+        ("mb_str_split", fn_mb_str_split, 1, Some(3)),
+        ("mb_strlen", fn_mb_strlen, 1, Some(2)),
+        ("mb_strpos", fn_mb_strpos, 2, Some(4)),
+        ("mb_strrpos", fn_mb_strrpos, 2, Some(4)),
+        ("mb_stripos", fn_mb_stripos, 2, Some(4)),
+        ("mb_strripos", fn_mb_strripos, 2, Some(4)),
+        ("mb_strstr", fn_mb_strstr, 2, Some(4)),
+        ("mb_strrchr", fn_mb_strrchr, 2, Some(4)),
+        ("mb_stristr", fn_mb_stristr, 2, Some(4)),
+        ("mb_strrichr", fn_mb_strrichr, 2, Some(4)),
+        ("mb_substr_count", fn_mb_substr_count, 2, Some(3)),
+        ("mb_substr", fn_mb_substr, 2, Some(4)),
+        ("mb_strcut", fn_mb_strcut, 2, Some(4)),
+        ("mb_strwidth", fn_mb_strwidth, 1, Some(2)),
+        ("mb_strimwidth", fn_mb_strimwidth, 3, Some(5)),
+        ("mb_convert_encoding", fn_mb_convert_encoding, 2, Some(3)),
+        ("mb_convert_case", fn_mb_convert_case, 2, Some(3)),
+        ("mb_strtoupper", fn_mb_strtoupper, 1, Some(2)),
+        ("mb_strtolower", fn_mb_strtolower, 1, Some(2)),
+        ("mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3)),
+        ("mb_list_encodings", fn_mb_list_encodings, 0, Some(0)),
+        ("mb_encoding_aliases", fn_mb_encoding_aliases, 1, Some(1)),
+        ("mb_convert_variables", fn_mb_convert_variables, 3, None),
+        (
+            "mb_encode_numericentity",
+            fn_mb_encode_numericentity,
+            2,
+            Some(4),
+        ),
+        (
+            "mb_decode_numericentity",
+            fn_mb_decode_numericentity,
+            2,
+            Some(3),
+        ),
+        ("mb_check_encoding", fn_mb_check_encoding, 0, Some(2)),
+        ("mb_scrub", fn_mb_scrub, 1, Some(2)),
+        ("mb_ord", fn_mb_ord, 1, Some(2)),
+        ("mb_chr", fn_mb_chr, 1, Some(2)),
+        ("mb_str_pad", fn_mb_str_pad, 2, Some(5)),
+    ];
+    for &(name, func, min_args, max_args) in fns {
         m.insert(
             name,
             Builtin {
                 name,
                 func,
-                min_args: min,
-                max_args: max,
+                min_args,
+                max_args,
             },
         );
     }
-    put(m, "mb_strlen", fn_mb_strlen, 1, Some(2));
-    put(m, "mb_substr", fn_mb_substr, 2, Some(4));
-    put(m, "mb_strtoupper", fn_mb_strtoupper, 1, Some(2));
-    put(m, "mb_strtolower", fn_mb_strtolower, 1, Some(2));
-    put(m, "mb_convert_case", fn_mb_convert_case, 2, Some(3));
-    put(m, "mb_str_split", fn_mb_str_split, 1, Some(3));
-    put(m, "mb_strpos", fn_mb_strpos, 2, Some(4));
-    put(m, "mb_stripos", fn_mb_stripos, 2, Some(4));
-    put(m, "mb_strrpos", fn_mb_strrpos, 2, Some(4));
-    put(m, "mb_strripos", fn_mb_strripos, 2, Some(4));
-    put(m, "mb_substr_count", fn_mb_substr_count, 2, Some(3));
-    put(m, "mb_strwidth", fn_mb_strwidth, 1, Some(2));
-    put(m, "mb_strstr", fn_mb_strstr, 2, Some(4));
-    put(m, "mb_strrchr", fn_mb_strrchr, 2, Some(4));
-    put(m, "mb_stristr", fn_mb_stristr, 2, Some(4));
-    put(m, "mb_strrichr", fn_mb_strrichr, 2, Some(4));
-    put(m, "mb_convert_variables", fn_mb_convert_variables, 3, None);
-    put(m, "mb_strimwidth", fn_mb_strimwidth, 3, Some(5));
-    put(m, "mb_scrub", fn_mb_scrub, 1, Some(2));
-    put(m, "mb_ord", fn_mb_ord, 1, Some(2));
-    put(m, "mb_chr", fn_mb_chr, 1, Some(2));
-    put(m, "mb_str_pad", fn_mb_str_pad, 2, Some(5));
-    put(
-        m,
-        "mb_internal_encoding",
-        fn_mb_internal_encoding,
-        0,
-        Some(1),
-    );
-    put(m, "mb_check_encoding", fn_mb_check_encoding, 0, Some(2));
-    put(m, "mb_convert_encoding", fn_mb_convert_encoding, 2, Some(3));
-    put(m, "mb_strcut", fn_mb_strcut, 2, Some(4));
-    put(
-        m,
-        "mb_substitute_character",
-        fn_mb_substitute_character,
-        0,
-        Some(1),
-    );
-    put(m, "mb_list_encodings", fn_mb_list_encodings, 0, Some(0));
-    put(m, "mb_encoding_aliases", fn_mb_encoding_aliases, 1, Some(1));
-    put(m, "mb_detect_encoding", fn_mb_detect_encoding, 1, Some(3));
 }
-
-// ---------------------------------------------------------------------------
-// tests — expected values captured from php 8.5.8
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn convert_variables_recursion_warns() {
-        // $r = ["\xe9"]; $r[] = &$r;
-        let cell: rhp_values::PhpRef = Rc::new(RefCell::new(Value::Null));
-        let mut a = PhpArray::new();
-        a.push(Value::str(b"\xe9".to_vec()));
-        a.push(Value::Ref(cell.clone()));
-        *cell.borrow_mut() = Value::Array(a);
-        for from in ["ISO-8859-1", "ISO-8859-1,UTF-8"] {
-            let (r, d) = crate::diag_test::run(
-                fn_mb_convert_variables,
-                &[
-                    Value::str("UTF-8"),
-                    Value::str(from),
-                    Value::Ref(cell.clone()),
-                ],
-            );
-            assert!(matches!(r, Ok(Value::Bool(false))));
-            assert_eq!(
-                d,
-                vec!["Warning: mb_convert_variables(): Cannot handle recursive references"]
-            );
-        }
-        // the single-encoding pass converted the first element before failing
-        let Value::Array(a) = &*cell.borrow() else {
-            panic!()
-        };
-        assert_eq!(bytes_of(a.get_index(0).unwrap().1), b"\xc3\xa9");
-        let (r, d) = crate::diag_test::run(
-            fn_mb_convert_variables,
-            &[
-                Value::str("UTF-8"),
-                Value::str("auto"),
-                Value::str(b"h\xe9llo".to_vec()),
-            ],
-        );
-        assert!(d.is_empty());
-        assert_eq!(bytes_of(&r.ok().unwrap()), b"ASCII");
-    }
-
-    struct NullHost;
-    impl Host for NullHost {
-        fn write_out(&mut self, _: &[u8]) {}
-    }
-
-    fn s(b: &str) -> Value {
-        Value::str(b)
-    }
-    fn call(f: crate::NativeFn, args: &[Value]) -> Value {
-        f(&mut NullHost, args).expect("no throw")
-    }
-    fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-        String::from_utf8(bytes_of(&call(f, args))).unwrap()
-    }
-    fn call_hex(f: crate::NativeFn, args: &[Value]) -> String {
-        bytes_of(&call(f, args))
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    }
-    fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
-        match call(f, args) {
-            Value::Int(n) => n,
-            other => panic!("expected int, got {}", other.type_name()),
-        }
-    }
-    fn call_pos(f: crate::NativeFn, args: &[Value]) -> Option<i64> {
-        match call(f, args) {
-            Value::Int(n) => Some(n),
-            Value::Bool(false) => None,
-            other => panic!("expected int|false, got {}", other.type_name()),
-        }
-    }
-    fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
-        matches!(call(f, args), Value::Bool(false))
-    }
-    fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
-        match call(f, args) {
-            Value::Array(a) => a
-                .iter()
-                .map(|(_, v)| String::from_utf8(bytes_of(v)).unwrap())
-                .collect(),
-            other => panic!("expected array, got {}", other.type_name()),
-        }
-    }
-
-    #[test]
-    fn strlen_cases() {
-        assert_eq!(call_int(fn_mb_strlen, &[s("héllo")]), 5);
-        assert_eq!(call_int(fn_mb_strlen, &[s("")]), 0);
-        assert_eq!(call_int(fn_mb_strlen, &[s("€uro")]), 4);
-        assert_eq!(call_int(fn_mb_strlen, &[s("日本語")]), 3);
-        // invalid UTF-8 chunking (ED A0 80 → 3 errors)
-        assert_eq!(
-            call_int(fn_mb_strlen, &[Value::str(vec![0xED, 0xA0, 0x80])]),
-            3
-        );
-        assert_eq!(call_int(fn_mb_strlen, &[Value::str(vec![0xC3, 0x28])]), 2);
-    }
-
-    #[test]
-    fn substr_cases() {
-        assert_eq!(
-            calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(3)]),
-            "éll"
-        );
-        assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(-2)]), "lo");
-        assert_eq!(
-            calls(fn_mb_substr, &[s("héllo"), Value::Int(1), Value::Int(-1)]),
-            "éll"
-        );
-        assert_eq!(calls(fn_mb_substr, &[s("héllo"), Value::Int(-10)]), "héllo");
-        // invalid lead byte → substitute
-        assert_eq!(
-            call_hex(
-                fn_mb_substr,
-                &[
-                    Value::str(vec![0xC3, 0x28, 0x61, 0x62]),
-                    Value::Int(0),
-                    Value::Int(2)
-                ]
-            ),
-            "3f28"
-        );
-    }
-
-    #[test]
-    fn case_cases() {
-        assert_eq!(calls(fn_mb_strtoupper, &[s("héllo wörld")]), "HÉLLO WÖRLD");
-        assert_eq!(calls(fn_mb_strtolower, &[s("HÉLLO WÖRLD")]), "héllo wörld");
-        assert_eq!(calls(fn_mb_strtoupper, &[s("straße")]), "STRASSE");
-        assert_eq!(calls(fn_mb_strtoupper, &[s("µ")]), "Μ");
-        assert_eq!(calls(fn_mb_strtoupper, &[s("×÷")]), "×÷"); // math signs unchanged
-    }
-
-    #[test]
-    fn final_sigma_cases() {
-        // "ΟΣΟΣ" → "οσος" with the LAST sigma as final sigma ς (cf82)
-        assert_eq!(call_hex(fn_mb_strtolower, &[s("ΟΣΟΣ")]), "cebfcf83cebfcf82");
-        // isolated Σ (no preceding cased) → non-final σ
-        assert_eq!(call_hex(fn_mb_strtolower, &[s("Σ")]), "cf83");
-    }
-
-    #[test]
-    fn convert_case_cases() {
-        assert_eq!(
-            calls(fn_mb_convert_case, &[s("héllo wörld"), Value::Int(2)]),
-            "Héllo Wörld"
-        );
-        assert_eq!(
-            calls(fn_mb_convert_case, &[s("it's a test"), Value::Int(2)]),
-            "It's A Test"
-        );
-        assert_eq!(
-            calls(fn_mb_convert_case, &[s("a.b a,b"), Value::Int(2)]),
-            "A.b A,B"
-        );
-        assert_eq!(
-            calls(fn_mb_convert_case, &[s("abc123def"), Value::Int(2)]),
-            "Abc123Def"
-        );
-        assert_eq!(
-            calls(fn_mb_convert_case, &[s("ßtra"), Value::Int(2)]),
-            "Sstra"
-        );
-        // FOLD: ß → ss, µ → μ
-        assert_eq!(
-            call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(3)]),
-            "7373"
-        );
-        assert_eq!(
-            call_hex(fn_mb_convert_case, &[s("µ"), Value::Int(3)]),
-            "cebc"
-        );
-        // SIMPLE upper keeps ß
-        assert_eq!(
-            call_hex(fn_mb_convert_case, &[s("ß"), Value::Int(4)]),
-            "c39f"
-        );
-    }
-
-    #[test]
-    fn str_split_cases() {
-        assert_eq!(
-            split_vec(fn_mb_str_split, &[s("héllo")]),
-            vec!["h", "é", "l", "l", "o"]
-        );
-        assert_eq!(
-            split_vec(fn_mb_str_split, &[s("héllo"), Value::Int(2)]),
-            vec!["hé", "ll", "o"]
-        );
-        assert!(fn_mb_str_split(&mut NullHost, &[s("abc"), Value::Int(0)]).is_err());
-    }
-
-    #[test]
-    fn pos_cases() {
-        assert_eq!(call_pos(fn_mb_strpos, &[s("héllo"), s("llo")]), Some(2));
-        assert_eq!(
-            call_pos(fn_mb_strpos, &[s("aéaéa"), s("a"), Value::Int(-1)]),
-            Some(4)
-        );
-        assert_eq!(
-            call_pos(fn_mb_stripos, &[s("Héllo WÖRLD"), s("wörld")]),
-            Some(6)
-        );
-        assert!(is_false(fn_mb_stripos, &[s("maße"), s("MASSE")])); // simple fold: ß ≠ ss
-        assert_eq!(call_pos(fn_mb_strrpos, &[s("aéaéa"), s("a")]), Some(4));
-        assert_eq!(
-            call_pos(fn_mb_strrpos, &[s("aéaéa"), s("a"), Value::Int(-2)]),
-            Some(2)
-        );
-        assert_eq!(
-            call_pos(fn_mb_strrpos, &[s("abcabc"), s("bc"), Value::Int(-3)]),
-            Some(1)
-        );
-        assert_eq!(call_pos(fn_mb_strripos, &[s("AéAéA"), s("a")]), Some(4));
-    }
-
-    #[test]
-    fn count_width_cases() {
-        assert_eq!(call_int(fn_mb_substr_count, &[s("ababab"), s("ab")]), 3);
-        assert_eq!(call_int(fn_mb_substr_count, &[s("aaa"), s("aa")]), 1); // non-overlapping
-        assert!(fn_mb_substr_count(&mut NullHost, &[s("abc"), s("")]).is_err());
-        assert_eq!(call_int(fn_mb_strwidth, &[s("日本語abc")]), 9);
-        assert_eq!(call_int(fn_mb_strwidth, &[s("😀")]), 2);
-    }
-
-    #[test]
-    fn strstr_strrchr_cases() {
-        assert_eq!(calls(fn_mb_strstr, &[s("héllo wörld"), s("ö")]), "örld");
-        assert_eq!(
-            calls(fn_mb_strstr, &[s("héllo wörld"), s("ö"), Value::Bool(true)]),
-            "héllo w"
-        );
-        assert!(is_false(fn_mb_strstr, &[s("héllo"), s("z")]));
-        assert_eq!(
-            calls(fn_mb_strstr, &[s("日本語テスト"), s("語")]),
-            "語テスト"
-        );
-        assert_eq!(calls(fn_mb_strrchr, &[s("héllo wörld"), s("l")]), "ld");
-        assert_eq!(
-            calls(
-                fn_mb_strrchr,
-                &[s("héllo wörld"), s("l"), Value::Bool(true)]
-            ),
-            "héllo wör"
-        );
-        assert_eq!(calls(fn_mb_strrchr, &[s("foobarbo"), s("ob")]), "obarbo");
-        assert!(is_false(fn_mb_strrchr, &[s("abc"), s("xy")]));
-    }
-
-    #[test]
-    fn strimwidth_cases() {
-        assert_eq!(
-            calls(
-                fn_mb_strimwidth,
-                &[s("Hello World"), Value::Int(0), Value::Int(10), s("...")]
-            ),
-            "Hello W..."
-        );
-        assert_eq!(
-            calls(
-                fn_mb_strimwidth,
-                &[s("日本語テスト"), Value::Int(0), Value::Int(6), s("...")]
-            ),
-            "日..."
-        );
-        assert_eq!(
-            calls(
-                fn_mb_strimwidth,
-                &[s("Hello"), Value::Int(0), Value::Int(3)]
-            ),
-            "Hel"
-        );
-        assert_eq!(
-            calls(
-                fn_mb_strimwidth,
-                &[s("日本語テスト"), Value::Int(2), Value::Int(6), s("..")]
-            ),
-            "語テ.."
-        );
-    }
-
-    #[test]
-    fn scrub_cases() {
-        assert_eq!(calls(fn_mb_scrub, &[s("valid")]), "valid");
-        assert_eq!(
-            calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]),
-            "abc??def"
-        );
-        assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97".to_vec())]), "?");
-    }
-
-    #[test]
-    fn ord_chr_cases() {
-        assert_eq!(call_int(fn_mb_ord, &[s("é")]), 233);
-        assert_eq!(call_int(fn_mb_ord, &[s("€")]), 8364);
-        assert!(fn_mb_ord(&mut NullHost, &[s("")]).is_err()); // php throws on empty
-        assert_eq!(calls(fn_mb_chr, &[Value::Int(233)]), "é");
-        assert!(is_false(fn_mb_chr, &[Value::Int(0x110000)]));
-    }
-
-    #[test]
-    fn str_pad_cases() {
-        assert_eq!(
-            calls(
-                fn_mb_str_pad,
-                &[s("héllo"), Value::Int(10), s("-*"), Value::Int(1)]
-            ),
-            "héllo-*-*-"
-        );
-        assert_eq!(
-            calls(
-                fn_mb_str_pad,
-                &[s("héllo"), Value::Int(10), s("xy"), Value::Int(2)]
-            ),
-            "xyhélloxyx"
-        );
-        assert_eq!(calls(fn_mb_str_pad, &[s("héllo"), Value::Int(3)]), "héllo");
-    }
-
-    #[test]
-    fn encoding_cases() {
-        // mb_convert_encoding($str, $to, $from): café UTF-8 → ISO-8859-1 (é → 0xe9)
-        assert_eq!(
-            call_hex(
-                fn_mb_convert_encoding,
-                &[s("café"), s("ISO-8859-1"), s("UTF-8")]
-            ),
-            "636166e9"
-        );
-        // reinterpreting those UTF-8 bytes as Latin-1 → UTF-8 (Ã,©)
-        assert_eq!(
-            call_hex(
-                fn_mb_convert_encoding,
-                &[s("café"), s("UTF-8"), s("ISO-8859-1")]
-            ),
-            "636166c383c2a9"
-        );
-        // "latin1" is an accepted alias for "ISO-8859-1"
-        assert_eq!(
-            call_hex(
-                fn_mb_convert_encoding,
-                &[s("café"), s("UTF-8"), s("latin1")]
-            ),
-            "636166c383c2a9"
-        );
-        // unmappable → '?'
-        assert_eq!(
-            call_hex(fn_mb_convert_encoding, &[s("café"), s("ASCII"), s("UTF-8")]),
-            "6361663f"
-        );
-        assert!(matches!(
-            call(fn_mb_check_encoding, &[s("héllo"), s("UTF-8")]),
-            Value::Bool(true)
-        ));
-        assert!(is_false(
-            fn_mb_check_encoding,
-            &[Value::str(vec![0xC3, 0x28]), s("UTF-8")]
-        ));
-        assert!(matches!(call(fn_mb_check_encoding, &[]), Value::Bool(true)));
-        // invalid encoding name → ValueError
-        assert!(fn_mb_strlen(&mut NullHost, &[s("x"), s("bogus")]).is_err());
-    }
-
-    #[test]
-    fn internal_encoding_roundtrip() {
-        assert_eq!(calls(fn_mb_internal_encoding, &[]), "UTF-8");
-        assert!(matches!(
-            call(fn_mb_internal_encoding, &[s("ISO-8859-1")]),
-            Value::Bool(true)
-        ));
-        assert_eq!(calls(fn_mb_internal_encoding, &[]), "ISO-8859-1");
-        // restore so other tests on this thread see the default
-        let _ = call(fn_mb_internal_encoding, &[s("UTF-8")]);
-        assert!(fn_mb_internal_encoding(&mut NullHost, &[s("bogus")]).is_err());
-    }
-}
+mod tests;

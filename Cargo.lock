@@ -1143,6 +1143,7 @@ dependencies = [
  "num-traits",
  "openssl-sys",
  "rhp-csrc",
+ "rhp-mbfl-sys",
  "rhp-semantics",
  "rhp-values",
  "ripemd",

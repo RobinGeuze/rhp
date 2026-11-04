@@ -35,6 +35,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "ctype",
     "curl",
     "json",
+    #[cfg(feature = "mbstring-libmbfl")]
     "mbstring",
     "SPL",
     "filter",

@@ -14,6 +14,7 @@ Start with the project [README](../../README.md), then
 | [`value-model.md`](./value-model.md) | `Value` (the zval analogue), `PhpStr`, `PhpArray`, references, copy-on-write. |
 | [`php-semantics.md`](./php-semantics.md) | php's exact output, number, comparison and conversion rules, as probed on the reference php. |
 | [`sapi.md`](./sapi.md) | The request layer (`rhp-sapi`): the `Sapi` trait, the request lifecycle, the compiled-script cache, memory accounting, embedding. |
+| [`builtins-layout.md`](./builtins-layout.md) | Where a builtin lives in `rhp-builtins`: the file of the php-src file that defines it. The table maps every file to php-src. |
 | [`request-state.md`](./request-state.md) | Every `thread_local!`: what it holds, whether it is per request, per call or a per-thread cache, and what resets it. |
 | [`libraries.md`](./libraries.md) | Policy for the C libraries rhp links or compiles: which, how (static or dynamic), licences, threading, the FFI callback layer. |
 | [`extensions.md`](./extensions.md) | Research on reusing php's native code per extension. `libraries.md` replaces its linking policy. |

@@ -35,7 +35,7 @@ Production crates are in `crates/`, the test tooling in `tools/`.
 | `rhp-values` | `Value` (zval), `PhpStr` (byte-string, COW), `PhpArray` (ordered, COW), conversions, float formatting, `Thrown`, the operators (`ops`) |
 | `rhp-bytecode` | the register ISA (data only) and php's stub signatures for the builtins |
 | `rhp-compiler` | parsing (mago-syntax) and AST → bytecode; refuses what rhp does not implement yet. Knows the builtins only through what the request layer passes in |
-| `rhp-builtins` | native function + constant registry, the extensions, and the PHP prelude (`*.php`) |
+| `rhp-builtins` | php's builtin functions, constants and PHP prelude (`*.php`), laid out as php-src (`zend/`, `main/`, `ext/`, `sapi/`; [builtins-layout.md](docs/design/builtins-layout.md)) |
 | `rhp-csrc` | php-src's own C (crypt) and frozen C libraries php links (argon2, timelib), vendored and linked statically |
 | `rhp-mbfl-sys` | php-src's libmbfl (LGPL-2.1), vendored and linked statically for mbstring |
 | `rhp-vm` | the register VM |

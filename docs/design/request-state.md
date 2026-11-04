@@ -6,7 +6,7 @@ builtins, the compiler or the VM keep outside the `Vm` struct lives in
 `thread_local!`s, as php's ZTS build keeps its module globals per thread.
 This is every one of them, what it holds and how a request gets a clean
 copy. Phase 8 turns the resets into a mandatory hook per module; until
-then `rhp_builtins::reset_request_state` is the list, and a new
+then `rhp_builtins::reset_request_state` (`registry.rs`) is the list, and a new
 `thread_local!` must go into this table and, when it holds request state,
 into that function. rhp-vm's `lifecycle::reset_request_state` runs it,
 with the VM's own resets, first thing in `Vm::new` and again when the `Vm`
@@ -30,24 +30,24 @@ Kinds:
 
 | where | static | kind | reset by |
 |---|---|---|---|
-| `vcwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `vcwd::reset_state` |
-| `runtime_fns.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `runtime_fns::reset_state` |
-| `runtime_fns.rs` | `STARTUP_DIAGS` | request | `runtime_fns::reset_state` |
-| `opcache_fns.rs` | `ACCEL_LOG` (opcache's startup messages) | startup | emptied by `start_request` |
-| `streams.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |
-| `fdstream.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `fdstream::reset_state` |
-| `dump.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `dump::clear_views` |
-| `sort_fns.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `sort_fns::reset_state` |
-| `socket_fns.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `socket_fns::reset_state` |
-| `json_fns.rs` | `LAST_ERROR` | request | `json_fns::reset_state` |
-| `preg_fns.rs` | `LAST_ERROR` | request | `preg_fns::reset_state` |
-| `pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `preg_fns::reset_state` |
-| `strsearch_fns.rs` | `STRTOK` | request | `strsearch_fns::reset_state` |
-| `stdext_fns.rs` | `MT` (mt_rand state) | request | `stdext_fns::reset_state` |
-| `sysmisc_fns.rs` | `TITLE` (`cli_set_process_title`) | request | `sysmisc_fns::reset_state` |
-| `php_fns.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `php_fns::reset_state` |
-| `sapi.rs` | `SAPI_NAME`, `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
-| `ext/bcmath` | `DEFAULT_SCALE` | request | `runtime_fns::reset_state` |
+| `zend/virtual_cwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `virtual_cwd::reset_state` |
+| `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
+| `main/ini.rs` | `STARTUP_DIAGS` | request | `ini::reset_state` |
+| `ext/opcache/mod.rs` | `ACCEL_LOG` (opcache's startup messages) | startup | emptied by `start_request` |
+| `main/streams/mod.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |
+| `main/streams/plain_wrapper.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `plain_wrapper::reset_state` |
+| `ext/standard/var.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `var::clear_views` |
+| `ext/standard/array.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `array::reset_state` |
+| `main/streams/xp_socket.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `xp_socket::reset_state` |
+| `ext/json/mod.rs` | `LAST_ERROR` | request | `json::reset_state` |
+| `ext/pcre/php_pcre.rs` | `LAST_ERROR` | request | `php_pcre::reset_state` |
+| `ext/pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `php_pcre::reset_state` |
+| `ext/standard/string.rs` | `STRTOK` | request | `string::reset_state` |
+| `ext/random/mod.rs` | `MT` (mt_rand state) | request | `random::reset_state` |
+| `sapi/cli.rs` | `TITLE` (`cli_set_process_title`) | request | `cli::reset_state` |
+| `ext/standard/basic_functions.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `basic_functions::reset_state` |
+| `main/sapi.rs` | `SAPI_NAME`, `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
+| `ext/bcmath` | `DEFAULT_SCALE` | request | `ini::reset_state` |
 | `ext/bz2` | `BZ_ERRORS` | request | `bz2::reset_state` |
 | `ext/curl/mod.rs` | `EASY`, `MULTI`, `SHARE` (handle tables) | request | `curl::reset_state` |
 | `ext/curl/share.rs` | `PERSISTENT` (php's `CURL_G(persistent_curlsh)`) | thread, as in php | — |
@@ -78,7 +78,7 @@ them. rhp resets them, so each request starts as a fresh php process does.
 
 | where | static | kind | reset by |
 |---|---|---|---|
-| `fmt.rs` | `PRECISION`, `SERIALIZE_PRECISION` | request | `fmt::reset_precision` via `runtime_fns::reset_state` |
+| `fmt.rs` | `PRECISION`, `SERIALIZE_PRECISION` | request | `fmt::reset_precision` via rhp-builtins' `ini::reset_state` |
 | `lib.rs` | `DROPPED_STREAMS` (resources whose last reference went) | request | `reset_dropped_streams` |
 | `lib.rs` | `OBJECT_FREE_HOOK` (set by every `Vm::new`) | thread | — |
 | `mem.rs` | `STATE` (memory counters, limit) | request | `mem::end_request` in `Vm::new` and `finish_request` |
@@ -105,7 +105,7 @@ Not per thread, so shared by every engine in the process:
   signal handler). Signal handlers belong to the process; pcntl exists
   only under the CLI and CGI (`sapi::has_pcntl`).
 - `OnceLock`s and `Once`s that compute something once: the builtin
-  registry, signatures, the process's umask (`vcwd`), libxml2's process
+  registry, signatures, the process's umask (`virtual_cwd`), libxml2's process
   init and default entity loader, curl's and OpenSSL's global init.
 - C libraries' own globals, set once to dispatchers that read the calling
   thread's state (see [`libraries.md`](./libraries.md), *Threading*).

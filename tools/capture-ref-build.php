@@ -17,7 +17,7 @@
 //
 // prints the reference build's ini directives and constant modules instead
 // (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php -- tables`), which
-// `rhp-difftest gen dumps` turns into ini_table.rs and const_modules.rs.
+// `rhp-difftest gen dumps` turns into main/ini_table.rs and const_modules.rs.
 
 function row(string $key, mixed $value): void
 {

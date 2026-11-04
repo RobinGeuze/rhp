@@ -9,7 +9,7 @@ own struct. rhp has the same two pieces:
 
 - **the payload**: one slot of native state on `ObjectData`
   ([`rhp_values::Payload`]), and
-- **the handler table**: [`rhp_builtins::object::ObjectHandlers`],
+- **the handler table**: [`rhp_builtins::zend::object_handlers::ObjectHandlers`],
   registered per class by the extension that owns it.
 
 The engine looks the table up once per class, when it links the class: a
@@ -68,7 +68,7 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
 
 and add `my_ext::CLASSES` to `class_handlers()` in `ext/mod.rs`. The
 classes of the engine itself (`Exception`, `Generator`, Reflection…) are in
-`object.rs`. `ObjectHandlers::UNCLONEABLE` and `ObjectHandlers::OPAQUE`
+`zend/object_handlers.rs`. `ObjectHandlers::UNCLONEABLE` and `ObjectHandlers::OPAQUE`
 (no clone, `zend_objects_not_comparable`) cover the common tables. Use a
 `static` for a table whose identity a handler checks (below).
 
@@ -154,7 +154,7 @@ Notes:
   (ext/date/objects.rs).
 - php's `ce->unserialize` (the `C:` format) is a class field, not a
   handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
-  `Serializable` class's `unserialize()` itself (serialize_fns).
+  `Serializable` class's `unserialize()` itself (ext/standard/var.rs).
 
 ## Class flags
 

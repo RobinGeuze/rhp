@@ -250,6 +250,7 @@ fn request(front: &Path, opcache: &str) -> Vec<u8> {
                 ..Default::default()
             }),
             php_binary: None,
+            cwd: None,
         },
     );
     assert_eq!(outcome, Outcome::Exit(0));

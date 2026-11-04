@@ -53,9 +53,19 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "zip",
 ];
 
-/// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
-pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
+/// The extensions the running SAPI has loaded: pcntl only under the CLI
+/// and CGI.
+fn sapi_exts() -> impl Iterator<Item = &'static str> {
+    let pcntl = crate::sapi::has_pcntl();
     LOADED_EXTS
+        .iter()
+        .copied()
+        .filter(move |e| pcntl || *e != "pcntl")
+}
+
+/// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
+pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
+    sapi_exts().collect()
 }
 
 /// The loaded extension matching `name` case-insensitively (php's module
@@ -64,10 +74,7 @@ pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
     if name.eq_ignore_ascii_case(b"cgi-fcgi") {
         return crate::sapi::is_cgi().then_some("cgi-fcgi");
     }
-    LOADED_EXTS
-        .iter()
-        .copied()
-        .find(|e| e.as_bytes().eq_ignore_ascii_case(name))
+    sapi_exts().find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
@@ -94,8 +101,8 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
     )?;
     let mut a = PhpArray::new();
     if !zend {
-        for e in LOADED_EXTS {
-            a.push(Value::str(*e));
+        for e in sapi_exts() {
+            a.push(Value::str(e));
         }
         if crate::sapi::is_cgi() {
             a.push(Value::str("cgi-fcgi"));

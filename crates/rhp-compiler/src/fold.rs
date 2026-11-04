@@ -25,7 +25,7 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
             match mc {
                 MagicConstant::Line(_) => Value::Int(cx.line_of(mc.span().start.offset) as i64),
                 MagicConstant::File(_) => Value::str(cx.file_name()),
-                MagicConstant::Directory(_) => Value::str(dirname(cx.file.as_bytes())),
+                MagicConstant::Directory(_) => Value::str(dirname(cx.builtins, cx.file.as_bytes())),
                 MagicConstant::Namespace(_) => Value::str(cx.cur_ns()),
                 _ => return Err(non_const_err()),
             }

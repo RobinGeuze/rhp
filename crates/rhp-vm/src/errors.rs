@@ -593,17 +593,8 @@ impl Vm {
                 line.extend_from_slice(&stamp);
                 line.extend_from_slice(b"] ");
                 line.extend_from_slice(&m);
-                use std::io::Write;
-                let path = String::from_utf8_lossy(&target).into_owned();
-                match std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                {
-                    Ok(mut f) => {
-                        let _ = f.write_all(&line);
-                    }
-                    Err(_) => self.write_stderr(&m),
+                if builtins::vcwd::append_file(&target, &line, 0o644).is_err() {
+                    self.write_stderr(&m);
                 }
             }
         }

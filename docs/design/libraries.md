@@ -381,8 +381,11 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   nodes. Each object keeps its references in its payload; there are no
   per-thread document tables. Trees never leave their VM's thread.
 - **No process-global side effects from a VM:** no `setlocale` (use
-  `newlocale`/`uselocale`), no relative paths handed to a library that opens
-  files itself (absolutize against the VM's cwd), no `putenv("TZ=…")`.
+  `newlocale`/`uselocale`), no `putenv("TZ=…")`, no chdir(2) or umask(2).
+  A path handed to a library that opens files itself goes through
+  `rhp_builtins::vcwd` first (`resolve`, `absolute` or `expand_filepath`,
+  as the php code being ported does), and a file the library creates gets
+  the request's umask through `vcwd::library_created`.
 - **C→Rust callbacks** (`ext/libxml/ffi.rs`):
   - a builtin runs the C call inside `ffi::with_host(host, fname, …)`, which
     pushes its `Host` on a thread-local stack;

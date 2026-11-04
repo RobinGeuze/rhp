@@ -82,6 +82,9 @@ pub struct Builtins {
     /// The value php's compiler substitutes for the global constant `name`
     /// (zend_try_ct_eval_const): a builtin constant that is not deprecated.
     pub constant: fn(&[u8]) -> Option<Value>,
+    /// The request's working directory, php's `getcwd()`: `__DIR__` of code
+    /// without a file ("Command line code", "Standard input code").
+    pub cwd: fn() -> Option<Vec<u8>>,
 }
 
 /// Compile a parsed program into an owned, runnable bytecode `Program` (no

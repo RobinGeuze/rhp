@@ -59,6 +59,8 @@ fn object_free(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
 pub(crate) struct Archive {
     /// Null once closed.
     za: Cell<*mut sys::zip_t>,
+    /// The archive's path, which closing it may create.
+    path: Vec<u8>,
     /// What `addFromString` handed libzip, read until the archive closes.
     buffers: RefCell<Vec<Box<[u8]>>>,
     /// Set while `close()`/`open()` closes it ("Already being closed").
@@ -68,9 +70,10 @@ pub(crate) struct Archive {
 }
 
 impl Archive {
-    fn new(za: *mut sys::zip_t) -> Rc<Archive> {
+    fn new(za: *mut sys::zip_t, path: Vec<u8>) -> Rc<Archive> {
         Rc::new(Archive {
             za: Cell::new(za),
+            path,
             buffers: RefCell::new(Vec::new()),
             close: Cell::new(false),
             progress: RefCell::new(None),
@@ -81,6 +84,12 @@ impl Archive {
     pub(crate) fn za(&self) -> *mut sys::zip_t {
         self.za.get()
     }
+
+    /// zip_close: libzip writes a new archive with the process's umask;
+    /// the request's applies.
+    fn zip_close(&self, za: *mut sys::zip_t) -> c_int {
+        crate::vcwd::library_created(&self.path, 0o666, || unsafe { sys::zip_close(za) })
+    }
 }
 
 impl Drop for Archive {
@@ -89,12 +98,8 @@ impl Drop for Archive {
     /// without php's warning.
     fn drop(&mut self) {
         let za = self.za.replace(ptr::null_mut());
-        if !za.is_null() {
-            unsafe {
-                if sys::zip_close(za) != 0 {
-                    sys::zip_discard(za);
-                }
-            }
+        if !za.is_null() && self.zip_close(za) != 0 {
+            unsafe { sys::zip_discard(za) };
         }
     }
 }
@@ -116,9 +121,7 @@ pub(crate) fn release(
         return Ok(());
     }
     let mut rc = 0;
-    let r = ffi::with_host(host, fname.unwrap_or("Unknown"), || {
-        rc = unsafe { sys::zip_close(za) }
-    });
+    let r = ffi::with_host(host, fname.unwrap_or("Unknown"), || rc = a.zip_close(za));
     a.za.set(ptr::null_mut());
     if rc != 0 {
         let msg = String::from_utf8_lossy(unsafe { sys::cstr(sys::zip_strerror(za)) }).into_owned();
@@ -600,7 +603,7 @@ pub(crate) fn expand_filepath(path: &[u8]) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    let p = crate::ext::dom::expand_filepath(path);
+    let p = crate::vcwd::expand_filepath(path);
     (p.len() < MAXPATHLEN - 1).then_some(p)
 }
 

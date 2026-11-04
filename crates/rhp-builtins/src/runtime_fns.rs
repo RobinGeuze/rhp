@@ -856,7 +856,6 @@ fn invalid_timezone(v: &[u8], func: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use std::io::Write;
     let msg = str_param(host, args, 0, "error_log", "message")?;
     let ty = int_param(host, args, 1, "error_log", "message_type", 0)?;
     let dest = str_or_null_param(host, args, 2, "error_log", "destination")?;
@@ -868,13 +867,7 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Some(path) = dest else {
                 return Ok(Value::Bool(false));
             };
-            let p = String::from_utf8_lossy(&path).into_owned();
-            let ok = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .and_then(|mut f| f.write_all(&msg))
-                .is_ok();
+            let ok = crate::vcwd::append_file(&path, &msg, 0o666).is_ok();
             Ok(Value::Bool(ok))
         }
         // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
@@ -883,7 +876,6 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             match log_target {
                 Some(path) if ty == 0 => {
                     // php_log_err: "[d-M-Y H:i:s e] message\n".
-                    let p = String::from_utf8_lossy(&path).into_owned();
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
@@ -897,11 +889,7 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(b"] ");
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
-                    let _ = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(p)
-                        .and_then(|mut f| f.write_all(&line));
+                    let _ = crate::vcwd::append_file(&path, &line, 0o644);
                 }
                 _ => host.log_message(&msg),
             }

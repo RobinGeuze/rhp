@@ -63,8 +63,10 @@ embedding in a web server, `rhp-sapi` is a library: the server implements
 the `Sapi` trait (body writer, `send_headers`, flush, log), fills in a
 `RequestInfo` (server variables, query string, cookies, body) and calls
 `rhp_sapi::run_request` on a worker thread, with one fresh engine per
-request and engine values that stay thread-local (`Rc`, not `Send`). See
-[`docs/design/sapi.md`](docs/design/sapi.md).
+request, pinned to that thread, and engine values that stay thread-local
+(`Rc`, not `Send`). Each request has its own working directory and umask;
+rhp never changes the process's, and reads its umask once, when the first
+engine starts. See [`docs/design/sapi.md`](docs/design/sapi.md).
 
 ## Non-goals / refused by design
 

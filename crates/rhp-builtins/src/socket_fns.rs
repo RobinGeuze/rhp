@@ -11,6 +11,7 @@
 //! `php_sockop_write` (or the TLS layer's); the VM registers it with its
 //! context ([`Host::stream_insert_fd`]).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -49,6 +50,34 @@ const RECV_CAP: usize = 16 << 20;
 
 /// php's `PHP_TIMEOUT_ERROR_VALUE`.
 const TIMEOUT_ERR: i32 = libc::ETIMEDOUT;
+
+/// A relative Unix socket path the request's directory was prefixed to:
+/// the path the kernel holds, and the name the script gave, which php,
+/// binding from a real working directory, reports.
+type Prefixed = (Vec<u8>, Vec<u8>);
+
+thread_local! {
+    /// The Unix socket paths the request bound relative to its directory.
+    static BOUND_UNIX: std::cell::RefCell<Vec<Prefixed>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A new request has bound no socket.
+pub(crate) fn reset_state() {
+    BOUND_UNIX.with(|b| b.borrow_mut().clear());
+}
+
+/// The name to report for the Unix socket path `path`: the one the script
+/// gave when the request bound it relative to its directory.
+fn unix_name(path: &[u8]) -> Vec<u8> {
+    BOUND_UNIX.with(|b| {
+        b.borrow()
+            .iter()
+            .rev()
+            .find(|(bound, _)| bound == path)
+            .map_or_else(|| path.to_vec(), |(_, given)| given.clone())
+    })
+}
 
 type Tv = Option<(i64, i64)>;
 
@@ -296,7 +325,7 @@ fn sockaddr_text(sa: &libc::sockaddr_storage, sl: libc::socklen_t) -> Option<Vec
                     Some(path[..len].to_vec())
                 } else {
                     let end = path.iter().position(|&b| b == 0).unwrap_or(path.len());
-                    Some(path[..end].to_vec())
+                    Some(unix_name(&path[..end]))
                 }
             }
             _ => None,
@@ -322,8 +351,14 @@ fn sock_name(fd: RawFd, peer: bool) -> Option<Vec<u8>> {
 }
 
 /// A `sockaddr_un` for `path` (php's `parse_unix_address`, truncating an
-/// over-long path with a notice).
-fn unix_addr(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Addr, Thrown> {
+/// over-long path with a notice). A relative path is taken from the
+/// request's working directory while that still fits; the path bound and
+/// the name as given come back too then.
+fn unix_addr(
+    host: &mut dyn Host,
+    fname: &str,
+    path: &[u8],
+) -> Result<(Addr, Option<Prefixed>), Thrown> {
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let un = unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_un) };
     un.sun_family = libc::AF_UNIX as libc::sa_family_t;
@@ -340,14 +375,26 @@ fn unix_addr(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Addr, Thro
             ),
         )?;
     }
-    for (d, &s) in un.sun_path.iter_mut().zip(&path[..n]) {
+    let resolved = if abstract_ns {
+        Cow::Borrowed(&path[..n])
+    } else {
+        crate::vcwd::resolve(&path[..n])
+    };
+    let given = &path[..n];
+    let (path, alias) = match &resolved {
+        Cow::Owned(full) if full.len() <= max => (&full[..], Some((full.clone(), given.to_vec()))),
+        _ => (given, None),
+    };
+    let n = path.len();
+    for (d, &s) in un.sun_path.iter_mut().zip(path) {
         *d = s as libc::c_char;
     }
     let off = std::mem::size_of::<libc::sockaddr_un>() - cap;
-    Ok(Addr {
+    let addr = Addr {
         storage,
         len: (off + n) as libc::socklen_t,
-    })
+    };
+    Ok((addr, alias))
 }
 
 fn new_socket(family: i32, socktype: i32) -> Option<OwnedFd> {
@@ -604,7 +651,7 @@ pub(crate) fn xport_client(
         let Some(fd) = new_socket(libc::AF_UNIX, proto.socktype()) else {
             return Ok(fail(0, Some("Failed to create unix socket".into())));
         };
-        let addr = unix_addr(host, fname, rest)?;
+        let (addr, _) = unix_addr(host, fname, rest)?;
         return match connect_socket(fd.as_raw_fd(), &addr, asynchronous, tv) {
             Ok(_) => client_stream(host, fname, fd, proto, tls, name, timeout, ctx),
             Err(e) => Ok(fail(e, Some(strerror(e)))),
@@ -787,9 +834,12 @@ fn xport_server(
                 strerror(e)
             ))));
         };
-        let addr = unix_addr(host, fname, rest)?;
+        let (addr, alias) = unix_addr(host, fname, rest)?;
         if unsafe { libc::bind(fd.as_raw_fd(), addr.ptr(), addr.len) } != 0 {
             return Ok(fail(None));
+        }
+        if let Some(alias) = alias {
+            BOUND_UNIX.with(|b| b.borrow_mut().push(alias));
         }
         fd
     } else {

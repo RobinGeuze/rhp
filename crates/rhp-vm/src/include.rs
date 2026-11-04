@@ -336,9 +336,9 @@ impl Vm {
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
     /// the first candidate that opens as a file, in php_resolve_path's
     /// order: an absolute or `./` / `../` path as is (relative to the
-    /// working directory), else each include_path entry, then the
-    /// including file's directory; failing those, the plain open of the
-    /// name relative to the working directory.
+    /// request's working directory), else each include_path entry, then
+    /// the including file's directory; failing those, the plain open of
+    /// the name relative to the working directory.
     pub(crate) fn resolve_include_file(
         &self,
         top: usize,
@@ -377,6 +377,8 @@ impl Vm {
             candidates.push(p.to_path_buf());
         }
         for cand in candidates {
+            use std::os::unix::ffi::OsStrExt;
+            let cand = builtins::vcwd::os_path(cand.as_os_str().as_bytes());
             let Ok(canon) = std::fs::canonicalize(&cand) else {
                 continue;
             };

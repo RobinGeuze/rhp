@@ -6,7 +6,11 @@
 //! runs only the fixtures whose name (`lang/closures`) contains SUBSTR; it
 //! fails when no fixture matches, vm/ included.
 //!
-//! The fixtures run one after another: they chdir, and some set the umask.
+//! Each fixture runs in its own directory (`Request::cwd`); the test
+//! process's working directory and umask never change, so the fixtures run
+//! on several threads at once (`GOLDEN_THREADS`, default: the CPUs). Those
+//! that install signal handlers, which belong to the process, run alone
+//! afterwards.
 
 use std::path::{Path, PathBuf};
 
@@ -26,9 +30,13 @@ fn golden_dir() -> PathBuf {
 
 /// Run `php` as php runs a golden: by its absolute path, from its directory.
 fn run(php: &Path) -> (Outcome, rhp_sapi::Captured) {
-    std::env::set_current_dir(php.parent().unwrap()).expect("chdir");
+    use std::os::unix::ffi::OsStrExt;
     let script = Script::File(php.to_string_lossy().into_owned());
-    CaptureSapi::cli().run(Request::new(script))
+    let req = Request {
+        cwd: Some(php.parent().unwrap().as_os_str().as_bytes().to_vec()),
+        ..Request::new(script)
+    };
+    CaptureSapi::cli().run(req)
 }
 
 /// An engine refusal (`Thrown::Unsupported`), reported on stderr.
@@ -50,35 +58,66 @@ fn cases() -> Vec<Fixture> {
         .collect()
 }
 
+/// Fixtures that install signal handlers or signal the process: they run
+/// one after another, after the rest.
+const ALONE: &[&str] = &["ext/pcntl/", "ext/posix/posix_pcntl"];
+
+/// `None` when the fixture prints its `.out`, else what went wrong.
+fn check(name: &str, php: &Path) -> Option<String> {
+    let Ok(expected) = std::fs::read(php.with_extension("out")) else {
+        return Some(format!("{name}: missing .out"));
+    };
+    match std::panic::catch_unwind(|| run(php)) {
+        Ok((_, out)) if refused(&out.stderr) => Some(format!(
+            "{name}: refused: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )),
+        Ok((_, out)) if out.stdout == expected => None,
+        Ok((outcome, out)) => Some(format!(
+            "{name}: MISMATCH ({outcome:?})\n  expected: {:?}\n  actual:   {:?}\n  stderr:   {:?}",
+            String::from_utf8_lossy(&expected),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )),
+        Err(_) => Some(format!("{name}: panicked")),
+    }
+}
+
 /// The VM must match php on every fixture.
 #[test]
 fn vm_matches_php_baseline() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     let cases = cases();
-    let cwd = std::env::current_dir().expect("cwd");
-    let mut passed = 0;
-    let mut failures = Vec::new();
-    for Fixture { name, php } in &cases {
-        let Ok(expected) = std::fs::read(php.with_extension("out")) else {
-            failures.push(format!("{name}: missing .out"));
-            continue;
-        };
-        match std::panic::catch_unwind(|| run(php)) {
-            Ok((_, out)) if refused(&out.stderr) => failures.push(format!(
-                "{name}: refused: {}",
-                String::from_utf8_lossy(&out.stderr)
-            )),
-            Ok((_, out)) if out.stdout == expected => passed += 1,
-            Ok((outcome, out)) => failures.push(format!(
-                "{name}: MISMATCH ({outcome:?})\n  expected: {:?}\n  actual:   {:?}\n  stderr:   {:?}",
-                String::from_utf8_lossy(&expected),
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr),
-            )),
-            Err(_) => failures.push(format!("{name}: panicked")),
+    let (alone, shared): (Vec<&Fixture>, Vec<&Fixture>) = cases
+        .iter()
+        .partition(|f| ALONE.iter().any(|a| f.name.starts_with(a)));
+    let threads = std::env::var("GOLDEN_THREADS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
+        .max(1);
+    let next = AtomicUsize::new(0);
+    let failures = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(f) = shared.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if let Some(e) = check(&f.name, &f.php) {
+                        failures.lock().unwrap().push(e);
+                    }
+                }
+            });
         }
-    }
-    std::env::set_current_dir(cwd).expect("chdir back");
-    eprintln!("[VM] golden: {passed}/{} passed", cases.len());
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.extend(alone.iter().filter_map(|f| check(&f.name, &f.php)));
+    failures.sort();
+    eprintln!(
+        "[VM] golden: {}/{} passed",
+        cases.len() - failures.len(),
+        cases.len()
+    );
     assert!(
         failures.is_empty(),
         "[VM] {} failure(s):\n{}",

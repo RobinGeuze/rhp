@@ -45,6 +45,12 @@ pub fn push_diag(level: i64, docref: bool, msg: impl Into<String>) {
     HAS_DIAGS.with(|f| f.set(true));
 }
 
+/// A new request: drop what an earlier one queued and never reported
+/// (a stream closed while its engine was dropped).
+pub(crate) fn reset_state() {
+    take_diags();
+}
+
 /// Whether diagnostics are queued (cheaper than [`take_diags`]).
 #[inline]
 pub fn has_diags() -> bool {

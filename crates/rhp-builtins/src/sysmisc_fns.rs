@@ -262,7 +262,7 @@ fn fn_getmyinode(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 /// Stat of the main script (php's `sapi_get_stat`).
 fn script_stat(host: &dyn Host) -> Option<std::fs::Metadata> {
     let p = host.running_main_path()?;
-    std::fs::metadata(String::from_utf8_lossy(&p).into_owned()).ok()
+    std::fs::metadata(crate::vcwd::os_path(&p)).ok()
 }
 
 /// `get_current_user`: the owner of the main script file.

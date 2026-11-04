@@ -544,7 +544,7 @@ fn open(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
         }
         let za = a.za();
         a.close.set(true);
-        let (err, thrown) = with_callbacks(cx, || unsafe { sys::zip_close(za) });
+        let (err, thrown) = with_callbacks(cx, || a.zip_close(za));
         a.close.set(false);
         if err != 0 {
             cx.warn_pending("Empty string as source", thrown.is_some())?;
@@ -579,8 +579,8 @@ fn open(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
             None => Ok(Value::Int(err as i64)),
         };
     }
+    *o.archive.borrow_mut() = Some(Archive::new(za, resolved.clone()));
     *o.filename.borrow_mut() = Some(resolved);
-    *o.archive.borrow_mut() = Some(Archive::new(za));
     match pending {
         Some(t) => Err(t),
         None => Ok(Value::Bool(true)),
@@ -607,7 +607,7 @@ fn close(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
         return Err(Thrown::error("Error", "Already being closed"));
     }
     a.close.set(true);
-    let (err, thrown) = with_callbacks(cx, || unsafe { sys::zip_close(za) });
+    let (err, thrown) = with_callbacks(cx, || a.zip_close(za));
     a.close.set(false);
     if err != 0 {
         let msg = String::from_utf8_lossy(unsafe { sys::cstr(sys::zip_strerror(za)) }).into_owned();
@@ -1269,7 +1269,7 @@ fn extract_file(
     }
     cx.host.stream_close(&stream);
     // The plain-files wrapper's metadata(TOUCH).
-    if let Ok(c) = CString::new(full) {
+    if let Some(c) = crate::vcwd::c_path(&full) {
         let t = libc::utimbuf {
             actime: sb.mtime,
             modtime: sb.mtime,
@@ -1328,11 +1328,11 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
         .rposition(|p| crate::streams::sys_stat(p, false).is_some())
         .map_or(0, |i| i + 1);
     for p in &prefixes[first_missing..] {
-        let Ok(c) = CString::new(p.to_vec()) else {
+        if p.contains(&0) {
             return Ok(false);
-        };
-        if unsafe { libc::mkdir(c.as_ptr(), 0o777) } < 0 {
-            let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        }
+        if let Err(e) = crate::vcwd::mkdir(p, 0o777) {
+            let e = e.raw_os_error().unwrap_or(0);
             if e != libc::EEXIST {
                 if report {
                     cx.warn(&crate::streams::strerror(e))?;
@@ -1344,28 +1344,11 @@ fn mkdir_recursive(cx: &mut Cx<'_>, path: &[u8], report: bool) -> Result<bool, T
     Ok(true)
 }
 
-/// virtual_file_ex(CWD_EXPAND) from an empty cwd: `.` and `..` folded,
-/// duplicate slashes dropped, the result absolute ("/").
+/// virtual_file_ex(CWD_EXPAND) from an empty cwd: [`crate::vcwd::normalize`],
+/// keeping a trailing slash.
 fn cwd_expand(path: &[u8]) -> Vec<u8> {
-    let mut parts: Vec<&[u8]> = Vec::new();
-    for seg in path.split(|&c| c == b'/') {
-        match seg {
-            b"" | b"." => {}
-            b".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    let mut out = Vec::new();
-    for p in &parts {
-        out.push(b'/');
-        out.extend_from_slice(p);
-    }
-    if path.ends_with(b"/") && !out.is_empty() {
-        out.push(b'/');
-    }
-    if out.is_empty() {
+    let mut out = crate::vcwd::normalize(path);
+    if path.ends_with(b"/") && out != b"/" {
         out.push(b'/');
     }
     out

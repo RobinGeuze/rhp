@@ -400,6 +400,11 @@ pub(crate) fn object_freed(id: u32) {
 pub(crate) fn reset_state() {
     let old = NATIVES.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
     drop(old);
+    // php keeps its error ring per worker (GINIT); a request here starts
+    // as a fresh process does.
+    ERRORS.with(|c| c.set(None));
+    ERRORS_MARK.with(|c| c.set(None));
+    PENDING.with(|p| p.borrow_mut().take());
 }
 
 pub const PRELUDE_PHP: &str = include_str!("prelude.php");
@@ -516,12 +521,16 @@ pub(super) fn bio_bytes(b: *mut sys::BIO) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(p.cast::<u8>(), n as usize) }.to_vec()
 }
 
-/// `BIO_new_file(path, mode)`; NULL on failure.
+/// `BIO_new_file(path, mode)`; NULL on failure. A file it creates gets
+/// the request's umask.
 pub(super) fn bio_file(path: &CStr, mode: &CStr) -> Own<sys::BIO> {
-    Own::new(
-        unsafe { sys::BIO_new_file(path.as_ptr(), mode.as_ptr()) },
-        free_bio,
-    )
+    let open = || unsafe { sys::BIO_new_file(path.as_ptr(), mode.as_ptr()) };
+    let bio = if mode.to_bytes().starts_with(b"r") {
+        open()
+    } else {
+        crate::vcwd::library_created(path.to_bytes(), 0o666, open)
+    };
+    Own::new(bio, free_bio)
 }
 
 pub(super) fn cstr_bytes<'a>(p: *const c_char) -> &'a [u8] {
@@ -739,7 +748,7 @@ pub(super) fn check_path(
         ("must not contain any null bytes", true)
     } else {
         // expand_filepath fails on a path of MAXPATHLEN or more
-        let real = crate::ext::dom::expand_filepath(fs);
+        let real = crate::vcwd::expand_filepath(fs);
         if fs.len() < libc::PATH_MAX as usize && real.len() < libc::PATH_MAX as usize {
             return Ok(Some(CString::new(real).unwrap_or_default()));
         }

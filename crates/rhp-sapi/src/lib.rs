@@ -83,6 +83,12 @@ pub struct Request {
     pub info: Option<RequestInfo>,
     /// `PHP_BINARY` (composer re-invokes it); default: unchanged.
     pub php_binary: Option<Vec<u8>>,
+    /// The directory the script runs in (`getcwd()`, relative paths, child
+    /// processes): php-cgi's script directory, an embedder's document root.
+    /// `None`: the process's. A relative script path is still opened from
+    /// the process's directory, as php-cgi opens the script before its
+    /// chdir. The process's own directory never changes.
+    pub cwd: Option<Vec<u8>>,
 }
 
 impl Request {
@@ -95,6 +101,7 @@ impl Request {
             args: Vec::new(),
             info: None,
             php_binary: None,
+            cwd: None,
         }
     }
 }
@@ -180,6 +187,7 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     prelude: rhp_builtins::prelude,
     native_function: |name| rhp_builtins::registry().contains_key(name),
     constant: rhp_builtins::ct_constant,
+    cwd: rhp_builtins::vcwd::getcwd,
 };
 
 /// Parse and compile the source `src` of `file` as rhp runs a file: php's
@@ -270,6 +278,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     };
 
     let mut vm = Vm::new(sapi);
+    if let Some(dir) = &req.cwd {
+        vm.set_cwd(dir);
+    }
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
@@ -677,6 +688,7 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
         args,
         info: None,
         php_binary,
+        cwd: None,
     };
     match run_request(Box::new(CliSapi), req) {
         Outcome::Exit(code) => code,

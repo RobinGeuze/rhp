@@ -331,8 +331,17 @@ pub(crate) fn reset_state() {
     set_sapi("cli", &[]);
 }
 
+/// Whether the running SAPI has pcntl: only the CLI and CGI. Signal
+/// handlers and fork belong to the whole process, so a server that embeds
+/// rhp never gets them. This is rhp's choice: php links pcntl into every
+/// SAPI binary built with it (php-fpm and embed included).
+pub fn has_pcntl() -> bool {
+    SAPI_NAME.with(|n| matches!(n.borrow().as_str(), "cli" | "cgi-fcgi"))
+}
+
 /// Builtins that exist only under some SAPIs (php registers them as SAPI
-/// `additional_functions`): hidden from lookup elsewhere.
+/// `additional_functions`; pcntl's, see [`has_pcntl`]): hidden from lookup
+/// elsewhere.
 pub fn builtin_hidden(name_lc: &str) -> bool {
     match name_lc {
         "getallheaders"
@@ -342,6 +351,7 @@ pub fn builtin_hidden(name_lc: &str) -> bool {
         "cli_set_process_title" | "cli_get_process_title" => {
             SAPI_NAME.with(|n| n.borrow().as_str() != "cli")
         }
+        n if n.starts_with("pcntl_") => !has_pcntl(),
         _ => false,
     }
 }

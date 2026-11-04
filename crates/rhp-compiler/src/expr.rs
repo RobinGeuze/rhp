@@ -146,7 +146,7 @@ impl ProtoBuilder<'_> {
         }
         let s: Vec<u8> = match mc {
             MagicConstant::File(_) => self.cx.file_name(),
-            MagicConstant::Directory(_) => dirname(&self.cx.file_name()),
+            MagicConstant::Directory(_) => dirname(self.cx.builtins, &self.cx.file_name()),
             MagicConstant::Function(_) => self.magic_function_name(),
             MagicConstant::Method(_) => self.magic_method_name(),
             MagicConstant::Class(_) | MagicConstant::Trait(_) => self

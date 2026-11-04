@@ -2,16 +2,16 @@
 
 use rhp_values::Thrown;
 
+use crate::Builtins;
+
 /// `dirname()` of a path, matching PHP for the file paths `__FILE__` yields:
 /// no slash → ".", a single leading slash → "/", else everything before the
 /// last slash.
-pub(crate) fn dirname(path: &[u8]) -> Vec<u8> {
+pub(crate) fn dirname(builtins: &Builtins, path: &[u8]) -> Vec<u8> {
     match path.iter().rposition(|&b| b == b'/') {
         // php (zend_compile `__DIR__`): a "." directory — "Command line
-        // code", "Standard input code" — becomes the current directory.
-        None => std::env::current_dir()
-            .map(|d| d.into_os_string().into_encoded_bytes())
-            .unwrap_or_else(|_| b".".to_vec()),
+        // code", "Standard input code" — becomes the working directory.
+        None => (builtins.cwd)().unwrap_or_else(|| b".".to_vec()),
         Some(0) => b"/".to_vec(),
         Some(i) => path[..i].to_vec(),
     }

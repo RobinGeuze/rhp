@@ -9,7 +9,6 @@
 //! Resource-backed streams (`fopen`/`fread`/`gzopen`) are a later stage.
 
 use std::any::Any;
-use std::path::Path;
 use std::rc::Rc;
 
 /// A stat result for a stream URL: the convenience flags plus every field of
@@ -92,6 +91,12 @@ pub fn note_errno() {
 /// Record the errno carried by an `io::Error`.
 pub fn note_io_err(e: &std::io::Error) {
     LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
+}
+
+/// A new request: no errno or wrapper error recorded.
+pub(crate) fn reset_state() {
+    clear_errno();
+    take_wrapper_error();
 }
 
 /// Forget any recorded errno (before an operation whose failure is reported).
@@ -240,18 +245,13 @@ pub fn last_strerror() -> String {
 
 /// `stat(2)` (or `lstat(2)` when `link`) a local path.
 pub fn sys_stat(path: &[u8], link: bool) -> Option<StatInfo> {
-    let c = std::ffi::CString::new(path.to_vec()).ok()?;
-    unsafe {
-        let mut st: libc::stat = std::mem::zeroed();
-        let r = if link {
-            libc::lstat(c.as_ptr(), &mut st)
-        } else {
-            libc::stat(c.as_ptr(), &mut st)
-        };
-        if r == 0 {
-            Some(StatInfo::from_libc(&st))
-        } else {
-            note_errno();
+    if path.contains(&0) {
+        return None;
+    }
+    match crate::vcwd::stat(path, !link) {
+        Ok(st) => Some(StatInfo::from_libc(&st)),
+        Err(e) => {
+            note_io_err(&e);
             None
         }
     }
@@ -272,12 +272,21 @@ pub fn sys_fstat(fd: i32) -> Option<StatInfo> {
 /// Read every entry of a local directory in OS `readdir(3)` order, including
 /// `.` and `..` (exactly what php's plain-files dir stream yields).
 pub fn sys_readdir(path: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let c = std::ffi::CString::new(path.to_vec()).ok()?;
+    // opendir(3)'s open, from the request's directory.
+    let flags = libc::O_RDONLY | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    let fd = crate::vcwd::with_at(path, |at, c| unsafe { libc::openat(at, c.as_ptr(), flags) })?;
     let mut out = Vec::new();
     unsafe {
-        let dir = libc::opendir(c.as_ptr());
+        let dir = if fd < 0 {
+            std::ptr::null_mut()
+        } else {
+            libc::fdopendir(fd)
+        };
         if dir.is_null() {
             note_errno();
+            if fd >= 0 {
+                libc::close(fd);
+            }
             return None;
         }
         loop {
@@ -387,10 +396,10 @@ pub struct FileWrapper;
 
 impl StreamWrapper for FileWrapper {
     fn exists(&self, url: &[u8]) -> bool {
-        Path::new(&*String::from_utf8_lossy(file_path(url))).exists()
+        crate::vcwd::stat(file_path(url), true).is_ok()
     }
     fn get_contents(&self, url: &[u8]) -> Option<Vec<u8>> {
-        std::fs::read(&*String::from_utf8_lossy(file_path(url)))
+        crate::vcwd::read_file(file_path(url))
             .map_err(|e| note_io_err(&e))
             .ok()
     }
@@ -404,7 +413,7 @@ impl StreamWrapper for FileWrapper {
         sys_readdir(file_path(url))
     }
     fn put_contents(&self, url: &[u8], data: &[u8]) -> Option<usize> {
-        std::fs::write(&*String::from_utf8_lossy(file_path(url)), data)
+        crate::vcwd::write_file(file_path(url), data)
             .map_err(|e| note_io_err(&e))
             .ok()
             .map(|_| data.len())
@@ -513,16 +522,19 @@ pub fn parse_fopen_mode(mode: &[u8]) -> Option<(libc::c_int, bool, bool)> {
 impl LocalFile {
     /// `open(2)` a local path with php's fopen-mode rules (perms 0666 & ~umask).
     pub fn open(path: &[u8], mode: &[u8]) -> Option<LocalFile> {
-        use std::os::unix::io::FromRawFd;
         let (flags, readable, writable) = parse_fopen_mode(mode)?;
-        let c = std::ffi::CString::new(file_path(path).to_vec()).ok()?;
-        let fd = unsafe { libc::open(c.as_ptr(), flags, 0o666 as libc::c_uint) };
-        if fd < 0 {
-            note_errno();
+        if path.contains(&0) {
             return None;
         }
+        let fd = match crate::vcwd::open(file_path(path), flags, 0o666) {
+            Ok(fd) => fd,
+            Err(e) => {
+                note_io_err(&e);
+                return None;
+            }
+        };
         Some(LocalFile {
-            file: unsafe { std::fs::File::from_raw_fd(fd) },
+            file: std::fs::File::from(fd),
             rbuf: Vec::new(),
             rpos: 0,
             pos: 0,

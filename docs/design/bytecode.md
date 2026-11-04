@@ -48,7 +48,8 @@ construct nodes and via `is_refused()` for function names (§4). `eval` is
 > the builtins read. The compiler does not depend on rhp-builtins:
 > `rhp_sapi::compile_file` passes it a `rhp_compiler::Builtins` (the
 > prelude source, which native functions exist, the values of builtin
-> constants for compile-time evaluation), so the two build in parallel.
+> constants for compile-time evaluation, the request's working directory
+> for `__DIR__` of code without a file), so the two build in parallel.
 > rhp-builtins owns all of the PHP prelude (`core_prelude.php` and each
 > module's `prelude.php`). §1.1 to §1.3 are the plan as it was made.
 

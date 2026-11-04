@@ -161,10 +161,7 @@ impl Drop for BodyState {
     }
 }
 
-fn os_path(p: &[u8]) -> &std::path::Path {
-    use std::os::unix::ffi::OsStrExt;
-    std::path::Path::new(std::ffi::OsStr::from_bytes(p))
-}
+use crate::vcwd::os_path;
 
 /// `request_parse_body()`'s `$options` (`REQUEST_PARSE_BODY_OPTION_GET`):
 /// a set field overrides the ini directive of the same name.
@@ -1054,13 +1051,8 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     let mut ok = false;
     if std::fs::rename(os_path(&from), os_path(&to)).is_ok() {
         ok = true;
-        let mask = unsafe {
-            let m = libc::umask(0o077);
-            libc::umask(m);
-            m
-        };
         use std::os::unix::fs::PermissionsExt;
-        let mode = 0o666 & !(mask as u32);
+        let mode = 0o666 & !crate::vcwd::umask();
         if let Err(e) =
             std::fs::set_permissions(os_path(&to), std::fs::Permissions::from_mode(mode))
         {
@@ -1073,7 +1065,7 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
                 crate::streams::note_io_err(&e);
                 crate::open_failed(host, "move_uploaded_file", &from)?;
             }
-            Ok(data) => match std::fs::write(os_path(&to), data) {
+            Ok(data) => match crate::vcwd::write_file(&to, &data) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(os_path(&from));
                     ok = true;

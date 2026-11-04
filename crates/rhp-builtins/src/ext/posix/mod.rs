@@ -290,11 +290,10 @@ fn fn_uname(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getcwd(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    use std::os::unix::ffi::OsStrExt;
-    match std::env::current_dir() {
-        Ok(p) => Ok(Value::str(p.as_os_str().as_bytes().to_vec())),
+    match crate::vcwd::current_dir() {
+        Ok(p) => Ok(Value::str(p)),
         Err(e) => {
-            set_last_error(host, e.raw_os_error().unwrap_or(0));
+            set_last_error(host, e);
             Ok(Value::Bool(false))
         }
     }
@@ -312,7 +311,7 @@ fn fn_access(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(_) => zpp_long(host, args, 1, "posix_access", "flags")?,
         None => 0,
     };
-    let Ok(c) = CString::new(path) else {
+    let Some(c) = crate::vcwd::c_path(&path) else {
         return Ok(Value::Bool(false));
     };
     if unsafe { libc::access(c.as_ptr(), mode as i32) } != 0 {

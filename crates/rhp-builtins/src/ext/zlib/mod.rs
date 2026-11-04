@@ -233,17 +233,15 @@ fn zlib_url(path: &[u8]) -> Vec<u8> {
 /// The `strerror` text php's plain-files wrapper reports when opening `path`
 /// with `mode` fails ("No such file or directory", …), or its mode error.
 pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
-    let p = String::from_utf8_lossy(path).into_owned();
-    if p.contains("://") {
+    if path.windows(3).any(|w| w == b"://") {
         return "operation failed".into();
     }
-    let mut o = std::fs::OpenOptions::new();
-    match mode.first() {
-        Some(b'r') => o.read(true),
-        Some(b'w') => o.write(true).create(true).truncate(false),
-        Some(b'a') => o.append(true).create(true),
-        Some(b'x') => o.write(true).create_new(true),
-        Some(b'c') => o.write(true).create(true).truncate(false),
+    let w = libc::O_WRONLY | libc::O_CREAT;
+    let flags = match mode.first() {
+        Some(b'r') => libc::O_RDONLY,
+        Some(b'w' | b'c') => w,
+        Some(b'a') => w | libc::O_APPEND,
+        Some(b'x') => w | libc::O_EXCL,
         _ => {
             return format!(
                 "`{}' is not a valid mode for fopen",
@@ -251,15 +249,12 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
             );
         }
     };
-    match o.open(&p) {
+    match crate::vcwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
         Ok(_) => "operation failed".into(),
-        Err(e) => {
-            let s = e.to_string();
-            match s.find(" (os error") {
-                Some(i) => s[..i].to_string(),
-                None => s,
-            }
-        }
+        Err(e) => match e.raw_os_error() {
+            Some(code) => crate::streams::strerror(code),
+            None => e.to_string(),
+        },
     }
 }
 
@@ -299,14 +294,14 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // php opens (creating/truncating) the underlying file right away.
     let rel = inner(&path);
     if mode[0] != b'r' && !rel.windows(3).any(|w| w == b"://") {
-        let mut o = std::fs::OpenOptions::new();
-        match mode[0] {
-            b'w' => o.write(true).create(true).truncate(true),
-            b'a' => o.append(true).create(true),
-            b'x' => o.write(true).create_new(true),
-            _ => o.write(true).create(true),
+        let w = libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC;
+        let flags = match mode[0] {
+            b'w' => w | libc::O_TRUNC,
+            b'a' => w | libc::O_APPEND,
+            b'x' => w | libc::O_EXCL,
+            _ => w,
         };
-        if o.open(String::from_utf8_lossy(rel).as_ref()).is_err() {
+        if crate::vcwd::open(rel, flags, 0o666).is_err() {
             warn_open_failed(host, "gzopen", rel, &mode);
             return Ok(Value::Bool(false));
         }

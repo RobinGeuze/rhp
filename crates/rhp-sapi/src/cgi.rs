@@ -695,19 +695,20 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         proto_num: 1000,
     };
     // php_execute_script: chdir to the script's directory (unless -C).
-    if !opts.no_chdir {
-        if let Some(dir) = std::path::Path::new(&script).parent() {
-            if !dir.as_os_str().is_empty() {
-                let _ = std::env::set_current_dir(dir);
-            }
+    let cwd = match std::path::Path::new(&script).parent() {
+        Some(dir) if !opts.no_chdir && !dir.as_os_str().is_empty() => {
+            use std::os::unix::ffi::OsStrExt;
+            Some(dir.as_os_str().as_bytes().to_vec())
         }
-    }
+        _ => None,
+    };
     let req = Request {
         script: Script::File(script),
         ini,
         args: Vec::new(),
         info: Some(request),
         php_binary: None,
+        cwd,
     };
     match run_request(Box::new(CgiSapi::new()), req) {
         Outcome::Exit(code) => code,

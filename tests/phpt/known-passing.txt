@@ -7138,6 +7138,7 @@ ext/standard/tests/crypt/des_fallback_invalid_salt.phpt
 ext/standard/tests/dir/bug41693.phpt
 ext/standard/tests/dir/bug71542.phpt
 ext/standard/tests/dir/chdir_basic.phpt
+ext/standard/tests/dir/chdir_error2.phpt
 ext/standard/tests/dir/chdir_variation2.phpt
 ext/standard/tests/dir/closedir_basic.phpt
 ext/standard/tests/dir/closedir_variation2.phpt

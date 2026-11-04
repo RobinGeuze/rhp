@@ -17,13 +17,32 @@ use crate::{deref, output, request, Frame, UnitFn, Vm};
 /// `Some(code)` ends the current step with that exit status.
 type ShutdownThrow<'a> = dyn FnMut(&mut Vm, Thrown) -> Result<Option<i32>, Thrown> + 'a;
 
+/// Resets the request state that builtins, the VM and the values keep in
+/// thread-locals when the engine is dropped, after its own values: an idle
+/// thread holds nothing of its last request (descriptors, handles, the
+/// `putenv` overlay). The next `Vm::new` resets it again.
+pub(crate) struct RequestStateReset;
+
+impl Drop for RequestStateReset {
+    fn drop(&mut self) {
+        reset_request_state();
+    }
+}
+
+/// Every thread-local that holds request state, back to a new request's
+/// (docs/design/request-state.md).
+fn reset_request_state() {
+    builtins::reset_request_state();
+    crate::lvalue::reset_path_diags();
+}
+
 impl Vm {
     /// A fresh engine for one request under `sapi`: its name
     /// (`php_sapi_name()`, `PHP_SAPI`), ini defaults, header semantics and
     /// output sink. Set ini values, then compile and run.
     pub fn new(sapi: Box<dyn builtins::sapi::Sapi>) -> Self {
         // Builtin state is per request: never inherit a previous engine's.
-        builtins::reset_request_state();
+        reset_request_state();
         rhp_values::mem::end_request();
         let name = sapi.name().to_string();
         builtins::sapi::set_sapi(&name, &sapi.ini_defaults());
@@ -116,7 +135,17 @@ impl Vm {
             preloaded: None,
             mem: rhp_values::mem::state(),
             delayed_oom: None,
+            _request_state: RequestStateReset,
         }
+    }
+
+    /// Start the request in `dir` (php-cgi's script directory, an embedder's
+    /// document root); relative paths, `getcwd()` and child processes use
+    /// it. The process's working directory never changes: each thread's
+    /// engine has its own (`rhp_builtins::vcwd`). `false` when `dir` isn't
+    /// a directory.
+    pub fn set_cwd(&mut self, dir: &[u8]) -> bool {
+        builtins::vcwd::set_cwd(dir)
     }
 
     /// A startup ini setting (`-d key=value`); unknown directives are ignored.

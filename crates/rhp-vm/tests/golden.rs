@@ -31,13 +31,17 @@ fn vm_goldens_match_php() {
         return;
     }
     assert!(!cases.is_empty());
-    // As php runs a golden: by its absolute path, from its directory.
-    std::env::set_current_dir(&dir).expect("chdir");
     let mut failures = Vec::new();
     for php in &cases {
+        use std::os::unix::ffi::OsStrExt;
         let want = std::fs::read(php.with_extension("out")).unwrap_or_default();
+        // As php runs a golden: by its absolute path, from its directory.
         let script = Script::File(php.to_string_lossy().into_owned());
-        let (_, got) = CaptureSapi::cli().run(Request::new(script));
+        let req = Request {
+            cwd: Some(dir.as_os_str().as_bytes().to_vec()),
+            ..Request::new(script)
+        };
+        let (_, got) = CaptureSapi::cli().run(req);
         if got.stdout != want {
             failures.push(format!(
                 "{}:\n  expected: {:?}\n  actual:   {:?}\n  stderr:   {:?}",

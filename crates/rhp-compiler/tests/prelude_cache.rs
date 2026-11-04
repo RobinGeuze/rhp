@@ -85,11 +85,13 @@ fn prelude_is_compiled_per_source() {
         prelude: || "<?php\nclass A {}\n",
         native_function: |_| false,
         constant: |_| None,
+        cwd: || None,
     };
     static B: Builtins = Builtins {
         prelude: || "<?php\nclass B {}\nclass C {}\n",
         native_function: |_| false,
         constant: |_| None,
+        cwd: || None,
     };
     let compile = |b: &Builtins| {
         let src = b"<?php\nclass D {}\n";
@@ -126,6 +128,7 @@ fn prelude_is_compiled_per_builtins() {
         prelude,
         native_function: no_function,
         constant: no_constant,
+        cwd: || None,
     };
     static B: Builtins = Builtins {
         prelude,
@@ -134,6 +137,7 @@ fn prelude_is_compiled_per_builtins() {
             ASKED_B.fetch_or(name == b"FOO", Ordering::Relaxed);
             None
         },
+        cwd: || None,
     };
     static C: Builtins = Builtins {
         prelude,
@@ -142,6 +146,7 @@ fn prelude_is_compiled_per_builtins() {
             false
         },
         constant: no_constant,
+        cwd: || None,
     };
     let compile = |b: &Builtins| {
         let src = b"<?php\n";

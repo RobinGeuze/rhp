@@ -416,13 +416,11 @@ impl Host for Vm {
     }
 
     fn executing_file(&self) -> Option<Vec<u8>> {
-        // The innermost user-code frame (prelude frames have no file).
-        self.stack
-            .iter()
+        // The innermost user-code frame.
+        (0..self.stack.len())
             .rev()
-            .map(|f| f.proto.debug.file.as_bytes())
-            .find(|f| !f.is_empty())
-            .map(|f| f.to_vec())
+            .find(|&i| !self.is_internal_frame(i))
+            .map(|i| self.stack[i].proto.debug.file.as_bytes().to_vec())
             .or_else(|| self.main_script_path.clone())
     }
 
@@ -979,7 +977,7 @@ impl Host for Vm {
         // zend_set_local_var_str: the innermost user code frame.
         let Some(top) = (0..self.stack.len())
             .rev()
-            .find(|&i| !self.stack[i].proto.debug.file.as_bytes().is_empty())
+            .find(|&i| !self.is_internal_frame(i))
         else {
             return false;
         };

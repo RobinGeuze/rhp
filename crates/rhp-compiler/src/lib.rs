@@ -921,8 +921,7 @@ fn compile_program_inner(
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
     let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
-    let stmts: Vec<&Statement> = flat.iter().map(|(_, st)| *st).collect();
-    let compile_diags = hrh::scan(&stmts, line_of)
+    let compile_diags = hrh::scan(&flat, line_of)
         .into_iter()
         .map(|line| (8192, hrh::MESSAGE.to_string(), line))
         .collect();

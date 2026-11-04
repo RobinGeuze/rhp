@@ -8859,6 +8859,7 @@ impl Vm {
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
         let prog = Rc::new(self.included_program(compiled, &file)?);
+        self.emit_compile_diags(&prog);
 
         // eval()'d declarations are preloaded too (recorded without a file).
         let main = self.install_file(b"", &prog)?;

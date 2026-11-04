@@ -7,7 +7,7 @@ use rhp_builtins::sapi::{self, RequestInfo, Response, Sapi, TreatData};
 use rhp_builtins::{self as builtins, Host};
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::{is_prelude_proto, Vm};
+use crate::Vm;
 
 /// Per-request SAPI state kept on the [`Vm`].
 pub(crate) struct SapiState {
@@ -271,7 +271,7 @@ impl Vm {
     pub(crate) fn exec_location(&self) -> Option<(Vec<u8>, i64)> {
         let i = (0..self.stack.len())
             .rev()
-            .find(|&i| !is_prelude_proto(&self.stack[i].proto))?;
+            .find(|&i| !self.stack[i].proto.is_internal())?;
         let file = self.current_file(i);
         if file.is_empty() {
             return None;

@@ -293,7 +293,7 @@ impl Vm {
         let msg = format!("{}{}", self.docref_prefix(), msg);
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !crate::is_prelude_proto(&self.stack[i].proto))
+            .find(|&i| !self.stack[i].proto.is_internal())
         {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),

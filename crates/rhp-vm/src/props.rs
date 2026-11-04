@@ -13,7 +13,7 @@ use rhp_values::{
 use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
 use crate::types::type_lc;
-use crate::{classes, deref, is_prelude_proto, Vm};
+use crate::{classes, deref, Vm};
 
 impl Vm {
     /// Whether `v` is an instance of the named class/interface (or a Closure for
@@ -565,7 +565,7 @@ impl Vm {
         // Engine-internal (prelude) code manages its own objects, except
         // that a stand-in `__set` writes on behalf of the user's code.
         let f = &self.stack[top];
-        let prelude = is_prelude_proto(&f.proto)
+        let prelude = f.proto.is_internal()
             && !(f.proto.name.as_bytes().eq_ignore_ascii_case(b"__set")
                 && f.defining_class
                     .is_some_and(|c| is_handler_accessor(self.class(c).name.as_bytes(), b"__set")));
@@ -654,14 +654,14 @@ impl Vm {
 
     /// Whether class `c` is a built-in class implemented in the PHP prelude.
     fn is_prelude_class(&self, c: ClassId) -> bool {
-        // A user class whose methods all lack a line map (empty bodies) is
-        // still a user class.
+        // Built-in classes come first; a prelude class declares methods
+        // compiled from the prelude.
         (c as usize) < self.internal_classes
             && self
                 .class(c)
                 .methods
                 .values()
-                .any(|m| m.defining_class == c && is_prelude_proto(&m.proto))
+                .any(|m| m.defining_class == c && m.proto.is_internal())
     }
 
     /// Reading the absent (uninitialized) slot `key` of a typed property:

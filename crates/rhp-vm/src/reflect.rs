@@ -278,7 +278,7 @@ impl Vm {
                 let mut user = PhpArray::new();
                 for f in &self.functions {
                     let name = lc(f.proto.name.as_bytes());
-                    if f.proto.debug.file.is_empty() {
+                    if f.proto.is_internal() {
                         internal.push(name);
                     } else {
                         user.push(s(&name));
@@ -1248,7 +1248,7 @@ impl Vm {
     fn subject_stub_sig(&self, sub: &FnSubject) -> Option<StubSig> {
         match sub {
             FnSubject::Builtin(name) => sigs::function(name.as_bytes()).map(StubSig::of_fn),
-            FnSubject::Func(f) if f.proto.debug.file.is_empty() => {
+            FnSubject::Func(f) if f.proto.is_internal() => {
                 sigs::function(f.proto.name.as_bytes()).map(StubSig::of_fn)
             }
             FnSubject::Method { m, .. } if self.is_internal_class(m.defining_class) => {
@@ -1328,7 +1328,7 @@ impl Vm {
         let (proto, internal) = match sub {
             FnSubject::Builtin(name) => return self.builtin_fn_info(name),
             FnSubject::EnumBuiltin { class, name } => return self.enum_builtin_info(*class, name),
-            FnSubject::Func(f) => (f.proto.clone(), f.proto.debug.file.is_empty()),
+            FnSubject::Func(f) => (f.proto.clone(), f.proto.is_internal()),
             FnSubject::Method { m, .. } => {
                 (m.proto.clone(), self.is_internal_class(m.defining_class))
             }

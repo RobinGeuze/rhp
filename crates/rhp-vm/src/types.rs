@@ -6,7 +6,7 @@ use rhp_builtins::Host;
 use rhp_bytecode::FunctionProto;
 use rhp_values::{conv, ArrayKey, ClassId, Thrown, Value};
 
-use crate::{deref, is_prelude_proto, Frame, Vm};
+use crate::{deref, Frame, Vm};
 
 impl Vm {
     fn value_instanceof(&self, v: &Value, name: &[u8]) -> bool {
@@ -214,7 +214,7 @@ impl Vm {
                 // then coerced (zend_null_arg_deprecated).
                 Err(())
                     if !strict
-                        && is_prelude_proto(proto)
+                        && proto.is_internal()
                         && matches!(deref(&cur), Value::Null)
                         && prelude_null_coercion(ty).is_some() =>
                 {
@@ -241,7 +241,7 @@ impl Vm {
                     // Prelude (built-in PHP-source) functions report like
                     // internal ones: no call site.
                     let site = caller
-                        .filter(|_| !is_prelude_proto(proto))
+                        .filter(|_| !proto.is_internal())
                         .and_then(|_| self.user_call_site())
                         .map(|(file, line)| {
                             format!(

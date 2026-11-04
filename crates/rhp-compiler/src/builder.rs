@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, Reg};
+use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
 use rhp_frontend::cst::{Expression, Identifier};
 use rhp_values::{PhpStr, Thrown, Value};
 
@@ -191,6 +191,9 @@ impl<'c> ProtoBuilder<'c> {
             .collect();
         proto.strict_types = self.cx.strict_types;
         proto.returns_ref = self.returns_ref;
+        if self.cx.is_prelude {
+            proto.flags.insert(ProtoFlags::INTERNAL);
+        }
         // The VM keeps the proto as it is for as long as the program lives
         // (with opcache, across requests): drop the growth slack.
         proto.code.shrink_to_fit();

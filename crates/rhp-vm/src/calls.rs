@@ -12,7 +12,7 @@ use rhp_values::{
 
 use crate::errors::UnwindResult;
 use crate::types::type_lc;
-use crate::{classes, deref, is_prelude_proto, Frame, UnitFn, Vm};
+use crate::{classes, deref, Frame, UnitFn, Vm};
 
 /// Named call arguments, in call order.
 type NamedArgs = Vec<(PhpStr, Value)>;
@@ -100,7 +100,7 @@ impl Vm {
     ) -> Result<Option<usize>, ()> {
         if !name.starts_with(b"__") {
             Ok(user)
-        } else if is_prelude_proto(caller) {
+        } else if caller.is_internal() {
             Ok(None)
         } else {
             user.map(Some).ok_or(())
@@ -481,7 +481,7 @@ impl Vm {
         };
         // A prelude callee has no file of its own: like an internal function,
         // the error belongs to the calling user frame (the throw site).
-        let at = (!is_prelude_proto(&proto)).then(|| {
+        let at = (!proto.is_internal()).then(|| {
             let line = proto.params.get(idx).map(|p| p.line).unwrap_or(0);
             (proto.debug.file.as_bytes().to_vec(), line)
         });
@@ -501,9 +501,7 @@ impl Vm {
         let Some(m) = self.lookup_method(cls, b"__construct") else {
             return Ok(());
         };
-        if m.visibility == rhp_values::Visibility::Public
-            || is_prelude_proto(&self.stack[top].proto)
-        {
+        if m.visibility == rhp_values::Visibility::Public || self.stack[top].proto.is_internal() {
             return Ok(());
         }
         let scope = self.stack[top].defining_class;
@@ -542,7 +540,7 @@ impl Vm {
         passed: usize,
     ) -> Option<Thrown> {
         use builtins::signatures::Signature;
-        if !is_prelude_proto(proto) {
+        if !proto.is_internal() {
             return None;
         }
         let caller = self.stack.len().checked_sub(1)?;
@@ -596,7 +594,7 @@ impl Vm {
             "at least"
         };
         let name = self.func_display_name(proto, frame.defining_class);
-        if is_prelude_proto(proto) {
+        if proto.is_internal() {
             // A built-in implemented in the PHP prelude reports like an
             // internal function (zend_wrong_parameters_count_error).
             let which = if proto.params.iter().any(|p| p.variadic) {

@@ -468,6 +468,7 @@ impl Vm {
             Some(mut main) => {
                 let mut p = (*main.proto).clone();
                 p.debug.file = rhp_values::PhpStr::from("");
+                p.flags.insert(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
                 main.pc = p.code.len();
                 // {main}'s temporaries are dead once it finished (php frees
                 // TMP/VAR slots as it goes): only its variables keep values.
@@ -657,6 +658,7 @@ impl Vm {
     fn push_internal_main(&mut self) {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
+        main.flags.insert(rhp_bytecode::ProtoFlags::INTERNAL);
         self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 

@@ -12,7 +12,7 @@ use crate::calls::{is_engine_helper_name, user_visible_builtin};
 use crate::classes::PropRes;
 use crate::errors::is_docref_message;
 use crate::streams::{res_id, MemMode, StreamState};
-use crate::{classes, deref, is_prelude_proto, Vm};
+use crate::{classes, deref, Vm};
 
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &str) {
@@ -63,7 +63,7 @@ impl Host for Vm {
         self.stack
             .iter()
             .rev()
-            .find(|f| !is_prelude_proto(&f.proto))
+            .find(|f| !f.proto.is_internal())
             .is_some_and(|f| f.proto.strict_types)
     }
 
@@ -1908,7 +1908,7 @@ impl Host for Vm {
         match self.lookup_method(class_id, method) {
             // `__`-prefixed helpers of built-in (prelude) classes are engine
             // plumbing, invisible to php code; real magic methods stay.
-            Some(m) => !(is_prelude_proto(&m.proto) && is_engine_helper_name(method)),
+            Some(m) => !(m.proto.is_internal() && is_engine_helper_name(method)),
             None => false,
         }
     }

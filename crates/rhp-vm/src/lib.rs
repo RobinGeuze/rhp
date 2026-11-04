@@ -355,10 +355,3 @@ fn deref(v: &Value) -> Value {
         other => other.clone(),
     }
 }
-
-/// Built-in PHP-source (prelude) code is compiled without a line map.
-/// It also carries no file name: a user function with an empty body has no
-/// line entries either, but it does have its file.
-fn is_prelude_proto(p: &FunctionProto) -> bool {
-    p.debug.file.is_empty() && p.debug.lines.iter().all(|&(_, l)| l == 0)
-}

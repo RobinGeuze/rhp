@@ -1056,6 +1056,40 @@ pub struct DebugInfo {
     pub lines: Vec<(Pc, u32)>,
 }
 
+/// What the compiler knows about a function that the VM checks while
+/// running it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProtoFlags(u8);
+
+impl ProtoFlags {
+    /// Built-in code, compiled from the prelude (the PHP source behind some
+    /// of php's internal functions and classes). php runs internal code
+    /// without a user frame: its errors are reported at the calling user
+    /// code, it takes its caller's `strict_types`, and its argument errors
+    /// read like an internal function's.
+    pub const INTERNAL: ProtoFlags = ProtoFlags(1);
+    /// Not set by the compiler: the VM's copy of the script's `{main}` that
+    /// holds the globals while shutdown callbacks run. php runs them with
+    /// no frame at all, so this one, too, is no user frame.
+    pub const SHUTDOWN_SCOPE: ProtoFlags = ProtoFlags(2);
+
+    pub const fn contains(self, other: ProtoFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn intersects(self, other: ProtoFlags) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub const fn union(self, other: ProtoFlags) -> ProtoFlags {
+        ProtoFlags(self.0 | other.0)
+    }
+
+    pub fn insert(&mut self, other: ProtoFlags) {
+        self.0 |= other.0;
+    }
+}
+
 /// One compiled PHP function/method/closure, or the script body (`"{main}"`).
 /// Carries no `'arena` borrow — the AST is consumed at compile time. The VM
 /// runs it as compiled and shares it (`Rc`) between every install of its
@@ -1104,9 +1138,15 @@ pub struct FunctionProto {
     pub cv_var_names: Vec<PhpStr>,
     /// Reflection metadata (attributes, doc comment, line span).
     pub meta: DeclMeta,
+    pub flags: ProtoFlags,
 }
 
 impl FunctionProto {
+    /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
+    pub fn is_internal(&self) -> bool {
+        self.flags.contains(ProtoFlags::INTERNAL)
+    }
+
     /// An empty proto (builder starting point).
     pub fn new(name: PhpStr) -> Self {
         FunctionProto {
@@ -1130,6 +1170,7 @@ impl FunctionProto {
             returns_ref: false,
             cv_var_names: Vec::new(),
             meta: DeclMeta::default(),
+            flags: ProtoFlags::default(),
         }
     }
 }

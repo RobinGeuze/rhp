@@ -13,12 +13,13 @@ use crate::main::ini::{
     INI, INI_STARTUP, STARTUP_DIAGS,
 };
 use crate::main::ini_table::INI_TABLE;
+use crate::main::network;
 use crate::main::output::ob;
 use crate::proc_fns::zpp_long;
 use crate::zend::builtin_functions::resolve_const;
 use crate::zend::virtual_cwd::os_path;
 use crate::zend::zpp::{bool_param, int_param, require_callback, str_or_null_param, str_param};
-use crate::{ext, inet, zend, Host, Thrown};
+use crate::{ext, zend, Host, Thrown};
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
@@ -667,7 +668,7 @@ fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = crate::zend::zpp::path_param(host, args, 0, "ip2long", "ip")?;
-    Ok(match crate::inet::pton4(&s) {
+    Ok(match crate::main::network::pton4(&s) {
         Some(a) if !s.is_empty() => Value::Int(u32::from_be_bytes(a) as i64),
         _ => Value::Bool(false),
     })
@@ -675,7 +676,7 @@ fn fn_ip2long(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let n = int_param(host, args, 0, "long2ip", "ip", 0)? as u64 as u32;
-    let text = crate::inet::ntop(&n.to_be_bytes()).expect("inet_ntop of an IPv4 address");
+    let text = crate::main::network::ntop(&n.to_be_bytes()).expect("inet_ntop of an IPv4 address");
     Ok(Value::str(text))
 }
 
@@ -730,9 +731,9 @@ fn fn_get_current_user(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ip = crate::zend::zpp::path_param(host, args, 0, "inet_pton", "ip")?;
     let packed = if ip.contains(&b':') {
-        inet::pton6(&ip).map(|a| a.to_vec())
+        network::pton6(&ip).map(|a| a.to_vec())
     } else if ip.contains(&b'.') {
-        inet::pton4(&ip).map(|a| a.to_vec())
+        network::pton4(&ip).map(|a| a.to_vec())
     } else {
         None
     };
@@ -742,7 +743,7 @@ fn fn_inet_pton(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `inet_ntop(string $ip): string|false`: a 4- or 16-byte address as text.
 fn fn_inet_ntop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let b = crate::zend::zpp::str_param(host, args, 0, "inet_ntop", "ip")?;
-    Ok(inet::ntop(&b).map_or(Value::Bool(false), Value::str))
+    Ok(network::ntop(&b).map_or(Value::Bool(false), Value::str))
 }
 
 fn fn_usleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

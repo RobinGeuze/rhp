@@ -1316,7 +1316,7 @@ fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     // php_stream_read_to_str allocates `len` bytes up front, fallibly.
     if !rhp_values::mem::reserve_str(len as usize)
-        || !crate::socket_fns::reserve_read_chunk(host, &h)
+        || !crate::ext::standard::streamsfuncs::reserve_read_chunk(host, &h)
     {
         return Ok(Value::Null);
     }
@@ -2113,7 +2113,7 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     if max == 0 {
         max = 8192;
     }
-    if !crate::socket_fns::reserve_read_chunk(host, &h) {
+    if !crate::ext::standard::streamsfuncs::reserve_read_chunk(host, &h) {
         return Ok(Value::Null);
     }
     let ending = str_arg(args, 2);

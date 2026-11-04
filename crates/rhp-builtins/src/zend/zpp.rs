@@ -666,6 +666,38 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// `Z_PARAM_DOUBLE_OR_NULL` (coercive): `None` for null / absent.
+pub(crate) fn zpp_double_or_null(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Option<f64>, Thrown> {
+    let v = match args.get(i).map(deref) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let f = match &v {
+        Value::Int(n) => Some(*n as f64),
+        Value::Float(f) => Some(*f),
+        Value::Bool(b) => Some(*b as i64 as f64),
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(n)) => Some(n as f64),
+            Some(conv::Num::Float(f)) => Some(f),
+            None => None,
+        },
+        _ => None,
+    };
+    f.map(Some).ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type ?float, {} given",
+            i + 1,
+            zval_value_name(host, &v)
+        ))
+    })
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register_helpers(m, &[("__zpp_arg", fn_zpp_arg, 5, Some(5))]);
 }

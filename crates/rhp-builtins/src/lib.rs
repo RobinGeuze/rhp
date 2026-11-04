@@ -42,13 +42,10 @@ mod const_modules;
 mod ext;
 mod file_fns;
 mod fs_fns;
-mod inet;
 mod ini_parse;
 mod proc_fns;
 mod sapi;
-mod socket_fns;
 mod stdext_fns;
-mod stream_fns;
 
 #[cfg(test)]
 mod test_support;
@@ -240,7 +237,7 @@ pub fn reset_request_state() {
     main::streams::plain_wrapper::reset_state();
     ext::standard::var::clear_views();
     ext::standard::array::reset_state();
-    socket_fns::reset_state();
+    main::streams::xp_socket::reset_state();
     ext::sockets::reset_state();
     ext::libxml::reset_state();
     ext::date::reset_state();
@@ -327,8 +324,11 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("output", Box::new(main::output::register)),
         ("main", Box::new(main::register)),
         ("info", Box::new(ext::standard::info::register)),
-        ("stream_fns", Box::new(stream_fns::register)),
-        ("socket_fns", Box::new(socket_fns::register)),
+        (
+            "streamsfuncs",
+            Box::new(ext::standard::streamsfuncs::register),
+        ),
+        ("fsock", Box::new(ext::standard::fsock::register)),
         ("http", Box::new(ext::standard::http::register)),
         (
             "builtin_functions",
@@ -653,7 +653,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .chain(fs_fns::constants())
     .chain(stdext_fns::constants())
     .chain(ext::standard::crypt::constants())
-    .chain(socket_fns::constants())
+    .chain(ext::standard::streamsfuncs::constants())
     // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their
     // module; pcntl's only under the SAPIs that have it.
     .chain(

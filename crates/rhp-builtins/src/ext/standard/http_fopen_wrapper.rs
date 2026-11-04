@@ -9,7 +9,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::openssl::xp_ssl;
 use crate::main::streams::plain_wrapper::FdStream;
-use crate::socket_fns::{xport_client, Opened};
+use crate::main::streams::xp_socket::{xport_client, Opened};
 use crate::{Host, Thrown};
 
 const HTTP_HEADER_BLOCK_SIZE: usize = 1024;

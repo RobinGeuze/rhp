@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 pub mod ops;
 pub mod plain_wrapper;
+pub mod xp_socket;
 
 /// A stat result for a stream URL: the convenience flags plus every field of
 /// php's `stat()` array (`dev` … `blocks`).

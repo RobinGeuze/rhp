@@ -9,6 +9,7 @@ use crate::{Host, Thrown};
 pub mod ini;
 #[rustfmt::skip]
 pub mod ini_table;
+pub mod network;
 pub mod output;
 pub mod php_variables;
 pub mod rfc1867;

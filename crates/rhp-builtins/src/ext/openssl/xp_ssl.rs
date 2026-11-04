@@ -577,7 +577,7 @@ fn matches_san_list(peer: *mut sys::X509, subject: &[u8]) -> (bool, bool) {
         }
     };
     let mut has_service_id = false;
-    let subject_ipv6 = crate::inet::pton6(subject).map(|a| expand_ipv6(&a));
+    let subject_ipv6 = crate::main::network::pton6(subject).map(|a| expand_ipv6(&a));
     for i in 0..count {
         let san = unsafe { &*(sys::OPENSSL_sk_value(names, i) as *const sys::GENERAL_NAME) };
         match san.type_ {

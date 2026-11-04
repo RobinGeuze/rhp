@@ -33,7 +33,7 @@ fn fn_gethostbyaddr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                 .to_vec()
         })
     };
-    let found = if let Some(a) = crate::inet::pton6(&ip) {
+    let found = if let Some(a) = crate::main::network::pton6(&ip) {
         // SAFETY: all-zero is a valid sockaddr_in6.
         let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
         sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
@@ -43,7 +43,7 @@ fn fn_gethostbyaddr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             std::mem::size_of_val(&sa),
             &mut out,
         )
-    } else if let Some(a) = crate::inet::pton4(&ip) {
+    } else if let Some(a) = crate::main::network::pton4(&ip) {
         // SAFETY: all-zero is a valid sockaddr_in.
         let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
         sa.sin_family = libc::AF_INET as libc::sa_family_t;

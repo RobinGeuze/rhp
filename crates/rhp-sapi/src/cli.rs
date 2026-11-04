@@ -1,9 +1,10 @@
 //! The php-cli front end (sapi/cli/php_cli.c): its option table, usage
 //! text and the passes `main` and `do_cli` make over the command line, so
 //! `rhp` reads options, and reports bad ones, as php does. The modes rhp
-//! does not have (`-a`, `-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`,
-//! `-S`, `--rf` and friends, `--ini`, `--repeat`) are refused once php
-//! would run them, after its own checks.
+//! does not have (`-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`, `-S`,
+//! `--rf` and friends, `--ini`, `--repeat`) are refused once php would run
+//! them, after its own checks. `-a` is an error, as in a php without
+//! readline.
 
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, OPTIONAL, REQUIRED};
 use crate::Script;
@@ -144,7 +145,6 @@ pub fn main(args: &[String]) -> i32 {
     // The option that chose `mode` (for a refusal).
     let mut mode_opt = 0u8;
     let mut param_error: Option<&str> = None;
-    let mut interactive = false;
     let mut script_file: Option<String> = None;
     let mut exec_direct: Option<String> = None;
     let (mut exec_run, mut exec_begin, mut exec_end) = (false, false, false);
@@ -158,16 +158,11 @@ pub fn main(args: &[String]) -> i32 {
             Opt::Char(c, arg) => (c, arg),
         };
         match c {
-            // rhp reports readline loaded, as the reference build does.
-            b'a' => {
-                if !interactive {
-                    if mode != Mode::Standard {
-                        param_error = Some(MODE_CONFLICT);
-                        continue;
-                    }
-                    interactive = true;
-                }
-            }
+            // rhp has no readline (extension_loaded('readline') is false),
+            // so this is php without it, and php's `interactive` is never
+            // set. The reference build has readline and CI's php does not,
+            // so -a can have no CLI fixture.
+            b'a' => param_error = Some("Interactive shell (-a) requires the readline extension.\n"),
             b'F' | b'R' => {
                 if mode == Mode::ProcessStdin {
                     if exec_run || script_file.is_some() {
@@ -206,7 +201,7 @@ pub fn main(args: &[String]) -> i32 {
                         param_error = Some("You can use -r only once.\n");
                         continue;
                     }
-                } else if mode != Mode::Standard || interactive {
+                } else if mode != Mode::Standard {
                     param_error = Some(MODE_CONFLICT);
                     continue;
                 }
@@ -228,7 +223,7 @@ pub fn main(args: &[String]) -> i32 {
                         });
                         continue;
                     }
-                } else if mode != Mode::Standard || interactive {
+                } else if mode != Mode::Standard {
                     param_error = Some(MODE_CONFLICT);
                     continue;
                 }
@@ -265,9 +260,6 @@ pub fn main(args: &[String]) -> i32 {
     if let Some(e) = param_error {
         print!("{e}");
         return 1;
-    }
-    if interactive {
-        return refuse(b'a');
     }
     if !matches!(mode, Mode::Standard | Mode::Direct) {
         return refuse(mode_opt);

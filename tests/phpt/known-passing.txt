@@ -26,6 +26,8 @@ Zend/tests/access_modifiers/access_modifiers_011.phpt
 Zend/tests/access_modifiers/access_modifiers_012.phpt
 Zend/tests/access_modifiers/access_modifiers_013.phpt
 Zend/tests/add_001.phpt
+Zend/tests/add_002.phpt
+Zend/tests/add_003.phpt
 Zend/tests/add_004.phpt
 Zend/tests/add_005.phpt
 Zend/tests/add_optional_by_ref_arg.phpt
@@ -218,6 +220,7 @@ Zend/tests/bug32993.phpt
 Zend/tests/bug33257.phpt
 Zend/tests/bug33558.phpt
 Zend/tests/bug33996.phpt
+Zend/tests/bug33999.phpt
 Zend/tests/bug34062.phpt
 Zend/tests/bug34137.phpt
 Zend/tests/bug34260.phpt
@@ -664,6 +667,7 @@ Zend/tests/dynamic_call/dynamic_call_003.phpt
 Zend/tests/dynamic_call/dynamic_call_freeing.phpt
 Zend/tests/dynamic_call/dynamic_call_to_ref_returning_function.phpt
 Zend/tests/dynamic_call/variable_variables_curly_syntax.phpt
+Zend/tests/dynamic_prop_deprecation.phpt
 Zend/tests/e_strict-deprecated.phpt
 Zend/tests/early_binding_unreachable.phpt
 Zend/tests/empty_with_expr.phpt
@@ -931,6 +935,7 @@ Zend/tests/gc/bug78379_2.phpt
 Zend/tests/gc/bug78589.phpt
 Zend/tests/gc/bug78752.phpt
 Zend/tests/gc/bug79900.phpt
+Zend/tests/gc/bug80072.phpt
 Zend/tests/gc/gc_025.phpt
 Zend/tests/gc/gc_027.phpt
 Zend/tests/gc/gc_032.phpt
@@ -1884,6 +1889,7 @@ Zend/tests/return_types/void_allowed.phpt
 Zend/tests/rope_with_exception.phpt
 Zend/tests/self_in_eval.phpt
 Zend/tests/serialize/bug34045.phpt
+Zend/tests/serialize/bug69761.phpt
 Zend/tests/serialize/bug70187.phpt
 Zend/tests/serialize/bug70187_2.phpt
 Zend/tests/serialize/bug73900.phpt
@@ -1945,6 +1951,7 @@ Zend/tests/ternary_associativity.phpt
 Zend/tests/ternary_operator_basic.phpt
 Zend/tests/this-reserved/bug34358.phpt
 Zend/tests/this_in_eval.phpt
+Zend/tests/throw/001.phpt
 Zend/tests/throw/002.phpt
 Zend/tests/throw/exit_in_finally.phpt
 Zend/tests/throw/leaks.phpt
@@ -2129,6 +2136,8 @@ Zend/tests/type_coercion/settype/settype_resource.phpt
 Zend/tests/type_coercion/settype/settype_string.phpt
 Zend/tests/type_coercion/type_casts/cast_to_array.phpt
 Zend/tests/type_coercion/type_casts/cast_to_bool.phpt
+Zend/tests/type_coercion/type_casts/cast_to_double.phpt
+Zend/tests/type_coercion/type_casts/cast_to_int.phpt
 Zend/tests/type_coercion/type_casts/cast_to_object.phpt
 Zend/tests/type_coercion/type_casts/cast_to_string.phpt
 Zend/tests/type_coercion/type_casts/cast_to_void_statement.phpt
@@ -2393,6 +2402,7 @@ Zend/tests/weakrefs/gh10043-010.phpt
 Zend/tests/weakrefs/gh10043-011.phpt
 Zend/tests/weakrefs/weakmap_nested.phpt
 Zend/tests/weakrefs/weakrefs_002.phpt
+Zend/tests/weakrefs/weakrefs_003.phpt
 Zend/tests/weakrefs/weakrefs_005.phpt
 Zend/tests/write_property_ref_overwrite_return.phpt
 Zend/tests/xor_003.phpt
@@ -2664,6 +2674,7 @@ ext/date/tests/date_default_timezone_get-3.phpt
 ext/date/tests/date_default_timezone_get-4.phpt
 ext/date/tests/date_default_timezone_set-1.phpt
 ext/date/tests/date_interval_format.phpt
+ext/date/tests/date_interval_prop_dim.phpt
 ext/date/tests/date_modify-2.phpt
 ext/date/tests/date_sub_basic.phpt
 ext/date/tests/date_time_immutable001.phpt
@@ -3006,6 +3017,7 @@ ext/gmp/tests/cast.phpt
 ext/gmp/tests/clone.phpt
 ext/gmp/tests/comparison.phpt
 ext/gmp/tests/comparison_invalid.phpt
+ext/gmp/tests/gh16890.phpt
 ext/gmp/tests/gmp_divexact.phpt
 ext/gmp/tests/gmp_gcd.phpt
 ext/gmp/tests/gmp_init.phpt
@@ -3496,6 +3508,7 @@ ext/opcache/tests/jit/assign_obj_004.phpt
 ext/opcache/tests/jit/assign_obj_005.phpt
 ext/opcache/tests/jit/assign_obj_006.phpt
 ext/opcache/tests/jit/assign_obj_on_null.phpt
+ext/opcache/tests/jit/assign_obj_op_001.phpt
 ext/opcache/tests/jit/assign_obj_ref_001.phpt
 ext/opcache/tests/jit/assign_op_003.phpt
 ext/opcache/tests/jit/assign_op_004.phpt
@@ -5458,6 +5471,7 @@ ext/standard/tests/array/array_pad_variation7.phpt
 ext/standard/tests/array/array_pop.phpt
 ext/standard/tests/array/array_pop_variation.phpt
 ext/standard/tests/array/array_product_empty_array.phpt
+ext/standard/tests/array/array_product_variation1.phpt
 ext/standard/tests/array/array_product_variation2.phpt
 ext/standard/tests/array/array_product_variation3.phpt
 ext/standard/tests/array/array_product_variation4.phpt
@@ -5515,6 +5529,7 @@ ext/standard/tests/array/array_sum_variation3.phpt
 ext/standard/tests/array/array_sum_variation4.phpt
 ext/standard/tests/array/array_sum_variation5.phpt
 ext/standard/tests/array/array_sum_variation6.phpt
+ext/standard/tests/array/array_sum_variation7.phpt
 ext/standard/tests/array/array_udiff_assoc_basic.phpt
 ext/standard/tests/array/array_udiff_assoc_variation.phpt
 ext/standard/tests/array/array_udiff_assoc_variation2.phpt
@@ -6371,6 +6386,7 @@ ext/standard/tests/general_functions/header_redirection_014.phpt
 ext/standard/tests/general_functions/http_response_code.phpt
 ext/standard/tests/general_functions/include_path.phpt
 ext/standard/tests/general_functions/ini_set_types.phpt
+ext/standard/tests/general_functions/intval_variation1.phpt
 ext/standard/tests/general_functions/is_array.phpt
 ext/standard/tests/general_functions/is_bool.phpt
 ext/standard/tests/general_functions/is_callable_anon.phpt

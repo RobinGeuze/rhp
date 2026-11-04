@@ -1,11 +1,11 @@
 //! Evaluates a builtin parameter's default as the stubs print it (see
-//! rhp_builtins::signatures): the constant expression php compiles in
+//! rhp_bytecode::signatures): the constant expression php compiles in
 //! zend_get_default_from_internal_arg_info for
 //! ReflectionParameter::getDefaultValue(). The forms are gen_stub's:
 //! literals, `[]` arrays, constants, class constants, unary and binary
 //! operators, parentheses.
 
-use rhp_semantics::ops::{self, BitOp};
+use rhp_values::ops::{self, BitOp};
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 /// A name the expression refers to.

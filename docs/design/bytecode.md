@@ -39,6 +39,19 @@ construct nodes and via `is_refused()` for function names (§4). `eval` is
 
 ## 1. Crate layout and the ops/conv/Thrown decision
 
+> **Today.** The operators are `rhp_values::ops` (rhp-semantics is gone),
+> parsing is `rhp_compiler::parse` (rhp-frontend is gone) and the oracle is
+> gone: the engine crates are values, bytecode, compiler, builtins, vm,
+> sapi and cli, plus rhp-csrc and rhp-mbfl-sys for vendored C. The README
+> has the table and the graph. rhp-bytecode also holds php's stub
+> signatures (`rhp_bytecode::signatures`), which the compiler, the VM and
+> the builtins read. The compiler does not depend on rhp-builtins:
+> `rhp_sapi::compile_file` passes it a `rhp_compiler::Builtins` (the
+> prelude source, which native functions exist, the values of builtin
+> constants for compile-time evaluation), so the two build in parallel.
+> rhp-builtins owns all of the PHP prelude (`core_prelude.php` and each
+> module's `prelude.php`). §1.1 to §1.3 are the plan as it was made.
+
 ### 1.1 Decision (one coherent answer, justified)
 
 - **`conv` and `fmt` stay in `rhp-values`** (they already live there; pure,
@@ -107,7 +120,7 @@ each other — only `rhp-cli` knits them.
 ### 1.4 Reused verbatim (confirmed signatures — do not reimplement)
 
 ```rust
-// rhp-semantics::ops  (moved from rhp-runtime/src/ops.rs, Thrown path rewritten)
+// rhp_values::ops  (was rhp-semantics::ops; first moved from rhp-runtime/src/ops.rs)
 pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
 pub fn negate(a: &Value) -> Result<Value, Thrown>;
 pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
@@ -359,7 +372,7 @@ BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot
 window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`
 straight to `NativeFn`. `cache` reserved for monomorphic function-resolution ICs.
 (Now: a builtin's arity and by-ref positions come from php's stubs
-(`rhp_builtins::signatures`), and before the call `crates/rhp-vm/src/zpp.rs`
+(`rhp_bytecode::signatures`), and before the call `crates/rhp-vm/src/zpp.rs`
 parses its stub-typed scalar and array arguments as zpp does, in the caller's
 `strict_types` mode, so the body gets coerced values.)
 ```
@@ -695,7 +708,8 @@ call or a return changes the top frame, not per instruction.
 ### 3.7 Sharing compiled code across threads (design notes)
 
 Each thread compiles and caches its own programs (opcache's cache and the
-compiler's prelude cache are `thread_local!`) because compiled code holds
+compiler's prelude cache, keyed on the prelude source, are `thread_local!`)
+because compiled code holds
 `Rc`s. Since the VM no longer writes into protos (§3.6), what is left for
 sharing one `Program` between threads is in the data types:
 

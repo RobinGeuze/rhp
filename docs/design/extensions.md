@@ -218,8 +218,8 @@ only where a function *is* a thin wrapper over a shared lib (regex, intl, gmp).
 Goal: let a single builtin delegate to a `-sys` crate **without** (a) forcing
 that C dependency on every build, (b) changing the `registry()` / `Host`
 contract, or (c) weakening the differential guarantee. The current layering
-makes this clean — `rhp-builtins` depends only on `rhp-values` +
-`rhp-semantics`, and each builtin is a `NativeFn = fn(&mut dyn Host,
+makes this clean — `rhp-builtins` depends only on `rhp-values` and
+`rhp-bytecode` (for the stub signatures), and each builtin is a `NativeFn = fn(&mut dyn Host,
 &[Value]) -> Result<Value, Thrown>` looked up by name in `registry()`
 (`crates/rhp-builtins/src/lib.rs:78`, `:101`).
 

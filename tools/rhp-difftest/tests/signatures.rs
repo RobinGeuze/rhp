@@ -1,4 +1,4 @@
-//! The generated signature table (crates/rhp-builtins/src/signatures)
+//! The generated signature table (crates/rhp-bytecode/src/signatures)
 //! against `php -n` Reflection, for every function, class and method rhp
 //! implements: parameter names, types, defaults, by-ref / prefer-ref,
 //! variadics, return types (tentative ones too), modifiers, parents and
@@ -7,7 +7,7 @@
 //!
 //! Skips unless `php` is the release rhp targets.
 
-use rhp_builtins::signatures::{self, Param, Signature};
+use rhp_bytecode::signatures::{self, Param, Signature};
 use rhp_difftest::{php_available, run_php, run_rhp};
 
 /// Lists what rhp implements: `F name`, `C name`, `M class name`.

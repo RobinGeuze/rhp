@@ -1,17 +1,19 @@
-//! The compiled prelude is cached per thread: every program compiled with it
-//! gets the same prelude, whatever the user file contains (or whether the
-//! previous compile failed), and include programs carry none of it.
+//! The compiled prelude is cached per thread and per set of builtins: every
+//! program compiled with it gets the same prelude, whatever the user file
+//! contains (or whether the previous compile failed), and include programs
+//! carry none of it.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rhp_bytecode::Program;
-use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::Arena;
+use rhp_compiler::parse::Arena;
+use rhp_compiler::Builtins;
+use rhp_sapi::{compile_file, Mode};
+use rhp_values::Value;
 
 fn main_prog(src: &str) -> Program {
-    let arena = Arena::new();
-    let parsed = arena.parse(b"t.php", src.as_bytes());
-    compile_with_source(parsed.program(), src.as_bytes(), "t.php").expect("compile")
+    compile_file("t.php", src.as_bytes(), Mode::Main).unwrap_or_else(|_| panic!("compile"))
 }
 
 fn names(p: &Program, n: usize) -> Vec<String> {
@@ -31,10 +33,8 @@ fn prelude_is_identical_across_compiles() {
          $f = function() { return 1; };\n",
     );
     // A failed compile in between must not disturb the cache.
-    let arena = Arena::new();
     let bad = "<?php\n$x = `ls`;\n";
-    let parsed = arena.parse(b"bad.php", bad.as_bytes());
-    assert!(compile_with_source(parsed.program(), bad.as_bytes(), "bad.php").is_err());
+    assert!(compile_file("bad.php", bad.as_bytes(), Mode::Main).is_err());
     let b = main_prog("<?php\n$g = fn() => 2;\n");
 
     assert!(a.num_prelude_classes > 0);
@@ -70,12 +70,89 @@ fn prelude_is_identical_across_compiles() {
 #[test]
 fn include_programs_carry_no_prelude() {
     let src = "<?php\nclass Y extends Exception {}\nfunction h() {}\n$c = function() {};\n";
-    let arena = Arena::new();
-    let parsed = arena.parse(b"inc.php", src.as_bytes());
-    let p = compile_include(parsed.program(), src.as_bytes(), "inc.php").expect("compile");
+    let p = compile_file("inc.php", src.as_bytes(), Mode::Include)
+        .unwrap_or_else(|_| panic!("compile"));
     assert_eq!(p.num_prelude_classes, 0);
     assert_eq!(p.num_prelude_functions, 0);
     assert_eq!(p.classes.len(), 1);
     assert_eq!(p.functions.len(), 1);
     assert_eq!(p.closures.len(), 1);
+}
+
+#[test]
+fn prelude_is_compiled_per_source() {
+    static A: Builtins = Builtins {
+        prelude: || "<?php\nclass A {}\n",
+        native_function: |_| false,
+        constant: |_| None,
+    };
+    static B: Builtins = Builtins {
+        prelude: || "<?php\nclass B {}\nclass C {}\n",
+        native_function: |_| false,
+        constant: |_| None,
+    };
+    let compile = |b: &Builtins| {
+        let src = b"<?php\nclass D {}\n";
+        let arena = Arena::new();
+        let parsed = arena.parse(b"t.php", src);
+        rhp_compiler::compile(b, parsed.program(), src, "t.php", Mode::Main).expect("compile")
+    };
+    let all = |p: &Program| names(p, p.classes.len());
+    assert_eq!(all(&compile(&A)), ["A", "D"]);
+    assert_eq!(all(&compile(&B)), ["B", "C", "D"]);
+    let a = compile(&A);
+    assert_eq!(all(&a), ["A", "D"]);
+    assert_eq!(a.num_prelude_classes, 1);
+}
+
+#[test]
+fn prelude_is_compiled_per_builtins() {
+    // The same prelude source with another `constant` (B) or
+    // `native_function` (C) than A's: the prelude compiles again and asks
+    // them (for in_array's strict flag, which is folded, and for strlen's
+    // stub) rather than reuse what it compiled with A's.
+    static ASKED_B: AtomicBool = AtomicBool::new(false);
+    static ASKED_C: AtomicBool = AtomicBool::new(false);
+    fn prelude() -> &'static str {
+        "<?php\nfunction p($a) { return in_array($a, ['x'], FOO) || strlen($a); }\n"
+    }
+    fn no_function(_: &str) -> bool {
+        false
+    }
+    fn no_constant(_: &[u8]) -> Option<Value> {
+        None
+    }
+    static A: Builtins = Builtins {
+        prelude,
+        native_function: no_function,
+        constant: no_constant,
+    };
+    static B: Builtins = Builtins {
+        prelude,
+        native_function: no_function,
+        constant: |name| {
+            ASKED_B.fetch_or(name == b"FOO", Ordering::Relaxed);
+            None
+        },
+    };
+    static C: Builtins = Builtins {
+        prelude,
+        native_function: |name| {
+            ASKED_C.fetch_or(name == "strlen", Ordering::Relaxed);
+            false
+        },
+        constant: no_constant,
+    };
+    let compile = |b: &Builtins| {
+        let src = b"<?php\n";
+        let arena = Arena::new();
+        let parsed = arena.parse(b"t.php", src);
+        rhp_compiler::compile(b, parsed.program(), src, "t.php", Mode::Main).expect("compile")
+    };
+    compile(&A);
+    compile(&B);
+    assert!(ASKED_B.load(Ordering::Relaxed), "a new constant");
+    compile(&A);
+    compile(&C);
+    assert!(ASKED_C.load(Ordering::Relaxed), "a new native_function");
 }

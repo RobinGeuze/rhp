@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_value_name;
@@ -372,11 +372,7 @@ pub fn register(m: &mut crate::Registry) {
     );
 }
 
-pub const PRELUDE_PHP: &str = r#"
-final class Socket {
-    public function __construct() { throw new Error("Cannot directly construct Socket, use socket_create() instead"); }
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
 /// The extension's constants, with the host platform's numbers.
 pub fn constants() -> Vec<(&'static str, Value)> {

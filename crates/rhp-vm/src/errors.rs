@@ -234,7 +234,7 @@ impl Vm {
         let Some(Value::Str(name)) = it.next() else {
             return None;
         };
-        let m = builtins::signatures::method(class.as_bytes(), name.as_bytes())?;
+        let m = rhp_bytecode::signatures::method(class.as_bytes(), name.as_bytes())?;
         let mut shown = PhpArray::new();
         if let Some(Value::Array(a)) = it.next() {
             for (_, v) in a.iter() {

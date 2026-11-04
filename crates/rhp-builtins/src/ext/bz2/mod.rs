@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use bzip2::{Action, Compress, Compression, Decompress, Status};
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};

@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, zval_value_name};

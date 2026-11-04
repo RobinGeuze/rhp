@@ -29,7 +29,7 @@
 
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::pcre::{self, sys::*, JitIssue, Ovector, Regex};

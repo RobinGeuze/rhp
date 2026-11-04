@@ -41,7 +41,7 @@ pub(crate) enum CallTarget {
     User(usize),
     Builtin(
         &'static builtins::Builtin,
-        Option<&'static builtins::signatures::Func>,
+        Option<&'static rhp_bytecode::signatures::Func>,
     ),
     /// No function by that name: the call fails as undefined.
     Missing,
@@ -175,7 +175,7 @@ impl Vm {
             return Ok((CallTarget::User(i), own));
         }
         let target = match builtins::lookup_lc(std::str::from_utf8(&fname).unwrap_or("")) {
-            Some(b) => CallTarget::Builtin(b, builtins::signatures::function(&fname)),
+            Some(b) => CallTarget::Builtin(b, rhp_bytecode::signatures::function(&fname)),
             None => CallTarget::Missing,
         };
         Ok((target, false))
@@ -660,7 +660,7 @@ impl Vm {
         frame: &Frame,
         passed: usize,
     ) -> Option<Thrown> {
-        use builtins::signatures::Signature;
+        use rhp_bytecode::signatures::Signature;
         if !proto.is_internal() {
             return None;
         }
@@ -679,13 +679,13 @@ impl Vm {
                 {
                     return None;
                 }
-                let st = builtins::signatures::method(cname, proto.name.as_bytes())?;
+                let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
                 let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
                 (name, st.min_args(), st.max_args())
             }
             Some(_) => return None,
             None => {
-                let f = builtins::signatures::function(proto.name.as_bytes())?;
+                let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
                 (f.name.to_string(), f.min_args(), f.max_args())
             }
         };
@@ -1716,7 +1716,7 @@ impl Vm {
         &mut self,
         top: usize,
         builtin: &'static builtins::Builtin,
-        sig: Option<&'static builtins::signatures::Func>,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
         base: Reg,
         argc: u16,
         frameless: bool,
@@ -1725,7 +1725,7 @@ impl Vm {
         // By-ref builtins (sort/array_push/preg_match/…) need their by-reference
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
-        use builtins::signatures::Signature;
+        use rhp_bytecode::signatures::Signature;
         let args: Vec<Value> = (0..argc)
             .map(|i| {
                 if sig.is_some_and(|s| s.by_ref(i as usize)) {
@@ -1778,7 +1778,7 @@ impl Vm {
         frameless: bool,
         strict: bool,
     ) -> Result<Value, Thrown> {
-        let sig = builtins::signatures::function(builtin.name.as_bytes());
+        let sig = rhp_bytecode::signatures::function(builtin.name.as_bytes());
         self.run_builtin_sig(builtin, sig, args, frameless, false, strict)
     }
 
@@ -1786,7 +1786,7 @@ impl Vm {
     fn run_builtin_sig(
         &mut self,
         builtin: &'static builtins::Builtin,
-        sig: Option<&'static builtins::signatures::Func>,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
         mut args: Vec<Value>,
         frameless: bool,
         icall: bool,
@@ -2034,8 +2034,8 @@ pub(crate) fn native_method_count_error(
     method: &[u8],
     passed: usize,
 ) -> Option<Thrown> {
-    use builtins::signatures::Signature;
-    let st = builtins::signatures::method(class.as_bytes(), method)?;
+    use rhp_bytecode::signatures::Signature;
+    let st = rhp_bytecode::signatures::method(class.as_bytes(), method)?;
     zpp_count_error(
         &format!("{class}::{}", st.name),
         st.min_args(),
@@ -2094,8 +2094,8 @@ pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
         b"offsetunset",
     ];
     ACCESSORS.contains(&method.to_ascii_lowercase().as_slice())
-        && builtins::signatures::class(class).is_some()
-        && builtins::signatures::method(class, method).is_none()
+        && rhp_bytecode::signatures::class(class).is_some()
+        && rhp_bytecode::signatures::method(class, method).is_none()
 }
 
 /// Bind positional `args` to a callee's parameter CV registers (by value), with

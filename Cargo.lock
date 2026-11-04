@@ -953,9 +953,9 @@ dependencies = [
  "num-integer",
  "num-traits",
  "openssl-sys",
+ "rhp-bytecode",
  "rhp-csrc",
  "rhp-mbfl-sys",
- "rhp-semantics",
  "rhp-values",
  "ripemd",
  "sha1",
@@ -984,11 +984,13 @@ dependencies = [
 name = "rhp-compiler"
 version = "0.0.0"
 dependencies = [
+ "mago-allocator",
+ "mago-database",
  "mago-span",
- "rhp-builtins",
+ "mago-syntax",
+ "mago-syntax-core",
  "rhp-bytecode",
- "rhp-frontend",
- "rhp-semantics",
+ "rhp-sapi",
  "rhp-values",
 ]
 
@@ -1011,22 +1013,12 @@ dependencies = [
  "hmac",
  "libc",
  "rhp-builtins",
+ "rhp-bytecode",
  "rhp-compiler",
- "rhp-frontend",
  "rhp-sapi",
  "rhp-values",
  "sha2",
  "toml",
-]
-
-[[package]]
-name = "rhp-frontend"
-version = "0.0.0"
-dependencies = [
- "mago-allocator",
- "mago-database",
- "mago-syntax",
- "mago-syntax-core",
 ]
 
 [[package]]
@@ -1043,17 +1035,10 @@ name = "rhp-sapi"
 version = "0.0.0"
 dependencies = [
  "rhp-builtins",
+ "rhp-bytecode",
  "rhp-compiler",
- "rhp-frontend",
  "rhp-values",
  "rhp-vm",
-]
-
-[[package]]
-name = "rhp-semantics"
-version = "0.0.0"
-dependencies = [
- "rhp-values",
 ]
 
 [[package]]
@@ -1075,7 +1060,6 @@ dependencies = [
  "rhp-builtins",
  "rhp-bytecode",
  "rhp-sapi",
- "rhp-semantics",
  "rhp-values",
  "rustc-hash",
 ]

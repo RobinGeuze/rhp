@@ -4,7 +4,7 @@
 //! instantiation, visibility-bypassing property access and invocation.
 //! Only prelude code can call these `__` builtins.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};

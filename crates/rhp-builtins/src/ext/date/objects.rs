@@ -740,7 +740,7 @@ pub(crate) fn interval_sync_in(host: &mut dyn Host, h: &ObjectHandle) -> Result<
         let o = h.borrow();
         for f in ["y", "m", "d", "h", "i", "s", "f", "invert"] {
             if let Some(v) = o.properties.get(&PhpStr::from(f)) {
-                vals.push((f, rhp_semantics::deref(v)));
+                vals.push((f, rhp_values::ops::deref(v)));
             }
         }
     }

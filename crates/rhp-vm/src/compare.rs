@@ -4,8 +4,8 @@
 //! detection, the conversion notice.
 
 use rhp_builtins::object::{CastTarget, Op};
-use rhp_semantics::ops::CompareCx;
 use rhp_values::conv::Num;
+use rhp_values::ops::CompareCx;
 use rhp_values::{ClassId, ClassKind, ObjectHandle, PhpStr, Thrown, Value};
 
 use crate::Vm;
@@ -332,7 +332,7 @@ impl Vm {
         a: &Value,
         b: &Value,
     ) -> Result<std::cmp::Ordering, Thrown> {
-        let r = rhp_semantics::ops::compare(a, b, self);
+        let r = rhp_values::ops::compare(a, b, self);
         // An error handler that threw on the conversion notice.
         match self.pending_throw.take() {
             Some(t) => Err(t),

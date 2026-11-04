@@ -63,3 +63,19 @@ fn engine_helper_golden_lists_every_helper() {
     registered.sort_unstable();
     assert_eq!(listed, registered);
 }
+
+/// Every builtin registered under a php name has a stub row, so its arity
+/// is php's ([`crate::register`] takes it from there); the `__` engine
+/// helpers have none.
+#[test]
+fn php_builtins_have_stubs() {
+    let mut bad: Vec<_> = crate::registry()
+        .keys()
+        .filter(|name| {
+            rhp_bytecode::signatures::function(name.as_bytes()).is_some() == name.starts_with("__")
+        })
+        .copied()
+        .collect();
+    bad.sort();
+    assert!(bad.is_empty(), "{bad:?}");
+}

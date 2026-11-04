@@ -6,7 +6,7 @@
 use std::ffi::CString;
 
 use rhp_csrc::argon2;
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{str_param, zval_value_name};

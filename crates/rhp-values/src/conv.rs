@@ -3,8 +3,7 @@
 //! These are infallible, AST-free, and depend only on `Value` + `fmt`, so both
 //! the VM (echo, operators, casts) and `rhp-builtins`
 //! (`intval`/`strval`/`is_numeric`/…) can share them. Conversions that can raise
-//! a `Throwable` (e.g. arithmetic on arrays) live in `rhp-semantics`, which can
-//! depend on the error type.
+//! a `Throwable` (e.g. arithmetic on arrays) are operators, in [`crate::ops`].
 //!
 //! All rules verified against php 8.5.8 (see `docs/design/php-semantics.md`).
 

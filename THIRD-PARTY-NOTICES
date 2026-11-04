@@ -284,7 +284,7 @@ ucdata-2.5, under this notice:
   The above copyright notice and this permission notice shall be included
   in all copies or substantial portions of the Software.
 
-crates/rhp-builtins/src/signatures/table.rs is generated from php-src's
+crates/rhp-bytecode/src/signatures/table.rs is generated from php-src's
 *.stub.php files.
 
 This product includes PHP software, freely available from

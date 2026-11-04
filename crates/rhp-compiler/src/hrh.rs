@@ -18,13 +18,13 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mago_span::HasSpan;
-use rhp_builtins::signatures::Signature;
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, Argument, ArgumentList, ArrayElement, AssignmentOperator, BinaryOperator, Expression,
     ForeachTarget, IndirectVariable, Literal, Node, Statement, UnaryPrefixOperator, Variable,
     Yield,
 };
+use mago_span::HasSpan;
+use rhp_bytecode::signatures::Signature;
 
 use crate::names::{NameKind, NsContext};
 
@@ -55,7 +55,7 @@ type UserSig = Rc<Vec<(Vec<u8>, bool, bool)>>;
 #[derive(Clone)]
 enum Callee {
     Unknown,
-    Builtin(&'static rhp_builtins::signatures::Func),
+    Builtin(&'static rhp_bytecode::signatures::Func),
     User(UserSig),
 }
 
@@ -175,10 +175,10 @@ fn is_short_circuited(e: &Expression) -> bool {
         Expression::ArrayAppend(a) => is_short_circuited(a.array),
         Expression::Access(Access::Property(p)) => is_short_circuited(p.object),
         Expression::Access(Access::StaticProperty(p)) => is_short_circuited(p.class),
-        Expression::Call(rhp_frontend::cst::Call::Method(m)) => is_short_circuited(m.object),
-        Expression::Call(rhp_frontend::cst::Call::StaticMethod(m)) => is_short_circuited(m.class),
+        Expression::Call(crate::parse::cst::Call::Method(m)) => is_short_circuited(m.object),
+        Expression::Call(crate::parse::cst::Call::StaticMethod(m)) => is_short_circuited(m.class),
         Expression::Access(Access::NullSafeProperty(_))
-        | Expression::Call(rhp_frontend::cst::Call::NullSafeMethod(_)) => true,
+        | Expression::Call(crate::parse::cst::Call::NullSafeMethod(_)) => true,
         Expression::Parenthesized(p) => is_short_circuited(p.expression),
         _ => false,
     }
@@ -235,7 +235,7 @@ impl Scan<'_> {
     /// A new op_array (function, method, closure, arrow function, hook).
     fn function(
         &mut self,
-        params: Option<&rhp_frontend::cst::FunctionLikeParameterList>,
+        params: Option<&crate::parse::cst::FunctionLikeParameterList>,
         returns_ref: bool,
         body: Node,
     ) {
@@ -376,7 +376,7 @@ impl Scan<'_> {
         }
     }
 
-    fn call(&mut self, fc: &rhp_frontend::cst::FunctionCall) {
+    fn call(&mut self, fc: &crate::parse::cst::FunctionCall) {
         let Expression::Identifier(id) = fc.function else {
             self.expr(fc.function, Mode::Read);
             return self.args(&fc.argument_list, Callee::Unknown);
@@ -386,7 +386,7 @@ impl Scan<'_> {
             let lc = name.to_ascii_lowercase();
             let callee = match self.user_fns.get(&lc) {
                 Some(u) => Callee::User(Rc::clone(u)),
-                None => rhp_builtins::signatures::function(&lc)
+                None => rhp_bytecode::signatures::function(&lc)
                     .filter(|_| !lc.contains(&b'\\'))
                     .map_or(Callee::Unknown, Callee::Builtin),
             };
@@ -400,7 +400,7 @@ impl Scan<'_> {
             .all(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_none()));
         let frameless = !self.in_frameless
             && plain
-            && rhp_builtins::signatures::function(&global.to_ascii_lowercase())
+            && rhp_bytecode::signatures::function(&global.to_ascii_lowercase())
                 .is_some_and(|f| f.frameless(list.arguments.len()));
         if !frameless {
             return self.args(list, Callee::Unknown);

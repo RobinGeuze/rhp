@@ -32,7 +32,7 @@ pub struct XmlError {
     pub file: Option<Vec<u8>>,
 }
 
-pub(crate) use rhp_semantics::deref;
+pub(crate) use rhp_values::ops::deref;
 
 /// String argument `i` as zpp's `s` hands it over: the string itself, not
 /// a copy (a document as large as memory_limit allows still loads).
@@ -508,13 +508,4 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     out
 }
 
-pub const PRELUDE_PHP: &str = r#"
-class LibXMLError {
-    public int $level;
-    public int $code;
-    public int $column;
-    public string $message;
-    public string $file;
-    public int $line;
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");

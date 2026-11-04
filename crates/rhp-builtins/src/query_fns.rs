@@ -2,7 +2,7 @@
 //! `parse_str` (main/php_variables.c `php_default_treat_data` +
 //! `php_register_variable_ex`), with php's exact key mangling.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::argparse::{int_param, str_or_null_param, str_param, zval_value_name};

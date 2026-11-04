@@ -3,7 +3,7 @@
 //! (The `ctype_*` tests moved to `ext::ctype`; the JSON builtins live in
 //! `json_fns`.) All behavior verified byte-for-byte against the local php 8.5.8.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{inet, Host, Thrown};

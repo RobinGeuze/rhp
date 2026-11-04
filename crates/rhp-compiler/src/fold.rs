@@ -1,6 +1,6 @@
 //! Compile-time constants: folding constant expressions and php's operand kinds.
 
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     ArrayElement, Construct, Expression, Literal, MagicConstant, UnaryPrefixOperator, Variable,
 };
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
@@ -45,14 +45,14 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
                 (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
                 (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
-                (Op::BitwiseNot(_), v) => rhp_semantics::ops::bitwise_not(&v),
+                (Op::BitwiseNot(_), v) => rhp_values::ops::bitwise_not(&v),
                 (Op::Not(_), v) => Value::Bool(!rhp_values::conv::to_bool(&v)),
                 _ => return Err(non_const_err()),
             }
         }
         Expression::Binary(b) => {
-            use rhp_frontend::cst::BinaryOperator as Bop;
-            use rhp_semantics::ops::{self, BitOp};
+            use crate::parse::cst::BinaryOperator as Bop;
+            use rhp_values::ops::{self, BitOp};
             let l = fold_const(cx, b.lhs)?;
             let r = fold_const(cx, b.rhs)?;
             match &b.operator {

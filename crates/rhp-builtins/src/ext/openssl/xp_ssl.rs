@@ -127,7 +127,7 @@ impl Opts {
         let ssl = match options {
             Value::Array(a) => match a
                 .get(&ArrayKey::from_bytes(b"ssl"))
-                .map(rhp_semantics::deref)
+                .map(rhp_values::ops::deref)
             {
                 Some(Value::Array(s)) => Some(s),
                 _ => None,
@@ -144,7 +144,7 @@ impl Opts {
         self.ssl
             .as_ref()?
             .get(&ArrayKey::from_bytes(name.as_bytes()))
-            .map(rhp_semantics::deref)
+            .map(rhp_values::ops::deref)
     }
 
     /// These options with `name` set (the http wrapper's proxy tunnel sets
@@ -720,7 +720,7 @@ fn fingerprint_match(peer: *mut sys::X509, val: &Value) -> bool {
                 return false;
             }
             for (k, v) in a.iter() {
-                let (ArrayKey::Str(k), Value::Str(fp)) = (k, rhp_semantics::deref(v)) else {
+                let (ArrayKey::Str(k), Value::Str(fp)) = (k, rhp_values::ops::deref(v)) else {
                     warn("Invalid peer_fingerprint array; [algo => fingerprint] form required");
                     return false;
                 };
@@ -1123,9 +1123,9 @@ fn enable_server_sni(t: &mut SslSock, opts: &Opts, verify_peer: bool) -> bool {
             warn("SNI_server_certs array requires string host name keys");
             return false;
         };
-        let ctx = match rhp_semantics::deref(current) {
+        let ctx = match rhp_values::ops::deref(current) {
             Value::Array(a) => {
-                let get = |n: &[u8]| a.get(&ArrayKey::from_bytes(n)).map(rhp_semantics::deref);
+                let get = |n: &[u8]| a.get(&ArrayKey::from_bytes(n)).map(rhp_values::ops::deref);
                 let Some(cert) = get(b"local_cert") else {
                     warn("local_cert not present in the array");
                     return false;

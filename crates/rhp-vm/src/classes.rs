@@ -177,7 +177,7 @@ fn link_flags(
     handlers: Option<&'static ObjectHandlers>,
     internal: bool,
 ) -> ClassFlags {
-    use rhp_builtins::signatures as sigs;
+    use rhp_bytecode::signatures as sigs;
     let mut f = proto.flags;
     let stub = if internal {
         sigs::class(proto.name.as_bytes()).map_or(0, |c| c.flags)

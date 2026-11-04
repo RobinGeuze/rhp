@@ -2,8 +2,9 @@
 //! interpreter exposes to builtins.
 //!
 //! Builtins operate on owned `Value`s only — they never touch the arena/AST,
-//! so this crate depends on `rhp-values` and `rhp-semantics` only, never on
-//! the compiler or the VM (no dependency cycle).
+//! so this crate depends on `rhp-values` and `rhp-bytecode` (the stub
+//! signatures), plus the C libraries it links, never on the compiler or the
+//! VM (no dependency cycle).
 //! The interpreter talks back through [`Host`].
 
 use std::collections::HashMap;
@@ -20,7 +21,6 @@ pub(crate) mod module;
 pub mod object;
 pub mod opsstream;
 pub mod pcre;
-pub mod signatures;
 pub mod streams;
 pub mod version;
 pub mod zend;
@@ -127,6 +127,18 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::dom::constant_deprecation(name))
 }
 
+/// The value php's compiler substitutes for the global constant `name`
+/// (zend_try_ct_eval_const): a builtin constant that is not deprecated.
+pub fn ct_constant(name: &[u8]) -> Option<Value> {
+    if constant_deprecation(name).is_some() {
+        return None;
+    }
+    constants()
+        .into_iter()
+        .find(|(n, _)| n.as_bytes() == name)
+        .map(|(_, v)| v)
+}
+
 /// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`
 /// constant raises (`class` is the declaring class).
 pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
@@ -149,8 +161,8 @@ pub fn host_compare(
     b: &Value,
 ) -> Result<std::cmp::Ordering, Thrown> {
     match host.compare_cx() {
-        Some(cx) => rhp_semantics::ops::compare(a, b, cx),
-        None => rhp_semantics::ops::compare(a, b, &mut rhp_semantics::ops::NoCx),
+        Some(cx) => rhp_values::ops::compare(a, b, cx),
+        None => rhp_values::ops::compare(a, b, &mut rhp_values::ops::NoCx),
     }
 }
 
@@ -244,7 +256,7 @@ pub trait Host {
 
     /// The engine's comparison context (`__toString`, internal compare
     /// handlers, notices) for loose comparisons inside builtins.
-    fn compare_cx(&mut self) -> Option<&mut dyn rhp_semantics::ops::CompareCx> {
+    fn compare_cx(&mut self) -> Option<&mut dyn rhp_values::ops::CompareCx> {
         None
     }
 
@@ -1154,24 +1166,12 @@ pub trait Host {
     }
 }
 
-// php's error levels (Zend/zend_errors.h).
-pub const E_ERROR: i64 = 1;
-pub const E_WARNING: i64 = 2;
-pub const E_PARSE: i64 = 4;
-pub const E_NOTICE: i64 = 8;
-pub const E_CORE_ERROR: i64 = 16;
-pub const E_CORE_WARNING: i64 = 32;
-pub const E_COMPILE_ERROR: i64 = 64;
-pub const E_COMPILE_WARNING: i64 = 128;
-pub const E_USER_ERROR: i64 = 256;
-pub const E_USER_WARNING: i64 = 512;
-pub const E_USER_NOTICE: i64 = 1024;
-pub const E_STRICT: i64 = 2048;
-pub const E_RECOVERABLE_ERROR: i64 = 4096;
-pub const E_DEPRECATED: i64 = 8192;
-pub const E_USER_DEPRECATED: i64 = 16384;
-/// Every level but E_STRICT (php 8.4+).
-pub const E_ALL: i64 = 30719;
+// php's error levels, for the builtins and the VM.
+pub use rhp_values::{
+    E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR, E_CORE_WARNING, E_DEPRECATED, E_ERROR,
+    E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT, E_USER_DEPRECATED, E_USER_ERROR,
+    E_USER_NOTICE, E_USER_WARNING, E_WARNING,
+};
 
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
 pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
@@ -1289,7 +1289,7 @@ pub(crate) type Registry = HashMap<&'static str, Builtin>;
 /// signatures (every registered php function has a stub row; the
 /// `php_builtins_have_stubs` test checks), raised to [`BODY_MIN`].
 pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
-    use signatures::Signature;
+    use rhp_bytecode::signatures::{self, Signature};
     for &(name, func) in fns {
         let (min_args, max_args) = signatures::function(name.as_bytes())
             .map_or((0, None), |f| (f.min_args(), f.max_args()));
@@ -1873,11 +1873,20 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     .collect()
 }
 
-/// Concatenated PHP-source class declarations contributed by extension modules
-/// (GMP, Phar, …). The compiler compiles these into the prelude alongside the
-/// engine's own core classes.
-pub fn module_prelude() -> String {
-    let mut s = String::new();
+/// The PHP prelude the compiler compiles into every program: the engine's
+/// core classes and interfaces (core_prelude.php), then each module's
+/// PHP-source classes (GMP, Phar, …) and helper functions (iterator_*, …).
+/// The core comes first, so its class indices never change. Built once per
+/// process, outside any request's memory.
+pub fn prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| rhp_values::mem::uncounted(build_prelude))
+}
+
+fn build_prelude() -> String {
+    let mut s = String::from("<?php\n");
+    s.push_str(include_str!("core_prelude.php"));
+    s.push('\n');
     s.push_str(fs_fns::PRELUDE_PHP);
     s.push('\n');
     s.push_str(stdext_fns::PRELUDE_PHP);
@@ -1915,7 +1924,7 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 // builtin implementations
 // ---------------------------------------------------------------------------
 
-use rhp_semantics::{deref, ops};
+use rhp_values::ops::{self, deref};
 
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();

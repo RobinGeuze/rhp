@@ -8,7 +8,7 @@ use std::rc::Rc;
 use rhp_builtins as builtins;
 use rhp_builtins::object::{CastTarget, Op};
 use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
-use rhp_semantics::{cast_to_array, inc_dec_value, ops};
+use rhp_values::ops::{self, cast_to_array, inc_dec_value};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, CallTarget};

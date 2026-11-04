@@ -7,7 +7,7 @@
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-pub use rhp_semantics::ops::CastTarget;
+pub use rhp_values::ops::CastTarget;
 use rhp_values::{conv, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::Host;

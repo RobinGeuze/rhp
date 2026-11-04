@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rhp_frontend::cst::{Identifier, Statement};
+use crate::parse::cst::{Identifier, Statement};
 
 use crate::file::FileCtx;
 
@@ -162,7 +162,7 @@ pub(crate) fn resolve_in(
 /// a fresh context. Every compile pass iterates this list so name resolution is
 /// identical across passes.
 pub(crate) fn flatten_namespaces<'a>(
-    stmts: &'a rhp_frontend::cst::Sequence<'a, Statement<'a>>,
+    stmts: &'a crate::parse::cst::Sequence<'a, Statement<'a>>,
     ctx: Rc<NsContext>,
     out: &mut Vec<(Rc<NsContext>, &'a Statement<'a>)>,
 ) {
@@ -187,8 +187,8 @@ pub(crate) fn flatten_namespaces<'a>(
     }
 }
 
-fn apply_use(ctx: &mut NsContext, u: &rhp_frontend::cst::Use) {
-    use rhp_frontend::cst::UseItems;
+fn apply_use(ctx: &mut NsContext, u: &crate::parse::cst::Use) {
+    use crate::parse::cst::UseItems;
     match &u.items {
         UseItems::Sequence(seq) => {
             for it in seq.items.iter() {
@@ -218,8 +218,8 @@ fn apply_use(ctx: &mut NsContext, u: &rhp_frontend::cst::Use) {
     }
 }
 
-fn use_kind(t: &rhp_frontend::cst::UseType) -> UseKind {
-    use rhp_frontend::cst::UseType;
+fn use_kind(t: &crate::parse::cst::UseType) -> UseKind {
+    use crate::parse::cst::UseType;
     match t {
         UseType::Function(_) => UseKind::Func,
         UseType::Const(_) => UseKind::Const,
@@ -230,7 +230,7 @@ fn import_one(
     ctx: &mut NsContext,
     kind: UseKind,
     prefix: &[u8],
-    item: &rhp_frontend::cst::UseItem,
+    item: &crate::parse::cst::UseItem,
 ) {
     let name_raw = strip_lead_bs(identifier_raw(&item.name));
     let full = if prefix.is_empty() {

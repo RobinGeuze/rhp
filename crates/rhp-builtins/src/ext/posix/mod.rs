@@ -5,7 +5,7 @@
 
 use std::ffi::{CStr, CString};
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};

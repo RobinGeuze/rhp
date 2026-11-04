@@ -3,7 +3,7 @@
 //! php generates its arginfo from these stubs with build/gen_stub.php, and
 //! Reflection reports that arginfo. This walks the stubs of the extensions
 //! rhp provides with mago-syntax and writes one row per function, class and
-//! method to crates/rhp-builtins/src/signatures/table.rs:
+//! method to crates/rhp-bytecode/src/signatures/table.rs:
 //! - types in zend_type_to_string's canonical spelling;
 //! - defaults printed the way gen_stub prints them (nikic/php-parser's
 //!   pretty printer after name resolution), which is the string Reflection
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rhp_frontend::cst::{
+use rhp_compiler::parse::cst::{
     Access, ArrayElement, Attribute, BinaryOperator, ClassLikeConstantSelector, ClassLikeMember,
     Expression, FunctionLikeParameterList, FunctionLikeReturnTypeHint, Hint, Identifier, Literal,
     LiteralStringKind, Method, Modifier, NamespaceBody, Sequence, Statement, TriviaKind,
@@ -69,7 +69,7 @@ const SOURCES: &[(&str, &str)] = &[
 ];
 
 /// The generated file, relative to the workspace root.
-const OUT: &str = "crates/rhp-builtins/src/signatures/table.rs";
+const OUT: &str = "crates/rhp-bytecode/src/signatures/table.rs";
 
 /// The php-src commit the table is generated from.
 const PIN: &str = "tests/phpt/php-src.ref";
@@ -77,7 +77,7 @@ const PIN: &str = "tests/phpt/php-src.ref";
 const USAGE: &str =
     "usage: rhp-difftest gen signatures [--php-src <dir>] [--out <file>] [--check]\n\
   --php-src   php-src checkout at tests/phpt/php-src.ref (default: php-src)\n\
-  --out       output file (default: crates/rhp-builtins/src/signatures/table.rs)\n\
+  --out       output file (default: crates/rhp-bytecode/src/signatures/table.rs)\n\
   --check     fail if the output file differs instead of writing it\n";
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -209,7 +209,7 @@ struct Out {
     methods: BTreeMap<(String, String), MethodRow>,
 }
 
-// Flags, mirrored by crates/rhp-builtins/src/signatures/mod.rs.
+// Flags, mirrored by crates/rhp-bytecode/src/signatures/mod.rs.
 const M_PUBLIC: u32 = 1;
 const M_PROTECTED: u32 = 2;
 const M_PRIVATE: u32 = 4;
@@ -386,7 +386,7 @@ fn live_lines(src: &[u8]) -> Vec<bool> {
 }
 
 fn parse_stub(rel: &str, src: &[u8], ext: &'static str, out: &mut Out) -> Result<(), String> {
-    let arena = rhp_frontend::Arena::new();
+    let arena = rhp_compiler::parse::Arena::new();
     let parsed = arena.parse(rel.as_bytes(), src);
     if parsed.has_parse_errors() {
         return Err(format!("parse error: {:?}", parsed.parse_error()));
@@ -665,11 +665,11 @@ fn modifier_start(m: &Modifier) -> u32 {
     }
 }
 
-fn attrs_start(lists: &Sequence<rhp_frontend::cst::AttributeList>) -> Option<u32> {
+fn attrs_start(lists: &Sequence<rhp_compiler::parse::cst::AttributeList>) -> Option<u32> {
     lists.first().map(|l| l.hash_left_bracket.start.offset)
 }
 
-fn has_attr(lists: &Sequence<rhp_frontend::cst::AttributeList>, name: &str) -> bool {
+fn has_attr(lists: &Sequence<rhp_compiler::parse::cst::AttributeList>, name: &str) -> bool {
     lists.iter().any(|l| {
         l.attributes.iter().any(|a: &Attribute| {
             let n = ident_bytes(&a.name);

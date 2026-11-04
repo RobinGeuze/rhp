@@ -1523,13 +1523,7 @@ pub fn register(m: &mut crate::Registry) {
 
 /// The `GMP` class. Its parameters are parsed natively (php's zpp, not a
 /// user function's type coercion).
-pub const PRELUDE_PHP: &str = r#"
-final class GMP {
-    public function __construct($num = 0, $base = 0) { __gmp_construct($this, $num, $base); }
-    public function __serialize() { return __gmp_serialize($this); }
-    public function __unserialize($data) { __gmp_unserialize($this, $data); }
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
 /// `GMP_*` constants.
 pub fn constants() -> Vec<(&'static str, Value)> {

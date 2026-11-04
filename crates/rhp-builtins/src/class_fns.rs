@@ -4,7 +4,7 @@
 //! `get_included_files` / `get_required_files`. The tables live in the host
 //! and are read through `Host::reflect_op`.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ClassKind, Value};
 
 use crate::argparse::{bool_param, str_param, zval_get_string, zval_value_name};

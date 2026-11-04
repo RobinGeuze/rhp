@@ -1,8 +1,8 @@
 //! `rhp-difftest lint` — a compile-only scan of PHP source trees.
 //!
 //! Every `.php` file under the given directories goes through the exact path
-//! an `include` takes in rhp (parse, then `compile_with_source`), without
-//! running anything. A file rhp *refuses* (parse error, compile-time
+//! an `include` takes in rhp (`rhp_sapi::compile_file`), without running
+//! anything. A file rhp *refuses* (parse error, compile-time
 //! `Unsupported`, compile error or compiler panic) is a file that would fatal
 //! the moment an app includes it, so the refused count over a framework's
 //! `vendor/` is a cheap, monotone progress metric.
@@ -26,7 +26,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use rhp_frontend::Arena;
+use rhp_sapi::{IncludeError, Mode};
 use rhp_values::Thrown;
 
 use crate::read_known;
@@ -111,30 +111,27 @@ fn first_line(s: &str) -> &str {
 /// Parse and compile one source file exactly like rhp's includer does.
 pub fn lint_source(file: &str, src: &[u8]) -> Result<(), Refusal> {
     let res = catch_unwind(AssertUnwindSafe(|| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), src);
-        let error = rhp_builtins::zend::syntax_error(src)
-            .map(|f| (f.message, f.line))
-            .or_else(|| parsed.parse_error());
-        if let Some((message, line)) = error {
-            return Err(Refusal::Parse { line, message });
-        }
-        match rhp_compiler::compile_include(parsed.program(), src, file) {
+        match rhp_sapi::compile_file(file, src, Mode::Include) {
             Ok(_) => Ok(()),
-            Err(Thrown::Unsupported {
+            Err(IncludeError::Parse { message, line, .. }) => Err(Refusal::Parse { line, message }),
+            Err(IncludeError::Compile { message, .. }) => Err(Refusal::Error {
+                class: "CompileError".into(),
+                message,
+            }),
+            Err(IncludeError::Thrown(Thrown::Unsupported {
                 feature,
                 reason,
                 location,
-            }) => Err(Refusal::Unsupported {
+            })) => Err(Refusal::Unsupported {
                 feature,
                 reason,
                 line: location.map(|(_, l)| l),
             }),
-            Err(Thrown::Error { class, message }) => Err(Refusal::Error {
+            Err(IncludeError::Thrown(Thrown::Error { class, message })) => Err(Refusal::Error {
                 class: class.to_string(),
                 message,
             }),
-            Err(other) => Err(Refusal::Error {
+            Err(IncludeError::Thrown(other)) => Err(Refusal::Error {
                 class: "Thrown".into(),
                 message: format!("{other:?}"),
             }),

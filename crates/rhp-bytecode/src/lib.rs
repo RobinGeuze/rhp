@@ -1,4 +1,5 @@
-//! The rhp bytecode ISA — **data only, no behavior**.
+//! The rhp bytecode ISA — **data only, no behavior** — and php's arginfo for
+//! the builtins ([`signatures`]), which the compiler and the VM share.
 //!
 //! A register-based instruction set (see `docs/design/bytecode.md` §2). Depends
 //! only on `rhp-values` so a future `rhp-jit` can lower the same ISA
@@ -9,6 +10,8 @@
 use std::rc::Rc;
 
 use rhp_values::{ClassFlags, ClassKind, PhpStr, Value, Visibility};
+
+pub mod signatures;
 
 // --- operand newtypes (kept as aliases for a lean encoding) ---------------
 pub type Reg = u16; // register-file index: CVs in [0,num_cvs), temporaries above

@@ -24,12 +24,17 @@
 //!   `stdinfile PATH`: append a file of the case.
 //! - `env K=V`: an environment variable.
 //! - `cwd PATH`: the working directory, relative to the case directory.
+//! - `argv0 NAME`: the program's `argv[0]` (php-cli's usage text names it).
+//! - `no-n`: no `-n`. For option errors, which php reports before it reads
+//!   a php.ini: CI's php shim adds arguments when it sees `-n`, and php's
+//!   messages number the arguments.
 //!
 //! `cargo test -p rhp-cli --test cli` runs rhp; `-- --check` also runs php
 //! (`RHP_PHP`) and requires it to print the committed output; `-- --write`
 //! rewrites the expectations from the reference php. `CLI_ONLY=SUBSTR`
 //! narrows the runs to those whose `CASE/NAME` contains SUBSTR.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -44,6 +49,8 @@ struct Spec {
     stdin: Vec<u8>,
     env: Vec<(String, String)>,
     cwd: PathBuf,
+    argv0: Option<String>,
+    no_n: bool,
 }
 
 fn spec(case: &Path, name: &str, engine: &str) -> Spec {
@@ -87,6 +94,8 @@ fn spec(case: &Path, name: &str, engine: &str) -> Spec {
                 s.env.push((k.to_string(), v.to_string()));
             }
             "cwd" => s.cwd = case.join(rest),
+            "argv0" => s.argv0 = Some(rest),
+            "no-n" => s.no_n = true,
             "" => {}
             _ if kw.starts_with('#') => {}
             other => panic!("{}/{name}: unknown directive {other}", case.display()),
@@ -97,7 +106,13 @@ fn spec(case: &Path, name: &str, engine: &str) -> Spec {
 
 fn run(bin: &str, case: &Path, s: &Spec) -> Ran {
     let mut cmd = Command::new(bin);
-    cmd.env_clear().env("TZ", "UTC").arg("-n");
+    cmd.env_clear().env("TZ", "UTC");
+    if let Some(a) = &s.argv0 {
+        cmd.arg0(a);
+    }
+    if !s.no_n {
+        cmd.arg("-n");
+    }
     if let Some(path) = std::env::var_os("PATH") {
         cmd.env("PATH", path);
     }

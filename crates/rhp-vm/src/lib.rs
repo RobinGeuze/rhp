@@ -1,7 +1,7 @@
 //! The register bytecode VM.
 //!
 //! Executes a `rhp_bytecode::Program`. Every arithmetic/compare/concat/cast
-//! opcode is a thin wrapper over the verified `rhp_semantics::ops` / value
+//! opcode is a thin wrapper over the verified `rhp_values::ops` / value
 //! `conv` functions, and calls go through `rhp_builtins`, so operator and
 //! builtin semantics live in one place shared with the rest of the engine.
 //!
@@ -38,7 +38,7 @@ use std::rc::Rc;
 use rhp_builtins as builtins;
 use rhp_builtins::ini_parse_bool as ini_bool;
 use rhp_bytecode::{ClassProto, FunctionProto, Reg};
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{ClassId, ObjectHandle, PhpStr, Thrown, Value};
 
 use calls::NativeCall;

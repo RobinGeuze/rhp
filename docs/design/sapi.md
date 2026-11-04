@@ -19,7 +19,7 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
  server / front end        rhp-cli (argv)   rhp --cgi        future: -S, embed, FastCGI
           │                      │               │                     │
           ▼                      ▼               ▼                     ▼
- rhp-sapi            run_cli()          cgi::main()            run_request()
+ rhp-sapi            cli::main()        cgi::main()            run_request()
                          └──────────────┬───────┴──────────────────┘
                                         ▼
                      run_request(Box<dyn Sapi>, Request) -> Outcome
@@ -40,14 +40,22 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   `$_POST`, `$_COOKIE`, `$_FILES`, `$_ENV` and `$_REQUEST`, reads POST
   bodies (`post_max_size`, `enable_post_data_reading`, multipart), and sends
   the headers lazily.
-- **`rhp-sapi`** is the library entry point (`run_request`) plus the
-  shipped SAPIs: `CliSapi` (php-cli), `cgi::CgiSapi` (php-cgi, with
-  `cgi::main` porting `cgi_main.c`'s argv and environment handling) and
+- **`rhp-sapi`** is the library entry point (`run_request`, and
+  `compile_file`, the one parse-and-compile path for scripts, includes,
+  eval and preload) plus the shipped SAPIs: `CliSapi` (php-cli, with
+  `cli::main` porting `php_cli.c`'s option table and passes),
+  `cgi::CgiSapi` (php-cgi, with `cgi::main` porting `cgi_main.c`'s argv
+  and environment handling) and
   `CaptureSapi`, which keeps a request's output in memory for tests and
   tools (`CaptureSapi::cli()` behaves as php-cli, `CaptureSapi::web(name)`
   as a web server).
-- **`rhp-cli`** is a thin argv front end: `rhp script.php`, `rhp -r code`,
-  `rhp --cgi …`.
+- **`rhp-cli`** only picks the SAPI (`rhp --cgi …`, or the binary named
+  `php-cgi`) and hands the command line to `cli::main` or `cgi::main`.
+  Both parse it with a port of php's `php_getopt`, so bad options get
+  php's messages; the php-cli modes rhp lacks (`-i`, `-l`, `-m`, `-s`,
+  `-w`, `-B`/`-R`/`-F`/`-E`, `-S`, `--rf` and friends, `--ini`,
+  `--repeat`) are refused after php's own checks, and `-a` gets the error
+  of a php without readline.
 
 ## The embedding API
 

@@ -14,7 +14,7 @@ use std::cell::Cell;
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};

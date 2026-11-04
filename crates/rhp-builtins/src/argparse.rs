@@ -2,7 +2,7 @@
 //! builtins that must raise php's exact `TypeError` text on a wrong-typed
 //! argument instead of silently coercing.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Host, Thrown};
@@ -149,7 +149,7 @@ pub(crate) fn array_param(
     match args.get(i).map(deref) {
         Some(Value::Array(a)) => Ok(a),
         v => {
-            let label = crate::signatures::function(func.as_bytes())
+            let label = rhp_bytecode::signatures::function(func.as_bytes())
                 .and_then(|f| f.params.get(i))
                 .filter(|p| !p.variadic())
                 .map(|p| format!(" (${})", p.name))

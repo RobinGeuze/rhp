@@ -1,10 +1,10 @@
 //! Control-flow lowering: conditionals, loops, switch/match, try and jumps.
 
-use rhp_bytecode::{CmpKind, Instr, Reg};
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, Expression, ForBody, ForeachBody, ForeachTarget, IfBody, Literal, Match, MatchArm,
     Statement, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
+use rhp_bytecode::{CmpKind, Instr, Reg};
 use rhp_values::Thrown;
 
 use crate::assign::{check_globals_write, globals_index};
@@ -25,7 +25,7 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    pub(crate) fn compile_if(&mut self, i: &rhp_frontend::cst::If) -> Result<(), Thrown> {
+    pub(crate) fn compile_if(&mut self, i: &crate::parse::cst::If) -> Result<(), Thrown> {
         // Jumps to the end of the whole if/elseif/else chain, patched at the end.
         let mut end_jumps = Vec::new();
 
@@ -89,7 +89,7 @@ impl ProtoBuilder<'_> {
         self.emit(Instr::Jmp { target: next });
     }
 
-    pub(crate) fn compile_while(&mut self, w: &rhp_frontend::cst::While) -> Result<(), Thrown> {
+    pub(crate) fn compile_while(&mut self, w: &crate::parse::cst::While) -> Result<(), Thrown> {
         self.emit_loop_entry();
         let top = self.here();
         let cond = self.compile_expr(w.condition)?;
@@ -116,7 +116,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_do_while(
         &mut self,
-        d: &rhp_frontend::cst::DoWhile,
+        d: &crate::parse::cst::DoWhile,
     ) -> Result<(), Thrown> {
         let top = self.here();
         self.loops.push(LoopCtx {
@@ -136,7 +136,7 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    pub(crate) fn compile_for(&mut self, f: &rhp_frontend::cst::For) -> Result<(), Thrown> {
+    pub(crate) fn compile_for(&mut self, f: &crate::parse::cst::For) -> Result<(), Thrown> {
         for e in f.initializations.iter() {
             self.compile_expr(e)?;
         }
@@ -179,7 +179,7 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    pub(crate) fn compile_switch(&mut self, sw: &rhp_frontend::cst::Switch) -> Result<(), Thrown> {
+    pub(crate) fn compile_switch(&mut self, sw: &crate::parse::cst::Switch) -> Result<(), Thrown> {
         let subject = self.compile_expr(sw.expression)?;
         // Protect the subject register across the fall-through case bodies.
         let saved_floor = self.temp_floor;
@@ -249,7 +249,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_foreach(
         &mut self,
-        fe: &rhp_frontend::cst::Foreach,
+        fe: &crate::parse::cst::Foreach,
     ) -> Result<(), Thrown> {
         // Resolve key + value targets. A value target may be a destructuring
         // pattern, which binds into a protected element register per iteration.
@@ -447,7 +447,7 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    pub(crate) fn compile_unset(&mut self, u: &rhp_frontend::cst::Unset) -> Result<(), Thrown> {
+    pub(crate) fn compile_unset(&mut self, u: &crate::parse::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
             check_globals_write(v)?;
             match v {
@@ -490,7 +490,7 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    pub(crate) fn compile_try(&mut self, t: &rhp_frontend::cst::Try) -> Result<(), Thrown> {
+    pub(crate) fn compile_try(&mut self, t: &crate::parse::cst::Try) -> Result<(), Thrown> {
         use rhp_bytecode::{CatchArm, ExRegion};
         let has_finally = t.finally_clause.is_some();
         if has_finally {

@@ -11,7 +11,6 @@ default = []
 [dependencies]
 rhp-values = { path = "../rhp-values" }
 rhp-bytecode = { path = "../rhp-bytecode" }
-rhp-semantics = { path = "../rhp-semantics" }
 rhp-builtins = { path = "../rhp-builtins" }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }

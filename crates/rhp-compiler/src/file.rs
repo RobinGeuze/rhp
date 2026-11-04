@@ -5,17 +5,20 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::parse::cst::{ClassLikeMember, Program as AstProgram, Statement};
 use rhp_bytecode::{ClassProto, FunctionProto};
-use rhp_frontend::cst::{ClassLikeMember, Program as AstProgram, Statement};
 use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::fold::fold_const;
 use crate::names::{join_ns, NsContext};
+use crate::Builtins;
 
 /// The file being compiled. Each compile builds one (the prelude its own) and
 /// every builder borrows it, so nothing outlives the compile or leaks into
 /// the next one on the thread.
 pub(crate) struct FileCtx<'s> {
+    /// The builtins the file is compiled against.
+    pub(crate) builtins: &'s Builtins,
     /// The file name for debug info, getFile() and `__FILE__`. Empty for the
     /// prelude.
     pub(crate) file: PhpStr,
@@ -24,7 +27,7 @@ pub(crate) struct FileCtx<'s> {
     src: &'s [u8],
     /// The source's tokens, comments included, lexed on the first doc
     /// comment lookup.
-    tokens: OnceCell<Vec<rhp_frontend::Token>>,
+    tokens: OnceCell<Vec<crate::parse::Token>>,
     /// Byte offset of each line start. Empty for the prelude, whose line
     /// numbers are never surfaced.
     line_starts: Vec<u32>,
@@ -72,8 +75,9 @@ pub(crate) struct FileCtx<'s> {
 }
 
 impl<'s> FileCtx<'s> {
-    fn empty(file: PhpStr, src: &'s [u8]) -> Self {
+    fn empty(builtins: &'s Builtins, file: PhpStr, src: &'s [u8]) -> Self {
         FileCtx {
+            builtins,
             file,
             src,
             tokens: OnceCell::new(),
@@ -96,12 +100,13 @@ impl<'s> FileCtx<'s> {
 
     /// A user file: `flat` is its statements with their namespace contexts.
     pub(crate) fn new(
+        builtins: &'s Builtins,
         file: &str,
         src: &'s [u8],
         program: &AstProgram,
         flat: &[(Rc<NsContext>, &Statement)],
     ) -> Self {
-        let mut cx = Self::empty(PhpStr::from_bytes(file.as_bytes().to_vec()), src);
+        let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
         cx.line_starts = build_line_starts(src);
@@ -125,8 +130,11 @@ impl<'s> FileCtx<'s> {
 
     /// The prelude: no file name, source or line map, and only its own
     /// method signatures (`flat` is its statements).
-    pub(crate) fn prelude(flat: &[(Rc<NsContext>, &Statement)]) -> FileCtx<'static> {
-        let mut cx = FileCtx::empty(PhpStr::from_bytes(Vec::new()), b"");
+    pub(crate) fn prelude(
+        builtins: &'s Builtins,
+        flat: &[(Rc<NsContext>, &Statement)],
+    ) -> FileCtx<'s> {
+        let mut cx = FileCtx::empty(builtins, PhpStr::from_bytes(Vec::new()), b"");
         cx.is_prelude = true;
         cx.method_ref = collect_method_refs(flat);
         cx
@@ -198,10 +206,10 @@ impl<'s> FileCtx<'s> {
 
     /// The source and its token stream for doc comment lookups (no tokens
     /// when the source has no `/**`).
-    pub(crate) fn doc_tokens(&self) -> (&[u8], &[rhp_frontend::Token]) {
+    pub(crate) fn doc_tokens(&self) -> (&[u8], &[crate::parse::Token]) {
         let toks = self.tokens.get_or_init(|| {
             if self.src.windows(3).any(|w| w == b"/**") {
-                rhp_frontend::tokens(self.src)
+                crate::parse::tokens(self.src)
             } else {
                 Vec::new()
             }
@@ -281,7 +289,7 @@ fn build_line_starts(source: &[u8]) -> Vec<u32> {
 /// (Method names are not namespaced, so this ignores the namespace context.)
 fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>, Vec<bool>> {
     let mut map: HashMap<Vec<u8>, Vec<bool>> = HashMap::new();
-    let mut add = |name: &[u8], pl: &rhp_frontend::cst::FunctionLikeParameterList| {
+    let mut add = |name: &[u8], pl: &crate::parse::cst::FunctionLikeParameterList| {
         let entry = map.entry(name.to_ascii_lowercase()).or_default();
         for (i, p) in pl.parameters.iter().enumerate() {
             if entry.len() <= i {

@@ -4,7 +4,7 @@
 //! The INFO_GENERAL block follows php's row order and formatting exactly; the
 //! values describe this engine (rhp) where php would describe its build.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::{version, Host, Thrown};

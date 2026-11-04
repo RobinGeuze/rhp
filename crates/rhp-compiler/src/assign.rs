@@ -1,10 +1,10 @@
 //! Assignments and lvalues: destructuring, references, compound and `??=` assignment.
 
-use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, ArrayElement, AssignmentOperator, ClassLikeMemberSelector, Expression,
     UnaryPrefixOperator, Variable,
 };
+use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
 use rhp_values::Thrown;
 
 use crate::builder::ProtoBuilder;
@@ -189,7 +189,7 @@ impl ProtoBuilder<'_> {
             Expression::Variable(v) => Ok(LvalRoot::VarVar(self.var_name_reg(v)?)),
             Expression::Parenthesized(p) => self.collect_lvalue_steps(p.expression, steps),
             Expression::Access(Access::NullSafeProperty(_))
-            | Expression::Call(rhp_frontend::cst::Call::NullSafeMethod(_)) => Err(Thrown::error(
+            | Expression::Call(crate::parse::cst::Call::NullSafeMethod(_)) => Err(Thrown::error(
                 "Error",
                 "Can't use nullsafe operator in write context",
             )),
@@ -272,7 +272,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_assignment(
         &mut self,
-        a: &rhp_frontend::cst::Assignment,
+        a: &crate::parse::cst::Assignment,
     ) -> Result<Reg, Thrown> {
         check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.

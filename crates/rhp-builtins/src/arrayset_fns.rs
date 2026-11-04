@@ -13,7 +13,7 @@
 //! `lib.rs`; `array_replace` and `array_merge_recursive` live in
 //! `strarr2_fns.rs`.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::argparse::array_param;

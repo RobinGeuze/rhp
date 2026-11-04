@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
+use crate::parse::cst::{Expression, Hint, MethodBody, Modifier, Node, Statement};
 use rhp_bytecode::{FunctionProto, Instr, MethodProto, NIdx, PropDefaultProto, PropProto, Reg};
-use rhp_frontend::cst::{Expression, Hint, MethodBody, Modifier, Node, Statement};
 use rhp_values::{PhpStr, Thrown};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
@@ -23,12 +23,12 @@ enum ClosureBody<'a> {
     /// Arrow function: a single expression, implicitly `return`ed.
     Arrow(&'a Expression<'a>),
     /// `function(){ ... }`: a block of statements.
-    Block(&'a rhp_frontend::cst::Block<'a>),
+    Block(&'a crate::parse::cst::Block<'a>),
 }
 
 pub(crate) fn compile_method(
     cx: &FileCtx,
-    m: &rhp_frontend::cst::Method,
+    m: &crate::parse::cst::Method,
     class_name: &PhpStr,
 ) -> Result<(MethodProto, Vec<PropProto>), Thrown> {
     let name = PhpStr::from_bytes(m.name.value.to_vec());
@@ -171,7 +171,7 @@ pub(crate) fn compile_method(
 /// Parameters occupy the first CV registers, in order.
 pub(crate) fn compile_function(
     cx: &FileCtx,
-    func: &rhp_frontend::cst::Function,
+    func: &crate::parse::cst::Function,
 ) -> Result<FunctionProto, Thrown> {
     let fname = join_ns(&cx.cur_ns(), func.name.value);
     let mut c = ProtoBuilder::new(cx, PhpStr::from_bytes(fname));
@@ -290,7 +290,7 @@ impl ProtoBuilder<'_> {
     /// `$this` when defined and the arrow is non-static.
     pub(crate) fn compile_arrow(
         &mut self,
-        af: &rhp_frontend::cst::ArrowFunction,
+        af: &crate::parse::cst::ArrowFunction,
     ) -> Result<Reg, Thrown> {
         let is_static = af.r#static.is_some();
         // Parameter names, to exclude from auto-capture.
@@ -347,7 +347,7 @@ impl ProtoBuilder<'_> {
     /// list. `use(&$x)` captures by reference (shares a cell with the outer var).
     pub(crate) fn compile_closure(
         &mut self,
-        cl: &rhp_frontend::cst::Closure,
+        cl: &crate::parse::cst::Closure,
     ) -> Result<Reg, Thrown> {
         let is_static = cl.r#static.is_some();
         let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
@@ -394,7 +394,7 @@ impl ProtoBuilder<'_> {
     fn build_closure(
         &mut self,
         is_static: bool,
-        param_list: &rhp_frontend::cst::FunctionLikeParameterList,
+        param_list: &crate::parse::cst::FunctionLikeParameterList,
         captures: Vec<(Vec<u8>, bool)>,
         body: ClosureBody,
         closure_offset: u32,

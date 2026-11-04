@@ -1,6 +1,6 @@
 //! Type declarations: lowering hints to `TypeHint` and php's checks on type names.
 
-use rhp_frontend::cst::{Hint, Identifier};
+use crate::parse::cst::{Hint, Identifier};
 use rhp_values::{PhpStr, Thrown};
 
 use crate::file::FileCtx;

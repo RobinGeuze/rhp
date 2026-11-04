@@ -3,7 +3,7 @@
 //! Each mutant changes exactly one token — a literal swapped for a boundary
 //! value, or an operator for a near neighbour — so a php/rhp divergence on a
 //! mutant points at one precise construct. Tokens come from rhp's own lexer
-//! ([`rhp_frontend::tokens`]), so comments, interpolated strings and inline HTML
+//! ([`rhp_compiler::parse::tokens`]), so comments, interpolated strings and inline HTML
 //! are never corrupted by accident. Replacements that could re-lex differently
 //! next to their neighbours (a negative literal after `-`) are parenthesised.
 //!
@@ -11,7 +11,7 @@
 //! `^`); the runner discards any mutant that php itself rejects with a parse
 //! error, so only programs php accepts are compared.
 
-use rhp_frontend::{tokens, Token, TokenKind};
+use rhp_compiler::parse::{tokens, Token, TokenKind};
 
 use crate::Rng;
 

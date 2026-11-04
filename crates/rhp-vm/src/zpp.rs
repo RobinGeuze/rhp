@@ -4,8 +4,8 @@
 
 use rhp_builtins as builtins;
 use rhp_builtins::object::CastTarget;
-use rhp_builtins::signatures::{ScalarParam, Zpp};
 use rhp_builtins::E_DEPRECATED;
+use rhp_bytecode::signatures::{ScalarParam, Zpp};
 use rhp_values::{conv, fmt, ArrayKey, Thrown, Value};
 
 use crate::{deref, Vm};
@@ -27,14 +27,14 @@ impl Vm {
     pub(crate) fn coerce_builtin_args(
         &mut self,
         name: &str,
-        sig: Option<&'static builtins::signatures::Func>,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
         args: &mut [Value],
         user: bool,
         strict: bool,
         frameless: bool,
     ) -> Result<(), Thrown> {
         let sps =
-            sig.and_then(|f| builtins::signatures::scalar_params_for(f, args.len(), frameless));
+            sig.and_then(|f| rhp_bytecode::signatures::scalar_params_for(f, args.len(), frameless));
         let (params, prefix) = match sps {
             Some(sps) => (&sps.params[..], sps.prefix),
             None => (&[][..], 0),
@@ -252,7 +252,7 @@ impl Vm {
         i: usize,
         v: &Value,
     ) -> Result<Got, Thrown> {
-        let base = builtins::signatures::class_param_base(name, sp.name);
+        let base = rhp_bytecode::signatures::class_param_base(name, sp.name);
         if sp.nullable && matches!(v, Value::Null) {
             return Ok(Got::Keep);
         }

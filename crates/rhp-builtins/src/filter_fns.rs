@@ -8,7 +8,7 @@
 //! string cast before validation/sanitization (matching ext/filter), except
 //! that the INT and FLOAT validators short-circuit real int/float inputs.
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, Value};
 
 use crate::{Host, Thrown};

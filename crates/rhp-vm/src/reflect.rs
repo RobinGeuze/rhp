@@ -13,7 +13,7 @@ use rhp_values::{ArrayKey, ClassId, ClassKind, PhpArray, PhpStr, Thrown, Value, 
 use crate::classes::ResolvedMethod;
 use crate::{deref, UnitFn, UnitId, Vm};
 
-use rhp_builtins::signatures::{self as sigs, Signature};
+use rhp_bytecode::signatures::{self as sigs, Signature};
 
 fn put(a: &mut PhpArray, k: &str, v: Value) {
     a.insert(ArrayKey::from_bytes(k.as_bytes()), v);

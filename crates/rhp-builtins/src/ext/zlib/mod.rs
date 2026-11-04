@@ -15,7 +15,7 @@ pub(crate) mod zraw;
 use std::any::Any;
 use std::rc::Rc;
 
-use rhp_semantics::deref;
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};

@@ -564,7 +564,7 @@ pub fn info_rows() -> Vec<(String, String)> {
 
 // --- shared helpers ----------------------------------------------------------
 
-pub(crate) use rhp_semantics::deref;
+pub(crate) use rhp_values::ops::deref;
 
 /// A string argument as C sees php's `char *`: up to the first NUL.
 pub(crate) fn c_string(b: &[u8]) -> CString {

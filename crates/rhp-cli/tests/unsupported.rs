@@ -5,6 +5,10 @@
 //!
 //! The tests use constructs rhp refuses by design (backtick shell execution,
 //! create_function), so they stay valid as features land.
+//!
+//! The interactive shell (`-a`) is here too: php's answer depends on its
+//! build (the reference php has readline, CI's does not), so the CLI
+//! fixtures can't hold it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -134,5 +138,34 @@ fn builtin_refusal_names_calling_line() {
     assert!(
         line.ends_with(&format!(" in {} on line 3", main.display())),
         "{line}"
+    );
+}
+
+/// rhp has no readline, so `-a` is php's error for a build without it, and
+/// a later error replaces it.
+#[test]
+fn interactive_shell_needs_readline() {
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rhp"))
+            .arg("-n")
+            .args(args)
+            .output()
+            .expect("run rhp");
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            out.status.code(),
+        )
+    };
+    let needs = "Interactive shell (-a) requires the readline extension.\n";
+    for args in [
+        &["-a"][..],
+        &["-r", "echo 1;", "-a"],
+        &["-a", "-r", "echo 1;"],
+    ] {
+        assert_eq!(run(args), (needs.to_string(), Some(1)), "{args:?}");
+    }
+    assert_eq!(
+        run(&["-a", "-f", "x.php", "-f", "y.php"]),
+        ("You can use -f only once.\n".to_string(), Some(1))
     );
 }

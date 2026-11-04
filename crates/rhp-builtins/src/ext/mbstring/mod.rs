@@ -125,7 +125,7 @@ fn has_oom() -> bool {
 
 /// The name of parameter `i` (0-based) of `fname`, from its stub.
 fn pname(fname: &str, i: usize) -> &'static str {
-    crate::signatures::function(fname.as_bytes())
+    rhp_bytecode::signatures::function(fname.as_bytes())
         .and_then(|f| f.params.get(i))
         .map_or("", |p| p.name)
 }

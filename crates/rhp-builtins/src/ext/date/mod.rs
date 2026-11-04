@@ -203,12 +203,23 @@ pub(crate) fn timezone_info() -> Result<Rc<Tz>, Thrown> {
     })
 }
 
-/// The date constants rhp's core list (lib.rs) doesn't define yet.
+/// The extension's constants, in the stub's order.
 pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
+        ("DATE_ATOM", Value::str("Y-m-d\\TH:i:sP")),
+        ("DATE_COOKIE", Value::str("l, d-M-Y H:i:s T")),
+        ("DATE_ISO8601", Value::str("Y-m-d\\TH:i:sO")),
         ("DATE_ISO8601_EXPANDED", Value::str("X-m-d\\TH:i:sP")),
+        ("DATE_RFC822", Value::str("D, d M y H:i:s O")),
+        ("DATE_RFC850", Value::str("l, d-M-y H:i:s T")),
+        ("DATE_RFC1036", Value::str("D, d M y H:i:s O")),
+        ("DATE_RFC1123", Value::str("D, d M Y H:i:s O")),
         ("DATE_RFC7231", Value::str("D, d M Y H:i:s \\G\\M\\T")),
+        ("DATE_RFC2822", Value::str("D, d M Y H:i:s O")),
+        ("DATE_RFC3339", Value::str("Y-m-d\\TH:i:sP")),
         ("DATE_RFC3339_EXTENDED", Value::str("Y-m-d\\TH:i:s.vP")),
+        ("DATE_RSS", Value::str("D, d M Y H:i:s O")),
+        ("DATE_W3C", Value::str("Y-m-d\\TH:i:sP")),
         ("SUNFUNCS_RET_TIMESTAMP", Value::Int(0)),
         ("SUNFUNCS_RET_STRING", Value::Int(1)),
         ("SUNFUNCS_RET_DOUBLE", Value::Int(2)),

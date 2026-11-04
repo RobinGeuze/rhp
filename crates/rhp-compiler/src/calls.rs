@@ -130,6 +130,9 @@ impl ProtoBuilder<'_> {
             /// A reference or a value, passed on as it is.
             Pass(Reg),
         }
+        // php compiles `in_array($x, [...], FLAG)` with a literal flag to
+        // ZEND_IN_ARRAY, which never type-checks the flag.
+        let in_array_flag = self.in_array_ct_strict(fc, &name_bytes, &fallback);
         // The unresolved callee, looked up (ResolveFunc) for the first
         // argument that needs to ask it about by-reference parameters.
         let mut callee: Option<Reg> = None;
@@ -206,6 +209,10 @@ impl ProtoBuilder<'_> {
                         ))
                     }
                 }
+            } else if let (2, Some(b)) = (i, in_array_flag) {
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadBool { dst, b });
+                slots.push(ArgSlot::Value(dst));
             } else if let (None, None, Some(var)) = (&sig, builtin, send_var_ex_name(p.value)) {
                 // A function the compiler does not know (another file's, or
                 // declared later): php's SEND_VAR_EX asks it at run time
@@ -279,6 +286,82 @@ impl ProtoBuilder<'_> {
             fallback: fb,
         });
         Ok(dst)
+    }
+
+    /// zend_compile_func_in_array: a compile-time-resolved `in_array` call
+    /// whose haystack is a constant array of only strings and ints (strict)
+    /// or only non-numeric strings (not strict), and whose third argument
+    /// is a literal or a compile-time constant, becomes ZEND_IN_ARRAY with
+    /// the flag's truth value. That value, when the call has this shape.
+    fn in_array_ct_strict(
+        &self,
+        fc: &rhp_frontend::cst::FunctionCall,
+        name: &[u8],
+        fallback: &Option<Vec<u8>>,
+    ) -> Option<bool> {
+        let args = &fc.argument_list.arguments;
+        if fallback.is_some() || !name.eq_ignore_ascii_case(b"in_array") || args.len() != 3 {
+            return None;
+        }
+        let arg = |i: usize| match &args[i] {
+            Argument::Positional(p) => Some(unparen(p.value)),
+            Argument::Named(_) => None,
+        };
+        let flag = match arg(2)? {
+            Expression::Literal(l) => crate::fold::literal_value(l),
+            Expression::ConstantAccess(ca) => self.ct_constant(&ca.name)?,
+            _ => return None,
+        };
+        // zend_is_true's warning, raised while compiling, whether or not
+        // the call then folds.
+        if matches!(flag, Value::Float(f) if f.is_nan()) {
+            self.cx.compile_diags.borrow_mut().push((
+                rhp_builtins::E_WARNING,
+                "unexpected NAN value was coerced to bool".into(),
+                self.cur_line,
+            ));
+        }
+        let strict = rhp_values::conv::to_bool(&flag);
+        let haystack = arg(1)?;
+        if !matches!(haystack, Expression::Array(_) | Expression::LegacyArray(_)) {
+            return None;
+        }
+        let Ok(Value::Array(a)) = crate::fold::fold_const(self.cx, haystack) else {
+            return None;
+        };
+        a.iter()
+            .all(|(_, v)| match v {
+                Value::Int(_) => strict,
+                Value::Str(s) => strict || rhp_values::conv::numeric_string(s.as_bytes()).is_none(),
+                _ => false,
+            })
+            .then_some(strict)
+    }
+
+    /// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
+    /// global builtin constant that is not deprecated.
+    fn ct_constant(&self, id: &Identifier) -> Option<Value> {
+        let namespaced_fq =
+            matches!(id, Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
+        if !namespaced_fq {
+            match crate::names::identifier_name(id)
+                .to_ascii_lowercase()
+                .as_slice()
+            {
+                b"true" => return Some(Value::Bool(true)),
+                b"false" => return Some(Value::Bool(false)),
+                b"null" => return Some(Value::Null),
+                _ => {}
+            }
+        }
+        let (name, fallback) = self.cx.resolve_name(id, NameKind::Const);
+        if fallback.is_some() || rhp_builtins::constant_deprecation(&name).is_some() {
+            return None;
+        }
+        rhp_builtins::constants()
+            .into_iter()
+            .find(|(n, _)| n.as_bytes() == name.as_slice())
+            .map(|(_, v)| v)
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
@@ -764,6 +847,13 @@ impl ProtoBuilder<'_> {
             }
         }
     }
+}
+
+fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    e
 }
 
 /// The stub signature of a builtin rhp implements: a native one, or a

@@ -1,0 +1,5 @@
+0: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+1: bool(true)
+2: bool(true)
+3: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+4: bool(true)

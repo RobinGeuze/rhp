@@ -65,6 +65,9 @@ pub(crate) struct FileCtx<'s> {
     /// The earliest compile error (source offset, line, message) recorded by
     /// [`FileCtx::fatal`].
     fatal: RefCell<Option<(u32, u32, String)>>,
+    /// Diagnostics php raises while compiling (level, message, line):
+    /// `Program::compile_diags`.
+    pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
 }
 
 impl<'s> FileCtx<'s> {
@@ -86,6 +89,7 @@ impl<'s> FileCtx<'s> {
             cond_classes: RefCell::new(Vec::new()),
             num_top_classes: 0,
             fatal: RefCell::new(None),
+            compile_diags: RefCell::new(Vec::new()),
         }
     }
 

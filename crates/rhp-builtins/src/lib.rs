@@ -1127,6 +1127,13 @@ pub trait Host {
             None => Ok(()),
         }
     }
+    /// `php_error_docref(NULL, level, msg)` raised outside a builtin of its
+    /// own (an object or resource freed): prefixed with php's active
+    /// function (the running builtin, else the innermost user function,
+    /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
+    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+        self.emit_diagnostic(level, &format!("Unknown: {msg}"))
+    }
 }
 
 /// `E_WARNING`.

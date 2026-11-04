@@ -404,11 +404,14 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
     closes, inside `with_host`. Their state is the archive
     (`php_zip_archive`), shared by the `ZipArchive`'s payload and the entry
     streams opened from it; libzip frees the callbacks with the archive.
-    The last owner closes it: a stream's `fclose`, `close()`/`open()`, or
-    the class's `dtor_obj` when the object goes (a class with a
-    `__destruct` leaves it to the payload's `Drop`, where the callbacks see
-    no host and do nothing). A warning raised while a callback's exception
-    is pending skips a user error handler, as php's does;
+    The last owner closes it: a stream's close, `close()`/`open()`, or the
+    class's `free_obj_host` after any `__destruct` when the object goes
+    (an archive the destructor pass never reaches closes in the payload's
+    `Drop`, where the callbacks see no host and do nothing). An exception
+    a callback throws while a stream closes comes out of `fclose()`, or of
+    the next builtin call for a stream freed by its last reference. A
+    warning raised while a callback's exception is pending skips a user
+    error handler, as php's does;
   - a library handle belongs in its object's payload (ext/openssl's and
     ext/curl's still sit in per-thread tables keyed by object id); one whose
     free can call back into PHP (an XMLWriter flushing to a stream) is freed

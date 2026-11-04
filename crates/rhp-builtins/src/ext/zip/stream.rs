@@ -12,7 +12,7 @@ use super::sys::{self, zip_file_t, zip_t};
 use super::{c_string, expand_filepath, Archive, MAXPATHLEN};
 use crate::opsstream::{OpsStream, StreamOps};
 use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
-use crate::Host;
+use crate::{Host, Thrown};
 
 /// `php_zip_stream_data_t`
 struct ZipStream {
@@ -117,7 +117,7 @@ impl StreamOps for ZipStream {
     }
 
     /// php_zip_ops_close: the archive reference goes with the stream.
-    fn close(&mut self, host: &mut dyn Host) {
+    fn close(&mut self, host: &mut dyn Host) -> Result<(), Thrown> {
         unsafe {
             if !self.zf.is_null() {
                 sys::zip_fclose(self.zf);
@@ -128,9 +128,9 @@ impl StreamOps for ZipStream {
                 self.za = ptr::null_mut();
             }
         }
-        if let Some(a) = self.archive.take() {
-            let fname = "fclose";
-            let _ = super::release(host, fname, a);
+        match self.archive.take() {
+            Some(a) => super::release(host, None, a),
+            None => Ok(()),
         }
     }
 }

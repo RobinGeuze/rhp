@@ -1565,7 +1565,7 @@ static GMP_HANDLERS: ObjectHandlers = ObjectHandlers {
     compare: Some(gmp_compare),
     do_operation: Some(gmp_do_operation),
     cast_object: Some(gmp_cast_object),
-    dtor_obj: None,
+    ..ObjectHandlers::STD
 };
 
 pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {

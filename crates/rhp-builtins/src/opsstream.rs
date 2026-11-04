@@ -4,7 +4,7 @@
 //! forward-seek emulation. The VM keeps one per such stream resource (zip
 //! entries) and forwards fread/fgets/fseek/fstat/fclose to it.
 
-use crate::{Host, StatInfo};
+use crate::{Host, StatInfo, Thrown};
 
 /// php's default chunk size.
 const CHUNK: usize = 8192;
@@ -33,8 +33,8 @@ pub trait StreamOps {
         None
     }
     /// `ops->close(stream, 1)`. It may reach PHP (a zip archive closing
-    /// runs its callbacks).
-    fn close(&mut self, host: &mut dyn Host);
+    /// runs its callbacks); an exception from there is returned.
+    fn close(&mut self, host: &mut dyn Host) -> Result<(), Thrown>;
 }
 
 /// A `php_stream` over [`StreamOps`].
@@ -282,8 +282,8 @@ impl OpsStream {
     }
 
     /// `php_stream_free`'s `ops->close(stream, 1)`.
-    pub fn close(&mut self, host: &mut dyn Host) {
-        self.ops.close(host);
+    pub fn close(&mut self, host: &mut dyn Host) -> Result<(), Thrown> {
+        self.ops.close(host)
     }
 
     /// Take the diagnostics the last operation raised.

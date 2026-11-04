@@ -38,28 +38,21 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[ClassHandlers {
 static HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
     clone_obj: CloneObj::None,
-    dtor_obj: Some(object_dtor),
+    free_obj_host: Some(object_free),
     ..ObjectHandlers::STD
 };
 
-/// php closes the archive in free_obj, which can run the archive's
-/// callbacks; the payload's `Drop` has no host for them. With no
-/// `__destruct` to run between the two, closing here, where the host is,
-/// is the same; a class with a `__destruct` (which may use the archive or
-/// keep the object) leaves the close to the payload.
-fn object_dtor(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
-    let cls = obj.borrow().class;
-    if host.class_has_method(cls, b"__destruct") {
-        return Ok(());
-    }
+/// php_zip_object_free_storage's close, which can run the archive's
+/// callbacks: here, where there is a host. The payload's `Drop` closes an
+/// archive the destructor pass did not reach, without them.
+fn object_free(host: &mut dyn Host, obj: &ObjectHandle) -> Result<(), Thrown> {
     let Some(o) = crate::object::payload_of::<ZipObject>(obj) else {
         return Ok(());
     };
     let Some(a) = o.archive.borrow_mut().take() else {
         return Ok(());
     };
-    // php's warnings name the running function; none runs here.
-    release(host, "Unknown", a)
+    release(host, None, a)
 }
 
 /// `php_zip_archive`: an open libzip archive, owned by its `ZipArchive`
@@ -109,9 +102,13 @@ impl Drop for Archive {
 
 /// php_zip_archive_release with a host: the last reference closes the
 /// archive while its callbacks can reach PHP, warning as php does when the
-/// close fails. `fname` is the running builtin; with none ("Unknown") php's
-/// warning has no parentheses.
-pub(crate) fn release(host: &mut dyn Host, fname: &str, a: Rc<Archive>) -> Result<(), Thrown> {
+/// close fails. `fname` is the `ZipArchive` method running; with none the
+/// warning names php's active function (`fclose`, `main`, …).
+pub(crate) fn release(
+    host: &mut dyn Host,
+    fname: Option<&str>,
+    a: Rc<Archive>,
+) -> Result<(), Thrown> {
     if Rc::strong_count(&a) > 1 {
         return Ok(());
     }
@@ -120,16 +117,17 @@ pub(crate) fn release(host: &mut dyn Host, fname: &str, a: Rc<Archive>) -> Resul
         return Ok(());
     }
     let mut rc = 0;
-    let r = ffi::with_host(host, fname, || rc = unsafe { sys::zip_close(za) });
+    let r = ffi::with_host(host, fname.unwrap_or("Unknown"), || {
+        rc = unsafe { sys::zip_close(za) }
+    });
     a.za.set(ptr::null_mut());
     if rc != 0 {
         let msg = String::from_utf8_lossy(unsafe { sys::cstr(sys::zip_strerror(za)) }).into_owned();
         unsafe { sys::zip_discard(za) };
         let msg = format!("Cannot destroy the zip context: {msg}");
-        if fname == "Unknown" {
-            host.emit_diagnostic(crate::E_WARNING, &format!("Unknown: {msg}"))?;
-        } else {
-            crate::warn(host, fname, &msg)?;
+        match fname {
+            Some(f) => crate::warn(host, f, &msg)?,
+            None => host.docref_diagnostic(crate::E_WARNING, &msg)?,
         }
     }
     drop(a);

@@ -556,7 +556,7 @@ fn open(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
         // php_zip_object_detach_archive
         a.za.set(ptr::null_mut());
         o.archive.borrow_mut().take();
-        release(cx.host, &cx.fname, a)?;
+        release(cx.host, Some(&cx.fname), a)?;
         pending = thrown;
     }
     *o.filename.borrow_mut() = None;
@@ -639,7 +639,7 @@ fn close(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
 fn detach(cx: &mut Cx<'_>, o: &ZipObject, a: Rc<Archive>) -> Result<(), Thrown> {
     a.za.set(ptr::null_mut());
     o.archive.borrow_mut().take();
-    release(cx.host, &cx.fname, a)
+    release(cx.host, Some(&cx.fname), a)
 }
 
 fn get_status_string(cx: &mut Cx<'_>) -> Value {

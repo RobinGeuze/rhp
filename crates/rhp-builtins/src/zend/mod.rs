@@ -3,6 +3,9 @@
 //! how a syntax error is worded.
 
 pub mod bison;
+pub mod builtin_functions;
+pub mod closures;
+pub mod exceptions;
 #[rustfmt::skip]
 pub mod ini_parser_tables;
 mod language_parser;

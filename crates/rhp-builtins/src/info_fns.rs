@@ -224,7 +224,7 @@ fn print_info(flag: i64) -> Vec<u8> {
         }
     }
     if flag & INFO_MODULES != 0 {
-        let mut exts: Vec<&str> = crate::php_fns::loaded_extension_names();
+        let mut exts: Vec<&str> = crate::zend::builtin_functions::loaded_extension_names();
         exts.sort_by_key(|e| e.to_ascii_lowercase());
         for e in &exts {
             o.section(e);

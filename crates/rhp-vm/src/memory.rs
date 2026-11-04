@@ -123,7 +123,7 @@ impl Vm {
             if let Some((_, frame)) = self.build_trace_ex(false, false).iter().next() {
                 first.push(frame.clone());
             }
-            rhp_builtins::php_fns::trace_to_string(self, &Value::Array(first))
+            rhp_builtins::zend::exceptions::trace_to_string(self, &Value::Array(first))
         } else {
             Vec::new()
         };

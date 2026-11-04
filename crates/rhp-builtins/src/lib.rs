@@ -27,6 +27,8 @@ pub mod pcre;
 pub mod version;
 pub mod zend;
 
+use crate::zend::builtin_functions::resolve_const;
+use crate::zend::zpp::require_callback;
 pub use diag::{
     deprecated, deprecated_fn, flush_stream_diags, notice, open_failed, warn, warn_arg,
 };
@@ -43,7 +45,6 @@ mod arraycmp_fns;
 mod arrayset_fns;
 #[rustfmt::skip]
 mod const_modules;
-mod class_fns;
 mod crypt_fns;
 mod ext;
 mod file_fns;
@@ -306,10 +307,7 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
                 ("var_dump", fn_var_dump),
                 ("print_r", fn_print_r),
                 ("var_export", fn_var_export),
-                ("define", fn_define),
-                ("defined", fn_defined),
                 ("constant", fn_constant),
-                ("strlen", fn_strlen),
                 ("count", fn_count),
                 ("sizeof", fn_sizeof),
                 ("str_repeat", fn_str_repeat),
@@ -337,17 +335,6 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
                 ("str_contains", fn_str_contains),
                 ("ord", fn_ord),
                 ("chr", fn_chr),
-                ("get_class", fn_get_class),
-                ("get_parent_class", fn_get_parent_class),
-                ("is_a", fn_is_a),
-                ("is_subclass_of", fn_is_subclass_of),
-                ("get_object_vars", fn_get_object_vars),
-                ("get_mangled_object_vars", fn_get_mangled_object_vars),
-                ("method_exists", fn_method_exists),
-                ("property_exists", fn_property_exists),
-                ("class_exists", fn_class_exists),
-                ("interface_exists", fn_interface_exists),
-                ("enum_exists", fn_enum_exists),
                 ("iterator_to_array", fn_iterator_to_array),
             ],
         );
@@ -397,7 +384,13 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("strsearch_fns", Box::new(strsearch_fns::register)),
         ("query_fns", Box::new(query_fns::register)),
         ("runtime_fns", Box::new(runtime_fns::register)),
-        ("class_fns", Box::new(class_fns::register)),
+        (
+            "builtin_functions",
+            Box::new(zend::builtin_functions::register),
+        ),
+        ("exceptions", Box::new(zend::exceptions::register)),
+        ("closures", Box::new(zend::closures::register)),
+        ("zpp", Box::new(zend::zpp::register)),
         ("sapi", Box::new(main::sapi::register)),
         ("rfc1867", Box::new(main::rfc1867::register)),
         ("opcache_fns", Box::new(opcache_fns::register)),
@@ -838,80 +831,6 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-/// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
-pub fn require_callback(
-    host: &mut dyn Host,
-    func: &str,
-    n: usize,
-    callable: &Value,
-) -> Result<(), Thrown> {
-    match host.check_callable(callable)? {
-        None => Ok(()),
-        Some(why) => Err(Thrown::type_error(format!(
-            "{func}(): Argument #{n} ($callback) must be a valid callback, {why}"
-        ))),
-    }
-}
-
-fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
-    let value = deref(&args[1]).clone();
-    if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
-        host.emit_diagnostic(
-            E_WARNING,
-            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
-        )?;
-    }
-    if host.define_const(&name, value) {
-        return Ok(Value::Bool(true));
-    }
-    host.emit_diagnostic(E_WARNING, &const_redefined_message(&name))?;
-    Ok(Value::Bool(false))
-}
-
-/// A global constant's key in the constant table: php lowercases the
-/// namespace part (`Foo\Bar\X` → `foo\bar\X`) and keeps the short name.
-/// Like php's `strrchr`, it only looks before the first NUL byte.
-pub fn const_key(name: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    let c_str = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
-    match c_str.iter().rposition(|&b| b == b'\\') {
-        Some(ns) if name[..ns].iter().any(u8::is_ascii_uppercase) => {
-            let mut key = name.to_vec();
-            key[..ns].make_ascii_lowercase();
-            key.into()
-        }
-        _ => name.into(),
-    }
-}
-
-/// zend_register_constant's warning for a name that is taken: the table
-/// key, printed as a C string.
-pub fn const_redefined_message(name: &[u8]) -> String {
-    let key = const_key(name);
-    let shown = &key[..key.iter().position(|&b| b == 0).unwrap_or(key.len())];
-    format!(
-        "Constant {} already defined, this will be an error in PHP 9",
-        String::from_utf8_lossy(shown)
-    )
-}
-
-/// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
-/// or a global constant. A leading `\` is skipped, as zend_get_constant_ex
-/// does.
-fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
-    let name = name.strip_prefix(b"\\").unwrap_or(name);
-    if let Some(pos) = find_sub(name, b"::") {
-        host.class_constant_eval(&name[..pos], &name[pos + 2..])
-    } else {
-        Ok(host.get_const(name))
-    }
-}
-
-fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
-}
-
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
     resolve_const(host, &name)?.ok_or_else(|| {
@@ -921,15 +840,6 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             format!("Undefined constant \"{}\"", String::from_utf8_lossy(shown)),
         )
     })
-}
-
-fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // Without copying the string (it may be most of memory_limit).
-    let n = match &args[0] {
-        Value::Str(s) => s.as_bytes().len(),
-        v => conv::to_string_bytes(v).len(),
-    };
-    Ok(Value::Int(n as i64))
 }
 
 /// php_count_recursive: an array met again through a reference warns
@@ -1888,222 +1798,6 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     ))
 }
 
-fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(obj) = args.first() else {
-        let Some(name) = host.caller_scope().and_then(|c| host.class_name(c)) else {
-            return Err(Thrown::error(
-                "Error",
-                "get_class() without arguments must be called from within a class",
-            ));
-        };
-        host.emit_diagnostic(
-            E_DEPRECATED,
-            "Calling get_class() without arguments is deprecated",
-        )?;
-        return Ok(Value::str(name));
-    };
-    match deref(obj) {
-        Value::Object(h) => {
-            let cid = h.borrow().class;
-            Ok(host
-                .class_name(cid)
-                .map(Value::str)
-                .unwrap_or(Value::Bool(false)))
-        }
-        other => Err(Thrown::type_error(format!(
-            "get_class(): Argument #1 ($object) must be of type object, {} given",
-            zend::zpp::zval_value_name(host, &other)
-        ))),
-    }
-}
-
-/// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
-/// string itself when `allow_string`.
-/// A string subject is looked up with autoloading (zend_lookup_class).
-fn subject_class(
-    host: &mut dyn Host,
-    subject: &Value,
-    allow_string: bool,
-) -> Result<Option<Vec<u8>>, Thrown> {
-    Ok(match subject {
-        Value::Object(h) => host.class_name(h.borrow().class),
-        Value::Str(s) if allow_string => {
-            host.resolve_class_autoload(s.as_bytes())?;
-            Some(s.as_bytes().to_vec())
-        }
-        _ => None,
-    })
-}
-
-fn norm_class(n: &[u8]) -> Vec<u8> {
-    n.strip_prefix(b"\\").unwrap_or(n).to_ascii_lowercase()
-}
-
-fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = deref(&args[0]);
-    let target = conv::to_string_bytes(&deref(&args[1]));
-    let allow_string = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(false);
-    match subject_class(host, &subject, allow_string)? {
-        Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
-        None => Ok(Value::Bool(false)),
-    }
-}
-
-fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = deref(&args[0]);
-    let target = conv::to_string_bytes(&deref(&args[1]));
-    let allow_string = args
-        .get(2)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(true);
-    match subject_class(host, &subject, allow_string)? {
-        Some(n) => {
-            // Subtype but NOT the same class (is_subclass_of is exclusive).
-            let same = norm_class(&n) == norm_class(&target);
-            Ok(Value::Bool(!same && host.reflect_is_a(&n, &target)))
-        }
-        None => Ok(Value::Bool(false)),
-    }
-}
-
-fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match args.first().map(deref) {
-        Some(Value::Object(h)) => {
-            let cid = h.borrow().class;
-            Ok(host
-                .class_parent_name(cid)
-                .map(Value::str)
-                .unwrap_or(Value::Bool(false)))
-        }
-        Some(v @ Value::Str(_)) => {
-            let name = conv::to_string_bytes(&v);
-            match host.resolve_class_autoload(&name)? {
-                Some(cid) => Ok(host
-                    .class_parent_name(cid)
-                    .map(Value::str)
-                    .unwrap_or(Value::Bool(false))),
-                None => Err(Thrown::type_error(
-                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
-                )),
-            }
-        }
-        // The calling scope's parent.
-        None => {
-            host.emit_diagnostic(
-                E_DEPRECATED,
-                "Calling get_parent_class() without arguments is deprecated",
-            )?;
-            Ok(host
-                .caller_scope()
-                .and_then(|c| host.class_parent_name(c))
-                .map(Value::str)
-                .unwrap_or(Value::Bool(false)))
-        }
-        Some(other) => Err(Thrown::type_error(format!(
-            "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            zend::zpp::zval_value_name(host, &other)
-        ))),
-    }
-}
-
-/// Resolve the class id named by an argument: an object yields its own class,
-/// a string resolves via the host's class table.
-fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
-    Ok(match deref(v) {
-        Value::Object(h) => Some(h.borrow().class),
-        Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
-        _ => None,
-    })
-}
-
-fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let method = conv::to_string_bytes(&deref(&args[1]));
-    let found = class_id_of(host, &args[0])?
-        .map(|cid| host.class_has_method(cid, &method))
-        .unwrap_or(false);
-    Ok(Value::Bool(found))
-}
-
-fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let prop = conv::to_string_bytes(&deref(&args[1]));
-    let found = match deref(&args[0]) {
-        // SimpleXML's has_property handler: a child element (or attribute)
-        // of that name.
-        v @ Value::Object(_) if ext::simplexml::is_sxe_object(&v) => {
-            let mut cb = PhpArray::new();
-            cb.push(v.clone());
-            cb.push(Value::str("__isset"));
-            conv::to_bool(&host.call_callable(&Value::Array(cb), &[Value::str(prop)])?)
-        }
-        Value::Object(h) => {
-            let cid = h.borrow().class;
-            // An object matches on a declared member (instance or static) OR a
-            // property reachable and set from the calling scope.
-            host.class_has_property(cid, &prop)
-                || ext::date::has_virtual_property(host, cid, &prop)
-                || host.object_prop_exists(&Value::Object(h.clone()), &prop)
-        }
-        Value::Str(s) => host
-            .resolve_class_autoload(s.as_bytes())?
-            .map(|cid| {
-                host.class_has_property(cid, &prop)
-                    || ext::date::has_virtual_property(host, cid, &prop)
-            })
-            .unwrap_or(false),
-        _ => false,
-    };
-    Ok(Value::Bool(found))
-}
-
-/// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve
-/// the name and test the resolved kind against `want`.
-fn exists_of_kind(
-    host: &mut dyn Host,
-    args: &[Value],
-    want: fn(rhp_values::ClassKind) -> bool,
-) -> Result<bool, Thrown> {
-    let name = conv::to_string_bytes(&deref(&args[0]));
-    // `$autoload` defaults to true: a miss triggers registered autoloaders.
-    let autoload = args
-        .get(1)
-        .map(|v| conv::to_bool(&deref(v)))
-        .unwrap_or(true);
-    let cid = if autoload {
-        host.resolve_class_autoload(&name)?
-    } else {
-        host.resolve_class(&name)
-    };
-    Ok(cid
-        .and_then(|cid| host.class_kind(cid))
-        .map(want)
-        .unwrap_or(false))
-}
-
-fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use rhp_values::ClassKind;
-    // Enums are classes too (`class_exists` is true for an enum name).
-    Ok(Value::Bool(exists_of_kind(host, args, |k| {
-        matches!(k, ClassKind::Class | ClassKind::Enum)
-    })?))
-}
-
-fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, args, |k| {
-        k == ClassKind::Interface
-    })?))
-}
-
-fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    use rhp_values::ClassKind;
-    Ok(Value::Bool(exists_of_kind(host, args, |k| {
-        k == ClassKind::Enum
-    })?))
-}
-
 /// `iterator_to_array($iterable, $preserve_keys = true)`. Only a plain array is
 /// supported here: driving a user `Iterator` / `Generator` is done by the VM, so
 /// a non-array iterable is deferred-to-VM and yields a TypeError from this
@@ -2129,43 +1823,6 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             "iterator_to_array(): driving a non-array Traversable is handled by the VM, \
              not this builtin",
         )),
-    }
-}
-
-fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
-        Value::Object(h) => {
-            if let Some(a) = zend::object_handlers::properties_for(
-                host,
-                &h,
-                zend::object_handlers::PropPurpose::GetObjectVars,
-            )? {
-                return Ok(Value::Array(a));
-            }
-            if let Some(v) = host.object_vars(&args[0]) {
-                return Ok(v);
-            }
-            let mut arr = PhpArray::new();
-            for (k, v) in h.borrow().properties.iter() {
-                arr.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
-            }
-            Ok(Value::Array(arr))
-        }
-        _ => Err(Thrown::type_error(
-            "get_object_vars(): Argument #1 must be of type object",
-        )),
-    }
-}
-
-/// `get_mangled_object_vars()`: the property table under php's mangled
-/// names, ignoring scope and the class's property hooks.
-fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
-        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
-        v => Err(Thrown::type_error(format!(
-            "get_mangled_object_vars(): Argument #1 ($object) must be of type object, {} given",
-            v.type_name()
-        ))),
     }
 }
 

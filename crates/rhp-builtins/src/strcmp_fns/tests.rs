@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::test_support::TestHost;
+use crate::zend::builtin_functions::fn_strcasecmp;
+use crate::zend::builtin_functions::fn_strcmp;
+use crate::zend::builtin_functions::fn_strncasecmp;
+use crate::zend::builtin_functions::fn_strncmp;
 use rhp_values::PhpArray;
 
 fn s(b: &str) -> Value {

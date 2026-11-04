@@ -45,17 +45,6 @@ fn fn_set_file_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     write_buffer_impl(host, args, "set_file_buffer")
 }
 
-fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
-        ref v @ Value::Resource(_) if host.resource_closed(v) => Ok(Value::str("Unknown")),
-        Value::Resource(r) => Ok(Value::str(r.type_name)),
-        other => Err(Thrown::type_error(format!(
-            "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
-            crate::zend::zpp::zval_value_name(host, &other)
-        ))),
-    }
-}
-
 fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ctx = host.create_stream_context(Value::Array(rhp_values::PhpArray::new()));
     if let Some(Value::Array(options)) = args.first().map(deref) {
@@ -377,7 +366,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("get_resource_type", fn_get_resource_type),
             ("stream_get_wrappers", fn_stream_get_wrappers),
             ("stream_copy_to_stream", fn_stream_copy_to_stream),
             ("stream_context_create", fn_stream_context_create),

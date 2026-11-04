@@ -164,10 +164,6 @@ fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(n as f64 / (1u64 << 53) as f64))
 }
 
-fn fn_zend_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(crate::version::ZEND_VERSION))
-}
-
 fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // No php.ini is loaded, so the configuration hash is empty.
     let _ = str_param(host, args, 0, "get_cfg_var", "option")?;
@@ -294,7 +290,6 @@ pub fn register(m: &mut crate::Registry) {
             ("long2ip", fn_long2ip),
             ("gettimeofday", fn_gettimeofday),
             ("lcg_value", fn_lcg_value),
-            ("zend_version", fn_zend_version),
             ("get_cfg_var", fn_get_cfg_var),
             ("get_include_path", fn_get_include_path),
             ("set_include_path", fn_set_include_path),

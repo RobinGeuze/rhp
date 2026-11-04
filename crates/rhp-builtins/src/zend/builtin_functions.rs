@@ -1,0 +1,1038 @@
+//! Zend/zend_builtin_functions.c: the engine's own functions: `strlen` and
+//! the `strcmp` family, `define`/`defined`, the class, function and constant
+//! table queries (the tables live in the host, read through
+//! `Host::reflect_op`), error handlers, backtraces and `gc_*`.
+
+use rhp_values::ops::deref;
+use rhp_values::{conv, ArrayKey, ClassKind, PhpArray, Value};
+
+use crate::const_modules::CONST_MODULES;
+use crate::zend::exceptions::trace_to_string;
+use crate::zend::zpp::{arg_bytes, bool_param, str_param, zval_get_string, zval_value_name};
+use crate::{ext, find_sub, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
+
+fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
+    host.reflect_op(b"declared", &[Value::str(kind)])
+}
+
+fn fn_get_declared_classes(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    declared(host, "class")
+}
+
+fn fn_get_declared_interfaces(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    declared(host, "interface")
+}
+
+fn fn_get_declared_traits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    declared(host, "trait")
+}
+
+fn fn_trait_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, "trait_exists", "trait")?;
+    let autoload = bool_param(host, args, 1, "trait_exists", "autoload", true)?;
+    let id = if autoload {
+        host.resolve_class_autoload(&name)?
+    } else {
+        host.resolve_class(&name)
+    };
+    Ok(Value::Bool(
+        id.and_then(|id| host.class_kind(id)) == Some(ClassKind::Trait),
+    ))
+}
+
+fn fn_get_defined_functions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    bool_param(
+        host,
+        args,
+        0,
+        "get_defined_functions",
+        "exclude_disabled",
+        true,
+    )?;
+    if !args.is_empty() {
+        crate::deprecated(
+            host,
+            "get_defined_functions",
+            "The $exclude_disabled parameter has no effect since PHP 8.0",
+        )?;
+    }
+    host.reflect_op(b"functions", &[])
+}
+
+fn fn_get_class_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    let class: Option<Vec<u8>> = match &v {
+        Value::Object(_) | Value::Closure(_) => host
+            .object_class_name(&v)
+            .or_else(|| matches!(v, Value::Closure(_)).then(|| b"Closure".to_vec())),
+        Value::Str(s) => host
+            .resolve_class_autoload(s.as_bytes())?
+            .map(|_| s.as_bytes().to_vec()),
+        _ => None,
+    };
+    let Some(class) = class else {
+        return Err(Thrown::type_error(format!(
+            "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
+            zval_value_name(host, &v)
+        )));
+    };
+    host.reflect_op(b"methods_visible", &[Value::str(class)])
+}
+
+fn fn_get_class_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zpp "C" (zend_parse_arg_class): try_convert_to_string in either
+    // mode, then a class lookup, else a TypeError.
+    let name = zval_get_string(host, &args[0])?;
+    if host.resolve_class_autoload(&name)?.is_none() {
+        return Err(Thrown::type_error(format!(
+            "get_class_vars(): Argument #1 ($class) must be a valid class name, {} given",
+            String::from_utf8_lossy(&name)
+        )));
+    }
+    host.reflect_op(b"default_props", &[Value::str(name), Value::Bool(true)])
+}
+
+fn fn_get_included_files(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.reflect_op(b"included", &[])
+}
+
+fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    let value = deref(&args[1]).clone();
+    if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
+        host.emit_diagnostic(
+            E_WARNING,
+            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
+        )?;
+    }
+    if host.define_const(&name, value) {
+        return Ok(Value::Bool(true));
+    }
+    host.emit_diagnostic(E_WARNING, &const_redefined_message(&name))?;
+    Ok(Value::Bool(false))
+}
+
+/// A global constant's key in the constant table: php lowercases the
+/// namespace part (`Foo\Bar\X` → `foo\bar\X`) and keeps the short name.
+/// Like php's `strrchr`, it only looks before the first NUL byte.
+pub fn const_key(name: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let c_str = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+    match c_str.iter().rposition(|&b| b == b'\\') {
+        Some(ns) if name[..ns].iter().any(u8::is_ascii_uppercase) => {
+            let mut key = name.to_vec();
+            key[..ns].make_ascii_lowercase();
+            key.into()
+        }
+        _ => name.into(),
+    }
+}
+
+/// zend_register_constant's warning for a name that is taken: the table
+/// key, printed as a C string.
+pub fn const_redefined_message(name: &[u8]) -> String {
+    let key = const_key(name);
+    let shown = &key[..key.iter().position(|&b| b == 0).unwrap_or(key.len())];
+    format!(
+        "Constant {} already defined, this will be an error in PHP 9",
+        String::from_utf8_lossy(shown)
+    )
+}
+
+/// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
+/// or a global constant. A leading `\` is skipped, as zend_get_constant_ex
+/// does.
+pub(crate) fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
+    let name = name.strip_prefix(b"\\").unwrap_or(name);
+    if let Some(pos) = find_sub(name, b"::") {
+        host.class_constant_eval(&name[..pos], &name[pos + 2..])
+    } else {
+        Ok(host.get_const(name))
+    }
+}
+
+fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
+}
+
+fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // Without copying the string (it may be most of memory_limit).
+    let n = match &args[0] {
+        Value::Str(s) => s.as_bytes().len(),
+        v => conv::to_string_bytes(v).len(),
+    };
+    Ok(Value::Int(n as i64))
+}
+
+fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some(obj) = args.first() else {
+        let Some(name) = host.caller_scope().and_then(|c| host.class_name(c)) else {
+            return Err(Thrown::error(
+                "Error",
+                "get_class() without arguments must be called from within a class",
+            ));
+        };
+        host.emit_diagnostic(
+            E_DEPRECATED,
+            "Calling get_class() without arguments is deprecated",
+        )?;
+        return Ok(Value::str(name));
+    };
+    match deref(obj) {
+        Value::Object(h) => {
+            let cid = h.borrow().class;
+            Ok(host
+                .class_name(cid)
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
+        }
+        other => Err(Thrown::type_error(format!(
+            "get_class(): Argument #1 ($object) must be of type object, {} given",
+            zend::zpp::zval_value_name(host, &other)
+        ))),
+    }
+}
+
+/// Class name of an `is_a`/`is_subclass_of` subject: an object's class, or the
+/// string itself when `allow_string`.
+/// A string subject is looked up with autoloading (zend_lookup_class).
+fn subject_class(
+    host: &mut dyn Host,
+    subject: &Value,
+    allow_string: bool,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    Ok(match subject {
+        Value::Object(h) => host.class_name(h.borrow().class),
+        Value::Str(s) if allow_string => {
+            host.resolve_class_autoload(s.as_bytes())?;
+            Some(s.as_bytes().to_vec())
+        }
+        _ => None,
+    })
+}
+
+fn norm_class(n: &[u8]) -> Vec<u8> {
+    n.strip_prefix(b"\\").unwrap_or(n).to_ascii_lowercase()
+}
+
+fn fn_is_a(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let subject = deref(&args[0]);
+    let target = conv::to_string_bytes(&deref(&args[1]));
+    let allow_string = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
+    match subject_class(host, &subject, allow_string)? {
+        Some(n) => Ok(Value::Bool(host.reflect_is_a(&n, &target))),
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let subject = deref(&args[0]);
+    let target = conv::to_string_bytes(&deref(&args[1]));
+    let allow_string = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
+    match subject_class(host, &subject, allow_string)? {
+        Some(n) => {
+            // Subtype but NOT the same class (is_subclass_of is exclusive).
+            let same = norm_class(&n) == norm_class(&target);
+            Ok(Value::Bool(!same && host.reflect_is_a(&n, &target)))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first().map(deref) {
+        Some(Value::Object(h)) => {
+            let cid = h.borrow().class;
+            Ok(host
+                .class_parent_name(cid)
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
+        }
+        Some(v @ Value::Str(_)) => {
+            let name = conv::to_string_bytes(&v);
+            match host.resolve_class_autoload(&name)? {
+                Some(cid) => Ok(host
+                    .class_parent_name(cid)
+                    .map(Value::str)
+                    .unwrap_or(Value::Bool(false))),
+                None => Err(Thrown::type_error(
+                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+                )),
+            }
+        }
+        // The calling scope's parent.
+        None => {
+            host.emit_diagnostic(
+                E_DEPRECATED,
+                "Calling get_parent_class() without arguments is deprecated",
+            )?;
+            Ok(host
+                .caller_scope()
+                .and_then(|c| host.class_parent_name(c))
+                .map(Value::str)
+                .unwrap_or(Value::Bool(false)))
+        }
+        Some(other) => Err(Thrown::type_error(format!(
+            "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
+            zend::zpp::zval_value_name(host, &other)
+        ))),
+    }
+}
+
+/// Resolve the class id named by an argument: an object yields its own class,
+/// a string resolves via the host's class table.
+fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
+    Ok(match deref(v) {
+        Value::Object(h) => Some(h.borrow().class),
+        Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
+        _ => None,
+    })
+}
+
+fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let method = conv::to_string_bytes(&deref(&args[1]));
+    let found = class_id_of(host, &args[0])?
+        .map(|cid| host.class_has_method(cid, &method))
+        .unwrap_or(false);
+    Ok(Value::Bool(found))
+}
+
+fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let prop = conv::to_string_bytes(&deref(&args[1]));
+    let found = match deref(&args[0]) {
+        // SimpleXML's has_property handler: a child element (or attribute)
+        // of that name.
+        v @ Value::Object(_) if ext::simplexml::is_sxe_object(&v) => {
+            let mut cb = PhpArray::new();
+            cb.push(v.clone());
+            cb.push(Value::str("__isset"));
+            conv::to_bool(&host.call_callable(&Value::Array(cb), &[Value::str(prop)])?)
+        }
+        Value::Object(h) => {
+            let cid = h.borrow().class;
+            // An object matches on a declared member (instance or static) OR a
+            // property reachable and set from the calling scope.
+            host.class_has_property(cid, &prop)
+                || ext::date::has_virtual_property(host, cid, &prop)
+                || host.object_prop_exists(&Value::Object(h.clone()), &prop)
+        }
+        Value::Str(s) => host
+            .resolve_class_autoload(s.as_bytes())?
+            .map(|cid| {
+                host.class_has_property(cid, &prop)
+                    || ext::date::has_virtual_property(host, cid, &prop)
+            })
+            .unwrap_or(false),
+        _ => false,
+    };
+    Ok(Value::Bool(found))
+}
+
+/// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve
+/// the name and test the resolved kind against `want`.
+fn exists_of_kind(
+    host: &mut dyn Host,
+    args: &[Value],
+    want: fn(rhp_values::ClassKind) -> bool,
+) -> Result<bool, Thrown> {
+    let name = conv::to_string_bytes(&deref(&args[0]));
+    // `$autoload` defaults to true: a miss triggers registered autoloaders.
+    let autoload = args
+        .get(1)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(true);
+    let cid = if autoload {
+        host.resolve_class_autoload(&name)?
+    } else {
+        host.resolve_class(&name)
+    };
+    Ok(cid
+        .and_then(|cid| host.class_kind(cid))
+        .map(want)
+        .unwrap_or(false))
+}
+
+fn fn_class_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use rhp_values::ClassKind;
+    // Enums are classes too (`class_exists` is true for an enum name).
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        matches!(k, ClassKind::Class | ClassKind::Enum)
+    })?))
+}
+
+fn fn_interface_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use rhp_values::ClassKind;
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        k == ClassKind::Interface
+    })?))
+}
+
+fn fn_enum_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use rhp_values::ClassKind;
+    Ok(Value::Bool(exists_of_kind(host, args, |k| {
+        k == ClassKind::Enum
+    })?))
+}
+
+fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => {
+            if let Some(a) = zend::object_handlers::properties_for(
+                host,
+                &h,
+                zend::object_handlers::PropPurpose::GetObjectVars,
+            )? {
+                return Ok(Value::Array(a));
+            }
+            if let Some(v) = host.object_vars(&args[0]) {
+                return Ok(v);
+            }
+            let mut arr = PhpArray::new();
+            for (k, v) in h.borrow().properties.iter() {
+                arr.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
+            }
+            Ok(Value::Array(arr))
+        }
+        _ => Err(Thrown::type_error(
+            "get_object_vars(): Argument #1 must be of type object",
+        )),
+    }
+}
+
+/// `get_mangled_object_vars()`: the property table under php's mangled
+/// names, ignoring scope and the class's property hooks.
+fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
+        v => Err(Thrown::type_error(format!(
+            "get_mangled_object_vars(): Argument #1 ($object) must be of type object, {} given",
+            v.type_name()
+        ))),
+    }
+}
+
+/// Extensions this engine reports as loaded, under php's own module names and
+/// in php 8.5.8's `get_loaded_extensions()` order. These are the ones whose
+/// functions/classes rhp actually provides.
+pub(crate) const LOADED_EXTS: &[&str] = &[
+    "Core",
+    "date",
+    "openssl",
+    "pcre",
+    "zlib",
+    "bcmath",
+    "bz2",
+    "ctype",
+    "curl",
+    "json",
+    #[cfg(feature = "mbstring-libmbfl")]
+    "mbstring",
+    "SPL",
+    "filter",
+    "gmp",
+    "hash",
+    "iconv",
+    "standard",
+    "libxml",
+    // Built in but disabled (php's CLI default; the CGI harness runs php
+    // with opcache.enable=0): the functions exist and report "not started".
+    "Zend OPcache",
+    "pcntl",
+    "Phar",
+    "posix",
+    "random",
+    "Reflection",
+    "SimpleXML",
+    "tokenizer",
+    "dom",
+    "xml",
+    "xmlreader",
+    "xmlwriter",
+    "zip",
+];
+
+/// The extensions the running SAPI has loaded: pcntl only under the CLI
+/// and CGI.
+fn sapi_exts() -> impl Iterator<Item = &'static str> {
+    let pcntl = crate::main::sapi::has_pcntl();
+    LOADED_EXTS
+        .iter()
+        .copied()
+        .filter(move |e| pcntl || *e != "pcntl")
+}
+
+/// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
+pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
+    sapi_exts().collect()
+}
+
+/// The loaded extension matching `name` case-insensitively (php's module
+/// lookup lowercases), if any.
+pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case(b"cgi-fcgi") {
+        return crate::main::sapi::is_cgi().then_some("cgi-fcgi");
+    }
+    sapi_exts().find(|e| e.as_bytes().eq_ignore_ascii_case(name))
+}
+
+/// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
+pub(crate) fn ext_version(ext: &str) -> &'static str {
+    match ext {
+        "dom" => crate::version::EXT_DOM,
+        "zip" => crate::version::EXT_ZIP,
+        _ => crate::version::PHP_VERSION,
+    }
+}
+
+fn fn_extension_loaded(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(loaded_ext(&arg_bytes(args, 0)).is_some()))
+}
+
+fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let zend = crate::zend::zpp::bool_param(
+        host,
+        args,
+        0,
+        "get_loaded_extensions",
+        "zend_extensions",
+        false,
+    )?;
+    let mut a = PhpArray::new();
+    if !zend {
+        for e in sapi_exts() {
+            a.push(Value::str(e));
+        }
+        if crate::main::sapi::is_cgi() {
+            a.push(Value::str("cgi-fcgi"));
+        }
+    } else {
+        a.push(Value::str("Zend OPcache"));
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_function_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // A leading "\" is ignored, as in zif_function_exists.
+    let name = arg_bytes(args, 0);
+    let name = name.strip_prefix(b"\\").unwrap_or(&name);
+    Ok(Value::Bool(host.function_exists(name)))
+}
+
+fn fn_func_num_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(host.current_arg_count()))
+}
+
+fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for v in host.current_args() {
+        a.push(v);
+    }
+    Ok(Value::Array(a))
+}
+
+fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let i = conv::to_int(&deref(&args[0]));
+    Ok(host
+        .current_args()
+        .into_iter()
+        .nth(i.max(0) as usize)
+        .unwrap_or(Value::Bool(false)))
+}
+
+/// `debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0)`.
+fn fn_debug_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use rhp_values::ArrayKey as K;
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(1);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(options & 1 != 0, options & 2 != 0) {
+        if limit <= 0 {
+            return Ok(Value::Array(t));
+        }
+        let mut out = PhpArray::new();
+        for (_, v) in t.iter().take(limit as usize) {
+            out.push(v.clone());
+        }
+        return Ok(Value::Array(out));
+    }
+    let mut arr = PhpArray::new();
+    for (func, class, file, line, this) in host.call_stack() {
+        let mut e = PhpArray::new();
+        if !file.is_empty() {
+            e.insert(K::from_bytes(b"file"), Value::str(file));
+            e.insert(K::from_bytes(b"line"), Value::Int(line as i64));
+        }
+        e.insert(K::from_bytes(b"function"), Value::str(func));
+        if let Some(c) = class {
+            e.insert(K::from_bytes(b"class"), Value::str(c));
+            e.insert(K::from_bytes(b"type"), Value::str("->"));
+            if let Some(obj) = this {
+                e.insert(K::from_bytes(b"object"), obj);
+            }
+        }
+        arr.push(Value::Array(e));
+    }
+    Ok(Value::Array(arr))
+}
+
+/// `debug_print_backtrace(int $options = 0, int $limit = 0)`: the trace in
+/// getTraceAsString() format, without the `{main}` line.
+fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let options = args.first().map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if let Some(Value::Array(t)) = host.backtrace(false, options & 2 != 0) {
+        let mut frames = PhpArray::new();
+        for (_, v) in t.iter().take(if limit > 0 {
+            limit as usize
+        } else {
+            usize::MAX
+        }) {
+            frames.push(v.clone());
+        }
+        let mut s = trace_to_string(host, &Value::Array(frames));
+        // Strip the trailing "#N {main}".
+        if let Some(pos) = s.iter().rposition(|&b| b == b'#') {
+            s.truncate(pos);
+        }
+        host.write_out(&s);
+        return Ok(Value::Null);
+    }
+    let mut out = Vec::new();
+    for (i, (func, class, file, line, _this)) in host.call_stack().into_iter().enumerate() {
+        let call = match &class {
+            Some(c) => format!(
+                "{}->{}",
+                String::from_utf8_lossy(c),
+                String::from_utf8_lossy(&func)
+            ),
+            None => String::from_utf8_lossy(&func).into_owned(),
+        };
+        out.extend_from_slice(
+            format!(
+                "#{} {}() called at [{}:{}]\n",
+                i,
+                call,
+                String::from_utf8_lossy(&file),
+                line
+            )
+            .as_bytes(),
+        );
+    }
+    host.write_out(&out);
+    Ok(Value::Null)
+}
+
+/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
+/// Under `@` php 8 lowers it to the fatal types only.
+pub fn error_reporting_level(host: &dyn Host) -> i64 {
+    let level = match host.ini_get(b"error_reporting") {
+        // OnUpdateErrorReporting: atoi.
+        Some(v) if !v.is_empty() => i64::from(crate::c_atoi(&v)),
+        _ => crate::E_ALL,
+    };
+    if host.silenced() {
+        level & SILENCE_MASK
+    } else {
+        level
+    }
+}
+
+/// What `@` leaves of error_reporting (php 8): the fatal types.
+pub const SILENCE_MASK: i64 = crate::E_ERROR
+    | crate::E_CORE_ERROR
+    | crate::E_COMPILE_ERROR
+    | crate::E_USER_ERROR
+    | crate::E_RECOVERABLE_ERROR
+    | crate::E_PARSE;
+
+/// `set_error_handler(?callable $callback, int $error_levels = E_ALL)`:
+/// returns the previous handler (or null).
+fn fn_set_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let why = match &h {
+        Value::Null => None,
+        Value::Str(s) if !host.is_callable_value(&h) => Some(format!(
+            "function \"{}\" not found or invalid function name",
+            String::from_utf8_lossy(s.as_bytes())
+        )),
+        Value::Str(_) | Value::Array(_) | Value::Closure(_) | Value::Object(_) => None,
+        _ => Some("no array or string given".to_string()),
+    };
+    if let Some(why) = why {
+        return Err(Thrown::type_error(format!(
+            "set_error_handler(): Argument #1 ($callback) must be a valid callback or null, {why}"
+        )));
+    }
+    let mask = args
+        .get(1)
+        .map(|v| conv::to_int(&deref(v)))
+        .unwrap_or(crate::E_ALL);
+    Ok(host.set_error_handler(h, mask))
+}
+
+/// `set_exception_handler(?callable $callback)`: returns the previous handler.
+fn fn_set_exception_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let why = match &h {
+        Value::Null => None,
+        Value::Str(s) if !host.is_callable_value(&h) => Some(format!(
+            "function \"{}\" not found or invalid function name",
+            String::from_utf8_lossy(s.as_bytes())
+        )),
+        Value::Str(_) | Value::Array(_) | Value::Closure(_) | Value::Object(_) => None,
+        _ => Some("no array or string given".to_string()),
+    };
+    if let Some(why) = why {
+        return Err(Thrown::type_error(format!(
+            "set_exception_handler(): Argument #1 ($callback) must be a valid callback or null, {why}"
+        )));
+    }
+    Ok(host.set_exception_handler(h))
+}
+
+fn fn_restore_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.restore_exception_handler();
+    Ok(Value::Bool(true))
+}
+
+fn fn_restore_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.restore_error_handler();
+    Ok(Value::Bool(true))
+}
+
+/// `trigger_error(string $message, int $error_level = E_USER_NOTICE)`.
+fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let msg = conv::to_string_bytes(&deref(&args[0]));
+    let level = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1024);
+    match level {
+        256 => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
+            )?;
+        }
+        512 | 1024 | 16384 => {}
+        _ => {
+            return Err(Thrown::error(
+                "ValueError",
+                "trigger_error(): Argument #2 ($error_level) must be one of E_USER_ERROR, E_USER_WARNING, E_USER_NOTICE, or E_USER_DEPRECATED",
+            ))
+        }
+    }
+    host.emit_diagnostic(level, &String::from_utf8_lossy(&msg))?;
+    Ok(Value::Bool(true))
+}
+
+/// `error_reporting(?int $error_level = null): int`: the old level; sets a
+/// new one when given.
+fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = error_reporting_level(host);
+    let new = crate::zend::zpp::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
+    if let Some(n) = new {
+        if n != old {
+            host.ini_set(b"error_reporting", n.to_string().into_bytes());
+        }
+    }
+    Ok(Value::Int(old))
+}
+
+fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(true))
+}
+
+fn fn_zero(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(0))
+}
+
+fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let class = str_param(host, args, 0, "class_alias", "class")?;
+    let alias = str_param(host, args, 1, "class_alias", "alias")?;
+    let autoload = bool_param(host, args, 2, "class_alias", "autoload", true)?;
+    let id = if autoload {
+        host.resolve_class_autoload(&class)?
+    } else {
+        host.resolve_class(&class)
+    };
+    match id {
+        // php: Warning "Cannot declare class X, because the name is already in use"
+        Some(id) => Ok(Value::Bool(host.class_alias(id, &alias))),
+        // php: Warning "Class "X" not found"
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_get_defined_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let categorize = bool_param(host, args, 0, "get_defined_constants", "categorize", false)?;
+    let user = host.user_constants();
+    let is_user = |n: &[u8]| user.iter().any(|(u, _)| u == n);
+    let mut flat = PhpArray::new();
+    let mut cats = PhpArray::new();
+    for (module, names) in CONST_MODULES {
+        let mut cat = PhpArray::new();
+        for name in names.split(' ') {
+            if is_user(name.as_bytes()) {
+                continue;
+            }
+            if let Some(v) = host.get_const(name.as_bytes()) {
+                cat.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+            }
+        }
+        if cat.is_empty() {
+            continue;
+        }
+        if categorize {
+            cats.insert(ArrayKey::from_bytes(module.as_bytes()), Value::Array(cat));
+        } else {
+            for (k, v) in cat.iter() {
+                flat.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    let mut ucat = PhpArray::new();
+    for (k, v) in user {
+        ucat.insert(ArrayKey::from_bytes(&k), v);
+    }
+    if categorize {
+        if !ucat.is_empty() {
+            cats.insert(ArrayKey::from_bytes(b"user"), Value::Array(ucat));
+        }
+        Ok(Value::Array(cats))
+    } else {
+        for (k, v) in ucat.iter() {
+            flat.insert(k.clone(), v.clone());
+        }
+        Ok(Value::Array(flat))
+    }
+}
+
+fn request_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
+/// `gc_status()`: rhp's values are reference counted without a cycle
+/// collector, so the collector never runs; the shape matches php's.
+fn fn_gc_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    put("running", Value::Bool(false));
+    put("protected", Value::Bool(false));
+    put("full", Value::Bool(false));
+    put("runs", Value::Int(0));
+    put("collected", Value::Int(0));
+    put("threshold", Value::Int(10001));
+    put("buffer_size", Value::Int(16384));
+    put("roots", Value::Int(0));
+    put(
+        "application_time",
+        Value::Float(request_start().elapsed().as_secs_f64()),
+    );
+    put("collector_time", Value::Float(0.0));
+    put("destructor_time", Value::Float(0.0));
+    put("free_time", Value::Float(0.0));
+    Ok(Value::Array(a))
+}
+
+fn fn_gc_mem_caches(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(0))
+}
+
+fn fn_zend_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(crate::version::ZEND_VERSION))
+}
+
+/// Raw byte-difference `memcmp` over the first `n` bytes: returns the signed
+/// difference of the first differing (unsigned) byte, or 0. Matches the
+/// platform `memcmp` php returns directly.
+fn memcmp_raw(a: &[u8], b: &[u8], n: usize) -> i64 {
+    for i in 0..n {
+        let d = a[i] as i64 - b[i] as i64;
+        if d != 0 {
+            return d;
+        }
+    }
+    0
+}
+
+/// Case-insensitive variant: compares `tolower` of each byte.
+fn memcmp_raw_ci(a: &[u8], b: &[u8], n: usize) -> i64 {
+    for i in 0..n {
+        let d = a[i].to_ascii_lowercase() as i64 - b[i].to_ascii_lowercase() as i64;
+        if d != 0 {
+            return d;
+        }
+    }
+    0
+}
+
+/// Normalize to -1 / 0 / 1 (the equal-prefix / length-difference path).
+fn norm(x: i64) -> i64 {
+    match x.cmp(&0) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+/// `zend_binary_strcmp`: raw diff on first differing byte, clamped sign on the
+/// equal-prefix (length-difference) path.
+fn binary_strcmp(s1: &[u8], s2: &[u8]) -> i64 {
+    let n = s1.len().min(s2.len());
+    let r = memcmp_raw(s1, s2, n);
+    if r != 0 {
+        r
+    } else {
+        norm(s1.len() as i64 - s2.len() as i64)
+    }
+}
+
+fn binary_strcasecmp(s1: &[u8], s2: &[u8]) -> i64 {
+    let n = s1.len().min(s2.len());
+    let r = memcmp_raw_ci(s1, s2, n);
+    if r != 0 {
+        r
+    } else {
+        norm(s1.len() as i64 - s2.len() as i64)
+    }
+}
+
+/// `zend_binary_strncmp`: like strcmp but bounded to `length` bytes. The
+/// equal-prefix path compares `min(length,len)` of each side.
+pub(crate) fn binary_strncmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
+    let n = length.min(s1.len()).min(s2.len());
+    let r = memcmp_raw(s1, s2, n);
+    if r != 0 {
+        r
+    } else {
+        norm(length.min(s1.len()) as i64 - length.min(s2.len()) as i64)
+    }
+}
+
+pub(crate) fn binary_strncasecmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
+    let n = length.min(s1.len()).min(s2.len());
+    let r = memcmp_raw_ci(s1, s2, n);
+    if r != 0 {
+        r
+    } else {
+        norm(length.min(s1.len()) as i64 - length.min(s2.len()) as i64)
+    }
+}
+
+pub(crate) fn fn_strcmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(binary_strcmp(
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
+    )))
+}
+
+pub(crate) fn fn_strcasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(binary_strcasecmp(
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
+    )))
+}
+
+pub(crate) fn fn_strncmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let n = conv::to_int(&deref(&args[2]));
+    if n < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "strncmp(): Argument #3 ($length) must be greater than or equal to 0",
+        ));
+    }
+    Ok(Value::Int(binary_strncmp(
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
+        n as usize,
+    )))
+}
+
+pub(crate) fn fn_strncasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let n = conv::to_int(&deref(&args[2]));
+    if n < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "strncasecmp(): Argument #3 ($length) must be greater than or equal to 0",
+        ));
+    }
+    Ok(Value::Int(binary_strncasecmp(
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
+        n as usize,
+    )))
+}
+
+fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        ref v @ Value::Resource(_) if host.resource_closed(v) => Ok(Value::str("Unknown")),
+        Value::Resource(r) => Ok(Value::str(r.type_name)),
+        other => Err(Thrown::type_error(format!(
+            "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
+            crate::zend::zpp::zval_value_name(host, &other)
+        ))),
+    }
+}
+
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("get_declared_classes", fn_get_declared_classes),
+            ("get_declared_interfaces", fn_get_declared_interfaces),
+            ("get_declared_traits", fn_get_declared_traits),
+            ("trait_exists", fn_trait_exists),
+            ("get_defined_functions", fn_get_defined_functions),
+            ("get_class_methods", fn_get_class_methods),
+            ("get_class_vars", fn_get_class_vars),
+            ("get_included_files", fn_get_included_files),
+            ("get_required_files", fn_get_included_files),
+            ("define", fn_define),
+            ("defined", fn_defined),
+            ("strlen", fn_strlen),
+            ("get_class", fn_get_class),
+            ("get_parent_class", fn_get_parent_class),
+            ("is_a", fn_is_a),
+            ("is_subclass_of", fn_is_subclass_of),
+            ("get_object_vars", fn_get_object_vars),
+            ("get_mangled_object_vars", fn_get_mangled_object_vars),
+            ("method_exists", fn_method_exists),
+            ("property_exists", fn_property_exists),
+            ("class_exists", fn_class_exists),
+            ("interface_exists", fn_interface_exists),
+            ("enum_exists", fn_enum_exists),
+            ("extension_loaded", fn_extension_loaded),
+            ("get_loaded_extensions", fn_get_loaded_extensions),
+            ("function_exists", fn_function_exists),
+            ("func_num_args", fn_func_num_args),
+            ("func_get_args", fn_func_get_args),
+            ("func_get_arg", fn_func_get_arg),
+            ("debug_backtrace", fn_debug_backtrace),
+            ("debug_print_backtrace", fn_debug_print_backtrace),
+            ("set_error_handler", fn_set_handler),
+            ("restore_error_handler", fn_restore_handler),
+            ("set_exception_handler", fn_set_exception_handler),
+            ("restore_exception_handler", fn_restore_exception_handler),
+            ("trigger_error", fn_trigger_error),
+            ("user_error", fn_trigger_error),
+            ("error_reporting", fn_error_reporting),
+            ("gc_enable", fn_true),
+            ("gc_disable", fn_true),
+            ("gc_collect_cycles", fn_zero),
+            ("class_alias", fn_class_alias),
+            ("get_defined_constants", fn_get_defined_constants),
+            ("gc_status", fn_gc_status),
+            ("gc_mem_caches", fn_gc_mem_caches),
+            ("zend_version", fn_zend_version),
+            ("strcmp", fn_strcmp),
+            ("strcasecmp", fn_strcasecmp),
+            ("strncmp", fn_strncmp),
+            ("strncasecmp", fn_strncasecmp),
+            ("get_resource_type", fn_get_resource_type),
+        ],
+    );
+}

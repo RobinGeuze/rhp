@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::const_modules::CONST_MODULES;
 use crate::ini_table::INI_TABLE;
 use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param, zval_value_name};
 use crate::{Host, Thrown};
@@ -19,23 +18,6 @@ use crate::{Host, Thrown};
 // ---------------------------------------------------------------------------
 // class relations
 // ---------------------------------------------------------------------------
-
-fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let class = str_param(host, args, 0, "class_alias", "class")?;
-    let alias = str_param(host, args, 1, "class_alias", "alias")?;
-    let autoload = bool_param(host, args, 2, "class_alias", "autoload", true)?;
-    let id = if autoload {
-        host.resolve_class_autoload(&class)?
-    } else {
-        host.resolve_class(&class)
-    };
-    match id {
-        // php: Warning "Cannot declare class X, because the name is already in use"
-        Some(id) => Ok(Value::Bool(host.class_alias(id, &alias))),
-        // php: Warning "Class "X" not found"
-        None => Ok(Value::Bool(false)),
-    }
-}
 
 /// (parents, interfaces, traits) as returned by `Host::class_relations`.
 type Relations = (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>);
@@ -94,50 +76,6 @@ fn fn_class_uses(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 // get_defined_constants
 // ---------------------------------------------------------------------------
-
-fn fn_get_defined_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let categorize = bool_param(host, args, 0, "get_defined_constants", "categorize", false)?;
-    let user = host.user_constants();
-    let is_user = |n: &[u8]| user.iter().any(|(u, _)| u == n);
-    let mut flat = PhpArray::new();
-    let mut cats = PhpArray::new();
-    for (module, names) in CONST_MODULES {
-        let mut cat = PhpArray::new();
-        for name in names.split(' ') {
-            if is_user(name.as_bytes()) {
-                continue;
-            }
-            if let Some(v) = host.get_const(name.as_bytes()) {
-                cat.insert(ArrayKey::from_bytes(name.as_bytes()), v);
-            }
-        }
-        if cat.is_empty() {
-            continue;
-        }
-        if categorize {
-            cats.insert(ArrayKey::from_bytes(module.as_bytes()), Value::Array(cat));
-        } else {
-            for (k, v) in cat.iter() {
-                flat.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    let mut ucat = PhpArray::new();
-    for (k, v) in user {
-        ucat.insert(ArrayKey::from_bytes(&k), v);
-    }
-    if categorize {
-        if !ucat.is_empty() {
-            cats.insert(ArrayKey::from_bytes(b"user"), Value::Array(ucat));
-        }
-        Ok(Value::Array(cats))
-    } else {
-        for (k, v) in ucat.iter() {
-            flat.insert(k.clone(), v.clone());
-        }
-        Ok(Value::Array(flat))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // ini table
@@ -379,7 +317,7 @@ fn module_loaded(module: &str) -> bool {
     if module == "cgi-fcgi" {
         return crate::main::sapi::is_cgi();
     }
-    crate::php_fns::loaded_ext(module.as_bytes()).is_some()
+    crate::zend::builtin_functions::loaded_ext(module.as_bytes()).is_some()
 }
 
 fn ini_entry(
@@ -906,11 +844,9 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("class_alias", fn_class_alias),
             ("class_implements", fn_class_implements),
             ("class_parents", fn_class_parents),
             ("class_uses", fn_class_uses),
-            ("get_defined_constants", fn_get_defined_constants),
             ("ini_get", fn_ini_get),
             ("ini_set", fn_ini_set),
             ("ini_alter", fn_ini_alter),

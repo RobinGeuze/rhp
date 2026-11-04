@@ -521,41 +521,9 @@ fn fn_getrusage(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(a))
 }
 
-fn request_start() -> std::time::Instant {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    *START.get_or_init(std::time::Instant::now)
-}
-
-/// `gc_status()`: rhp's values are reference counted without a cycle
-/// collector, so the collector never runs; the shape matches php's.
-fn fn_gc_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let mut a = PhpArray::new();
-    let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
-    put("running", Value::Bool(false));
-    put("protected", Value::Bool(false));
-    put("full", Value::Bool(false));
-    put("runs", Value::Int(0));
-    put("collected", Value::Int(0));
-    put("threshold", Value::Int(10001));
-    put("buffer_size", Value::Int(16384));
-    put("roots", Value::Int(0));
-    put(
-        "application_time",
-        Value::Float(request_start().elapsed().as_secs_f64()),
-    );
-    put("collector_time", Value::Float(0.0));
-    put("destructor_time", Value::Float(0.0));
-    put("free_time", Value::Float(0.0));
-    Ok(Value::Array(a))
-}
-
 fn fn_memory_reset_peak_usage(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     rhp_values::mem::reset_peak();
     Ok(Value::Null)
-}
-
-fn fn_gc_mem_caches(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
 }
 
 fn fn_sys_getloadavg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -878,9 +846,7 @@ pub fn register(m: &mut crate::Registry) {
             ("array_multisort", fn_array_multisort),
             ("fnmatch", fn_fnmatch),
             ("getrusage", fn_getrusage),
-            ("gc_status", fn_gc_status),
             ("memory_reset_peak_usage", fn_memory_reset_peak_usage),
-            ("gc_mem_caches", fn_gc_mem_caches),
             ("sys_getloadavg", fn_sys_getloadavg),
             ("getopt", fn_getopt),
             ("readline", fn_readline),

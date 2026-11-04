@@ -34,7 +34,7 @@ pub(crate) enum FinallyCont {
     Jump(u32),
 }
 
-pub(crate) use builtins::php_fns::SILENCE_MASK as SILENCE_KEEPS;
+pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
@@ -50,7 +50,7 @@ impl Vm {
         };
         self.last_error = Some((64, msg.as_bytes().to_vec(), file.clone(), line));
         let trace = Value::Array(self.build_trace_ex(false, false));
-        let trace = builtins::php_fns::trace_to_string(self, &trace);
+        let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
         self.display_error_trace(64, "Fatal error", msg.as_bytes(), &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)
@@ -134,7 +134,7 @@ impl Vm {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).
             let trace = Value::Array(self.build_trace_ex(false, false));
-            let trace = builtins::php_fns::trace_to_string(self, &trace);
+            let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
             self.display_error_trace(level, "Fatal error", msg.as_bytes(), &file, line, &trace);
             self.destructed_below = self.next_object_id;
             self.pending_throw = Some(Thrown::Exit(255));
@@ -550,7 +550,7 @@ impl Vm {
             // php_error_cb's bailout: a 200 becomes a 500 when nothing shows.
             self.fatal_status();
         }
-        if builtins::php_fns::error_reporting_level(self) & ty == 0 {
+        if builtins::zend::builtin_functions::error_reporting_level(self) & ty == 0 {
             return;
         }
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
@@ -692,9 +692,9 @@ impl Vm {
         let s = match self.lookup_method(cls, b"__tostring") {
             Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
                 Ok(Value::Str(s)) => s.as_bytes().to_vec(),
-                _ => builtins::php_fns::throwable_to_string(self, &obj),
+                _ => builtins::zend::exceptions::throwable_to_string(self, &obj),
             },
-            None => builtins::php_fns::throwable_to_string(self, &obj),
+            None => builtins::zend::exceptions::throwable_to_string(self, &obj),
         };
         let mut msg = b"Uncaught ".to_vec();
         msg.extend_from_slice(&s);

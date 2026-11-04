@@ -600,10 +600,10 @@ impl Vm {
                 }
                 Instr::DeclareConst { name, src } => {
                     let cname = proto.names[name as usize].as_bytes();
-                    let key = builtins::const_key(cname);
+                    let key = builtins::zend::builtin_functions::const_key(cname);
                     let v = self.reg_get(top, src);
                     if self.const_taken(&key) {
-                        let msg = builtins::const_redefined_message(cname);
+                        let msg = builtins::zend::builtin_functions::const_redefined_message(cname);
                         self.diag(builtins::E_WARNING, &msg)?;
                     } else {
                         self.constants.insert(key.into_owned(), v);
@@ -2318,7 +2318,7 @@ impl Vm {
         fallback: NIdx,
     ) -> Result<(), Thrown> {
         let cname = proto.names[name as usize].as_bytes();
-        let key = builtins::const_key(cname);
+        let key = builtins::zend::builtin_functions::const_key(cname);
         let v = self.constants.get(&*key).cloned().or_else(|| {
             if fallback != rhp_bytecode::NO_NAME {
                 self.constants

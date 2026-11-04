@@ -148,7 +148,7 @@ impl Vm {
         let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
         let trace = if ini_bool(&backtraces) {
             let trace = Value::Array(self.build_trace_ex(false, false));
-            builtins::php_fns::trace_to_string(self, &trace)
+            builtins::zend::exceptions::trace_to_string(self, &trace)
         } else {
             Vec::new()
         };

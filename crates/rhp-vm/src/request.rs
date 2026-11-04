@@ -164,7 +164,7 @@ impl Vm {
             }
             return;
         }
-        if builtins::php_fns::error_reporting_level(self) & 1 == 0 {
+        if builtins::zend::builtin_functions::error_reporting_level(self) & 1 == 0 {
             return;
         }
         let mut msg = msg.as_bytes().to_vec();

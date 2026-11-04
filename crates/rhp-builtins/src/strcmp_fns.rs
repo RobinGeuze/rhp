@@ -20,136 +20,16 @@
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
+use crate::zend::builtin_functions::{binary_strncasecmp, binary_strncmp};
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
 
-/// Raw byte-difference `memcmp` over the first `n` bytes: returns the signed
-/// difference of the first differing (unsigned) byte, or 0. Matches the
-/// platform `memcmp` php returns directly.
-fn memcmp_raw(a: &[u8], b: &[u8], n: usize) -> i64 {
-    for i in 0..n {
-        let d = a[i] as i64 - b[i] as i64;
-        if d != 0 {
-            return d;
-        }
-    }
-    0
-}
-
-/// Case-insensitive variant: compares `tolower` of each byte.
-fn memcmp_raw_ci(a: &[u8], b: &[u8], n: usize) -> i64 {
-    for i in 0..n {
-        let d = a[i].to_ascii_lowercase() as i64 - b[i].to_ascii_lowercase() as i64;
-        if d != 0 {
-            return d;
-        }
-    }
-    0
-}
-
-/// Normalize to -1 / 0 / 1 (the equal-prefix / length-difference path).
-fn norm(x: i64) -> i64 {
-    match x.cmp(&0) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }
-}
-
-/// `zend_binary_strcmp`: raw diff on first differing byte, clamped sign on the
-/// equal-prefix (length-difference) path.
-fn binary_strcmp(s1: &[u8], s2: &[u8]) -> i64 {
-    let n = s1.len().min(s2.len());
-    let r = memcmp_raw(s1, s2, n);
-    if r != 0 {
-        r
-    } else {
-        norm(s1.len() as i64 - s2.len() as i64)
-    }
-}
-
-fn binary_strcasecmp(s1: &[u8], s2: &[u8]) -> i64 {
-    let n = s1.len().min(s2.len());
-    let r = memcmp_raw_ci(s1, s2, n);
-    if r != 0 {
-        r
-    } else {
-        norm(s1.len() as i64 - s2.len() as i64)
-    }
-}
-
-/// `zend_binary_strncmp`: like strcmp but bounded to `length` bytes. The
-/// equal-prefix path compares `min(length,len)` of each side.
-fn binary_strncmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
-    let n = length.min(s1.len()).min(s2.len());
-    let r = memcmp_raw(s1, s2, n);
-    if r != 0 {
-        r
-    } else {
-        norm(length.min(s1.len()) as i64 - length.min(s2.len()) as i64)
-    }
-}
-
-fn binary_strncasecmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
-    let n = length.min(s1.len()).min(s2.len());
-    let r = memcmp_raw_ci(s1, s2, n);
-    if r != 0 {
-        r
-    } else {
-        norm(length.min(s1.len()) as i64 - length.min(s2.len()) as i64)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // strcmp / strcasecmp / strncmp / strncasecmp
 // ---------------------------------------------------------------------------
-
-fn fn_strcmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(binary_strcmp(
-        &conv::to_string_bytes(&args[0]),
-        &conv::to_string_bytes(&args[1]),
-    )))
-}
-
-fn fn_strcasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(binary_strcasecmp(
-        &conv::to_string_bytes(&args[0]),
-        &conv::to_string_bytes(&args[1]),
-    )))
-}
-
-fn fn_strncmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let n = conv::to_int(&deref(&args[2]));
-    if n < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "strncmp(): Argument #3 ($length) must be greater than or equal to 0",
-        ));
-    }
-    Ok(Value::Int(binary_strncmp(
-        &conv::to_string_bytes(&args[0]),
-        &conv::to_string_bytes(&args[1]),
-        n as usize,
-    )))
-}
-
-fn fn_strncasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let n = conv::to_int(&deref(&args[2]));
-    if n < 0 {
-        return Err(Thrown::error(
-            "ValueError",
-            "strncasecmp(): Argument #3 ($length) must be greater than or equal to 0",
-        ));
-    }
-    Ok(Value::Int(binary_strncasecmp(
-        &conv::to_string_bytes(&args[0]),
-        &conv::to_string_bytes(&args[1]),
-        n as usize,
-    )))
-}
 
 // ---------------------------------------------------------------------------
 // substr_compare
@@ -540,10 +420,6 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
-            ("strcmp", fn_strcmp),
-            ("strcasecmp", fn_strcasecmp),
-            ("strncmp", fn_strncmp),
-            ("strncasecmp", fn_strncasecmp),
             ("substr_compare", fn_substr_compare),
             ("strnatcmp", fn_strnatcmp),
             ("strnatcasecmp", fn_strnatcasecmp),

@@ -589,3 +589,83 @@ pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Throw
         _ => return Ok(None),
     }))
 }
+
+/// zpp's `f` check: "F(): Argument #N ($callback) must be a valid callback, …".
+pub fn require_callback(
+    host: &mut dyn Host,
+    func: &str,
+    n: usize,
+    callable: &Value,
+) -> Result<(), Thrown> {
+    match host.check_callable(callable)? {
+        None => Ok(()),
+        Some(why) => Err(Thrown::type_error(format!(
+            "{func}(): Argument #{n} ($callback) must be a valid callback, {why}"
+        ))),
+    }
+}
+
+pub(crate) fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
+    conv::to_string_bytes(&deref(&args[i]))
+}
+
+/// `__zpp_arg($fn, $n, $name, $type, $value)`: coerce one argument of a
+/// prelude-implemented internal method the way php's zpp does in coercive
+/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`), or raise its
+/// TypeError ("Fn(): Argument #n ($name) must be of type T, X given").
+fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let func = arg_bytes(args, 0);
+    let n = conv::to_int(&deref(&args[1]));
+    let name = arg_bytes(args, 2);
+    let ty = arg_bytes(args, 3);
+    let v = deref(&args[4]);
+    let (nullable, base) = match ty.strip_prefix(b"?") {
+        Some(b) => (true, b.to_vec()),
+        None => (false, ty.clone()),
+    };
+    let coerced: Option<Value> = match (&v, base.as_slice()) {
+        (Value::Null, _) if nullable => Some(Value::Null),
+        // Coercive mode: null to a scalar internal param is the scalar's zero.
+        (Value::Null, b"string") => Some(Value::str("")),
+        (Value::Null, b"int") => Some(Value::Int(0)),
+        (Value::Str(_), b"string") => Some(v.clone()),
+        (Value::Int(_) | Value::Float(_) | Value::Bool(_), b"string") => {
+            Some(Value::str(conv::to_string_bytes(&v)))
+        }
+        (Value::Object(_), b"string") => {
+            crate::zend::object_handlers::to_string(host, &v)?.map(Value::str)
+        }
+        (Value::Int(_), b"int") => Some(v.clone()),
+        (Value::Bool(b), b"int") => Some(Value::Int(*b as i64)),
+        (Value::Float(f), b"int") if f.is_finite() => Some(Value::Int(*f as i64)),
+        (Value::Str(s), b"int") => conv::numeric_string(s.as_bytes()).map(|num| {
+            Value::Int(match num {
+                conv::Num::Int(i) => i,
+                conv::Num::Float(f) => f as i64,
+            })
+        }),
+        (Value::Object(_), b"Throwable") => {
+            let cls = host.object_class_name(&v).unwrap_or_default();
+            host.reflect_is_a(&cls, b"Throwable").then(|| v.clone())
+        }
+        _ => None,
+    };
+    match coerced {
+        Some(c) => Ok(c),
+        None => {
+            let given = crate::zend::zpp::zval_value_name(host, &v);
+            Err(Thrown::type_error(format!(
+                "{}(): Argument #{} (${}) must be of type {}, {} given",
+                String::from_utf8_lossy(&func),
+                n,
+                String::from_utf8_lossy(&name),
+                String::from_utf8_lossy(&ty),
+                given
+            )))
+        }
+    }
+}
+
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(m, &[("__zpp_arg", fn_zpp_arg, 5, Some(5))]);
+}

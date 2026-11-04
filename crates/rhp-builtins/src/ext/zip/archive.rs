@@ -9,10 +9,10 @@ use std::rc::Rc;
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use super::sys::{self, zip_t};
+use super::sys::zip_t;
 use super::{
     c_string, check_path, deref, expand_filepath, file_error, must_not_be_empty, release,
-    stat_array, zip_object, Archive, ZipObject, MAXPATHLEN,
+    stat_array, sys, zip_object, Archive, ZipObject, MAXPATHLEN,
 };
 use crate::ext::libxml::ffi;
 use crate::{Host, Thrown};
@@ -1536,7 +1536,7 @@ fn get_stream(cx: &mut Cx<'_>, by_name: bool, accept_flags: bool) -> Result<Valu
 fn register_progress(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     let rate = conv::to_float(&cx.arg(0));
     let cb = cx.arg(1);
-    crate::require_callback(cx.host, &cx.fname, 2, &cb)?;
+    crate::zend::zpp::require_callback(cx.host, &cx.fname, 2, &cb)?;
     let za = cx.za()?;
     let a = cx.obj().archive().expect("open archive");
     let ud = Rc::as_ptr(&a) as *mut c_void;
@@ -1558,7 +1558,7 @@ fn register_progress(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
 
 fn register_cancel(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     let cb = cx.arg(0);
-    crate::require_callback(cx.host, &cx.fname, 1, &cb)?;
+    crate::zend::zpp::require_callback(cx.host, &cx.fname, 1, &cb)?;
     let za = cx.za()?;
     let a = cx.obj().archive().expect("open archive");
     let ud = Rc::as_ptr(&a) as *mut c_void;

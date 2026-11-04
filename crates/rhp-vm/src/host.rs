@@ -172,7 +172,7 @@ impl Host for Vm {
     }
 
     fn define_const(&mut self, name: &[u8], value: Value) -> bool {
-        let key = builtins::const_key(name);
+        let key = builtins::zend::builtin_functions::const_key(name);
         if self.const_taken(&key) {
             return false;
         }
@@ -185,7 +185,9 @@ impl Host for Vm {
         self.user_const_order
             .iter()
             .filter_map(|n| {
-                let v = self.constants.get(&*builtins::const_key(n))?;
+                let v = self
+                    .constants
+                    .get(&*builtins::zend::builtin_functions::const_key(n))?;
                 Some((n.clone(), v.clone()))
             })
             .collect()
@@ -216,7 +218,9 @@ impl Host for Vm {
     }
 
     fn get_const(&self, name: &[u8]) -> Option<Value> {
-        self.constants.get(&*builtins::const_key(name)).cloned()
+        self.constants
+            .get(&*builtins::zend::builtin_functions::const_key(name))
+            .cloned()
     }
 
     fn register_autoloader(&mut self, callback: Value, prepend: bool) {

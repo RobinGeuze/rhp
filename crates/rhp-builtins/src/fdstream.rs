@@ -12,15 +12,57 @@
 //! `read(2)` returned 0, and a non-blocking read with no data available
 //! (`EAGAIN`) yields an empty result rather than EOF.
 
+use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+use crate::ext::openssl::xp_ssl::SslSock;
 
 /// php's default stream chunk size.
 const CHUNK: usize = 8192;
 
+thread_local! {
+    static DIAGS: RefCell<Vec<Diag>> = const { RefCell::new(Vec::new()) };
+    /// Whether `DIAGS` may be non-empty: checked after every builtin call.
+    static HAS_DIAGS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A diagnostic raised inside a stream operation that has no host (the TLS
+/// layer's warnings): the code that ran the operation reports it.
+#[derive(Clone, Debug)]
+pub struct Diag {
+    pub level: i64,
+    /// `php_error_docref` (prefixed with the running function) rather than
+    /// `php_error`.
+    pub docref: bool,
+    pub msg: String,
+}
+
+/// Queue a diagnostic (see [`Diag`]).
+pub fn push_diag(level: i64, docref: bool, msg: impl Into<String>) {
+    let msg = msg.into();
+    DIAGS.with(|d| d.borrow_mut().push(Diag { level, docref, msg }));
+    HAS_DIAGS.with(|f| f.set(true));
+}
+
+/// Whether diagnostics are queued (cheaper than [`take_diags`]).
+#[inline]
+pub fn has_diags() -> bool {
+    HAS_DIAGS.with(|f| f.get())
+}
+
+/// The queued diagnostics, oldest first.
+pub fn take_diags() -> Vec<Diag> {
+    HAS_DIAGS.with(|f| f.set(false));
+    DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
 pub struct FdStream {
+    /// The TLS layer of a socket stream (php's openssl socket ops). Declared
+    /// before `fd`: it shuts the session down before the socket closes.
+    pub(crate) tls: Option<Box<SslSock>>,
     fd: Option<OwnedFd>,
     /// Set once a `read(2)` returned 0 (or a hard error).
-    eof: bool,
+    pub(crate) eof: bool,
     /// Read-ahead buffer (bytes read from the fd but not yet consumed).
     rbuf: Vec<u8>,
     /// php's `stream->position`: the logical offset (reads and writes add to
@@ -35,14 +77,33 @@ pub struct FdStream {
     /// Set for a socket stream (php's `php_netstream_data_t`): reads and
     /// writes then follow `xp_socket.c` (poll with the read timeout, `recv` /
     /// `send` with `MSG_DONTWAIT`).
-    sock: Option<SockInfo>,
+    pub(crate) sock: Option<SockInfo>,
     /// The failed `send(2)` of the last write (socket streams).
     last_send_error: Option<SendError>,
+    /// php's "dechunk" read filter (an http response with
+    /// `Transfer-Encoding: chunked`).
+    dechunk: Option<Dechunk>,
+    /// The stream's context has a notifier: reads record [`NotifyEvent`]s
+    /// for the code that ran them to deliver.
+    pub notify: bool,
+    pub(crate) events: Vec<NotifyEvent>,
+}
+
+/// A notification a stream operation owes its context's notifier.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NotifyEvent {
+    /// A socket read got this many bytes (`php_stream_notify_progress_increment`).
+    Progress(usize),
+    /// The eof flag changed (`php_stream_notify_completed`).
+    Completed,
+    /// A TLS server session exceeded its renegotiation limit and the
+    /// context has a `reneg_limit_callback` to ask.
+    RenegLimit,
 }
 
 /// The socket half of a socket stream (php's `php_netstream_data_t` plus the
 /// stream ops name).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SockInfo {
     /// php's ops label (`stream_get_meta_data()['stream_type']`):
     /// `tcp_socket/ssl`, `udp_socket`, `unix_socket`, `udg_socket`,
@@ -64,6 +125,14 @@ pub struct SockInfo {
     pub persistent: bool,
     /// The peer closed the connection, as seen by a liveness check (`feof`).
     peer_closed: std::cell::Cell<bool>,
+    /// The timeout the transport was created with (openssl's
+    /// `connect_timeout`, the client handshake's limit).
+    pub connect_timeout: (i64, i64),
+    /// The wrapper that opened the stream (`http`), with its data (the
+    /// response headers) and the mode it was opened with.
+    pub wrapper: Option<&'static str>,
+    pub wrapper_data: Option<rhp_values::Value>,
+    pub mode: Option<Vec<u8>>,
 }
 
 impl SockInfo {
@@ -77,6 +146,10 @@ impl SockInfo {
             uri: None,
             persistent: false,
             peer_closed: std::cell::Cell::new(false),
+            connect_timeout: (0, 0),
+            wrapper: None,
+            wrapper_data: None,
+            mode: None,
         }
     }
 }
@@ -143,6 +216,7 @@ impl FdStream {
             }
         }
         FdStream {
+            tls: None,
             fd: Some(fd),
             eof: false,
             rbuf: Vec::new(),
@@ -151,6 +225,9 @@ impl FdStream {
             greedy: false,
             sock: None,
             last_send_error: None,
+            dechunk: None,
+            notify: false,
+            events: Vec::new(),
         }
     }
 
@@ -158,6 +235,7 @@ impl FdStream {
     /// `_pair`, `fsockopen`): never seekable, position 0.
     pub fn new_socket(fd: OwnedFd, info: SockInfo) -> Self {
         FdStream {
+            tls: None,
             fd: Some(fd),
             eof: false,
             rbuf: Vec::new(),
@@ -166,6 +244,9 @@ impl FdStream {
             greedy: false,
             sock: Some(info),
             last_send_error: None,
+            dechunk: None,
+            notify: false,
+            events: Vec::new(),
         }
     }
 
@@ -214,7 +295,9 @@ impl FdStream {
     /// Does the read-ahead buffer hold unread data? (`stream_select` treats such
     /// a stream as immediately readable, like php's emulated read set.)
     pub fn has_buffered(&self) -> bool {
-        !self.rbuf.is_empty()
+        // php's cast for select first moves what the TLS layer holds
+        // decrypted (SSL_pending) into the read buffer.
+        !self.rbuf.is_empty() || self.tls.as_ref().is_some_and(|t| t.pending() > 0)
     }
 
     /// php's `is_seekable` (`stream_get_meta_data()['seekable']`).
@@ -236,8 +319,48 @@ impl FdStream {
 
     /// [`FdStream::fill`]; `has_buffered` is php's `stream->has_buffered_data`
     /// (this read already took bytes from the buffer), which makes a blocking
-    /// socket read not wait.
-    fn fill_ex(&mut self, max: usize, has_buffered: bool) -> Fill {
+    /// socket read not wait. A stream with the dechunk filter reads through
+    /// it, until `want` (at most a chunk) decoded bytes are buffered.
+    fn fill_ex(&mut self, want: usize, has_buffered: bool) -> Fill {
+        let old_eof = self.eof;
+        let r = if self.dechunk.is_none() {
+            self.fill_raw(want, has_buffered)
+        } else {
+            match self.fill_filtered(want, has_buffered) {
+                Some(r) => return r,
+                None => Fill::Error,
+            }
+        };
+        if self.notify && old_eof != self.eof {
+            self.events.push(NotifyEvent::Completed);
+        }
+        r
+    }
+
+    /// _php_stream_fill_read_buffer with read filters; `None` when a read
+    /// fails with nothing buffered, the one way it notifies completion.
+    fn fill_filtered(&mut self, want: usize, has_buffered: bool) -> Option<Fill> {
+        let to_read_now = want.min(CHUNK);
+        let mut got = false;
+        while !self.eof && self.rbuf.len() < to_read_now {
+            let before = self.rbuf.len();
+            let r = self.fill_raw(CHUNK, has_buffered);
+            if matches!(r, Fill::Error) && self.rbuf.is_empty() {
+                return None;
+            }
+            let raw: Vec<u8> = self.rbuf.drain(before..).collect();
+            if raw.is_empty() {
+                break;
+            }
+            let out = self.dechunk.as_mut().expect("dechunk").feed(raw);
+            got |= !out.is_empty();
+            self.rbuf.extend_from_slice(&out);
+        }
+        Some(if got { Fill::Data } else { Fill::Nothing })
+    }
+
+    /// One read of the underlying descriptor (the stream ops' `read`).
+    fn fill_raw(&mut self, max: usize, has_buffered: bool) -> Fill {
         let Some(raw) = self.raw_fd() else {
             return Fill::Error;
         };
@@ -274,6 +397,22 @@ impl FdStream {
     /// the read (without EOF); then one `recv`, where EAGAIN is "no data",
     /// 0 is EOF and any other error sets EOF.
     fn sock_fill(&mut self, raw: RawFd, max: usize, has_buffered: bool) -> Fill {
+        if self.tls_active() {
+            // php_openssl_sockop_read
+            let mut buf = vec![0u8; max.max(1)];
+            let n = crate::ext::openssl::xp_ssl::sockop_read(self, &mut buf, has_buffered);
+            return match n {
+                n if n > 0 => {
+                    self.rbuf.extend_from_slice(&buf[..n as usize]);
+                    if self.notify {
+                        self.events.push(NotifyEvent::Progress(n as usize));
+                    }
+                    Fill::Data
+                }
+                0 => Fill::Nothing,
+                _ => Fill::Error,
+            };
+        }
         let sock = self.sock.as_mut().expect("socket stream");
         let mut flags = 0;
         if sock.blocked {
@@ -305,6 +444,9 @@ impl FdStream {
         let n = unsafe { libc::recv(raw, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags) };
         if n > 0 {
             self.rbuf.extend_from_slice(&buf[..n as usize]);
+            if self.notify {
+                self.events.push(NotifyEvent::Progress(n as usize));
+            }
             return Fill::Data;
         }
         if n == 0 {
@@ -328,6 +470,13 @@ impl FdStream {
         };
         if sock.peer_closed.get() {
             return false;
+        }
+        if let Some(t) = self.tls.as_ref().filter(|t| t.active) {
+            let alive = t.alive(raw, sock);
+            if !alive {
+                sock.peer_closed.set(true);
+            }
+            return alive;
         }
         if sock.no_io {
             // A listening socket: poll(0) for readability, then peek.
@@ -375,7 +524,12 @@ impl FdStream {
         let mut out = self.take(len);
         while out.len() < len {
             let had = !out.is_empty();
-            match self.fill_ex(CHUNK, had) {
+            let want = if self.dechunk.is_some() {
+                len - out.len()
+            } else {
+                CHUNK
+            };
+            match self.fill_ex(want, had) {
                 Fill::Data => {}
                 Fill::Nothing => break,
                 Fill::Error if out.is_empty() => return None,
@@ -452,6 +606,9 @@ impl FdStream {
         let raw = self.raw_fd()?;
         if data.is_empty() {
             return Some(0);
+        }
+        if self.tls_active() {
+            return self.tls_write(data);
         }
         if self.sock.is_some() {
             return self.sock_write(raw, data);
@@ -541,6 +698,9 @@ impl FdStream {
                 });
                 return if done == 0 { None } else { Some(done) };
             };
+            if self.notify {
+                self.events.push(NotifyEvent::Progress(n as usize));
+            }
             done += n as usize;
             self.position += n as i64;
         }
@@ -638,7 +798,226 @@ impl FdStream {
 
     /// Close the fd (`fclose`).
     pub fn close(&mut self) {
+        self.tls = None;
         self.fd = None;
+    }
+
+    /// The TLS layer is set up and the handshake done (php's `ssl_active`).
+    pub fn tls_active(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| t.active)
+    }
+
+    /// `_php_stream_write_buffer` over `php_openssl_sockop_write`.
+    fn tls_write(&mut self, data: &[u8]) -> Option<usize> {
+        let mut done = 0usize;
+        while done < data.len() {
+            let n = crate::ext::openssl::xp_ssl::sockop_write(self, &data[done..]);
+            if n <= 0 {
+                return if done == 0 && n < 0 { None } else { Some(done) };
+            }
+            if self.notify {
+                self.events.push(NotifyEvent::Progress(n as usize));
+            }
+            done += n as usize;
+            self.position += n as i64;
+        }
+        Some(done)
+    }
+
+    /// The socket state of a socket stream, for changing it.
+    pub fn sock_mut(&mut self) -> Option<&mut SockInfo> {
+        self.sock.as_mut()
+    }
+
+    /// The `crypto` entry of `stream_get_meta_data` (an active TLS layer).
+    pub fn crypto_meta(&self) -> Option<rhp_values::Value> {
+        self.tls.as_ref().filter(|t| t.active).map(|t| t.meta())
+    }
+
+    /// The notifications owed since the last call.
+    pub fn take_events(&mut self) -> Vec<NotifyEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The `reneg_limit_callback` said not to keep the connection:
+    /// php's shutdown with eof.
+    pub fn reneg_close(&mut self) {
+        if let Some(raw) = self.raw_fd() {
+            unsafe { libc::shutdown(raw, libc::SHUT_RDWR) };
+        }
+        self.eof = true;
+    }
+
+    /// Read the rest through php's "dechunk" filter.
+    pub fn add_dechunk(&mut self) {
+        let mut d = Dechunk::default();
+        if !self.rbuf.is_empty() {
+            let raw = std::mem::take(&mut self.rbuf);
+            self.rbuf = d.feed(raw);
+        }
+        self.dechunk = Some(d);
+    }
+
+    /// Set php's `stream->position` (the http wrapper starts the body at 0).
+    pub fn set_position(&mut self, pos: i64) {
+        self.position = pos;
+    }
+}
+
+/// php's "dechunk" filter state (ext/standard/filters.c `php_dechunk`).
+#[derive(Default)]
+pub struct Dechunk {
+    chunk_size: usize,
+    state: ChunkState,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum ChunkState {
+    #[default]
+    SizeStart,
+    Size,
+    SizeExt,
+    SizeCr,
+    SizeLf,
+    Body,
+    BodyCr,
+    BodyLf,
+    Trailer,
+    Error,
+}
+
+impl Dechunk {
+    /// Decode one bucket: `php_dechunk`.
+    pub fn feed(&mut self, buf: Vec<u8>) -> Vec<u8> {
+        use ChunkState::*;
+        let end = buf.len();
+        let mut p = 0usize;
+        let mut out = Vec::with_capacity(end);
+        // `php_dechunk` falls through from one state to the next; `st` is
+        // the case being run.
+        let mut st = self.state;
+        while p < end {
+            match st {
+                SizeStart | Size => {
+                    if st == SizeStart {
+                        self.chunk_size = 0;
+                    }
+                    let mut state = st;
+                    while p < end {
+                        let c = buf[p];
+                        let digit = match c {
+                            b'0'..=b'9' => (c - b'0') as usize,
+                            b'A'..=b'F' => (c - b'A' + 10) as usize,
+                            b'a'..=b'f' => (c - b'a' + 10) as usize,
+                            _ if state == SizeStart => {
+                                state = Error;
+                                break;
+                            }
+                            _ => {
+                                state = SizeExt;
+                                break;
+                            }
+                        };
+                        if self.chunk_size > usize::MAX / 16 {
+                            state = Error;
+                            break;
+                        }
+                        self.chunk_size = self.chunk_size * 16 + digit;
+                        state = Size;
+                        p += 1;
+                    }
+                    self.state = state;
+                    if state == Error {
+                        st = Error;
+                        continue;
+                    } else if p == end {
+                        return out;
+                    }
+                    st = SizeExt;
+                }
+                SizeExt => {
+                    while p < end && buf[p] != b'\r' && buf[p] != b'\n' {
+                        p += 1;
+                    }
+                    if p == end {
+                        return out;
+                    }
+                    st = SizeCr;
+                }
+                SizeCr => {
+                    if buf[p] == b'\r' {
+                        p += 1;
+                        if p == end {
+                            self.state = SizeLf;
+                            return out;
+                        }
+                    }
+                    st = SizeLf;
+                }
+                SizeLf => {
+                    if buf[p] == b'\n' {
+                        p += 1;
+                        if self.chunk_size == 0 {
+                            self.state = Trailer;
+                            st = Trailer;
+                            continue;
+                        } else if p == end {
+                            self.state = Body;
+                            return out;
+                        }
+                    } else {
+                        self.state = Error;
+                        st = Error;
+                        continue;
+                    }
+                    st = Body;
+                }
+                Body => {
+                    if end - p >= self.chunk_size {
+                        out.extend_from_slice(&buf[p..p + self.chunk_size]);
+                        p += self.chunk_size;
+                        if p == end {
+                            self.state = BodyCr;
+                            return out;
+                        }
+                    } else {
+                        out.extend_from_slice(&buf[p..end]);
+                        self.chunk_size -= end - p;
+                        self.state = Body;
+                        return out;
+                    }
+                    st = BodyCr;
+                }
+                BodyCr => {
+                    if buf[p] == b'\r' {
+                        p += 1;
+                        if p == end {
+                            self.state = BodyLf;
+                            return out;
+                        }
+                    }
+                    st = BodyLf;
+                }
+                BodyLf => {
+                    if buf[p] == b'\n' {
+                        p += 1;
+                        self.state = SizeStart;
+                        st = SizeStart;
+                    } else {
+                        self.state = Error;
+                        st = Error;
+                    }
+                }
+                Trailer => {
+                    p = end;
+                }
+                Error => {
+                    out.extend_from_slice(&buf[p..end]);
+                    return out;
+                }
+            }
+        }
+        out
     }
 }
 
@@ -672,4 +1051,29 @@ pub fn fd_access_mode(fd: RawFd) -> Option<bool> {
         return None;
     }
     Some(fl & libc::O_ACCMODE == libc::O_WRONLY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Dechunk;
+
+    fn dechunk(parts: &[&[u8]]) -> Vec<u8> {
+        let mut d = Dechunk::default();
+        parts.iter().flat_map(|p| d.feed(p.to_vec())).collect()
+    }
+
+    #[test]
+    fn dechunks_like_php() {
+        let body: &[u8] = b"4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nTrailer: x\r\n\r\n";
+        assert_eq!(dechunk(&[body]), b"Wikipedia");
+        // the same body one byte per bucket
+        let bytes: Vec<&[u8]> = body.chunks(1).collect();
+        assert_eq!(dechunk(&bytes), b"Wikipedia");
+        // LF-only line ends are accepted
+        assert_eq!(dechunk(&[b"3\nabc\n0\n\n"]), b"abc");
+        // not a chunk size: the rest passes through as it is
+        assert_eq!(dechunk(&[b"zz\r\nraw"]), b"zz\r\nraw");
+        // a bad chunk end switches to pass-through after the data
+        assert_eq!(dechunk(&[b"2\r\nabX\r\nmore"]), b"abX\r\nmore");
+    }
 }

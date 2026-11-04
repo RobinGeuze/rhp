@@ -9,7 +9,8 @@
 //!   pretty printer after name resolution), which is the string Reflection
 //!   shows;
 //! - by-ref, `@prefer-ref`, variadic, `@tentative-return-type`,
-//!   `#[\Deprecated]`, modifiers, parent and interfaces;
+//!   `@frameless-function` arities, `#[\Deprecated]`, modifiers, parent
+//!   and interfaces;
 //! - the extension name php registers the item under.
 //!
 //! Declarations php only compiles on Windows or in debug builds are left out.
@@ -177,6 +178,8 @@ struct Func {
     ext: &'static str,
     ret: String,
     deprecated: bool,
+    /// `F_FRAMELESS << arity` for each `@frameless-function`.
+    frameless: u32,
     params: Vec<Param>,
 }
 
@@ -215,6 +218,7 @@ const M_FINAL: u32 = 32;
 const M_ABSTRACT: u32 = 64;
 const M_TENTATIVE: u32 = 1 << 8;
 const M_DEPRECATED: u32 = 1 << 9;
+const F_FRAMELESS: u32 = 1 << 10;
 const C_FINAL: u32 = 32;
 const C_ABSTRACT: u32 = 64;
 const C_READONLY: u32 = 65536;
@@ -441,6 +445,7 @@ fn walk_stmts(
                     ext: f.ext,
                     ret: ret_type(&func.return_type_hint, &ns),
                     deprecated: has_attr(&func.attribute_lists, "Deprecated"),
+                    frameless: frameless_arities(doc).map_err(|e| format!("{name}: {e}"))?,
                     params,
                 };
                 if out.funcs.insert(name.to_ascii_lowercase(), row).is_some() {
@@ -669,6 +674,24 @@ fn has_attr(lists: &Sequence<rhp_frontend::cst::AttributeList>, name: &str) -> b
             n.eq_ignore_ascii_case(name.as_bytes())
         })
     })
+}
+
+/// The `@frameless-function {"arity": N}` tags of a doc comment, as
+/// `F_FRAMELESS << N` bits (zend's arities are 0 to 3).
+fn frameless_arities(doc: &str) -> Result<u32, String> {
+    let mut bits = 0;
+    for (_, v) in doc_tags(doc)
+        .iter()
+        .filter(|(t, _)| t == "frameless-function")
+    {
+        let arity = v
+            .split_once("\"arity\":")
+            .and_then(|(_, n)| n.trim().trim_end_matches('}').trim().parse::<u32>().ok())
+            .filter(|&n| n <= 3)
+            .ok_or_else(|| format!("bad @frameless-function {v}"))?;
+        bits |= F_FRAMELESS << arity;
+    }
+    Ok(bits)
 }
 
 /// `@tag value` pairs of a doc comment.
@@ -1172,7 +1195,7 @@ fn render(out: &Out) -> String {
     );
     s.push_str("#[rustfmt::skip]\npub static FUNCTIONS: &[Func] = &[\n");
     for fr in out.funcs.values() {
-        let flags = if fr.deprecated { M_DEPRECATED } else { 0 };
+        let flags = if fr.deprecated { M_DEPRECATED } else { 0 } | fr.frameless;
         s.push_str(&format!(
             "f({}, {}, {flags}, {}, {}),\n",
             lit(&fr.name),

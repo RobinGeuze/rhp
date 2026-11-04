@@ -155,6 +155,12 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 3);
+    if crate::http::is_http(&path) {
+        return Ok(
+            crate::http::open_arg(host, "fopen", &path, &mode, args.get(3))?
+                .unwrap_or(Value::Bool(false)),
+        );
+    }
     crate::streams::clear_errno();
     let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
     match host.stream_open_ctx(&path, &mode, &ctx) {
@@ -904,7 +910,13 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
     crate::streams::clear_errno();
-    let data = if flags & USE_INCLUDE_PATH != 0 {
+    let http = crate::http::is_http(&path);
+    let data = if http {
+        match crate::http::get_contents(host, "file", &path, args.get(2), 0, None)? {
+            Some(b) => Some(b),
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if flags & USE_INCLUDE_PATH != 0 {
         match resolve_include_path(&path) {
             Some(p) => host.stream_get_contents(&p),
             None => host.stream_get_contents(&path),
@@ -925,7 +937,9 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::open_failed(host, "file", &path)?;
         return Ok(Value::Bool(false));
     };
-    host.consume_resource_ids(crate::streams::open_resource_ids(&path));
+    if !http {
+        host.consume_resource_ids(crate::streams::open_resource_ids(&path));
+    }
     let mut a = PhpArray::new();
     if buf.is_empty() {
         return Ok(Value::Array(a));
@@ -1430,11 +1444,27 @@ fn stream_get_meta_data_impl(
     let mut put = |k: &str, v: Value| {
         a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
     };
+    // The TLS layer's META_DATA_API answer comes first.
+    if let Some(c) = m.crypto {
+        put("crypto", c);
+    }
+    let own_meta = m.rfc2397.is_some();
+    if let Some(Value::Array(meta)) = m.rfc2397 {
+        for (k, v) in meta.iter() {
+            a.insert(k.clone(), v.clone());
+        }
+    }
+    let mut put = |k: &str, v: Value| {
+        a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+    };
     // A TEMP stream answers META_DATA_API itself, so php skips these three.
-    if m.stream_type != "TEMP" {
+    if m.stream_type != "TEMP" && !own_meta {
         put("timed_out", Value::Bool(m.timed_out));
         put("blocked", Value::Bool(m.blocked));
         put("eof", Value::Bool(m.eof));
+    }
+    if let Some(d) = m.wrapper_data {
+        put("wrapper_data", d);
     }
     // Pipes have no wrapper and no uri; directory streams no uri.
     if !m.wrapper_type.is_empty() {
@@ -1590,11 +1620,19 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     crate::streams::clear_errno();
-    let Some(data) = host.stream_get_contents(&from) else {
-        crate::open_failed(host, "copy", &from)?;
-        return Ok(Value::Bool(false));
+    let data = if crate::http::is_http(&from) {
+        match crate::http::get_contents(host, "copy", &from, args.get(2), 0, None)? {
+            Some(b) => b,
+            None => return Ok(Value::Bool(false)),
+        }
+    } else {
+        let Some(data) = host.stream_get_contents(&from) else {
+            crate::open_failed(host, "copy", &from)?;
+            return Ok(Value::Bool(false));
+        };
+        host.consume_resource_ids(1);
+        data
     };
-    host.consume_resource_ids(1);
     let (scheme, _) = split_scheme(&to);
     crate::streams::clear_errno();
     if scheme == b"file" {
@@ -1831,6 +1869,14 @@ fn fn_lchgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "readfile", "filename")?;
     touch_ctx(host, args, 2);
+    if crate::http::is_http(&path) {
+        let Some(data) = crate::http::get_contents(host, "readfile", &path, args.get(2), 0, None)?
+        else {
+            return Ok(Value::Bool(false));
+        };
+        host.write_out(&data);
+        return Ok(Value::Int(data.len() as i64));
+    }
     crate::streams::clear_errno();
     let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
         match resolve_include_path(&path) {

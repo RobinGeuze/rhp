@@ -67,6 +67,8 @@ pub const ABSTRACT: u16 = 64;
 pub const TENTATIVE: u16 = 1 << 8;
 /// `#[\Deprecated]`.
 pub const DEPRECATED: u16 = 1 << 9;
+/// `@frameless-function` of arity n (0 to 3): `FRAMELESS << n`.
+pub const FRAMELESS: u16 = 1 << 10;
 
 #[derive(Debug)]
 pub struct Func {
@@ -230,6 +232,19 @@ impl Signature for Func {
     }
     fn ret(&self) -> &'static str {
         self.ret
+    }
+}
+
+impl Func {
+    /// Whether php compiles a call with `argc` arguments to a frameless
+    /// handler (find_frameless_function_info's arity check).
+    pub fn frameless(&self, argc: usize) -> bool {
+        argc <= 3
+            && (argc..=3).any(|n| {
+                self.flags & (FRAMELESS << n) != 0
+                    && self.min_args() <= argc
+                    && (self.max_args().is_some() || n == argc)
+            })
     }
 }
 

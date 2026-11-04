@@ -25,6 +25,8 @@ use rhp_frontend::cst::{
 };
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
+mod hrh;
+
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
 #[derive(Clone, Copy)]
@@ -919,6 +921,10 @@ fn compile_program_inner(
     let closures = CLOSURES.with(|c| std::mem::take(&mut *c.borrow_mut()));
     classes.extend(ANON_CLASSES.with(|c| std::mem::take(&mut *c.borrow_mut())));
     let cond_classes = COND_CLASSES.with(|c| std::mem::take(&mut c.borrow_mut().0));
+    let compile_diags = hrh::scan(&flat, line_of)
+        .into_iter()
+        .map(|line| (8192, hrh::MESSAGE.to_string(), line))
+        .collect();
     Ok(Program {
         main: Rc::new(c.finish()?),
         functions,
@@ -927,6 +933,8 @@ fn compile_program_inner(
         num_prelude_classes,
         num_prelude_functions,
         cond_classes,
+        compile_diags,
+        compile_diags_reported: Default::default(),
     })
 }
 
@@ -2791,6 +2799,29 @@ impl ProtoBuilder {
             Some(f) => self.intern_name(f),
             None => rhp_bytecode::NO_NAME,
         }
+    }
+
+    /// The register holding the unresolved callee `name` (then `fallback`)
+    /// of the call being compiled, emitting its `ResolveFunc` the first time.
+    fn resolve_callee(
+        &mut self,
+        callee: &mut Option<Reg>,
+        name: &[u8],
+        fallback: &Option<Vec<u8>>,
+    ) -> Reg {
+        if let Some(r) = *callee {
+            return r;
+        }
+        let dst = self.alloc_temp();
+        let name = self.intern_name(&name.to_ascii_lowercase());
+        let fallback = self.intern_fallback(&fallback.as_ref().map(|f| f.to_ascii_lowercase()));
+        self.emit(Instr::ResolveFunc {
+            dst,
+            name,
+            fallback,
+        });
+        *callee = Some(dst);
+        dst
     }
 
     /// Resolve a first-class-callable's target function to a single name. An
@@ -5040,7 +5071,18 @@ impl ProtoBuilder {
             RefLval(&'e Expression<'e>),
             /// A call result for a by-ref parameter (passed with a notice).
             NoRef(Reg),
+            /// SEND_VAR_EX of a variable to an unresolved function.
+            VarEx {
+                cv: Reg,
+                func: Reg,
+                idx: u16,
+            },
+            /// A reference or a value, passed on as it is.
+            Pass(Reg),
         }
+        // The unresolved callee, looked up (ResolveFunc) for the first
+        // argument that needs to ask it about by-reference parameters.
+        let mut callee: Option<Reg> = None;
         let mut slots = Vec::new();
         for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
             let p = match arg {
@@ -5114,6 +5156,40 @@ impl ProtoBuilder {
                         ))
                     }
                 }
+            } else if let (None, None, Some(var)) = (&sig, builtin, send_var_ex_name(p.value)) {
+                // A function the compiler does not know (another file's, or
+                // declared later): php's SEND_VAR_EX asks it at run time
+                // whether the parameter is by reference.
+                let cv = self.cv(var);
+                let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
+                let idx = i as u16;
+                if !later_arg_may_write(&fc.argument_list, i) {
+                    slots.push(ArgSlot::VarEx { cv, func, idx });
+                } else {
+                    // a later argument may change the variable: send it now
+                    let t = self.alloc_temp();
+                    self.emit(Instr::SendVarEx {
+                        dst: t,
+                        cv,
+                        func,
+                        idx,
+                    });
+                    slots.push(ArgSlot::Pass(t));
+                }
+            } else if sig.is_none()
+                && builtin.is_none()
+                && matches!(
+                    p.value,
+                    Expression::ArrayAccess(_)
+                        | Expression::Access(Access::Property(_))
+                        | Expression::Access(Access::StaticProperty(_))
+                )
+                && variable_rooted_lvalue(p.value)
+            {
+                // SEND_FUNC_ARG for an element or property of a variable
+                let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
+                let t = self.compile_func_arg(p.value, ArgRefTarget::Func(func), i as u16)?;
+                slots.push(ArgSlot::Pass(t));
             } else {
                 // A variable's value is taken when its argument is evaluated
                 // (php's SEND_VAR), before later arguments can change it.
@@ -5136,6 +5212,10 @@ impl ProtoBuilder {
                     self.emit_cursor(root, &steps);
                     self.emit(Instr::MakeRefLval { dst });
                 }
+                ArgSlot::VarEx { cv, func, idx } => {
+                    self.emit(Instr::SendVarEx { dst, cv, func, idx })
+                }
+                ArgSlot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
             }
         }
         let name = self.intern_name(&name_bytes);
@@ -6001,6 +6081,11 @@ impl ProtoBuilder {
                 name,
                 idx,
             }),
+            ArgRefTarget::Func(func) => self.emit(Instr::FuncArgIsRef {
+                dst: flag,
+                func,
+                idx,
+            }),
         }
         let t = self.alloc_temp();
         let jf = self.code.len();
@@ -6035,16 +6120,9 @@ impl ProtoBuilder {
         expr: &Expression,
         r: Reg,
     ) -> Reg {
-        let later_may_write = list.arguments.iter().skip(i + 1).any(|a| {
-            !matches!(
-                a,
-                Argument::Positional(q) if matches!(
-                    q.value,
-                    Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
-                )
-            )
-        });
-        if !later_may_write || !matches!(expr, Expression::Variable(Variable::Direct(_))) {
+        if !later_arg_may_write(list, i)
+            || !matches!(expr, Expression::Variable(Variable::Direct(_)))
+        {
             return r;
         }
         let t = self.alloc_temp();
@@ -7372,6 +7450,36 @@ fn expr_kind(e: &Expression) -> &'static str {
 enum ArgRefTarget {
     Method(Reg, NIdx),
     Static(ClassRef, NIdx),
+    /// The function [`Instr::ResolveFunc`] put in the register.
+    Func(Reg),
+}
+
+/// The variable name (without `$`) of a plain-variable argument php sends
+/// with SEND_VAR_EX to a function it cannot resolve (`$this` and `$GLOBALS`
+/// are passed by value).
+fn send_var_ex_name<'a>(e: &Expression<'a>) -> Option<&'a [u8]> {
+    match e {
+        Expression::Variable(Variable::Direct(d))
+            if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this") =>
+        {
+            Some(strip_dollar(d.name))
+        }
+        _ => None,
+    }
+}
+
+/// Whether an argument after the `i`th may write a variable (anything but
+/// a literal or a plain variable).
+fn later_arg_may_write(list: &rhp_frontend::cst::ArgumentList, i: usize) -> bool {
+    list.arguments.iter().skip(i + 1).any(|a| {
+        !matches!(
+            a,
+            Argument::Positional(q) if matches!(
+                q.value,
+                Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+            )
+        )
+    })
 }
 
 /// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a

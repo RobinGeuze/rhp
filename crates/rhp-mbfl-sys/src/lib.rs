@@ -388,9 +388,19 @@ impl Encoding {
     pub fn cut(&self, s: &[u8], from: usize, len: usize) -> Option<Vec<u8>> {
         let f = self.cut?;
         assert!(from <= s.len());
-        let p = s.as_ptr() as *mut u8;
-        // SAFETY: the C reads within [p, p + s.len()) and returns a new
-        // string or the static empty one.
+        // mb_cut_utf8 reads the byte at `from`, which for from == len is
+        // the NUL terminator every zend_string has.
+        let terminated;
+        let buf = if from == s.len() {
+            terminated = [s, b"\0"].concat();
+            &terminated[..]
+        } else {
+            s
+        };
+        let p = buf.as_ptr() as *mut u8;
+        // SAFETY: the C reads within [p, p + s.len()], and that last byte
+        // exists when it is read (from == len); it returns a new string or
+        // the static empty one.
         Some(unsafe { take(f(p, from, len, p.add(s.len()))) })
     }
 }

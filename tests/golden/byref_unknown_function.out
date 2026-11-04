@@ -1,0 +1,23 @@
+string(3) "set"
+int(1)
+int(99)
+int(5)
+string(3) "set"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+string(11) "in function"
+string(3) "set"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(1) {
+  ["k"]=>
+  string(3) "key"
+}

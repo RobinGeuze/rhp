@@ -72,19 +72,121 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // stream_context_set_params is not implemented: refuse params rather
-    // than drop them.
-    if matches!(args.get(1).map(deref), Some(Value::Array(p)) if !p.is_empty()) {
-        return Err(Thrown::unsupported(
-            "stream_context_create() argument #2 ($params)",
-            "not implemented",
-        ));
+    let ctx = host.create_stream_context(Value::Array(rhp_values::PhpArray::new()));
+    if let Some(Value::Array(options)) = args.first().map(deref) {
+        parse_context_options(host, &ctx, &options)?;
     }
-    let options = args
-        .first()
+    if let Some(Value::Array(params)) = args.get(1).map(deref) {
+        parse_context_params(host, "stream_context_create", &ctx, &params)?;
+    }
+    Ok(ctx)
+}
+
+/// php's `parse_context_options`: each `[wrapper][option]` value copied
+/// into the context (a list of options is skipped, as php skips a packed
+/// array).
+fn parse_context_options(
+    host: &mut dyn Host,
+    ctx: &Value,
+    options: &rhp_values::PhpArray,
+) -> Result<(), Thrown> {
+    use rhp_values::ArrayKey;
+    for (wk, wv) in options.iter() {
+        let wv = deref(wv);
+        let (ArrayKey::Str(w), Value::Array(inner)) = (wk, &wv) else {
+            return Err(Thrown::error(
+                "ValueError",
+                "Options should have the form [\"wrappername\"][\"optionname\"] = $value",
+            ));
+        };
+        if !inner.is_empty() && inner.iter().all(|(k, _)| matches!(k, ArrayKey::Int(_))) {
+            continue;
+        }
+        for (ok, ov) in inner.iter() {
+            if let ArrayKey::Str(o) = ok {
+                host.stream_context_set_option(ctx, w.as_bytes(), o.as_bytes(), deref(ov));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// php's `parse_context_params`: the `notification` callback, then
+/// `options`.
+fn parse_context_params(
+    host: &mut dyn Host,
+    fname: &str,
+    ctx: &Value,
+    params: &rhp_values::PhpArray,
+) -> Result<(), Thrown> {
+    use rhp_values::ArrayKey;
+    if let Some(cb) = params
+        .get(&ArrayKey::from_bytes(b"notification"))
         .map(deref)
-        .unwrap_or(Value::Array(rhp_values::PhpArray::new()));
-    Ok(host.create_stream_context(options))
+    {
+        host.set_stream_context_notifier(ctx, None);
+        if let Some(err) = host.callable_error(&cb) {
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #1 ($context) must be an array with valid callbacks as values, {err}"
+            )));
+        }
+        host.set_stream_context_notifier(ctx, Some(cb));
+        crate::http::reset_progress(host, ctx);
+    }
+    if let Some(opts) = params.get(&ArrayKey::from_bytes(b"options")).map(deref) {
+        let Value::Array(opts) = opts else {
+            return Err(Thrown::type_error("Invalid stream/context parameter"));
+        };
+        parse_context_options(host, ctx, &opts)?;
+    }
+    Ok(())
+}
+
+/// `decode_context_param` for a function's first argument.
+fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let v = args.first().map(deref).unwrap_or(Value::Null);
+    if !matches!(v, Value::Resource(_)) {
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($context) must be of type resource, {} given",
+            crate::argparse::value_name(host, &v)
+        )));
+    }
+    host.resolve_stream_context(&v).ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #1 ($context) must be a valid stream/context"
+        ))
+    })
+}
+
+fn fn_stream_context_set_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "stream_context_set_params";
+    let ctx = context_param(host, args, fname)?;
+    let params = match args.get(1).map(deref) {
+        Some(Value::Array(p)) => p,
+        other => {
+            let v = other.unwrap_or(Value::Null);
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #2 ($params) must be of type array, {} given",
+                crate::argparse::value_name(host, &v)
+            )));
+        }
+    };
+    parse_context_params(host, fname, &ctx, &params)?;
+    Ok(Value::Bool(true))
+}
+
+fn fn_stream_context_get_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ctx = context_param(host, args, "stream_context_get_params")?;
+    let mut a = rhp_values::PhpArray::new();
+    if let Some(cb) = host.stream_context_notifier(&ctx) {
+        a.insert(rhp_values::ArrayKey::from_bytes(b"notification"), cb);
+    }
+    let opts = match host.stream_context_options(&ctx) {
+        Value::Null => Value::Array(rhp_values::PhpArray::new()),
+        v => v,
+    };
+    a.insert(rhp_values::ArrayKey::from_bytes(b"options"), opts);
+    Ok(Value::Array(a))
 }
 
 fn fn_stream_context_get_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -125,14 +227,101 @@ fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
     }
 }
 
+/// `get_headers($url, $associative = false, $context = null)`: the
+/// response headers of an http(s) URL (the wrapper's only-headers mode).
+fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "get_headers";
+    let url = crate::argparse::path_param(host, args, 0, fname, "url")?;
+    let assoc = crate::argparse::bool_param(host, args, 1, fname, "associative", false)?;
+    let ctx = match args.get(2).map(deref) {
+        None | Some(Value::Null) => host.default_stream_context(),
+        Some(v @ Value::Resource(_)) => v,
+        Some(v) => {
+            return Err(Thrown::type_error(format!(
+                "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
+                crate::argparse::value_name(host, &v)
+            )))
+        }
+    };
+    if crate::streams::is_data_url(&url) {
+        // a URL wrapper whose stream has no header array
+        match host.stream_open(&url, b"r") {
+            Some(res) => {
+                host.stream_close(&res);
+            }
+            None => crate::open_failed(host, fname, &url)?,
+        }
+        return Ok(Value::Bool(false));
+    }
+    if !crate::http::is_http(&url) {
+        // STREAM_USE_URL refuses a wrapper that is not for URLs (the
+        // plain-files one when none matches the scheme)
+        let scheme = crate::streams::split_scheme(&url).0.to_ascii_lowercase();
+        let known = host.stream_wrapper_schemes();
+        if !matches!(&scheme[..], b"file" | b"glob" | b"php")
+            && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))
+        {
+            let name = String::from_utf8_lossy(&scheme).into_owned();
+            crate::warn(
+                host,
+                fname,
+                &format!(
+                    "Unable to find the wrapper \"{name}\" - did you forget to enable it when you configured PHP?"
+                ),
+            )?;
+        }
+        crate::warn(host, fname, "This function may only be used against URLs")?;
+        return Ok(Value::Bool(false));
+    }
+    let Some(res) = crate::http::open(host, fname, &url, b"r", &ctx, true)? else {
+        return Ok(Value::Bool(false));
+    };
+    let data = host.stream_meta(&res).and_then(|m| m.wrapper_data);
+    host.stream_close(&res);
+    let Some(Value::Array(headers)) = data else {
+        return Ok(Value::Bool(false));
+    };
+    let mut out = rhp_values::PhpArray::new();
+    for (_, h) in headers.iter() {
+        let Value::Str(h) = h else { continue };
+        let h = h.as_bytes();
+        let colon = h.iter().position(|&c| c == b':').filter(|_| assoc);
+        let Some(p) = colon else {
+            out.push(Value::str(h.to_vec()));
+            continue;
+        };
+        let mut v = p + 1;
+        while v < h.len() && h[v].is_ascii_whitespace() {
+            v += 1;
+        }
+        let key = rhp_values::ArrayKey::from_bytes(&h[..p]);
+        let value = Value::str(h[v..].to_vec());
+        match out.get(&key).cloned() {
+            None => {
+                out.insert(key, value);
+            }
+            Some(Value::Array(mut prev)) => {
+                prev.push(value);
+                out.insert(key, Value::Array(prev));
+            }
+            Some(prev) => {
+                let mut a = rhp_values::PhpArray::new();
+                a.push(prev);
+                a.push(value);
+                out.insert(key, Value::Array(a));
+            }
+        }
+    }
+    Ok(Value::Array(out))
+}
+
 fn fn_http_get_last_response_headers(
     host: &mut dyn Host,
     _args: &[Value],
 ) -> Result<Value, Thrown> {
-    let headers = host.http_response_headers();
-    if headers.is_empty() {
+    let Some(headers) = host.http_response_headers() else {
         return Ok(Value::Null);
-    }
+    };
     let mut a = rhp_values::PhpArray::new();
     for h in headers {
         a.push(Value::str(h));
@@ -144,7 +333,7 @@ fn fn_http_clear_last_response_headers(
     host: &mut dyn Host,
     _args: &[Value],
 ) -> Result<Value, Thrown> {
-    host.clear_http_response_headers();
+    host.set_http_response_headers(None);
     Ok(Value::Null)
 }
 
@@ -240,11 +429,26 @@ pub fn register(m: &mut HashMap<&'static str, Builtin>) {
     );
     put(
         m,
+        "stream_context_set_params",
+        fn_stream_context_set_params,
+        2,
+        Some(2),
+    );
+    put(
+        m,
+        "stream_context_get_params",
+        fn_stream_context_get_params,
+        1,
+        Some(1),
+    );
+    put(
+        m,
         "stream_context_set_option",
         fn_stream_context_set_option,
         2,
         Some(4),
     );
+    put(m, "get_headers", fn_get_headers, 1, Some(3));
     put(
         m,
         "http_get_last_response_headers",

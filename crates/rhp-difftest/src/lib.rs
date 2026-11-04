@@ -98,9 +98,12 @@ pub fn run_rhp(source: &[u8]) -> Result<Vec<u8>, String> {
     match result {
         Ok((Outcome::Exit(0), out)) => Ok(out.stdout),
         Ok((outcome, out)) => {
+            // The fatal error, not a warning logged before it.
             let why = out
                 .log
-                .first()
+                .iter()
+                .find(|l| l.starts_with(b"PHP Fatal error") || l.starts_with(b"PHP Parse error"))
+                .or(out.log.last())
                 .map(|l| String::from_utf8_lossy(l).into_owned())
                 .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).into_owned());
             Err(format!("rhp: {outcome:?}: {why}"))

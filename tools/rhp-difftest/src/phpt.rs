@@ -198,6 +198,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
+    "bcmath.scale",
     "date.timezone",
     "default_charset",
     "display_errors",

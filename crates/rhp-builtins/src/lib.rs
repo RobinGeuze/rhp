@@ -631,15 +631,6 @@ pub trait Host {
         Ok(())
     }
 
-    /// The bcmath default scale (`bcscale()` with no argument), 0 at script
-    /// start. Stored on the host so it resets per script run.
-    fn bc_scale(&self) -> i64 {
-        0
-    }
-
-    /// Set the bcmath default scale (`bcscale($scale)`).
-    fn set_bc_scale(&mut self, _scale: i64) {}
-
     /// Instantiate a named class, then set the given properties (no
     /// constructor is run), as object-returning builtins do (`gmp_*`
     /// returning `GMP`, `simplexml_load_string`). An internal class gets its

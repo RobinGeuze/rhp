@@ -1,0 +1,274 @@
+//! Compile-time constants: folding constant expressions and php's operand kinds.
+
+use rhp_frontend::cst::{
+    ArrayElement, Construct, Expression, Literal, MagicConstant, UnaryPrefixOperator, Variable,
+};
+use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
+
+use crate::file::FileCtx;
+use crate::names::identifier_name;
+use crate::util::{dirname, is_superglobal, strip_dollar};
+
+/// Fold a compile-time-constant expression (literals, const arrays, true/false/
+/// null, negated numeric literals) to a `Value`. Errors on anything requiring
+/// runtime evaluation (named constants, class constants, arithmetic).
+pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> {
+    let v = match e {
+        Expression::Literal(l) => literal_value(l),
+        Expression::Parenthesized(p) => return fold_const(cx, p.expression),
+        // Context-free magic constants fold in const / default-value positions
+        // (`const ROOT = __DIR__;`, `function f($p = __FILE__)`). The scope-
+        // dependent ones (__CLASS__/__FUNCTION__/__METHOD__) are handled by the
+        // ProtoBuilder path, not here.
+        Expression::MagicConstant(mc) => {
+            use mago_span::HasSpan;
+            match mc {
+                MagicConstant::Line(_) => Value::Int(cx.line_of(mc.span().start.offset) as i64),
+                MagicConstant::File(_) => Value::str(cx.file_name()),
+                MagicConstant::Directory(_) => Value::str(dirname(cx.file.as_bytes())),
+                MagicConstant::Namespace(_) => Value::str(cx.cur_ns()),
+                _ => return Err(non_const_err()),
+            }
+        }
+        Expression::Array(arr) => return fold_const_array(cx, arr.elements.iter()),
+        Expression::LegacyArray(arr) => return fold_const_array(cx, arr.elements.iter()),
+        Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+            b"true" | b"TRUE" | b"True" => Value::Bool(true),
+            b"false" | b"FALSE" | b"False" => Value::Bool(false),
+            b"null" | b"NULL" | b"Null" => Value::Null,
+            _ => return Err(non_const_err()),
+        },
+        Expression::UnaryPrefix(u) => {
+            use UnaryPrefixOperator as Op;
+            let inner = fold_const(cx, u.operand)?;
+            match (&u.operator, inner) {
+                (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
+                (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
+                (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
+                (Op::BitwiseNot(_), v) => rhp_semantics::ops::bitwise_not(&v),
+                (Op::Not(_), v) => Value::Bool(!rhp_values::conv::to_bool(&v)),
+                _ => return Err(non_const_err()),
+            }
+        }
+        Expression::Binary(b) => {
+            use rhp_frontend::cst::BinaryOperator as Bop;
+            use rhp_semantics::ops::{self, BitOp};
+            let l = fold_const(cx, b.lhs)?;
+            let r = fold_const(cx, b.rhs)?;
+            match &b.operator {
+                Bop::Addition(_) => ops::add(&l, &r)?,
+                Bop::Subtraction(_) => ops::sub(&l, &r)?,
+                Bop::Multiplication(_) => ops::mul(&l, &r)?,
+                Bop::Division(_) => ops::div(&l, &r)?,
+                Bop::Modulo(_) => ops::modulo(&l, &r)?,
+                Bop::Exponentiation(_) => ops::pow(&l, &r)?,
+                Bop::StringConcat(_) => ops::concat(&l, &r),
+                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And),
+                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or),
+                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor),
+                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl),
+                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr),
+                Bop::Equal(_) => Value::Bool(ops::loose_eq(&l, &r)),
+                Bop::NotEqual(_) | Bop::AngledNotEqual(_) => Value::Bool(!ops::loose_eq(&l, &r)),
+                Bop::Identical(_) => Value::Bool(ops::strict_eq(&l, &r)),
+                Bop::NotIdentical(_) => Value::Bool(!ops::strict_eq(&l, &r)),
+                Bop::LessThan(_) => Value::Bool(ops::loose_compare(&l, &r).is_lt()),
+                Bop::LessThanOrEqual(_) => Value::Bool(ops::loose_compare(&l, &r).is_le()),
+                Bop::GreaterThan(_) => Value::Bool(ops::loose_compare(&r, &l).is_lt()),
+                Bop::GreaterThanOrEqual(_) => Value::Bool(ops::loose_compare(&r, &l).is_le()),
+                Bop::Spaceship(_) => ops::spaceship(&l, &r),
+                Bop::And(_) | Bop::LowAnd(_) => {
+                    Value::Bool(rhp_values::conv::to_bool(&l) && rhp_values::conv::to_bool(&r))
+                }
+                Bop::Or(_) | Bop::LowOr(_) => {
+                    Value::Bool(rhp_values::conv::to_bool(&l) || rhp_values::conv::to_bool(&r))
+                }
+                Bop::NullCoalesce(_) => {
+                    if matches!(l, Value::Null) {
+                        r
+                    } else {
+                        l
+                    }
+                }
+                _ => return Err(non_const_err()),
+            }
+        }
+        _ => return Err(non_const_err()),
+    };
+    Ok(v)
+}
+
+fn fold_const_array<'a>(
+    cx: &FileCtx,
+    els: impl Iterator<Item = &'a ArrayElement<'a>>,
+) -> Result<Value, Thrown> {
+    let mut a = PhpArray::new();
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                let k = fold_const(cx, kv.key)?;
+                let v = fold_const(cx, kv.value)?;
+                let key = ArrayKey::from_value(&k)
+                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                a.insert(key, v);
+            }
+            ArrayElement::Value(v) => a.push(fold_const(cx, v.value)?),
+            ArrayElement::Variadic(_) => return Err(non_const_err()),
+            ArrayElement::Missing(_) => {}
+        }
+    }
+    Ok(Value::Array(a))
+}
+
+/// An array literal built only from int/string-keyed scalar literals,
+/// `true`/`false`/`null` and nested such arrays, as its value (`None` when
+/// building it could raise a diagnostic or needs runtime evaluation).
+pub(crate) fn literal_array<'a>(els: impl Iterator<Item = &'a ArrayElement<'a>>) -> Option<Value> {
+    fn scalar(e: &Expression) -> Option<Value> {
+        match e {
+            Expression::Literal(l) => Some(literal_value(l)),
+            Expression::Array(arr) => literal_array(arr.elements.iter()),
+            Expression::LegacyArray(arr) => literal_array(arr.elements.iter()),
+            Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
+                b"true" | b"TRUE" | b"True" => Some(Value::Bool(true)),
+                b"false" | b"FALSE" | b"False" => Some(Value::Bool(false)),
+                b"null" | b"NULL" | b"Null" => Some(Value::Null),
+                _ => None,
+            },
+            Expression::UnaryPrefix(u) => match (&u.operator, scalar(u.operand)?) {
+                (UnaryPrefixOperator::Negation(_), Value::Int(n)) => {
+                    n.checked_neg().map(Value::Int)
+                }
+                (UnaryPrefixOperator::Negation(_), Value::Float(f)) => Some(Value::Float(-f)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let mut a = PhpArray::new();
+    for el in els {
+        match el {
+            ArrayElement::KeyValue(kv) => {
+                // Only int / string keys: float, bool and null keys convert
+                // with diagnostics or php-specific rules at run time.
+                let key = match scalar(kv.key)? {
+                    Value::Int(n) => ArrayKey::Int(n),
+                    k @ Value::Str(_) => ArrayKey::from_value(&k)?,
+                    _ => return None,
+                };
+                // A PHP_INT_MAX key makes a later append fail at run time.
+                if matches!(key, ArrayKey::Int(i64::MAX)) {
+                    return None;
+                }
+                a.insert(key, scalar(kv.value)?);
+            }
+            ArrayElement::Value(v) => a.push(scalar(v.value)?),
+            _ => return None,
+        }
+    }
+    Some(Value::Array(a))
+}
+
+/// Whether php's VM swaps the operands of a commutative opcode: op1's
+/// kind is lower than op2's, in IS_CONST < IS_TMP_VAR < IS_VAR < IS_CV.
+/// Reads of elements and properties are TMP (zend_adjust_for_fetch_type);
+/// calls, `new`, `yield` and `include`/`eval` are VAR. (php's frameless
+/// and special-cased function calls give TMP; they count as VAR here.)
+pub(crate) fn php_swaps_operands(cx: &FileCtx, lhs: &Expression, rhs: &Expression) -> bool {
+    match (php_operand_kind(lhs), php_operand_kind(rhs)) {
+        (l, r) if l != r => l < r,
+        // Both CONST-or-TMP: only a CONST op1 against a TMP op2 swaps.
+        (Kind::ConstOrTmp, Kind::ConstOrTmp) => !is_ct_const(cx, rhs) && is_ct_const(cx, lhs),
+        _ => false,
+    }
+}
+
+/// Whether php's compiler folds `e` to a constant. A binary operation
+/// checks its right operand first, so the left spine of a long chain is
+/// not walked at every level.
+fn is_ct_const(cx: &FileCtx, e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => is_ct_const(cx, p.expression),
+        Expression::MagicConstant(_) => true,
+        Expression::Binary(b) => {
+            is_ct_const(cx, b.rhs) && is_ct_const(cx, b.lhs) && fold_const(cx, e).is_ok()
+        }
+        _ => fold_const(cx, e).is_ok(),
+    }
+}
+
+#[derive(PartialEq, PartialOrd)]
+enum Kind {
+    ConstOrTmp,
+    Var,
+    Cv,
+}
+
+fn php_operand_kind(e: &Expression) -> Kind {
+    match e {
+        Expression::Parenthesized(p) => php_operand_kind(p.expression),
+        Expression::Variable(Variable::Direct(d)) => {
+            let n = strip_dollar(d.name);
+            if n == b"this" || is_superglobal(n) {
+                Kind::ConstOrTmp
+            } else {
+                Kind::Cv
+            }
+        }
+        Expression::Call(_)
+        | Expression::Instantiation(_)
+        | Expression::AnonymousClass(_)
+        | Expression::Yield(_) => Kind::Var,
+        Expression::Construct(
+            Construct::Eval(_)
+            | Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_),
+        ) => Kind::Var,
+        _ => Kind::ConstOrTmp,
+    }
+}
+
+fn non_const_err() -> Thrown {
+    Thrown::unsupported(
+        "non-constant initializer",
+        "only literal / array / true/false/null constant initializers for now",
+    )
+}
+
+/// Fold a literal AST node to its runtime value (php's scanner rules: an
+/// integer literal past `i64::MAX` becomes a float).
+pub(crate) fn literal_value(lit: &Literal) -> Value {
+    match lit {
+        Literal::Integer(i) => match i.value {
+            Some(u) if u <= i64::MAX as u64 => Value::Int(u as i64),
+            Some(u) => Value::Float(u as f64),
+            None => {
+                let cleaned: Vec<u8> = i.raw.iter().copied().filter(|&b| b != b'_').collect();
+                std::str::from_utf8(&cleaned)
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(Value::Float)
+                    .unwrap_or(Value::Int(0))
+            }
+        },
+        Literal::Float(f) => Value::Float(f.value.0),
+        Literal::String(s) => Value::str(s.value.unwrap_or(s.raw).to_vec()),
+        Literal::True(_) => Value::Bool(true),
+        Literal::False(_) => Value::Bool(false),
+        Literal::Null(_) => Value::Null,
+    }
+}
+
+/// Structural equality for constant-pool deduplication.
+pub(crate) fn const_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+        (Value::Str(x), Value::Str(y)) => x == y,
+        _ => false,
+    }
+}

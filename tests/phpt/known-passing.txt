@@ -2474,6 +2474,7 @@ ext/bcmath/tests/bcround_error.phpt
 ext/bcmath/tests/bcscale.phpt
 ext/bcmath/tests/bcscale_variation001.phpt
 ext/bcmath/tests/bcscale_variation002.phpt
+ext/bcmath/tests/bcscale_variation003.phpt
 ext/bcmath/tests/bcsqrt.phpt
 ext/bcmath/tests/bcsqrt_error1.phpt
 ext/bcmath/tests/bcsqrt_error2.phpt
@@ -2493,6 +2494,7 @@ ext/bcmath/tests/gh16978.phpt
 ext/bcmath/tests/gh17275.phpt
 ext/bcmath/tests/negative_scale.phpt
 ext/bcmath/tests/scale.phpt
+ext/bcmath/tests/scale_ini.phpt
 ext/bcmath/tests/str2num_formatting.phpt
 ext/bz2/tests/005.phpt
 ext/bz2/tests/bug51997.phpt

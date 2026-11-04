@@ -1,0 +1,64 @@
+string(1) "0"
+int(0)
+3
+int(0)
+string(1) "3"
+3.500 3.5
+string(1) "3"
+int(5)
+0.33333
+bool(false)
+bool(false)
+string(1) "5"
+int(5)
+warning: Invalid "bcmath.scale" setting. Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility
+string(1) "5"
+string(3) "abc"
+int(0)
+warning: Invalid "bcmath.scale" setting. Invalid quantity "2abc": unknown multiplier "c", interpreting as "2" for backwards compatibility
+string(3) "abc"
+string(4) "2abc"
+int(2)
+string(4) "2abc"
+int(4)
+1.8750
+string(1) "0"
+int(0)
+ValueError: bcscale(): Argument #1 ($scale) must be between 0 and 2147483647
+int(0)
+int(0)
+int(7)
+array(1) {
+  ["bcmath.scale"]=>
+  array(3) {
+    ["global_value"]=>
+    string(1) "0"
+    ["local_value"]=>
+    string(1) "0"
+    ["access"]=>
+    int(7)
+  }
+}
+0 1
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, string given
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, string given
+TypeError: bcscale(): Argument #1 ($scale) must be of type ?int, float given
+warning: Implicit conversion from float 2.5 to int loses precision
+string(1) "4"
+int(4)
+int(2)
+int(3)
+int(6)
+TypeError: bcadd(): Argument #3 ($scale) must be of type ?int, string given
+warning: Implicit conversion from float 1.5 to int loses precision
+3.0 3.00 1.414
+bcadd(): Argument #3 ($scale) must be between 0 and 2147483647
+bcsub(): Argument #3 ($scale) must be between 0 and 2147483647
+bcmul(): Argument #3 ($scale) must be between 0 and 2147483647
+bcdiv(): Argument #3 ($scale) must be between 0 and 2147483647
+bcmod(): Argument #3 ($scale) must be between 0 and 2147483647
+bcpow(): Argument #3 ($scale) must be between 0 and 2147483647
+bccomp(): Argument #3 ($scale) must be between 0 and 2147483647
+bcdivmod(): Argument #3 ($scale) must be between 0 and 2147483647
+bcpowmod(): Argument #4 ($scale) must be of type ?int, string given
+bcsqrt(): Argument #2 ($scale) must be between 0 and 2147483647

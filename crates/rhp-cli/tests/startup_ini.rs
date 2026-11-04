@@ -1,8 +1,9 @@
 //! Startup (`-d`) ini values run their directive's on_modify handler, as
-//! php's module startup does: a sweep of memory_hard_limit_percent and
-//! openssl.libctx values crossed with the display settings, compared with
-//! `php -n` (stdout, stderr and exit status) when the local php is rhp's
-//! release. The fixed cases are CLI fixtures (`tests/cli/startup_ini`).
+//! php's module startup does: a sweep of memory_hard_limit_percent,
+//! openssl.libctx and bcmath.scale values (the first two crossed with the
+//! display settings), compared with `php -n` (stdout, stderr and exit
+//! status) when the local php is rhp's release. The fixed cases are CLI
+//! fixtures (`tests/cli/startup_ini`).
 
 use std::process::Command;
 
@@ -13,6 +14,13 @@ var_dump(ini_get('memory_hard_limit_percent'));
 var_dump(ini_get_all(null, false)['memory_hard_limit_percent']);
 var_dump(error_get_last());
 var_dump(ini_set('memory_hard_limit_percent', '200'));"#;
+
+const BCMATH_SCRIPT: &str = r#"var_dump(bcscale(), ini_get('bcmath.scale'));
+echo bcadd('1', '2'), "\n";
+ini_set('bcmath.scale', '2');
+var_dump(bcscale());
+ini_restore('bcmath.scale');
+var_dump(bcscale(), ini_get_all('bcmath')['bcmath.scale']['global_value']);"#;
 
 const LIBCTX_SCRIPT: &str = r#"echo "start\n";
 var_dump(ini_get('openssl.libctx'), error_get_last(), ini_set('openssl.libctx', 'default'));"#;
@@ -119,5 +127,20 @@ fn startup_ini_matches_php() {
             ini.extend_from_slice(extra);
             assert_eq!(run(&php_bin(), &ini), run(RHP, &ini), "-d {ini:?}");
         }
+    }
+}
+
+#[test]
+fn bcmath_scale_matches_php() {
+    if !same_release() {
+        return;
+    }
+    for v in ["4", "-1", "abc", "3x", " 7 ", "2147483648", "1k", ""] {
+        let kv = format!("bcmath.scale={v}");
+        assert_eq!(
+            run_script(&php_bin(), &[&kv], BCMATH_SCRIPT),
+            run_script(RHP, &[&kv], BCMATH_SCRIPT),
+            "-d {kv}"
+        );
     }
 }

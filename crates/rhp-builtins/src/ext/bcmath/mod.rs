@@ -7,9 +7,10 @@
 //! truncate-toward-zero semantics, and exact string formatting — is
 //! PHP-specific and hand-rolled here.
 //!
-//! The per-script default scale (`bcscale()`) lives on the [`Host`] so it resets
-//! between runs.
+//! The default scale is the `bcmath.scale` ini setting, as in php: `bcscale()`
+//! changes it like `ini_set()` does, and it resets with the request's ini.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use num_bigint::BigInt;
@@ -311,19 +312,18 @@ fn operand(
     })
 }
 
-/// Resolve the `scale` argument at position `idx` (or the host default),
-/// validating the 0..=i32::MAX range PHP enforces.
+/// The `?int $scale` argument at position `idx` (zpp's
+/// `Z_PARAM_LONG_OR_NULL`), or the default scale, checked against the
+/// 0..=INT_MAX range. php parses it before it reads the operands.
 fn scale_arg(
-    host: &dyn Host,
+    host: &mut dyn Host,
     args: &[Value],
     idx: usize,
     func: &str,
     argnum: usize,
 ) -> Result<usize, Thrown> {
-    let s = match args.get(idx) {
-        Some(v) if !matches!(deref(v), Value::Null) => conv::to_int(&deref(v)),
-        _ => host.bc_scale(),
-    };
+    let s = crate::ext::zpp::opt_long_arg(host, args, idx, func, "scale")?
+        .unwrap_or_else(default_scale);
     if !(0..=2147483647).contains(&s) {
         return Err(Thrown::error(
             "ValueError",
@@ -338,44 +338,44 @@ fn scale_arg(
 // ---------------------------------------------------------------------------
 
 fn fn_bcadd(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcadd", 3)?;
     let a = operand(args, 0, "bcadd", 1, "num1")?;
     let b = operand(args, 1, "bcadd", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcadd", 3)?;
     Ok(Value::str(a.add(&b).format(scale)))
 }
 
 fn fn_bcsub(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcsub", 3)?;
     let a = operand(args, 0, "bcsub", 1, "num1")?;
     let b = operand(args, 1, "bcsub", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcsub", 3)?;
     Ok(Value::str(a.sub(&b).format(scale)))
 }
 
 fn fn_bcmul(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcmul", 3)?;
     let a = operand(args, 0, "bcmul", 1, "num1")?;
     let b = operand(args, 1, "bcmul", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcmul", 3)?;
     Ok(Value::str(a.mul(&b).format(scale)))
 }
 
 fn fn_bcdiv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcdiv", 3)?;
     let a = operand(args, 0, "bcdiv", 1, "num1")?;
     let b = operand(args, 1, "bcdiv", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcdiv", 3)?;
     Ok(Value::str(bc_div(&a, &b, scale)?.format(scale)))
 }
 
 fn fn_bcmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcmod", 3)?;
     let a = operand(args, 0, "bcmod", 1, "num1")?;
     let b = operand(args, 1, "bcmod", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcmod", 3)?;
     Ok(Value::str(bc_mod(&a, &b, scale)?.format(scale)))
 }
 
 fn fn_bcdivmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcdivmod", 3)?;
     let a = operand(args, 0, "bcdivmod", 1, "num1")?;
     let b = operand(args, 1, "bcdivmod", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bcdivmod", 3)?;
     if b.is_zero() {
         return Err(Thrown::error("DivisionByZeroError", "Division by zero"));
     }
@@ -388,17 +388,17 @@ fn fn_bcdivmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_bcpow(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bcpow", 3)?;
     let base = operand(args, 0, "bcpow", 1, "num")?;
     let exp = operand(args, 1, "bcpow", 2, "exponent")?;
-    let scale = scale_arg(host, args, 2, "bcpow", 3)?;
     Ok(Value::str(bc_pow(&base, &exp, scale)?.format(scale)))
 }
 
 fn fn_bcpowmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 3, "bcpowmod", 4)?;
     let base = operand(args, 0, "bcpowmod", 1, "num")?;
     let exp = operand(args, 1, "bcpowmod", 2, "exponent")?;
     let modulus = operand(args, 2, "bcpowmod", 3, "modulus")?;
-    let scale = scale_arg(host, args, 3, "bcpowmod", 4)?;
     let e = exp.trunc_int();
     if e.is_negative() {
         return Err(Thrown::error(
@@ -422,15 +422,15 @@ fn fn_bcpowmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_bcsqrt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = operand(args, 0, "bcsqrt", 1, "num")?;
     let scale = scale_arg(host, args, 1, "bcsqrt", 2)?;
+    let a = operand(args, 0, "bcsqrt", 1, "num")?;
     Ok(Value::str(bc_sqrt(&a, scale)?.format(scale)))
 }
 
 fn fn_bccomp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let scale = scale_arg(host, args, 2, "bccomp", 3)?;
     let a = operand(args, 0, "bccomp", 1, "num1")?;
     let b = operand(args, 1, "bccomp", 2, "num2")?;
-    let scale = scale_arg(host, args, 2, "bccomp", 3)?;
     let diff = a.rescale(scale).mant - b.rescale(scale).mant;
     let r = if diff.is_positive() {
         1
@@ -488,22 +488,38 @@ fn fn_bcround(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(r.format(out_scale)))
 }
 
+thread_local! {
+    /// php's `BCG(bc_precision)`: the `bcmath.scale` setting as a number,
+    /// kept by [`set_default_scale`] whenever the setting changes.
+    static DEFAULT_SCALE: Cell<i64> = const { Cell::new(0) };
+}
+
+/// OnUpdateScale's store: `scale` is the setting's quantity, which its
+/// handler only accepts within 0..=INT_MAX.
+pub(crate) fn set_default_scale(scale: i64) {
+    DEFAULT_SCALE.with(|s| s.set(scale));
+}
+
+/// The default scale: the `bcmath.scale` setting.
+fn default_scale() -> i64 {
+    DEFAULT_SCALE.with(Cell::get)
+}
+
+/// `bcscale(?int $scale = null)`: the old default scale; a new one is set
+/// through the ini entry (`zend_alter_ini_entry`).
 fn fn_bcscale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match args.first() {
-        Some(v) if !matches!(deref(v), Value::Null) => {
-            let new = conv::to_int(&deref(v));
-            if !(0..=2147483647).contains(&new) {
-                return Err(Thrown::error(
-                    "ValueError",
-                    "bcscale(): Argument #1 ($scale) must be between 0 and 2147483647",
-                ));
-            }
-            let old = host.bc_scale();
-            host.set_bc_scale(new);
-            Ok(Value::Int(old))
+    let old = default_scale();
+    if let Some(new) = crate::ext::zpp::opt_long_arg(host, args, 0, "bcscale", "scale")? {
+        if !(0..=2147483647).contains(&new) {
+            return Err(Thrown::error(
+                "ValueError",
+                "bcscale(): Argument #1 ($scale) must be between 0 and 2147483647",
+            ));
         }
-        _ => Ok(Value::Int(host.bc_scale())),
+        let new = new.to_string().into_bytes();
+        crate::runtime_fns::alter_ini_entry(host, b"bcmath.scale", new, "bcscale")?;
     }
+    Ok(Value::Int(old))
 }
 
 // ---------------------------------------------------------------------------

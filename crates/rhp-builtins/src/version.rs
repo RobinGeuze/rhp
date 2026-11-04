@@ -5,15 +5,16 @@
 //! is printed by `tools/capture-ref-build.php`; `crates/rhp-cli/tests/ref_build.rs`
 //! runs that script under both php and rhp and requires identical output.
 //!
-//! Libraries rhp links report their own versions (PCRE2: `crate::pcre`); the
-//! ones still listed here are for code that does not link its library yet.
+//! Libraries rhp links report their own versions (PCRE2: `crate::pcre`,
+//! libcurl: `curl_version()`); the ones still listed here are for code that
+//! does not link its library yet.
 //!
 //! Built for another platform (Linux), rhp keeps the reference's release,
 //! [`BUILD_DATE`] and the library versions below: they describe behaviour rhp
-//! implements the same way everywhere (libcurl, ...). Only the
+//! implements the same way everywhere (libzip, ...). Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
-//! [`BUILD_SYSTEM`], [`ZEND_VM_KIND`] and libcurl's host triple. There
+//! [`BUILD_SYSTEM`] and [`ZEND_VM_KIND`]. There
 //! ref_build compares the release section only.
 //!
 //! Bumping to a new patch release (e.g. 8.5.13):
@@ -220,7 +221,8 @@ pub const EXT_DOM: &str = "20031129";
 // PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
 // LIBXML_* versions from the linked libxml2 (crate::ext::libxml), the
 // INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
-// ones from the linked OpenSSL (crate::ext::openssl).
+// ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
+// linked libcurl (crate::ext::curl).
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
 /// `ICONV_VERSION`.
@@ -233,31 +235,6 @@ pub const GMP_VERSION: &str = "6.3.0";
 /// `ZLIB_VERSION`, `ZLIB_VERNUM` (the zlib headers php was compiled against).
 pub const ZLIB_VERSION: &str = "1.2.12";
 pub const ZLIB_VERNUM: i64 = 0x12c0;
-
-/// `curl_version()`: the libcurl the reference php links at run time.
-pub mod curl {
-    pub const VERSION: &str = "8.23.0";
-    pub const VERSION_NUMBER: i64 = 0x08_17_00;
-    pub const AGE: i64 = 11;
-    /// The `CURL_VERSION_*` feature bits (no TLS-SRP: OpenSSL 4 dropped SRP).
-    pub const FEATURES: i64 = 1472137101;
-    /// The triple libcurl was configured for: the reference's on macOS, the
-    /// target's GNU triple elsewhere, as Ubuntu's libcurl reports it
-    /// (x86_64's for any architecture but aarch64).
-    #[cfg(target_os = "macos")]
-    pub const HOST: &str = "aarch64-apple-darwin27.0.0";
-    #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
-    pub const HOST: &str = "aarch64-unknown-linux-gnu";
-    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
-    pub const HOST: &str = "x86_64-pc-linux-gnu";
-    pub const SSL_VERSION: &str = "OpenSSL/4.1.0";
-    /// The libz libcurl links at run time (not [`super::ZLIB_VERSION`],
-    /// php's compile-time zlib, although on the reference they agree).
-    pub const LIBZ_VERSION: &str = "1.2.12";
-    pub const LIBSSH_VERSION: &str = "libssh2/1.11.1";
-    pub const BROTLI_VERSION: &str = "brotli/1.2.1";
-    pub const BROTLI_VER_NUM: i64 = 16785409;
-}
 
 #[cfg(test)]
 mod tests {

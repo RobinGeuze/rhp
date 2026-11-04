@@ -34,6 +34,22 @@ fn main() {
         .warnings(true)
         .extra_warnings(true)
         .compile("rhp_intl_shim");
+
+    // ext/curl's constants against the linked curl.h, and its stdio shim.
+    let curl = include("CURL");
+    for f in ["src/ext/curl/consts.c", "src/ext/curl/shim.c"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/curl/consts.c")
+        .file("src/ext/curl/shim.c")
+        .include(&curl)
+        .warnings(true)
+        .extra_warnings(true)
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .flag_if_supported("-Wno-unused-parameter")
+        .compile("rhp_curl_shim");
+
     // ICU is C++; its .pc files leave the C++ runtime to the linker driver.
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") | Ok("ios") => println!("cargo:rustc-link-lib=dylib=c++"),

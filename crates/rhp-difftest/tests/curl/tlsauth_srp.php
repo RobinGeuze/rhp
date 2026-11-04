@@ -1,5 +1,6 @@
 <?php
-// The TLS-SRP options: libcurl 8.23 on OpenSSL 4 (no SRP) refuses every value.
+// The TLS-SRP options: libcurl accepts them only when its TLS library has SRP
+// (OpenSSL 3 does, OpenSSL 4 does not).
 $h = curl_init();
 foreach ([CURLOPT_TLSAUTH_USERNAME, CURLOPT_TLSAUTH_PASSWORD, CURLOPT_TLSAUTH_TYPE, CURLOPT_PROXY_TLSAUTH_USERNAME,
           CURLOPT_PROXY_TLSAUTH_PASSWORD, CURLOPT_PROXY_TLSAUTH_TYPE] as $o) {

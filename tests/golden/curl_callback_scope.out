@@ -1,0 +1,19 @@
+bool(true)
+private cb 5
+bool(true)
+int(0)
+private cb 5
+bool(true)
+bool(true)
+protected static cb
+bool(true)
+int(0)
+protected static cb
+bool(true)
+bool(true)
+private cb 5
+bool(true)
+int(0)
+private cb 5
+bool(true)
+curl_setopt(): Argument #3 ($value) must be a valid callback for option CURLOPT_WRITEFUNCTION, cannot access private method P::cb()

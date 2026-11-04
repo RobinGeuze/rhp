@@ -90,21 +90,13 @@ curl_setopt($h, CURLOPT_RETURNTRANSFER, true);
 var_dump(curl_exec($h), curl_errno($h), str_replace($dir, 'DIR', curl_error($h)));
 $h = curl_init('foo://bar');
 var_dump(curl_exec($h), curl_errno($h), curl_error($h));
+// (The disabled-protocol texts differ between libcurl releases: tests/curl.rs.)
 $h = curl_init('ftp://x/');
 curl_setopt($h, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
-var_dump(curl_exec($h), curl_errno($h), curl_error($h));
+var_dump(curl_exec($h), curl_errno($h));
 $h = curl_init($url);
 curl_setopt($h, CURLOPT_PROTOCOLS, CURLPROTO_HTTP);
-var_dump(curl_exec($h), curl_errno($h), curl_error($h));
-foreach ([0, 1, 6, 7, 22, 23, 28, 42, 47, 60, 77, 101, 102, -1, 999] as $c) {
-    echo $c, ": ", curl_strerror($c), "\n";
-}
-foreach ([-1, 0, 1, 2, 6, 7, 13] as $c) {
-    echo "m", $c, ": ", curl_multi_strerror($c), "\n";
-}
-foreach ([0, 1, 3, 5, 6] as $c) {
-    echo "s", $c, ": ", curl_share_strerror($c), "\n";
-}
+var_dump(curl_exec($h), curl_errno($h));
 
 echo "== validation\n";
 $h = curl_init();
@@ -142,6 +134,7 @@ var_dump($c === $h, strlen(curl_exec($c)));
 curl_reset($c);
 var_dump(curl_getinfo($c, CURLINFO_EFFECTIVE_URL));
 var_dump(curl_escape($h, "a b&c=d/é~"), curl_unescape($h, "a%20b%26c%3Dd%2F%C3%A9~%zz+"));
+var_dump(curl_escape($h, ""), curl_unescape($h, ""), curl_escape($h, "a\0b"), bin2hex(curl_unescape($h, "a%00b")));
 var_dump(@curl_close($h), curl_errno($h));
 
 echo "== multi\n";

@@ -129,6 +129,12 @@ pub fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Resul
     ext::xmlwriter::object_dtor(host, id)
 }
 
+/// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
+/// constant, if `name` is one.
+pub fn constant_deprecation(name: &[u8]) -> Option<String> {
+    ext::curl::constant_deprecation(name)
+}
+
 /// The engine's object free hook (`rhp_values::set_object_free_hook`): lets
 /// the extensions with per-object native state release it.
 pub fn object_freed(id: u32) {
@@ -138,6 +144,7 @@ pub fn object_freed(id: u32) {
     ext::xml::object_freed(id);
     ext::xmlwriter::object_freed(id);
     ext::openssl::object_freed(id);
+    ext::curl::object_freed(id);
 }
 
 /// The internal opaque-handle classes php declares `@strict-properties` and
@@ -150,6 +157,7 @@ pub fn is_opaque_handle_class(name: &[u8]) -> bool {
         b"CurlHandle",
         b"CurlMultiHandle",
         b"CurlShareHandle",
+        b"CurlSharePersistentHandle",
         b"XMLParser",
         b"OpenSSLCertificate",
         b"OpenSSLCertificateSigningRequest",
@@ -379,6 +387,13 @@ pub trait Host {
     /// throw, e.g. on an undefined constant inside it).
     fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
         Ok(self.class_constant(class, name))
+    }
+
+    /// Run the destructors of objects nothing references any more, now: php
+    /// destructs when the refcount reaches zero, rhp before the next
+    /// statement. Default: nothing.
+    fn run_released_destructors(&mut self) -> Result<(), Thrown> {
+        Ok(())
     }
 
     /// Invoke a PHP callable (for `array_map`/`array_filter`/…). Default: refused.

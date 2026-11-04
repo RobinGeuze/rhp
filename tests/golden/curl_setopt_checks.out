@@ -47,14 +47,13 @@ CONNECTTIMEOUT -2=false 0=true 10=true
 MAXREDIRS      -5=false -2=false -1=true 0=true 20=true
 SSLVERSION     99=false 2=false 3=false 0=true 1=true 6=true 7=true 8=false 458758=true 524289=false
 PROXYTYPE      12345=false -1=false 0=true 7=true 8=false
-HTTP_VERSION   99=false -1=false 0=true 2=true 3=true 4=true 5=true 6=false 30=true 31=true 32=false
+HTTP_VERSION   99=false -1=false 0=true 2=true 3=true 4=true 5=true 6=false 32=false
 IPRESOLVE      99=false -1=false 0=true 1=true 2=true 3=false
 PORT           99999=false -1=false 0=true 80=true 65535=true 65536=false
 FOLLOWLOCATION 0=true 1=true 2=true 3=true 4=false -1=false
 BUFFERSIZE     -1=false 0=true 1024=true
 INFILESIZE     -2=false -1=true 0=true
-HTTPAUTH       0=true 1=true 8=false 4294967023=true 2147483648=false 16=true 4294967022=true
-PROXYAUTH      8=false 9=true
+HTTPAUTH       0=true 1=true 2147483648=false 16=true
 SOCKS5_AUTH    0=true 1=true 4=true 5=true 2=false -1=false
 NEW_FILE_PERMS 420=true 511=true 512=false -1=false
 ADDRESS_SCOPE  0=true 4294967295=true 4294967296=false -1=false
@@ -62,19 +61,16 @@ RTSP_REQUEST   0=false 1=true 11=true 12=false
 NETRC          0=true 2=true 3=false
 ALTSVC_CTRL    0=false 1=true
 SSL_FALSESTART 0=false 1=false
-PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
-REDIR_PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'rtmp'=false 'smb'=false 'file,ftp,sftp'=true
+PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'file,ftp,sftp'=true
+REDIR_PROTOCOLS_STR: 'nope'=false ''=false 'all'=true 'ALL'=true 'http'=true 'HTTP,https'=true 'http,,https'=true 'http,'=true 'all,http'=false 'http '=false 'file,ftp,sftp'=true
 INTERFACE '' => true
 INTERFACE 'lo0' => true
 SSLENGINE '' => true
 SSLENGINE 'x' => false
 DNS_SERVERS '' => false
 DNS_SERVERS '1.1.1.1' => false
-TLSAUTH_TYPE 'SRP' => false
-TLSAUTH_TYPE 'srp' => false
 TLSAUTH_TYPE 'x' => false
 TLSAUTH_TYPE '' => false
-PROXY_TLSAUTH_TYPE 'SRP' => false
 PROXY_TLSAUTH_TYPE 'tls' => false
 bool(false)
 bool(false)

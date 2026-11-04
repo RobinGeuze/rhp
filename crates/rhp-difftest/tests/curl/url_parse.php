@@ -1,5 +1,5 @@
 <?php
-// libcurl 8.23's URL parser as php shows it: CURLINFO_EFFECTIVE_URL before a
+// The linked libcurl's URL parser as php shows it: CURLINFO_EFFECTIVE_URL before a
 // transfer, CURLOPT_PATH_AS_IS, and curl_exec on a URL the parser rejects
 // (CURLE_URL_MALFORMAT, no transfer, no effective URL afterwards). No
 // network: transfers that parse are stopped by CURLOPT_PROTOCOLS_STR.

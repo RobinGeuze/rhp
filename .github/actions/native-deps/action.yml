@@ -23,10 +23,12 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a), ICU (libicu*.a) and
-        # OpenSSL (libcrypto.a, libssl.a), linked statically. Ubuntu's
-        # libcrypto.a also needs its Libs.private, which libssl-dev does not
-        # pull in: -l:libjitterentropy.a -lz -lzstd.
+        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a), ICU (libicu*.a),
+        # OpenSSL (libcrypto.a, libssl.a) and libcurl (libcurl.a), linked
+        # statically. Ubuntu's libcrypto.a also needs its Libs.private, which
+        # libssl-dev does not pull in: -l:libjitterentropy.a -lz -lzstd.
+        # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
+        # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -36,7 +38,10 @@ runs:
           libssl-dev \
           libjitterentropy3-dev \
           zlib1g-dev \
-          libzstd-dev
+          libzstd-dev \
+          libcurl4-openssl-dev \
+          libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
+          libpsl-dev librtmp-dev libssh-dev libssh2-1-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -63,6 +68,15 @@ runs:
           fi
         fi
         if [ -n "$php" ]; then
+          # libcurl has no source build here: php must link the distro's.
+          # shellcheck disable=SC2016
+          curl_want="$("$php" -n -r 'echo function_exists("curl_version") ? curl_version()["version"] : "";')"
+          curl_have="$(pkg-config --modversion libcurl)"
+          echo "libcurl: the distro has $curl_have; $php links ${curl_want:-no libcurl}"
+          if [ -n "$curl_want" ] && [ "$curl_want" != "$curl_have" ]; then
+            echo "::error::$php links libcurl $curl_want, but the distro's libcurl4-openssl-dev is $curl_have. rhp links the distro's libcurl.a and cannot build another release."
+            exit 1
+          fi
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION
           # its library's: one release. php can differ only if it loads a
           # libxml2 other than the one it was compiled against.

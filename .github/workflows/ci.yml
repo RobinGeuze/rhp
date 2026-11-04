@@ -166,6 +166,8 @@ jobs:
             /ext/intl/php_intl.stub.php
             /ext/intl/collator/collator.stub.php
             /ext/intl/common/common.stub.php
+            /ext/curl/curl.stub.php
+            /ext/curl/curl_private.h
       - uses: actions/cache@v4
         with:
           path: php-dist
@@ -188,6 +190,7 @@ jobs:
       - run: target/debug/rhp-difftest gen html-tables --php-src php-src --check
       - run: target/debug/rhp-difftest gen intl-consts --php-src php-src --check
       - run: target/debug/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
+      - run: target/debug/rhp-difftest gen curl-consts --php-src php-src --check
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
   # from the manifest, so adding an app version needs no workflow change.

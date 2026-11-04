@@ -34,7 +34,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, argon2 (in `rhp-csrc`); later timelib, oniguruma, and libmbfl in its own crate (LGPL) |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libxml2 on Linux; later gmp, curl |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux; later gmp |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -46,7 +46,9 @@ rather than linking dynamically quietly.
 
 - OS libraries that php also takes from the OS and that ship no static
   archive. macOS `/usr/lib`: libxml2, libxslt, libiconv, libz, libbz2,
-  libedit, libffi. Linux: glibc's iconv.
+  libedit, libffi, and what Homebrew's libcurl takes from the SDK
+  (libicucore, libldap, libgssapi_krb5, libresolv, frameworks). Linux:
+  glibc's iconv.
 - Libraries with no static archive of php's version: Homebrew's libzip.
 - The C++ runtime a static C++ library needs (ICU), which php also loads
   dynamically. macOS: the SDK has no static libc++, only /usr/lib/libc++.
@@ -55,6 +57,11 @@ rather than linking dynamically quietly.
   keeps it out of the binary; the system's libstdc++.so is used, as libgcc_s
   is for Rust's std. ICU's .pc files leave the runtime to the linker
   driver, so build.rs names it.
+- libcurl's private dependencies on Debian/Ubuntu (nghttp2, libidn2,
+  librtmp, OpenLDAP, libssh2, libpsl, MIT Kerberos, zstd, brotli, zlib):
+  libcurl.a is linked statically, they are not. MIT Kerberos ships no
+  static archive, and librtmp and libidn2 are LGPL. Its OpenSSL is the
+  OpenSSL row's static one.
 
 Today rhp-builtins links:
 
@@ -68,6 +75,7 @@ Today rhp-builtins links:
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
+| libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -119,9 +127,26 @@ policy for one build, for experiments.
 The helper links a static archive from a directory under `OUT_DIR` that holds
 only that archive. Searching the library's own libdir would not work: ld64
 has no `-Bstatic`, so `-lpcre2-8` takes Homebrew's `libpcre2-8.dylib` next
-to the `.a`. A static link's `Libs.private` dependencies are linked
-dynamically from the default paths; one that is a Homebrew or `-dev`
-library needs its own row.
+to the `.a`.
+
+A static archive's own dependencies come from its .pc file (`Libs.private`
+and the modules in `Requires.private`):
+
+- macOS: each one a Homebrew formula ships as `lib<name>.a` is linked
+  statically the same way, with its own dependencies (the .pc files of
+  Homebrew's curl name its dependencies' Cellar paths, which the helper maps
+  to the formulae's opt prefixes: the versions php's dylibs load). Every
+  other one must be an OS library in the SDK, else the build fails; `-framework`s
+  are linked as frameworks.
+- Linux: the archive's direct dependencies are linked dynamically (its
+  `Libs.private`, plus the `Libs` of its `Requires.private` modules), not
+  `pkg-config --static`'s whole closure, whose libraries need not all have
+  `.so` links installed.
+
+The helper drops the library itself from these (a second, dynamic `-l` for
+it would override the static one), the ones with rows of their own (ICU's
+libicuuc and libicudata) and the ones openssl-sys links (libcurl's libssl
+and libcrypto), so each library is linked once.
 
 **Checks.** `crates/rhp-cli/tests/ref_build.rs` requires the "linked" section
 of `tools/capture-ref-build.php` to print the same under rhp and the host's
@@ -144,15 +169,23 @@ ICU off). A release with no recorded checksum fails the job; add its
 checksum.
 The `php` input names a php that is not the one on PATH (the nightly
 sanitizer build uses php-src's bundled PCRE2).
-`otool -L target/release/rhp` (or `ldd`) shows no libpcre2, libicu, libssl
-or libcrypto (and on Linux no libxml2); `nm` shows the `pcre2_*` symbols.
-rhp-builtins' `pcre2_is_linked_statically`, `libxml2_is_linked_statically`,
-`icu_is_linked_statically` and `openssl_is_linked_statically` tests check its
-own test binary, which is linked straight from the crate. The helper drops
-the library itself from a static link's `Libs.private`: a second, dynamic
-`-l` for it would override the static one. It also drops the ones that have
-rows of their own (ICU's libicuuc and libicudata), which those rows link
-statically.
+`otool -L target/release/rhp` (or `ldd`) shows no libpcre2, libicu, libssl,
+libcrypto or libcurl (and on Linux no libxml2); `nm` shows the `pcre2_*` and
+`curl_*` symbols. rhp-builtins' `pcre2_is_linked_statically`,
+`libxml2_is_linked_statically`, `icu_is_linked_statically`,
+`openssl_is_linked_statically` and `libcurl_is_linked_statically` tests
+check its own test binary, which is linked straight from the crate. The last
+also requires `curl_version_info()` to report the version of the curl.h rhp
+compiled against.
+
+php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
+older libcurl, whose error texts differ: the CURL row names the formula, so
+the build never falls back to a bare `-lcurl`. rhp declares libcurl's API
+itself (`ext/curl/sys.rs`) instead of using curl-sys, which links `-lcurl`
+from the SDK on macOS and builds its bundled libcurl when pkg-config finds
+none. ext/curl's constants are php's names and version gates
+(`rhp-difftest gen curl-consts`, from curl.stub.php), evaluated against the
+linked curl.h at build time (`ext/curl/consts.c`).
 
 ## Compiled from source: rhp-csrc
 
@@ -194,6 +227,8 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 - Permissive licences (MIT, BSD, Apache-2.0, ISC, Zlib, curl, Unicode-3.0,
   CC0-1.0, public domain) may be linked or vendored; their notices go in
   `THIRD-PARTY-NOTICES`.
+- MPL-2.0 data or code may be linked unmodified if its notice names where
+  its source is (the Public Suffix List inside Homebrew's static libpsl).
 - LGPL may be linked statically or vendored: rhp ships its source, so users
   can relink. Keep LGPL code in its own crate with an exact licence
   expression (libmbfl: `rhp-mbfl-sys`, `LGPL-2.1-only AND PHP-3.01 AND MIT`).
@@ -259,6 +294,13 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   - printf-style callbacks are C functions in the shim that format with
     `vasprintf` (no length limit, like php's `vspprintf`) and hand Rust the
     finished message;
+  - libcurl's callbacks (ext/curl) use the same layer. php's callbacks
+    neither stop a transfer on an exception nor on `exit`: later callbacks
+    see `EG(exception)` and return their defaults (a write callback the
+    length it was given), so rhp registers no stop function and the transfer
+    runs to its end before `curl_exec`/`curl_multi_exec` rethrows. Each
+    callback's `void *` is its handle's `RefCell`, kept alive by the builtin
+    driving the transfer; freeing a handle clears the pointers first;
   - a handle whose free can call back into PHP (an XMLWriter flushing to a
     stream) is freed in the class's native `dtor_obj`
     (`rhp_builtins::object_dtor`), which the engine runs with a host before
@@ -331,3 +373,4 @@ Tables php-src owns are generated, committed, and checked by
 | `intl-consts` | php-src `ext/intl` stubs: global constants' names, types, `@cvalue` and `#if` guards (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `ini_table.rs`, `const_modules.rs` | `cargo test` on the reference host |
+| `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |

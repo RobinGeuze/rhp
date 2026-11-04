@@ -113,6 +113,12 @@ foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR',
 // each binary was compiled against: a Homebrew bottle built before an
 // openssl@4 update reports the older headers, so they are compared nowhere.
 module_rows(['OpenSSL Library Version']);
+ext_row('curl', 'curl_version()', function () {
+    $v = curl_version();
+    // The array without feature_list (derived from 'features').
+    unset($v['feature_list']);
+    return $v;
+});
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
@@ -130,9 +136,3 @@ foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION'
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
-ext_row('curl', 'curl_version()', function () {
-    $v = curl_version();
-    // The array without feature_list (derived from 'features').
-    unset($v['feature_list']);
-    return $v;
-});

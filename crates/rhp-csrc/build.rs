@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let crypt = std::env::var_os("CARGO_FEATURE_CRYPT").is_some();
     let argon2 = std::env::var_os("CARGO_FEATURE_ARGON2").is_some();
+    let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
     println!("cargo:rerun-if-changed=build.rs");
 
     if crypt {
@@ -23,6 +24,42 @@ fn main() {
         .file("glue/crypt.c")
         .compile("rhp_csrc_crypt");
         rerun(&["shim", "glue", "vendor/php-src"]);
+    }
+
+    if timelib {
+        // ext/date/config0.m4: timelib's sources and PHP_TIMELIB_CFLAGS
+        // (-fwrapv: timelib relies on signed overflow wrapping), plus php's
+        // global -ffp-contract=off (astro.c's floating point). It builds
+        // without the Zend shim; glue/timelib_config.h stands in for php's
+        // generated timelib_config.h.
+        let lib = Path::new("vendor/php-src/ext/date/lib");
+        let mut b = cc::Build::new();
+        b.include("glue")
+            .include(lib)
+            .opt_level(2)
+            .warnings(false)
+            .define("HAVE_TIMELIB_CONFIG_H", "1")
+            .flag("-fwrapv")
+            .flag("-ffp-contract=off")
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_timelib.h"));
+        for f in [
+            "astro.c",
+            "dow.c",
+            "parse_date.c",
+            "parse_tz.c",
+            "parse_posix.c",
+            "timelib.c",
+            "tm2unixtime.c",
+            "unixtime2tm.c",
+            "parse_iso_intervals.c",
+            "interval.c",
+        ] {
+            b.file(lib.join(f));
+        }
+        b.file("glue/timelib.c").compile("rhp_csrc_timelib");
+        rerun(&["glue", "vendor/php-src"]);
     }
 
     if argon2 {

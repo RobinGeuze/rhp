@@ -24,6 +24,7 @@ in their package metadata (see Cargo.lock) and are not repeated here.
                    brotli (MIT), libssh2, zstd (BSD-3-Clause), the Public
                    Suffix List (MPL-2.0); OpenSSL as in 14
 16. iconv          macOS: BSD-2-Clause; Linux: glibc (LGPL-2.1-or-later)
+17. timelib        MIT; tz data: public domain
 
 
 ------------------------------------------------------------------------------
@@ -259,8 +260,8 @@ algorithms from main/, ext/ and Zend/. php-src is under the PHP License 3.01;
 its Zend/ directory is under the Zend Engine License 2.00. Both follow.
 
 crates/rhp-csrc also compiles some php-src C files unmodified (its
-vendor/php-src). Their original authors' terms are in sections 5 to 7;
-php-src's changes to them come under the PHP License.
+vendor/php-src). Their original authors' terms are in sections 5 to 7 and
+17; php-src's changes to them come under the PHP License.
 
 crates/rhp-builtins/src/signatures/table.rs is generated from php-src's
 *.stub.php files.
@@ -1585,3 +1586,38 @@ The macOS library's header (usr/include/iconv.h) carries:
  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  SUCH DAMAGE.
+
+
+17. timelib
+------------------------------------------------------------------------------
+
+timelib 2022.17, php-src's ext/date/lib, compiled by crates/rhp-csrc from its
+vendor/php-src/ext/date/lib (timezonedb.h reduced to the branch php compiles).
+Each file states the MIT licence with its own years: Copyright (c) 2015-2026
+Derick Rethans; Copyright (c) 2017-2021 MongoDB, Inc. astro.c's algorithms are
+"taken from a public domain source by Paul Schlyter". The embedded time zone
+data (timezonedb.h, timezonemap.h, fallbackmap.h) is generated from the IANA
+time zone database, which is in the public domain. LICENSE.rst:
+
+  The MIT License (MIT)
+
+  Copyright (c) 2015-2021 Derick Rethans
+  Copyright (c) 2017-2019,2021 MongoDB, Inc.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.

@@ -1313,6 +1313,8 @@ fn compile_anon_class(
         is_final: true,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
+        // zend_compile_class_decl: every anonymous class.
+        not_serializable: true,
         ..ClassFlags::default()
     };
     let m = compile_members(&ac.members, sigs, &name)?;

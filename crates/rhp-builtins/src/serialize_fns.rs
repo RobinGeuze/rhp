@@ -148,11 +148,13 @@ impl Serializer {
         let class_id = h.borrow().class;
         let mut cname = host.class_name(class_id).unwrap_or_default();
         if host.not_serializable(class_id) {
+            // php's `%s`: an anonymous class's name ends at its NUL.
+            let shown = cname.split(|&b| b == 0).next().unwrap_or_default();
             return Err(Thrown::error(
                 "Exception",
                 format!(
                     "Serialization of '{}' is not allowed",
-                    String::from_utf8_lossy(&cname)
+                    String::from_utf8_lossy(shown)
                 ),
             ));
         }

@@ -4405,6 +4405,26 @@ impl ProtoBuilder {
 
         let a = self.compile_expr(b.lhs)?;
         let r = self.compile_expr(b.rhs)?;
+        // zend_vm's SPEC_RULE_COMMUTATIVE: php swaps the operands of these
+        // opcodes when op1's kind is lower than op2's, which decides whose
+        // object handler runs first.
+        let commutative = matches!(
+            &b.operator,
+            Op::Multiplication(_)
+                | Op::BitwiseAnd(_)
+                | Op::BitwiseOr(_)
+                | Op::BitwiseXor(_)
+                | Op::Equal(_)
+                | Op::NotEqual(_)
+                | Op::AngledNotEqual(_)
+                | Op::Identical(_)
+                | Op::NotIdentical(_)
+        );
+        let (a, r) = if commutative && php_operand_kind(b.lhs) < php_operand_kind(b.rhs) {
+            (r, a)
+        } else {
+            (a, r)
+        };
         let dst = self.alloc_temp();
         let cmp = |k| Instr::Cmp {
             dst,
@@ -7116,6 +7136,43 @@ fn hint_class_names(hint: &Hint) -> Result<Vec<PhpStr>, Thrown> {
     let mut out = Vec::new();
     collect(hint, &mut out)?;
     Ok(out)
+}
+
+/// The kind php's compiler gives an expression's result: IS_CONST (1) <
+/// IS_TMP_VAR (2) < IS_VAR (4) < IS_CV (8). Reads of elements and
+/// properties are TMP (zend_adjust_for_fetch_type); calls, `new`, `yield`
+/// and `include`/`eval` are VAR. (php's frameless and special-cased
+/// function calls give TMP; they count as VAR here.)
+fn php_operand_kind(e: &Expression) -> u8 {
+    const CONST: u8 = 1;
+    const TMP: u8 = 2;
+    const VAR: u8 = 4;
+    const CV: u8 = 8;
+    match e {
+        Expression::Parenthesized(p) => php_operand_kind(p.expression),
+        Expression::Variable(Variable::Direct(d)) => {
+            let n = strip_dollar(d.name);
+            if n == b"this" || is_superglobal(n) {
+                TMP
+            } else {
+                CV
+            }
+        }
+        Expression::Call(_)
+        | Expression::Instantiation(_)
+        | Expression::AnonymousClass(_)
+        | Expression::Yield(_) => VAR,
+        Expression::Construct(
+            Construct::Eval(_)
+            | Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_),
+        ) => VAR,
+        Expression::MagicConstant(_) => CONST,
+        _ if fold_const(e).is_ok() => CONST,
+        _ => TMP,
+    }
 }
 
 /// PHP's superglobals, available in every scope without `global`.

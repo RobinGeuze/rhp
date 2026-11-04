@@ -6295,13 +6295,7 @@ impl Vm {
                     let v = if matches!(x, Value::Object(_) | Value::Array(_))
                         || matches!(y, Value::Object(_) | Value::Array(_))
                     {
-                        if let Some(r) = self.try_do_operation(Op::Concat, &x, &y)? {
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                        let mut bytes = self.to_string_vm(&x)?;
-                        bytes.extend_from_slice(&self.to_string_vm(&y)?);
-                        Value::str(bytes)
+                        self.concat_object(&x, &y)?
                     } else {
                         ops::concat(&x, &y)
                     };
@@ -6309,16 +6303,13 @@ impl Vm {
                 }
 
                 Instr::Neg { dst, a } => {
-                    let mut v = self.reg_get(top, a);
-                    if let Value::Object(_) = v {
+                    let v = self.reg_get(top, a);
+                    let r = if let Value::Object(_) | Value::Closure(_) = v {
                         // php compiles `-$x` to `$x * -1`.
-                        if let Some(r) = self.try_do_operation(Op::Mul, &v, &Value::Int(-1))? {
-                            self.reg_set(top, dst, r);
-                            continue;
-                        }
-                        v = self.number_operand(v)?;
-                    }
-                    let r = ops::negate(&v)?;
+                        self.arith_object(Op::Mul, ops::mul, &v, &Value::Int(-1))?
+                    } else {
+                        ops::negate(&v)?
+                    };
                     self.reg_set(top, dst, r);
                 }
                 Instr::BitNot { dst, a } => {
@@ -6330,6 +6321,12 @@ impl Vm {
                                 continue;
                             }
                         }
+                    }
+                    if let Value::Object(_) | Value::Closure(_) = v {
+                        return Err(Thrown::type_error(format!(
+                            "Cannot perform bitwise not on {}",
+                            self.zval_value_name(&v)
+                        )));
                     }
                     self.reg_set(top, dst, ops::bitwise_not(&v));
                 }
@@ -10300,7 +10297,9 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
+        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
+            || matches!(y, Value::Object(_) | Value::Closure(_))
+        {
             self.bin_object(op, f, x, y)?
         } else {
             f(&x, &y)?
@@ -10309,9 +10308,8 @@ impl Vm {
         Ok(())
     }
 
-    /// An operator with an object operand: its `do_operation` first, then
-    /// the operator on the operands, an internal class's object cast to a
-    /// number (`cast_object(_IS_NUMBER)`).
+    /// An operator with an object operand: php's order of `do_operation`
+    /// and operand conversion (see `compare.rs`).
     #[inline(never)]
     fn bin_object(
         &mut self,
@@ -10320,11 +10318,10 @@ impl Vm {
         x: Value,
         y: Value,
     ) -> Result<Value, Thrown> {
-        if let Some(v) = self.try_do_operation(op, &x, &y)? {
-            return Ok(v);
+        match op {
+            Op::Mod => self.long_op_object(op, &x, &y),
+            _ => self.arith_object(op, f, &x, &y),
         }
-        let (x, y) = (self.number_operand(x)?, self.number_operand(y)?);
-        f(&x, &y)
     }
 
     /// Bitwise binary op. An object operand goes through
@@ -10341,8 +10338,10 @@ impl Vm {
         f: fn(&Value, &Value) -> Value,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_)) || matches!(y, Value::Object(_)) {
-            self.bin_inf_object(op, f, x, y)?
+        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
+            || matches!(y, Value::Object(_) | Value::Closure(_))
+        {
+            self.bin_inf_object(op, x, y)?
         } else {
             f(&x, &y)
         };
@@ -10350,29 +10349,10 @@ impl Vm {
         Ok(())
     }
 
-    /// A bitwise operator with an object operand: its `do_operation` first,
-    /// then the operator on integers (zendi_try_get_long: an internal
-    /// class's object is cast to a number, then to int).
+    /// A bitwise operator with an object operand (`convert_op1_op2_long`).
     #[inline(never)]
-    fn bin_inf_object(
-        &mut self,
-        op: Op,
-        f: fn(&Value, &Value) -> Value,
-        x: Value,
-        y: Value,
-    ) -> Result<Value, Thrown> {
-        if let Some(v) = self.try_do_operation(op, &x, &y)? {
-            return Ok(v);
-        }
-        let as_int = |v: Value| match v {
-            Value::Float(f) => Value::Int(conv::to_int(&Value::Float(f))),
-            other => other,
-        };
-        let (x, y) = (
-            as_int(self.number_operand(x)?),
-            as_int(self.number_operand(y)?),
-        );
-        Ok(f(&x, &y))
+    fn bin_inf_object(&mut self, op: Op, x: Value, y: Value) -> Result<Value, Thrown> {
+        self.long_op_object(op, &x, &y)
     }
 
     fn call_builtin(
@@ -11910,18 +11890,6 @@ fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, V
 }
 
 impl Vm {
-    /// An arithmetic operand: an object of an internal class with a
-    /// `cast_object` handler as its number (`cast_object(_IS_NUMBER)`,
-    /// e.g. a SimpleXML node's text); any other value unchanged.
-    fn number_operand(&mut self, v: Value) -> Result<Value, Thrown> {
-        if let Value::Object(_) = v {
-            if let Some(n) = self.handler_cast(&v, CastTarget::Number)? {
-                return Ok(n);
-            }
-        }
-        Ok(v)
-    }
-
     /// `(bool) $v`: an internal class's `cast_object(_IS_BOOL)` (an empty
     /// SimpleXML list, a zero GMP is false), else php's truthiness.
     #[inline]

@@ -1545,15 +1545,9 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let f = "iconv_mime_encode";
     let field_name = zstr_arg(host, args, 0, f, "field_name")?;
     let field_value = zstr_arg(host, args, 1, f, "field_value")?;
-    let pref = match args.get(2).map(deref) {
+    let pref = match args.get(2) {
         None => None,
-        Some(Value::Array(a)) => Some(a),
-        Some(v) => {
-            return Err(Thrown::type_error(format!(
-                "{f}(): Argument #3 ($options) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &v)
-            )))
-        }
+        Some(_) => Some(crate::argparse::array_param(host, args, 2, f)?),
     };
     let mut in_charset = cstr(&encoding("internal"));
     let mut out_charset = in_charset.clone();

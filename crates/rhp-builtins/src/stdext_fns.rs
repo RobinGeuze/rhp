@@ -252,15 +252,7 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `array_rand(array $array, int $num = 1)` (php_array_pick_keys).
 fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "array_rand(): Argument #1 ($array) must be of type array, {} given",
-                zval_value_name(host, &other)
-            )))
-        }
-    };
+    let arr = crate::argparse::array_param(host, args, 0, "array_rand")?;
     let num = int_param(host, args, 1, "array_rand", "num", 1)?;
     let avail = arr.len() as i64;
     if avail == 0 {
@@ -318,15 +310,7 @@ fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // --- arrays ------------------------------------------------------------------
 
 fn fn_array_change_key_case(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "array_change_key_case(): Argument #1 ($array) must be of type array, {} given",
-                zval_value_name(host, &other)
-            )))
-        }
-    };
+    let arr = crate::argparse::array_param(host, args, 0, "array_change_key_case")?;
     let upper = int_param(host, args, 1, "array_change_key_case", "case", 0)? != 0;
     let mut out = PhpArray::new();
     for (k, v) in arr.iter() {
@@ -861,15 +845,9 @@ fn cstr(b: &[u8]) -> Vec<u8> {
 /// `getopt(string $short_options, array $long_options = [], &$rest_index = null)`.
 fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let short = cstr(&str_param(host, args, 0, "getopt", "short_options")?);
-    let longs = match args.get(1).map(deref) {
+    let longs = match args.get(1) {
         None => PhpArray::new(),
-        Some(Value::Array(a)) => a,
-        Some(other) => {
-            return Err(Thrown::type_error(format!(
-                "getopt(): Argument #2 ($long_options) must be of type array, {} given",
-                zval_value_name(host, &other)
-            )))
-        }
+        Some(_) => crate::argparse::array_param(host, args, 1, "getopt")?,
     };
     let set_rest = |v: i64| {
         if let Some(Value::Ref(r)) = args.get(2) {

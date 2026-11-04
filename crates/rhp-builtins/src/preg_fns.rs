@@ -896,15 +896,7 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
 /// `preg_replace_callback_array($pattern, $subject, $limit, &$count, $flags)`:
 /// each `pattern => callback` pair is applied in turn to the whole subject.
 fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let map = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-            "preg_replace_callback_array(): Argument #1 ($pattern) must be of type array, {} given",
-            crate::argparse::zval_value_name(host, &other)
-        )))
-        }
-    };
+    let map = crate::argparse::array_param(host, args, 0, "preg_replace_callback_array")?;
     let limit = int_arg(args, 2, -1);
     let flags = int_arg(args, 4, 0);
     let mut count = 0usize;

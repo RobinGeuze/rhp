@@ -610,15 +610,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "pcntl_sigprocmask(): Argument #1 ($mode) must be one of SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK",
         ));
     }
-    let sigs = match deref(&args[1]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "pcntl_sigprocmask(): Argument #2 ($signals) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &other)
-            )))
-        }
-    };
+    let sigs = crate::argparse::array_param(host, args, 1, "pcntl_sigprocmask")?;
     if sigs.is_empty() && how != libc::SIG_SETMASK as i64 {
         return Err(Thrown::error(
             "ValueError",

@@ -153,16 +153,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
 fn fn_stream_context_set_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_context_set_params";
     let ctx = context_param(host, args, fname)?;
-    let params = match args.get(1).map(deref) {
-        Some(Value::Array(p)) => p,
-        other => {
-            let v = other.unwrap_or(Value::Null);
-            return Err(Thrown::type_error(format!(
-                "{fname}(): Argument #2 ($params) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &v)
-            )));
-        }
-    };
+    let params = crate::argparse::array_param(host, args, 1, fname)?;
     parse_context_params(host, fname, &ctx, &params)?;
     Ok(Value::Bool(true))
 }

@@ -2093,16 +2093,7 @@ pub(super) fn fn_curl_setopt(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_setopt_array";
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
-    let arr = match args.get(1).map(deref) {
-        Some(Value::Array(a)) => a,
-        other => {
-            let v = other.unwrap_or(Value::Null);
-            return Err(Thrown::type_error(format!(
-                "{f}(): Argument #2 ($options) must be of type array, {} given",
-                crate::argparse::zval_value_name(host, &v)
-            )));
-        }
-    };
+    let arr = crate::argparse::array_param(host, args, 1, f)?;
     // A callback's exception does not stop the loop (php checks only the
     // FAILURE return); it is thrown at the end.
     let mut pending = None;

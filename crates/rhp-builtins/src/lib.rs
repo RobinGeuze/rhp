@@ -1154,24 +1154,12 @@ pub trait Host {
     }
 }
 
-// php's error levels (Zend/zend_errors.h).
-pub const E_ERROR: i64 = 1;
-pub const E_WARNING: i64 = 2;
-pub const E_PARSE: i64 = 4;
-pub const E_NOTICE: i64 = 8;
-pub const E_CORE_ERROR: i64 = 16;
-pub const E_CORE_WARNING: i64 = 32;
-pub const E_COMPILE_ERROR: i64 = 64;
-pub const E_COMPILE_WARNING: i64 = 128;
-pub const E_USER_ERROR: i64 = 256;
-pub const E_USER_WARNING: i64 = 512;
-pub const E_USER_NOTICE: i64 = 1024;
-pub const E_STRICT: i64 = 2048;
-pub const E_RECOVERABLE_ERROR: i64 = 4096;
-pub const E_DEPRECATED: i64 = 8192;
-pub const E_USER_DEPRECATED: i64 = 16384;
-/// Every level but E_STRICT (php 8.4+).
-pub const E_ALL: i64 = 30719;
+// php's error levels, for the builtins and the VM.
+pub use rhp_values::{
+    E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR, E_CORE_WARNING, E_DEPRECATED, E_ERROR,
+    E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT, E_USER_DEPRECATED, E_USER_ERROR,
+    E_USER_NOTICE, E_USER_WARNING, E_WARNING,
+};
 
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
 pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {

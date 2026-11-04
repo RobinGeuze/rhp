@@ -21,6 +21,25 @@ pub mod thrown;
 
 pub use thrown::Thrown;
 
+// php's error levels (Zend/zend_errors.h).
+pub const E_ERROR: i64 = 1;
+pub const E_WARNING: i64 = 2;
+pub const E_PARSE: i64 = 4;
+pub const E_NOTICE: i64 = 8;
+pub const E_CORE_ERROR: i64 = 16;
+pub const E_CORE_WARNING: i64 = 32;
+pub const E_COMPILE_ERROR: i64 = 64;
+pub const E_COMPILE_WARNING: i64 = 128;
+pub const E_USER_ERROR: i64 = 256;
+pub const E_USER_WARNING: i64 = 512;
+pub const E_USER_NOTICE: i64 = 1024;
+pub const E_STRICT: i64 = 2048;
+pub const E_RECOVERABLE_ERROR: i64 = 4096;
+pub const E_DEPRECATED: i64 = 8192;
+pub const E_USER_DEPRECATED: i64 = 16384;
+/// Every level but E_STRICT (php 8.4+).
+pub const E_ALL: i64 = 30719;
+
 /// The runtime value. Owned, cheaply cloneable, `'static`.
 ///
 /// Two sharing disciplines, kept strictly separate:

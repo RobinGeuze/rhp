@@ -320,7 +320,7 @@ impl ProtoBuilder<'_> {
         // the call then folds.
         if matches!(flag, Value::Float(f) if f.is_nan()) {
             self.cx.compile_diags.borrow_mut().push((
-                rhp_builtins::E_WARNING,
+                rhp_values::E_WARNING,
                 "unexpected NAN value was coerced to bool".into(),
                 self.cur_line,
             ));

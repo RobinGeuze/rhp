@@ -191,7 +191,7 @@ fn compile_file(
     let cond_classes = cx.cond_classes.take().into_iter().map(Rc::new).collect();
     let mut compile_diags: Vec<_> = hrh::scan(flat, &|o| cx.line_of(o))
         .into_iter()
-        .map(|line| (rhp_builtins::E_DEPRECATED, hrh::MESSAGE.to_string(), line))
+        .map(|line| (rhp_values::E_DEPRECATED, hrh::MESSAGE.to_string(), line))
         .chain(cx.compile_diags.take())
         .collect();
     compile_diags.sort_by_key(|d| d.2);

@@ -8,6 +8,9 @@ publish.workspace = true
 [dependencies]
 rhp-values = { path = "../rhp-values" }
 rhp-bytecode = { path = "../rhp-bytecode" }
-rhp-frontend = { path = "../rhp-frontend" }
 rhp-builtins = { path = "../rhp-builtins" }
+mago-syntax.workspace = true
+mago-allocator.workspace = true
+mago-database.workspace = true
+mago-syntax-core.workspace = true
 mago-span.workspace = true

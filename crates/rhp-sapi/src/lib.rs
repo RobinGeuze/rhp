@@ -22,8 +22,8 @@
 use std::io::Write;
 
 use rhp_builtins::zend::ParseFailure;
+use rhp_compiler::parse::{Arena, Parsed};
 use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
 use rhp_vm::{IncludeError, Vm};
 

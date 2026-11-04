@@ -18,13 +18,13 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mago_span::HasSpan;
-use rhp_builtins::signatures::Signature;
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, Argument, ArgumentList, ArrayElement, AssignmentOperator, BinaryOperator, Expression,
     ForeachTarget, IndirectVariable, Literal, Node, Statement, UnaryPrefixOperator, Variable,
     Yield,
 };
+use mago_span::HasSpan;
+use rhp_builtins::signatures::Signature;
 
 use crate::names::{NameKind, NsContext};
 
@@ -175,10 +175,10 @@ fn is_short_circuited(e: &Expression) -> bool {
         Expression::ArrayAppend(a) => is_short_circuited(a.array),
         Expression::Access(Access::Property(p)) => is_short_circuited(p.object),
         Expression::Access(Access::StaticProperty(p)) => is_short_circuited(p.class),
-        Expression::Call(rhp_frontend::cst::Call::Method(m)) => is_short_circuited(m.object),
-        Expression::Call(rhp_frontend::cst::Call::StaticMethod(m)) => is_short_circuited(m.class),
+        Expression::Call(crate::parse::cst::Call::Method(m)) => is_short_circuited(m.object),
+        Expression::Call(crate::parse::cst::Call::StaticMethod(m)) => is_short_circuited(m.class),
         Expression::Access(Access::NullSafeProperty(_))
-        | Expression::Call(rhp_frontend::cst::Call::NullSafeMethod(_)) => true,
+        | Expression::Call(crate::parse::cst::Call::NullSafeMethod(_)) => true,
         Expression::Parenthesized(p) => is_short_circuited(p.expression),
         _ => false,
     }
@@ -235,7 +235,7 @@ impl Scan<'_> {
     /// A new op_array (function, method, closure, arrow function, hook).
     fn function(
         &mut self,
-        params: Option<&rhp_frontend::cst::FunctionLikeParameterList>,
+        params: Option<&crate::parse::cst::FunctionLikeParameterList>,
         returns_ref: bool,
         body: Node,
     ) {
@@ -376,7 +376,7 @@ impl Scan<'_> {
         }
     }
 
-    fn call(&mut self, fc: &rhp_frontend::cst::FunctionCall) {
+    fn call(&mut self, fc: &crate::parse::cst::FunctionCall) {
         let Expression::Identifier(id) = fc.function else {
             self.expr(fc.function, Mode::Read);
             return self.args(&fc.argument_list, Callee::Unknown);

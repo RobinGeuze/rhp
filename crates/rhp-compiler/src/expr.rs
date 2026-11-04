@@ -1,11 +1,11 @@
 //! Expression lowering: each returns the register holding the result.
 
-use rhp_bytecode::{ClassRef, CmpKind, IncludeKind, Instr, Reg};
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, Argument, ArrayElement, BinaryOperator, ClassLikeMemberSelector, CompositeString,
     Construct, Expression, Identifier, Literal, MagicConstant, Node, Statement, StringPart,
     UnaryPrefixOperator, Variable,
 };
+use rhp_bytecode::{ClassRef, CmpKind, IncludeKind, Instr, Reg};
 use rhp_values::{Thrown, Value};
 
 use crate::assign::{as_reference, check_globals_write, is_globals_var};
@@ -89,8 +89,8 @@ impl ProtoBuilder<'_> {
             }
             Expression::Construct(c) => self.compile_construct(c),
             Expression::Call(call) => {
+                use crate::parse::cst::Call;
                 use mago_span::HasSpan;
-                use rhp_frontend::cst::Call;
                 let at = match call {
                     Call::Function(fc) => fc.function.span(),
                     Call::Method(mc) => mc.method.span(),
@@ -209,7 +209,7 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    fn compile_binary(&mut self, b: &rhp_frontend::cst::Binary) -> Result<Reg, Thrown> {
+    fn compile_binary(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
         use BinaryOperator as Op;
         // Short-circuit operators lower to branches.
         match &b.operator {
@@ -304,7 +304,7 @@ impl ProtoBuilder<'_> {
     /// on the full path `dst = (bool)rhs`.
     fn compile_logical(
         &mut self,
-        b: &rhp_frontend::cst::Binary,
+        b: &crate::parse::cst::Binary,
         is_and: bool,
     ) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
@@ -333,7 +333,7 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    fn compile_coalesce(&mut self, b: &rhp_frontend::cst::Binary) -> Result<Reg, Thrown> {
+    fn compile_coalesce(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         let a = self.compile_quiet(b.lhs)?;
         self.emit(Instr::Mov { dst, src: a });
@@ -349,7 +349,7 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    fn compile_unary_prefix(&mut self, u: &rhp_frontend::cst::UnaryPrefix) -> Result<Reg, Thrown> {
+    fn compile_unary_prefix(&mut self, u: &crate::parse::cst::UnaryPrefix) -> Result<Reg, Thrown> {
         use UnaryPrefixOperator as Op;
         match &u.operator {
             Op::PreIncrement(_) => return self.compile_inc_dec(u.operand, true, 1),
@@ -402,9 +402,9 @@ impl ProtoBuilder<'_> {
 
     fn compile_unary_postfix(
         &mut self,
-        u: &rhp_frontend::cst::UnaryPostfix,
+        u: &crate::parse::cst::UnaryPostfix,
     ) -> Result<Reg, Thrown> {
-        use rhp_frontend::cst::UnaryPostfixOperator as Op;
+        use crate::parse::cst::UnaryPostfixOperator as Op;
         match &u.operator {
             Op::PostIncrement(_) => self.compile_inc_dec(u.operand, false, 1),
             Op::PostDecrement(_) => self.compile_inc_dec(u.operand, false, -1),
@@ -449,7 +449,7 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    fn compile_conditional(&mut self, c: &rhp_frontend::cst::Conditional) -> Result<Reg, Thrown> {
+    fn compile_conditional(&mut self, c: &crate::parse::cst::Conditional) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         let cond = self.compile_expr(c.condition)?;
         let jf = self.code.len();
@@ -739,7 +739,7 @@ impl ProtoBuilder<'_> {
     /// string to print). Evaluates the argument (or null) and emits `Exit`.
     fn compile_exit(
         &mut self,
-        arguments: Option<&rhp_frontend::cst::ArgumentList>,
+        arguments: Option<&crate::parse::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
         let arg = match arguments.and_then(|a| a.arguments.first()) {
             Some(Argument::Positional(p)) => self.compile_expr(p.value)?,
@@ -758,8 +758,8 @@ impl ProtoBuilder<'_> {
 
     /// `yield` / `yield $v` / `yield $k => $v`. The result register receives the
     /// value sent in via `Generator::send()` when execution resumes.
-    fn compile_yield(&mut self, y: &rhp_frontend::cst::Yield) -> Result<Reg, Thrown> {
-        use rhp_frontend::cst::Yield;
+    fn compile_yield(&mut self, y: &crate::parse::cst::Yield) -> Result<Reg, Thrown> {
+        use crate::parse::cst::Yield;
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
@@ -907,7 +907,7 @@ impl ProtoBuilder<'_> {
     /// The raw identifier bytes of a member selector (non-dynamic only).
     pub(crate) fn selector_string(
         &self,
-        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
     ) -> Result<Vec<u8>, Thrown> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(li.value.to_vec()),
@@ -921,7 +921,7 @@ impl ProtoBuilder<'_> {
 
 /// Does a function body contain a top-level `yield` (making it a generator)?
 /// Does not descend into nested function-likes (their yields are their own).
-pub(crate) fn block_has_yield(stmts: &rhp_frontend::cst::Sequence<Statement>) -> bool {
+pub(crate) fn block_has_yield(stmts: &crate::parse::cst::Sequence<Statement>) -> bool {
     stmts.iter().any(stmt_has_yield)
 }
 

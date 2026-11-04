@@ -1,6 +1,6 @@
 //! Compile-time constants: folding constant expressions and php's operand kinds.
 
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     ArrayElement, Construct, Expression, Literal, MagicConstant, UnaryPrefixOperator, Variable,
 };
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
@@ -51,7 +51,7 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
             }
         }
         Expression::Binary(b) => {
-            use rhp_frontend::cst::BinaryOperator as Bop;
+            use crate::parse::cst::BinaryOperator as Bop;
             use rhp_values::ops::{self, BitOp};
             let l = fold_const(cx, b.lhs)?;
             let r = fold_const(cx, b.rhs)?;

@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 rhp-compiler = { path = "../../crates/rhp-compiler" }
-rhp-frontend = { path = "../../crates/rhp-frontend" }
 rhp-sapi = { path = "../../crates/rhp-sapi" }
 rhp-values = { path = "../../crates/rhp-values" }
 # EXPECTF and app masks use rhp-builtins' PCRE2, so the binary links one copy.

@@ -1,6 +1,6 @@
 //! The CV pre-pass: one register per named variable, created in the order php creates them.
 
-use rhp_frontend::cst::{
+use crate::parse::cst::{
     Access, Argument, ArrayElement, AssignmentOperator, ClassLikeConstantSelector,
     ClassLikeMemberSelector, CompositeString, Construct, Expression, ForeachBody, ForeachTarget,
     IndirectVariable, Literal, Node, PartialArgument, Statement, StringPart, Variable,
@@ -14,7 +14,7 @@ impl ProtoBuilder<'_> {
     /// first reaches it (which is the order of `$GLOBALS`, and of the
     /// destructor calls at shutdown, for the script's own variables).
     pub(crate) fn scan_stmt_vars(&mut self, stmt: &Statement) {
-        use rhp_frontend::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
+        use crate::parse::cst::{ForBody, IfBody, SwitchBody, SwitchCase, WhileBody};
         match stmt {
             Statement::Echo(e) => e.values.iter().for_each(|v| self.scan_expr_vars(v)),
             Statement::EchoTag(e) => e.values.iter().for_each(|v| self.scan_expr_vars(v)),
@@ -120,7 +120,7 @@ impl ProtoBuilder<'_> {
             Statement::Static(s) => {
                 for item in s.items.iter() {
                     self.cv(strip_dollar(item.variable().name));
-                    if let rhp_frontend::cst::StaticItem::Concrete(c) = item {
+                    if let crate::parse::cst::StaticItem::Concrete(c) = item {
                         self.scan_expr_vars(c.value);
                     }
                 }
@@ -148,7 +148,7 @@ impl ProtoBuilder<'_> {
                 }
             }
             Statement::Declare(d) => {
-                use rhp_frontend::cst::DeclareBody;
+                use crate::parse::cst::DeclareBody;
                 match &d.body {
                     DeclareBody::Statement(s) => self.scan_stmt_vars(s),
                     DeclareBody::ColonDelimited(c) => {
@@ -215,7 +215,7 @@ impl ProtoBuilder<'_> {
             }
             // Every arm's conditions, then the arm bodies.
             Expression::Match(m) => {
-                use rhp_frontend::cst::MatchArm;
+                use crate::parse::cst::MatchArm;
                 self.scan_expr_vars(m.expression);
                 for arm in m.arms.iter() {
                     if let MatchArm::Expression(a) = arm {
@@ -270,7 +270,7 @@ impl ProtoBuilder<'_> {
             Expression::Construct(c) => self.scan_construct_vars(c),
             // The callee (or object and method name) before the arguments.
             Expression::Call(call) => {
-                use rhp_frontend::cst::Call;
+                use crate::parse::cst::Call;
                 match call {
                     Call::Function(fc) => {
                         self.scan_expr_vars(fc.function);
@@ -294,7 +294,7 @@ impl ProtoBuilder<'_> {
                 }
             }
             Expression::PartialApplication(pa) => {
-                use rhp_frontend::cst::PartialApplication as Pa;
+                use crate::parse::cst::PartialApplication as Pa;
                 match pa {
                     Pa::Function(f) => {
                         self.scan_expr_vars(f.function);
@@ -338,7 +338,7 @@ impl ProtoBuilder<'_> {
                 }
             }
             Expression::Yield(y) => {
-                use rhp_frontend::cst::Yield;
+                use crate::parse::cst::Yield;
                 match y {
                     Yield::Value(v) => {
                         if let Some(e) = v.value {
@@ -382,7 +382,7 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    fn scan_partial_args(&mut self, list: &rhp_frontend::cst::PartialArgumentList) {
+    fn scan_partial_args(&mut self, list: &crate::parse::cst::PartialArgumentList) {
         for arg in list.arguments.iter() {
             match arg {
                 PartialArgument::Positional(p) => self.scan_expr_vars(p.value),
@@ -392,7 +392,7 @@ impl ProtoBuilder<'_> {
         }
     }
 
-    fn scan_args(&mut self, list: &rhp_frontend::cst::ArgumentList) {
+    fn scan_args(&mut self, list: &crate::parse::cst::ArgumentList) {
         for arg in list.arguments.iter() {
             match arg {
                 Argument::Positional(p) => self.scan_expr_vars(p.value),

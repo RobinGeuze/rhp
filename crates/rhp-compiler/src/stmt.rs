@@ -1,7 +1,7 @@
 //! Statement lowering.
 
+use crate::parse::cst::{Statement, Variable};
 use rhp_bytecode::{ClassProto, Instr};
-use rhp_frontend::cst::{Statement, Variable};
 use rhp_values::{Thrown, Value};
 
 use crate::builder::ProtoBuilder;
@@ -147,7 +147,7 @@ impl ProtoBuilder<'_> {
             }
             Statement::Static(s) => {
                 for item in s.items.iter() {
-                    use rhp_frontend::cst::StaticItem;
+                    use crate::parse::cst::StaticItem;
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
                         StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {
@@ -214,7 +214,7 @@ impl ProtoBuilder<'_> {
             // `declare(strict_types=1|ticks=…|encoding=…)` — the directives are
             // no-ops for this engine; compile the body (usually just `;`).
             Statement::Declare(d) => {
-                use rhp_frontend::cst::DeclareBody;
+                use crate::parse::cst::DeclareBody;
                 match &d.body {
                     DeclareBody::Statement(s) => self.compile_stmt(s)?,
                     DeclareBody::ColonDelimited(c) => {

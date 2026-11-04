@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::parse::cst::{Expression, Identifier};
 use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
-use rhp_frontend::cst::{Expression, Identifier};
 use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::file::FileCtx;

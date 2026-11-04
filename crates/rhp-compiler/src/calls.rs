@@ -1,7 +1,7 @@
 //! Calls: function, method and static calls, argument passing and by-reference parameters.
 
+use crate::parse::cst::{Access, Argument, Expression, Identifier, Variable};
 use rhp_bytecode::{CallFlags, ClassRef, Instr, NIdx, Reg};
-use rhp_frontend::cst::{Access, Argument, Expression, Identifier, Variable};
 use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
@@ -13,8 +13,8 @@ use crate::prelude::prelude_classes;
 use crate::util::strip_dollar;
 
 impl ProtoBuilder<'_> {
-    pub(crate) fn compile_call(&mut self, call: &rhp_frontend::cst::Call) -> Result<Reg, Thrown> {
-        use rhp_frontend::cst::Call;
+    pub(crate) fn compile_call(&mut self, call: &crate::parse::cst::Call) -> Result<Reg, Thrown> {
+        use crate::parse::cst::Call;
         match call {
             Call::Function(fc) => self.compile_function_call(fc),
             Call::Method(mc) => {
@@ -47,7 +47,7 @@ impl ProtoBuilder<'_> {
 
     fn compile_function_call(
         &mut self,
-        fc: &rhp_frontend::cst::FunctionCall,
+        fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
         let callee_id: &Identifier = match fc.function {
             Expression::Identifier(id) => id,
@@ -299,7 +299,7 @@ impl ProtoBuilder<'_> {
     /// the flag's truth value. That value, when the call has this shape.
     fn in_array_ct_strict(
         &self,
-        fc: &rhp_frontend::cst::FunctionCall,
+        fc: &crate::parse::cst::FunctionCall,
         name: &[u8],
         fallback: &Option<Vec<u8>>,
     ) -> Option<bool> {
@@ -373,7 +373,7 @@ impl ProtoBuilder<'_> {
     /// call site, so by-ref parameters are not honoured for dynamic calls).
     fn compile_dynamic_call(
         &mut self,
-        fc: &rhp_frontend::cst::FunctionCall,
+        fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
         let callee = self.compile_expr(fc.function)?;
 
@@ -402,9 +402,9 @@ impl ProtoBuilder<'_> {
     /// the underlying callable value, then wraps it as a `Closure` via `MakeFcc`.
     pub(crate) fn compile_fcc(
         &mut self,
-        pa: &rhp_frontend::cst::PartialApplication,
+        pa: &crate::parse::cst::PartialApplication,
     ) -> Result<Reg, Thrown> {
-        use rhp_frontend::cst::PartialApplication as Pa;
+        use crate::parse::cst::PartialApplication as Pa;
         if !pa.is_first_class_callable() {
             return Err(Thrown::unsupported(
                 "partial application with placeholders",
@@ -468,7 +468,7 @@ impl ProtoBuilder<'_> {
     /// spread `...$x`): positional args are pushed, spreads are merged.
     pub(crate) fn build_args_array(
         &mut self,
-        args: Option<&rhp_frontend::cst::ArgumentList>,
+        args: Option<&crate::parse::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         self.emit(Instr::NewArray { dst, cap: 0 });
@@ -513,7 +513,7 @@ impl ProtoBuilder<'_> {
     /// dereferences a copy, so this is safe and matches php's runtime by-ref).
     fn compile_arg_window_ex(
         &mut self,
-        args: Option<&rhp_frontend::cst::ArgumentList>,
+        args: Option<&crate::parse::cst::ArgumentList>,
         ref_mask: &[bool],
         over_approx: bool,
     ) -> Result<(Reg, u16), Thrown> {
@@ -526,7 +526,7 @@ impl ProtoBuilder<'_> {
     /// then passed as a reference to the lvalue, else by value.
     pub(crate) fn compile_arg_window_t(
         &mut self,
-        args: Option<&rhp_frontend::cst::ArgumentList>,
+        args: Option<&crate::parse::cst::ArgumentList>,
         ref_mask: &[bool],
         over_approx: bool,
         target: Option<ArgRefTarget>,
@@ -640,7 +640,7 @@ impl ProtoBuilder<'_> {
     /// evaluates arguments strictly left to right.
     fn snapshot_arg(
         &mut self,
-        list: &rhp_frontend::cst::ArgumentList,
+        list: &crate::parse::cst::ArgumentList,
         i: usize,
         expr: &Expression,
         r: Reg,
@@ -669,8 +669,8 @@ impl ProtoBuilder<'_> {
     fn compile_method_call(
         &mut self,
         object: &Expression,
-        selector: &rhp_frontend::cst::ClassLikeMemberSelector,
-        args: &rhp_frontend::cst::ArgumentList,
+        selector: &crate::parse::cst::ClassLikeMemberSelector,
+        args: &crate::parse::cst::ArgumentList,
         null_safe: bool,
     ) -> Result<Reg, Thrown> {
         let obj = self.compile_expr(object)?;
@@ -800,7 +800,7 @@ impl ProtoBuilder<'_> {
 
     fn compile_static_call(
         &mut self,
-        smc: &rhp_frontend::cst::StaticMethodCall,
+        smc: &crate::parse::cst::StaticMethodCall,
     ) -> Result<Reg, Thrown> {
         let class = self.class_ref(smc.class)?;
         match self.compile_selector(&smc.method)? {
@@ -922,13 +922,13 @@ fn call_flags(name: &[u8], fallback: Option<&[u8]>, argc: usize) -> CallFlags {
     flags
 }
 
-pub(crate) fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {
+pub(crate) fn has_named(list: &crate::parse::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
         .any(|a| matches!(a, Argument::Named(_)))
 }
 
-pub(crate) fn has_spread(list: &rhp_frontend::cst::ArgumentList) -> bool {
+pub(crate) fn has_spread(list: &crate::parse::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
         .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
@@ -960,7 +960,7 @@ fn send_var_ex_name<'a>(e: &Expression<'a>) -> Option<&'a [u8]> {
 
 /// Whether an argument after the `i`th may write a variable (anything but
 /// a literal or a plain variable).
-fn later_arg_may_write(list: &rhp_frontend::cst::ArgumentList, i: usize) -> bool {
+fn later_arg_may_write(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
     list.arguments.iter().skip(i + 1).any(|a| {
         !matches!(
             a,

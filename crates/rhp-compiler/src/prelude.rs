@@ -3,8 +3,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::parse::cst::Statement;
 use rhp_bytecode::{ClassProto, FunctionProto};
-use rhp_frontend::cst::Statement;
 use rhp_values::Thrown;
 
 use crate::decl::{compile_class, compile_interface};
@@ -183,7 +183,7 @@ fn prelude_classes_isolated() -> Result<PreludeParts, Thrown> {
     // The engine's core classes (PRELUDE) plus each extension module's own
     // PHP-source classes (GMP, Phar, …) and helper functions (iterator_*, …).
     let src = format!("{PRELUDE}\n{}", rhp_builtins::module_prelude());
-    let arena = rhp_frontend::Arena::new();
+    let arena = crate::parse::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
     let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
         .program()

@@ -983,10 +983,13 @@ dependencies = [
 name = "rhp-compiler"
 version = "0.0.0"
 dependencies = [
+ "mago-allocator",
+ "mago-database",
  "mago-span",
+ "mago-syntax",
+ "mago-syntax-core",
  "rhp-builtins",
  "rhp-bytecode",
- "rhp-frontend",
  "rhp-values",
 ]
 
@@ -1010,21 +1013,10 @@ dependencies = [
  "libc",
  "rhp-builtins",
  "rhp-compiler",
- "rhp-frontend",
  "rhp-sapi",
  "rhp-values",
  "sha2",
  "toml",
-]
-
-[[package]]
-name = "rhp-frontend"
-version = "0.0.0"
-dependencies = [
- "mago-allocator",
- "mago-database",
- "mago-syntax",
- "mago-syntax-core",
 ]
 
 [[package]]
@@ -1042,7 +1034,6 @@ version = "0.0.0"
 dependencies = [
  "rhp-builtins",
  "rhp-compiler",
- "rhp-frontend",
  "rhp-values",
  "rhp-vm",
 ]

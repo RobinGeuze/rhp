@@ -26,7 +26,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use rhp_frontend::Arena;
+use rhp_compiler::parse::Arena;
 use rhp_values::Thrown;
 
 use crate::read_known;

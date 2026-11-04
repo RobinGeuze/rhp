@@ -2,12 +2,12 @@
 
 use std::rc::Rc;
 
+use crate::parse::cst::{
+    Access, Class, ClassLikeMember, Expression, Hint, Modifier, Node, Property, PropertyItem,
+};
 use rhp_bytecode::{
     ClassProto, ConstInitProto, ConstProto, FunctionProto, Instr, MethodProto, PropDefaultProto,
     PropProto, StaticPropProto,
-};
-use rhp_frontend::cst::{
-    Access, Class, ClassLikeMember, Expression, Hint, Modifier, Node, Property, PropertyItem,
 };
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 use rhp_values::{ClassFlags, ClassKind, Visibility};
@@ -20,7 +20,7 @@ use crate::hints::type_hint;
 use crate::names::{identifier_raw, join_ns};
 use crate::util::strip_dollar;
 
-pub(crate) fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>) -> Visibility {
+pub(crate) fn modifiers_visibility(mods: &crate::parse::cst::Sequence<Modifier>) -> Visibility {
     for m in mods.iter() {
         match m {
             // `private(set)` etc. only restrict writes (asymmetric visibility,
@@ -38,7 +38,7 @@ pub(crate) fn modifiers_visibility(mods: &rhp_frontend::cst::Sequence<Modifier>)
 /// The asymmetric write visibility (`private(set)` / `protected(set)`), when
 /// it is narrower than the read visibility.
 pub(crate) fn modifiers_set_visibility(
-    mods: &rhp_frontend::cst::Sequence<Modifier>,
+    mods: &crate::parse::cst::Sequence<Modifier>,
 ) -> Option<Visibility> {
     let read = modifiers_visibility(mods);
     let set = mods.iter().find_map(|m| match m {
@@ -56,7 +56,7 @@ pub(crate) fn modifiers_set_visibility(
 }
 
 pub(crate) fn has_modifier(
-    mods: &rhp_frontend::cst::Sequence<Modifier>,
+    mods: &crate::parse::cst::Sequence<Modifier>,
     want: fn(&Modifier) -> bool,
 ) -> bool {
     mods.iter().any(want)
@@ -64,7 +64,7 @@ pub(crate) fn has_modifier(
 
 /// Whether the attribute lists carry `#[AllowDynamicProperties]`.
 fn has_allow_dynamic(
-    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
 ) -> bool {
     lists.iter().any(|l| {
         l.attributes.iter().any(|a| {
@@ -83,7 +83,7 @@ fn has_allow_dynamic(
 /// keywords, type hints): the first doc comment reached is the declaration's.
 impl FileCtx<'_> {
     pub(crate) fn doc_comment_before(&self, pos: u32) -> Option<PhpStr> {
-        use rhp_frontend::TokenKind as T;
+        use crate::parse::TokenKind as T;
         let (src, toks) = self.doc_tokens();
         if toks.is_empty() {
             return None;
@@ -140,10 +140,10 @@ impl FileCtx<'_> {
 /// in `class_name`'s scope when Reflection asks for the arguments).
 pub(crate) fn compile_attributes(
     cx: &FileCtx,
-    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
     class_name: Option<&PhpStr>,
 ) -> Result<Vec<rhp_bytecode::AttributeProto>, Thrown> {
-    use rhp_frontend::cst::PartialArgument as PA;
+    use crate::parse::cst::PartialArgument as PA;
     let mut out = Vec::new();
     for list in lists.iter() {
         for a in list.attributes.iter() {
@@ -212,7 +212,7 @@ pub(crate) fn compile_attributes(
 /// claimed at `doc_pos`, and the line span `[start, end]` (byte offsets).
 pub(crate) fn decl_meta(
     cx: &FileCtx,
-    lists: &rhp_frontend::cst::Sequence<rhp_frontend::cst::AttributeList>,
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
     class_name: Option<&PhpStr>,
     doc_pos: u32,
     start: u32,
@@ -232,7 +232,7 @@ pub(crate) fn decl_meta(
 /// constant / class-constant reference.
 pub(crate) fn param_default_meta(
     cx: &FileCtx,
-    p: &rhp_frontend::cst::FunctionLikeParameter,
+    p: &crate::parse::cst::FunctionLikeParameter,
     class_name: Option<&PhpStr>,
 ) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
     let Some(dv) = &p.default_value else {
@@ -256,7 +256,7 @@ pub(crate) fn param_default_meta(
                 _ => None,
             };
             match (&cca.constant, class) {
-                (rhp_frontend::cst::ClassLikeConstantSelector::Identifier(c), Some(mut cl)) => {
+                (crate::parse::cst::ClassLikeConstantSelector::Identifier(c), Some(mut cl)) => {
                     cl.extend_from_slice(b"::");
                     cl.extend_from_slice(c.value);
                     Some(PhpStr::from_bytes(cl))
@@ -358,7 +358,7 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
 /// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
 pub(crate) fn compile_anon_class(
     cx: &FileCtx,
-    ac: &rhp_frontend::cst::AnonymousClass,
+    ac: &crate::parse::cst::AnonymousClass,
 ) -> Result<ClassProto, Thrown> {
     use mago_span::HasSpan;
     let parent = ac.extends.as_ref().and_then(|e| {
@@ -433,7 +433,7 @@ pub(crate) fn compile_anon_class(
 /// `UnitEnum` (pure) or `BackedEnum` (backed), plus any declared interfaces.
 pub(crate) fn compile_enum(
     cx: &FileCtx,
-    en: &rhp_frontend::cst::Enum,
+    en: &crate::parse::cst::Enum,
 ) -> Result<ClassProto, Thrown> {
     use rhp_bytecode::EnumBacking;
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), en.name.value));
@@ -593,7 +593,7 @@ struct CompiledMembers {
 
 fn compile_members(
     cx: &FileCtx,
-    members: &rhp_frontend::cst::Sequence<ClassLikeMember>,
+    members: &crate::parse::cst::Sequence<ClassLikeMember>,
     class_name: &PhpStr,
 ) -> Result<CompiledMembers, Thrown> {
     let mut out = CompiledMembers::default();
@@ -712,7 +712,7 @@ fn compile_member(
             }
         }
         ClassLikeMember::EnumCase(ec) => {
-            use rhp_frontend::cst::EnumCaseItem;
+            use crate::parse::cst::EnumCaseItem;
             let (name, value) = match &ec.item {
                 EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
                 EnumCaseItem::Backed(b) => (
@@ -742,7 +742,7 @@ fn compile_member(
 
 pub(crate) fn compile_trait(
     cx: &FileCtx,
-    t: &rhp_frontend::cst::Trait,
+    t: &crate::parse::cst::Trait,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), t.name.value));
     let saved = cx.in_trait.replace(true);
@@ -778,7 +778,7 @@ pub(crate) fn compile_trait(
 
 pub(crate) fn compile_interface(
     cx: &FileCtx,
-    iface: &rhp_frontend::cst::Interface,
+    iface: &crate::parse::cst::Interface,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), iface.name.value));
     let interfaces: Vec<PhpStr> = iface

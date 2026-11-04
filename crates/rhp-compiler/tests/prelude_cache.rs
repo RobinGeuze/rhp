@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use rhp_bytecode::Program;
+use rhp_compiler::parse::Arena;
 use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::Arena;
 
 fn main_prog(src: &str) -> Program {
     let arena = Arena::new();

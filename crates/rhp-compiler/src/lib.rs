@@ -1,6 +1,6 @@
 //! AST → bytecode compiler.
 //!
-//! Lowers a parsed `rhp_frontend` program into a `rhp_bytecode::Program`.
+//! Lowers a program parsed by [`parse`] into a `rhp_bytecode::Program`.
 //! A construct rhp does not implement yet never produces an opcode: the
 //! compiler returns `Err(Thrown::Unsupported)` for the whole file.
 //!
@@ -11,8 +11,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::parse::cst::{Node, Program as AstProgram, Statement};
 use rhp_bytecode::{Instr, Program};
-use rhp_frontend::cst::{Node, Program as AstProgram, Statement};
 use rhp_values::{PhpStr, Thrown};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
@@ -37,6 +37,7 @@ mod hints;
 mod hrh;
 mod names;
 mod oop;
+pub mod parse;
 mod prelude;
 mod shrink;
 mod stmt;
@@ -55,7 +56,7 @@ pub fn compile_error_line() -> u32 {
     COMPILE_ERROR_LINE.with(Cell::get)
 }
 
-/// Compile a parsed program (borrowed from a `rhp_frontend::Arena`) into an
+/// Compile a parsed program (borrowed from a `crate::parse::Arena`) into an
 /// owned, runnable bytecode `Program`. No `'arena` borrow escapes.
 pub fn compile(program: &AstProgram) -> Result<Program, Thrown> {
     compile_with_source(program, b"", "")

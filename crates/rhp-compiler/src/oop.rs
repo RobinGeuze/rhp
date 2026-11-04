@@ -1,7 +1,7 @@
 //! Object expressions: class references, member names, property access and `new`.
 
+use crate::parse::cst::{Access, ClassLikeMemberSelector, Expression, Variable};
 use rhp_bytecode::{ClassRef, Instr, NIdx, Reg};
-use rhp_frontend::cst::{Access, ClassLikeMemberSelector, Expression, Variable};
 use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
@@ -34,7 +34,7 @@ impl ProtoBuilder<'_> {
 
     fn selector_name(
         &mut self,
-        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
     ) -> Result<NIdx, Thrown> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
@@ -49,7 +49,7 @@ impl ProtoBuilder<'_> {
     /// register (`$o->$x` / `$o->{expr}`).
     pub(crate) fn compile_selector(
         &mut self,
-        sel: &rhp_frontend::cst::ClassLikeMemberSelector,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
     ) -> Result<Sel, Thrown> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(Sel::Static(self.intern_name(li.value))),
@@ -102,9 +102,9 @@ impl ProtoBuilder<'_> {
     /// its generated name and instantiate it.
     pub(crate) fn compile_new_anon(
         &mut self,
-        ac: &rhp_frontend::cst::AnonymousClass,
+        ac: &crate::parse::cst::AnonymousClass,
     ) -> Result<Reg, Thrown> {
-        use rhp_frontend::cst::PartialArgument;
+        use crate::parse::cst::PartialArgument;
         let proto = compile_anon_class(self.cx, ac)?;
         let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
         self.cx.anon_classes.borrow_mut().push(proto);
@@ -144,7 +144,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_new(
         &mut self,
-        inst: &rhp_frontend::cst::Instantiation,
+        inst: &crate::parse::cst::Instantiation,
     ) -> Result<Reg, Thrown> {
         if let Expression::AnonymousClass(ac) = inst.class {
             return self.compile_new_anon(ac);
@@ -348,7 +348,7 @@ impl ProtoBuilder<'_> {
                 // class need not exist (php uses `Foo::class` as a bareword FQN,
                 // e.g. `function_exists(u::class)`). `self/static/parent::class`
                 // and `$obj::class` stay runtime.
-                if let rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
+                if let crate::parse::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
                 {
                     if li.value.eq_ignore_ascii_case(b"class") {
                         if let Expression::Identifier(id) = cca.class {
@@ -361,7 +361,7 @@ impl ProtoBuilder<'_> {
                 }
                 let class = self.class_ref(cca.class)?;
                 let name = match &cca.constant {
-                    rhp_frontend::cst::ClassLikeConstantSelector::Identifier(li) => {
+                    crate::parse::cst::ClassLikeConstantSelector::Identifier(li) => {
                         self.intern_name(li.value)
                     }
                     _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),

@@ -1,6 +1,5 @@
-//! Thin, **safe** wrapper over `mago-syntax`: owns the parse arena and exposes
-//! a scoped borrow of the AST so the rest of rhp can be written against a
-//! stable surface (and the parser swapped later).
+//! Parsing: a thin, **safe** wrapper over `mago-syntax` that owns the parse
+//! arena and exposes a scoped borrow of the AST, plus the token stream.
 //!
 //! mago-syntax is arena-allocated — a parsed `Program` borrows the arena. Rather
 //! than store a self-referential `arena + &Program` (which needs `unsafe`), the

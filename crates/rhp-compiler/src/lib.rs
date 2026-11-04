@@ -5080,6 +5080,54 @@ impl ProtoBuilder {
                         ))
                     }
                 }
+            } else if let (None, None, Expression::Variable(Variable::Direct(d))) =
+                (&sig, builtin, p.value)
+            {
+                // A function the compiler does not know (another file's, or
+                // declared later): php's SEND_VAR_EX asks it at run time
+                // whether the parameter is by reference.
+                let cv = self.cv(strip_dollar(d.name));
+                let name = self.intern_name(&name_bytes);
+                let fb = self.intern_fallback(&fallback);
+                let flag = self.alloc_temp();
+                self.emit(Instr::FuncArgIsRef {
+                    dst: flag,
+                    name,
+                    fallback: fb,
+                    idx: i as u16,
+                });
+                let t = self.alloc_temp();
+                let jf = self.code.len();
+                self.emit(Instr::Nop);
+                self.emit(Instr::MakeRef { dst: t, cv });
+                let jend = self.code.len();
+                self.emit(Instr::Nop);
+                let by_value = self.here();
+                self.code[jf] = Instr::JmpFalse {
+                    cond: flag,
+                    target: by_value,
+                };
+                let v = self.compile_expr(p.value)?;
+                self.emit(Instr::Mov { dst: t, src: v });
+                let end = self.here();
+                self.code[jend] = Instr::Jmp { target: end };
+                // passed on with MakeRef: a by-value parameter dereferences it
+                slots.push(ArgSlot::Ref(t));
+            } else if sig.is_none()
+                && builtin.is_none()
+                && matches!(
+                    p.value,
+                    Expression::ArrayAccess(_)
+                        | Expression::Access(Access::Property(_))
+                        | Expression::Access(Access::StaticProperty(_))
+                )
+                && variable_rooted_lvalue(p.value)
+            {
+                // SEND_FUNC_ARG for an element or property of a variable
+                let name = self.intern_name(&name_bytes);
+                let fb = self.intern_fallback(&fallback);
+                let t = self.compile_func_arg(p.value, ArgRefTarget::Func(name, fb), i as u16)?;
+                slots.push(ArgSlot::Ref(t));
             } else {
                 // A variable's value is taken when its argument is evaluated
                 // (php's SEND_VAR), before later arguments can change it.
@@ -5965,6 +6013,12 @@ impl ProtoBuilder {
                 dst: flag,
                 class,
                 name,
+                idx,
+            }),
+            ArgRefTarget::Func(name, fallback) => self.emit(Instr::FuncArgIsRef {
+                dst: flag,
+                name,
+                fallback,
                 idx,
             }),
         }
@@ -7279,6 +7333,8 @@ fn expr_kind(e: &Expression) -> &'static str {
 enum ArgRefTarget {
     Method(Reg, NIdx),
     Static(ClassRef, NIdx),
+    /// A function by name and namespace fallback.
+    Func(NIdx, NIdx),
 }
 
 /// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a

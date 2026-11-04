@@ -7765,6 +7765,16 @@ impl Vm {
                     };
                     self.reg_set(top, dst, Value::Bool(r));
                 }
+                Instr::FuncArgIsRef {
+                    dst,
+                    name,
+                    fallback,
+                    idx,
+                } => {
+                    let (user, _) = self.resolve_fn(name, fallback, &proto.names);
+                    let r = user.is_some_and(|f| param_is_ref(&self.functions[f], idx));
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
                 Instr::StaticArgIsRef {
                     dst,
                     class,

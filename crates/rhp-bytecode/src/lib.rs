@@ -552,6 +552,14 @@ pub enum Instr {
         name: NIdx,
         idx: u16,
     },
+    /// The same for function `name` (then `fallback`) when the compiler did
+    /// not know it (php's SEND_VAR_EX): defined in another file, or later.
+    FuncArgIsRef {
+        dst: Reg,
+        name: NIdx,
+        fallback: NIdx,
+        idx: u16,
+    },
     /// The same for static method (or constructor) `name` of `class`; the
     /// class is resolved (autoloaded) first, as php's INIT_STATIC_METHOD_CALL
     /// / NEW do before the arguments.

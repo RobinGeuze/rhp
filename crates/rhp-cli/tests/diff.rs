@@ -1,12 +1,15 @@
-//! Golden test: every fixture in `tests/golden` runs as a CLI request
+//! Golden test: every fixture below `tests/golden` runs as a CLI request
 //! (`rhp_sapi::CaptureSapi`) and must print exactly its committed `NAME.out`,
 //! which the reference php printed (`rhp-difftest golden --check`, see
-//! docs/testing.md). The fixtures in subdirectories have runners of their
-//! own (`tests/golden/vm`: rhp-vm's). It needs no php binary, so it also
-//! runs in the php-free CI job.
+//! docs/testing.md); `tests/golden/vm` is rhp-vm's to run. It needs no php
+//! binary, so it also runs in the php-free CI job. `GOLDEN_ONLY=SUBSTR`
+//! runs only the fixtures whose name (`lang/closures`) contains SUBSTR.
+//!
+//! The fixtures run one after another: they chdir, and some set the umask.
 
 use std::path::{Path, PathBuf};
 
+use rhp_difftest::golden::{fixtures, Fixture};
 use rhp_sapi::{CaptureSapi, Outcome, Request, Script};
 
 // The engine's memory accounting (memory_get_usage(), memory_limit).
@@ -32,26 +35,26 @@ fn refused(stderr: &[u8]) -> bool {
     stderr.windows(16).any(|w| w == b"RHP_UNSUPPORTED:")
 }
 
-fn cases() -> Vec<PathBuf> {
-    let mut v: Vec<_> = std::fs::read_dir(golden_dir())
+fn cases() -> Vec<Fixture> {
+    let only = std::env::var("GOLDEN_ONLY").ok();
+    fixtures(&golden_dir())
         .expect("read golden dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "php"))
-        .collect();
-    v.sort();
-    v
+        .into_iter()
+        // rhp-vm's tests/golden.rs runs these.
+        .filter(|f| !f.name.starts_with("vm/"))
+        .filter(|f| only.as_deref().is_none_or(|o| f.name.contains(o)))
+        .collect()
 }
 
 /// The VM must match php on every fixture.
 #[test]
 fn vm_matches_php_baseline() {
     let cases = cases();
-    assert!(!cases.is_empty());
+    assert!(!cases.is_empty(), "no golden fixture matches GOLDEN_ONLY");
     let cwd = std::env::current_dir().expect("cwd");
     let mut passed = 0;
     let mut failures = Vec::new();
-    for php in &cases {
-        let name = php.file_stem().unwrap().to_string_lossy().into_owned();
+    for Fixture { name, php } in &cases {
         let Ok(expected) = std::fs::read(php.with_extension("out")) else {
             failures.push(format!("{name}: missing .out"));
             continue;

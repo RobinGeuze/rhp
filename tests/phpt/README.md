@@ -104,10 +104,9 @@ is the 61 tests that set `opcache.opt_debug_level`: they print Zend's
 optimizer listing. A missing feature (the JIT, the file cache, an extension)
 is a skip or a failure, not an ignore. When an ignored test also prints
 script output and rhp matches php on it, that part is kept as a golden
-(`tests/golden/lang/opt_*.php`). Twenty of the 61 print script output; 13 are
+(`tests/golden/lang/opt_*.php`). Twenty of the 61 print script output; 14 are
 goldens. The others, with what blocks them:
 
-- `ext/opcache/tests/match/001.phpt`: `range()` with characters.
 - `ext/opcache/tests/ct_eval_frameless_002.phpt`: the "Undefined
   variable" warning.
 - `ext/opcache/tests/dump_property_hooks.phpt`: property hooks.

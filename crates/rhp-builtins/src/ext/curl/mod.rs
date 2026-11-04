@@ -168,7 +168,11 @@ fn curl_cast_object(
 }
 
 /// curl_clone_obj: the copy gets a duplicate of the libcurl handle.
-fn curl_clone_obj(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Result<(), Thrown> {
+fn curl_clone_obj(
+    host: &mut dyn Host,
+    src: &ObjectHandle,
+    dst: &ObjectHandle,
+) -> Result<(), Thrown> {
     let id = src.borrow().id;
     let Some(easy) = EASY.with(|m| m.borrow().get(&id).cloned()) else {
         return Ok(());

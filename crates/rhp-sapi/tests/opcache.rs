@@ -347,6 +347,8 @@ fn cached_programs_are_outside_the_request_memory() {
         let hit = grew(&main, &[], 1002);
         assert!(uncached > hit + 100_000, "uncached {uncached}, hit {hit}");
         assert!((miss - hit).abs() < 4096, "miss {miss}, hit {hit}");
+        // The include runs the cached code as it is (php: 352 bytes).
+        assert!(hit < 4096, "a cache hit copied the file: {hit} bytes");
         let discarded = grew(&discard, &[], 1003);
         assert!(discarded >= 0, "invalidating gave back {discarded}");
     });

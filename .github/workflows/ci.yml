@@ -94,7 +94,7 @@ jobs:
         run: |
           rc=0
           for f in $(git ls-files 'crates/rhp-builtins/src/*.php'); do
-            fns=$(grep -oE '^function +&?[A-Za-z_][A-Za-z0-9_]*' "$f" | sed -E 's/^function +&?//' | paste -sd, -)
+            fns=$({ grep -oE '^function +&?[A-Za-z_][A-Za-z0-9_]*' "$f" || true; } | sed -E 's/^function +&?//' | paste -sd, -)
             out=$({ echo '<?php'; cat "$f"; } | php -n -d "disable_functions=$fns" -l 2>&1) || { echo "$f: $out"; rc=1; }
           done
           exit $rc

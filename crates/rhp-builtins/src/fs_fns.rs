@@ -156,7 +156,8 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     touch_ctx(host, args, 3);
     crate::streams::clear_errno();
-    match host.stream_open(&path, &mode) {
+    let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
+    match host.stream_open_ctx(&path, &mode, &ctx) {
         Some(v) => Ok(v),
         None => {
             if crate::streams::split_scheme(&path).0 == b"file"

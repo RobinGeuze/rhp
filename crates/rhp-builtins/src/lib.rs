@@ -18,6 +18,7 @@ pub(crate) mod dump;
 pub mod fdstream;
 pub(crate) mod module;
 pub mod object;
+pub mod opsstream;
 pub mod pcre;
 pub mod signatures;
 pub mod streams;
@@ -826,6 +827,15 @@ pub trait Host {
 
     /// `fopen($path, $mode)` → a resource, or None on failure.
     fn stream_open(&mut self, _path: &[u8], _mode: &[u8]) -> Option<Value> {
+        None
+    }
+    /// [`Host::stream_open`] with the call's stream context (null: the
+    /// default one), which a wrapper's own opener reads.
+    fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], _ctx: &Value) -> Option<Value> {
+        self.stream_open(path, mode)
+    }
+    /// A `stream` resource over an extension's stream ops.
+    fn stream_from_ops(&mut self, _s: opsstream::OpsStream) -> Option<Value> {
         None
     }
     /// `fwrite`/`fputs` → bytes written.

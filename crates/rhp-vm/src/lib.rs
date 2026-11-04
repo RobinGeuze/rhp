@@ -356,6 +356,8 @@ enum StreamState {
     /// An OS file descriptor stream: a `proc_open` pipe's parent end or
     /// `php://stdin` (a dup of fd 0).
     Fd(builtins::fdstream::FdStream),
+    /// A stream on an extension's ops (zip entries).
+    Ops(Box<builtins::opsstream::OpsStream>),
 }
 
 /// Status of a generator.
@@ -773,6 +775,10 @@ impl Host for Vm {
     }
 
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
+        self.stream_open_ctx(path, mode, &Value::Null)
+    }
+
+    fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], ctx: &Value) -> Option<Value> {
         let writable = mode
             .iter()
             .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
@@ -847,6 +853,8 @@ impl Host for Vm {
         } else if builtins::streams::split_scheme(path).0 == b"file" {
             // Plain local file: a real descriptor (seek/tell/flock/ftruncate).
             StreamState::File(Box::new(builtins::streams::LocalFile::open(path, mode)?))
+        } else if let Some(opened) = self.open_wrapper_stream(path, mode, ctx) {
+            return opened;
         } else if writable {
             let origin = (path.to_vec(), mode.to_vec());
             let zlib = builtins::streams::split_scheme(path).0 == b"compress.zlib";
@@ -916,6 +924,10 @@ impl Host for Vm {
         res_id(res).is_some_and(|id| self.streams.contains_key(&id))
     }
 
+    fn stream_from_ops(&mut self, s: builtins::opsstream::OpsStream) -> Option<Value> {
+        Some(self.make_stream(StreamState::Ops(Box::new(s)), "stream"))
+    }
+
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         if let Some(m) = self
@@ -927,6 +939,7 @@ impl Host for Vm {
         }
         // Memory / temp streams (returned before the mode is recorded).
         match self.streams.get(&id)? {
+            StreamState::Ops(s) => Some(s.mode.clone()),
             StreamState::Mem { mode, .. } => Some(
                 match mode {
                     MemMode::ReadOnly => &b"rb"[..],
@@ -952,6 +965,7 @@ impl Host for Vm {
             StreamState::Stderr => Act::Err,
             StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
             StreamState::File(f) => return f.write(data),
+            StreamState::Ops(s) => return s.write(data),
             StreamState::Fd(f) => {
                 let r = f.write(data);
                 if let Some(e) = f.take_send_error() {
@@ -1011,6 +1025,15 @@ impl Host for Vm {
 
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
         let id = res_id(res)?;
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            let r = if len < 0 {
+                Some(s.read_all())
+            } else {
+                s.read(len as usize)
+            };
+            self.raise_stream_diags(id);
+            return r;
+        }
         match self.streams.get_mut(&id)? {
             StreamState::Mem {
                 buf,
@@ -1089,6 +1112,7 @@ impl Host for Vm {
             Some(StreamState::Mem { eof, .. }) => *eof,
             Some(StreamState::File(f)) => f.eof(),
             Some(StreamState::Fd(f)) => f.eof(),
+            Some(StreamState::Ops(s)) => s.eof(),
             Some(StreamState::Stdin) => self.stdin_reader.as_ref().is_some_and(|f| f.eof()),
             Some(StreamState::Dir { .. }) => false,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
@@ -1302,6 +1326,7 @@ impl Host for Vm {
             }
             Some(StreamState::File(f)) => f.rewind(),
             Some(StreamState::Fd(f)) => f.seek(0, 0),
+            Some(StreamState::Ops(s)) => s.seek(0, 0) == 0,
             Some(StreamState::Stdout | StreamState::Stderr | StreamState::Stdin) => false,
             _ => true,
         }
@@ -1313,7 +1338,9 @@ impl Host for Vm {
             StreamState::File(_) => K::File,
             StreamState::Fd(_) => K::Pipe,
             StreamState::Dir { .. } => K::Dir,
-            StreamState::Mem { .. } | StreamState::FileWrite { .. } => K::Memory,
+            StreamState::Mem { .. } | StreamState::FileWrite { .. } | StreamState::Ops(_) => {
+                K::Memory
+            }
             StreamState::Stdout | StreamState::Stderr | StreamState::Stdin => K::Stdio,
         })
     }
@@ -1323,6 +1350,11 @@ impl Host for Vm {
         match self.streams.get_mut(&id) {
             Some(StreamState::File(f)) => f.seek(offset, whence),
             Some(StreamState::Fd(f)) => f.seek(offset, whence),
+            Some(StreamState::Ops(s)) => {
+                let ok = s.seek(offset, whence) == 0;
+                self.raise_stream_diags(id);
+                ok
+            }
             Some(StreamState::Stdin) => match self.stdin_stream() {
                 Some(f) => f.seek(offset, whence),
                 None => false,
@@ -1368,6 +1400,7 @@ impl Host for Vm {
             StreamState::File(f) => Some(f.tell()),
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
+            StreamState::Ops(s) => Some(s.tell()),
             StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).
@@ -1418,6 +1451,9 @@ impl Host for Vm {
         if let Some((uri, _)) = self.stream_origins.get(&id) {
             let uri = uri.clone();
             return self.wrapper_for(&uri)?.stat(&uri);
+        }
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            return s.stat();
         }
         match self.streams.get(&id)? {
             StreamState::File(f) => f.stat(),
@@ -1480,6 +1516,17 @@ impl Host for Vm {
                 });
             }
             Some(match self.streams.get(&id)? {
+                StreamState::Ops(s) => M {
+                    wrapper_type: s.wrapper_label.unwrap_or(""),
+                    stream_type: s.label(),
+                    mode: s.mode.clone(),
+                    uri: s.uri.clone(),
+                    unread_bytes: s.unread() as i64,
+                    seekable: s.seekable(),
+                    eof: s.eof_flag(),
+                    blocked: true,
+                    timed_out: false,
+                },
                 StreamState::File(f) => M {
                     wrapper_type: "plainfile",
                     stream_type: "STDIO",
@@ -4063,6 +4110,11 @@ impl Vm {
                 Some(line)
             }
             StreamState::File(f) => f.gets(max),
+            StreamState::Ops(s) => {
+                let line = s.gets(max);
+                self.raise_stream_diags(id);
+                line
+            }
             // FdStream::gets takes php's `$length` (it reads `length - 1`).
             StreamState::Fd(f) => f.gets(max.map(|m| m + 1)),
             StreamState::Stdin => self.stdin_stream()?.gets(max.map(|m| m + 1)),
@@ -4081,6 +4133,10 @@ impl Vm {
                 .wrapper_for(&url)
                 .map(|w| w.put_contents(&url, &buf))
                 .is_some(),
+            Some(StreamState::Ops(mut s)) => {
+                s.close(self);
+                true
+            }
             Some(_) => true,
             None => false,
         }
@@ -4124,6 +4180,45 @@ impl Vm {
         self.next_resource_id += 1;
         self.streams.insert(id, state);
         Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+    }
+
+    /// A wrapper's own opener (`zip://`), given the call's stream context
+    /// (null: the default one). `None` when the wrapper has none.
+    fn open_wrapper_stream(
+        &mut self,
+        path: &[u8],
+        mode: &[u8],
+        ctx: &Value,
+    ) -> Option<Option<Value>> {
+        let w = self.wrapper_for(path)?.clone();
+        let ctx = match ctx {
+            Value::Resource(_) => ctx.clone(),
+            _ => self.default_stream_context(),
+        };
+        let options = self.stream_context_options(&ctx);
+        let mut diags = Vec::new();
+        let opened = w.open_stream(path, mode, &options, &mut diags)?;
+        self.raise_ops_diags(diags);
+        Some(opened.map(|s| self.make_stream(StreamState::Ops(Box::new(s)), "stream")))
+    }
+
+    /// Report the diagnostics an ops stream's last operation raised, under
+    /// the running builtin.
+    fn raise_stream_diags(&mut self, id: u32) {
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            let diags = s.take_diags();
+            self.raise_ops_diags(diags);
+        }
+    }
+
+    fn raise_ops_diags(&mut self, diags: Vec<(i64, String)>) {
+        if diags.is_empty() {
+            return;
+        }
+        let func = self.native_calls.last().map_or("Unknown", |n| n.name);
+        for (level, msg) in diags {
+            self.raise_diagnostic(level, &format!("{func}(): {msg}"));
+        }
     }
 
     /// Set (or override) an engine constant, e.g. the SAPI's `PHP_BINARY`.

@@ -211,6 +211,25 @@ pub trait StreamWrapper: Any {
     fn canonical(&self, _url: &[u8]) -> Option<Vec<u8>> {
         None
     }
+    /// Whether [`StreamWrapper::open_stream`] is the wrapper's opener, so
+    /// whole-file readers open a stream (with the call's context) instead
+    /// of [`StreamWrapper::get_contents`].
+    fn has_stream_opener(&self) -> bool {
+        false
+    }
+    /// php's `wops->stream_opener` for a wrapper whose streams run on their
+    /// own ops (zip entries) instead of a whole-file buffer: `None` when the
+    /// wrapper has none, else the stream or the failure. `options` are the
+    /// stream context's options; diagnostics go to `diags`.
+    fn open_stream(
+        &self,
+        _url: &[u8],
+        _mode: &[u8],
+        _options: &rhp_values::Value,
+        _diags: &mut Vec<(i64, String)>,
+    ) -> Option<Option<crate::opsstream::OpsStream>> {
+        None
+    }
     /// For wrapper-specific control ops (e.g. `Phar::mapPhar` reaching its own
     /// archive table). Implementors return `self`.
     fn as_any(&self) -> &dyn Any;

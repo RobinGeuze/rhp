@@ -753,7 +753,7 @@ fn mime_encode(
                     out_reserved += 4;
                     inp = ini_in;
                 }
-                let encoded = crate::ext::hash::base64_encode(&buf[..pos]);
+                let encoded = crate::ext::standard::base64::base64_encode(&buf[..pos]);
                 if char_cnt < encoded.len() {
                     // Something went wrong.
                     return Unknown;
@@ -1229,7 +1229,7 @@ fn mime_decode(
                     }
                     let text = &s[encoded_text..encoded_text + encoded_text_len];
                     let decoded = match enc_scheme {
-                        Scheme::Base64 => crate::ext::hash::base64_decode(text, false),
+                        Scheme::Base64 => crate::ext::standard::base64::base64_decode(text, false),
                         Scheme::QPrint => qprint_decode(text),
                     };
                     let Some(decoded) = decoded else {

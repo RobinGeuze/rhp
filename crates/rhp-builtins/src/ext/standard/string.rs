@@ -2513,6 +2513,61 @@ fn dirname_once(path: &[u8]) -> Vec<u8> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// small shared helpers
+// ---------------------------------------------------------------------------
+
+/// Lowercase hex encoding of a byte slice.
+pub(crate) fn to_hex(bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
+    }
+    out
+}
+
+fn fn_bin2hex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = conv::to_string_bytes(&args[0]);
+    Ok(Value::str(to_hex(&s)))
+}
+
+fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = conv::to_string_bytes(&args[0]);
+    // Odd length or non-hex input: php emits a warning and returns false.
+    if !s.len().is_multiple_of(2) {
+        crate::warn(
+            host,
+            "hex2bin",
+            "Hexadecimal input string must have an even length",
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in s.as_chunks::<2>().0 {
+        let hi = hex_nibble(pair[0]);
+        let lo = hex_nibble(pair[1]);
+        match (hi, lo) {
+            (Some(h), Some(l)) => out.push((h << 4) | l),
+            _ => {
+                crate::warn(host, "hex2bin", "Input string must be hexadecimal string")?;
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
+    Ok(Value::str(out))
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Register all string builtins into the shared table.
 // ---------------------------------------------------------------------------
 // registration
@@ -2586,6 +2641,8 @@ pub fn register(m: &mut crate::Registry) {
             ("basename", fn_basename),
             ("dirname", fn_dirname),
             ("pathinfo", fn_pathinfo),
+            ("bin2hex", fn_bin2hex),
+            ("hex2bin", fn_hex2bin),
         ],
     );
     crate::register_helpers(

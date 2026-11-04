@@ -17,7 +17,7 @@ use super::{
     bio_bytes, bool_arg, cstr_bytes, cstring, int_arg, key_arg, libctx, mem_bio, openssl_free,
     set_ref, store_errors, str_arg, sys, value_error, Own,
 };
-use crate::ext::hash::primitives::{base64_decode, base64_encode};
+use crate::ext::standard::base64::{base64_decode, base64_encode};
 use crate::zend::zpp::deref;
 use crate::{warn, Host, Thrown};
 

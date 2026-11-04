@@ -89,23 +89,3 @@ fn base64_roundtrip_binary() {
         vec![0x61, 0x06, 0x10]
     );
 }
-
-#[test]
-fn bin2hex_hex2bin_vectors() {
-    assert_eq!(calls(fn_bin2hex, &[s("abc")]), "616263");
-    assert_eq!(calls(fn_bin2hex, &[s("")]), "");
-    assert_eq!(
-        calls(fn_bin2hex, &[Value::str(vec![0xff, 0x00, 0x10])]),
-        "ff0010"
-    );
-    assert_eq!(calls(fn_hex2bin, &[s("616263")]), "abc");
-    assert_eq!(calls(fn_hex2bin, &[s("")]), "");
-    assert_eq!(
-        rhp_values::conv::to_string_bytes(&call(fn_hex2bin, &[s("ff0010")])),
-        vec![0xff, 0x00, 0x10]
-    );
-    // odd length -> false
-    assert!(is_false(fn_hex2bin, &[s("abc")]));
-    // non-hex -> false
-    assert!(is_false(fn_hex2bin, &[s("xy")]));
-}

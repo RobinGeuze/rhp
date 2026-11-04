@@ -680,7 +680,7 @@ pub fn auth_server_vars(auth: &[u8]) -> Vec<(&'static [u8], Vec<u8>)> {
     }
     let has_prefix = |p: &[u8]| auth.len() >= p.len() && auth[..p.len()].eq_ignore_ascii_case(p);
     if has_prefix(b"Basic ") {
-        if let Some(user) = crate::ext::hash::base64_decode(&auth[6..], false) {
+        if let Some(user) = crate::ext::standard::base64::base64_decode(&auth[6..], false) {
             if let Some(colon) = user.iter().position(|&b| b == b':') {
                 let mut out = vec![(&b"PHP_AUTH_USER"[..], cstr(&user[..colon]))];
                 let pass = cstr(&user[colon + 1..]);

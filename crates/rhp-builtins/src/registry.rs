@@ -163,6 +163,10 @@ type Registrar = Box<dyn Fn(&mut Registry)>;
 fn builtin_modules() -> Vec<(&'static str, Registrar)> {
     let mut v: Vec<(&'static str, Registrar)> = vec![
         ("string", Box::new(ext::standard::string::register)),
+        ("base64", Box::new(ext::standard::base64::register)),
+        ("md5", Box::new(ext::standard::md5::register)),
+        ("sha1", Box::new(ext::standard::sha1::register)),
+        ("crc32", Box::new(ext::standard::crc32::register)),
         ("math", Box::new(ext::standard::math::register)),
         ("array", Box::new(ext::standard::array::register)),
         (

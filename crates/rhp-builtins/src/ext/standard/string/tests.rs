@@ -1359,3 +1359,28 @@ fn csv_escape() {
         some(&["a\\", "b", "c"])
     );
 }
+
+/// True when the result is php `false` (used for failure returns).
+fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
+    matches!(call(f, args), Value::Bool(false))
+}
+
+#[test]
+fn bin2hex_hex2bin_vectors() {
+    assert_eq!(calls(fn_bin2hex, &[s("abc")]), "616263");
+    assert_eq!(calls(fn_bin2hex, &[s("")]), "");
+    assert_eq!(
+        calls(fn_bin2hex, &[Value::str(vec![0xff, 0x00, 0x10])]),
+        "ff0010"
+    );
+    assert_eq!(calls(fn_hex2bin, &[s("616263")]), "abc");
+    assert_eq!(calls(fn_hex2bin, &[s("")]), "");
+    assert_eq!(
+        rhp_values::conv::to_string_bytes(&call(fn_hex2bin, &[s("ff0010")])),
+        vec![0xff, 0x00, 0x10]
+    );
+    // odd length -> false
+    assert!(is_false(fn_hex2bin, &[s("abc")]));
+    // non-hex -> false
+    assert!(is_false(fn_hex2bin, &[s("xy")]));
+}

@@ -220,7 +220,7 @@ pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'s
     meta.insert(ArrayKey::from_bytes(b"base64"), Value::Bool(base64));
     let data = &path[comma + 1..];
     let data = if base64 {
-        crate::ext::hash::primitives::base64_decode(data, true)
+        crate::ext::standard::base64::base64_decode(data, true)
             .ok_or("rfc2397: unable to decode")?
     } else {
         crate::main::php_variables::url_decode(data)

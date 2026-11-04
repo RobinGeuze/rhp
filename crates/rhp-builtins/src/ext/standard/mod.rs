@@ -3,7 +3,9 @@
 
 pub mod array;
 pub mod assert;
+pub mod base64;
 pub mod basic_functions;
+pub mod crc32;
 pub mod crypt;
 pub mod dir;
 pub mod dns;
@@ -23,12 +25,14 @@ pub mod info;
 pub mod levenshtein;
 pub mod link;
 pub mod math;
+pub mod md5;
 pub mod microtime;
 pub mod pack;
 pub mod pageinfo;
 pub mod password;
 pub mod proc_open;
 pub mod scanf;
+pub mod sha1;
 pub mod soundex;
 pub mod streamsfuncs;
 pub mod string;

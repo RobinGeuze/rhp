@@ -908,7 +908,7 @@ fn wrap_http_ex(
                 scratch.extend_from_slice(&crate::main::php_variables::url_decode(pass));
             }
             req.extend_from_slice(b"Authorization: Basic ");
-            req.extend_from_slice(&crate::ext::hash::primitives::base64_encode(&scratch));
+            req.extend_from_slice(&crate::ext::standard::base64::base64_encode(&scratch));
             req.extend_from_slice(b"\r\n");
             cx.notify(NOTIFY_AUTH_REQUIRED, SEVERITY_INFO, None, 0, 0, 0)?;
         }

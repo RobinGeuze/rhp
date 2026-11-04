@@ -588,13 +588,14 @@ fn headers_parse(
                 .unwrap_or(u64::MAX);
             info.file_size = parsed.min(i64::MAX as u64) as i64;
             let line = c_str(&last).to_vec();
+            // php_stream_notify_file_size: the size is bytes_max
             cx.notify(
                 NOTIFY_FILE_SIZE_IS,
                 SEVERITY_INFO,
                 Some(&line),
                 0,
-                info.file_size,
                 0,
+                info.file_size,
             )?;
         }
     } else if starts(b"Transfer-Encoding:")

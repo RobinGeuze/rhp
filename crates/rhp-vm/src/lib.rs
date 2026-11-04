@@ -1019,7 +1019,9 @@ impl Host for Vm {
             StreamState::File(f) => return f.write(data),
             StreamState::Fd(f) => {
                 let r = f.write(data);
-                if let Some(e) = f.take_send_error() {
+                let send_error = f.take_send_error();
+                self.deliver_stream_events(res);
+                if let Some(e) = send_error {
                     // php_sockop_write's notice, under the calling builtin.
                     let func = self.native_calls.last().map_or("fwrite", |n| n.name);
                     let msg = format!(

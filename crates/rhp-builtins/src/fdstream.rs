@@ -687,6 +687,9 @@ impl FdStream {
                 });
                 return if done == 0 { None } else { Some(done) };
             };
+            if self.notify {
+                self.events.push(NotifyEvent::Progress(n as usize));
+            }
             done += n as usize;
             self.position += n as i64;
         }
@@ -801,6 +804,9 @@ impl FdStream {
             let n = crate::ext::openssl::xp_ssl::sockop_io(self, false, &mut chunk, false);
             if n <= 0 {
                 return if done == 0 && n < 0 { None } else { Some(done) };
+            }
+            if self.notify {
+                self.events.push(NotifyEvent::Progress(n as usize));
             }
             done += n as usize;
             self.position += n as i64;

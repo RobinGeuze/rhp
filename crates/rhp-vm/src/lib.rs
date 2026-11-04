@@ -6450,17 +6450,27 @@ impl Vm {
                     let v = self.reg_get(top, a);
                     // zval_get_long: an object's cast_object (curl handles:
                     // the id), else a warning.
-                    let n = match builtins::object::object_to_number(self, &v, CastTarget::Int)? {
-                        Some(n) => conv::to_int(&n),
-                        None => conv::to_int(&v),
+                    let n = match v {
+                        Value::Object(_) | Value::Closure(_) => {
+                            match builtins::object::object_to_number(self, &v, CastTarget::Int)? {
+                                Some(n) => conv::to_int(&n),
+                                None => conv::to_int(&v),
+                            }
+                        }
+                        _ => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
                     let v = self.reg_get(top, a);
-                    let f = match builtins::object::object_to_number(self, &v, CastTarget::Float)? {
-                        Some(f) => conv::to_float(&f),
-                        None => conv::to_float(&v),
+                    let f = match v {
+                        Value::Object(_) | Value::Closure(_) => {
+                            match builtins::object::object_to_number(self, &v, CastTarget::Float)? {
+                                Some(f) => conv::to_float(&f),
+                                None => conv::to_float(&v),
+                            }
+                        }
+                        _ => conv::to_float(&v),
                     };
                     self.reg_set(top, dst, Value::Float(f));
                 }
@@ -6663,8 +6673,7 @@ impl Vm {
                             && compiled_inline(&fname, argc as usize);
                         let icall = frameless_icall(&fname, argc as usize);
                         self.mark_user_call_builtin(&fname, fallback);
-                        let out =
-                            self.call_builtin(top, lc, builtin, base, argc, frameless, icall);
+                        let out = self.call_builtin(top, lc, builtin, base, argc, frameless, icall);
                         self.cuf_caller = None;
                         let out = out?;
                         self.reg_set(top, dst, out);

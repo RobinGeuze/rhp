@@ -94,12 +94,14 @@ impl From<Thrown> for IncludeError {
 pub struct Vm {
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
-    /// The fetch the next magic accessor or `offsetGet` call serves (php's
-    /// `BP_VAR_W` below a write, `check_empty` for `empty()`); that call
-    /// takes it.
+    /// The fetch the next magic accessor or ArrayAccess call serves (php's
+    /// `BP_VAR_W` below a write, `check_empty` for `empty()`); the next
+    /// synchronous call takes it.
     pending_magic_fetch: builtins::MagicFetch,
-    /// The fetch the running accessor serves ([`Host::magic_fetch`]).
-    magic_fetch: builtins::MagicFetch,
+    /// The fetch the running accessor serves ([`Host::magic_fetch`]), and
+    /// the stack index of that accessor's frame: code it calls runs in
+    /// frames above and sees a plain read.
+    magic_fetch: (usize, builtins::MagicFetch),
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
@@ -472,7 +474,12 @@ impl Host for Vm {
     }
 
     fn magic_fetch(&self) -> builtins::MagicFetch {
-        self.magic_fetch
+        let (frame, mode) = self.magic_fetch;
+        if frame + 1 == self.stack.len() {
+            mode
+        } else {
+            builtins::MagicFetch::Read
+        }
     }
 
     fn arg_uses_strict_types(&self) -> bool {
@@ -3149,22 +3156,14 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let guard = (h.borrow().id, which, name.clone());
         self.prop_guards.insert(guard.clone());
-        let r = self.with_magic_fetch(|vm| vm.call_sync(m, Some(h.clone()), cls, args));
+        let r = self.call_sync(m, Some(h.clone()), cls, args);
         self.prop_guards.remove(&guard);
         r
     }
 
-    /// Run a magic accessor or `offsetGet` call with the fetch it serves.
-    fn with_magic_fetch<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        let mode = std::mem::take(&mut self.pending_magic_fetch);
-        let saved = std::mem::replace(&mut self.magic_fetch, mode);
-        let r = f(self);
-        self.magic_fetch = saved;
-        r
-    }
-
     /// `f` (a property or element fetch) with `mode` for the accessor it
-    /// may call.
+    /// may call: the first synchronous call `f` makes takes it
+    /// ([`Self::run_proto_sync`]).
     fn fetching_as<T>(&mut self, mode: builtins::MagicFetch, f: impl FnOnce(&mut Self) -> T) -> T {
         self.pending_magic_fetch = mode;
         let r = f(self);
@@ -5942,11 +5941,17 @@ impl Vm {
     fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"offsetget") {
-            Some(m) => {
-                self.with_magic_fetch(|vm| vm.call_sync(&m, Some(h.clone()), cls, vec![key]))
-            }
+            Some(m) => self.call_sync(&m, Some(h.clone()), cls, vec![key]),
             None => Ok(Value::Null),
         }
+    }
+
+    /// `offsetExists($key)` on an ArrayAccess object, as a bool.
+    fn aa_offset_exists(&mut self, h: &ObjectHandle, key: Value) -> Result<bool, Thrown> {
+        let cls = h.borrow().class;
+        let m = self.lookup_method(cls, b"offsetexists").unwrap();
+        let r = self.call_sync(&m, Some(h.clone()), cls, vec![key])?;
+        Ok(conv::to_bool(&r))
     }
 
     /// Before a read-modify-write (compound assignment / `++`) through an
@@ -7671,12 +7676,8 @@ impl Vm {
                     let k = self.reg_get(top, key);
                     if let Value::Object(h) = &a {
                         if self.class_implements(h.borrow().class, b"ArrayAccess") {
-                            let m = self
-                                .lookup_method(h.borrow().class, b"offsetexists")
-                                .unwrap();
-                            let r =
-                                self.call_sync(&m, Some(h.clone()), h.borrow().class, vec![k])?;
-                            self.reg_set(top, dst, Value::Bool(conv::to_bool(&r)));
+                            let r = self.aa_offset_exists(h, k)?;
+                            self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
                     }
@@ -8541,8 +8542,26 @@ impl Vm {
     }
 
     /// Push a capture frame for `proto` and drive it to completion, returning
-    /// its value (re-entrant; exceptions handled within the sub-run).
+    /// its value (re-entrant; exceptions handled within the sub-run). The
+    /// call takes the pending magic fetch mode, which then holds for its
+    /// own frame only ([`Host::magic_fetch`]).
     fn run_proto_sync(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        this: Option<ObjectHandle>,
+        defining_class: Option<ClassId>,
+        called_class: Option<ClassId>,
+        args: Vec<Value>,
+        caller: Option<bool>,
+    ) -> Result<Value, Thrown> {
+        let mode = std::mem::take(&mut self.pending_magic_fetch);
+        let saved = std::mem::replace(&mut self.magic_fetch, (self.stack.len(), mode));
+        let r = self.run_proto_frame(proto, this, defining_class, called_class, args, caller);
+        self.magic_fetch = saved;
+        r
+    }
+
+    fn run_proto_frame(
         &mut self,
         proto: Rc<FunctionProto>,
         this: Option<ObjectHandle>,
@@ -11318,16 +11337,11 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
-                    if quiet {
-                        // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
-                        let ex = self.lookup_method(cls, b"offsetexists").unwrap();
-                        let r = self.call_sync(&ex, Some(h.clone()), cls, vec![key.clone()])?;
-                        if !conv::to_bool(&r) {
-                            return Ok(Value::Null);
-                        }
+                    // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
+                    if quiet && !self.aa_offset_exists(h, key.clone())? {
+                        return Ok(Value::Null);
                     }
-                    let m = self.lookup_method(cls, b"offsetget").unwrap();
-                    return self.call_sync(&m, Some(h.clone()), cls, vec![key.clone()]);
+                    return self.aa_offset_get(h, key.clone());
                 }
                 Err(Thrown::error(
                     "Error",

@@ -136,6 +136,32 @@ pub fn long_arg(
     fname: &str,
     pname: &str,
 ) -> Result<i64, Thrown> {
+    long_arg_as(host, args, i, fname, pname, "int")
+}
+
+/// [`long_arg`] for a `?int` parameter (`Z_PARAM_LONG_OR_NULL`): `None`
+/// when absent or null.
+pub fn opt_long_arg(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Option<i64>, Thrown> {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => long_arg_as(host, args, i, fname, pname, "?int").map(Some),
+    }
+}
+
+fn long_arg_as(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+    ty: &str,
+) -> Result<i64, Thrown> {
     // ZEND_DOUBLE_FITS_LONG
     const TWO_63: f64 = 9_223_372_036_854_775_808.0;
     let fits = |f: f64| (-TWO_63..TWO_63).contains(&f);
@@ -146,7 +172,7 @@ pub fn long_arg(
     // zend_wrong_parameter_type_error names the value (`true given`).
     let wrong = |host: &dyn Host, v: &Value| {
         Thrown::type_error(format!(
-            "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
+            "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
             crate::argparse::value_name(host, v)
         ))

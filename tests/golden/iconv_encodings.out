@@ -1,0 +1,95 @@
+array(3) {
+  ["input_encoding"]=>
+  string(5) "UTF-8"
+  ["output_encoding"]=>
+  string(5) "UTF-8"
+  ["internal_encoding"]=>
+  string(5) "UTF-8"
+}
+string(5) "UTF-8"
+array(3) {
+  ["input_encoding"]=>
+  string(5) "UTF-8"
+  ["output_encoding"]=>
+  string(5) "UTF-8"
+  ["internal_encoding"]=>
+  string(5) "UTF-8"
+}
+bool(false)
+string(5) "UTF-8"
+array(3) {
+  ["input_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["output_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["internal_encoding"]=>
+  string(10) "ISO-8859-1"
+}
+int(3)
+string(1) "é"
+  W[8]: iconv_strlen(): Detected an illegal character in input string
+string(0) ""
+array(3) {
+  ["input_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["output_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["internal_encoding"]=>
+  string(5) "UTF-8"
+}
+bool(false)
+  W[8192]: iconv_set_encoding(): Use of iconv.internal_encoding is deprecated
+  W[2]: iconv_set_encoding(): Encoding parameter exceeds the maximum allowed length of 64 characters
+bool(true)
+bool(false)
+bool(false)
+string(6) "EUC-JP"
+array(3) {
+  ["input_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["output_encoding"]=>
+  string(10) "ISO-8859-1"
+  ["internal_encoding"]=>
+  string(6) "EUC-JP"
+}
+  W[8192]: ini_set(): Use of iconv.input_encoding is deprecated
+bool(false)
+string(0) ""
+string(0) ""
+  W[8192]: ini_alter(): Use of iconv.output_encoding is deprecated
+  W[8192]: iconv_set_encoding(): Use of iconv.input_encoding is deprecated
+string(0) ""
+bool(true)
+bool(false)
+bool(false)
+string(10) "ISO-8859-1"
+  W[8192]: ini_restore(): Use of iconv.internal_encoding is deprecated
+array(3) {
+  ["input_encoding"]=>
+  string(5) "UTF-8"
+  ["output_encoding"]=>
+  string(6) "UTF-16"
+  ["internal_encoding"]=>
+  string(5) "UTF-8"
+}
+  W[8]: iconv_mime_encode(): Detected an illegal character in input string
+bool(false)
+  W[8192]: ini_set(): Use of iconv.internal_encoding is deprecated
+array(3) {
+  ["input_encoding"]=>
+  string(5) "UTF-8"
+  ["output_encoding"]=>
+  string(6) "UTF-16"
+  ["internal_encoding"]=>
+  string(5) "UTF-8"
+}
+int(1)
+bool(true)
+bool(true)
+int(1)
+int(2)
+bool(false)
+bool(true)
+  W[8]: iconv(): Detected an incomplete multibyte character in input string
+  W[8]: iconv_mime_decode(): Unknown error (22)
+bool(false)

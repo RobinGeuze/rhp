@@ -241,6 +241,8 @@ fn print_info(flag: i64) -> Vec<u8> {
                 print_openssl(&mut o);
             } else if *e == "curl" {
                 print_curl(&mut o);
+            } else if *e == "iconv" {
+                print_iconv(&mut o);
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
@@ -354,6 +356,28 @@ fn print_curl(o: &mut Info) {
     let local = crate::runtime_fns::ini_value(b"curl.cainfo").flatten();
     let master = crate::runtime_fns::ini_default_value(b"curl.cainfo").flatten();
     o.row(&["curl.cainfo", &show(local), &show(master)]);
+}
+
+/// PHP_MINFO_FUNCTION(miconv), then its ini entries.
+fn print_iconv(o: &mut Info) {
+    for (k, v) in crate::ext::iconv::info_rows() {
+        o.row(&[k, &v]);
+    }
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in [
+        "iconv.input_encoding",
+        "iconv.internal_encoding",
+        "iconv.output_encoding",
+    ] {
+        let show = |v: Option<Option<Vec<u8>>>| match v.flatten() {
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
+        };
+        let local = show(crate::runtime_fns::ini_value(name.as_bytes()));
+        let master = show(crate::runtime_fns::ini_default_value(name.as_bytes()));
+        o.row(&[name, &local, &master]);
+    }
 }
 
 fn print_core_ini(o: &mut Info) {

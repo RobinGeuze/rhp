@@ -222,11 +222,10 @@ pub const EXT_DOM: &str = "20031129";
 // LIBXML_* versions from the linked libxml2 (crate::ext::libxml), the
 // INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
 // ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
-// linked libcurl (crate::ext::curl).
+// linked libcurl (crate::ext::curl), ICONV_* from the system iconv
+// (crate::ext::iconv).
 /// `ZipArchive::LIBZIP_VERSION`.
 pub const LIBZIP_VERSION: &str = libzip!();
-/// `ICONV_VERSION`.
-pub const ICONV_VERSION: &str = "1.11";
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
 /// `GMP_VERSION`.

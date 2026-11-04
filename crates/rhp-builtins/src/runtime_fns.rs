@@ -188,6 +188,9 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
     if name == b"memory_limit" {
         return memory_limit_modify(v);
     }
+    if crate::ext::iconv::ini_refuses(name, v) {
+        return (Vec::new(), None);
+    }
     let mut warnings = Vec::new();
     if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
         if let Some(err) = crate::rfc1867::quantity_error(v) {
@@ -625,6 +628,8 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
             }
         }
         b"arg_separator.output" if v.is_empty() => Err(()),
+        // OnUpdateDefaultCharset.
+        b"default_charset" if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) => Err(()),
         b"date.timezone" if !tz_valid(v) => Err(()),
         _ => Ok(()),
     }
@@ -665,36 +670,52 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
             )))
         }
     };
-    let Some(e) = ini_entry(&name) else {
-        return Ok(Value::Bool(false));
+    Ok(match alter_ini_entry(host, &name, newv, func)? {
+        Some(old) => Value::str(old),
+        None => Value::Bool(false),
+    })
+}
+
+/// zend_alter_ini_entry at runtime (PHP_INI_USER) from builtin `func`: the
+/// old value, or `None` when the directive is unknown, not changeable at
+/// runtime, or its handler refused the value.
+pub(crate) fn alter_ini_entry(
+    host: &mut dyn Host,
+    name: &[u8],
+    newv: Vec<u8>,
+    func: &str,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    let Some(e) = ini_entry(name) else {
+        return Ok(None);
     };
     if e.3 & PHP_INI_USER == 0 {
-        return Ok(Value::Bool(false));
+        return Ok(None);
     }
-    mark_changed(&String::from_utf8_lossy(&name));
-    let (warnings, stored) = on_modify_check(&name, &newv);
+    mark_changed(&String::from_utf8_lossy(name));
+    let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w)?;
     }
     let Some(newv) = stored else {
-        return Ok(Value::Bool(false));
+        return Ok(None);
     };
-    if !crate::opcache_fns::on_modify(host, &name, &newv)? {
-        return Ok(Value::Bool(false));
+    if !crate::opcache_fns::on_modify(host, name, &newv)? {
+        return Ok(None);
     }
+    crate::ext::iconv::ini_runtime_update(host, name, func)?;
     if name == b"date.timezone" && !tz_valid(&newv) {
         let func = format!("{func}()");
         host.emit_diagnostic(crate::E_WARNING, &invalid_timezone(&newv, &func))?;
-        return Ok(Value::Bool(false));
+        return Ok(None);
     }
-    if ini_validate(&name, &newv).is_err() {
+    if ini_validate(name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.
-        return Ok(Value::Bool(false));
+        return Ok(None);
     }
-    let old = ini_value(&name).flatten().unwrap_or_default();
-    ini_apply(&name, Some(&newv));
-    ini_store(&name, newv);
-    Ok(Value::str(old))
+    let old = ini_value(name).flatten().unwrap_or_default();
+    ini_apply(name, Some(&newv));
+    ini_store(name, newv);
+    Ok(Some(old))
 }
 
 fn fn_ini_set(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -714,9 +735,12 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         let mut d = d.borrow_mut();
         let pos = d.changed.iter().position(|c| *c == key)?;
         d.changed.remove(pos);
-        d.restore.get(&key).cloned()
+        Some(d.restore.get(&key).cloned())
     });
-    for w in restore.unwrap_or_default() {
+    if restore.is_some() {
+        crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
+    }
+    for w in restore.flatten().unwrap_or_default() {
         host.emit_diagnostic(crate::E_WARNING, &w)?;
     }
     // Back to the startup value (`-d`), else the default.

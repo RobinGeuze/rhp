@@ -199,18 +199,30 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
     "date.timezone",
+    "default_charset",
     "display_errors",
     "error_reporting",
     "html_errors",
+    "iconv.input_encoding",
+    "iconv.internal_encoding",
+    "iconv.output_encoding",
     "include_path",
+    "input_encoding",
+    "internal_encoding",
     "max_memory_limit",
     "memory_hard_limit_percent",
     "memory_limit",
+    "output_encoding",
     "pcre.backtrack_limit",
     "pcre.jit",
     "pcre.recursion_limit",
     "precision",
     "serialize_precision",
+    // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
+    // rhp both ignore them.
+    "iconv.http_input",
+    "iconv.http_output",
+    "iconv.internal_charset",
 ];
 
 /// The `name` of a `name=value` setting.

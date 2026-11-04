@@ -25,9 +25,10 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   and `LIBXML_LOADED_VERSION` from `xmlParserVersion`; `INTL_ICU_VERSION`/
   `INTL_ICU_DATA_VERSION` from ICU's uvernum.h;
   `OPENSSL_VERSION_TEXT`/`NUMBER` from opensslv.h and phpinfo's "OpenSSL
-  Library Version" from `OpenSSL_version()`. `version.rs` keeps
-  hard-coded values only for libraries rhp does not link yet; each goes when
-  its library is linked.
+  Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
+  `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc).
+  `version.rs` keeps hard-coded values only for libraries rhp does not link
+  yet; each goes when its library is linked.
 
 ## Linking: static by default
 
@@ -74,6 +75,7 @@ Today rhp-builtins links:
 | ICU (libicui18n, libicuuc, libicudata) | static, Homebrew icu4c@79 (keg-only; php's formula) | static, libicu-dev (CI: 78.2, the release php links) |
 | OpenSSL (libcrypto, libssl) | static, Homebrew openssl@4 | static, libssl-dev |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
+| iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
@@ -87,6 +89,12 @@ of the linked uvernum.h, and build.rs refuses an ICU built with
 `U_DISABLE_RENAMING`. Homebrew names the formula by major version: when
 php's formula moves to a newer `icu4c@N`, the `ICU_*` rows in `native.rs`
 follow (ref_build's "linked" section fails until they do).
+
+iconv has no row in `native.rs`: there is no .pc file or version macro to
+check (php reads `_libiconv_version` or `gnu_get_libc_version()` at run
+time), and on Linux it is part of libc. `ext/iconv/sys.rs` links it, and its
+`links_the_library_php_links` test checks with `dladdr` that `iconv_open`
+comes from that library.
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's

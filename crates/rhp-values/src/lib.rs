@@ -363,6 +363,7 @@ impl ArrayKey {
     }
 
     /// The key as a value (`array_keys`, `foreach`'s key, …).
+    #[inline]
     pub fn to_value(&self) -> Value {
         match self {
             ArrayKey::Int(n) => Value::Int(*n),

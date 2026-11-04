@@ -26,7 +26,7 @@ fn key_bytes(k: &ArrayKey) -> Vec<u8> {
 
 /// Build php's `php_charmask` set (supports the `a..z` range syntax). Used by
 /// `str_word_count`'s additional-characters argument.
-fn charmask(chars: &[u8]) -> [bool; 256] {
+fn word_charmask(chars: &[u8]) -> [bool; 256] {
     let mut mask = [false; 256];
     let len = chars.len();
     let mut i = 0;
@@ -333,7 +333,7 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         ));
     }
     let extra = args.get(2).map(conv::to_string_bytes);
-    let extra_mask = extra.map(|e| charmask(&e)).unwrap_or([false; 256]);
+    let extra_mask = extra.map(|e| word_charmask(&e)).unwrap_or([false; 256]);
     let is_word =
         |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
 

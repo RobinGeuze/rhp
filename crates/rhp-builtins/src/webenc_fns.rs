@@ -15,7 +15,7 @@ use crate::{Host, Thrown};
 const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// C `isspace`: space, \t, \n, \v, \f, \r.
-fn is_space(b: u8) -> bool {
+fn c_isspace(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
@@ -207,7 +207,7 @@ fn tag_find(tag: &[u8], set: &[u8]) -> bool {
         match c {
             b'<' => norm.push(c),
             b'>' => break,
-            _ if !is_space(c) => {
+            _ if !c_isspace(c) => {
                 seen = true;
                 if c != b'/' || (t > 0 && at(t - 1) != b'<' && at(t + 1) != b'>') {
                     norm.push(c);
@@ -246,7 +246,7 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
             0 => match c {
                 0 => {}
                 b'<' if in_q != 0 => {}
-                b'<' if is_space(at(p + 1)) => out.push(c),
+                b'<' if c_isspace(at(p + 1)) => out.push(c),
                 b'<' => {
                     lc = b'<';
                     state = 1;
@@ -261,7 +261,7 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
             1 => match c {
                 0 => {}
                 b'<' if in_q != 0 => {}
-                b'<' if is_space(at(p + 1)) => reg_char = true,
+                b'<' if c_isspace(at(p + 1)) => reg_char = true,
                 b'<' => depth += 1,
                 b'>' if depth > 0 => depth -= 1,
                 b'>' if in_q != 0 => {}

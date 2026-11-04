@@ -9,7 +9,7 @@ use rhp_values::{conv, ArrayKey, ClassKind, PhpArray, Value};
 use crate::const_modules::CONST_MODULES;
 use crate::zend::exceptions::trace_to_string;
 use crate::zend::zpp::{arg_bytes, bool_param, str_param, zval_get_string, zval_value_name};
-use crate::{ext, find_sub, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
+use crate::{ext, find_subslice, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
     host.reflect_op(b"declared", &[Value::str(kind)])
@@ -143,7 +143,7 @@ pub fn const_redefined_message(name: &[u8]) -> String {
 /// does.
 pub(crate) fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
     let name = name.strip_prefix(b"\\").unwrap_or(name);
-    if let Some(pos) = find_sub(name, b"::") {
+    if let Some(pos) = find_subslice(name, b"::") {
         host.class_constant_eval(&name[..pos], &name[pos + 2..])
     } else {
         Ok(host.get_const(name))

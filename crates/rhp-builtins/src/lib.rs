@@ -881,7 +881,7 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // All pieces, in order.
     let mut parts: Vec<Vec<u8>> = Vec::new();
     let mut start = 0;
-    while let Some(pos) = find_sub(&s[start..], &delim) {
+    while let Some(pos) = find_subslice(&s[start..], &delim) {
         parts.push(s[start..start + pos].to_vec());
         start += pos + delim.len();
     }
@@ -921,7 +921,7 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(arr))
 }
 
-fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
@@ -944,7 +944,7 @@ fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let haystack = conv::to_string_bytes(&deref(&args[0]));
     let needle = conv::to_string_bytes(&deref(&args[1]));
     Ok(Value::Bool(
-        needle.is_empty() || find_sub(&haystack, &needle).is_some(),
+        needle.is_empty() || find_subslice(&haystack, &needle).is_some(),
     ))
 }
 

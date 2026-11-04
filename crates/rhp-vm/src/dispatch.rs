@@ -1398,10 +1398,9 @@ impl Vm {
                     name,
                     args,
                     fallback,
-                    flags,
                 } => {
                     let target = self.call_target(top, &proto, pc, name, fallback)?;
-                    self.call_v(top, dst, args, target, flags, &proto.names[name as usize])?;
+                    self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
                 Instr::NewV { dst, class, args } => {
                     let cls = self.resolve_class_autoload(top, class)?;

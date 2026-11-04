@@ -5,7 +5,7 @@ use std::rc::{Rc, Weak};
 
 use rhp_builtins::object::CastTarget;
 use rhp_builtins::{self as builtins, Host};
-use rhp_bytecode::{CallFlags, ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
+use rhp_bytecode::{ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
 };
@@ -2008,14 +2008,15 @@ impl Vm {
     }
 
     /// `CallV`: call `target` (the function `name` resolved to) with the
-    /// packed arguments array in `args`.
+    /// packed arguments array in `args`. A builtin runs as an ordinary
+    /// internal call: a callback it makes is coercive, whatever the caller's
+    /// `strict_types`.
     pub(crate) fn call_v(
         &mut self,
         top: usize,
         dst: Reg,
         args: Reg,
         target: CallTarget,
-        flags: CallFlags,
         name: &PhpStr,
     ) -> Result<(), Thrown> {
         let arr = self.reg_get(top, args);
@@ -2030,12 +2031,7 @@ impl Vm {
                 // `call_user_func($f, ...named)` forwards them.
                 let cuf = matches!(target, CallTarget::Builtin(b, _) if b.name == "call_user_func");
                 if cuf && !argv.is_empty() {
-                    let out = self.call_named(
-                        &argv[0],
-                        argv[1..].to_vec(),
-                        named,
-                        Some(self.caller_strict()),
-                    )?;
+                    let out = self.call_named(&argv[0], argv[1..].to_vec(), named, None)?;
                     self.reg_set(top, dst, out);
                 } else {
                     return Err(Thrown::unsupported(
@@ -2045,12 +2041,7 @@ impl Vm {
                 }
             }
             CallTarget::Builtin(builtin, sig) => {
-                self.cuf_caller = flags
-                    .contains(CallFlags::USER_CALL)
-                    .then(|| self.caller_strict());
-                let out = self.run_builtin_sig(builtin, sig, argv, false, false);
-                self.cuf_caller = None;
-                let out = out?;
+                let out = self.run_builtin_sig(builtin, sig, argv, false, false)?;
                 self.reg_set(top, dst, out);
             }
             CallTarget::Missing => return Err(undefined_function(name)),

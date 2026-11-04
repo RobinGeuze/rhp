@@ -432,14 +432,15 @@ compiled, not guessed from debug info:
   function's. `SHUTDOWN_SCOPE` is set only by the VM, on the copy of the
   finished script's `{main}` that holds the globals while shutdown
   callbacks run; it is no user frame either (`Vm::is_internal_frame`).
-- `Call`/`CallV` carry `CallFlags`, php's compile-time decisions for a call
+- `Call` carries `CallFlags`, php's compile-time decisions for a call
   that reaches a builtin: `INLINE` (zend_try_compile_special_func: no
   trace frame), `ICALL` (php 8.4 frameless internal calls) and `USER_CALL`
   (`call_user_func[_array]` compiled to ZEND_INIT_USER_CALL). The compiler
   sets them from the call's name and argument count: `INLINE` and
   `USER_CALL` only for a name resolved at compile time (no namespace
   fallback), `ICALL` also for a namespaced call that falls back to the
-  builtin.
+  builtin. `CallV` (an unpacked or named argument) has none: php compiles
+  such a call as a plain internal call.
 
 A call by name is resolved once per call site and request, like php's
 run-time cache slots: `Vm::call_sites` maps (proto address, pc) to the user

@@ -62,9 +62,10 @@ impl ProtoBuilder<'_> {
 
         // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
         // args into an array, emit CallV (the VM places named arguments).
+        // php special-compiles none of these (zend_try_compile_special_func
+        // gives up on unpacking and named arguments), so no CallFlags.
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;
-            let flags = user_call_flag(&name_bytes, fallback.as_deref());
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
@@ -73,7 +74,6 @@ impl ProtoBuilder<'_> {
                 name,
                 args,
                 fallback: fb,
-                flags,
             });
             return Ok(dst);
         }
@@ -816,26 +816,20 @@ fn builtin_by_ref(cx: &FileCtx, name_lc: &[u8], argc: usize) -> Option<Vec<bool>
 /// global name.
 fn call_flags(name: &[u8], fallback: Option<&[u8]>, argc: usize) -> CallFlags {
     let global = fallback.unwrap_or(name).to_ascii_lowercase();
-    let mut flags = user_call_flag(name, fallback);
+    let mut flags = CallFlags::default();
     // Only for a name php resolves at compile time.
-    if fallback.is_none() && compiled_inline(&global, argc) {
-        flags.insert(CallFlags::INLINE);
+    if fallback.is_none() {
+        if compiled_inline(&global, argc) {
+            flags.insert(CallFlags::INLINE);
+        }
+        if global == b"call_user_func" || global == b"call_user_func_array" {
+            flags.insert(CallFlags::USER_CALL);
+        }
     }
     if frameless_icall(&global, argc) {
         flags.insert(CallFlags::ICALL);
     }
     flags
-}
-
-/// [`CallFlags::USER_CALL`] for a call to `name`.
-fn user_call_flag(name: &[u8], fallback: Option<&[u8]>) -> CallFlags {
-    let cuf = name.eq_ignore_ascii_case(b"call_user_func")
-        || name.eq_ignore_ascii_case(b"call_user_func_array");
-    if fallback.is_none() && cuf {
-        CallFlags::USER_CALL
-    } else {
-        CallFlags::default()
-    }
 }
 
 pub(crate) fn has_named(list: &rhp_frontend::cst::ArgumentList) -> bool {

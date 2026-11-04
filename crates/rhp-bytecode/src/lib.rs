@@ -33,8 +33,8 @@ pub enum CmpKind {
     Spaceship,
 }
 
-/// What php's compiler decides about a call by name (`Call`, `CallV`) that
-/// reaches a builtin.
+/// What php's compiler decides about a call by name (`Call`) that reaches a
+/// builtin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CallFlags(u8);
 
@@ -390,13 +390,14 @@ pub enum Instr {
         flags: CallFlags,
     },
     /// Variadic call: `args` holds a `PhpArray` of the evaluated arguments
-    /// (used when a call site contains argument spread `...$x`).
+    /// (used when a call site contains argument spread `...$x` or a named
+    /// argument). php compiles such a call as a plain one, so it has no
+    /// `CallFlags`.
     CallV {
         dst: Reg,
         name: NIdx,
         args: Reg,
         fallback: NIdx,
-        flags: CallFlags,
     },
     /// Dynamic call `$f(args)`: `callee` holds a closure / string name / callable
     /// array / `__invoke` object; call it with `regs[base..base+argc]`.

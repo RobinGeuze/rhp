@@ -72,15 +72,43 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_stream_context_create(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let options = args
-        .first()
-        .map(deref)
-        .unwrap_or(Value::Array(rhp_values::PhpArray::new()));
-    let ctx = host.create_stream_context(options);
+    let ctx = host.create_stream_context(Value::Array(rhp_values::PhpArray::new()));
+    if let Some(Value::Array(options)) = args.first().map(deref) {
+        parse_context_options(host, &ctx, &options)?;
+    }
     if let Some(Value::Array(params)) = args.get(1).map(deref) {
         parse_context_params(host, "stream_context_create", &ctx, &params)?;
     }
     Ok(ctx)
+}
+
+/// php's `parse_context_options`: each `[wrapper][option]` value copied
+/// into the context (a list of options is skipped, as php skips a packed
+/// array).
+fn parse_context_options(
+    host: &mut dyn Host,
+    ctx: &Value,
+    options: &rhp_values::PhpArray,
+) -> Result<(), Thrown> {
+    use rhp_values::ArrayKey;
+    for (wk, wv) in options.iter() {
+        let wv = deref(wv);
+        let (ArrayKey::Str(w), Value::Array(inner)) = (wk, &wv) else {
+            return Err(Thrown::error(
+                "ValueError",
+                "Options should have the form [\"wrappername\"][\"optionname\"] = $value",
+            ));
+        };
+        if !inner.is_empty() && inner.iter().all(|(k, _)| matches!(k, ArrayKey::Int(_))) {
+            continue;
+        }
+        for (ok, ov) in inner.iter() {
+            if let ArrayKey::Str(o) = ok {
+                host.stream_context_set_option(ctx, w.as_bytes(), o.as_bytes(), deref(ov));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// php's `parse_context_params`: the `notification` callback, then
@@ -109,29 +137,7 @@ fn parse_context_params(
         let Value::Array(opts) = opts else {
             return Err(Thrown::type_error("Invalid stream/context parameter"));
         };
-        for (wk, wv) in opts.iter() {
-            let wv = deref(wv);
-            match (wk, &wv) {
-                (ArrayKey::Str(w), Value::Array(inner)) => {
-                    for (ok, ov) in inner.iter() {
-                        if let ArrayKey::Str(o) = ok {
-                            host.stream_context_set_option(
-                                ctx,
-                                w.as_bytes(),
-                                o.as_bytes(),
-                                ov.clone(),
-                            );
-                        }
-                    }
-                }
-                _ => {
-                    return Err(Thrown::error(
-                        "ValueError",
-                        "Options should have the form [\"wrappername\"][\"optionname\"] = $value",
-                    ))
-                }
-            }
-        }
+        parse_context_options(host, ctx, &opts)?;
     }
     Ok(())
 }

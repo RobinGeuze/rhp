@@ -13,53 +13,18 @@
 //! (php's warnings — e.g. "posix_spawn() failed: …" — are not emitted: this
 //! engine has no diagnostics channel yet; the return values match.)
 
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::streams::errno;
+use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
         *rc.borrow_mut() = value;
-    }
-}
-
-/// php's `zend_zval_value_name` (used in ValueError/TypeError messages).
-fn value_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => value_name(&r.borrow()),
-    }
-}
-
-/// The type name php's zpp TypeErrors print (`zend_zval_value_name`, with the
-/// class name for objects).
-pub(crate) fn zpp_type_name(host: &dyn Host, v: &Value) -> String {
-    match v {
-        Value::Object(_) => host
-            .object_class_name(v)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        Value::Closure(_) => "Closure".into(),
-        other => value_name(other).into(),
     }
 }
 
@@ -100,7 +65,7 @@ pub(crate) fn zpp_long(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type int, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         ))
     })
 }
@@ -123,7 +88,7 @@ pub(crate) fn zpp_string(
         _ => Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type string, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         ))),
     }
 }
@@ -145,10 +110,6 @@ fn path_arg(args: &[Value], i: usize, fname: &str, pname: &str) -> Result<Vec<u8
 
 fn cstr(b: &[u8]) -> CString {
     CString::new(b.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default()
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The current process environment as `KEY=VALUE` entries (php passes
@@ -708,7 +669,7 @@ fn fn_pclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "pclose(): Argument #1 ($handle) must be of type resource, {} given",
-                value_name(other)
+                crate::argparse::zval_value_name(host, other)
             )))
         }
     };
@@ -749,7 +710,7 @@ fn proc_arg<'h>(
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($process) must be of type resource, {} given",
-            value_name(&v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     let is_proc = matches!(&v, Value::Resource(r) if r.type_name == "process");
@@ -921,7 +882,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Value::Null | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #1 ($command) must be of type array|string, {} given",
-                value_name(&cmd_v)
+                crate::argparse::zval_value_name(host, &cmd_v)
             )))
         }
         other => conv::to_string_bytes(other),
@@ -933,7 +894,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         other => {
             return Err(Thrown::type_error(format!(
                 "proc_open(): Argument #2 ($descriptor_spec) must be of type array, {} given",
-                value_name(&other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -1043,7 +1004,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                                     "ValueError",
                                     format!(
                                         "Redirection target must be of type int, {} given",
-                                        value_name(&other)
+                                        crate::argparse::zval_value_name(host, &other)
                                     ),
                                 ))
                             }
@@ -1373,39 +1334,27 @@ fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "proc_open", fn_proc_open, 3, Some(6));
-    put(m, "proc_close", fn_proc_close, 1, Some(1));
-    put(m, "popen", fn_popen, 2, Some(2));
-    put(m, "pclose", fn_pclose, 1, Some(1));
-    put(m, "proc_get_status", fn_proc_get_status, 1, Some(1));
-    put(m, "proc_terminate", fn_proc_terminate, 1, Some(2));
-    put(m, "proc_nice", fn_proc_nice, 1, Some(1));
-    put(m, "exec", fn_exec, 1, Some(3));
-    put(m, "system", fn_system, 1, Some(2));
-    put(m, "passthru", fn_passthru, 1, Some(2));
-    put(m, "shell_exec", fn_shell_exec, 1, Some(1));
-    put(m, "escapeshellarg", fn_escapeshellarg, 1, Some(1));
-    put(m, "escapeshellcmd", fn_escapeshellcmd, 1, Some(1));
-    put(m, "stream_select", fn_stream_select, 4, Some(5));
-    put(m, "stream_isatty", fn_stream_isatty, 1, Some(1));
-    put(m, "usleep", fn_usleep, 1, Some(1));
-    put(m, "sleep", fn_sleep, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("proc_open", fn_proc_open),
+            ("proc_close", fn_proc_close),
+            ("popen", fn_popen),
+            ("pclose", fn_pclose),
+            ("proc_get_status", fn_proc_get_status),
+            ("proc_terminate", fn_proc_terminate),
+            ("proc_nice", fn_proc_nice),
+            ("exec", fn_exec),
+            ("system", fn_system),
+            ("passthru", fn_passthru),
+            ("shell_exec", fn_shell_exec),
+            ("escapeshellarg", fn_escapeshellarg),
+            ("escapeshellcmd", fn_escapeshellcmd),
+            ("stream_select", fn_stream_select),
+            ("stream_isatty", fn_stream_isatty),
+            ("usleep", fn_usleep),
+            ("sleep", fn_sleep),
+        ],
+    );
 }

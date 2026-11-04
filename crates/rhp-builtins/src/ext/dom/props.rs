@@ -422,7 +422,7 @@ fn coerce(cx: &mut Cx, ty: Ty, v: Value, prop: &Prop) -> Result<Value, Thrown> {
     let fail = |cx: &mut Cx, v: &Value| {
         Thrown::type_error(format!(
             "Cannot assign {} to property {}::${} of type {tname}",
-            crate::ext::zpp::given_type(cx.host, v),
+            crate::argparse::zval_value_name(cx.host, v),
             prop.decl,
             prop.name
         ))

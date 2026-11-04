@@ -4,18 +4,10 @@
 //! instantiation, visibility-bypassing property access and invocation.
 //! Only prelude code can call these `__` builtins.
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::{Host, Thrown};
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
@@ -66,35 +58,22 @@ fn fn_reflect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     host.reflect_op(&op, &args[1..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "__reflect", fn_reflect, 1, None);
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(
         m,
-        "__reflect_new_instance_noctor",
-        fn_new_instance_noctor,
-        1,
-        Some(1),
+        &[
+            ("__reflect", fn_reflect, 1, None),
+            (
+                "__reflect_new_instance_noctor",
+                fn_new_instance_noctor,
+                1,
+                Some(1),
+            ),
+            ("__reflect_get_prop", fn_get_prop, 3, Some(3)),
+            ("__reflect_set_prop", fn_set_prop, 4, Some(4)),
+            ("__reflect_invoke", fn_invoke, 4, Some(4)),
+        ],
     );
-    put(m, "__reflect_get_prop", fn_get_prop, 3, Some(3));
-    put(m, "__reflect_set_prop", fn_set_prop, 4, Some(4));
-    put(m, "__reflect_invoke", fn_invoke, 4, Some(4));
 }
 
 /// The `Reflection*` classes and the engine's attribute classes

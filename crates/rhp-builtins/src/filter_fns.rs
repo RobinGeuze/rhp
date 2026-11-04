@@ -8,11 +8,10 @@
 //! string cast before validation/sanitization (matching ext/filter), except
 //! that the INT and FLOAT validators short-circuit real int/float inputs.
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // filter ids (php 8.5.8 — `php -r 'echo FILTER_VALIDATE_INT;'`)
@@ -47,14 +46,6 @@ const FLAG_NULL_ON_FAILURE: i64 = 1 << 27; // 134217728
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// php's filter whitespace set for the INT/FLOAT/BOOLEAN validators:
 /// space, `\t`, `\n`, `\v`, `\r` — note `\f` (0x0c) is NOT included.
@@ -887,25 +878,8 @@ fn sanitize_special_chars(value: &Value) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Register the filter builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "filter_var", fn_filter_var, 1, Some(3));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("filter_var", fn_filter_var)]);
 }
 
 #[cfg(test)]

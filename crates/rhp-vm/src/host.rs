@@ -19,7 +19,9 @@ impl Host for Vm {
         // A builtin's `php_error_docref` ("func(): …"): HTML-escaped when
         // html_errors is on (engine and sapi errors are not, nor are the
         // E_USER_* messages trigger_error passes through as given).
-        self.sapi.docref_msg = level & (256 | 512 | 1024 | 16384) == 0 && is_docref_message(msg);
+        use builtins::{E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING};
+        let user = E_USER_ERROR | E_USER_WARNING | E_USER_NOTICE | E_USER_DEPRECATED;
+        self.sapi.docref_msg = level & user == 0 && is_docref_message(msg);
         // php_verror: none while an out-of-memory error is pending.
         if self.sapi.docref_msg && self.mem.attention() {
             self.sapi.docref_msg = false;

@@ -17,21 +17,13 @@
 //! - `log2()` is intentionally NOT provided: PHP has no `log2()` function
 //!   (use `log($x, 2)`), so defining it would diverge from the oracle.
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-pub use crate::Builtin;
 use crate::Thrown;
 
 // Deref helper matching the crate-wide pattern; the `conv::*` helpers already
 // recurse through `Value::Ref`, so we only need an owned copy for `match`.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn f(v: &Value) -> f64 {
     conv::to_float(v)
@@ -133,7 +125,8 @@ fn php_round_helper(integral: f64, value: f64, exponent: f64, places: i32, mode:
 }
 
 /// Port of php 8.5's `_php_math_round`.
-fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
+#[inline]
+pub(crate) fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
     if !value.is_finite() || value == 0.0 {
         return value;
     }
@@ -518,56 +511,48 @@ fn fn_base_convert(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thr
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    macro_rules! reg {
-        ($name:literal, $func:path, $min:literal, $max:expr) => {
-            m.insert(
-                $name,
-                Builtin {
-                    name: $name,
-                    func: $func,
-                    min_args: $min,
-                    max_args: $max,
-                },
-            );
-        };
-    }
-    reg!("floor", fn_floor, 1, Some(1));
-    reg!("ceil", fn_ceil, 1, Some(1));
-    reg!("round", fn_round, 1, Some(3));
-    reg!("sqrt", fn_sqrt, 1, Some(1));
-    reg!("pow", fn_pow, 2, Some(2));
-    reg!("exp", fn_exp, 1, Some(1));
-    reg!("expm1", fn_expm1, 1, Some(1));
-    reg!("log1p", fn_log1p, 1, Some(1));
-    reg!("sinh", fn_sinh, 1, Some(1));
-    reg!("cosh", fn_cosh, 1, Some(1));
-    reg!("tanh", fn_tanh, 1, Some(1));
-    reg!("asinh", fn_asinh, 1, Some(1));
-    reg!("acosh", fn_acosh, 1, Some(1));
-    reg!("atanh", fn_atanh, 1, Some(1));
-    reg!("log", fn_log, 1, Some(2));
-    reg!("log10", fn_log10, 1, Some(1));
-    reg!("sin", fn_sin, 1, Some(1));
-    reg!("cos", fn_cos, 1, Some(1));
-    reg!("tan", fn_tan, 1, Some(1));
-    reg!("asin", fn_asin, 1, Some(1));
-    reg!("acos", fn_acos, 1, Some(1));
-    reg!("atan", fn_atan, 1, Some(1));
-    reg!("atan2", fn_atan2, 2, Some(2));
-    reg!("pi", fn_pi, 0, Some(0));
-    reg!("fmod", fn_fmod, 2, Some(2));
-    reg!("fdiv", fn_fdiv, 2, Some(2));
-    reg!("hypot", fn_hypot, 2, Some(2));
-    reg!("deg2rad", fn_deg2rad, 1, Some(1));
-    reg!("rad2deg", fn_rad2deg, 1, Some(1));
-    reg!("dechex", fn_dechex, 1, Some(1));
-    reg!("hexdec", fn_hexdec, 1, Some(1));
-    reg!("decbin", fn_decbin, 1, Some(1));
-    reg!("bindec", fn_bindec, 1, Some(1));
-    reg!("decoct", fn_decoct, 1, Some(1));
-    reg!("octdec", fn_octdec, 1, Some(1));
-    reg!("base_convert", fn_base_convert, 3, Some(3));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("floor", fn_floor),
+            ("ceil", fn_ceil),
+            ("round", fn_round),
+            ("sqrt", fn_sqrt),
+            ("pow", fn_pow),
+            ("exp", fn_exp),
+            ("expm1", fn_expm1),
+            ("log1p", fn_log1p),
+            ("sinh", fn_sinh),
+            ("cosh", fn_cosh),
+            ("tanh", fn_tanh),
+            ("asinh", fn_asinh),
+            ("acosh", fn_acosh),
+            ("atanh", fn_atanh),
+            ("log", fn_log),
+            ("log10", fn_log10),
+            ("sin", fn_sin),
+            ("cos", fn_cos),
+            ("tan", fn_tan),
+            ("asin", fn_asin),
+            ("acos", fn_acos),
+            ("atan", fn_atan),
+            ("atan2", fn_atan2),
+            ("pi", fn_pi),
+            ("fmod", fn_fmod),
+            ("fdiv", fn_fdiv),
+            ("hypot", fn_hypot),
+            ("deg2rad", fn_deg2rad),
+            ("rad2deg", fn_rad2deg),
+            ("dechex", fn_dechex),
+            ("hexdec", fn_hexdec),
+            ("decbin", fn_decbin),
+            ("bindec", fn_bindec),
+            ("decoct", fn_decoct),
+            ("octdec", fn_octdec),
+            ("base_convert", fn_base_convert),
+        ],
+    );
 }
 
 #[cfg(test)]

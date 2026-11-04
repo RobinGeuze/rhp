@@ -10,7 +10,7 @@ fn call(f: crate::NativeFn, args: &[Value]) -> Value {
     f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-    String::from_utf8(bytes_of(&call(f, args))).unwrap()
+    String::from_utf8(rhp_values::conv::to_string_bytes(&call(f, args))).unwrap()
 }
 /// True when the result is php `false` (used for failure returns).
 fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
@@ -82,9 +82,12 @@ fn base64_decode_vectors() {
 fn base64_roundtrip_binary() {
     // decode non-strict of "ab=c" -> bytes 69 b7
     let v = call(fn_base64_decode, &[s("ab=c")]);
-    assert_eq!(bytes_of(&v), vec![0x69, 0xb7]);
+    assert_eq!(rhp_values::conv::to_string_bytes(&v), vec![0x69, 0xb7]);
     let v = call(fn_base64_decode, &[s("YQ==YQ==")]);
-    assert_eq!(bytes_of(&v), vec![0x61, 0x06, 0x10]);
+    assert_eq!(
+        rhp_values::conv::to_string_bytes(&v),
+        vec![0x61, 0x06, 0x10]
+    );
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn bin2hex_hex2bin_vectors() {
     assert_eq!(calls(fn_hex2bin, &[s("616263")]), "abc");
     assert_eq!(calls(fn_hex2bin, &[s("")]), "");
     assert_eq!(
-        bytes_of(&call(fn_hex2bin, &[s("ff0010")])),
+        rhp_values::conv::to_string_bytes(&call(fn_hex2bin, &[s("ff0010")])),
         vec![0xff, 0x00, 0x10]
     );
     // odd length -> false

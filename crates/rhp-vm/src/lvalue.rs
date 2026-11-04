@@ -11,7 +11,7 @@ use rhp_values::{
 };
 
 use crate::classes::PropRes;
-use crate::types::type_lc;
+use crate::types::{type_lc, value_name_lc};
 use crate::{classes, deref, Vm};
 
 /// A pending lvalue step (an evaluated key, an append, or an object property).
@@ -291,7 +291,7 @@ impl Vm {
 
     fn flush_rw_warnings(&mut self, warnings: Vec<String>) -> Result<(), Thrown> {
         for w in warnings {
-            self.diag(2, &w)?;
+            self.diag(builtins::E_WARNING, &w)?;
         }
         Ok(())
     }
@@ -895,7 +895,7 @@ impl Vm {
             "Indirect modification of overloaded element of {} has no effect",
             String::from_utf8_lossy(self.class(cls).name.as_bytes())
         );
-        self.diag(8, &msg)
+        self.diag(builtins::E_NOTICE, &msg)
     }
 
     /// The built-in ArrayObject / ArrayIterator class `h` derives from, when
@@ -946,7 +946,7 @@ impl Vm {
         let akey = match deref(key) {
             Value::Null => {
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     "Using null as an array offset is deprecated, use an empty string instead",
                 )?;
                 Some(rhp_values::ArrayKey::from_bytes(b""))
@@ -968,14 +968,14 @@ impl Vm {
                     return Ok(Some(Rc::new(RefCell::new(Value::Null))));
                 }
                 DimFetch::Rw => {
-                    let msg = match array_key_to_value(&akey) {
+                    let msg = match akey.to_value() {
                         Value::Int(n) => format!("Undefined array key {n}"),
                         k => format!(
                             "Undefined array key \"{}\"",
                             String::from_utf8_lossy(&conv::to_string_bytes(&k))
                         ),
                     };
-                    self.diag(2, &msg)?;
+                    self.diag(builtins::E_WARNING, &msg)?;
                 }
                 DimFetch::W => {}
             }
@@ -986,12 +986,7 @@ impl Vm {
             called: Some(owner),
         };
         let mut slot = storage.borrow_mut();
-        make_ref_path(
-            &mut slot,
-            &[CursorStep::Key(array_key_to_value(&akey))],
-            &cx,
-        )
-        .map(Some)
+        make_ref_path(&mut slot, &[CursorStep::Key(akey.to_value())], &cx).map(Some)
     }
 
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
@@ -1022,19 +1017,19 @@ impl Vm {
     fn dim_key(&mut self, key: &Value, quiet: bool) -> Result<Option<ArrayKey>, Thrown> {
         match key {
             Value::Null if !quiet => self.diag(
-                8192,
+                builtins::E_DEPRECATED,
                 "Using null as an array offset is deprecated, use an empty string instead",
             )?,
             Value::Float(f) if !quiet && (!f.is_finite() || f.fract() != 0.0) => {
                 let shown =
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     &format!("Implicit conversion from float {shown} to int loses precision"),
                 )?
             }
             Value::Resource(r) if !quiet => self.diag(
-                2,
+                builtins::E_WARNING,
                 &format!(
                     "Resource ID#{} used as offset, casting to integer ({})",
                     r.id, r.id
@@ -1073,7 +1068,7 @@ impl Vm {
                                     String::from_utf8_lossy(s.as_bytes())
                                 ),
                             };
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                         }
                         Ok(Value::Null)
                     }
@@ -1112,7 +1107,7 @@ impl Vm {
                                     !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
                                 if trailing && !quiet {
                                     self.diag(
-                                        2,
+                                        builtins::E_WARNING,
                                         &format!(
                                             "Illegal string offset \"{}\"",
                                             String::from_utf8_lossy(kb)
@@ -1133,7 +1128,7 @@ impl Vm {
                     }
                     Value::Float(_) | Value::Null | Value::Bool(_) => {
                         if !quiet {
-                            self.diag(2, "String offset cast occurred")?;
+                            self.diag(builtins::E_WARNING, "String offset cast occurred")?;
                         }
                         conv::to_int(key)
                     }
@@ -1154,33 +1149,28 @@ impl Vm {
                 } else if quiet {
                     Ok(Value::Null)
                 } else {
-                    self.diag(2, &format!("Uninitialized string offset {offset}"))?;
+                    self.diag(
+                        builtins::E_WARNING,
+                        &format!("Uninitialized string offset {offset}"),
+                    )?;
                     Ok(Value::str(""))
                 }
             }
             Value::Null => Ok(Value::Null).and_then(|v| {
                 if mode == DimMode::Read {
-                    self.diag(2, "Trying to access array offset on null")?;
+                    self.diag(builtins::E_WARNING, "Trying to access array offset on null")?;
                 }
                 Ok(v)
             }),
             other => {
                 if !quiet {
-                    let ty = match other {
-                        Value::Bool(true) => "true",
-                        Value::Bool(false) => "false",
-                        Value::Int(_) => "int",
-                        Value::Float(_) => "float",
-                        Value::Str(_) => "string",
-                        Value::Resource(_) => "resource",
-                        _ => "null",
-                    };
+                    // zend_zval_type_name for list(), else zend_zval_value_name
                     let msg = if mode == DimMode::List {
-                        format!("Cannot use {ty} as array")
+                        format!("Cannot use {} as array", type_lc(other))
                     } else {
-                        format!("Trying to access array offset on {ty}")
+                        format!("Trying to access array offset on {}", value_name_lc(other))
                     };
-                    self.diag(2, &msg)?;
+                    self.diag(builtins::E_WARNING, &msg)?;
                 }
                 Ok(Value::Null)
             }
@@ -1288,7 +1278,7 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
         }
         Value::Bool(false) => {
             path_diag(
-                8192,
+                builtins::E_DEPRECATED,
                 "Automatic conversion of false to array is deprecated".into(),
             );
             *slot = Value::Array(PhpArray::new());
@@ -1326,11 +1316,11 @@ fn path_diag(level: i64, msg: String) {
 fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
     match deref(k) {
         Value::Null => path_diag(
-            8192,
+            builtins::E_DEPRECATED,
             "Using null as an array offset is deprecated, use an empty string instead".into(),
         ),
         Value::Float(f) if f.is_finite() && f.fract() != 0.0 => path_diag(
-            8192,
+            builtins::E_DEPRECATED,
             format!(
                 "Implicit conversion from float {} to int loses precision",
                 String::from_utf8_lossy(&conv::to_string_bytes(&Value::Float(f)))
@@ -1362,7 +1352,7 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
                     let trailing = !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
                     if trailing && !unset {
                         path_diag(
-                            2,
+                            builtins::E_WARNING,
                             format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
                         );
                     }
@@ -1372,7 +1362,10 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
             }
         }
         v @ (Value::Float(_) | Value::Null | Value::Bool(_)) => {
-            path_diag(2, "String offset cast occurred".into());
+            path_diag(
+                rhp_builtins::E_WARNING,
+                "String offset cast occurred".into(),
+            );
             Ok(conv::to_int(&v))
         }
         Value::Object(h) => Err(illegal(
@@ -1413,13 +1406,16 @@ fn assign_string_offset(
     };
     let len = s.as_bytes().len() as i64;
     if offset < -len {
-        path_diag(2, format!("Illegal string offset {offset}"));
+        path_diag(
+            rhp_builtins::E_WARNING,
+            format!("Illegal string offset {offset}"),
+        );
         return Ok(());
     }
     let at = if offset < 0 { offset + len } else { offset } as usize;
     let bytes = match deref(value) {
         Value::Array(_) => {
-            path_diag(2, "Array to string conversion".into());
+            path_diag(rhp_builtins::E_WARNING, "Array to string conversion".into());
             b"Array".to_vec()
         }
         Value::Object(_) | Value::Closure(_) => {
@@ -1438,7 +1434,7 @@ fn assign_string_offset(
     };
     if bytes.len() != 1 {
         path_diag(
-            2,
+            builtins::E_WARNING,
             "Only the first byte will be assigned to the string offset".into(),
         );
     }
@@ -1492,11 +1488,7 @@ fn assign_path(
             // zend_throw_non_object_error: the property itself is assigned;
             // a write further down the path modifies it.
             other => {
-                let shown = match other {
-                    Value::Bool(true) => "true",
-                    Value::Bool(false) => "false",
-                    o => type_lc(o),
-                };
+                let shown = value_name_lc(other);
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -1574,16 +1566,15 @@ fn make_ref_path(
     if let CursorStep::Prop(name) = head {
         let handle = match slot {
             Value::Object(h) => h.clone(),
-            Value::Null => {
-                return Err(Thrown::error(
-                    "Error",
-                    "Attempt to reference property on null",
-                ))
-            }
+            // zend_throw_non_object_error for a fetch for write
             other => {
                 return Err(Thrown::error(
                     "Error",
-                    format!("Attempt to reference property on {}", type_lc(other)),
+                    format!(
+                        "Attempt to modify property \"{}\" on {}",
+                        String::from_utf8_lossy(name.as_bytes()),
+                        value_name_lc(other)
+                    ),
                 ))
             }
         };
@@ -1652,7 +1643,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 }
                 Value::Bool(false) if rest.is_empty() => {
                     path_diag(
-                        8192,
+                        builtins::E_DEPRECATED,
                         "Automatic conversion of false to array is deprecated".into(),
                     );
                     return Ok(());
@@ -1722,13 +1713,6 @@ pub(crate) fn foreach_promote(
         }
     };
     Some((key, rc))
-}
-
-pub(crate) fn array_key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
 }
 
 /// php's "Undefined array key" warning text for `k`.

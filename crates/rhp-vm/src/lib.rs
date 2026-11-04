@@ -29,13 +29,16 @@ mod request;
 mod streams;
 mod stub_default;
 mod types;
+mod zpp;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
+use rhp_builtins::ini_parse_bool as ini_bool;
 use rhp_bytecode::{ClassProto, FunctionProto, Reg};
+use rhp_semantics::deref;
 use rhp_values::{ClassId, ObjectHandle, PhpStr, Thrown, Value};
 
 use calls::NativeCall;
@@ -284,12 +287,6 @@ struct DeclSlot {
     done: bool,
 }
 
-/// zend_ini_parse_bool: "true"/"yes"/"on" (any case) or a nonzero number.
-fn ini_bool(v: &[u8]) -> bool {
-    let lc = v.to_ascii_lowercase();
-    matches!(lc.as_slice(), b"true" | b"yes" | b"on") || builtins::php_fns::atol(v) != 0
-}
-
 /// One activation record.
 struct Frame {
     proto: Rc<FunctionProto>,
@@ -351,12 +348,5 @@ impl Frame {
             dyn_vars: HashMap::new(),
             global_scope: false,
         }
-    }
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        other => other.clone(),
     }
 }

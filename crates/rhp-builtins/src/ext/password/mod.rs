@@ -3,16 +3,16 @@
 //! other `crypt()` hash as php does; argon2i and argon2id go through the
 //! argon2 reference C php links. Both C libraries come from rhp-csrc.
 
-use std::collections::HashMap;
 use std::ffi::CString;
 
 use rhp_csrc::argon2;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::{str_param, value_name};
+use crate::argparse::{str_param, zval_value_name};
 use crate::crypt_fns::php_crypt;
-use crate::{Builtin, Host, Thrown, E_DEPRECATED};
+use crate::ext::hash::primitives::base64_encode as base64;
+use crate::{Host, Thrown, E_DEPRECATED};
 
 // php_password.h
 const BCRYPT_COST: i64 = 12;
@@ -97,7 +97,7 @@ fn algo_find_zval(
         Some(v) => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #2 ($algo) must be of type string|int|null, {} given",
-                value_name(host, &v)
+                zval_value_name(host, &v)
             )))
         }
     };
@@ -199,29 +199,6 @@ fn sscanf_longs(s: &[u8], fmt: &[Option<&[u8]>], out: &mut [&mut i64]) {
 // ---------------------------------------------------------------------------
 // salts
 // ---------------------------------------------------------------------------
-
-fn base64(data: &[u8]) -> Vec<u8> {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16
-            | (*c.get(1).unwrap_or(&0) as u32) << 8
-            | *c.get(2).unwrap_or(&0) as u32;
-        out.push(T[(n >> 18) as usize & 63]);
-        out.push(T[(n >> 12) as usize & 63]);
-        out.push(if c.len() > 1 {
-            T[(n >> 6) as usize & 63]
-        } else {
-            b'='
-        });
-        out.push(if c.len() > 2 {
-            T[n as usize & 63]
-        } else {
-            b'='
-        });
-    }
-    out
-}
 
 /// `php_password_get_salt`: warns about a `salt` option, then
 /// `php_password_make_salt(length)`: `length` characters of the base64 of
@@ -498,23 +475,17 @@ fn fn_password_algos(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown>
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("password_hash", fn_password_hash, 2, 3);
-    put("password_verify", fn_password_verify, 2, 2);
-    put("password_needs_rehash", fn_password_needs_rehash, 2, 3);
-    put("password_get_info", fn_password_get_info, 1, 1);
-    put("password_algos", fn_password_algos, 0, 0);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("password_hash", fn_password_hash),
+            ("password_verify", fn_password_verify),
+            ("password_needs_rehash", fn_password_needs_rehash),
+            ("password_get_info", fn_password_get_info),
+            ("password_algos", fn_password_algos),
+        ],
+    );
 }
 
 /// `PASSWORD_*` (password.stub.php).

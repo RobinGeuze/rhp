@@ -14,14 +14,13 @@
 //! gate on the extension would otherwise assume it.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ptr;
 use std::sync::OnceLock;
 
 use rhp_values::Value;
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 mod grapheme;
 mod idn;
@@ -275,79 +274,36 @@ pub(crate) fn path_arg(
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "intl_get_error_code", fn_intl_get_error_code, 0, Some(0));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "intl_get_error_message",
-        fn_intl_get_error_message,
-        0,
-        Some(0),
+        &[
+            ("intl_get_error_code", fn_intl_get_error_code),
+            ("intl_get_error_message", fn_intl_get_error_message),
+            ("intl_is_failure", fn_intl_is_failure),
+            ("intl_error_name", fn_intl_error_name),
+            ("grapheme_strlen", grapheme::fn_strlen),
+            ("grapheme_strpos", grapheme::fn_strpos),
+            ("grapheme_stripos", grapheme::fn_stripos),
+            ("grapheme_strrpos", grapheme::fn_strrpos),
+            ("grapheme_strripos", grapheme::fn_strripos),
+            ("grapheme_substr", grapheme::fn_substr),
+            ("grapheme_strstr", grapheme::fn_strstr),
+            ("grapheme_stristr", grapheme::fn_stristr),
+            ("grapheme_str_split", grapheme::fn_str_split),
+            ("grapheme_extract", grapheme::fn_extract),
+            ("grapheme_levenshtein", grapheme::fn_levenshtein),
+            ("normalizer_normalize", normalizer::fn_normalize),
+            ("normalizer_is_normalized", normalizer::fn_is_normalized),
+            (
+                "normalizer_get_raw_decomposition",
+                normalizer::fn_get_raw_decomposition,
+            ),
+            ("idn_to_ascii", idn::fn_idn_to_ascii),
+            ("idn_to_utf8", idn::fn_idn_to_utf8),
+        ],
     );
-    put(m, "intl_is_failure", fn_intl_is_failure, 1, Some(1));
-    put(m, "intl_error_name", fn_intl_error_name, 1, Some(1));
-
-    put(m, "grapheme_strlen", grapheme::fn_strlen, 1, Some(1));
-    put(m, "grapheme_strpos", grapheme::fn_strpos, 2, Some(4));
-    put(m, "grapheme_stripos", grapheme::fn_stripos, 2, Some(4));
-    put(m, "grapheme_strrpos", grapheme::fn_strrpos, 2, Some(4));
-    put(m, "grapheme_strripos", grapheme::fn_strripos, 2, Some(4));
-    put(m, "grapheme_substr", grapheme::fn_substr, 2, Some(4));
-    put(m, "grapheme_strstr", grapheme::fn_strstr, 2, Some(4));
-    put(m, "grapheme_stristr", grapheme::fn_stristr, 2, Some(4));
-    put(m, "grapheme_str_split", grapheme::fn_str_split, 1, Some(2));
-    put(m, "grapheme_extract", grapheme::fn_extract, 2, Some(5));
-    put(
-        m,
-        "grapheme_levenshtein",
-        grapheme::fn_levenshtein,
-        2,
-        Some(6),
-    );
-
-    put(
-        m,
-        "normalizer_normalize",
-        normalizer::fn_normalize,
-        1,
-        Some(2),
-    );
-    put(
-        m,
-        "normalizer_is_normalized",
-        normalizer::fn_is_normalized,
-        1,
-        Some(2),
-    );
-    put(
-        m,
-        "normalizer_get_raw_decomposition",
-        normalizer::fn_get_raw_decomposition,
-        1,
-        Some(2),
-    );
-
-    put(m, "__normalizer", normalizer::fn_method, 1, None);
-
-    put(m, "idn_to_ascii", idn::fn_idn_to_ascii, 1, Some(4));
-    put(m, "idn_to_utf8", idn::fn_idn_to_utf8, 1, Some(4));
+    crate::register_helpers(m, &[("__normalizer", normalizer::fn_method, 1, None)]);
 }
 
 /// The `Normalizer` class: its static methods share the procedural

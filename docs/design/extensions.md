@@ -125,7 +125,7 @@ exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
 
 | PHP surface | Underlying C lib | Rust binding |
 |---|---|---|
-| `preg_*` | **PCRE2** (`libpcre2-8`) | `pcre2-sys` / `pcre2` crate |
+| `preg_*` | **PCRE2** (`libpcre2-8`) | none: rhp links the system library and declares what it calls (`src/pcre/sys.rs`) |
 | `intl`, parts of `mbstring` (casing, collation, normalization), `IntlDateFormatter` | **ICU** (`libicui18n`/`libicuuc`) | `icu`/`rust_icu_*` (bindgen over system ICU), or ICU4X (pure Rust, *different data*) |
 | `mb_ereg*` | **Oniguruma** (`libonig`) | `onig` crate |
 | `dom`, `simplexml`, `xml` | **libxml2** | `libxml`/bindgen |
@@ -485,8 +485,8 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
   finds them). This is the cost that keeps these gated.
 - **Bundled vs system libs — bundle for byte-exactness.** A *system* PCRE2/ICU
   is whatever the build host ships, which defeats version-pinning (§2 caveat).
-  Prefer `-sys` crates in **vendored/bundled mode** (`pcre2-sys` builds a pinned
-  PCRE2 from source; `icu`/`rug` can vendor) so the binary carries the *exact*
+  Prefer `-sys` crates in **vendored/bundled mode** (`icu`/`rug` can vendor)
+  so the binary carries the *exact*
   version matched to the goldens. Trade-off: longer builds, larger binary. For
   ICU specifically, bundling the **data** is the hard part (tens of MB) — this
   is a real reason ICU stays opt-in.
@@ -611,7 +611,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
 ### 9.3 Build mechanics
 
 - `crates/rhp-zendshim/build.rs` uses the **`cc` crate** (already in the tree
-  via `pcre2-sys`) to compile `csrc/*.c` with `-I include` into a static archive
+  for rhp-csrc) to compile `csrc/*.c` with `-I include` into a static archive
   linked into the Rust crate. Stage 2's vendored file is detected at build time
   and gated by a `--cfg zendshim_bin2hex` (declared with `rustc-check-cfg`, so
   zero warnings).
@@ -774,13 +774,14 @@ php 8.5.8 over the sweep.
 
 - **Pure-Rust crates (1:1):** RustCrypto `md2`, `md4`, `md-5`, `sha1`, `sha2`
   (sha224/256/384/512 and the sha512/224, sha512/256 truncations), `sha3`,
-  `ripemd`, `whirlpool`, `tiger` (3-pass), `gost94` (gost + gost-crypto);
+  `ripemd`, `whirlpool`, `gost94` (gost + gost-crypto);
   `xxhash-rust` (xxh32/64/3/128).
 - **zlib:** `crc32b` (and `crc32()`) and `adler32` call the linked zlib.
 - **Hand-rolled (no 1:1 crate):** the `crc32` and `crc32c` variants; FNV-1/1a (32/64);
   joaat; MurmurHash3 (x86_32, x86_128, x64_128); and the table-heavy
-  `hash_tiger.rs` (4-pass tiger), `hash_snefru.rs` (Snefru-256),
-  `hash_haval.rs` (HAVAL 3/4/5-pass × 128–256-bit).
+  `hash/tiger.rs` (Tiger, 3- and 4-pass through one N-pass
+  implementation), `hash/snefru.rs` (Snefru-256), `hash/haval.rs` (HAVAL
+  3/4/5-pass × 128–256-bit).
 - **Quirks the differential sweep surfaced** (each invisible to spec reading, each
   caught instantly by diffing php): PHP emits the non-reflected `crc32`
   **little-endian** while `crc32b`/`crc32c` are big-endian; `snefru` and

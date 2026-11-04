@@ -9,22 +9,14 @@
 pub(crate) mod ids;
 pub(crate) mod lexer;
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 use ids::*;
 use lexer::Tok;
 
 pub const TOKEN_PARSE: i64 = 1;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn is_trivia(id: i64) -> bool {
     matches!(id, T_WHITESPACE | T_COMMENT | T_DOC_COMMENT | T_OPEN_TAG)
@@ -150,23 +142,15 @@ fn fn_token_name(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(token_name(id)))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let table: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
-        ("token_get_all", fn_token_get_all, 1, Some(2)),
-        ("token_name", fn_token_name, 1, Some(1)),
-        ("__token_list", fn_token_list, 1, Some(2)),
-    ];
-    for &(name, func, min, max) in table {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("token_get_all", fn_token_get_all),
+            ("token_name", fn_token_name),
+        ],
+    );
+    crate::register_helpers(m, &[("__token_list", fn_token_list, 1, Some(2))]);
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

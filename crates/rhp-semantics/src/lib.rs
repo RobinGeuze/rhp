@@ -10,6 +10,7 @@ use rhp_values::{PhpArray, Value};
 pub mod ops;
 
 /// Deref a possible `Value::Ref` to the underlying value (clone).
+#[inline]
 pub fn deref(v: &Value) -> Value {
     match v {
         Value::Ref(r) => r.borrow().clone(),

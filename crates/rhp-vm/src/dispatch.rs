@@ -15,10 +15,9 @@ use crate::calls::{dyn_method_name, param_is_ref, undefined_function, CallTarget
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
-    aa_key, array_key_to_value, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch,
-    DimMode, MagicSplit,
+    aa_key, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
-use crate::types::type_lc;
+use crate::types::value_name_lc;
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
 impl Vm {
@@ -266,7 +265,7 @@ impl Vm {
                     if let Value::Object(_) | Value::Closure(_) = v {
                         return Err(Thrown::type_error(format!(
                             "Cannot perform bitwise not on {}",
-                            self.zval_value_name(&v)
+                            rhp_builtins::zval_value_name(self, &v)
                         )));
                     }
                     self.reg_set(top, dst, ops::bitwise_not(&v));
@@ -795,7 +794,7 @@ impl Vm {
                                 "Undefined global variable ${}",
                                 String::from_utf8_lossy(&n)
                             );
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                             Value::Null
                         }
                     };
@@ -926,7 +925,10 @@ impl Vm {
                 }
                 Instr::SendNoRef { dst, src } => {
                     let v = self.reg_get(top, src);
-                    self.diag(8, "Only variables should be passed by reference")?;
+                    self.diag(
+                        builtins::E_NOTICE,
+                        "Only variables should be passed by reference",
+                    )?;
                     // The callee works on a private copy.
                     self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
                 }
@@ -1096,7 +1098,7 @@ impl Vm {
                             format!(
                                 "Call to a member function {}() on {}",
                                 String::from_utf8_lossy(&mname),
-                                type_lc(&o)
+                                value_name_lc(&o)
                             ),
                         ));
                     };
@@ -1236,7 +1238,7 @@ impl Vm {
                             format!(
                                 "Call to a member function {}() on {}",
                                 String::from_utf8_lossy(&mname),
-                                type_lc(&o)
+                                value_name_lc(&o)
                             ),
                         ));
                     };
@@ -1582,14 +1584,14 @@ impl Vm {
         match deref(v) {
             Value::Null if !inc => {
                 self.diag(
-                    2,
+                    builtins::E_WARNING,
                     "Decrement on type null has no effect, this will change in the next major version of PHP",
                 )?;
                 Ok(Value::Null)
             }
             Value::Bool(b) => {
                 self.diag(
-                    2,
+                    builtins::E_WARNING,
                     &format!(
                         "{what} on type bool has no effect, this will change in the next major version of PHP"
                     ),
@@ -1601,19 +1603,19 @@ impl Vm {
                 if !inc {
                     if b.is_empty() {
                         self.diag(
-                            8192,
+                            builtins::E_DEPRECATED,
                             "Decrement on empty string is deprecated as non-numeric",
                         )?;
                         return Ok(Value::Int(-1));
                     }
                     self.diag(
-                        8192,
+                        builtins::E_DEPRECATED,
                         "Decrement on non-numeric string has no effect and is deprecated",
                     )?;
                     return Ok(Value::Str(s));
                 }
                 self.diag(
-                    8192,
+                    builtins::E_DEPRECATED,
                     "Increment on non-numeric string is deprecated, use str_increment() instead",
                 )?;
                 Ok(Value::str(perl_increment(b)))
@@ -1621,7 +1623,7 @@ impl Vm {
             arr @ Value::Array(_) => Err(Thrown::type_error(format!(
                 "Cannot {} {}",
                 what.to_ascii_lowercase(),
-                self.zval_value_name(&arr)
+                rhp_builtins::zval_value_name(self, &arr)
             ))),
             // increment_function: `do_operation(ADD, 1)`, else the object
             // as a number (`cast_object(_IS_NUMBER)`), else a TypeError.
@@ -1640,7 +1642,7 @@ impl Vm {
                     None => Err(Thrown::type_error(format!(
                         "Cannot {} {}",
                         what.to_ascii_lowercase(),
-                        self.zval_value_name(&obj)
+                        rhp_builtins::zval_value_name(self, &obj)
                     ))),
                 }
             }
@@ -1664,7 +1666,7 @@ impl Vm {
             other => {
                 let msg = format!(
                     "Only arrays and Traversables can be unpacked, {} given",
-                    self.zval_value_name(&other)
+                    rhp_builtins::zval_value_name(self, &other)
                 );
                 return Err(
                     if args || matches!(other, Value::Object(_) | Value::Closure(_)) {
@@ -1974,7 +1976,7 @@ impl Vm {
                 // write through it — matching PHP's foreach gotcha.
                 self.cv_assign(top, val_cv, v);
                 if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                    self.cv_assign(top, key_cv, k.to_value());
                 }
                 self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
             }
@@ -2099,7 +2101,7 @@ impl Vm {
                     Some((k, elem_rc)) => {
                         self.bind_ref_cv(top, val_cv, elem_rc);
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, array_key_to_value(&k));
+                            self.cv_assign(top, key_cv, k.to_value());
                         }
                         let mut st = PhpArray::new();
                         st.push(Value::Ref(cell));
@@ -2216,7 +2218,7 @@ impl Vm {
             Some((k, elem_rc)) => {
                 self.bind_ref_cv(top, val_cv, elem_rc);
                 if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, array_key_to_value(&k));
+                    self.cv_assign(top, key_cv, k.to_value());
                 }
                 self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
             }
@@ -2277,7 +2279,7 @@ impl Vm {
                     if self.is_internal_class(decl) {
                         let dname = self.class(decl).name.as_bytes();
                         if let Some(msg) = builtins::class_constant_deprecation(dname, &name_b) {
-                            self.diag(8192, &msg)?;
+                            self.diag(builtins::E_DEPRECATED, &msg)?;
                         }
                     }
                     self.reg_set(top, dst, v);
@@ -2333,7 +2335,7 @@ impl Vm {
                 };
                 if let Some(msg) = deprecation {
                     if self.constants.contains_key(bare) {
-                        self.diag(8192, &msg)?;
+                        self.diag(builtins::E_DEPRECATED, &msg)?;
                     }
                 }
                 self.reg_set(top, dst, v);

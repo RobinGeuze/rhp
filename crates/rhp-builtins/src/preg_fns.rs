@@ -27,14 +27,13 @@
 //! is the start advanced by one code unit (one byte, or one UTF-8 character
 //! under `u`).
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::pcre::{self, sys::*, JitIssue, Ovector, Regex};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // `preg_last_error()` codes.
 const PREG_NO_ERROR: i64 = 0;
@@ -90,11 +89,6 @@ fn find_at(re: &Regex, subject: &[u8], start: usize) -> Result<Option<Ovector>, 
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
-
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    rhp_values::conv::to_string_bytes(&deref(v))
-}
 
 /// An array entry or a callback's result as a string (zval_get_string): an
 /// array warns, an object goes through `__toString` or throws.
@@ -439,10 +433,15 @@ fn match_setup(
 // ---------------------------------------------------------------------------
 
 fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_match", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_match",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
     let Some(offset) = match_setup("preg_match", false, &subject, flags, offset, args.get(2))?
@@ -471,10 +470,15 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_match_all", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_match_all",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
     let Some(offset) = match_setup("preg_match_all", true, &subject, flags, offset, args.get(2))?
@@ -714,8 +718,13 @@ fn replace_subject(
 /// becomes a one-element list; an array keeps its values in order.
 fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     match deref(v) {
-        Value::Array(a) => (a.iter().map(|(_, x)| bytes_of(x)).collect(), true),
-        other => (vec![bytes_of(&other)], false),
+        Value::Array(a) => (
+            a.iter()
+                .map(|(_, x)| rhp_values::conv::to_string_bytes(x))
+                .collect(),
+            true,
+        ),
+        other => (vec![rhp_values::conv::to_string_bytes(&other)], false),
     }
 }
 
@@ -762,7 +771,7 @@ fn preg_replace_common(
             Value::Array(out)
         }
         other => {
-            let sb = bytes_of(&other);
+            let sb = rhp_values::conv::to_string_bytes(&other);
             match replace_subject(host, fname, &pats, &reps, &sb, limit, &mut count)? {
                 Some(r) if !filter || count > 0 => Value::str(r),
                 _ => Value::Null,
@@ -858,7 +867,7 @@ fn cb_subject(
             Ok(Some(Value::Array(out)))
         }
         other => {
-            let sb = bytes_of(&other);
+            let sb = rhp_values::conv::to_string_bytes(&other);
             Ok(cb_string(host, fname, pairs, &sb, limit, flags, count)?.map(Value::str))
         }
     }
@@ -887,21 +896,13 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
 /// `preg_replace_callback_array($pattern, $subject, $limit, &$count, $flags)`:
 /// each `pattern => callback` pair is applied in turn to the whole subject.
 fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let map = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-            "preg_replace_callback_array(): Argument #1 ($pattern) must be of type array, {} given",
-            crate::argparse::value_name(host, &other)
-        )))
-        }
-    };
+    let map = crate::argparse::array_param(host, args, 0, "preg_replace_callback_array")?;
     let limit = int_arg(args, 2, -1);
     let flags = int_arg(args, 4, 0);
     let mut count = 0usize;
     let mut cur = match deref(&args[1]) {
         Value::Array(a) => Value::Array(a),
-        other => Value::str(bytes_of(&other)),
+        other => Value::str(rhp_values::conv::to_string_bytes(&other)),
     };
     for (k, cb) in map.iter() {
         let ArrayKey::Str(pat) = k else {
@@ -949,10 +950,15 @@ fn fn_preg_last_error_msg(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 // ---------------------------------------------------------------------------
 
 fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_split", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_split",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
-    let subject = bytes_of(&args[1]);
+    let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let no_empty = flags & PREG_SPLIT_NO_EMPTY != 0;
     let delim_capture = flags & PREG_SPLIT_DELIM_CAPTURE != 0;
@@ -1024,11 +1030,11 @@ fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// Escape the PCRE metacharacters (and an optional delimiter). NUL becomes the
 /// literal escape `\000`; every metacharacter is prefixed with a backslash.
 fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = rhp_values::conv::to_string_bytes(&args[0]);
     // delimiter: first byte of the second argument, if any.
     let delim = args
         .get(1)
-        .map(bytes_of)
+        .map(rhp_values::conv::to_string_bytes)
         .filter(|d| !d.is_empty())
         .map(|d| d[0]);
     let mut out = Vec::with_capacity(s.len() + s.len() / 2);
@@ -1056,7 +1062,12 @@ fn fn_preg_quote(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_preg_grep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(re) = compile_warn(host, "preg_grep", &bytes_of(&args[0]))? else {
+    let Some(re) = compile_warn(
+        host,
+        "preg_grep",
+        &rhp_values::conv::to_string_bytes(&args[0]),
+    )?
+    else {
         return Ok(Value::Bool(false));
     };
     let Value::Array(input) = deref(&args[1]) else {
@@ -1130,49 +1141,26 @@ pub fn preg_constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    // `&$matches` / `&$count` are by-reference OUT params (arg 2 for the match
-    // functions, the final arg for the replace functions).
-    put(m, "preg_match", fn_preg_match, 2, Some(5));
-    put(m, "preg_match_all", fn_preg_match_all, 2, Some(5));
-    put(m, "preg_replace", fn_preg_replace, 3, Some(5));
-    put(m, "preg_filter", fn_preg_filter, 3, Some(5));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "preg_replace_callback",
-        fn_preg_replace_callback,
-        3,
-        Some(6),
+        &[
+            ("preg_match", fn_preg_match),
+            ("preg_match_all", fn_preg_match_all),
+            ("preg_replace", fn_preg_replace),
+            ("preg_filter", fn_preg_filter),
+            ("preg_replace_callback", fn_preg_replace_callback),
+            (
+                "preg_replace_callback_array",
+                fn_preg_replace_callback_array,
+            ),
+            ("preg_last_error", fn_preg_last_error),
+            ("preg_last_error_msg", fn_preg_last_error_msg),
+            ("preg_split", fn_preg_split),
+            ("preg_quote", fn_preg_quote),
+            ("preg_grep", fn_preg_grep),
+        ],
     );
-    put(
-        m,
-        "preg_replace_callback_array",
-        fn_preg_replace_callback_array,
-        2,
-        Some(5),
-    );
-    put(m, "preg_last_error", fn_preg_last_error, 0, Some(0));
-    put(m, "preg_last_error_msg", fn_preg_last_error_msg, 0, Some(0));
-    put(m, "preg_split", fn_preg_split, 2, Some(4));
-    put(m, "preg_quote", fn_preg_quote, 1, Some(2));
-    put(m, "preg_grep", fn_preg_grep, 2, Some(3));
 }
 
 #[cfg(test)]

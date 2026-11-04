@@ -1,11 +1,6 @@
 use super::*;
 use crate::test_support::TestHost;
 
-/// `(string)` bytes of a value.
-fn bytes_of(v: &Value) -> Vec<u8> {
-    rhp_values::conv::to_string_bytes(&deref(v))
-}
-
 #[test]
 fn convert_variables_recursion_warns() {
     // $r = ["\xe9"]; $r[] = &$r;
@@ -33,7 +28,10 @@ fn convert_variables_recursion_warns() {
     let Value::Array(a) = &*cell.borrow() else {
         panic!()
     };
-    assert_eq!(bytes_of(a.get_index(0).unwrap().1), b"\xc3\xa9");
+    assert_eq!(
+        rhp_values::conv::to_string_bytes(a.get_index(0).unwrap().1),
+        b"\xc3\xa9"
+    );
     let (r, d) = crate::test_support::run(
         fn_mb_convert_variables,
         &[
@@ -43,7 +41,10 @@ fn convert_variables_recursion_warns() {
         ],
     );
     assert!(d.is_empty());
-    assert_eq!(bytes_of(&r.ok().unwrap()), b"ASCII");
+    assert_eq!(
+        rhp_values::conv::to_string_bytes(&r.ok().unwrap()),
+        b"ASCII"
+    );
 }
 
 /// Nesting deeper than any fixed limit converts, as in php (whose limit is
@@ -72,14 +73,17 @@ fn convert_variables_deep_nesting() {
                     ],
                 );
                 assert!(d.is_empty(), "{d:?}");
-                assert_eq!(bytes_of(&r.ok().unwrap()), want.as_bytes());
+                assert_eq!(
+                    rhp_values::conv::to_string_bytes(&r.ok().unwrap()),
+                    want.as_bytes()
+                );
             }
             let mut v = cell.borrow().clone();
             for _ in 0..DEPTH {
                 let Value::Array(a) = v else { panic!() };
                 v = a.get_index(0).unwrap().1.clone();
             }
-            assert_eq!(bytes_of(&v), b"\xc3\xa9");
+            assert_eq!(rhp_values::conv::to_string_bytes(&v), b"\xc3\xa9");
         })
         .unwrap()
         .join()
@@ -93,10 +97,10 @@ fn call(f: crate::NativeFn, args: &[Value]) -> Value {
     f(&mut TestHost::new(), args).expect("no throw")
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-    String::from_utf8(bytes_of(&call(f, args))).unwrap()
+    String::from_utf8(rhp_values::conv::to_string_bytes(&call(f, args))).unwrap()
 }
 fn call_hex(f: crate::NativeFn, args: &[Value]) -> String {
-    bytes_of(&call(f, args))
+    rhp_values::conv::to_string_bytes(&call(f, args))
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
@@ -121,7 +125,7 @@ fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
     match call(f, args) {
         Value::Array(a) => a
             .iter()
-            .map(|(_, v)| String::from_utf8(bytes_of(v)).unwrap())
+            .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
             .collect(),
         other => panic!("expected array, got {}", other.type_name()),
     }

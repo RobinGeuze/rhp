@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use rhp_semantics::{deref, ops};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // PHP sort-flag constants. The low byte selects the comparison kind; the
 // `SORT_FLAG_CASE` bit (8) can be OR'd into `SORT_STRING` / `SORT_NATURAL` to
@@ -19,13 +19,6 @@ const SORT_NUMERIC: i64 = 1;
 const SORT_STRING: i64 = 2;
 const SORT_NATURAL: i64 = 6;
 const SORT_FLAG_CASE: i64 = 8;
-
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
 
 /// Compare two values honouring a `SORT_*` flag (default: PHP loose compare).
 /// The `SORT_FLAG_CASE` bit folds ASCII case for the string/natural kinds.
@@ -172,7 +165,7 @@ fn asort_impl(
     let mut err = None;
     pairs.sort_by(|a, b| {
         let o = if by_key {
-            cmp_flagged(&key_to_value(&a.0), &key_to_value(&b.0), flags)
+            cmp_flagged(&a.0.to_value(), &b.0.to_value(), flags)
         } else {
             cmp_flagged_cx(host, &a.1, &b.1, flags, &mut err)
         };
@@ -221,7 +214,7 @@ fn usort_impl(
             return Ordering::Equal;
         }
         let (x, y) = if by_key {
-            (key_to_value(&a.0), key_to_value(&b.0))
+            (a.0.to_value(), b.0.to_value())
         } else {
             (a.1.clone(), b.1.clone())
         };
@@ -302,7 +295,7 @@ fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Pass the element by reference so `&$value` callbacks write back.
         let cell = std::rc::Rc::new(std::cell::RefCell::new(v));
         let value_ref = Value::Ref(cell.clone());
-        host.call_callable(&cb, &[value_ref, key_to_value(&k), extra.clone()])?;
+        host.call_callable(&cb, &[value_ref, k.to_value(), extra.clone()])?;
         let new_val = cell.borrow().clone();
         out.insert(k, new_val);
     }
@@ -340,10 +333,7 @@ fn walk_rec_pairs(
             }
             leaf => {
                 let cell = std::rc::Rc::new(std::cell::RefCell::new(leaf));
-                host.call_callable(
-                    cb,
-                    &[Value::Ref(cell.clone()), key_to_value(&k), extra.clone()],
-                )?;
+                host.call_callable(cb, &[Value::Ref(cell.clone()), k.to_value(), extra.clone()])?;
                 let nv = cell.borrow().clone();
                 out.insert(k, nv);
             }
@@ -396,7 +386,7 @@ fn ptr_arg(
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($array) must be of type array, {} given",
-            crate::argparse::value_name(host, &other)
+            crate::argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -531,10 +521,7 @@ fn fn_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(with_array_data(&args[0], |d| {
         d.entries
             .get_index(d.pos)
-            .map(|(k, _)| match k {
-                ArrayKey::Int(n) => Value::Int(*n),
-                ArrayKey::Str(s) => Value::Str(s.clone()),
-            })
+            .map(|(k, _)| k.to_value())
             .unwrap_or(Value::Null)
     })
     .unwrap_or(Value::Null))
@@ -685,50 +672,34 @@ fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(removed))
 }
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    let add = |m: &mut std::collections::HashMap<&'static str, Builtin>,
-               name: &'static str,
-               func: crate::NativeFn,
-               min: usize,
-               max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    add(m, "sort", fn_sort, 1, Some(2));
-    add(m, "rsort", fn_rsort, 1, Some(2));
-    add(m, "asort", fn_asort, 1, Some(2));
-    add(m, "arsort", fn_arsort, 1, Some(2));
-    add(m, "ksort", fn_ksort, 1, Some(2));
-    add(m, "krsort", fn_krsort, 1, Some(2));
-    add(m, "usort", fn_usort, 2, Some(2));
-    add(m, "uasort", fn_uasort, 2, Some(2));
-    add(m, "uksort", fn_uksort, 2, Some(2));
-    add(m, "natsort", fn_natsort, 1, Some(1));
-    add(m, "natcasesort", fn_natcasesort, 1, Some(1));
-    add(m, "array_walk", fn_array_walk, 2, Some(3));
-    add(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "array_walk_recursive",
-        fn_array_walk_recursive,
-        2,
-        Some(3),
+        &[
+            ("sort", fn_sort),
+            ("rsort", fn_rsort),
+            ("asort", fn_asort),
+            ("arsort", fn_arsort),
+            ("ksort", fn_ksort),
+            ("krsort", fn_krsort),
+            ("usort", fn_usort),
+            ("uasort", fn_uasort),
+            ("uksort", fn_uksort),
+            ("natsort", fn_natsort),
+            ("natcasesort", fn_natcasesort),
+            ("array_walk", fn_array_walk),
+            ("array_walk_recursive", fn_array_walk_recursive),
+            ("array_push", fn_array_push),
+            ("array_pop", fn_array_pop),
+            ("array_shift", fn_array_shift),
+            ("array_unshift", fn_array_unshift),
+            ("array_splice", fn_array_splice),
+            ("reset", fn_reset),
+            ("end", fn_end),
+            ("next", fn_next),
+            ("prev", fn_prev),
+            ("current", fn_current),
+            ("key", fn_key),
+        ],
     );
-    add(m, "array_push", fn_array_push, 1, None);
-    add(m, "array_pop", fn_array_pop, 1, Some(1));
-    add(m, "array_shift", fn_array_shift, 1, Some(1));
-    add(m, "array_unshift", fn_array_unshift, 1, None);
-    add(m, "array_splice", fn_array_splice, 2, Some(4));
-    add(m, "reset", fn_reset, 1, Some(1));
-    add(m, "end", fn_end, 1, Some(1));
-    add(m, "next", fn_next, 1, Some(1));
-    add(m, "prev", fn_prev, 1, Some(1));
-    add(m, "current", fn_current, 1, Some(1));
-    add(m, "key", fn_key, 1, Some(1));
 }

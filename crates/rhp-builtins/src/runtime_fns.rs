@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, value_name};
+use crate::argparse::{bool_param, int_param, str_or_null_param, str_param, zval_value_name};
 use crate::const_modules::CONST_MODULES;
 use crate::ini_table::INI_TABLE;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // class relations
@@ -61,7 +61,7 @@ fn relation(
         other => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                value_name(host, other)
+                zval_value_name(host, other)
             )))
         }
     };
@@ -504,7 +504,8 @@ fn fn_ini_get(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-/// C `strtol(s, NULL, 10)` / `atoi`: leading whitespace, sign, digits.
+/// C `strtol(s, NULL, 10)` / `atol` (php's ZEND_ATOL): leading whitespace,
+/// sign, digits; saturates on overflow.
 pub(crate) fn c_atol(s: &[u8]) -> i64 {
     let mut i = 0;
     while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
@@ -521,15 +522,16 @@ pub(crate) fn c_atol(s: &[u8]) -> i64 {
         }
         _ => false,
     };
-    let mut n: i64 = 0;
+    // The magnitude, saturated past i64::MIN's.
+    let mut n: u64 = 0;
     while let Some(d) = s.get(i).filter(|c| c.is_ascii_digit()) {
-        n = n.saturating_mul(10).saturating_add((d - b'0') as i64);
+        n = n.saturating_mul(10).saturating_add((d - b'0') as u64);
         i += 1;
     }
     if neg {
-        n.saturating_neg()
+        0i64.checked_sub_unsigned(n).unwrap_or(i64::MIN)
     } else {
-        n
+        i64::try_from(n).unwrap_or(i64::MAX)
     }
 }
 
@@ -658,12 +660,18 @@ fn ini_apply(name: &[u8], v: Option<&[u8]>) {
     }
 }
 
+/// C `atoi`: `(int)strtol(s, NULL, 10)`, so a value past the long range
+/// saturates first and is then cut to 32 bits.
+pub(crate) fn c_atoi(s: &[u8]) -> i32 {
+    c_atol(s) as i32
+}
+
 /// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
 pub(crate) fn ini_parse_bool(v: &[u8]) -> bool {
     [&b"true"[..], b"yes", b"on"]
         .iter()
         .any(|w| v.eq_ignore_ascii_case(w))
-        || c_atol(v) as i32 != 0
+        || c_atoi(v) != 0
 }
 
 fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
@@ -906,27 +914,21 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // sleep / usleep
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("class_alias", fn_class_alias, 2, 3);
-    put("class_implements", fn_class_implements, 1, 2);
-    put("class_parents", fn_class_parents, 1, 2);
-    put("class_uses", fn_class_uses, 1, 2);
-    put("get_defined_constants", fn_get_defined_constants, 0, 1);
-    put("ini_get", fn_ini_get, 1, 1);
-    put("ini_set", fn_ini_set, 2, 2);
-    put("ini_alter", fn_ini_alter, 2, 2);
-    put("ini_restore", fn_ini_restore, 1, 1);
-    put("ini_get_all", fn_ini_get_all, 0, 2);
-    put("error_log", fn_error_log, 1, 4);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("class_alias", fn_class_alias),
+            ("class_implements", fn_class_implements),
+            ("class_parents", fn_class_parents),
+            ("class_uses", fn_class_uses),
+            ("get_defined_constants", fn_get_defined_constants),
+            ("ini_get", fn_ini_get),
+            ("ini_set", fn_ini_set),
+            ("ini_alter", fn_ini_alter),
+            ("ini_restore", fn_ini_restore),
+            ("ini_get_all", fn_ini_get_all),
+            ("error_log", fn_error_log),
+        ],
+    );
 }

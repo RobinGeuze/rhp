@@ -16,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::ext::openssl::xp_ssl::SslSock;
+use crate::streams::errno;
 
 /// php's default stream chunk size.
 const CHUNK: usize = 8192;
@@ -189,10 +190,6 @@ enum Fill {
     Nothing,
     /// A hard read error (php's fill fails: `fread` returns false).
     Error,
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 impl FdStream {

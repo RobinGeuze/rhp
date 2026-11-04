@@ -8,23 +8,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use bzip2::{Action, Compress, Compression, Decompress, Status};
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const BZ_SEQUENCE_ERROR: i64 = -1;
 const BZ_PARAM_ERROR: i64 = -2;
 const BZ_MEM_ERROR: i64 = -3;
 const BZ_DATA_ERROR: i64 = -4;
 const BZ_DATA_ERROR_MAGIC: i64 = -5;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
     match args.get(i).map(deref) {
@@ -279,28 +273,20 @@ fn fn_bzerror(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(a))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let table: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
-        ("bzcompress", fn_bzcompress, 1, Some(3)),
-        ("bzdecompress", fn_bzdecompress, 1, Some(2)),
-        ("bzopen", fn_bzopen, 2, Some(2)),
-        ("bzread", fn_bzread, 1, Some(2)),
-        ("bzwrite", fn_bzwrite, 2, Some(3)),
-        ("bzflush", fn_bzflush, 1, Some(1)),
-        ("bzclose", fn_bzclose, 1, Some(1)),
-        ("bzerrno", fn_bzerrno, 1, Some(1)),
-        ("bzerrstr", fn_bzerrstr, 1, Some(1)),
-        ("bzerror", fn_bzerror, 1, Some(1)),
-    ];
-    for &(name, func, min, max) in table {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("bzcompress", fn_bzcompress),
+            ("bzdecompress", fn_bzdecompress),
+            ("bzopen", fn_bzopen),
+            ("bzread", fn_bzread),
+            ("bzwrite", fn_bzwrite),
+            ("bzflush", fn_bzflush),
+            ("bzclose", fn_bzclose),
+            ("bzerrno", fn_bzerrno),
+            ("bzerrstr", fn_bzerrstr),
+            ("bzerror", fn_bzerror),
+        ],
+    );
 }

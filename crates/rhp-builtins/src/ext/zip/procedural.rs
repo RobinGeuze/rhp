@@ -2,7 +2,6 @@
 //! Directory" and "Zip Entry" resources.
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ffi::{c_int, CString};
 use std::ptr;
 use std::rc::{Rc, Weak};
@@ -11,7 +10,7 @@ use rhp_values::{ResourceData, Value};
 
 use super::sys::{self, zip_file_t, zip_t};
 use super::{check_path, deref, expand_filepath, must_not_be_empty};
-use crate::{Builtin, Host, Thrown, E_DEPRECATED};
+use crate::{Host, Thrown, E_DEPRECATED};
 
 const DIR: &str = "Zip Directory";
 const ENTRY: &str = "Zip Entry";
@@ -79,7 +78,7 @@ fn resource_arg(
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
         i + 1,
-        crate::ext::zpp::given_type(host, &v)
+        crate::argparse::zval_value_name(host, &v)
     )))
 }
 
@@ -288,33 +287,20 @@ fn zip_entry_compressionmethod(host: &mut dyn Host, args: &[Value]) -> Result<Va
     entry_info(host, args, f, 3)
 }
 
-pub(super) fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let fns: [(&'static str, crate::NativeFn, usize, usize); 10] = [
-        ("zip_open", zip_open, 1, 1),
-        ("zip_close", zip_close, 1, 1),
-        ("zip_read", zip_read, 1, 1),
-        ("zip_entry_open", zip_entry_open, 2, 3),
-        ("zip_entry_close", zip_entry_close, 1, 1),
-        ("zip_entry_read", zip_entry_read, 1, 2),
-        ("zip_entry_name", zip_entry_name, 1, 1),
-        ("zip_entry_compressedsize", zip_entry_compressedsize, 1, 1),
-        ("zip_entry_filesize", zip_entry_filesize, 1, 1),
-        (
-            "zip_entry_compressionmethod",
-            zip_entry_compressionmethod,
-            1,
-            1,
-        ),
-    ];
-    for (name, func, min, max) in fns {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    }
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("zip_open", zip_open),
+            ("zip_close", zip_close),
+            ("zip_read", zip_read),
+            ("zip_entry_open", zip_entry_open),
+            ("zip_entry_close", zip_entry_close),
+            ("zip_entry_read", zip_entry_read),
+            ("zip_entry_name", zip_entry_name),
+            ("zip_entry_compressedsize", zip_entry_compressedsize),
+            ("zip_entry_filesize", zip_entry_filesize),
+            ("zip_entry_compressionmethod", zip_entry_compressionmethod),
+        ],
+    );
 }

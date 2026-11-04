@@ -2,22 +2,14 @@
 //! (`spl_autoload_register` and friends). The callables live on the [`Host`]
 //! (the VM), which invokes them when a class reference fails to resolve.
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 mod files;
 mod iterators;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// `ArrayObject` / `ArrayIterator`'s handlers: spl_array's
 /// `get_properties_for` (the storage stands in for the properties) and its
@@ -206,50 +198,25 @@ fn fn_spl_object_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "spl_autoload_register",
-        fn_spl_autoload_register,
-        0,
-        Some(3),
+        &[
+            ("spl_autoload_register", fn_spl_autoload_register),
+            ("spl_autoload_unregister", fn_spl_autoload_unregister),
+            ("spl_autoload_functions", fn_spl_autoload_functions),
+            ("spl_autoload_call", fn_spl_autoload_call),
+            ("spl_object_id", fn_spl_object_id),
+            ("spl_object_hash", fn_spl_object_hash),
+        ],
     );
-    put(
+    crate::register_helpers(
         m,
-        "spl_autoload_unregister",
-        fn_spl_autoload_unregister,
-        1,
-        Some(1),
+        &[
+            ("__spl_deprecated", fn_spl_deprecated, 1, Some(1)),
+            ("__spl_user_props", fn_spl_user_props, 1, Some(1)),
+        ],
     );
-    put(
-        m,
-        "spl_autoload_functions",
-        fn_spl_autoload_functions,
-        0,
-        Some(0),
-    );
-    put(m, "spl_autoload_call", fn_spl_autoload_call, 1, Some(1));
-    put(m, "spl_object_id", fn_spl_object_id, 1, Some(1));
-    put(m, "spl_object_hash", fn_spl_object_hash, 1, Some(1));
-    put(m, "__spl_deprecated", fn_spl_deprecated, 1, Some(1));
-    put(m, "__spl_user_props", fn_spl_user_props, 1, Some(1));
 }
 
 /// SPL / core data-structure classes implemented in PHP (ArrayIterator and

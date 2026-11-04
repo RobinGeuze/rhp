@@ -7,13 +7,12 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::argparse::{int_or_null_param, int_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
+use crate::argparse::{int_or_null_param, int_param, str_param, zval_value_name};
+use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
 
@@ -251,24 +250,9 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-fn key_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 /// `array_rand(array $array, int $num = 1)` (php_array_pick_keys).
 fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "array_rand(): Argument #1 ($array) must be of type array, {} given",
-                value_name(host, &other)
-            )))
-        }
-    };
+    let arr = crate::argparse::array_param(host, args, 0, "array_rand")?;
     let num = int_param(host, args, 1, "array_rand", "num", 1)?;
     let avail = arr.len() as i64;
     if avail == 0 {
@@ -279,7 +263,7 @@ fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     if num == 1 {
         let i = mt_range(0, avail - 1) as usize;
-        return Ok(arr.get_index(i).map(|(k, _)| key_value(k)).unwrap());
+        return Ok(arr.get_index(i).map(|(k, _)| k.to_value()).unwrap());
     }
     if num <= 0 || num > avail {
         return Err(Thrown::error(
@@ -303,7 +287,7 @@ fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     for (i, (k, _)) in arr.iter().enumerate() {
         if bits[i] ^ negative {
-            out.push(key_value(k));
+            out.push(k.to_value());
         }
     }
     Ok(Value::Array(out))
@@ -326,15 +310,7 @@ fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // --- arrays ------------------------------------------------------------------
 
 fn fn_array_change_key_case(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let arr = match deref(&args[0]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "array_change_key_case(): Argument #1 ($array) must be of type array, {} given",
-                value_name(host, &other)
-            )))
-        }
-    };
+    let arr = crate::argparse::array_param(host, args, 0, "array_change_key_case")?;
     let upper = int_param(host, args, 1, "array_change_key_case", "case", 0)? != 0;
     let mut out = PhpArray::new();
     for (k, v) in arr.iter() {
@@ -479,7 +455,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 crate::E_WARNING,
                 &format!(
                     "Object of class {} could not be converted to {to}",
-                    value_name(host, &cur)
+                    zval_value_name(host, &cur)
                 ),
             )?;
         }
@@ -508,7 +484,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         "Error",
                         format!(
                             "Object of class {} could not be converted to string",
-                            value_name(host, &cur)
+                            zval_value_name(host, &cur)
                         ),
                     ))
                 }
@@ -869,15 +845,9 @@ fn cstr(b: &[u8]) -> Vec<u8> {
 /// `getopt(string $short_options, array $long_options = [], &$rest_index = null)`.
 fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let short = cstr(&str_param(host, args, 0, "getopt", "short_options")?);
-    let longs = match args.get(1).map(deref) {
+    let longs = match args.get(1) {
         None => PhpArray::new(),
-        Some(Value::Array(a)) => a,
-        Some(other) => {
-            return Err(Thrown::type_error(format!(
-                "getopt(): Argument #2 ($long_options) must be of type array, {} given",
-                value_name(host, &other)
-            )))
-        }
+        Some(_) => crate::argparse::array_param(host, args, 1, "getopt")?,
     };
     let set_rest = |v: i64| {
         if let Some(Value::Ref(r)) = args.get(2) {
@@ -989,50 +959,39 @@ fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    put("mt_srand", fn_mt_srand, 0, Some(2));
-    put("srand", fn_mt_srand, 0, Some(2));
-    put("mt_rand", fn_mt_rand, 0, Some(2));
-    put("rand", fn_rand, 0, Some(2));
-    put("shuffle", fn_shuffle, 1, Some(1));
-    put("array_rand", fn_array_rand, 1, Some(2));
-    put("str_shuffle", fn_str_shuffle, 1, Some(1));
-    put(
-        "array_change_key_case",
-        fn_array_change_key_case,
-        1,
-        Some(2),
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("mt_srand", fn_mt_srand),
+            ("srand", fn_mt_srand),
+            ("mt_rand", fn_mt_rand),
+            ("rand", fn_rand),
+            ("shuffle", fn_shuffle),
+            ("array_rand", fn_array_rand),
+            ("str_shuffle", fn_str_shuffle),
+            ("array_change_key_case", fn_array_change_key_case),
+            ("array_multisort", fn_array_multisort),
+            ("settype", fn_settype),
+            ("fnmatch", fn_fnmatch),
+            ("getrusage", fn_getrusage),
+            ("gc_status", fn_gc_status),
+            ("memory_reset_peak_usage", fn_memory_reset_peak_usage),
+            ("gc_mem_caches", fn_gc_mem_caches),
+            ("sys_getloadavg", fn_sys_getloadavg),
+            ("getopt", fn_getopt),
+            ("readline", fn_readline),
+            ("readline_add_history", fn_readline_add_history),
+            ("readline_clear_history", fn_true),
+        ],
     );
-    put("array_multisort", fn_array_multisort, 1, None);
-    put("settype", fn_settype, 2, Some(2));
-    put("fnmatch", fn_fnmatch, 2, Some(3));
-    put("getrusage", fn_getrusage, 0, Some(1));
-    put("gc_status", fn_gc_status, 0, Some(0));
-    put(
-        "memory_reset_peak_usage",
-        fn_memory_reset_peak_usage,
-        0,
-        Some(0),
+    crate::register_helpers(
+        m,
+        &[
+            ("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1)),
+            ("__stdext_warning", fn_stdext_warning, 1, Some(1)),
+        ],
     );
-    put("gc_mem_caches", fn_gc_mem_caches, 0, Some(0));
-    put("sys_getloadavg", fn_sys_getloadavg, 0, Some(0));
-    put("getopt", fn_getopt, 1, Some(3));
-    put("readline", fn_readline, 0, Some(1));
-    put("readline_add_history", fn_readline_add_history, 1, Some(1));
-    put("readline_clear_history", fn_true, 0, Some(0));
-    put("__stdext_deprecated", fn_stdext_deprecated, 1, Some(1));
-    put("__stdext_warning", fn_stdext_warning, 1, Some(1));
 }
 
 /// `utf8_encode` / `utf8_decode`.

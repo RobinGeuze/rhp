@@ -12,19 +12,12 @@ use std::collections::HashSet;
 use rhp_semantics::{deref, ops};
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::argparse::array_param;
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-
-/// `ArrayKey` -> `Value` (for returning keys, e.g. `array_search`).
-fn key_to_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
 
 /// The "string-cast" key coercion used by `array_fill_keys` / `array_combine`:
 /// integers stay integers; everything else is `(string)`-cast and then run
@@ -48,42 +41,12 @@ fn key_intstr(v: &Value) -> Option<ArrayKey> {
     }
 }
 
-fn want_array(v: Value, func: &str) -> Result<PhpArray, Thrown> {
-    match v {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{}(): Argument must be of type array, {} given",
-            func,
-            other.type_name_lower_()
-        ))),
-    }
-}
-
-trait TypeNameLower_ {
-    fn type_name_lower_(&self) -> &'static str;
-}
-impl TypeNameLower_ for Value {
-    fn type_name_lower_(&self) -> &'static str {
-        match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) | Value::Closure(_) => "object",
-            Value::Resource(_) => "resource",
-            Value::Ref(r) => r.borrow().type_name_lower_(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // array_slice
 // ---------------------------------------------------------------------------
 
-fn fn_array_slice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_slice")?;
+fn fn_array_slice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_slice")?;
     let offset = conv::to_int(&deref(&args[1]));
     let length = match args.get(2) {
         None => None,
@@ -144,12 +107,12 @@ fn fn_array_slice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_flip
 // ---------------------------------------------------------------------------
 
-fn fn_array_flip(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_flip")?;
+fn fn_array_flip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_flip")?;
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         if let Some(nk) = key_intstr(v) {
-            out.insert(nk, key_to_value(k));
+            out.insert(nk, k.to_value());
         }
         // non int/string values are skipped (php: warning to stderr)
     }
@@ -198,8 +161,8 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_fill_keys
 // ---------------------------------------------------------------------------
 
-fn fn_array_fill_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let keys = want_array(deref(&args[0]), "array_fill_keys")?;
+fn fn_array_fill_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let keys = array_param(host, args, 0, "array_fill_keys")?;
     let val = deref(&args[1]);
     let mut out = PhpArray::new();
     for (_, kv) in keys.iter() {
@@ -212,9 +175,9 @@ fn fn_array_fill_keys(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_combine
 // ---------------------------------------------------------------------------
 
-fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let keys = want_array(deref(&args[0]), "array_combine")?;
-    let values = want_array(deref(&args[1]), "array_combine")?;
+fn fn_array_combine(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let keys = array_param(host, args, 0, "array_combine")?;
+    let values = array_param(host, args, 1, "array_combine")?;
     if keys.len() != values.len() {
         return Err(Thrown::error(
             "ValueError",
@@ -234,7 +197,7 @@ fn fn_array_combine(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let needle = deref(&args[0]);
-    let a = want_array(deref(&args[1]), "array_search")?;
+    let a = array_param(host, args, 1, "array_search")?;
     let strict = args
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
@@ -246,7 +209,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             crate::host_loose_eq(host, &needle, v)?
         };
         if hit {
-            return Ok(key_to_value(k));
+            return Ok(k.to_value());
         }
     }
     Ok(Value::Bool(false))
@@ -257,7 +220,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // ---------------------------------------------------------------------------
 
 fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_unique")?;
+    let a = array_param(host, args, 0, "array_unique")?;
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(2);
     if flags != 2 && a.len() > 1 {
         // SORT_REGULAR / SORT_NUMERIC / SORT_LOCALE_STRING: php sorts and drops
@@ -306,8 +269,8 @@ fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 
 const HT_MAX_SIZE: i128 = 1073741824; // 0x40000000
 
-fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_pad")?;
+fn fn_array_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_pad")?;
     let size = conv::to_int(&deref(&args[1]));
     let val = deref(&args[2]);
 
@@ -366,19 +329,19 @@ fn fn_array_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_key_first / array_key_last
 // ---------------------------------------------------------------------------
 
-fn fn_array_key_first(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_key_first")?;
+fn fn_array_key_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_key_first")?;
     Ok(a.iter()
         .next()
-        .map(|(k, _)| key_to_value(k))
+        .map(|(k, _)| k.to_value())
         .unwrap_or(Value::Null))
 }
 
-fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_key_last")?;
+fn fn_array_key_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_key_last")?;
     Ok(a.iter()
         .last()
-        .map(|(k, _)| key_to_value(k))
+        .map(|(k, _)| k.to_value())
         .unwrap_or(Value::Null))
 }
 
@@ -386,8 +349,8 @@ fn fn_array_key_last(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // array_is_list
 // ---------------------------------------------------------------------------
 
-fn fn_array_is_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_is_list")?;
+fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_is_list")?;
     let mut expected: i64 = 0;
     for (k, _) in a.iter() {
         match k {
@@ -402,12 +365,12 @@ fn fn_array_is_list(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_diff / array_intersect (string comparison)
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(deref(&args[0]), "array_diff")?;
+fn fn_array_diff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_diff")?;
     // Union of the string forms of every subsequent array's values.
     let mut others: HashSet<Vec<u8>> = HashSet::new();
-    for arg in &args[1..] {
-        let o = want_array(deref(arg), "array_diff")?;
+    for i in 1..args.len() {
+        let o = array_param(host, args, i, "array_diff")?;
         for (_, v) in o.iter() {
             others.insert(conv::to_string_bytes(v));
         }
@@ -421,11 +384,11 @@ fn fn_array_diff(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-fn fn_array_intersect(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(deref(&args[0]), "array_intersect")?;
+fn fn_array_intersect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_intersect")?;
     let mut sets: Vec<HashSet<Vec<u8>>> = Vec::new();
-    for arg in &args[1..] {
-        let o = want_array(deref(arg), "array_intersect")?;
+    for i in 1..args.len() {
+        let o = array_param(host, args, i, "array_intersect")?;
         sets.push(o.iter().map(|(_, v)| conv::to_string_bytes(v)).collect());
     }
     let mut out = PhpArray::new();
@@ -473,7 +436,7 @@ fn column_prop(host: &mut dyn Host, row: &Value, key: &Value) -> Result<Option<V
 }
 
 fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let rows = want_array(deref(&args[0]), "array_column")?;
+    let rows = array_param(host, args, 0, "array_column")?;
     let column_key = deref(&args[1]);
     let column_null = matches!(column_key, Value::Null);
     let column_ak = ArrayKey::from_value(&column_key);
@@ -531,8 +494,8 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // array_chunk
 // ---------------------------------------------------------------------------
 
-fn fn_array_chunk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_chunk")?;
+fn fn_array_chunk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_chunk")?;
     let size = conv::to_int(&deref(&args[1]));
     if size < 1 {
         return Err(Thrown::error(
@@ -571,8 +534,8 @@ fn fn_array_chunk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_count_values
 // ---------------------------------------------------------------------------
 
-fn fn_array_count_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(deref(&args[0]), "array_count_values")?;
+fn fn_array_count_values(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = array_param(host, args, 0, "array_count_values")?;
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
         let Some(k) = key_intstr(v) else { continue };
@@ -586,38 +549,28 @@ fn fn_array_count_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut std::collections::HashMap<&'static str, Builtin>) {
-    let add = |m: &mut std::collections::HashMap<&'static str, Builtin>,
-               name: &'static str,
-               func: crate::NativeFn,
-               min: usize,
-               max: Option<usize>| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    };
-    add(m, "array_slice", fn_array_slice, 2, Some(4));
-    add(m, "array_flip", fn_array_flip, 1, Some(1));
-    add(m, "array_fill", fn_array_fill, 3, Some(3));
-    add(m, "array_fill_keys", fn_array_fill_keys, 2, Some(2));
-    add(m, "array_combine", fn_array_combine, 2, Some(2));
-    add(m, "array_search", fn_array_search, 2, Some(3));
-    add(m, "array_unique", fn_array_unique, 1, Some(2));
-    add(m, "array_pad", fn_array_pad, 3, Some(3));
-    add(m, "array_key_first", fn_array_key_first, 1, Some(1));
-    add(m, "array_key_last", fn_array_key_last, 1, Some(1));
-    add(m, "array_is_list", fn_array_is_list, 1, Some(1));
-    add(m, "array_diff", fn_array_diff, 1, None);
-    add(m, "array_intersect", fn_array_intersect, 1, None);
-    add(m, "array_column", fn_array_column, 2, Some(3));
-    add(m, "array_chunk", fn_array_chunk, 2, Some(3));
-    add(m, "array_count_values", fn_array_count_values, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("array_slice", fn_array_slice),
+            ("array_flip", fn_array_flip),
+            ("array_fill", fn_array_fill),
+            ("array_fill_keys", fn_array_fill_keys),
+            ("array_combine", fn_array_combine),
+            ("array_search", fn_array_search),
+            ("array_unique", fn_array_unique),
+            ("array_pad", fn_array_pad),
+            ("array_key_first", fn_array_key_first),
+            ("array_key_last", fn_array_key_last),
+            ("array_is_list", fn_array_is_list),
+            ("array_diff", fn_array_diff),
+            ("array_intersect", fn_array_intersect),
+            ("array_column", fn_array_column),
+            ("array_chunk", fn_array_chunk),
+            ("array_count_values", fn_array_count_values),
+        ],
+    );
 }
 
 #[cfg(test)]

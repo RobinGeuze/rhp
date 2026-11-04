@@ -209,7 +209,7 @@ impl Vm {
                 };
                 if let Some(reason) = reason {
                     self.diag(
-                        2,
+                        builtins::E_WARNING,
                         &format!("{fname}({path_str}): Failed to open stream: {reason}"),
                     )?;
                 }
@@ -220,7 +220,7 @@ impl Vm {
                     ));
                 }
                 self.diag(
-                    2,
+                    builtins::E_WARNING,
                     &format!(
                         "{fname}(): Failed opening '{path_str}' for inclusion (include_path='{ip}')"
                     ),

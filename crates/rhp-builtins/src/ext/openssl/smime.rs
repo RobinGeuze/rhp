@@ -13,7 +13,7 @@ use super::backend::{
 use super::pkey::path_arg;
 use super::{
     arg, bio_bytes, bio_new_file, int_arg, libctx, mem_bio, obj_or_str, set_ref, store_errors,
-    str_arg, sys, try_string, type_error, value_error, Own, Put, CERT_CLASS, PROPQ,
+    str_arg, sys, try_string, type_error, value_error, Own, CERT_CLASS, PROPQ,
 };
 use crate::ext::zpp::deref;
 use crate::{warn, Host, Thrown};
@@ -29,32 +29,22 @@ const NID_PKCS7_SIGNED: c_int = 22;
 const NID_PKCS7_SIGNED_AND_ENVELOPED: c_int = 24;
 const BIO_CTRL_RESET: c_int = 1;
 
-pub(super) fn register(put: &mut Put) {
-    put(
-        "openssl_pkcs7_verify",
-        super::wrapped!(fn_pkcs7_verify),
-        2,
-        7,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("openssl_pkcs7_verify", super::wrapped!(fn_pkcs7_verify)),
+            ("openssl_pkcs7_encrypt", super::wrapped!(fn_pkcs7_encrypt)),
+            ("openssl_pkcs7_read", super::wrapped!(fn_pkcs7_read)),
+            ("openssl_pkcs7_sign", super::wrapped!(fn_pkcs7_sign)),
+            ("openssl_pkcs7_decrypt", super::wrapped!(fn_pkcs7_decrypt)),
+            ("openssl_cms_verify", super::wrapped!(fn_cms_verify)),
+            ("openssl_cms_encrypt", super::wrapped!(fn_cms_encrypt)),
+            ("openssl_cms_read", super::wrapped!(fn_cms_read)),
+            ("openssl_cms_sign", super::wrapped!(fn_cms_sign)),
+            ("openssl_cms_decrypt", super::wrapped!(fn_cms_decrypt)),
+        ],
     );
-    put(
-        "openssl_pkcs7_encrypt",
-        super::wrapped!(fn_pkcs7_encrypt),
-        4,
-        6,
-    );
-    put("openssl_pkcs7_read", super::wrapped!(fn_pkcs7_read), 2, 2);
-    put("openssl_pkcs7_sign", super::wrapped!(fn_pkcs7_sign), 5, 7);
-    put(
-        "openssl_pkcs7_decrypt",
-        super::wrapped!(fn_pkcs7_decrypt),
-        3,
-        4,
-    );
-    put("openssl_cms_verify", super::wrapped!(fn_cms_verify), 2, 9);
-    put("openssl_cms_encrypt", super::wrapped!(fn_cms_encrypt), 4, 7);
-    put("openssl_cms_read", super::wrapped!(fn_cms_read), 2, 2);
-    put("openssl_cms_sign", super::wrapped!(fn_cms_sign), 5, 8);
-    put("openssl_cms_decrypt", super::wrapped!(fn_cms_decrypt), 3, 5);
 }
 
 extern "C" {

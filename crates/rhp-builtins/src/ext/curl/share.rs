@@ -176,16 +176,7 @@ pub(super) fn fn_curl_share_init_persistent(
     args: &[Value],
 ) -> Result<Value, Thrown> {
     let f = "curl_share_init_persistent";
-    let opts = match args.first().map(deref) {
-        Some(Value::Array(a)) => a,
-        other => {
-            let v = other.unwrap_or(Value::Null);
-            return Err(Thrown::type_error(format!(
-                "{f}(): Argument #1 ($share_options) must be of type array, {} given",
-                crate::argparse::value_name(host, &v)
-            )));
-        }
-    };
+    let opts = crate::argparse::array_param(host, args, 0, f)?;
     let value_err = |msg: &str| {
         Thrown::error(
             "ValueError",
@@ -207,7 +198,7 @@ pub(super) fn fn_curl_share_init_persistent(
         let Some(option) = try_get_long(host, &entry)? else {
             return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($share_options) must contain only int values, {} given",
-                crate::argparse::value_name(host, &entry)
+                crate::argparse::zval_value_name(host, &entry)
             )));
         };
         if option == sys::php("CURL_LOCK_DATA_COOKIE") {

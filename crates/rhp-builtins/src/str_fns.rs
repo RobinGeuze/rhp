@@ -4,29 +4,15 @@
 //! binary (see `str_fns/tests.rs` — expected values are hardcoded from
 //! `php -r '...'` output).
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, Value};
 
 use crate::argparse::zval_get_string;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 /// Leftmost occurrence of `needle` in `haystack` (byte search).
 fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -98,7 +84,7 @@ fn clamp_start(start: i64, len: usize) -> usize {
 }
 
 fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let len = s.len();
     let start = clamp_start(conv::to_int(&deref(&args[1])), len);
     // remaining length after start
@@ -140,8 +126,8 @@ fn replace_in_subject(
     let Value::Array(searches) = search else {
         return Ok(replace_fn(
             &subject,
-            &bytes_of(search),
-            &bytes_of(replace),
+            &conv::to_string_bytes(search),
+            &conv::to_string_bytes(replace),
             n,
         ));
     };
@@ -153,7 +139,7 @@ fn replace_in_subject(
                 Some((_, v)) => zval_get_string(host, v)?,
                 None => Vec::new(),
             },
-            other => bytes_of(other),
+            other => conv::to_string_bytes(other),
         };
         if sbytes.is_empty() {
             continue;
@@ -195,7 +181,7 @@ pub(crate) fn str_replace_common(
         }
         Value::Array(out)
     } else {
-        let s = bytes_of(&subject);
+        let s = conv::to_string_bytes(&subject);
         Value::str(replace_in_subject(
             host, s, &search, &replace, replace_fn, &mut n,
         )?)
@@ -234,8 +220,8 @@ fn resolve_fwd_offset(offset: i64, len: usize, fname: &str) -> Result<usize, Thr
 }
 
 fn strpos_impl(args: &[Value], ci: bool, fname: &str) -> Result<Value, Thrown> {
-    let mut haystack = bytes_of(&args[0]);
-    let mut needle = bytes_of(&args[1]);
+    let mut haystack = conv::to_string_bytes(&args[0]);
+    let mut needle = conv::to_string_bytes(&args[1]);
     let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let start = resolve_fwd_offset(off, haystack.len(), fname)?;
     if ci {
@@ -249,8 +235,8 @@ fn strpos_impl(args: &[Value], ci: bool, fname: &str) -> Result<Value, Thrown> {
 }
 
 fn strrpos_impl(args: &[Value], ci: bool, fname: &str) -> Result<Value, Thrown> {
-    let mut haystack = bytes_of(&args[0]);
-    let mut needle = bytes_of(&args[1]);
+    let mut haystack = conv::to_string_bytes(&args[0]);
+    let mut needle = conv::to_string_bytes(&args[1]);
     let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if ci {
         haystack.make_ascii_lowercase();
@@ -307,10 +293,10 @@ fn fn_strripos(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_str_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let target = conv::to_int(&deref(&args[1]));
     let pad = match args.get(2) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b" ".to_vec(),
     };
     let ptype = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(1); // STR_PAD_RIGHT
@@ -375,9 +361,9 @@ fn fn_str_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn trim_impl(args: &[Value], left: bool, right: bool) -> Value {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let chars = match args.get(1) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => TRIM_DEFAULT.to_vec(),
     };
     let mask = charmask(&chars);
@@ -411,7 +397,7 @@ fn fn_rtrim(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_ucfirst(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut s = bytes_of(&args[0]);
+    let mut s = conv::to_string_bytes(&args[0]);
     if let Some(b) = s.first_mut() {
         b.make_ascii_uppercase();
     }
@@ -419,7 +405,7 @@ fn fn_ucfirst(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_lcfirst(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut s = bytes_of(&args[0]);
+    let mut s = conv::to_string_bytes(&args[0]);
     if let Some(b) = s.first_mut() {
         b.make_ascii_lowercase();
     }
@@ -427,9 +413,9 @@ fn fn_lcfirst(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_ucwords(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut s = bytes_of(&args[0]);
+    let mut s = conv::to_string_bytes(&args[0]);
     let delims = match args.get(1) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b" \t\r\n\x0c\x0b".to_vec(),
     };
     let mask = charmask_plain(&delims);
@@ -453,7 +439,7 @@ fn charmask_plain(chars: &[u8]) -> [bool; 256] {
 }
 
 fn fn_strrev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut s = bytes_of(&args[0]);
+    let mut s = conv::to_string_bytes(&args[0]);
     s.reverse();
     Ok(Value::str(s))
 }
@@ -463,8 +449,8 @@ fn fn_strrev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_substr_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let haystack = bytes_of(&args[0]);
-    let needle = bytes_of(&args[1]);
+    let haystack = conv::to_string_bytes(&args[0]);
+    let needle = conv::to_string_bytes(&args[1]);
     if needle.is_empty() {
         return Err(Thrown::error(
             "ValueError",
@@ -518,14 +504,14 @@ fn fn_substr_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_str_starts_with(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = bytes_of(&args[0]);
-    let n = bytes_of(&args[1]);
+    let h = conv::to_string_bytes(&args[0]);
+    let n = conv::to_string_bytes(&args[1]);
     Ok(Value::Bool(h.len() >= n.len() && h[..n.len()] == n[..]))
 }
 
 fn fn_str_ends_with(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let h = bytes_of(&args[0]);
-    let n = bytes_of(&args[1]);
+    let h = conv::to_string_bytes(&args[0]);
+    let n = conv::to_string_bytes(&args[1]);
     Ok(Value::Bool(
         h.len() >= n.len() && h[h.len() - n.len()..] == n[..],
     ))
@@ -536,10 +522,10 @@ fn fn_str_ends_with(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let text = bytes_of(&args[0]);
+    let text = conv::to_string_bytes(&args[0]);
     let width = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(75);
     let brk = match args.get(2) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b"\n".to_vec(),
     };
     let cut = args
@@ -553,7 +539,7 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if brk.is_empty() {
         return Err(Thrown::error(
             "ValueError",
-            "wordwrap(): Argument #3 ($break) must be a non-empty string",
+            "wordwrap(): Argument #3 ($break) must not be empty",
         ));
     }
     if width == 0 && cut {
@@ -702,11 +688,11 @@ fn fn_number_format(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let num = conv::to_float(&deref(&args[0]));
     let dec = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let dec_point = match args.get(2) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b".".to_vec(),
     };
     let thousands = match args.get(3) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b",".to_vec(),
     };
 
@@ -1189,13 +1175,13 @@ pub(crate) fn do_sprintf(
 }
 
 fn fn_sprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let fmt = bytes_of(&args[0]);
+    let fmt = conv::to_string_bytes(&args[0]);
     let out = do_sprintf(&fmt, &args[1..], args.len())?;
     Ok(Value::str(out))
 }
 
 fn fn_printf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let fmt = bytes_of(&args[0]);
+    let fmt = conv::to_string_bytes(&args[0]);
     let out = do_sprintf(&fmt, &args[1..], args.len())?;
     let len = out.len() as i64;
     host.write_out(&out);
@@ -1203,7 +1189,7 @@ fn fn_printf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let fmt = bytes_of(&args[0]);
+    let fmt = conv::to_string_bytes(&args[0]);
     let Value::Array(arr) = deref(&args[1]) else {
         return Err(Thrown::type_error(
             "vsprintf(): Argument #2 ($values) must be of type array",
@@ -1225,7 +1211,7 @@ fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_soundex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // soundex_table[c-'A'] for A..Z; '0' means "no code" (vowel / h / w / y).
     const TABLE: &[u8; 26] = b"01230120022455012623010202";
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mut out = Vec::with_capacity(4);
     let mut last = 0u8;
     for &b in &s {
@@ -1260,8 +1246,8 @@ fn fn_soundex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `addcslashes($string, $characters)`: backslash-escape every byte present in
 /// `$characters` (control bytes become `\n`, `\t`, … or a 3-digit octal escape).
 fn fn_addcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
-    let mask = charmask(&bytes_of(&args[1]));
+    let s = conv::to_string_bytes(&args[0]);
+    let mask = charmask(&conv::to_string_bytes(&args[1]));
     let mut out = Vec::with_capacity(s.len());
     for &c in &s {
         if mask[c as usize] {
@@ -1291,7 +1277,7 @@ fn fn_addcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `stripcslashes($string)`: the inverse of [`fn_addcslashes`] (a faithful port
 /// of php's `php_stripcslashes`), decoding `\n`, `\xHH`, octal `\NNN`, etc.
 fn fn_stripcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let n = s.len();
     let mut out = Vec::with_capacity(n);
     let mut i = 0;
@@ -1387,7 +1373,7 @@ fn hex_val(b: u8) -> u8 {
 /// `count_chars($string, $mode = 0)`: per-byte frequency statistics. Modes 0–2
 /// return an int-keyed array; modes 3–4 return a byte string.
 fn fn_count_chars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let mode = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if !(0..=4).contains(&mode) {
         return Err(Thrown::error(
@@ -1432,51 +1418,39 @@ fn fn_count_chars(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 /// Register all string builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "substr", fn_substr, 2, Some(3));
-    put(m, "str_replace", fn_str_replace, 3, Some(4));
-    put(m, "strpos", fn_strpos, 2, Some(3));
-    put(m, "stripos", fn_stripos, 2, Some(3));
-    put(m, "strrpos", fn_strrpos, 2, Some(3));
-    put(m, "strripos", fn_strripos, 2, Some(3));
-    put(m, "str_pad", fn_str_pad, 2, Some(4));
-    put(m, "trim", fn_trim, 1, Some(2));
-    put(m, "ltrim", fn_ltrim, 1, Some(2));
-    put(m, "rtrim", fn_rtrim, 1, Some(2));
-    put(m, "chop", fn_rtrim, 1, Some(2));
-    put(m, "ucfirst", fn_ucfirst, 1, Some(1));
-    put(m, "lcfirst", fn_lcfirst, 1, Some(1));
-    put(m, "ucwords", fn_ucwords, 1, Some(2));
-    put(m, "strrev", fn_strrev, 1, Some(1));
-    put(m, "substr_count", fn_substr_count, 2, Some(4));
-    put(m, "str_starts_with", fn_str_starts_with, 2, Some(2));
-    put(m, "str_ends_with", fn_str_ends_with, 2, Some(2));
-    put(m, "wordwrap", fn_wordwrap, 1, Some(4));
-    put(m, "number_format", fn_number_format, 1, Some(4));
-    put(m, "sprintf", fn_sprintf, 1, None);
-    put(m, "printf", fn_printf, 1, None);
-    put(m, "vsprintf", fn_vsprintf, 2, Some(2));
-    put(m, "soundex", fn_soundex, 1, Some(1));
-    put(m, "addcslashes", fn_addcslashes, 2, Some(2));
-    put(m, "stripcslashes", fn_stripcslashes, 1, Some(1));
-    put(m, "count_chars", fn_count_chars, 1, Some(2));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("substr", fn_substr),
+            ("str_replace", fn_str_replace),
+            ("strpos", fn_strpos),
+            ("stripos", fn_stripos),
+            ("strrpos", fn_strrpos),
+            ("strripos", fn_strripos),
+            ("str_pad", fn_str_pad),
+            ("trim", fn_trim),
+            ("ltrim", fn_ltrim),
+            ("rtrim", fn_rtrim),
+            ("chop", fn_rtrim),
+            ("ucfirst", fn_ucfirst),
+            ("lcfirst", fn_lcfirst),
+            ("ucwords", fn_ucwords),
+            ("strrev", fn_strrev),
+            ("substr_count", fn_substr_count),
+            ("str_starts_with", fn_str_starts_with),
+            ("str_ends_with", fn_str_ends_with),
+            ("wordwrap", fn_wordwrap),
+            ("number_format", fn_number_format),
+            ("sprintf", fn_sprintf),
+            ("printf", fn_printf),
+            ("vsprintf", fn_vsprintf),
+            ("soundex", fn_soundex),
+            ("addcslashes", fn_addcslashes),
+            ("stripcslashes", fn_stripcslashes),
+            ("count_chars", fn_count_chars),
+        ],
+    );
 }
 
 #[cfg(test)]

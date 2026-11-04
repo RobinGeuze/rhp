@@ -23,7 +23,7 @@ use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::str_param;
 use crate::ext::zpp;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 pub use format::php_format_date;
 pub(crate) use objects::CLASSES;
@@ -629,7 +629,7 @@ fn double_arg(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::argparse::value_name(host, v)
+            crate::argparse::zval_value_name(host, v)
         ))
     };
     Ok(Some(match &v {
@@ -1072,67 +1072,36 @@ fn fn_timezone_name_from_abbr(host: &mut dyn Host, args: &[Value]) -> Result<Val
 }
 
 /// Register the date builtins.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("date", fn_date, 1, 2);
-    put("gmdate", fn_gmdate, 1, 2);
-    put("idate", fn_idate, 1, 2);
-    put("strtotime", fn_strtotime, 1, 2);
-    put("mktime", fn_mktime, 1, 6);
-    put("gmmktime", fn_gmmktime, 1, 6);
-    put("checkdate", fn_checkdate, 3, 3);
-    put("localtime", fn_localtime, 0, 2);
-    put("getdate", fn_getdate, 0, 1);
-    put("date_parse", fn_date_parse, 1, 1);
-    put("date_parse_from_format", fn_date_parse_from_format, 2, 2);
-    put(
-        "date_default_timezone_set",
-        fn_date_default_timezone_set,
-        1,
-        1,
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("date", fn_date),
+            ("gmdate", fn_gmdate),
+            ("idate", fn_idate),
+            ("strtotime", fn_strtotime),
+            ("mktime", fn_mktime),
+            ("gmmktime", fn_gmmktime),
+            ("checkdate", fn_checkdate),
+            ("localtime", fn_localtime),
+            ("getdate", fn_getdate),
+            ("date_parse", fn_date_parse),
+            ("date_parse_from_format", fn_date_parse_from_format),
+            ("date_default_timezone_set", fn_date_default_timezone_set),
+            ("date_default_timezone_get", fn_date_default_timezone_get),
+            ("timezone_identifiers_list", fn_timezone_identifiers_list),
+            (
+                "timezone_abbreviations_list",
+                fn_timezone_abbreviations_list,
+            ),
+            ("timezone_name_from_abbr", fn_timezone_name_from_abbr),
+            ("timezone_version_get", fn_timezone_version_get),
+            ("strftime", fn_strftime),
+            ("gmstrftime", fn_gmstrftime),
+            ("date_sunrise", fn_date_sunrise),
+            ("date_sunset", fn_date_sunset),
+            ("date_sun_info", fn_date_sun_info),
+        ],
     );
-    put(
-        "date_default_timezone_get",
-        fn_date_default_timezone_get,
-        0,
-        0,
-    );
-    put(
-        "timezone_identifiers_list",
-        fn_timezone_identifiers_list,
-        0,
-        2,
-    );
-    put(
-        "timezone_abbreviations_list",
-        fn_timezone_abbreviations_list,
-        0,
-        0,
-    );
-    put("timezone_name_from_abbr", fn_timezone_name_from_abbr, 1, 3);
-    put("timezone_version_get", fn_timezone_version_get, 0, 0);
-    put("strftime", fn_strftime, 1, 2);
-    put("gmstrftime", fn_gmstrftime, 1, 2);
-    put("date_sunrise", fn_date_sunrise, 1, 6);
-    put("date_sunset", fn_date_sunset, 1, 6);
-    put("date_sun_info", fn_date_sun_info, 3, 3);
-    m.insert(
-        "__date",
-        Builtin {
-            name: "__date",
-            func: classes::fn_date,
-            min_args: 1,
-            max_args: None,
-        },
-    );
+    crate::register_helpers(m, &[("__date", classes::fn_date, 1, None)]);
 }

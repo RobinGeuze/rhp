@@ -10,19 +10,19 @@
 //! (`crate::ext::libxml::node`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::c_int;
 use std::ptr;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
-use crate::argparse::{value_name, zval_get_string};
+use crate::argparse::{zval_get_string, zval_value_name};
 use crate::ext::libxml::node::{self as lxn, ClassType, NodeObject};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 use crate::ext::libxml::{self as lx, ffi};
 use crate::object::{self, CastTarget, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const INT_MAX: i64 = i32::MAX as i64;
 
@@ -696,7 +696,7 @@ fn prop_dim_write(
                 return Err(Thrown::type_error(format!(
                     "It's not possible to assign a complex type to {}, {} given",
                     if attribs { "attributes" } else { "properties" },
-                    value_name(cx.host, other)
+                    zval_value_name(cx.host, other)
                 )));
             }
         },
@@ -1681,7 +1681,8 @@ fn read_doc(cx: &mut Cx, data: &[u8], is_file: bool, options: i64) -> Result<*mu
 fn class_arg(host: &mut dyn Host, fname: &str, n: usize, v: Value) -> Result<Vec<u8>, Thrown> {
     let name = match v {
         Value::Null => return Ok(b"SimpleXMLElement".to_vec()),
-        v => conv::to_string_bytes(&v),
+        // try_convert_to_string, in either mode
+        v => zval_get_string(host, &v)?,
     };
     if let Some(id) = host.resolve_class_autoload(&name)? {
         let canonical = host.class_name(id).unwrap_or_else(|| name.clone());
@@ -1808,7 +1809,14 @@ pub(crate) fn document_of(v: &Value) -> *mut lxn::RefObj {
 }
 
 fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zpp "o|C!": any object, then the class name, then the node check.
     let v = arg(args, 0);
+    if !matches!(v, Value::Object(_) | Value::Closure(_)) {
+        return Err(Thrown::type_error(format!(
+            "simplexml_import_dom(): Argument #1 ($node) must be of type object, {} given",
+            zval_value_name(host, &v)
+        )));
+    }
     let class = class_arg(host, "simplexml_import_dom", 2, arg(args, 1))?;
     let Some((mut nodep, document)) = lx::import_node(host, &v)? else {
         return Err(Thrown::type_error(
@@ -1843,13 +1851,6 @@ fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---- methods ----
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).map(deref).unwrap_or(Value::Null)
@@ -2654,25 +2655,23 @@ fn fn_sxe_dim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min, max) in [
-        ("__sxe", fn_sxe as crate::NativeFn, 2, None),
-        ("__sxe_prop", fn_sxe_prop, 3, Some(4)),
-        ("__sxe_dim", fn_sxe_dim, 3, Some(4)),
-        ("simplexml_load_string", fn_load_string, 1, Some(5)),
-        ("simplexml_load_file", fn_load_file, 1, Some(5)),
-        ("simplexml_import_dom", fn_import_dom, 1, Some(2)),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("simplexml_load_string", fn_load_string),
+            ("simplexml_load_file", fn_load_file),
+            ("simplexml_import_dom", fn_import_dom),
+        ],
+    );
+    crate::register_helpers(
+        m,
+        &[
+            ("__sxe", fn_sxe, 2, None),
+            ("__sxe_prop", fn_sxe_prop, 3, Some(4)),
+            ("__sxe_dim", fn_sxe_dim, 3, Some(4)),
+        ],
+    );
 }
 
 pub const PRELUDE_PHP: &str = include_str!("prelude.php");

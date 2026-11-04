@@ -4,13 +4,11 @@
 //! `get_included_files` / `get_required_files`. The tables live in the host
 //! and are read through `Host::reflect_op`.
 
-use std::collections::HashMap;
-
 use rhp_semantics::deref;
 use rhp_values::{ClassKind, Value};
 
-use crate::argparse::{bool_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
+use crate::argparse::{bool_param, str_param, zval_get_string, zval_value_name};
+use crate::{Host, Thrown};
 
 fn declared(host: &mut dyn Host, kind: &str) -> Result<Value, Thrown> {
     host.reflect_op(b"declared", &[Value::str(kind)])
@@ -74,29 +72,17 @@ fn fn_get_class_methods(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let Some(class) = class else {
         return Err(Thrown::type_error(format!(
             "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            value_name(host, &v)
+            zval_value_name(host, &v)
         )));
     };
     host.reflect_op(b"methods_visible", &[Value::str(class)])
 }
 
 fn fn_get_class_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // zpp "C": the argument as a string naming a class, else a TypeError.
-    let v = deref(&args[0]);
-    let name: Vec<u8> = match &v {
-        Value::Str(s) => s.as_bytes().to_vec(),
-        Value::Array(_) => {
-            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
-            b"Array".to_vec()
-        }
-        Value::Object(_) | Value::Closure(_) => value_name(host, &v).into_bytes(),
-        other => rhp_values::conv::to_string_bytes(other),
-    };
-    let found = match &v {
-        Value::Str(_) => host.resolve_class_autoload(&name)?,
-        _ => None,
-    };
-    if found.is_none() {
+    // zpp "C" (zend_parse_arg_class): try_convert_to_string in either
+    // mode, then a class lookup, else a TypeError.
+    let name = zval_get_string(host, &args[0])?;
+    if host.resolve_class_autoload(&name)?.is_none() {
         return Err(Thrown::type_error(format!(
             "get_class_vars(): Argument #1 ($class) must be a valid class name, {} given",
             String::from_utf8_lossy(&name)
@@ -109,25 +95,19 @@ fn fn_get_included_files(host: &mut dyn Host, _args: &[Value]) -> Result<Value, 
     host.reflect_op(b"included", &[])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("get_declared_classes", fn_get_declared_classes, 0, 0);
-    put("get_declared_interfaces", fn_get_declared_interfaces, 0, 0);
-    put("get_declared_traits", fn_get_declared_traits, 0, 0);
-    put("trait_exists", fn_trait_exists, 1, 2);
-    put("get_defined_functions", fn_get_defined_functions, 0, 1);
-    put("get_class_methods", fn_get_class_methods, 1, 1);
-    put("get_class_vars", fn_get_class_vars, 1, 1);
-    put("get_included_files", fn_get_included_files, 0, 0);
-    put("get_required_files", fn_get_included_files, 0, 0);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("get_declared_classes", fn_get_declared_classes),
+            ("get_declared_interfaces", fn_get_declared_interfaces),
+            ("get_declared_traits", fn_get_declared_traits),
+            ("trait_exists", fn_trait_exists),
+            ("get_defined_functions", fn_get_defined_functions),
+            ("get_class_methods", fn_get_class_methods),
+            ("get_class_vars", fn_get_class_vars),
+            ("get_included_files", fn_get_included_files),
+            ("get_required_files", fn_get_included_files),
+        ],
+    );
 }

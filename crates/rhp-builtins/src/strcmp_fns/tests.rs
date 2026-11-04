@@ -17,7 +17,7 @@ fn call_int(f: crate::NativeFn, args: &[Value]) -> i64 {
     }
 }
 fn calls(f: crate::NativeFn, args: &[Value]) -> String {
-    String::from_utf8(bytes_of(&call(f, args))).unwrap()
+    String::from_utf8(rhp_values::conv::to_string_bytes(&call(f, args))).unwrap()
 }
 fn throws(f: crate::NativeFn, args: &[Value]) -> bool {
     f(&mut TestHost::new(), args).is_err()
@@ -291,7 +291,7 @@ fn str_ireplace_cases() {
     };
     let got: Vec<String> = arr
         .iter()
-        .map(|(_, v)| String::from_utf8(bytes_of(v)).unwrap())
+        .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
         .collect();
     assert_eq!(got, vec!["XX".to_string(), "bcX".to_string()]);
 }

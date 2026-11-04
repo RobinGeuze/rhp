@@ -12,7 +12,7 @@ use rhp_values::{
 
 use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
-use crate::types::type_lc;
+use crate::types::value_name_lc;
 use crate::{classes, deref, Vm};
 
 impl Vm {
@@ -89,7 +89,7 @@ impl Vm {
                                 String::from_utf8_lossy(self.class(cls).name.as_bytes()),
                                 String::from_utf8_lossy(pname.as_bytes())
                             );
-                            self.diag(2, &msg)?;
+                            self.diag(builtins::E_WARNING, &msg)?;
                             Value::Null
                         }
                     },
@@ -100,20 +100,16 @@ impl Vm {
                     "Undefined property: Closure::${}",
                     String::from_utf8_lossy(pname.as_bytes())
                 );
-                self.diag(2, &msg)?;
+                self.diag(builtins::E_WARNING, &msg)?;
                 Value::Null
             }
             other => {
                 let msg = format!(
                     "Attempt to read property \"{}\" on {}",
                     String::from_utf8_lossy(pname.as_bytes()),
-                    match other {
-                        Value::Bool(true) => "true",
-                        Value::Bool(false) => "false",
-                        ref o => type_lc(o),
-                    }
+                    value_name_lc(&other)
                 );
-                self.diag(2, &msg)?;
+                self.diag(builtins::E_WARNING, &msg)?;
                 Value::Null
             }
         })
@@ -541,11 +537,7 @@ impl Vm {
             format!(
                 "Attempt to assign property \"{}\" on {}",
                 String::from_utf8_lossy(pname.as_bytes()),
-                match &o {
-                    Value::Bool(true) => "true",
-                    Value::Bool(false) => "false",
-                    other => type_lc(other),
-                }
+                value_name_lc(&o)
             ),
         ))
     }
@@ -582,7 +574,7 @@ impl Vm {
             return Ok(());
         }
         self.diag(
-            8192,
+            builtins::E_DEPRECATED,
             &format!("Creation of dynamic property {cname}::${p} is deprecated"),
         )
     }
@@ -710,7 +702,7 @@ impl Vm {
                         let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
                             .into_owned();
                         self.diag(
-                            8192,
+                            builtins::E_DEPRECATED,
                             &format!(
                                 "Implicit conversion from float {shown} to int loses precision"
                             ),
@@ -721,7 +713,7 @@ impl Vm {
             }
             Err(()) => Err(Thrown::type_error(format!(
                 "Cannot assign {} to property {}::${} of type {}",
-                self.zval_value_name(&deref(&val)),
+                rhp_builtins::zval_value_name(self, &deref(&val)),
                 String::from_utf8_lossy(self.class(decl).name.as_bytes()),
                 String::from_utf8_lossy(name.as_bytes()),
                 self.type_string_resolved(&ty, Some(decl), Some(cls))

@@ -11,16 +11,15 @@
 mod compat;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::c_int;
 use std::rc::{Rc, Weak};
 
 use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::ext::zpp::{deref, given_type, long_arg};
+use crate::ext::zpp::{deref, long_arg};
 use crate::object::{ClassHandlers, ObjectHandlers};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
 
@@ -157,7 +156,7 @@ fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($parser) must be of type XMLParser, {} given",
         i + 1,
-        given_type(host, &v)
+        crate::argparse::zval_value_name(host, &v)
     )))
 }
 
@@ -991,7 +990,7 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if !matches!(new_this, Value::Object(_)) {
         return Err(Thrown::type_error(format!(
             "{F}(): Argument #2 ($object) must be of type object, {} given",
-            given_type(host, &new_this)
+            crate::argparse::zval_value_name(host, &new_this)
         )));
     }
     const SET_VIA: [&str; 10] = [
@@ -1178,25 +1177,6 @@ fn fn_parser_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(true))
 }
 
-/// zval_get_long, with the warning for an object.
-fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
-    match v {
-        Value::Object(_) => {
-            let class = host.object_class_name(v).unwrap_or_default();
-            host.emit_diagnostic(
-                crate::E_WARNING,
-                &format!(
-                    "Object of class {} could not be converted to int",
-                    String::from_utf8_lossy(&class)
-                ),
-            )?;
-            Ok(1)
-        }
-        Value::Array(a) => Ok(!a.is_empty() as i64),
-        other => Ok(conv::to_int(other)),
-    }
-}
-
 fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_set_option";
     let p = parser_arg(host, args, 0, F)?;
@@ -1205,7 +1185,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if !matches!(value, Value::Bool(_) | Value::Int(_) | Value::Str(_)) {
         let msg = format!(
             "Argument #3 ($value) must be of type string|int|bool, {} given",
-            given_type(host, &value)
+            crate::argparse::zval_type_name(host, &value)
         );
         crate::warn(host, F, &msg)?;
     }
@@ -1222,7 +1202,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             p.borrow_mut().parsehuge = conv::to_bool(&value);
         }
         OPT_SKIP_TAGSTART => {
-            let v = zval_get_long(host, &value)?;
+            let v = crate::argparse::zval_get_long(host, &value)?;
             if !(0..=i32::MAX as i64).contains(&v) {
                 crate::warn(
                     host,
@@ -1350,25 +1330,9 @@ fn fn_dispatch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     f(host, &args[1..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__xml_fn",
-        Builtin {
-            name: "__xml_fn",
-            func: fn_dispatch,
-            min_args: 1,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "xml_parse_into_struct",
-        Builtin {
-            name: "xml_parse_into_struct",
-            func: fn_parse_into_struct,
-            min_args: 3,
-            max_args: Some(4),
-        },
-    );
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("xml_parse_into_struct", fn_parse_into_struct)]);
+    crate::register_helpers(m, &[("__xml_fn", fn_dispatch, 1, None)]);
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

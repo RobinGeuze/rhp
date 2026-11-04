@@ -7,20 +7,13 @@
 //! Registered after `file_fns`/`stream_fns`, so these entries replace any
 //! older approximations there.
 
-use std::collections::HashMap;
 use std::ffi::CString;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::streams::{split_scheme, StatInfo};
-use crate::{Builtin, Host, StreamKind, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::{Host, StreamKind, Thrown};
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     args.get(i)
@@ -32,28 +25,6 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
     match args.get(i).map(deref) {
         None | Some(Value::Null) => default,
         Some(v) => conv::to_int(&v),
-    }
-}
-
-/// php's zpp type name for an argument in a TypeError ("string", "int", the
-/// class name for objects, …).
-fn given(host: &dyn Host, v: &Value) -> String {
-    match v {
-        Value::Null => "null".into(),
-        // zend_zval_value_name: booleans show their value.
-        Value::Bool(true) => "true".into(),
-        Value::Bool(false) => "false".into(),
-        Value::Int(_) => "int".into(),
-        Value::Float(_) => "float".into(),
-        Value::Str(_) => "string".into(),
-        Value::Array(_) => "array".into(),
-        Value::Closure(_) => "Closure".into(),
-        Value::Object(_) => host
-            .object_class_name(v)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        Value::Resource(_) => "resource".into(),
-        Value::Ref(r) => given(host, &r.borrow()),
     }
 }
 
@@ -85,7 +56,7 @@ pub(crate) fn stream_param(
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
             i + 1,
-            given(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     match host.stream_kind(&v) {
@@ -137,9 +108,9 @@ fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<
     if let Some(Value::Array(opts)) = args.first().map(deref) {
         for (wk, wv) in opts.iter() {
             if let Value::Array(inner) = wv {
-                let w = conv::to_string_bytes(&crate::key_to_value(wk));
+                let w = conv::to_string_bytes(&wk.to_value());
                 for (ok, ov) in inner.iter() {
-                    let o = conv::to_string_bytes(&crate::key_to_value(ok));
+                    let o = conv::to_string_bytes(&ok.to_value());
                     host.stream_context_set_option(&ctx, &w, &o, ov.clone());
                 }
             }
@@ -257,7 +228,7 @@ fn dir_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, 
         other => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($dir_handle) must be of type resource or null, {} given",
-                given(host, &other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -1885,7 +1856,7 @@ fn do_chown(
             let what = if group { "group" } else { "user" };
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 (${what}) must be of type string|int, {} given",
-                given(host, other)
+                crate::argparse::zval_value_name(host, other)
             )));
         }
     };
@@ -2257,104 +2228,77 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "fopen", fn_fopen, 2, Some(4));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "stream_context_get_default",
-        fn_stream_context_get_default,
-        0,
-        Some(1),
+        &[
+            ("fopen", fn_fopen),
+            ("stream_context_get_default", fn_stream_context_get_default),
+            ("mkdir", fn_mkdir),
+            ("link", fn_link),
+            ("linkinfo", fn_linkinfo),
+            ("copy", fn_copy),
+            ("opendir", fn_opendir),
+            ("dir", fn_dir),
+            ("readdir", fn_readdir),
+            ("rewinddir", fn_rewinddir),
+            ("closedir", fn_closedir),
+            ("scandir", fn_scandir),
+            ("glob", fn_glob),
+            ("file", fn_file),
+            ("stat", fn_stat),
+            ("lstat", fn_lstat),
+            ("fstat", fn_fstat),
+            ("fileinode", fn_fileinode),
+            ("fileowner", fn_fileowner),
+            ("filegroup", fn_filegroup),
+            ("fileatime", fn_fileatime),
+            ("filemtime", fn_filemtime),
+            ("filectime", fn_filectime),
+            ("filesize", fn_filesize),
+            ("fileperms", fn_fileperms),
+            ("is_link", fn_is_link),
+            ("is_file", fn_is_file),
+            ("is_dir", fn_is_dir),
+            ("filetype", fn_filetype),
+            ("is_readable", fn_is_readable),
+            ("is_writable", fn_is_writable),
+            ("is_writeable", fn_is_writable),
+            ("is_executable", fn_is_executable),
+            ("flock", fn_flock),
+            ("ftruncate", fn_ftruncate),
+            ("fseek", fn_fseek),
+            ("ftell", fn_ftell),
+            ("rewind", fn_rewind),
+            ("fgets", fn_fgets),
+            ("fread", fn_fread),
+            ("fwrite", fn_fwrite),
+            ("fputs", fn_fwrite),
+            ("fclose", fn_fclose),
+            ("feof", fn_feof),
+            ("fflush", fn_fflush),
+            ("fgetc", fn_fgetc),
+            ("stream_get_contents", fn_stream_get_contents),
+            ("stream_get_meta_data", fn_stream_get_meta_data),
+            ("sys_get_temp_dir", fn_sys_get_temp_dir),
+            ("realpath", fn_realpath),
+            ("tempnam", fn_tempnam),
+            ("fgetcsv", fn_fgetcsv),
+            ("fputcsv", fn_fputcsv),
+            ("tmpfile", fn_tmpfile),
+            ("stream_get_line", fn_stream_get_line),
+            ("chown", fn_chown),
+            ("chgrp", fn_chgrp),
+            ("lchown", fn_lchown),
+            ("lchgrp", fn_lchgrp),
+            ("readfile", fn_readfile),
+            ("fpassthru", fn_fpassthru),
+            ("stream_is_local", fn_stream_is_local),
+            (
+                "stream_resolve_include_path",
+                fn_stream_resolve_include_path,
+            ),
+        ],
     );
-    put(m, "mkdir", fn_mkdir, 1, Some(4));
-    put(m, "link", fn_link, 2, Some(2));
-    put(m, "linkinfo", fn_linkinfo, 1, Some(1));
-    put(m, "copy", fn_copy, 2, Some(3));
-    put(m, "opendir", fn_opendir, 1, Some(2));
-    put(m, "dir", fn_dir, 1, Some(2));
-    put(m, "readdir", fn_readdir, 0, Some(1));
-    put(m, "rewinddir", fn_rewinddir, 0, Some(1));
-    put(m, "closedir", fn_closedir, 0, Some(1));
-    put(m, "__directory_op", fn_directory_op, 2, Some(2));
-    put(m, "scandir", fn_scandir, 1, Some(3));
-    put(m, "glob", fn_glob, 1, Some(2));
-    put(m, "file", fn_file, 1, Some(3));
-    put(m, "stat", fn_stat, 1, Some(1));
-    put(m, "lstat", fn_lstat, 1, Some(1));
-    put(m, "fstat", fn_fstat, 1, Some(1));
-    put(m, "fileinode", fn_fileinode, 1, Some(1));
-    put(m, "fileowner", fn_fileowner, 1, Some(1));
-    put(m, "filegroup", fn_filegroup, 1, Some(1));
-    put(m, "fileatime", fn_fileatime, 1, Some(1));
-    put(m, "filemtime", fn_filemtime, 1, Some(1));
-    put(m, "filectime", fn_filectime, 1, Some(1));
-    put(m, "filesize", fn_filesize, 1, Some(1));
-    put(m, "fileperms", fn_fileperms, 1, Some(1));
-    put(m, "is_link", fn_is_link, 1, Some(1));
-    put(m, "is_file", fn_is_file, 1, Some(1));
-    put(m, "is_dir", fn_is_dir, 1, Some(1));
-    put(m, "filetype", fn_filetype, 1, Some(1));
-    put(m, "is_readable", fn_is_readable, 1, Some(1));
-    put(m, "is_writable", fn_is_writable, 1, Some(1));
-    put(m, "is_writeable", fn_is_writable, 1, Some(1));
-    put(m, "is_executable", fn_is_executable, 1, Some(1));
-    put(m, "flock", fn_flock, 2, Some(3));
-    put(m, "ftruncate", fn_ftruncate, 2, Some(2));
-    put(m, "fseek", fn_fseek, 2, Some(3));
-    put(m, "ftell", fn_ftell, 1, Some(1));
-    put(m, "rewind", fn_rewind, 1, Some(1));
-    put(m, "fgets", fn_fgets, 1, Some(2));
-    put(m, "fread", fn_fread, 2, Some(2));
-    put(m, "fwrite", fn_fwrite, 2, Some(3));
-    put(m, "fputs", fn_fwrite, 2, Some(3));
-    put(m, "fclose", fn_fclose, 1, Some(1));
-    put(m, "feof", fn_feof, 1, Some(1));
-    put(m, "fflush", fn_fflush, 1, Some(1));
-    put(m, "fgetc", fn_fgetc, 1, Some(1));
-    put(m, "stream_get_contents", fn_stream_get_contents, 1, Some(3));
-    put(
-        m,
-        "stream_get_meta_data",
-        fn_stream_get_meta_data,
-        1,
-        Some(1),
-    );
-    put(m, "sys_get_temp_dir", fn_sys_get_temp_dir, 0, Some(0));
-    put(m, "realpath", fn_realpath, 1, Some(1));
-    put(m, "tempnam", fn_tempnam, 2, Some(2));
-    put(m, "fgetcsv", fn_fgetcsv, 1, Some(5));
-    put(m, "fputcsv", fn_fputcsv, 2, Some(6));
-    put(m, "tmpfile", fn_tmpfile, 0, Some(0));
-    put(m, "stream_get_line", fn_stream_get_line, 2, Some(3));
-    put(m, "chown", fn_chown, 2, Some(2));
-    put(m, "chgrp", fn_chgrp, 2, Some(2));
-    put(m, "lchown", fn_lchown, 2, Some(2));
-    put(m, "lchgrp", fn_lchgrp, 2, Some(2));
-    put(m, "readfile", fn_readfile, 1, Some(3));
-    put(m, "fpassthru", fn_fpassthru, 1, Some(1));
-    put(m, "stream_is_local", fn_stream_is_local, 1, Some(1));
-    put(
-        m,
-        "stream_resolve_include_path",
-        fn_stream_resolve_include_path,
-        1,
-        Some(1),
-    );
+    crate::register_helpers(m, &[("__directory_op", fn_directory_op, 2, Some(2))]);
 }

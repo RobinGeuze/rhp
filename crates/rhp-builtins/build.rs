@@ -3,6 +3,16 @@ mod native;
 
 fn main() {
     println!("cargo:rerun-if-changed=build/native.rs");
+    // libz-sys builds its bundled zlib when it finds no system one, and then
+    // tells its dependents where (`cargo:root`). rhp links the zlib php
+    // links (docs/design/libraries.md): refuse the fallback.
+    if let Some(root) = std::env::var_os("DEP_Z_ROOT") {
+        panic!(
+            "libz-sys built its bundled zlib (in {}): install the system zlib \
+             (macOS: the SDK's /usr/lib/libz; Debian/Ubuntu: apt install zlib1g-dev)",
+            std::path::Path::new(&root).display()
+        );
+    }
     let linked = native::link_all();
     native::check_openssl();
     let include = |name: &str| {

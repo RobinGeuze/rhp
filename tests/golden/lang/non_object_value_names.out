@@ -1,0 +1,88 @@
+-- true
+Call to a member function foo() on true
+Call to a member function bar() on true
+Call to a member function spread() on true
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Cannot use bool as array
+Warning: Cannot use bool as array
+Warning: Trying to access array offset on true
+Attempt to modify property "p" on true
+Attempt to modify property "p" on true
+Attempt to assign property "p" on true
+Attempt to modify property "p" on true
+Warning: Attempt to read property "p" on true
+-- false
+Call to a member function foo() on false
+Call to a member function bar() on false
+Call to a member function spread() on false
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Cannot use bool as array
+Warning: Cannot use bool as array
+Warning: Trying to access array offset on false
+Attempt to modify property "p" on false
+Attempt to modify property "p" on false
+Attempt to assign property "p" on false
+Attempt to modify property "p" on false
+Warning: Attempt to read property "p" on false
+-- NULL
+Call to a member function foo() on null
+Call to a member function bar() on null
+Call to a member function spread() on null
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Trying to access array offset on null
+Attempt to modify property "p" on null
+Attempt to modify property "p" on null
+Attempt to assign property "p" on null
+Attempt to modify property "p" on null
+Warning: Attempt to read property "p" on null
+-- 1
+Call to a member function foo() on int
+Call to a member function bar() on int
+Call to a member function spread() on int
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Cannot use int as array
+Warning: Cannot use int as array
+Warning: Trying to access array offset on int
+Attempt to modify property "p" on int
+Attempt to modify property "p" on int
+Attempt to assign property "p" on int
+Attempt to modify property "p" on int
+Warning: Attempt to read property "p" on int
+-- 1.5
+Call to a member function foo() on float
+Call to a member function bar() on float
+Call to a member function spread() on float
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Cannot use float as array
+Warning: Cannot use float as array
+Warning: Trying to access array offset on float
+Attempt to modify property "p" on float
+Attempt to modify property "p" on float
+Attempt to assign property "p" on float
+Attempt to modify property "p" on float
+Warning: Attempt to read property "p" on float
+-- 's'
+Call to a member function foo() on string
+Call to a member function bar() on string
+Call to a member function spread() on string
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, class "s" not found
+Warning: Cannot use string as array
+Warning: Cannot use string as array
+Attempt to modify property "p" on string
+Attempt to modify property "p" on string
+Attempt to assign property "p" on string
+Attempt to modify property "p" on string
+Warning: Attempt to read property "p" on string
+-- NULL
+Call to a member function foo() on resource
+Call to a member function bar() on resource
+Call to a member function spread() on resource
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, first array member is not a valid class name or object
+Warning: Cannot use resource as array
+Warning: Cannot use resource as array
+Warning: Trying to access array offset on resource
+Attempt to modify property "p" on resource
+Attempt to modify property "p" on resource
+Attempt to assign property "p" on resource
+Attempt to modify property "p" on resource
+Warning: Attempt to read property "p" on resource

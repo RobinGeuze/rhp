@@ -23,8 +23,9 @@ indexmap = { workspace = true }
 
 # `hash` extension algorithms. Pure-Rust (RustCrypto et al.) where a faithful
 # 1:1 implementation exists; crc32b and adler32 use zlib (libz-sys). The
-# oddballs with no crate (snefru, haval, php's 4-pass tiger, crc32 (bzip2),
-# crc32c, fnv, joaat, murmur) are hand-rolled in `hash/`.
+# oddballs with no crate (snefru, haval, tiger (php's 4-pass form, so 3-pass
+# shares it), crc32 (bzip2), crc32c, fnv, joaat, murmur) are hand-rolled in
+# `hash/`.
 digest = "0.11"
 md2 = "0.11"
 md4 = "0.11"
@@ -34,7 +35,6 @@ sha2 = "0.11"
 sha3 = "0.12"
 ripemd = "0.2"
 whirlpool = "0.11"
-tiger = "0.3"
 gost94 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
@@ -50,8 +50,8 @@ rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt"
 rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
-# CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
-# miniz_oxide so compressed bytes are identical to php's (which links zlib).
+# CRC-32. Backed by the system C zlib (build.rs refuses libz-sys's bundled
+# copy) rather than miniz_oxide so compressed bytes are identical to php's.
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
 # sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive; also

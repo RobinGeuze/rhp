@@ -11,13 +11,13 @@
 //! `zend_sort`), because both the result for inconsistent comparators and the
 //! sequence of callback invocations are observable.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::argparse::value_name;
-use crate::{Builtin, Host, Thrown};
+use crate::argparse::zval_value_name;
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort
@@ -220,13 +220,6 @@ pub(crate) fn zend_sort<T>(a: &mut [T], cmp: &mut CmpFn<T>) {
 
 type Elem = (ArrayKey, Value);
 
-fn key_value(k: &ArrayKey) -> Value {
-    match k {
-        ArrayKey::Int(n) => Value::Int(*n),
-        ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
-}
-
 fn normalize(n: i64) -> i32 {
     n.signum() as i32
 }
@@ -271,7 +264,7 @@ impl Ctx<'_> {
 
     fn key_cmp(&mut self, x: &Elem, y: &Elem) -> i32 {
         let cb = self.key_cb.clone().expect("key callback");
-        self.user_sort_cmp(&cb, key_value(&x.0), key_value(&y.0))
+        self.user_sort_cmp(&cb, x.0.to_value(), y.0.to_value())
     }
 
     /// The data comparator: the user callback, or php's
@@ -328,7 +321,7 @@ fn parse_args(
                     ),
                     other => format!(
                         "no array or string given ({} given)",
-                        value_name(host, other)
+                        zval_value_name(host, other)
                     ),
                 }
             )));
@@ -344,7 +337,7 @@ fn parse_args(
                     "{func}(): Argument #{}{} must be of type array, {} given",
                     i + 1,
                     if i == 0 { " ($array)" } else { "" },
-                    value_name(host, &other)
+                    zval_value_name(host, &other)
                 )));
             }
         }
@@ -729,28 +722,22 @@ fn fn_array_uintersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     assoc_by_key(host, args, "array_uintersect_assoc", true)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: None,
-            },
-        );
-    };
-    put("array_udiff", fn_array_udiff, 2);
-    put("array_uintersect", fn_array_uintersect, 2);
-    put("array_diff_ukey", fn_array_diff_ukey, 2);
-    put("array_intersect_ukey", fn_array_intersect_ukey, 2);
-    put("array_diff_uassoc", fn_array_diff_uassoc, 2);
-    put("array_intersect_uassoc", fn_array_intersect_uassoc, 2);
-    put("array_udiff_uassoc", fn_array_udiff_uassoc, 3);
-    put("array_uintersect_uassoc", fn_array_uintersect_uassoc, 3);
-    put("array_udiff_assoc", fn_array_udiff_assoc, 2);
-    put("array_uintersect_assoc", fn_array_uintersect_assoc, 2);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("array_udiff", fn_array_udiff),
+            ("array_uintersect", fn_array_uintersect),
+            ("array_diff_ukey", fn_array_diff_ukey),
+            ("array_intersect_ukey", fn_array_intersect_ukey),
+            ("array_diff_uassoc", fn_array_diff_uassoc),
+            ("array_intersect_uassoc", fn_array_intersect_uassoc),
+            ("array_udiff_uassoc", fn_array_udiff_uassoc),
+            ("array_uintersect_uassoc", fn_array_uintersect_uassoc),
+            ("array_udiff_assoc", fn_array_udiff_assoc),
+            ("array_uintersect_assoc", fn_array_uintersect_assoc),
+        ],
+    );
 }
 
 #[cfg(test)]

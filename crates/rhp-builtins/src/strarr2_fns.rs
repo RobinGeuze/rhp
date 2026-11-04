@@ -7,28 +7,15 @@
 //! binary (see `strarr2_fns/tests.rs` — expected values hardcoded from
 //! `php -r '...'` output).
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::argparse::array_param;
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 /// The byte form of an array key (int keys render as their decimal string).
 fn key_bytes(k: &ArrayKey) -> Vec<u8> {
@@ -59,36 +46,12 @@ fn charmask(chars: &[u8]) -> [bool; 256] {
     mask
 }
 
-fn want_array(v: &Value, func: &str, argn: usize) -> Result<PhpArray, Thrown> {
-    match deref(v) {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #{argn} must be of type array, {} given",
-            type_name_lower(&other)
-        ))),
-    }
-}
-
-fn type_name_lower(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => type_name_lower(&r.borrow()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // str_split
 // ---------------------------------------------------------------------------
 
 fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let n = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     if n < 1 {
         return Err(Thrown::error(
@@ -109,14 +72,15 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // strtr
 // ---------------------------------------------------------------------------
 
-fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = conv::to_string_bytes(&args[0]);
     if args.len() == 2 {
         // Pairs form: longest matching key at each position wins.
         let Value::Array(pairs) = deref(&args[1]) else {
-            return Err(Thrown::type_error(
-                "strtr(): Argument #2 ($from) must be of type array, string given",
-            ));
+            return Err(Thrown::type_error(format!(
+                "strtr(): Argument #2 ($from) must be of type array, {} given",
+                crate::argparse::zval_value_name(host, &args[1])
+            )));
         };
         let table: Vec<(Vec<u8>, Vec<u8>)> = pairs
             .iter()
@@ -126,7 +90,7 @@ fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if kb.is_empty() {
                     None
                 } else {
-                    Some((kb, bytes_of(v)))
+                    Some((kb, conv::to_string_bytes(v)))
                 }
             })
             .collect();
@@ -156,8 +120,8 @@ fn fn_strtr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Ok(Value::str(out))
     } else {
         // from/to form: byte-for-byte over the common prefix length.
-        let from = bytes_of(&args[1]);
-        let to = bytes_of(&args[2]);
+        let from = conv::to_string_bytes(&args[1]);
+        let to = conv::to_string_bytes(&args[2]);
         let n = from.len().min(to.len());
         let mut map: [Option<u8>; 256] = [None; 256];
         for i in 0..n {
@@ -205,14 +169,14 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
         for (i, (k, v)) in subj.iter().enumerate() {
-            let sbytes = bytes_of(v);
+            let sbytes = conv::to_string_bytes(v);
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
                 Value::Array(ra) => ra
                     .get_index(i)
-                    .map(|(_, rv)| bytes_of(rv))
+                    .map(|(_, rv)| conv::to_string_bytes(rv))
                     .unwrap_or_default(),
-                other => bytes_of(other),
+                other => conv::to_string_bytes(other),
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
             let st = match &start_arg {
@@ -256,9 +220,9 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             Value::Array(ra) => ra
                 .iter()
                 .next()
-                .map(|(_, rv)| bytes_of(rv))
+                .map(|(_, rv)| conv::to_string_bytes(rv))
                 .unwrap_or_default(),
-            other => bytes_of(other),
+            other => conv::to_string_bytes(other),
         };
         let st = conv::to_int(&start_arg);
         let ln = length_arg.as_ref().map(conv::to_int);
@@ -271,8 +235,8 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // ---------------------------------------------------------------------------
 
 fn fn_levenshtein(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = bytes_of(&args[0]);
-    let b = bytes_of(&args[1]);
+    let a = conv::to_string_bytes(&args[0]);
+    let b = conv::to_string_bytes(&args[1]);
     let cost_ins = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     let cost_rep = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
     let cost_del = args.get(4).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
@@ -340,8 +304,8 @@ fn similar_char(t1: &[u8], t2: &[u8]) -> usize {
 }
 
 fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = bytes_of(&args[0]);
-    let b = bytes_of(&args[1]);
+    let a = conv::to_string_bytes(&args[0]);
+    let b = conv::to_string_bytes(&args[1]);
     let total = a.len() + b.len();
     let sim = if total == 0 { 0 } else { similar_char(&a, &b) };
     // `&$percent`, written when passed.
@@ -361,7 +325,7 @@ fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let format = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if !matches!(format, 0..=2) {
         return Err(Thrown::error(
@@ -369,7 +333,7 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "str_word_count(): Argument #2 ($format) must be a valid format value",
         ));
     }
-    let extra = args.get(2).map(bytes_of);
+    let extra = args.get(2).map(conv::to_string_bytes);
     let extra_mask = extra.map(|e| charmask(&e)).unwrap_or([false; 256]);
     let is_word =
         |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
@@ -408,7 +372,7 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 // ---------------------------------------------------------------------------
 
 fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let chunklen = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(76);
     if chunklen < 1 {
         return Err(Thrown::error(
@@ -417,7 +381,7 @@ fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let end = match args.get(2) {
-        Some(v) => bytes_of(v),
+        Some(v) => conv::to_string_bytes(v),
         None => b"\r\n".to_vec(),
     };
     // php appends `end` once for an empty subject.
@@ -437,11 +401,11 @@ fn fn_chunk_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // array_diff_key / array_intersect_key
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_diff_key", 1)?;
+fn fn_array_diff_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_diff_key")?;
     let mut others = Vec::new();
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_diff_key", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_diff_key")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -452,11 +416,11 @@ fn fn_array_diff_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Array(out))
 }
 
-fn fn_array_intersect_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = want_array(&args[0], "array_intersect_key", 1)?;
+fn fn_array_intersect_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, "array_intersect_key")?;
     let mut others = Vec::new();
-    for (i, arg) in args[1..].iter().enumerate() {
-        others.push(want_array(arg, "array_intersect_key", i + 2)?);
+    for i in 1..args.len() {
+        others.push(array_param(host, args, i, "array_intersect_key")?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
@@ -471,10 +435,10 @@ fn fn_array_intersect_key(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 // array_replace
 // ---------------------------------------------------------------------------
 
-fn fn_array_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = want_array(&args[0], "array_replace", 1)?;
-    for (i, arg) in args[1..].iter().enumerate() {
-        let a = want_array(arg, "array_replace", i + 2)?;
+fn fn_array_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = array_param(host, args, 0, "array_replace")?;
+    for i in 1..args.len() {
+        let a = array_param(host, args, i, "array_replace")?;
         for (k, v) in a.iter() {
             out.insert(k.clone(), v.clone());
         }
@@ -521,10 +485,10 @@ fn merge_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
     }
 }
 
-fn fn_array_merge_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_merge_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
-    for (i, arg) in args.iter().enumerate() {
-        let a = want_array(arg, "array_merge_recursive", i + 1)?;
+    for i in 0..args.len() {
+        let a = array_param(host, args, i, "array_merge_recursive")?;
         merge_recursive_into(&mut out, &a);
     }
     Ok(Value::Array(out))
@@ -534,40 +498,22 @@ fn fn_array_merge_recursive(_: &mut dyn Host, args: &[Value]) -> Result<Value, T
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "str_split", fn_str_split, 1, Some(2));
-    put(m, "strtr", fn_strtr, 2, Some(3));
-    put(m, "substr_replace", fn_substr_replace, 3, Some(4));
-    put(m, "levenshtein", fn_levenshtein, 2, Some(5));
-    put(m, "similar_text", fn_similar_text, 2, Some(3));
-    put(m, "str_word_count", fn_str_word_count, 1, Some(3));
-    put(m, "chunk_split", fn_chunk_split, 1, Some(3));
-    put(m, "array_diff_key", fn_array_diff_key, 1, None);
-    put(m, "array_intersect_key", fn_array_intersect_key, 1, None);
-    put(m, "array_replace", fn_array_replace, 1, None);
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "array_merge_recursive",
-        fn_array_merge_recursive,
-        0,
-        None,
+        &[
+            ("str_split", fn_str_split),
+            ("strtr", fn_strtr),
+            ("substr_replace", fn_substr_replace),
+            ("levenshtein", fn_levenshtein),
+            ("similar_text", fn_similar_text),
+            ("str_word_count", fn_str_word_count),
+            ("chunk_split", fn_chunk_split),
+            ("array_diff_key", fn_array_diff_key),
+            ("array_intersect_key", fn_array_intersect_key),
+            ("array_replace", fn_array_replace),
+            ("array_merge_recursive", fn_array_merge_recursive),
+        ],
     );
 }
 

@@ -15,87 +15,46 @@ use super::backend::{
 use super::{
     arg, bio_bytes, check_path, cstring, int_arg, key_arg, key_object, mem_bio, mem_buf,
     openssl_free, opt_str_arg, set_ref, store_errors, str_arg, sys, type_error, value_error, Own,
-    Put, PROPQ,
+    PROPQ,
 };
 use crate::ext::zpp::deref;
 use crate::{deprecated_fn, warn, Host, Thrown};
 
-pub(super) fn register(put: &mut Put) {
-    put("openssl_pkey_new", super::wrapped!(fn_pkey_new), 0, 1);
-    put(
-        "openssl_pkey_export_to_file",
-        super::wrapped!(fn_export_to_file),
-        2,
-        4,
+pub(super) fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("openssl_pkey_new", super::wrapped!(fn_pkey_new)),
+            (
+                "openssl_pkey_export_to_file",
+                super::wrapped!(fn_export_to_file),
+            ),
+            ("openssl_pkey_export", super::wrapped!(fn_export)),
+            ("openssl_pkey_get_public", super::wrapped!(fn_get_public)),
+            ("openssl_get_publickey", super::wrapped!(fn_get_public)),
+            ("openssl_pkey_free", super::wrapped!(fn_pkey_free)),
+            ("openssl_free_key", super::wrapped!(fn_free_key)),
+            ("openssl_pkey_get_private", super::wrapped!(fn_get_private)),
+            ("openssl_get_privatekey", super::wrapped!(fn_get_private)),
+            ("openssl_pkey_get_details", super::wrapped!(fn_get_details)),
+            ("openssl_dh_compute_key", super::wrapped!(fn_dh_compute_key)),
+            ("openssl_pkey_derive", super::wrapped!(fn_pkey_derive)),
+            (
+                "openssl_private_encrypt",
+                super::wrapped!(fn_private_encrypt),
+            ),
+            (
+                "openssl_private_decrypt",
+                super::wrapped!(fn_private_decrypt),
+            ),
+            ("openssl_public_encrypt", super::wrapped!(fn_public_encrypt)),
+            ("openssl_public_decrypt", super::wrapped!(fn_public_decrypt)),
+            ("openssl_sign", super::wrapped!(fn_sign)),
+            ("openssl_verify", super::wrapped!(fn_verify)),
+            ("openssl_seal", super::wrapped!(fn_seal)),
+            ("openssl_open", super::wrapped!(fn_open)),
+        ],
     );
-    put("openssl_pkey_export", super::wrapped!(fn_export), 2, 4);
-    put(
-        "openssl_pkey_get_public",
-        super::wrapped!(fn_get_public),
-        1,
-        1,
-    );
-    put(
-        "openssl_get_publickey",
-        super::wrapped!(fn_get_public),
-        1,
-        1,
-    );
-    put("openssl_pkey_free", super::wrapped!(fn_pkey_free), 1, 1);
-    put("openssl_free_key", super::wrapped!(fn_free_key), 1, 1);
-    put(
-        "openssl_pkey_get_private",
-        super::wrapped!(fn_get_private),
-        1,
-        2,
-    );
-    put(
-        "openssl_get_privatekey",
-        super::wrapped!(fn_get_private),
-        1,
-        2,
-    );
-    put(
-        "openssl_pkey_get_details",
-        super::wrapped!(fn_get_details),
-        1,
-        1,
-    );
-    put(
-        "openssl_dh_compute_key",
-        super::wrapped!(fn_dh_compute_key),
-        2,
-        2,
-    );
-    put("openssl_pkey_derive", super::wrapped!(fn_pkey_derive), 2, 3);
-    put(
-        "openssl_private_encrypt",
-        super::wrapped!(fn_private_encrypt),
-        3,
-        4,
-    );
-    put(
-        "openssl_private_decrypt",
-        super::wrapped!(fn_private_decrypt),
-        3,
-        5,
-    );
-    put(
-        "openssl_public_encrypt",
-        super::wrapped!(fn_public_encrypt),
-        3,
-        5,
-    );
-    put(
-        "openssl_public_decrypt",
-        super::wrapped!(fn_public_decrypt),
-        3,
-        4,
-    );
-    put("openssl_sign", super::wrapped!(fn_sign), 3, 5);
-    put("openssl_verify", super::wrapped!(fn_verify), 3, 5);
-    put("openssl_seal", super::wrapped!(fn_seal), 5, 6);
-    put("openssl_open", super::wrapped!(fn_open), 5, 6);
 }
 
 /// A `p` (path) parameter: a string without NUL bytes.

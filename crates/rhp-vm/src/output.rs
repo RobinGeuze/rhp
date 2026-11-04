@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rhp_builtins::{Host, ObCall};
+use rhp_builtins::{Host, ObCall, E_DEPRECATED, E_NOTICE, E_WARNING};
 use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
 use crate::Vm;
@@ -57,10 +57,6 @@ const O_DISABLED: u32 = 0x02;
 const O_WRITTEN: u32 = 0x04;
 const O_SENT: u32 = 0x08;
 const O_ACTIVATED: u32 = 0x10_0000;
-
-const E_WARNING: i64 = 2;
-const E_NOTICE: i64 = 8;
-const E_DEPRECATED: i64 = 8192;
 
 const DEFAULT_HANDLER_NAME: &[u8] = b"default output handler";
 
@@ -204,7 +200,7 @@ impl Vm {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let handler = ini(self, b"output_handler");
         // OnUpdateLong: "On" etc. read as 0 (atol), so php ignores them.
-        let buffering = rhp_builtins::php_fns::atol(&ini(self, b"output_buffering"));
+        let buffering = rhp_builtins::c_atol(&ini(self, b"output_buffering"));
         if !handler.is_empty() {
             self.output.starting = true;
             // No autoloader is registered yet, so resolving cannot throw.

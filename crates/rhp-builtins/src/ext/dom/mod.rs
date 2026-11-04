@@ -25,7 +25,6 @@ mod xpath;
 pub(crate) use document::valid_file_path;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ptr;
 use std::rc::Rc;
 
@@ -34,7 +33,7 @@ use rhp_values::{conv, ObjectHandle, PhpArray, Value};
 use crate::ext::libxml::node::{self as lxn, NodeObject};
 use crate::ext::libxml::sys::{self, XmlNode};
 use crate::object::{self, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// php's `dom_object`, as an object's payload.
 pub(crate) struct DomObject {
@@ -458,12 +457,7 @@ fn classmap_lookup(document: *mut lxn::RefObj, base: &str) -> Option<Vec<u8>> {
 
 // ---- arguments ----
 
-pub(crate) fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+pub(crate) use rhp_semantics::deref;
 
 pub(crate) fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).map(deref).unwrap_or(Value::Null)
@@ -867,23 +861,16 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     },
 ];
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min, max) in [
-        ("__dom", fn_dom as crate::NativeFn, 2, None),
-        ("__dom_prop", fn_dom_prop, 3, Some(4)),
-        ("__dom_iter", fn_dom_iter, 3, Some(3)),
-        ("dom_import_simplexml", fn_dom_import_simplexml, 1, Some(1)),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("dom_import_simplexml", fn_dom_import_simplexml)]);
+    crate::register_helpers(
+        m,
+        &[
+            ("__dom", fn_dom, 2, None),
+            ("__dom_prop", fn_dom_prop, 3, Some(4)),
+            ("__dom_iter", fn_dom_iter, 3, Some(3)),
+        ],
+    );
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

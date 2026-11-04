@@ -7,17 +7,17 @@
 //! its payload ([`Reader`]).
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
 use crate::ext::libxml::sys::{self, xmlTextReader};
 use crate::object::{self, ClassHandlers, CloneObj, ObjectHandlers, PropPurpose};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// php's `xmlreader_object`.
 pub(crate) struct Reader {
@@ -81,13 +81,6 @@ fn intern(v: &Value) -> Option<Rc<Reader>> {
     let r = Rc::new(Reader::new());
     object::set_payload(&h, r.clone());
     Some(r)
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
 }
 
 fn arg(args: &[Value], i: usize) -> Value {
@@ -813,7 +806,7 @@ fn m_from_stream(cx: &mut Cx, _: &Rc<Reader>, _: &Value, args: &[Value]) -> Resu
             return Err(Thrown::type_error(format!(
                 "{}(): Argument #1 ($stream) must be of type resource, {} given",
                 cx.fname,
-                crate::argparse::value_name(cx.host, other)
+                crate::argparse::zval_value_name(cx.host, other)
             )));
         }
     }
@@ -1236,21 +1229,14 @@ fn fn_xr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     m(&mut cx, &r, &this, &args[2.min(args.len())..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    for (name, func, min, max) in [
-        ("__xr", fn_xr as crate::NativeFn, 2, None),
-        ("__xr_prop", fn_xr_prop, 3, Some(4)),
-    ] {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(
+        m,
+        &[
+            ("__xr", fn_xr, 2, None),
+            ("__xr_prop", fn_xr_prop, 3, Some(4)),
+        ],
+    );
 }
 
 pub const PRELUDE_PHP: &str = r#"

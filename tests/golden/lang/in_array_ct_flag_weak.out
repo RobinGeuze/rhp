@@ -1,0 +1,9 @@
+Warning: unexpected NAN value was coerced to bool
+bool(true)
+bool(true)
+Deprecated: in_array(): Passing null to parameter #3 ($strict) of type bool is deprecated
+bool(true)
+Warning: unexpected NAN value was coerced to bool
+bool(true)
+Deprecated: in_array(): Passing null to parameter #3 ($strict) of type bool is deprecated
+bool(false)

@@ -15,32 +15,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::proc_fns::zpp_long;
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-fn value_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => value_name(&r.borrow()),
-    }
-}
+use crate::{Host, Thrown};
 
 #[derive(Default)]
 struct PcntlState {
@@ -444,7 +423,7 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         return Err(Thrown::type_error(format!(
             "pcntl_signal(): Argument #2 ($handler) must be of type callable|int, {} given",
-            value_name(&handler)
+            crate::argparse::zval_value_name(host, &handler)
         )));
     }
     let queue_handler = signal_handler
@@ -631,15 +610,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "pcntl_sigprocmask(): Argument #1 ($mode) must be one of SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK",
         ));
     }
-    let sigs = match deref(&args[1]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "pcntl_sigprocmask(): Argument #2 ($signals) must be of type array, {} given",
-                value_name(&other)
-            )))
-        }
-    };
+    let sigs = crate::argparse::array_param(host, args, 1, "pcntl_sigprocmask")?;
     if sigs.is_empty() && how != libc::SIG_SETMASK as i64 {
         return Err(Thrown::error(
             "ValueError",
@@ -657,7 +628,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         let Some(n) = crate::ext::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
-                value_name(&v)
+                crate::argparse::zval_value_name(host, &v)
             )));
         };
         if !(1..NUM_SIGNALS).contains(&n) {
@@ -802,47 +773,29 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     v
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "pcntl_async_signals", fn_async_signals, 0, Some(1));
-    put(m, "pcntl_signal", fn_signal, 2, Some(3));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "pcntl_signal_get_handler",
-        fn_signal_get_handler,
-        1,
-        Some(1),
+        &[
+            ("pcntl_async_signals", fn_async_signals),
+            ("pcntl_signal", fn_signal),
+            ("pcntl_signal_get_handler", fn_signal_get_handler),
+            ("pcntl_signal_dispatch", fn_signal_dispatch),
+            ("pcntl_alarm", fn_alarm),
+            ("pcntl_get_last_error", fn_get_last_error),
+            ("pcntl_errno", fn_get_last_error),
+            ("pcntl_strerror", fn_strerror),
+            ("pcntl_fork", fn_fork),
+            ("pcntl_waitpid", fn_waitpid),
+            ("pcntl_wait", fn_wait),
+            ("pcntl_sigprocmask", fn_sigprocmask),
+            ("pcntl_wifexited", fn_wifexited),
+            ("pcntl_wifstopped", fn_wifstopped),
+            ("pcntl_wifsignaled", fn_wifsignaled),
+            ("pcntl_wifcontinued", fn_wifcontinued),
+            ("pcntl_wexitstatus", fn_wexitstatus),
+            ("pcntl_wtermsig", fn_wtermsig),
+            ("pcntl_wstopsig", fn_wstopsig),
+        ],
     );
-    put(m, "pcntl_signal_dispatch", fn_signal_dispatch, 0, Some(0));
-    put(m, "pcntl_alarm", fn_alarm, 1, Some(1));
-    put(m, "pcntl_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_errno", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_strerror", fn_strerror, 1, Some(1));
-    put(m, "pcntl_fork", fn_fork, 0, Some(0));
-    put(m, "pcntl_waitpid", fn_waitpid, 2, Some(4));
-    put(m, "pcntl_wait", fn_wait, 1, Some(3));
-    put(m, "pcntl_sigprocmask", fn_sigprocmask, 2, Some(3));
-    put(m, "pcntl_wifexited", fn_wifexited, 1, Some(1));
-    put(m, "pcntl_wifstopped", fn_wifstopped, 1, Some(1));
-    put(m, "pcntl_wifsignaled", fn_wifsignaled, 1, Some(1));
-    put(m, "pcntl_wifcontinued", fn_wifcontinued, 1, Some(1));
-    put(m, "pcntl_wexitstatus", fn_wexitstatus, 1, Some(1));
-    put(m, "pcntl_wtermsig", fn_wtermsig, 1, Some(1));
-    put(m, "pcntl_wstopsig", fn_wstopsig, 1, Some(1));
 }

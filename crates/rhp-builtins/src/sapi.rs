@@ -25,7 +25,7 @@ use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
 use crate::argparse::{bool_param, int_param, str_or_null_param, str_param};
-use crate::{Builtin, Host};
+use crate::Host;
 
 pub use crate::query_fns::{post_form_vars, treat_data, url_decode, TreatData};
 
@@ -897,7 +897,7 @@ fn setcookie_common(
         Some(Value::Object(_) | Value::Resource(_) | Value::Closure(_)) => {
             return Err(Thrown::type_error(format!(
                 "{func}(): Argument #3 ($expires_or_options) must be of type array|int, {} given",
-                crate::argparse::value_name(host, &deref(&args[2]))
+                crate::argparse::zval_value_name(host, &deref(&args[2]))
             )));
         }
         Some(_) => {
@@ -954,7 +954,7 @@ fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Val
 fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = crate::runtime_fns::ini_value(b"ignore_user_abort")
         .flatten()
-        .map(|v| i64::from(crate::c_atol(&v) != 0 || v.eq_ignore_ascii_case(b"on")))
+        .map(|v| i64::from(crate::ini_parse_bool(&v)))
         .unwrap_or(0);
     match args.first().map(deref) {
         None | Some(Value::Null) => {}
@@ -1068,36 +1068,25 @@ pub fn auth_server_vars(auth: &[u8]) -> Vec<(&'static [u8], Vec<u8>)> {
     Vec::new()
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("header", fn_header, 1, 3);
-    put("header_remove", fn_header_remove, 0, 1);
-    put("headers_sent", fn_headers_sent, 0, 2);
-    put("headers_list", fn_headers_list, 0, 0);
-    put("http_response_code", fn_http_response_code, 0, 1);
-    put("setcookie", fn_setcookie, 1, 7);
-    put("setrawcookie", fn_setrawcookie, 1, 7);
-    put(
-        "header_register_callback",
-        fn_header_register_callback,
-        1,
-        1,
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("header", fn_header),
+            ("header_remove", fn_header_remove),
+            ("headers_sent", fn_headers_sent),
+            ("headers_list", fn_headers_list),
+            ("http_response_code", fn_http_response_code),
+            ("setcookie", fn_setcookie),
+            ("setrawcookie", fn_setrawcookie),
+            ("header_register_callback", fn_header_register_callback),
+            ("getallheaders", fn_apache_request_headers),
+            ("apache_request_headers", fn_apache_request_headers),
+            ("apache_response_headers", fn_apache_response_headers),
+            ("apache_child_terminate", fn_apache_child_terminate),
+            ("ignore_user_abort", fn_ignore_user_abort),
+            ("connection_status", fn_connection_status),
+            ("connection_aborted", fn_connection_status),
+        ],
     );
-    put("getallheaders", fn_apache_request_headers, 0, 0);
-    put("apache_request_headers", fn_apache_request_headers, 0, 0);
-    put("apache_response_headers", fn_apache_response_headers, 0, 0);
-    put("apache_child_terminate", fn_apache_child_terminate, 0, 0);
-    put("ignore_user_abort", fn_ignore_user_abort, 0, 1);
-    put("connection_status", fn_connection_status, 0, 0);
-    put("connection_aborted", fn_connection_status, 0, 0);
 }

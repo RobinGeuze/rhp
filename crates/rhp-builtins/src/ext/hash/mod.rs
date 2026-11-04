@@ -7,15 +7,14 @@
 //! `php` binary over a broad generated corpus.
 //!
 //! Where a faithful pure-Rust crate exists we use it (RustCrypto's `md2`, `md4`,
-//! `md-5`, `sha1`, `sha2`, `sha3`, `ripemd`, `whirlpool`, `tiger`, `gost94`;
+//! `md-5`, `sha1`, `sha2`, `sha3`, `ripemd`, `whirlpool`, `gost94`;
 //! `xxhash-rust`); crc32b and adler32 go through the linked zlib. The oddballs
 //! with no 1:1 implementation are hand-rolled: the crc32/crc32c, FNV, joaat and
-//! murmur variants below, and the table-heavy `snefru`, `haval` and 4-pass
-//! `tiger` in their own files.
-
-use std::collections::HashMap;
+//! murmur variants below, and the table-heavy `snefru`, `haval` and `tiger`
+//! (3- and 4-pass, one N-pass implementation) in their own files.
 
 use digest::Digest;
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 mod haval;
@@ -24,24 +23,13 @@ mod snefru;
 mod tiger;
 
 use crate::ext::zlib::zraw as zlib;
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 use primitives::to_hex;
 pub(crate) use primitives::{base64_decode, base64_encode};
 
 // ---------------------------------------------------------------------------
 // value helpers
 // ---------------------------------------------------------------------------
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 fn as_bool(v: Option<&Value>) -> bool {
     v.map(|v| conv::to_bool(&deref(v))).unwrap_or(false)
@@ -83,12 +71,12 @@ pub(crate) fn digest(algo: &[u8], data: &[u8]) -> Option<Vec<u8>> {
         b"ripemd256" => dg::<ripemd::Ripemd256>(data),
         b"ripemd320" => dg::<ripemd::Ripemd320>(data),
         b"whirlpool" => dg::<whirlpool::Whirlpool>(data),
-        b"tiger128,3" => tiger3(data, 16),
-        b"tiger160,3" => tiger3(data, 20),
-        b"tiger192,3" => tiger3(data, 24),
-        b"tiger128,4" => tiger::tiger4(data, 16),
-        b"tiger160,4" => tiger::tiger4(data, 20),
-        b"tiger192,4" => tiger::tiger4(data, 24),
+        b"tiger128,3" => tiger::tiger(data, 3, 16),
+        b"tiger160,3" => tiger::tiger(data, 3, 20),
+        b"tiger192,3" => tiger::tiger(data, 3, 24),
+        b"tiger128,4" => tiger::tiger(data, 4, 16),
+        b"tiger160,4" => tiger::tiger(data, 4, 20),
+        b"tiger192,4" => tiger::tiger(data, 4, 24),
         b"snefru" | b"snefru256" => snefru::snefru256(data).to_vec(),
         b"gost" => dg::<gost94::Gost94Test>(data),
         b"gost-crypto" => dg::<gost94::Gost94CryptoPro>(data),
@@ -288,16 +276,6 @@ fn parse_haval(algo: &[u8]) -> Option<(usize, usize)> {
     } else {
         None
     }
-}
-
-// ---------------------------------------------------------------------------
-// tiger (3-pass via the `tiger` crate, truncated to width)
-// ---------------------------------------------------------------------------
-
-fn tiger3(data: &[u8], width: usize) -> Vec<u8> {
-    // `::tiger` = the external crate (the local `tiger` module shadows the name).
-    let full = dg::<::tiger::Tiger>(data);
-    full[..width].to_vec()
 }
 
 // ---------------------------------------------------------------------------
@@ -861,8 +839,8 @@ fn invalid_algo(func: &str) -> Thrown {
 }
 
 fn fn_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     if digest(&algo, b"").is_none() {
         return Err(invalid_algo("hash"));
@@ -873,8 +851,8 @@ fn fn_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let path = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let path = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     if digest(&algo, b"").is_none() {
         return Err(invalid_algo("hash_file"));
@@ -891,7 +869,7 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `__hash_init_options($algo, $options)`: hash_init's reading of
 /// `$options`, as `[seed]`, `['secret' => k]` or null.
 fn fn_hash_init_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
     Ok(match hash_options(host, "hash_init", &algo, args.get(1))? {
         Some(Init::Seed(n)) => Value::Int(n),
         Some(Init::Secret(k)) => Value::str(k),
@@ -902,8 +880,8 @@ fn fn_hash_init_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 /// `__hash_digest($algo, $data, $binary, $init)`: a HashContext's digest,
 /// `$init` from `__hash_init_options`.
 fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
     let binary = as_bool(args.get(2));
     let init = match args.get(3).map(crate::deref) {
         Some(Value::Int(n)) => Some(Init::Seed(n)),
@@ -915,7 +893,7 @@ fn fn_hash_digest(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_of(&args[0]);
+    let path = conv::to_string_bytes(&args[0]);
     let binary = as_bool(args.get(1));
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
@@ -926,7 +904,7 @@ fn fn_md5_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = bytes_of(&args[0]);
+    let path = conv::to_string_bytes(&args[0]);
     let binary = as_bool(args.get(1));
     let Some(data) = host.stream_get_contents(&path) else {
         return Ok(Value::Bool(false));
@@ -937,9 +915,9 @@ fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let data = bytes_of(&args[1]);
-    let key = bytes_of(&args[2]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let data = conv::to_string_bytes(&args[1]);
+    let key = conv::to_string_bytes(&args[2]);
     let binary = as_bool(args.get(3));
     // hash_hmac rejects non-crypto algorithms (crc32/adler/fnv/…)
     match hmac(&algo, &key, &data) {
@@ -954,9 +932,9 @@ fn fn_hash_hmac(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `$options` (arg 6) goes to the hash's init, and only the seeded
 /// non-cryptographic algorithms read it, which pbkdf2 refuses.
 fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let algo = bytes_of(&args[0]).to_ascii_lowercase();
-    let pass = bytes_of(&args[1]);
-    let salt = bytes_of(&args[2]);
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let pass = conv::to_string_bytes(&args[1]);
+    let salt = conv::to_string_bytes(&args[2]);
     let iterations = as_int(&args[3]);
     let length = args.get(4).map(as_int).unwrap_or(0);
     let binary = as_bool(args.get(5));
@@ -1012,8 +990,8 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_hash_equals(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let known = bytes_of(&args[0]);
-    let user = bytes_of(&args[1]);
+    let known = conv::to_string_bytes(&args[0]);
+    let user = conv::to_string_bytes(&args[1]);
     // constant-time compare (length first, then byte diff accumulation)
     let eq = known.len() == user.len()
         && known
@@ -1156,37 +1134,29 @@ const HMAC_ALGOS: &[&str] = &[
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    // md5/sha1/crc32/base64/bin2hex/hex2bin — the hand-rolled core primitives.
+pub fn register(m: &mut crate::Registry) {
     primitives::register(m);
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "hash", fn_hash, 2, Some(4));
-    put(m, "hash_file", fn_hash_file, 2, Some(4));
-    put(m, "md5_file", fn_md5_file, 1, Some(2));
-    put(m, "sha1_file", fn_sha1_file, 1, Some(2));
-    put(m, "hash_hmac", fn_hash_hmac, 3, Some(4));
-    put(m, "hash_pbkdf2", fn_hash_pbkdf2, 4, Some(7));
-    put(m, "__hash_init_options", fn_hash_init_options, 2, Some(2));
-    put(m, "__hash_digest", fn_hash_digest, 4, Some(4));
-    put(m, "hash_equals", fn_hash_equals, 2, Some(2));
-    put(m, "hash_algos", fn_hash_algos, 0, Some(0));
-    put(m, "hash_hmac_algos", fn_hash_hmac_algos, 0, Some(0));
+    crate::register(
+        m,
+        &[
+            ("hash", fn_hash),
+            ("hash_file", fn_hash_file),
+            ("md5_file", fn_md5_file),
+            ("sha1_file", fn_sha1_file),
+            ("hash_hmac", fn_hash_hmac),
+            ("hash_pbkdf2", fn_hash_pbkdf2),
+            ("hash_equals", fn_hash_equals),
+            ("hash_algos", fn_hash_algos),
+            ("hash_hmac_algos", fn_hash_hmac_algos),
+        ],
+    );
+    crate::register_helpers(
+        m,
+        &[
+            ("__hash_init_options", fn_hash_init_options, 2, Some(2)),
+            ("__hash_digest", fn_hash_digest, 4, Some(4)),
+        ],
+    );
 }
 
 /// `HASH_HMAC`.

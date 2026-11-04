@@ -78,6 +78,11 @@ thread_local! {
     static LAST_OS_ERR: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
 }
 
+/// The calling thread's `errno`, read now.
+pub(crate) fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
 /// Record the errno of a failed syscall (`errno` read now).
 pub fn note_errno() {
     let e = std::io::Error::last_os_error();

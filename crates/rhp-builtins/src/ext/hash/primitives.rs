@@ -1,32 +1,18 @@
 //! `md5`, `sha1`, `crc32`, `base64_encode`/`decode` and `bin2hex`/`hex2bin`.
 //!
 //! md5 and sha1 come from RustCrypto, crc32 from the linked zlib. base64 and
-//! hex are php's own code, ported. Registered via `super::register`.
-
-use std::collections::HashMap;
+//! hex are php's own code, ported. Registered by `super::register`.
 
 use digest::Digest;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 /// Lowercase hex encoding of a byte slice.
 pub(crate) fn to_hex(bytes: &[u8]) -> Vec<u8> {
@@ -151,7 +137,7 @@ pub(crate) fn base64_decode(input: &[u8], strict: bool) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let digest = md5::Md5::digest(&s);
     let binary = args
         .get(1)
@@ -165,7 +151,7 @@ fn fn_md5(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let digest = sha1::Sha1::digest(&s);
     let binary = args
         .get(1)
@@ -179,17 +165,17 @@ fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_crc32(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::Int(crate::ext::zlib::zraw::crc32(&s) as i64))
 }
 
 fn fn_base64_encode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::str(base64_encode(&s)))
 }
 
 fn fn_base64_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     let strict = args
         .get(1)
         .map(|v| conv::to_bool(&deref(v)))
@@ -201,12 +187,12 @@ fn fn_base64_decode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_bin2hex(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     Ok(Value::str(to_hex(&s)))
 }
 
 fn fn_hex2bin(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
+    let s = conv::to_string_bytes(&args[0]);
     // Odd length or non-hex input: php emits a warning and returns false.
     if !s.len().is_multiple_of(2) {
         crate::warn(
@@ -245,31 +231,19 @@ fn hex_val(b: u8) -> Option<u8> {
 // ---------------------------------------------------------------------------
 
 /// Register all hashing + binary-encoding builtins into the shared table.
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "md5", fn_md5, 1, Some(2));
-    put(m, "sha1", fn_sha1, 1, Some(2));
-    put(m, "crc32", fn_crc32, 1, Some(1));
-    put(m, "base64_encode", fn_base64_encode, 1, Some(1));
-    put(m, "base64_decode", fn_base64_decode, 1, Some(2));
-    put(m, "bin2hex", fn_bin2hex, 1, Some(1));
-    put(m, "hex2bin", fn_hex2bin, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("md5", fn_md5),
+            ("sha1", fn_sha1),
+            ("crc32", fn_crc32),
+            ("base64_encode", fn_base64_encode),
+            ("base64_decode", fn_base64_decode),
+            ("bin2hex", fn_bin2hex),
+            ("hex2bin", fn_hex2bin),
+        ],
+    );
 }
 
 #[cfg(test)]

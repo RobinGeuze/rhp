@@ -5,26 +5,13 @@
 //! `cli_get_process_title`, `gethostname`, `gethostbyname`, `getmyuid`/
 //! `getmygid`/`getmyinode`, `get_current_user`.
 
-use std::collections::HashMap;
-
-use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::argparse::{bool_param, int_param, str_param, value_name};
-use crate::{Builtin, Host, Thrown};
-
-fn want_array(host: &dyn Host, args: &[Value], func: &str) -> Result<PhpArray, Thrown> {
-    match deref(&args[0]) {
-        Value::Array(a) => Ok(a),
-        other => Err(Thrown::type_error(format!(
-            "{func}(): Argument #1 ($array) must be of type array, {} given",
-            value_name(host, &other)
-        ))),
-    }
-}
+use crate::argparse::{array_param, bool_param, int_param, str_param};
+use crate::{Host, Thrown};
 
 fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(host, args, "array_first")?;
+    let a = array_param(host, args, 0, "array_first")?;
     Ok(a.iter()
         .next()
         .map(|(_, v)| v.clone())
@@ -32,7 +19,7 @@ fn fn_array_first(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let a = want_array(host, args, "array_last")?;
+    let a = array_param(host, args, 0, "array_last")?;
     Ok(a.iter()
         .last()
         .map(|(_, v)| v.clone())
@@ -295,36 +282,30 @@ fn fn_get_current_user(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
     Ok(Value::str(name.to_bytes().to_vec()))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("array_first", fn_array_first, 1, 1);
-    put("array_last", fn_array_last, 1, 1);
-    put("str_increment", fn_str_increment, 1, 1);
-    put("str_decrement", fn_str_decrement, 1, 1);
-    put("ip2long", fn_ip2long, 1, 1);
-    put("long2ip", fn_long2ip, 1, 1);
-    put("gettimeofday", fn_gettimeofday, 0, 1);
-    put("lcg_value", fn_lcg_value, 0, 0);
-    put("zend_version", fn_zend_version, 0, 0);
-    put("get_cfg_var", fn_get_cfg_var, 1, 1);
-    put("get_include_path", fn_get_include_path, 0, 0);
-    put("set_include_path", fn_set_include_path, 1, 1);
-    put("cli_set_process_title", fn_cli_set_process_title, 1, 1);
-    put("cli_get_process_title", fn_cli_get_process_title, 0, 0);
-    put("gethostname", fn_gethostname, 0, 0);
-    put("gethostbyname", fn_gethostbyname, 1, 1);
-    put("getmyuid", fn_getmyuid, 0, 0);
-    put("getmygid", fn_getmygid, 0, 0);
-    put("getmyinode", fn_getmyinode, 0, 0);
-    put("get_current_user", fn_get_current_user, 0, 0);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("array_first", fn_array_first),
+            ("array_last", fn_array_last),
+            ("str_increment", fn_str_increment),
+            ("str_decrement", fn_str_decrement),
+            ("ip2long", fn_ip2long),
+            ("long2ip", fn_long2ip),
+            ("gettimeofday", fn_gettimeofday),
+            ("lcg_value", fn_lcg_value),
+            ("zend_version", fn_zend_version),
+            ("get_cfg_var", fn_get_cfg_var),
+            ("get_include_path", fn_get_include_path),
+            ("set_include_path", fn_set_include_path),
+            ("cli_set_process_title", fn_cli_set_process_title),
+            ("cli_get_process_title", fn_cli_get_process_title),
+            ("gethostname", fn_gethostname),
+            ("gethostbyname", fn_gethostbyname),
+            ("getmyuid", fn_getmyuid),
+            ("getmygid", fn_getmygid),
+            ("getmyinode", fn_getmyinode),
+            ("get_current_user", fn_get_current_user),
+        ],
+    );
 }

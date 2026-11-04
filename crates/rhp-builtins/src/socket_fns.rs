@@ -15,28 +15,20 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::argparse::zval_value_name;
 use crate::ext::openssl::xp_ssl::{self, SslSock};
 use crate::fdstream::{poll_fd, FdStream, SockInfo};
-use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::proc_fns::{zpp_long, zpp_string};
+use crate::streams::errno;
+use crate::{Host, Thrown};
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {
         *rc.borrow_mut() = value;
     }
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn strerror(e: i32) -> String {
@@ -87,7 +79,7 @@ fn zpp_double_or_null(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type ?float, {} given",
             i + 1,
-            zpp_type_name(host, &v)
+            zval_value_name(host, &v)
         ))
     })
 }
@@ -140,25 +132,6 @@ fn ctx_socket_opt(host: &dyn Host, ctx: &Value, name: &str) -> Option<Value> {
 
 // --- addresses ---------------------------------------------------------------
 
-/// C `atoi`: leading whitespace, optional sign, digits (wrapping like an int).
-fn atoi(s: &[u8]) -> i32 {
-    let mut i = 0;
-    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
-        i += 1;
-    }
-    let mut neg = false;
-    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
-        neg = s[i] == b'-';
-        i += 1;
-    }
-    let mut n: i64 = 0;
-    while i < s.len() && s[i].is_ascii_digit() {
-        n = n.wrapping_mul(10).wrapping_add((s[i] - b'0') as i64);
-        i += 1;
-    }
-    (if neg { -n } else { n }) as i32
-}
-
 /// php's `parse_ip_address_ex`: `host:port` or `[v6]:port`.
 fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
     if s.contains(&0) {
@@ -168,7 +141,9 @@ fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
     if s.first() == Some(&b'[') && s.len() > 1 {
         let inner = &s[1..s.len() - 1];
         return match inner.iter().position(|&b| b == b']') {
-            Some(p) if s.get(p + 2) == Some(&b':') => Ok((s[1..p + 1].to_vec(), atoi(&s[p + 3..]))),
+            Some(p) if s.get(p + 2) == Some(&b':') => {
+                Ok((s[1..p + 1].to_vec(), crate::c_atoi(&s[p + 3..])))
+            }
             _ => Err(format!("Failed to parse IPv6 address \"{shown}\"")),
         };
     }
@@ -178,7 +153,7 @@ fn parse_ip_address(s: &[u8]) -> Result<(Vec<u8>, i32), String> {
         s[..s.len() - 1].iter().position(|&b| b == b':')
     };
     match colon {
-        Some(c) => Ok((s[..c].to_vec(), atoi(&s[c + 1..]))),
+        Some(c) => Ok((s[..c].to_vec(), crate::c_atoi(&s[c + 1..]))),
         None => Err(format!("Failed to parse address \"{shown}\"")),
     }
 }
@@ -1353,7 +1328,7 @@ fn parse_network_address(
     };
     // `estrndup` + C string calls: the host ends at its first NUL.
     let h = &h[..h.iter().position(|&b| b == 0).unwrap_or(h.len())];
-    let port = atoi(p) as u16;
+    let port = crate::c_atoi(p) as u16;
     let text = String::from_utf8_lossy(h).into_owned();
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     if let Some(a) = crate::inet::pton6(h) {
@@ -1518,7 +1493,7 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
         Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_))) => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #2 ($enable) must be of type bool, {} given",
-                zpp_type_name(host, &v)
+                zval_value_name(host, &v)
             )))
         }
         Some(v) => conv::to_bool(&v),
@@ -1539,7 +1514,7 @@ fn fn_stream_socket_enable_crypto(host: &mut dyn Host, args: &[Value]) -> Result
                     } else {
                         Thrown::type_error(format!(
                             "{fname}(): Argument #4 ($session_stream) must be of type resource or null, {} given",
-                            zpp_type_name(host, &v)
+                            zval_value_name(host, &v)
                         ))
                     }
                 })?
@@ -1673,120 +1648,35 @@ fn fn_stream_get_transports(_host: &mut dyn Host, _args: &[Value]) -> Result<Val
     Ok(Value::Array(a))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "stream_socket_server",
-        fn_stream_socket_server,
-        1,
-        Some(5),
-    );
-    put(
-        m,
-        "stream_socket_client",
-        fn_stream_socket_client,
-        1,
-        Some(6),
-    );
-    put(
-        m,
-        "stream_socket_accept",
-        fn_stream_socket_accept,
-        1,
-        Some(3),
-    );
-    put(
-        m,
-        "stream_socket_get_name",
-        fn_stream_socket_get_name,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_socket_shutdown",
-        fn_stream_socket_shutdown,
-        2,
-        Some(2),
-    );
-    put(m, "stream_socket_pair", fn_stream_socket_pair, 3, Some(3));
-    put(
-        m,
-        "stream_socket_sendto",
-        fn_stream_socket_sendto,
-        2,
-        Some(4),
-    );
-    put(
-        m,
-        "stream_socket_recvfrom",
-        fn_stream_socket_recvfrom,
-        2,
-        Some(4),
-    );
-    put(
-        m,
-        "stream_socket_enable_crypto",
-        fn_stream_socket_enable_crypto,
-        2,
-        Some(4),
-    );
-    put(m, "fsockopen", fn_fsockopen, 1, Some(5));
-    put(
-        m,
-        "stream_get_transports",
-        fn_stream_get_transports,
-        0,
-        Some(0),
-    );
-    put(m, "pfsockopen", fn_pfsockopen, 1, Some(5));
-    put(m, "stream_set_timeout", fn_stream_set_timeout, 2, Some(3));
-    put(m, "socket_set_timeout", fn_socket_set_timeout, 2, Some(3));
-    // php's aliases
-    put(
-        m,
-        "socket_get_status",
-        crate::fs_fns::fn_socket_get_status,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "socket_set_blocking",
-        crate::stream_fns::fn_socket_set_blocking,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_set_read_buffer",
-        fn_stream_set_read_buffer,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_set_chunk_size",
-        fn_stream_set_chunk_size,
-        2,
-        Some(2),
+        &[
+            ("stream_socket_server", fn_stream_socket_server),
+            ("stream_socket_client", fn_stream_socket_client),
+            ("stream_socket_accept", fn_stream_socket_accept),
+            ("stream_socket_get_name", fn_stream_socket_get_name),
+            ("stream_socket_shutdown", fn_stream_socket_shutdown),
+            ("stream_socket_pair", fn_stream_socket_pair),
+            ("stream_socket_sendto", fn_stream_socket_sendto),
+            ("stream_socket_recvfrom", fn_stream_socket_recvfrom),
+            (
+                "stream_socket_enable_crypto",
+                fn_stream_socket_enable_crypto,
+            ),
+            ("fsockopen", fn_fsockopen),
+            ("stream_get_transports", fn_stream_get_transports),
+            ("pfsockopen", fn_pfsockopen),
+            ("stream_set_timeout", fn_stream_set_timeout),
+            ("socket_set_timeout", fn_socket_set_timeout),
+            ("socket_get_status", crate::fs_fns::fn_socket_get_status),
+            (
+                "socket_set_blocking",
+                crate::stream_fns::fn_socket_set_blocking,
+            ),
+            ("stream_set_read_buffer", fn_stream_set_read_buffer),
+            ("stream_set_chunk_size", fn_stream_set_chunk_size),
+        ],
     );
 }
 

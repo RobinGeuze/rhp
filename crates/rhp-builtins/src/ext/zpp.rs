@@ -7,37 +7,12 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-/// Deref a (possibly `Ref`) value to an owned value.
-pub fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-/// The type name php's ZPP uses in "must be of type X, Y given" messages.
-pub fn given_type(host: &dyn Host, v: &Value) -> String {
-    match v {
-        Value::Null => "null".into(),
-        Value::Bool(_) => "bool".into(),
-        Value::Int(_) => "int".into(),
-        Value::Float(_) => "float".into(),
-        Value::Str(_) => "string".into(),
-        Value::Array(_) => "array".into(),
-        Value::Closure(_) => "Closure".into(),
-        Value::Object(_) => host
-            .object_class_name(v)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        Value::Resource(_) => "resource".into(),
-        Value::Ref(r) => given_type(host, &r.borrow()),
-    }
-}
+pub use rhp_semantics::deref;
 
 fn type_err(host: &dyn Host, fname: &str, n: usize, pname: &str, want: &str, v: &Value) -> Thrown {
     Thrown::type_error(format!(
         "{fname}(): Argument #{n} (${pname}) must be of type {want}, {} given",
-        given_type(host, v)
+        crate::argparse::zval_value_name(host, v)
     ))
 }
 
@@ -157,7 +132,7 @@ fn long_arg_as(
         Thrown::type_error(format!(
             "{fname}(): Argument #{} (${pname}) must be of type {ty}, {} given",
             i + 1,
-            crate::argparse::value_name(host, v)
+            crate::argparse::zval_value_name(host, v)
         ))
     };
     if host.caller_strict_types() {

@@ -3,20 +3,14 @@
 //! `posix_get_last_error`/`posix_strerror` error channel — thin wrappers over
 //! the real libc calls.
 
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::streams::errno;
+use crate::{Host, Thrown};
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
 fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Result<(), Thrown> {
@@ -31,10 +25,6 @@ fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Resu
         ));
     }
     Ok(())
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The module's `last_error` (posix_get_last_error).
@@ -356,46 +346,34 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "posix_getpid", fn_getpid, 0, Some(0));
-    put(m, "posix_getppid", fn_getppid, 0, Some(0));
-    put(m, "posix_getuid", fn_getuid, 0, Some(0));
-    put(m, "posix_geteuid", fn_geteuid, 0, Some(0));
-    put(m, "posix_getgid", fn_getgid, 0, Some(0));
-    put(m, "posix_getegid", fn_getegid, 0, Some(0));
-    put(m, "posix_getpgrp", fn_getpgrp, 0, Some(0));
-    put(m, "posix_getsid", fn_getsid, 1, Some(1));
-    put(m, "posix_getpgid", fn_getpgid, 1, Some(1));
-    put(m, "posix_kill", fn_kill, 2, Some(2));
-    put(m, "posix_isatty", fn_isatty, 1, Some(1));
-    put(m, "posix_ttyname", fn_ttyname, 1, Some(1));
-    put(m, "posix_getpwuid", fn_getpwuid, 1, Some(1));
-    put(m, "posix_getpwnam", fn_getpwnam, 1, Some(1));
-    put(m, "posix_getgrgid", fn_getgrgid, 1, Some(1));
-    put(m, "posix_getgrnam", fn_getgrnam, 1, Some(1));
-    put(m, "posix_getgroups", fn_getgroups, 0, Some(0));
-    put(m, "posix_getlogin", fn_getlogin, 0, Some(0));
-    put(m, "posix_uname", fn_uname, 0, Some(0));
-    put(m, "posix_getcwd", fn_getcwd, 0, Some(0));
-    put(m, "posix_access", fn_access, 1, Some(2));
-    put(m, "posix_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "posix_errno", fn_get_last_error, 0, Some(0));
-    put(m, "posix_strerror", fn_strerror, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("posix_getpid", fn_getpid),
+            ("posix_getppid", fn_getppid),
+            ("posix_getuid", fn_getuid),
+            ("posix_geteuid", fn_geteuid),
+            ("posix_getgid", fn_getgid),
+            ("posix_getegid", fn_getegid),
+            ("posix_getpgrp", fn_getpgrp),
+            ("posix_getsid", fn_getsid),
+            ("posix_getpgid", fn_getpgid),
+            ("posix_kill", fn_kill),
+            ("posix_isatty", fn_isatty),
+            ("posix_ttyname", fn_ttyname),
+            ("posix_getpwuid", fn_getpwuid),
+            ("posix_getpwnam", fn_getpwnam),
+            ("posix_getgrgid", fn_getgrgid),
+            ("posix_getgrnam", fn_getgrnam),
+            ("posix_getgroups", fn_getgroups),
+            ("posix_getlogin", fn_getlogin),
+            ("posix_uname", fn_uname),
+            ("posix_getcwd", fn_getcwd),
+            ("posix_access", fn_access),
+            ("posix_get_last_error", fn_get_last_error),
+            ("posix_errno", fn_get_last_error),
+            ("posix_strerror", fn_strerror),
+        ],
+    );
 }

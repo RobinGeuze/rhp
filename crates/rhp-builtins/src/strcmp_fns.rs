@@ -17,28 +17,14 @@
 //! strcmp_fns::register(&mut m);
 //! ```
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-/// `(string)` bytes of a value (after deref).
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 /// Raw byte-difference `memcmp` over the first `n` bytes: returns the signed
 /// difference of the first differing (unsigned) byte, or 0. Matches the
@@ -123,15 +109,15 @@ fn binary_strncasecmp(s1: &[u8], s2: &[u8], length: usize) -> i64 {
 
 fn fn_strcmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(binary_strcmp(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
     )))
 }
 
 fn fn_strcasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(binary_strcasecmp(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
     )))
 }
 
@@ -144,8 +130,8 @@ fn fn_strncmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     Ok(Value::Int(binary_strncmp(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
         n as usize,
     )))
 }
@@ -159,8 +145,8 @@ fn fn_strncasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     Ok(Value::Int(binary_strncasecmp(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
         n as usize,
     )))
 }
@@ -170,8 +156,8 @@ fn fn_strncasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_substr_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let main = bytes_of(&args[0]);
-    let needle = bytes_of(&args[1]);
+    let main = conv::to_string_bytes(&args[0]);
+    let needle = conv::to_string_bytes(&args[1]);
     let offset = conv::to_int(&deref(&args[2]));
 
     // length: arg #4, optional, may be null (= "default").
@@ -397,16 +383,16 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
 
 fn fn_strnatcmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(strnatcmp_ex(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
         false,
     )))
 }
 
 fn fn_strnatcasecmp(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(strnatcmp_ex(
-        &bytes_of(&args[0]),
-        &bytes_of(&args[1]),
+        &conv::to_string_bytes(&args[0]),
+        &conv::to_string_bytes(&args[1]),
         true,
     )))
 }
@@ -449,8 +435,8 @@ fn fn_str_ireplace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 // ---------------------------------------------------------------------------
 
 fn fn_strpbrk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = bytes_of(&args[0]);
-    let chars = bytes_of(&args[1]);
+    let s = conv::to_string_bytes(&args[0]);
+    let chars = conv::to_string_bytes(&args[1]);
     if chars.is_empty() {
         return Err(Thrown::error(
             "ValueError",
@@ -505,8 +491,8 @@ fn spn_window(subject_len: usize, args: &[Value]) -> (usize, usize) {
 }
 
 fn fn_strspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = bytes_of(&args[0]);
-    let mask = bytes_of(&args[1]);
+    let subject = conv::to_string_bytes(&args[0]);
+    let mask = conv::to_string_bytes(&args[1]);
     let (start, len) = spn_window(subject.len(), args);
     let mut set = [false; 256];
     for &c in &mask {
@@ -518,8 +504,8 @@ fn fn_strspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strcspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = bytes_of(&args[0]);
-    let mask = bytes_of(&args[1]);
+    let subject = conv::to_string_bytes(&args[0]);
+    let mask = conv::to_string_bytes(&args[1]);
     let (start, len) = spn_window(subject.len(), args);
     let mut set = [false; 256];
     for &c in &mask {
@@ -535,7 +521,7 @@ fn fn_strcspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // ---------------------------------------------------------------------------
 
 fn fn_str_rot13(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = bytes_of(&args[0]);
+    let mut b = conv::to_string_bytes(&args[0]);
     for c in b.iter_mut() {
         *c = match *c {
             b'A'..=b'Z' => b'A' + (*c - b'A' + 13) % 26,
@@ -550,36 +536,24 @@ fn fn_str_rot13(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "strcmp", fn_strcmp, 2, Some(2));
-    put(m, "strcasecmp", fn_strcasecmp, 2, Some(2));
-    put(m, "strncmp", fn_strncmp, 3, Some(3));
-    put(m, "strncasecmp", fn_strncasecmp, 3, Some(3));
-    put(m, "substr_compare", fn_substr_compare, 3, Some(5));
-    put(m, "strnatcmp", fn_strnatcmp, 2, Some(2));
-    put(m, "strnatcasecmp", fn_strnatcasecmp, 2, Some(2));
-    put(m, "str_ireplace", fn_str_ireplace, 3, Some(4));
-    put(m, "strpbrk", fn_strpbrk, 2, Some(2));
-    put(m, "strspn", fn_strspn, 2, Some(4));
-    put(m, "strcspn", fn_strcspn, 2, Some(4));
-    put(m, "str_rot13", fn_str_rot13, 1, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("strcmp", fn_strcmp),
+            ("strcasecmp", fn_strcasecmp),
+            ("strncmp", fn_strncmp),
+            ("strncasecmp", fn_strncasecmp),
+            ("substr_compare", fn_substr_compare),
+            ("strnatcmp", fn_strnatcmp),
+            ("strnatcasecmp", fn_strnatcasecmp),
+            ("str_ireplace", fn_str_ireplace),
+            ("strpbrk", fn_strpbrk),
+            ("strspn", fn_strspn),
+            ("strcspn", fn_strcspn),
+            ("str_rot13", fn_str_rot13),
+        ],
+    );
 }
 
 #[cfg(test)]

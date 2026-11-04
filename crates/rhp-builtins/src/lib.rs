@@ -1154,12 +1154,24 @@ pub trait Host {
     }
 }
 
-/// `E_WARNING`.
+// php's error levels (Zend/zend_errors.h).
+pub const E_ERROR: i64 = 1;
 pub const E_WARNING: i64 = 2;
-/// `E_NOTICE`.
+pub const E_PARSE: i64 = 4;
 pub const E_NOTICE: i64 = 8;
-/// `E_DEPRECATED`.
+pub const E_CORE_ERROR: i64 = 16;
+pub const E_CORE_WARNING: i64 = 32;
+pub const E_COMPILE_ERROR: i64 = 64;
+pub const E_COMPILE_WARNING: i64 = 128;
+pub const E_USER_ERROR: i64 = 256;
+pub const E_USER_WARNING: i64 = 512;
+pub const E_USER_NOTICE: i64 = 1024;
+pub const E_STRICT: i64 = 2048;
+pub const E_RECOVERABLE_ERROR: i64 = 4096;
 pub const E_DEPRECATED: i64 = 8192;
+pub const E_USER_DEPRECATED: i64 = 16384;
+/// Every level but E_STRICT (php 8.4+).
+pub const E_ALL: i64 = 30719;
 
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
 pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
@@ -1270,16 +1282,71 @@ pub struct Builtin {
     pub max_args: Option<usize>,
 }
 
-macro_rules! builtins {
-    ($($name:literal => $func:path, $min:literal, $max:expr);* $(;)?) => {{
-        let mut m: HashMap<&'static str, Builtin> = HashMap::new();
-        $(
-            m.insert($name, Builtin { name: $name, func: $func, min_args: $min, max_args: $max });
-        )*
-        m
-    }};
+/// The builtin table under construction, keyed by lowercase name.
+pub(crate) type Registry = HashMap<&'static str, Builtin>;
+
+/// Register php functions by name. Their arity is php's, from the stub
+/// signatures (every registered php function has a stub row; the
+/// `php_builtins_have_stubs` test checks), raised to [`BODY_MIN`].
+pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
+    use signatures::Signature;
+    for &(name, func) in fns {
+        let (min_args, max_args) = signatures::function(name.as_bytes())
+            .map_or((0, None), |f| (f.min_args(), f.max_args()));
+        let min_args = BODY_MIN
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(min_args, |&(_, min)| min);
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args,
+                max_args,
+            },
+        );
+    }
 }
 
+/// Register engine helpers: `__` builtins only prelude code calls, with no
+/// stub row, so their arity (min, max; `None` = variadic) is given here.
+pub(crate) fn register_helpers(
+    m: &mut Registry,
+    fns: &[(&'static str, NativeFn, usize, Option<usize>)],
+) {
+    for &(name, func, min_args, max_args) in fns {
+        debug_assert!(name.starts_with("__"), "{name} is not an engine helper");
+        m.insert(
+            name,
+            Builtin {
+                name,
+                func,
+                min_args,
+                max_args,
+            },
+        );
+    }
+}
+
+/// Functions whose php body requires more arguments than their arginfo
+/// (`array_udiff(): expects at least 2 arguments`; openssl_cms_verify's zpp
+/// wants `$flags`).
+const BODY_MIN: &[(&str, usize)] = &[
+    ("array_diff_uassoc", 2),
+    ("array_diff_ukey", 2),
+    ("array_intersect_uassoc", 2),
+    ("array_intersect_ukey", 2),
+    ("array_udiff", 2),
+    ("array_udiff_assoc", 2),
+    ("array_udiff_uassoc", 3),
+    ("array_uintersect", 2),
+    ("array_uintersect_assoc", 2),
+    ("array_uintersect_uassoc", 3),
+    ("openssl_cms_verify", 2),
+];
+
+pub use argparse::{zval_type_name, zval_value_name};
 pub use php_fns::{apply_env_overrides, env_overrides};
 
 /// The php version this engine reports (`PHP_VERSION`).
@@ -1291,9 +1358,19 @@ pub fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
     runtime_fns::ini_value(name)
 }
 
-/// C `atol`: leading blanks, sign, digits.
+/// C `atol` (php's ZEND_ATOL): leading blanks, sign, digits; saturating.
 pub fn c_atol(s: &[u8]) -> i64 {
     runtime_fns::c_atol(s)
+}
+
+/// C `atoi`: [`c_atol`] cut to 32 bits.
+pub fn c_atoi(s: &[u8]) -> i32 {
+    runtime_fns::c_atoi(s)
+}
+
+/// `zend_ini_parse_bool`: "true", "yes", "on" (any case), else atoi != 0.
+pub fn ini_parse_bool(v: &[u8]) -> bool {
+    runtime_fns::ini_parse_bool(v)
 }
 
 /// `zend_ini_parse_quantity`: `8M` → 8388608.
@@ -1350,89 +1427,93 @@ pub fn reset_request_state() {
 /// The builtin function table, keyed by lowercase name (PHP function names are
 /// case-insensitive).
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {
-    static REG: OnceLock<HashMap<&'static str, Builtin>> = OnceLock::new();
+    static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
-        let mut m = builtins! {
-            "var_dump"       => fn_var_dump, 1, None;
-            "print_r"        => fn_print_r, 1, Some(2);
-            "var_export"     => fn_var_export, 1, Some(2);
-            "gettype"        => fn_gettype, 1, Some(1);
-            "get_debug_type" => fn_get_debug_type, 1, Some(1);
-            "is_numeric"     => fn_is_numeric, 1, Some(1);
-            "is_int"         => fn_is_int, 1, Some(1);
-            "is_integer"     => fn_is_int, 1, Some(1);
-            "is_long"        => fn_is_int, 1, Some(1);
-            "is_float"       => fn_is_float, 1, Some(1);
-            "is_double"      => fn_is_float, 1, Some(1);
-            "is_string"      => fn_is_string, 1, Some(1);
-            "is_bool"        => fn_is_bool, 1, Some(1);
-            "is_null"        => fn_is_null, 1, Some(1);
-            "is_array"       => fn_is_array, 1, Some(1);
-            "is_scalar"      => fn_is_scalar, 1, Some(1);
-            "is_object"      => fn_is_object, 1, Some(1);
-            "is_callable"    => fn_is_callable, 1, Some(3);
-            "define"         => fn_define, 2, Some(3);
-            "defined"        => fn_defined, 1, Some(1);
-            "constant"       => fn_constant, 1, Some(1);
-            "intval"         => fn_intval, 1, Some(2);
-            "floatval"       => fn_floatval, 1, Some(1);
-            "doubleval"      => fn_floatval, 1, Some(1);
-            "strval"         => fn_strval, 1, Some(1);
-            "boolval"        => fn_boolval, 1, Some(1);
-            "strlen"         => fn_strlen, 1, Some(1);
-            "count"          => fn_count, 1, Some(2);
-            "sizeof"         => fn_sizeof, 1, Some(2);
-            "intdiv"         => fn_intdiv, 2, Some(2);
-            "str_repeat"     => fn_str_repeat, 2, Some(2);
-            "abs"            => fn_abs, 1, Some(1);
-            "max"            => fn_max, 1, None;
-            "min"            => fn_min, 1, None;
-            "array_sum"      => fn_array_sum, 1, Some(1);
-            "array_product"  => fn_array_product, 1, Some(1);
-            "array_keys"     => fn_array_keys, 1, Some(3);
-            "is_nan"         => fn_is_nan, 1, Some(1);
-            "is_infinite"    => fn_is_infinite, 1, Some(1);
-            "is_finite"      => fn_is_finite, 1, Some(1);
-            "array_values"   => fn_array_values, 1, Some(1);
-            "array_merge"    => fn_array_merge, 0, None;
-            "array_reverse"  => fn_array_reverse, 1, Some(2);
-            "range"          => fn_range, 2, Some(3);
-            "array_map"      => fn_array_map, 2, None;
-            "array_filter"   => fn_array_filter, 1, Some(3);
-            "array_reduce"   => fn_array_reduce, 2, Some(3);
-            "call_user_func" => fn_call_user_func, 1, None;
-            "call_user_func_array" => fn_call_user_func_array, 2, Some(2);
-            "in_array"       => fn_in_array, 2, Some(3);
-            "array_key_exists" => fn_array_key_exists, 2, Some(2);
-            "implode"        => fn_implode, 1, Some(2);
-            "join"           => fn_implode, 1, Some(2);
-            "explode"        => fn_explode, 2, Some(3);
-            "strtoupper"     => fn_strtoupper, 1, Some(1);
-            "strtolower"     => fn_strtolower, 1, Some(1);
-            "str_contains"   => fn_str_contains, 2, Some(2);
-            "ord"            => fn_ord, 1, Some(1);
-            "chr"            => fn_chr, 1, Some(1);
-            "get_class"      => fn_get_class, 0, Some(1);
-            "get_parent_class" => fn_get_parent_class, 0, Some(1);
-            "is_a"           => fn_is_a, 2, Some(3);
-            "is_subclass_of" => fn_is_subclass_of, 2, Some(3);
-            "get_object_vars" => fn_get_object_vars, 1, Some(1);
-            "get_mangled_object_vars" => fn_get_mangled_object_vars, 1, Some(1);
-            "method_exists"  => fn_method_exists, 2, Some(2);
-            "property_exists" => fn_property_exists, 2, Some(2);
-            "class_exists"   => fn_class_exists, 1, Some(2);
-            "interface_exists" => fn_interface_exists, 1, Some(2);
-            "enum_exists"    => fn_enum_exists, 1, Some(2);
-            "iterator_to_array" => fn_iterator_to_array, 1, Some(2);
-        };
-        for (_, register) in builtin_modules() {
-            register(&mut m);
+        let mut m = Registry::new();
+        register(
+            &mut m,
+            &[
+                ("var_dump", fn_var_dump),
+                ("print_r", fn_print_r),
+                ("var_export", fn_var_export),
+                ("gettype", fn_gettype),
+                ("get_debug_type", fn_get_debug_type),
+                ("is_numeric", fn_is_numeric),
+                ("is_int", fn_is_int),
+                ("is_integer", fn_is_int),
+                ("is_long", fn_is_int),
+                ("is_float", fn_is_float),
+                ("is_double", fn_is_float),
+                ("is_string", fn_is_string),
+                ("is_bool", fn_is_bool),
+                ("is_null", fn_is_null),
+                ("is_array", fn_is_array),
+                ("is_scalar", fn_is_scalar),
+                ("is_object", fn_is_object),
+                ("is_callable", fn_is_callable),
+                ("define", fn_define),
+                ("defined", fn_defined),
+                ("constant", fn_constant),
+                ("intval", fn_intval),
+                ("floatval", fn_floatval),
+                ("doubleval", fn_floatval),
+                ("strval", fn_strval),
+                ("boolval", fn_boolval),
+                ("strlen", fn_strlen),
+                ("count", fn_count),
+                ("sizeof", fn_sizeof),
+                ("intdiv", fn_intdiv),
+                ("str_repeat", fn_str_repeat),
+                ("abs", fn_abs),
+                ("max", fn_max),
+                ("min", fn_min),
+                ("array_sum", fn_array_sum),
+                ("array_product", fn_array_product),
+                ("array_keys", fn_array_keys),
+                ("is_nan", fn_is_nan),
+                ("is_infinite", fn_is_infinite),
+                ("is_finite", fn_is_finite),
+                ("array_values", fn_array_values),
+                ("array_merge", fn_array_merge),
+                ("array_reverse", fn_array_reverse),
+                ("range", fn_range),
+                ("array_map", fn_array_map),
+                ("array_filter", fn_array_filter),
+                ("array_reduce", fn_array_reduce),
+                ("call_user_func", fn_call_user_func),
+                ("call_user_func_array", fn_call_user_func_array),
+                ("in_array", fn_in_array),
+                ("array_key_exists", fn_array_key_exists),
+                ("implode", fn_implode),
+                ("join", fn_implode),
+                ("explode", fn_explode),
+                ("strtoupper", fn_strtoupper),
+                ("strtolower", fn_strtolower),
+                ("str_contains", fn_str_contains),
+                ("ord", fn_ord),
+                ("chr", fn_chr),
+                ("get_class", fn_get_class),
+                ("get_parent_class", fn_get_parent_class),
+                ("is_a", fn_is_a),
+                ("is_subclass_of", fn_is_subclass_of),
+                ("get_object_vars", fn_get_object_vars),
+                ("get_mangled_object_vars", fn_get_mangled_object_vars),
+                ("method_exists", fn_method_exists),
+                ("property_exists", fn_property_exists),
+                ("class_exists", fn_class_exists),
+                ("interface_exists", fn_interface_exists),
+                ("enum_exists", fn_enum_exists),
+                ("iterator_to_array", fn_iterator_to_array),
+            ],
+        );
+        for (_, register_module) in builtin_modules() {
+            register_module(&mut m);
         }
         m
     })
 }
 
-type Registrar = Box<dyn Fn(&mut HashMap<&'static str, Builtin>)>;
+type Registrar = Box<dyn Fn(&mut Registry)>;
 
 /// Every builtin module's registration, in registry order (a later module
 /// would override an earlier one's function of the same name; the
@@ -1652,24 +1733,24 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_ALL", Value::Int(15)),
         ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
         ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
-        ("E_ERROR", Value::Int(1)),
-        ("E_PARSE", Value::Int(4)),
-        ("E_CORE_ERROR", Value::Int(16)),
-        ("E_CORE_WARNING", Value::Int(32)),
-        ("E_COMPILE_ERROR", Value::Int(64)),
-        ("E_COMPILE_WARNING", Value::Int(128)),
-        ("E_USER_ERROR", Value::Int(256)),
-        ("E_USER_WARNING", Value::Int(512)),
-        ("E_USER_NOTICE", Value::Int(1024)),
-        ("E_STRICT", Value::Int(2048)),
-        ("E_RECOVERABLE_ERROR", Value::Int(4096)),
-        ("E_DEPRECATED", Value::Int(8192)),
-        ("E_USER_DEPRECATED", Value::Int(16384)),
+        ("E_ERROR", Value::Int(E_ERROR)),
+        ("E_PARSE", Value::Int(E_PARSE)),
+        ("E_CORE_ERROR", Value::Int(E_CORE_ERROR)),
+        ("E_CORE_WARNING", Value::Int(E_CORE_WARNING)),
+        ("E_COMPILE_ERROR", Value::Int(E_COMPILE_ERROR)),
+        ("E_COMPILE_WARNING", Value::Int(E_COMPILE_WARNING)),
+        ("E_USER_ERROR", Value::Int(E_USER_ERROR)),
+        ("E_USER_WARNING", Value::Int(E_USER_WARNING)),
+        ("E_USER_NOTICE", Value::Int(E_USER_NOTICE)),
+        ("E_STRICT", Value::Int(E_STRICT)),
+        ("E_RECOVERABLE_ERROR", Value::Int(E_RECOVERABLE_ERROR)),
+        ("E_DEPRECATED", Value::Int(E_DEPRECATED)),
+        ("E_USER_DEPRECATED", Value::Int(E_USER_DEPRECATED)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(30719)),
-        ("E_WARNING", Value::Int(2)),
-        ("E_NOTICE", Value::Int(8)),
+        ("E_ALL", Value::Int(E_ALL)),
+        ("E_WARNING", Value::Int(E_WARNING)),
+        ("E_NOTICE", Value::Int(E_NOTICE)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
         // Placeholders: the VM binds the stream resources when a request
@@ -2274,12 +2355,12 @@ fn count_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value,
             }
             Err(Thrown::type_error(format!(
                 "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-                argparse::value_name(host, &obj)
+                argparse::zval_value_name(host, &obj)
             )))
         }
         other => Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($value) must be of type Countable|array, {} given",
-            other.type_name_lower()
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -2301,7 +2382,14 @@ fn fn_intdiv(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
-    let n = conv::to_int(&args[1]).max(0) as usize;
+    let n = conv::to_int(&args[1]);
+    if n < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
+        ));
+    }
+    let n = n as usize;
     // zend_string_safe_falloc(len, mult, 0): php refuses past memory_limit.
     if !s.is_empty()
         && n != 0
@@ -2345,7 +2433,7 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
         let Value::Array(a) = &args[0] else {
             return Err(Thrown::type_error(format!(
                 "{name}(): Argument #1 ($value) must be of type array, {} given",
-                type_name_of(host, &args[0])
+                argparse::zval_value_name(host, &args[0])
             )));
         };
         let mut it = a.iter().map(|(_, v)| deref(v));
@@ -2497,7 +2585,7 @@ fn array_binop(
         match operand {
             Some(n) => acc = op(&acc, &n)?,
             None => {
-                let ty = type_name_of(host, &v);
+                let ty = argparse::zval_type_name(host, &v);
                 warn(
                     host,
                     fname,
@@ -2522,10 +2610,6 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(2)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    let key_val = |k: &rhp_values::ArrayKey| match k {
-        rhp_values::ArrayKey::Int(n) => Value::Int(*n),
-        rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
-    };
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
         let keep = match &search {
@@ -2539,7 +2623,7 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         };
         if keep {
-            out.push(key_val(k));
+            out.push(k.to_value());
         }
     }
     Ok(Value::Array(out))
@@ -2575,13 +2659,6 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     Ok(Value::Array(out))
-}
-
-pub(crate) fn key_to_value(k: &rhp_values::ArrayKey) -> Value {
-    match k {
-        rhp_values::ArrayKey::Int(n) => Value::Int(*n),
-        rhp_values::ArrayKey::Str(s) => Value::Str(s.clone()),
-    }
 }
 
 fn as_array(v: &Value, who: &str) -> Result<PhpArray, Thrown> {
@@ -2648,8 +2725,8 @@ fn fn_array_filter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             None => object::is_true(host, v)?,
             Some(cb) => {
                 let call_args: Vec<Value> = match mode {
-                    2 => vec![key_to_value(k)],            // ARRAY_FILTER_USE_KEY
-                    1 => vec![v.clone(), key_to_value(k)], // ARRAY_FILTER_USE_BOTH
+                    2 => vec![k.to_value()],            // ARRAY_FILTER_USE_KEY
+                    1 => vec![v.clone(), k.to_value()], // ARRAY_FILTER_USE_BOTH
                     _ => vec![v.clone()],
                 };
                 let r = host.call_callable(cb, &call_args)?;
@@ -2719,88 +2796,316 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(out))
 }
 
-/// range()'s RANGE_CHECK_{LONG,DOUBLE}_INIT_ARRAY: a ValueError when the
-/// result would exceed HT_MAX_SIZE elements. (php prints the lower bound
-/// as start and the higher as end, whatever the direction.)
-fn range_size_check(
-    start: conv::Num,
-    end: conv::Num,
-    step: f64,
-    float: bool,
-) -> Result<(), Thrown> {
-    const HT_MAX_SIZE: u64 = 0x4000_0000;
-    let msg = "The supplied range exceeds the maximum array size by";
-    if let (false, conv::Num::Int(a), conv::Num::Int(b)) = (float, start, end) {
-        let (lo, hi) = (a.min(b), a.max(b));
-        let step = step as u64;
-        let size = (hi as u64).wrapping_sub(lo as u64) / step;
-        if size >= HT_MAX_SIZE - 1 {
-            return Err(Thrown::error(
-                "ValueError",
-                format!(
-                    "{msg} {} elements: start={lo}, end={hi}, step={step}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
-                    size - (HT_MAX_SIZE - 1)
-                ),
-            ));
+/// What php_range_process_input made of a range() bound, ordered as php's
+/// type codes (IS_LONG < IS_DOUBLE < IS_STRING < IS_ARRAY).
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum RangeIn {
+    Long,
+    Double,
+    /// A non-numeric string: its first byte.
+    Char,
+    /// A one-digit string: a char or an int, whichever the other bound is.
+    Digit,
+}
+
+fn range_value_error(n: usize, name: &str, msg: &str) -> Thrown {
+    Thrown::error(
+        "ValueError",
+        format!("range(): Argument #{n} (${name}) {msg}"),
+    )
+}
+
+/// php_range_process_input: the bound's kind with its int and float values.
+fn range_input(
+    host: &mut dyn Host,
+    v: &Value,
+    n: usize,
+    name: &str,
+) -> Result<(RangeIn, i64, f64), Thrown> {
+    let finite = |d: f64| {
+        if d.is_infinite() {
+            Err(range_value_error(
+                n,
+                name,
+                "must be a finite number, INF provided",
+            ))
+        } else if d.is_nan() {
+            Err(range_value_error(
+                n,
+                name,
+                "must be a finite number, NAN provided",
+            ))
+        } else {
+            Ok((RangeIn::Double, 0, d))
         }
-        return Ok(());
+    };
+    let s = match v {
+        Value::Str(s) => s.as_bytes(),
+        Value::Float(d) => return finite(*d),
+        // The VM's zpp leaves an int or a float, or a string.
+        other => {
+            let l = conv::to_int(other);
+            return Ok((RangeIn::Long, l, l as f64));
+        }
+    };
+    if s.is_empty() {
+        let msg = format!("Argument #{n} (${name}) must not be empty, casted to 0");
+        host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+        return Ok((RangeIn::Long, 0, 0.0));
     }
-    let (a, b) = (start.as_f64(), end.as_f64());
-    let (lo, hi) = (a.min(b), a.max(b));
+    match conv::numeric_string(s) {
+        Some(conv::Num::Float(d)) => finite(d),
+        Some(conv::Num::Int(l)) if s.len() == 1 => Ok((RangeIn::Digit, l, l as f64)),
+        Some(conv::Num::Int(l)) => Ok((RangeIn::Long, l, l as f64)),
+        None => {
+            if s.len() != 1 {
+                let msg = format!(
+                    "Argument #{n} (${name}) must be a single byte, subsequent bytes are ignored"
+                );
+                host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+            }
+            Ok((RangeIn::Char, 0, 0.0))
+        }
+    }
+}
+
+const HT_MAX_SIZE: u64 = 0x4000_0000;
+
+/// RANGE_CHECK_DOUBLE_INIT_ARRAY for `hi > lo`: the element count, or the
+/// ValueError for a range past HT_MAX_SIZE.
+fn range_size_double(hi: f64, lo: f64, step: f64) -> Result<usize, Thrown> {
     let size = (hi - lo) / step + 1.0;
     if size >= HT_MAX_SIZE as f64 {
         return Err(Thrown::error(
             "ValueError",
             format!(
-                "{msg} {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
+                "The supplied range exceeds the maximum array size by {:.1} elements: start={lo:.1}, end={hi:.1}, step={step:.1}. Max size: {HT_MAX_SIZE}",
                 size - HT_MAX_SIZE as f64
             ),
         ));
     }
-    Ok(())
+    Ok(math_fns::php_math_round(size, 0, 1) as usize)
 }
 
-fn fn_range(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // Numeric ranges only (char ranges deferred).
-    let start = conv::to_number(&deref(&args[0])).0;
-    let end = conv::to_number(&deref(&args[1])).0;
-    let step = args
-        .get(2)
-        .map(|v| conv::to_number(&deref(v)).0.as_f64().abs())
-        .unwrap_or(1.0);
-    let step = if step == 0.0 { 1.0 } else { step };
-    let mut out = PhpArray::new();
-    let use_float = matches!(start, conv::Num::Float(_))
-        || matches!(end, conv::Num::Float(_))
-        || step.fract() != 0.0;
-    let (s, e) = (start.as_f64(), end.as_f64());
-    range_size_check(start, end, step, use_float)?;
-    // php sizes the result up front, fallibly.
-    let count = ((s - e).abs() / step).floor() + 1.0;
-    if count.is_finite()
-        && !rhp_values::mem::reserve_packed_array(count.min(u32::MAX as f64) as usize)
-    {
-        return Ok(Value::Null);
+/// RANGE_CHECK_LONG_INIT_ARRAY for `hi > lo`.
+fn range_size_long(hi: i64, lo: i64, step: u64) -> Result<usize, Thrown> {
+    let size = (hi as u64).wrapping_sub(lo as u64) / step;
+    if size >= HT_MAX_SIZE - 1 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "The supplied range exceeds the maximum array size by {} elements: start={lo}, end={hi}, step={}. Calculated size: {size}. Maximum size: {HT_MAX_SIZE}.",
+                size - (HT_MAX_SIZE - 1),
+                step as i64
+            ),
+        ));
     }
-    if s <= e {
-        let mut x = s;
-        while x <= e + 1e-9 {
-            out.push(if use_float {
-                Value::Float(x)
+    Ok(size as usize + 1)
+}
+
+/// php's range(): an int, float or character sequence from `$start` to
+/// `$end` by `abs($step)`, with php_range's argument checks.
+fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let boundary_error = || {
+        range_value_error(
+            3,
+            "step",
+            "must be less than the range spanned by argument #1 ($start) and argument #2 ($end)",
+        )
+    };
+    let negative_step_error =
+        || range_value_error(3, "step", "must be greater than 0 for increasing ranges");
+    let mut is_step_double = false;
+    let mut is_step_negative = false;
+    let mut step_double = 1.0;
+    let mut step: i64 = 1;
+    if let Some(user_step) = args.get(2).map(deref) {
+        if let Value::Float(d) = user_step {
+            if d.is_infinite() {
+                return Err(range_value_error(
+                    3,
+                    "step",
+                    "must be a finite number, INF provided",
+                ));
+            }
+            if d.is_nan() {
+                return Err(range_value_error(
+                    3,
+                    "step",
+                    "must be a finite number, NAN provided",
+                ));
+            }
+            step_double = d;
+            if step_double < 0.0 {
+                is_step_negative = true;
+                step_double = -step_double;
+            }
+            // zend_dval_to_lval_silent, then zend_is_long_compatible
+            step = rhp_values::float_to_int(step_double);
+            is_step_double = step as f64 != step_double;
+        } else {
+            step = conv::to_int(&user_step);
+            if step < 0 {
+                if step == i64::MIN {
+                    return Err(range_value_error(
+                        3,
+                        "step",
+                        &format!("must be greater than {step}"),
+                    ));
+                }
+                is_step_negative = true;
+                step = -step;
+            }
+            step_double = step as f64;
+        }
+        if step_double == 0.0 {
+            return Err(range_value_error(3, "step", "cannot be 0"));
+        }
+    }
+    let start = deref(&args[0]);
+    let end = deref(&args[1]);
+    let (mut start_type, start_long, start_double) = range_input(host, &start, 1, "start")?;
+    let (mut end_type, end_long, end_double) = range_input(host, &end, 2, "end")?;
+    let mut out = PhpArray::new();
+
+    if start_type >= RangeIn::Char || end_type >= RangeIn::Char {
+        if start_type < RangeIn::Char || end_type < RangeIn::Char {
+            if start_type < RangeIn::Char {
+                if end_type != RangeIn::Digit {
+                    host.emit_diagnostic(
+                        E_WARNING,
+                        "range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
+                    )?;
+                }
+                end_type = RangeIn::Long;
             } else {
-                Value::Int(x as i64)
-            });
-            x += step;
+                if start_type != RangeIn::Digit {
+                    host.emit_diagnostic(
+                        E_WARNING,
+                        "range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
+                    )?;
+                }
+                start_type = RangeIn::Long;
+            }
+        } else if is_step_double {
+            if start_type == RangeIn::Char || end_type == RangeIn::Char {
+                host.emit_diagnostic(
+                    E_WARNING,
+                    "range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
+                )?;
+            }
+            start_type = RangeIn::Long;
+            end_type = RangeIn::Long;
+        } else {
+            // Both bounds are strings: a range of characters.
+            let first = |v: &Value| match v {
+                Value::Str(s) => s.as_bytes().first().copied().unwrap_or(0) as i64,
+                _ => 0,
+            };
+            let (mut low, high) = (first(&start), first(&end));
+            let char_value = |c: i64| Value::str(vec![c as u8]);
+            if low > high {
+                if low - high < step {
+                    return Err(boundary_error());
+                }
+                while low >= high {
+                    out.push(char_value(low));
+                    if low - step < 0 {
+                        break;
+                    }
+                    low -= step;
+                }
+            } else if high > low {
+                if is_step_negative {
+                    return Err(negative_step_error());
+                }
+                if high - low < step {
+                    return Err(boundary_error());
+                }
+                while low <= high {
+                    out.push(char_value(low));
+                    if low + step > 255 {
+                        break;
+                    }
+                    low += step;
+                }
+            } else {
+                out.push(char_value(low));
+            }
+            return Ok(Value::Array(out));
+        }
+    }
+
+    // php sizes the result up front, fallibly.
+    let reserve = |n: usize| rhp_values::mem::reserve_packed_array(n);
+    if start_type == RangeIn::Double || end_type == RangeIn::Double || is_step_double {
+        let (s, e) = (start_double, end_double);
+        if s > e {
+            if s - e < step_double {
+                return Err(boundary_error());
+            }
+            let size = range_size_double(s, e, step_double)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            let mut el = s;
+            let mut i = 0;
+            while i < size && el >= e {
+                out.push(Value::Float(el));
+                i += 1;
+                el = s - i as f64 * step_double;
+            }
+        } else if e > s {
+            if is_step_negative {
+                return Err(negative_step_error());
+            }
+            if e - s < step_double {
+                return Err(boundary_error());
+            }
+            let size = range_size_double(e, s, step_double)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            let mut el = s;
+            let mut i = 0;
+            while i < size && el <= e {
+                out.push(Value::Float(el));
+                i += 1;
+                el = s + i as f64 * step_double;
+            }
+        } else {
+            out.push(Value::Float(s));
         }
     } else {
-        let mut x = s;
-        while x >= e - 1e-9 {
-            out.push(if use_float {
-                Value::Float(x)
-            } else {
-                Value::Int(x as i64)
-            });
-            x -= step;
+        let (s, e) = (start_long, end_long);
+        let ustep = step as u64;
+        if s > e {
+            if (s as u64).wrapping_sub(e as u64) < ustep {
+                return Err(boundary_error());
+            }
+            let size = range_size_long(s, e, ustep)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            for i in 0..size as u64 {
+                out.push(Value::Int(s.wrapping_sub(i.wrapping_mul(ustep) as i64)));
+            }
+        } else if e > s {
+            if is_step_negative {
+                return Err(negative_step_error());
+            }
+            if (e as u64).wrapping_sub(s as u64) < ustep {
+                return Err(boundary_error());
+            }
+            let size = range_size_long(e, s, ustep)?;
+            if !reserve(size) {
+                return Ok(Value::Null);
+            }
+            for i in 0..size as u64 {
+                out.push(Value::Int(s.wrapping_add(i.wrapping_mul(ustep) as i64)));
+            }
+        } else {
+            out.push(Value::Int(s));
         }
     }
     Ok(Value::Array(out))
@@ -2840,13 +3145,18 @@ fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // implode($array) or implode($glue, $array)
+    // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
-        (Value::Array(a), _) => (Vec::new(), a),
+        (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
+        (Value::Array(_), Some(_)) => {
+            return Err(Thrown::type_error(
+                "implode(): Argument #1 ($separator) must be of type string, array given",
+            ))
+        }
         (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
         _ => {
             return Err(Thrown::type_error(
-                "implode(): Argument must be of type array",
+                "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
             ))
         }
     };
@@ -2885,7 +3195,7 @@ fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if delim.is_empty() {
         return Err(Thrown::error(
             "ValueError",
-            "explode(): Argument #1 ($separator) cannot be empty",
+            "explode(): Argument #1 ($separator) must not be empty",
         ));
     }
     // All pieces, in order.
@@ -2982,7 +3292,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         other => Err(Thrown::type_error(format!(
             "get_class(): Argument #1 ($object) must be of type object, {} given",
-            argparse::value_name(host, &other)
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -3074,7 +3384,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         }
         Some(other) => Err(Thrown::type_error(format!(
             "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, {} given",
-            argparse::value_name(host, &other)
+            argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -3235,47 +3545,29 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
     }
 }
 
-fn fn_ord(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_ord(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let b = conv::to_string_bytes(&deref(&args[0]));
+    match b.len() {
+        1 => {}
+        0 => deprecated(host, "ord", "Providing an empty string is deprecated")?,
+        _ => deprecated(
+            host,
+            "ord",
+            "Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead",
+        )?,
+    }
     Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
 }
 
-fn fn_chr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let n = conv::to_int(&deref(&args[0])).rem_euclid(256) as u8;
-    Ok(Value::str(vec![n]))
-}
-
-// small helper on Value for error messages
-trait TypeNameLower {
-    fn type_name_lower(&self) -> &'static str;
-}
-impl TypeNameLower for Value {
-    fn type_name_lower(&self) -> &'static str {
-        match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Str(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) | Value::Closure(_) => "object",
-            Value::Resource(_) => "resource",
-            Value::Ref(r) => r.borrow().type_name_lower(),
-        }
+fn fn_chr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let c = conv::to_int(&deref(&args[0]));
+    if !(0..=255).contains(&c) {
+        deprecated(
+            host,
+            "chr",
+            "Providing a value not in-between 0 and 255 is deprecated, this is because a byte \
+             value must be in the [0, 255] interval. The value used will be constrained using % 256",
+        )?;
     }
-}
-
-/// `zend_zval_value_name`: the class name for objects, `true`/`false` for
-/// bools, else the type name.
-pub fn type_name_of(host: &dyn Host, v: &Value) -> String {
-    match deref(v) {
-        Value::Bool(true) => "true".into(),
-        Value::Bool(false) => "false".into(),
-        Value::Closure(_) => "Closure".into(),
-        o @ Value::Object(_) => host
-            .object_class_name(&o)
-            .map(|n| String::from_utf8_lossy(&n).into_owned())
-            .unwrap_or_else(|| "object".into()),
-        other => other.type_name_lower().into(),
-    }
+    Ok(Value::str(vec![(c & 0xff) as u8]))
 }

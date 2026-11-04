@@ -18,6 +18,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use super::sys;
 use crate::fdstream::{poll_fd, push_diag, FdStream, SockInfo};
+use crate::streams::errno;
 use crate::E_WARNING;
 
 // STREAM_CRYPTO_METHOD_* bits
@@ -86,10 +87,6 @@ fn warn(msg: impl Into<String>) {
 /// `php_error(E_WARNING, ...)`: no function prefix.
 fn warn_plain(msg: impl Into<String>) {
     push_diag(E_WARNING, false, msg);
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn cstr_bytes(p: *const c_char) -> Vec<u8> {
@@ -695,7 +692,7 @@ fn fingerprint_cmp(peer: *mut sys::X509, method: &[u8], expected: &[u8]) -> i32 
     super::backend::release_md(md);
     if ok == 0 {
         super::store_errors();
-        push_diag(1, true, "Could not generate signature");
+        push_diag(crate::E_ERROR, true, "Could not generate signature");
         return -1;
     }
     let hex = super::backend::hex(&buf[..n as usize]);

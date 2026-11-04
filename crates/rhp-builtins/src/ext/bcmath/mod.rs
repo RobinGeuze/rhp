@@ -11,28 +11,17 @@
 //! changes it like `ini_set()` does, and it resets with the request's ini.
 
 use std::cell::Cell;
-use std::collections::HashMap;
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
 // value helpers
 // ---------------------------------------------------------------------------
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-fn bytes_of(v: &Value) -> Vec<u8> {
-    conv::to_string_bytes(&deref(v))
-}
 
 fn ten_pow(n: usize) -> BigInt {
     BigInt::from(10).pow(n as u32)
@@ -303,7 +292,7 @@ fn operand(
     argnum: usize,
     name: &str,
 ) -> Result<Dec, Thrown> {
-    let raw = bytes_of(&args[idx]);
+    let raw = conv::to_string_bytes(&args[idx]);
     Dec::parse(&raw).ok_or_else(|| {
         Thrown::error(
             "ValueError",
@@ -470,7 +459,7 @@ fn fn_bcround(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // $mode takes a RoundingMode, which rhp does not implement: anything a
     // php script can pass is a zpp TypeError, except a RoundingMode case.
     if let Some(mode) = args.get(2).map(deref) {
-        let name = crate::argparse::value_name(host, &mode);
+        let name = crate::argparse::zval_value_name(host, &mode);
         if name.eq_ignore_ascii_case("RoundingMode") {
             return Err(Thrown::unsupported(
                 "bcround() argument #3 ($mode)",
@@ -526,36 +515,24 @@ fn fn_bcscale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // registration
 // ---------------------------------------------------------------------------
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "bcadd", fn_bcadd, 2, Some(3));
-    put(m, "bcsub", fn_bcsub, 2, Some(3));
-    put(m, "bcmul", fn_bcmul, 2, Some(3));
-    put(m, "bcdiv", fn_bcdiv, 2, Some(3));
-    put(m, "bcmod", fn_bcmod, 2, Some(3));
-    put(m, "bcdivmod", fn_bcdivmod, 2, Some(3));
-    put(m, "bcpow", fn_bcpow, 2, Some(3));
-    put(m, "bcpowmod", fn_bcpowmod, 3, Some(4));
-    put(m, "bcsqrt", fn_bcsqrt, 1, Some(2));
-    put(m, "bccomp", fn_bccomp, 2, Some(3));
-    put(m, "bcfloor", fn_bcfloor, 1, Some(1));
-    put(m, "bcceil", fn_bcceil, 1, Some(1));
-    put(m, "bcround", fn_bcround, 1, Some(3));
-    put(m, "bcscale", fn_bcscale, 0, Some(1));
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("bcadd", fn_bcadd),
+            ("bcsub", fn_bcsub),
+            ("bcmul", fn_bcmul),
+            ("bcdiv", fn_bcdiv),
+            ("bcmod", fn_bcmod),
+            ("bcdivmod", fn_bcdivmod),
+            ("bcpow", fn_bcpow),
+            ("bcpowmod", fn_bcpowmod),
+            ("bcsqrt", fn_bcsqrt),
+            ("bccomp", fn_bccomp),
+            ("bcfloor", fn_bcfloor),
+            ("bcceil", fn_bcceil),
+            ("bcround", fn_bcround),
+            ("bcscale", fn_bcscale),
+        ],
+    );
 }

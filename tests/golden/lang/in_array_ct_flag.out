@@ -1,0 +1,24 @@
+Warning: unexpected NAN value was coerced to bool
+int flag: bool(true)
+string flag: bool(true)
+float flag: bool(true)
+parenthesized: bool(true)
+builtin constant: bool(true)
+E_ALL: bool(true)
+NAN: bool(true)
+null: bool(true)
+NULL any case: bool(true)
+qualified: bool(true)
+mixed keys: bool(true)
+strict ints and strings: bool(true)
+strict numeric string: bool(false)
+empty haystack: bool(false)
+loose ints: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+loose numeric string: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+float element: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+variable element: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+variable flag: TypeError: in_array(): Argument #3 ($strict) must be of type bool, string given
+negative flag: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+expression flag: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given
+undefined constant: Error: Undefined constant "NO_SUCH_CONSTANT"
+spread: TypeError: in_array(): Argument #3 ($strict) must be of type bool, int given

@@ -412,24 +412,6 @@ fn proxy_authorization_header(s: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// C `atoi`.
-fn atoi(s: &[u8]) -> i64 {
-    let mut i = 0;
-    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
-        i += 1;
-    }
-    let neg = i < s.len() && s[i] == b'-';
-    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
-        i += 1;
-    }
-    let mut n: i64 = 0;
-    while i < s.len() && s[i].is_ascii_digit() {
-        n = n.wrapping_mul(10).wrapping_add((s[i] - b'0') as i64);
-        i += 1;
-    }
-    (if neg { -n } else { n }) as i32 as i64
-}
-
 /// php's `%s` of a string: up to the first NUL.
 fn c_str(s: &[u8]) -> &[u8] {
     &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
@@ -1032,7 +1014,7 @@ fn wrap_http_ex(
         return Ok(None);
     };
     response_code = if tmp_line.len() > 9 {
-        atoi(&tmp_line[9..])
+        i64::from(crate::c_atoi(&tmp_line[9..]))
     } else {
         0
     };
@@ -1059,7 +1041,7 @@ fn wrap_http_ex(
             }
         }
         response_code = if tmp_line.len() > 9 {
-            atoi(&tmp_line[9..])
+            i64::from(crate::c_atoi(&tmp_line[9..]))
         } else {
             0
         };

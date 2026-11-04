@@ -14,14 +14,13 @@
 
 mod sys;
 
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
 use libc::{E2BIG, EBADF, EILSEQ, EINVAL};
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::zpp::{deref, long_arg, opt_long_arg, opt_str_arg, str_arg, value_error};
-use crate::{warn, Builtin, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
+use crate::{warn, Host, OutputHandlerAlias, OutputHandlerCtx, Thrown};
 use sys::{errno, set_errno, Cd, NulCopy, FAILED};
 
 /// ICONV_CSNMAXLEN.
@@ -1546,15 +1545,9 @@ fn fn_iconv_mime_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let f = "iconv_mime_encode";
     let field_name = zstr_arg(host, args, 0, f, "field_name")?;
     let field_value = zstr_arg(host, args, 1, f, "field_value")?;
-    let pref = match args.get(2).map(deref) {
+    let pref = match args.get(2) {
         None => None,
-        Some(Value::Array(a)) => Some(a),
-        Some(v) => {
-            return Err(Thrown::type_error(format!(
-                "{f}(): Argument #3 ($options) must be of type array, {} given",
-                crate::ext::zpp::given_type(host, &v)
-            )))
-        }
+        Some(_) => Some(crate::argparse::array_param(host, args, 2, f)?),
     };
     let mut in_charset = cstr(&encoding("internal"));
     let mut out_charset = in_charset.clone();
@@ -1863,40 +1856,22 @@ pub(crate) fn reset_state() {
     set_errno(0);
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "iconv_strlen", fn_iconv_strlen, 1, Some(2));
-    put(m, "iconv_substr", fn_iconv_substr, 2, Some(4));
-    put(m, "iconv_strpos", fn_iconv_strpos, 2, Some(4));
-    put(m, "iconv_strrpos", fn_iconv_strrpos, 2, Some(3));
-    put(m, "iconv_mime_encode", fn_iconv_mime_encode, 2, Some(3));
-    put(m, "iconv_mime_decode", fn_iconv_mime_decode, 1, Some(3));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "iconv_mime_decode_headers",
-        fn_iconv_mime_decode_headers,
-        1,
-        Some(3),
+        &[
+            ("iconv_strlen", fn_iconv_strlen),
+            ("iconv_substr", fn_iconv_substr),
+            ("iconv_strpos", fn_iconv_strpos),
+            ("iconv_strrpos", fn_iconv_strrpos),
+            ("iconv_mime_encode", fn_iconv_mime_encode),
+            ("iconv_mime_decode", fn_iconv_mime_decode),
+            ("iconv_mime_decode_headers", fn_iconv_mime_decode_headers),
+            ("iconv", fn_iconv),
+            ("iconv_set_encoding", fn_iconv_set_encoding),
+            ("iconv_get_encoding", fn_iconv_get_encoding),
+        ],
     );
-    put(m, "iconv", fn_iconv, 3, Some(3));
-    put(m, "iconv_set_encoding", fn_iconv_set_encoding, 2, Some(2));
-    put(m, "iconv_get_encoding", fn_iconv_get_encoding, 0, Some(1));
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

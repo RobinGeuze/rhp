@@ -4,18 +4,10 @@
 //! `fclose`/`fseek`/…) live in `fs_fns` with php's argument validation. The
 //! resource state lives in the VM.
 
-use std::collections::HashMap;
-
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::{Host, Thrown};
 
 fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
@@ -66,7 +58,7 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         Value::Resource(r) => Ok(Value::str(r.type_name)),
         other => Err(Thrown::type_error(format!(
             "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
-            crate::argparse::value_name(host, &other)
+            crate::argparse::zval_value_name(host, &other)
         ))),
     }
 }
@@ -148,7 +140,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
     if !matches!(v, Value::Resource(_)) {
         return Err(Thrown::type_error(format!(
             "{fname}(): Argument #1 ($context) must be of type resource, {} given",
-            crate::argparse::value_name(host, &v)
+            crate::argparse::zval_value_name(host, &v)
         )));
     }
     host.resolve_stream_context(&v).ok_or_else(|| {
@@ -161,16 +153,7 @@ fn context_param(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Val
 fn fn_stream_context_set_params(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_context_set_params";
     let ctx = context_param(host, args, fname)?;
-    let params = match args.get(1).map(deref) {
-        Some(Value::Array(p)) => p,
-        other => {
-            let v = other.unwrap_or(Value::Null);
-            return Err(Thrown::type_error(format!(
-                "{fname}(): Argument #2 ($params) must be of type array, {} given",
-                crate::argparse::value_name(host, &v)
-            )));
-        }
-    };
+    let params = crate::argparse::array_param(host, args, 1, fname)?;
     parse_context_params(host, fname, &ctx, &params)?;
     Ok(Value::Bool(true))
 }
@@ -239,7 +222,7 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Some(v) => {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #3 ($context) must be of type resource or null, {} given",
-                crate::argparse::value_name(host, &v)
+                crate::argparse::zval_value_name(host, &v)
             )))
         }
     };
@@ -392,95 +375,34 @@ fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value,
     Ok(Value::Array(a))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "is_resource", fn_is_resource, 1, Some(1));
-    put(m, "get_resource_type", fn_get_resource_type, 1, Some(1));
-    put(m, "stream_get_wrappers", fn_stream_get_wrappers, 0, Some(0));
-    put(
+/// TTY detection lives elsewhere: `stream_isatty` with the process
+/// functions (proc_fns), `posix_isatty` in ext/posix;
+/// sapi_windows_vt100_support exists on Windows only.
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "stream_copy_to_stream",
-        fn_stream_copy_to_stream,
-        2,
-        Some(4),
+        &[
+            ("is_resource", fn_is_resource),
+            ("get_resource_type", fn_get_resource_type),
+            ("stream_get_wrappers", fn_stream_get_wrappers),
+            ("stream_copy_to_stream", fn_stream_copy_to_stream),
+            ("stream_context_create", fn_stream_context_create),
+            ("stream_context_get_options", fn_stream_context_get_options),
+            ("stream_context_set_params", fn_stream_context_set_params),
+            ("stream_context_get_params", fn_stream_context_get_params),
+            ("stream_context_set_option", fn_stream_context_set_option),
+            ("get_headers", fn_get_headers),
+            (
+                "http_get_last_response_headers",
+                fn_http_get_last_response_headers,
+            ),
+            (
+                "http_clear_last_response_headers",
+                fn_http_clear_last_response_headers,
+            ),
+            ("stream_set_blocking", fn_stream_set_blocking),
+            ("stream_set_write_buffer", fn_stream_set_write_buffer),
+            ("set_file_buffer", fn_set_file_buffer),
+        ],
     );
-    put(
-        m,
-        "stream_context_create",
-        fn_stream_context_create,
-        0,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_context_get_options",
-        fn_stream_context_get_options,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "stream_context_set_params",
-        fn_stream_context_set_params,
-        2,
-        Some(2),
-    );
-    put(
-        m,
-        "stream_context_get_params",
-        fn_stream_context_get_params,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "stream_context_set_option",
-        fn_stream_context_set_option,
-        2,
-        Some(4),
-    );
-    put(m, "get_headers", fn_get_headers, 1, Some(3));
-    put(
-        m,
-        "http_get_last_response_headers",
-        fn_http_get_last_response_headers,
-        0,
-        Some(0),
-    );
-    put(
-        m,
-        "http_clear_last_response_headers",
-        fn_http_clear_last_response_headers,
-        0,
-        Some(0),
-    );
-    // No-op stream knobs (accepted so framework output code runs).
-    put(m, "stream_set_blocking", fn_stream_set_blocking, 2, Some(2));
-    put(
-        m,
-        "stream_set_write_buffer",
-        fn_stream_set_write_buffer,
-        2,
-        Some(2),
-    );
-    put(m, "set_file_buffer", fn_set_file_buffer, 2, Some(2));
-    // TTY detection: `stream_isatty` lives with the process functions
-    // (proc_fns), `posix_isatty` in ext/posix. sapi_windows_vt100_support
-    // exists on Windows only.
 }

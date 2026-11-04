@@ -16,14 +16,13 @@
 //! request ends.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 use crate::query_fns::{post_form_vars, register_variable_value};
-use crate::{Builtin, Host};
+use crate::Host;
 
 /// `FILLUNIT`: the multipart buffer's minimum size.
 const FILLUNIT: usize = 1024 * 5;
@@ -205,15 +204,10 @@ impl Limits {
             upload_max_filesize: o
                 .upload_max_filesize
                 .unwrap_or_else(|| q(b"upload_max_filesize")),
-            file_uploads: ini_bool(&fu),
+            file_uploads: crate::ini_parse_bool(&fu),
             upload_tmp_dir: ini(b"upload_tmp_dir"),
         }
     }
-}
-
-fn ini_bool(v: &[u8]) -> bool {
-    let l = v.to_ascii_lowercase();
-    matches!(&l[..], b"on" | b"yes" | b"true") || crate::c_atol(v) != 0
 }
 
 /// A diagnostic the parser raised.
@@ -1313,7 +1307,7 @@ fn parse_options(host: &mut dyn Host, opts: &PhpArray) -> Result<BodyOptions, Th
                     "ValueError",
                     format!(
                         "Invalid {} value in $options argument",
-                        crate::argparse::value_name(host, other)
+                        crate::argparse::zval_value_name(host, other)
                     ),
                 ))
             }
@@ -1342,7 +1336,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         Some(other) => {
             return Err(Thrown::type_error(format!(
                 "request_parse_body(): Argument #1 ($options) must be of type ?array, {} given",
-                crate::argparse::value_name(host, &other)
+                crate::argparse::zval_value_name(host, &other)
             )))
         }
     };
@@ -1465,21 +1459,15 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Array(pair))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("is_uploaded_file", fn_is_uploaded_file, 1, 1);
-    put("move_uploaded_file", fn_move_uploaded_file, 2, 2);
-    put("request_parse_body", fn_request_parse_body, 0, 1);
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("is_uploaded_file", fn_is_uploaded_file),
+            ("move_uploaded_file", fn_move_uploaded_file),
+            ("request_parse_body", fn_request_parse_body),
+        ],
+    );
 }
 
 #[cfg(test)]

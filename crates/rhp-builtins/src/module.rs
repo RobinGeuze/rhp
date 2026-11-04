@@ -7,18 +7,15 @@
 //! Core stdlib groups (`str_fns`, `math_fns`, …) stay registered directly for
 //! now — only discrete extensions use this richer contract.
 
-use std::collections::HashMap;
-
 use rhp_values::Value;
 
 use crate::streams::WrapperReg;
-use crate::Builtin;
 
 /// A full extension description.
 pub struct ModuleDef {
     pub name: &'static str,
     /// Insert the module's native functions into the registry.
-    pub functions: fn(&mut HashMap<&'static str, Builtin>),
+    pub functions: fn(&mut crate::Registry),
     /// The module's `(name, value)` constants.
     pub constants: fn() -> Vec<(&'static str, Value)>,
     /// PHP-source class/interface declarations (compiled into the prelude).

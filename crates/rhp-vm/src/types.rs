@@ -226,7 +226,7 @@ impl Vm {
                         "{fname}(): Passing null to parameter #{} (${pname}) of type {tname} is deprecated",
                         i + 1
                     );
-                    if let Err(t) = self.diag(8192, &msg) {
+                    if let Err(t) = self.diag(rhp_builtins::E_DEPRECATED, &msg) {
                         return Err((i, t));
                     }
                     frame.regs[p.cv as usize] = zero;
@@ -260,7 +260,7 @@ impl Vm {
                                 i + 1,
                                 pname,
                                 self.type_string_resolved(ty, ctx, frame.called_class),
-                                self.zval_value_name(&deref(&cur)),
+                                rhp_builtins::zval_value_name(self, &deref(&cur)),
                                 site.unwrap_or_default(),
                             ),
                         ),
@@ -333,34 +333,17 @@ impl Vm {
                         "{}(): Return value must be of type {}, {} returned",
                         fname,
                         self.type_string_resolved(ty, ctx, called),
-                        self.zval_value_name(&deref(&v)),
+                        rhp_builtins::zval_value_name(self, &deref(&v)),
                     ),
                 ))
             }
         }
     }
 
-    pub(crate) fn value_debug_type(&self, v: &Value) -> String {
-        match v {
-            Value::Object(h) => self
-                .class_name(h.borrow().class)
-                .map(|n| String::from_utf8_lossy(&n).into_owned())
-                .unwrap_or_else(|| "object".into()),
-            Value::Closure(_) => "Closure".into(),
-            Value::Null => "null".into(),
-            Value::Bool(_) => "bool".into(),
-            Value::Int(_) => "int".into(),
-            Value::Float(_) => "float".into(),
-            Value::Str(_) => "string".into(),
-            Value::Array(_) => "array".into(),
-            Value::Resource(_) => "resource".into(),
-            Value::Ref(r) => self.value_debug_type(&r.borrow()),
-        }
-    }
-
-    /// zend_type_to_string_resolved: a declared type as php prints it in
+    /// zend_type_to_string(_resolved): a declared type as php prints it in
     /// TypeErrors -- class names first (self/parent resolved against `scope`,
-    /// static against `called`), then the builtin types in php's fixed order.
+    /// static against `called`; with no scope they print as written), then
+    /// the builtin types in php's fixed order.
     pub(crate) fn type_string_resolved(
         &self,
         ty: &rhp_bytecode::TypeHint,
@@ -499,7 +482,7 @@ impl Vm {
             ));
         }
         if let Value::Array(_) = d {
-            self.diag(2, "Array to string conversion")?;
+            self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
         }
         Ok(conv::to_string_bytes(&d))
     }
@@ -607,79 +590,8 @@ fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
         .collect()
 }
 
-/// Human-readable form of a declared type, for TypeError messages.
-pub(crate) fn type_string(ty: &rhp_bytecode::TypeHint) -> String {
-    // php's zend_type_to_string: class names first (declaration order), then
-    // the builtin types in a fixed order, `null` last (or `?T` for a single
-    // type). `iterable` is `Traversable|array`.
-    use rhp_bytecode::TypeKind as K;
-    if ty.intersection {
-        let parts: Vec<String> = ty
-            .kinds
-            .iter()
-            .filter_map(|k| match k {
-                K::Named(n) => Some(String::from_utf8_lossy(n.as_bytes()).into_owned()),
-                _ => None,
-            })
-            .collect();
-        return parts.join("&");
-    }
-    let has = |want: &dyn Fn(&K) -> bool| ty.kinds.iter().any(want);
-    let mut parts: Vec<String> = dnf_group_strings(ty);
-    for k in &ty.kinds {
-        match k {
-            K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
-            K::SelfType => parts.push("self".into()),
-            K::Parent => parts.push("parent".into()),
-            _ => {}
-        }
-    }
-    if has(&|k| matches!(k, K::Iterable)) && !parts.iter().any(|p| p == "Traversable") {
-        parts.push("Traversable".into());
-    }
-    if has(&|k| matches!(k, K::Mixed)) {
-        parts.push("mixed".into());
-        return parts.join("|");
-    }
-    type Pred = fn(&K) -> bool;
-    let order: [(Pred, &str); 7] = [
-        (|k| matches!(k, K::StaticType), "static"),
-        (|k| matches!(k, K::Callable), "callable"),
-        (|k| matches!(k, K::Object), "object"),
-        (|k| matches!(k, K::Array | K::Iterable), "array"),
-        (|k| matches!(k, K::String), "string"),
-        (|k| matches!(k, K::Int), "int"),
-        (|k| matches!(k, K::Float), "float"),
-    ];
-    for (pred, name) in order {
-        if has(&pred) {
-            parts.push(name.into());
-        }
-    }
-    let t = has(&|k| matches!(k, K::True));
-    let f = has(&|k| matches!(k, K::False));
-    if has(&|k| matches!(k, K::Bool)) || (t && f) {
-        parts.push("bool".into());
-    } else if f {
-        parts.push("false".into());
-    } else if t {
-        parts.push("true".into());
-    }
-    if has(&|k| matches!(k, K::Void)) {
-        parts.push("void".into());
-    }
-    if has(&|k| matches!(k, K::Never)) {
-        parts.push("never".into());
-    }
-    if ty.nullable || has(&|k| matches!(k, K::Null)) {
-        if parts.len() == 1 && ty.groups.is_empty() {
-            return format!("?{}", parts[0]);
-        }
-        parts.push("null".into());
-    }
-    parts.join("|")
-}
-
+/// zend_zval_type_name for a value that is not an object (`bool` for
+/// both bools).
 pub(crate) fn type_lc(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -691,6 +603,16 @@ pub(crate) fn type_lc(v: &Value) -> &'static str {
         Value::Object(_) | Value::Closure(_) => "object",
         Value::Resource(_) => "resource",
         Value::Ref(_) => "reference",
+    }
+}
+
+/// zend_zval_value_name for a value that is not an object: [`type_lc`],
+/// but `true` / `false` for a bool.
+pub(crate) fn value_name_lc(v: &Value) -> &'static str {
+    match v {
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        other => type_lc(other),
     }
 }
 

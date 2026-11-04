@@ -14,13 +14,12 @@ pub(crate) mod node;
 pub mod sys;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{Once, OnceLock};
 
 use rhp_values::{conv, PhpArray, PhpStr, Value};
 
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// An error record of libxml2's (php's `LibXMLError`).
 #[derive(Clone, Debug)]
@@ -33,12 +32,7 @@ pub struct XmlError {
     pub file: Option<Vec<u8>>,
 }
 
-pub(crate) fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+pub(crate) use rhp_semantics::deref;
 
 /// String argument `i` as zpp's `s` hands it over: the string itself, not
 /// a copy (a document as large as memory_limit allows still loads).
@@ -425,7 +419,7 @@ fn fn_set_streams_context(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let Value::Resource(r) = &arg else {
         return Err(Thrown::type_error(format!(
             "libxml_set_streams_context(): Argument #1 ($context) must be of type resource, {} given",
-            crate::ext::zpp::given_type(host, &arg)
+            crate::argparse::zval_value_name(host, &arg)
         )));
     };
     if r.type_name != "stream-context" {
@@ -455,61 +449,25 @@ fn fn_get_external_entity_loader(_h: &mut dyn Host, _args: &[Value]) -> Result<V
     Ok(entity_loader_callback().unwrap_or(Value::Null))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "libxml_use_internal_errors",
-        fn_use_internal_errors,
-        0,
-        Some(1),
-    );
-    put(m, "libxml_get_errors", fn_get_errors, 0, Some(0));
-    put(m, "libxml_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "libxml_clear_errors", fn_clear_errors, 0, Some(0));
-    put(
-        m,
-        "libxml_disable_entity_loader",
-        fn_disable_entity_loader,
-        0,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_set_streams_context",
-        fn_set_streams_context,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_set_external_entity_loader",
-        fn_set_external_entity_loader,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_get_external_entity_loader",
-        fn_get_external_entity_loader,
-        0,
-        Some(0),
+        &[
+            ("libxml_use_internal_errors", fn_use_internal_errors),
+            ("libxml_get_errors", fn_get_errors),
+            ("libxml_get_last_error", fn_get_last_error),
+            ("libxml_clear_errors", fn_clear_errors),
+            ("libxml_disable_entity_loader", fn_disable_entity_loader),
+            ("libxml_set_streams_context", fn_set_streams_context),
+            (
+                "libxml_set_external_entity_loader",
+                fn_set_external_entity_loader,
+            ),
+            (
+                "libxml_get_external_entity_loader",
+                fn_get_external_entity_loader,
+            ),
+        ],
     );
 }
 

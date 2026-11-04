@@ -9,21 +9,16 @@
 //! reported as loaded (`extension_loaded('sockets')` stays false).
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
+use crate::argparse::zval_value_name;
 use crate::object::{ClassHandlers, ObjectHandlers};
-use crate::proc_fns::{zpp_long, zpp_type_name};
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::proc_fns::zpp_long;
+use crate::streams::errno;
+use crate::{Host, Thrown};
 
 /// `Socket`'s handlers: no clone, not comparable.
 pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
@@ -67,7 +62,7 @@ fn socket_arg(
         "{fname}(): Argument #{} ($socket) must be of type {}Socket, {} given",
         i + 1,
         if nullable { "?" } else { "" },
-        zpp_type_name(host, &v)
+        zval_value_name(host, &v)
     )))
 }
 
@@ -107,10 +102,6 @@ fn sockets_strerror(e: i32) -> String {
 
 extern "C" {
     fn hstrerror(err: libc::c_int) -> *const libc::c_char;
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -271,7 +262,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let Some(a) = option_table(&value) else {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is SO_LINGER, {} given",
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let onoff = table_entry(&a, "l_onoff", fname)?;
@@ -302,7 +293,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is {}, {} given",
                 if opt == libc::SO_RCVTIMEO as i64 { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" },
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let sec = table_entry(&a, "sec", fname)?;
@@ -365,38 +356,20 @@ fn fn_socket_clear_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Null)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "socket_import_stream",
-        fn_socket_import_stream,
-        1,
-        Some(1),
+        &[
+            ("socket_import_stream", fn_socket_import_stream),
+            ("socket_get_option", fn_socket_get_option),
+            ("socket_getopt", fn_socket_get_option),
+            ("socket_set_option", fn_socket_set_option),
+            ("socket_setopt", fn_socket_set_option),
+            ("socket_strerror", fn_socket_strerror),
+            ("socket_last_error", fn_socket_last_error),
+            ("socket_clear_error", fn_socket_clear_error),
+        ],
     );
-    put(m, "socket_get_option", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_getopt", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_set_option", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_setopt", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_strerror", fn_socket_strerror, 1, Some(1));
-    put(m, "socket_last_error", fn_socket_last_error, 0, Some(1));
-    put(m, "socket_clear_error", fn_socket_clear_error, 0, Some(1));
 }
 
 pub const PRELUDE_PHP: &str = r#"

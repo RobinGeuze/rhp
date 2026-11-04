@@ -323,13 +323,14 @@ pub fn methods() -> &'static [Method] {
 }
 
 /// A parameter whose type is made of scalar and array types only, so zpp's
-/// checks on it are generic: coercion of `Stringable` objects, TypeErrors
-/// for other objects and for arrays, the null deprecation.
-#[derive(Debug)]
+/// checks on it are generic: the `Z_PARAM_*` its type maps to ([`Zpp`]),
+/// in the caller's typing mode.
+#[derive(Debug, Clone)]
 pub struct ScalarParam {
     pub pos: usize,
     pub name: &'static str,
     pub ty: &'static str,
+    pub kind: Zpp,
     pub variadic: bool,
     pub nullable: bool,
     pub has_str: bool,
@@ -337,13 +338,123 @@ pub struct ScalarParam {
     pub by_ref: bool,
 }
 
+/// The `Z_PARAM_*` a scalar stub type parses with (`null` aside, which
+/// [`ScalarParam::nullable`] covers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zpp {
+    /// `string`: `Z_PARAM_STR`.
+    Str,
+    /// `int`: `Z_PARAM_LONG`.
+    Long,
+    /// `float`: `Z_PARAM_DOUBLE`.
+    Double,
+    /// `bool`: `Z_PARAM_BOOL`.
+    Bool,
+    /// `int|float`: `Z_PARAM_NUMBER`.
+    Number,
+    /// `string|int`: `Z_PARAM_STR_OR_LONG`.
+    StrOrLong,
+    /// `string|int|float`: `Z_PARAM_NUMBER_OR_STR`.
+    NumberOrStr,
+    /// `array`: `Z_PARAM_ARRAY`.
+    Array,
+    /// `array|string`: `Z_PARAM_ARRAY_HT_OR_STR`.
+    ArrayOrStr,
+    /// `array|int`: `Z_PARAM_ARRAY_HT_OR_LONG`.
+    ArrayOrLong,
+    /// A class name (zpp's `C`, zend_parse_arg_class): converted to a
+    /// string in either mode, then a class that must exist and derive from
+    /// [`class_param_base`] when it names one.
+    Class,
+    /// Another mix of scalar types: only the object, array and null checks.
+    Other,
+}
+
+impl Zpp {
+    /// The type a TypeError names (php's `Z_EXPECTED_*`), or `None` for
+    /// [`Zpp::Other`].
+    pub fn expected(self, nullable: bool) -> Option<&'static str> {
+        use Zpp::*;
+        Some(match (self, nullable) {
+            (Str, false) => "string",
+            (Str, true) => "?string",
+            (Long, false) => "int",
+            (Long, true) => "?int",
+            (Double, false) => "float",
+            (Double, true) => "?float",
+            (Bool, false) => "bool",
+            (Bool, true) => "?bool",
+            (Number, false) => "int|float",
+            (Number, true) => "int|float|null",
+            (StrOrLong, false) => "string|int",
+            (StrOrLong, true) => "string|int|null",
+            (NumberOrStr, false) => "string|int|float",
+            (NumberOrStr, true) => "string|int|float|null",
+            (Array, false) => "array",
+            (Array, true) => "?array",
+            (ArrayOrStr, false) => "array|string",
+            (ArrayOrStr, true) => "array|string|null",
+            (ArrayOrLong, false) => "array|int",
+            (ArrayOrLong, true) => "array|int|null",
+            (Class | Other, _) => return None,
+        })
+    }
+
+    fn of(ty: &str) -> Zpp {
+        let mut parts: Vec<&str> = ty
+            .trim_start_matches('?')
+            .split('|')
+            .filter(|t| *t != "null")
+            .collect();
+        parts.sort_unstable();
+        match parts.as_slice() {
+            ["string"] => Zpp::Str,
+            ["int"] => Zpp::Long,
+            ["float"] => Zpp::Double,
+            ["bool"] => Zpp::Bool,
+            ["float", "int"] => Zpp::Number,
+            ["int", "string"] => Zpp::StrOrLong,
+            ["float", "int", "string"] => Zpp::NumberOrStr,
+            ["array"] => Zpp::Array,
+            ["array", "string"] => Zpp::ArrayOrStr,
+            ["array", "int"] => Zpp::ArrayOrLong,
+            _ => Zpp::Other,
+        }
+    }
+}
+
 /// Parameters whose zpp is looser than their stub type: fputcsv's `$eol` is
-/// `Z_PARAM_STR_OR_NULL`, and ini_set's `$value` raises its own TypeError.
+/// `Z_PARAM_STR_OR_NULL`, ini_set's `$value` raises its own TypeError, and
+/// hash_equals takes zvals and checks them itself.
 const ZPP_OWN: &[(&str, &str)] = &[
     ("fputcsv", "eol"),
+    ("hash_equals", "known_string"),
+    ("hash_equals", "user_string"),
     ("ini_alter", "value"),
     ("ini_set", "value"),
 ];
+
+/// Parameters whose zpp differs from what their stub type maps to:
+/// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`
+/// parameters php parses as a class name (`C`).
+const ZPP_KIND: &[(&str, &str, Zpp)] = &[
+    ("get_class_vars", "class", Zpp::Class),
+    ("number_format", "num", Zpp::Number),
+    ("simplexml_import_dom", "class_name", Zpp::Class),
+    ("simplexml_load_file", "class_name", Zpp::Class),
+    ("simplexml_load_string", "class_name", Zpp::Class),
+];
+
+/// The class a [`Zpp::Class`] parameter's class must derive from, if any.
+pub fn class_param_base(func: &str, param: &str) -> Option<&'static str> {
+    match (func, param) {
+        (
+            "simplexml_import_dom" | "simplexml_load_file" | "simplexml_load_string",
+            "class_name",
+        ) => Some("SimpleXMLElement"),
+        _ => None,
+    }
+}
 
 /// Extensions whose builtins parse every parameter themselves, in php's
 /// order: a `GMP|int|string` argument's error comes before a later `int`'s.
@@ -369,6 +480,10 @@ fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> 
         pos,
         name: p.name,
         ty: p.ty,
+        kind: ZPP_KIND
+            .iter()
+            .find(|(func, param, _)| *func == f.name && *param == p.name)
+            .map_or_else(|| Zpp::of(p.ty), |&(_, _, kind)| kind),
         variadic: p.variadic(),
         nullable,
         has_str: parts().any(|t| t == "string"),
@@ -377,24 +492,133 @@ fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> 
     })
 }
 
-/// The [`ScalarParam`]s of a function row.
-pub fn scalar_params(f: &'static Func) -> &'static [ScalarParam] {
-    static CACHE: std::sync::OnceLock<Vec<Box<[ScalarParam]>>> = std::sync::OnceLock::new();
+/// A function row's [`ScalarParam`]s, and how many of its parameters come
+/// before the first one whose checks are the body's (`prefix`: a resource,
+/// a callable, a class type, …; `mixed` does not count): zpp reports an
+/// earlier parameter's error first, so the checks of a later scalar
+/// parameter that the body's error would beat stay with the body.
+#[derive(Debug)]
+pub struct ScalarParams {
+    pub params: Box<[ScalarParam]>,
+    pub prefix: usize,
+    /// zpp depends on the call ([`scalar_params_for`]).
+    by_call: bool,
+}
+
+/// The functions [`scalar_params_for`] has variants for (`call_variant`
+/// tells them apart by their first letter).
+const ZPP_BY_CALL: &[&str] = &["implode", "strtr"];
+
+/// The [`ScalarParams`] of a function row.
+pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
+    static CACHE: std::sync::OnceLock<Vec<ScalarParams>> = std::sync::OnceLock::new();
     let rows = table::FUNCTIONS;
     let cache = CACHE.get_or_init(|| {
         rows.iter()
             .map(|f| {
-                f.params
+                let params: Box<[ScalarParam]> = f
+                    .params
                     .iter()
                     .enumerate()
                     .filter_map(|(i, p)| scalar_param(f, i, p))
-                    .collect()
+                    .collect();
+                // `mixed` and untyped by-reference parameters accept anything.
+                let prefix = (0..f.params.len())
+                    .find(|&i| {
+                        let p = &f.params[i];
+                        !params.iter().any(|sp| sp.pos == i)
+                            && p.ty != "mixed"
+                            && !(p.ty.is_empty() && p.by_ref())
+                    })
+                    .unwrap_or(usize::MAX);
+                // Past the prefix a class name is the body's: it converts
+                // and looks the class up after the earlier checks.
+                let params = params
+                    .into_vec()
+                    .into_iter()
+                    .filter(|sp| sp.kind != Zpp::Class || sp.pos < prefix)
+                    .collect();
+                ScalarParams {
+                    params,
+                    prefix,
+                    by_call: ZPP_BY_CALL.contains(&f.name),
+                }
             })
             .collect()
     });
     let at = (f as *const Func as usize).wrapping_sub(rows.as_ptr() as usize)
         / std::mem::size_of::<Func>();
-    cache.get(at).map_or(&[], |v| &v[..])
+    cache.get(at)
+}
+
+/// The [`ScalarParams`] for a call with `argc` arguments (`frameless`:
+/// one php compiles to ZEND_FRAMELESS_ICALL_n): the row's, except where
+/// php's zpp depends on the count or the variant. strtr parses `$from` as
+/// Z_PARAM_ARRAY_HT with two arguments, and `$from` and `$to` as
+/// Z_PARAM_STR with three. implode's frameless forms parse nothing with
+/// one argument (the body raises the TypeError) and `$separator` as
+/// Z_FLF_PARAM_STR with two.
+#[inline]
+pub fn scalar_params_for(
+    f: &'static Func,
+    argc: usize,
+    frameless: bool,
+) -> Option<&'static ScalarParams> {
+    let row = scalar_params(f)?;
+    if !row.by_call {
+        return Some(row);
+    }
+    Some(call_variant(f, argc, frameless).unwrap_or(row))
+}
+
+#[inline]
+fn call_variant(f: &Func, argc: usize, frameless: bool) -> Option<&'static ScalarParams> {
+    static VARIANTS: std::sync::OnceLock<[ScalarParams; 4]> = std::sync::OnceLock::new();
+    let at = match (f.name.as_bytes()[0], argc, frameless) {
+        (b's', 2, _) => 0,
+        (b's', 3, _) => 1,
+        (b'i', 1, true) => 2,
+        (b'i', 2, true) => 3,
+        _ => return None,
+    };
+    let variants = VARIANTS.get_or_init(|| {
+        // The row's parameters with each named one's kind replaced; the
+        // type php's null deprecation prints stays the stub's.
+        let with = |name: &str, kinds: &[(&str, Zpp)]| {
+            let row = function(name.as_bytes()).and_then(scalar_params);
+            let params = row
+                .expect("cached stub row")
+                .params
+                .iter()
+                .map(|sp| {
+                    let mut sp = sp.clone();
+                    if let Some(&(_, kind)) = kinds.iter().find(|(p, _)| *p == sp.name) {
+                        sp.kind = kind;
+                        sp.nullable = false;
+                        sp.has_str = kind == Zpp::Str;
+                        sp.has_arr = kind == Zpp::Array;
+                    }
+                    sp
+                })
+                .collect();
+            ScalarParams {
+                params,
+                prefix: usize::MAX,
+                by_call: true,
+            }
+        };
+        [
+            with("strtr", &[("from", Zpp::Array)]),
+            with("strtr", &[("from", Zpp::Str), ("to", Zpp::Str)]),
+            ScalarParams {
+                params: Box::new([]),
+                prefix: usize::MAX,
+                by_call: true,
+            },
+            with("implode", &[("separator", Zpp::Str)]),
+        ]
+    });
+    Some(&variants[at])
 }
 
 #[cfg(test)]

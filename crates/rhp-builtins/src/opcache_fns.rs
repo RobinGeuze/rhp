@@ -3,12 +3,10 @@
 //! `opcache.enable_cli`, or `opcache.enable=0`) each function reports what
 //! php reports then, so feature detection still sees them.
 
-use std::collections::HashMap;
-
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::argparse::{bool_param, str_param};
-use crate::{Builtin, Host, Thrown};
+use crate::{Host, Thrown};
 
 /// How `opcache_get_configuration()` types a directive.
 #[derive(Clone, Copy)]
@@ -82,11 +80,6 @@ const DIRECTIVES: &[(&str, Ty)] = &[
     ("opcache.jit_prof_threshold", Ty::Float),
     ("opcache.jit_max_trace_length", Ty::Int),
 ];
-
-fn ini_bool(v: &[u8]) -> bool {
-    let l = v.to_ascii_lowercase();
-    matches!(&l[..], b"on" | b"yes" | b"true") || crate::runtime_fns::c_atol(&l) != 0
-}
 
 /// `validate_api_restriction`: with `opcache.restrict_api` set, only a
 /// script whose path starts with it may use the API.
@@ -185,7 +178,7 @@ fn fn_opcache_get_configuration(host: &mut dyn Host, _args: &[Value]) -> Result<
         let raw = host.ini_get(name.as_bytes()).unwrap_or_default();
         let atol = || crate::runtime_fns::c_atol(&raw);
         let v = match ty {
-            Ty::Bool => Value::Bool(ini_bool(&raw)),
+            Ty::Bool => Value::Bool(crate::ini_parse_bool(&raw)),
             Ty::Int => Value::Int(atol()),
             Ty::Mb => Value::Int(atol().saturating_mul(1024 * 1024)),
             Ty::Quantity => Value::Int(crate::runtime_fns::ini_parse_quantity(&raw)),
@@ -253,8 +246,8 @@ pub fn asctime_local(t: i64) -> String {
 pub(crate) fn jit_enabled() -> bool {
     let startup = |n: &[u8]| crate::ini_startup_value(n).unwrap_or_default();
     let cli = crate::sapi::sapi_name() == "cli";
-    let started = ini_bool(&startup(b"opcache.enable"))
-        && (!cli || ini_bool(&startup(b"opcache.enable_cli")));
+    let started = crate::ini_parse_bool(&startup(b"opcache.enable"))
+        && (!cli || crate::ini_parse_bool(&startup(b"opcache.enable_cli")));
     let mode = startup(b"opcache.jit").to_ascii_lowercase();
     started
         && mode != b"disable"
@@ -454,39 +447,21 @@ pub(crate) fn jit_mode_valid(mode: &[u8]) -> bool {
     jit % 10 <= 1 && jit / 10 == 0
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let mut put = |name: &'static str, func: crate::NativeFn, min: usize, max: usize| {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: Some(max),
-            },
-        );
-    };
-    put("opcache_get_status", fn_opcache_get_status, 0, 1);
-    put("opcache_reset", fn_opcache_reset, 0, 0);
-    put("opcache_invalidate", fn_opcache_invalidate, 1, 2);
-    put(
-        "opcache_is_script_cached",
-        fn_opcache_is_script_cached,
-        1,
-        1,
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("opcache_get_status", fn_opcache_get_status),
+            ("opcache_reset", fn_opcache_reset),
+            ("opcache_invalidate", fn_opcache_invalidate),
+            ("opcache_is_script_cached", fn_opcache_is_script_cached),
+            (
+                "opcache_is_script_cached_in_file_cache",
+                fn_opcache_is_script_cached_in_file_cache,
+            ),
+            ("opcache_compile_file", fn_opcache_compile_file),
+            ("opcache_get_configuration", fn_opcache_get_configuration),
+            ("opcache_jit_blacklist", fn_opcache_jit_blacklist),
+        ],
     );
-    put(
-        "opcache_is_script_cached_in_file_cache",
-        fn_opcache_is_script_cached_in_file_cache,
-        1,
-        1,
-    );
-    put("opcache_compile_file", fn_opcache_compile_file, 1, 1);
-    put(
-        "opcache_get_configuration",
-        fn_opcache_get_configuration,
-        0,
-        0,
-    );
-    put("opcache_jit_blacklist", fn_opcache_jit_blacklist, 1, 1);
 }

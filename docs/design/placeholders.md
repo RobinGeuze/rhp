@@ -55,10 +55,10 @@ priority order rather than rediscovered one framework crash at a time.
 | 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/prelude.rs` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
-| 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
+| 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 | 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
-| 36 | Builtin `int`/`int\|float` parameters accept leading-numeric strings (`intdiv("9z", 2)`) instead of throwing `TypeError` | builtin argument parsing | TypeError parity at builtin calls | med | med |
+| 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
 | 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
 
@@ -177,6 +177,12 @@ The original notes:
   which matches php's default.
 - **Full impl:** only needed if locale-sensitive functions (`strcoll`,
   locale-aware `printf`, `strftime`) are implemented; defer until then.
+  PCRE depends on it too: under a non-C `LC_CTYPE` php compiles patterns
+  with `pcre2_maketables` and keys its pattern cache on the locale, so
+  `/\w/` and `/i` see the locale's letters (`preg_match('/^\w$/', "\xE4")`
+  is 1 under `de_DE.ISO8859-1`). rhp's cache key needs the locale once
+  `setlocale` switches `LC_CTYPE`; while it is always `"C"` there is
+  nothing to key on.
 - **Effort/priority:** low / low.
 
 ### 1.9 `php_uname`
@@ -532,32 +538,11 @@ The module is deliberately "READ-ONLY, native format only"
 
 ## 8. Type system
 
-### 8.1 `declare(strict_types=1)` is a no-op; type hints unenforced — **IN PROGRESS**
-- **Now:** the compiler treats all `declare(...)` directives — including
-  `strict_types=1` — as no-ops and just compiles the body
-  (`compiler/lib.rs:1977-1988`). Parameter and return *types are parsed and stored*
-  (`rhp-bytecode/src/lib.rs:279`, `:403`) and the proto carries a `strict_types`
-  flag (`:405-407`, defaulting false at `:433`), but nothing reads them to coerce
-  or to throw `TypeError`. So a function typed `(int $x)` accepts a string
-  unchanged.
-- **Status:** **actively being implemented right now** — the open modification in
-  this working tree is `crates/rhp-bytecode/src/lib.rs` (the proto/type plumbing),
-  which is the data side of exactly this feature.
-- **OK because (until now):** the diff corpus avoided relying on coercion/TypeError
-  at typed boundaries.
-- **Breaks:** PHP's scalar type juggling at call boundaries — in weak mode, `"5"`
-  passed to `(int $x)` coerces to `5` (with a deprecation for non-numeric); in
-  strict mode, a type mismatch throws `TypeError`. Both are observable and
-  common.
-- **Full impl (the in-progress plan):** at the call boundary (`bind_params`,
-  `vm/lib.rs:3170`) and at `return`, check each value against the declared type;
-  in **weak** mode coerce per php's scalar rules (int↔float↔string↔bool, with the
-  int→string and numeric-string rules), in **strict** mode (proto `strict_types`
-  true) accept only exact types (plus the int→float widening php allows) and else
-  throw `TypeError` with php's exact message. The `strict_types` flag must be set
-  from the `declare` directive per-file and propagated to each proto.
-- **Effort/priority:** high / high. On the critical path for real frameworks;
-  already underway.
+### 8.1 `declare(strict_types=1)` and type hints — RESOLVED
+- User functions coerce or reject their typed parameters and return values
+  in the calling file's mode. Builtins get php's zpp in the caller's mode
+  from `crates/rhp-vm/src/zpp.rs` (§8.3); a callback a builtin invokes is
+  called in weak mode, as in php.
 
 ### 8.2 Named arguments to functions whose defaults don't fold — refused
 - **Now:** for a call with named args into a *known* user function, the compiler
@@ -585,15 +570,28 @@ The module is deliberately "READ-ONLY, native format only"
   VM prologue (run them for unfilled params).
 - **Effort/priority:** med / med.
 
-### 8.3 Builtin int/number parameters take leading-numeric strings
-- **Now:** a leading-numeric string passed to a builtin's `int` or
-  `int|float` parameter is truncated to its number: `intdiv("9z", 2)` is 4,
-  `str_repeat("a", "3x")` is `"aaa"`, `abs("4q")` is 4. php throws
-  `TypeError: intdiv(): Argument #1 ($num1) must be of type int, string
-  given`. User functions with `int $x` already throw in both.
-- **Full impl:** the builtin parameter parser should accept only numeric
-  strings (leading and trailing whitespace allowed) for these types, as
-  `zend_parse_arg_long_weak` does, and raise php's `TypeError` otherwise.
+### 8.3 Builtin int/number parameters take leading-numeric strings — RESOLVED
+- `crates/rhp-vm/src/zpp.rs` parses a builtin's stub-typed scalar arguments
+  as `zend_parse_arg_*_weak` does (or strictly, under `strict_types`), so
+  `intdiv("9z", 2)` throws php's TypeError. Goldens
+  `lang/builtin_arg_types` and `lang/builtin_arg_types_strict`.
+- Class-name parameters (zpp's `C`: get_class_vars, simplexml_*) are
+  converted and looked up as `zend_parse_arg_class` does; strtr and
+  implode parse by argument count and frameless variant
+  (`signatures::scalar_params_for`); `in_array()` with a constant
+  haystack and a literal flag is folded as php's compiler folds it, so
+  the flag is never type-checked.
+- **Left:** past the first parameter whose checks are a builtin body's (a
+  resource, a callable, a class), the VM only does the object, array and
+  null checks, so php's order of errors holds; the body coerces the rest
+  itself, as before. So there a null argument still gets the weak-mode
+  deprecation under `strict_types` (`fwrite($fp, null)`: php throws the
+  TypeError), and a scalar is not coerced or checked strictly. Recording
+  the stubs' `@param resource` (and the stream check `PHP_Z_PARAM_STREAM`
+  does inside zpp) in `gen signatures` would let the VM check resource
+  parameters and extend the prefix. Bodies that still differ from php for
+  values zpp accepts: `number_format()` of NAN, INF and huge floats, and
+  `iterator_to_array()` of a scalar (the golden skips those).
 
 ### 8.4 Named arguments to builtins — refused
 - **Now:** a call with named arguments to a builtin function stops with
@@ -662,8 +660,8 @@ packages, then **general framework compatibility**, then long-tail parity.
    (#1.10a, one-line). *High effort, highest priority.*
 2. **`register_shutdown_function` actually runs** (#1.5) — composer plugins and
    error paths depend on it. *High / high.*
-3. **`strict_types` + type enforcement** (#8.1) — already in progress; real
-   packages declare it and rely on coercion/TypeError. *High / high.*
+3. ~~**`strict_types` + type enforcement** (#8.1)~~ — done; builtins keep
+   the zpp prefix limit of #8.3.
 4. **`chdir` + permission-accurate `is_writable`/`is_readable`** (#2.8, #2.6) —
    composer probes writability and changes directories during install.
    *Med / med.*

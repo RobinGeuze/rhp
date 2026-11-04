@@ -1,5 +1,5 @@
 //! The PCRE `preg_*` builtin family: ext/pcre/php_pcre.c's glue over the
-//! real PCRE2 (see [`crate::pcre`] for the library and its per-thread state).
+//! real PCRE2 (see [`super`] for the library and its per-thread state).
 //!
 //! Matching is PCRE2's own, so every construct behaves as in php. This file
 //! ports php's part: delimiter and modifier parsing, the compiled-pattern
@@ -32,7 +32,9 @@ use std::rc::Rc;
 use rhp_values::ops::deref;
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Value};
 
-use crate::pcre::{self, sys::*, JitIssue, Ovector, Regex};
+use crate::ext::pcre;
+use crate::ext::pcre::sys::*;
+use crate::ext::pcre::{JitIssue, Ovector, Regex};
 use crate::{Host, Thrown};
 
 // `preg_last_error()` codes.

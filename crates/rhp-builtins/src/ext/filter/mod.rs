@@ -512,7 +512,8 @@ fn validate_email(host: &mut dyn Host, value: &Value, flags: i64) -> Result<Opti
     } else {
         EMAIL_REGEXP1
     };
-    let ok = crate::preg_fns::fixed_pattern_matches(host, "filter_var", re.as_bytes(), &s)?;
+    let ok =
+        crate::ext::pcre::php_pcre::fixed_pattern_matches(host, "filter_var", re.as_bytes(), &s)?;
     Ok(ok.then(|| Value::str(s)))
 }
 

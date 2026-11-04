@@ -269,7 +269,7 @@ fn ini_entry(
         .iter()
         .find(|e| e.1.as_bytes() == name && module_loaded(e.0))
         // php registers pcre.jit only when the PCRE2 it links has a JIT.
-        .filter(|e| e.1 != "pcre.jit" || crate::pcre::jit_supported())
+        .filter(|e| e.1 != "pcre.jit" || crate::ext::pcre::jit_supported())
 }
 
 /// Current value of an ini directive: `None` = unknown directive,
@@ -330,8 +330,8 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             String::from_utf8_lossy(v)
         );
         (vec![msg], None)
-    } else if let Some(w) = crate::opcache_fns::startup_check(name, v) {
-        crate::opcache_fns::accel_log(name, crate::opcache_fns::LOG_WARNING, w);
+    } else if let Some(w) = crate::ext::opcache::startup_check(name, v) {
+        crate::ext::opcache::accel_log(name, crate::ext::opcache::LOG_WARNING, w);
         (Vec::new(), None)
     } else {
         on_modify_check(name, v)
@@ -518,7 +518,7 @@ pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
         b"precision" => rhp_values::fmt::set_precision(v.map_or(14, c_atol)),
         b"serialize_precision" => rhp_values::fmt::set_serialize_precision(v.map_or(-1, c_atol)),
         b"pcre.backtrack_limit" | b"pcre.recursion_limit" | b"pcre.jit" => {
-            crate::pcre::ini_update(name, v.unwrap_or_default())
+            crate::ext::pcre::ini_update(name, v.unwrap_or_default())
         }
         b"bcmath.scale" => crate::ext::bcmath::set_default_scale(v.map_or(0, ini_parse_quantity)),
         _ => {}
@@ -562,7 +562,7 @@ pub(crate) fn alter_ini_entry(
     let Some(newv) = stored else {
         return Ok(None);
     };
-    if !crate::opcache_fns::on_modify(host, name, &newv)? {
+    if !crate::ext::opcache::on_modify(host, name, &newv)? {
         return Ok(None);
     }
     crate::ext::iconv::ini_runtime_update(host, name, func)?;

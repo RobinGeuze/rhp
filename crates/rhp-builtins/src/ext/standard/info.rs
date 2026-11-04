@@ -306,11 +306,11 @@ fn print_pcre(o: &mut Info) {
         "PCRE (Perl Compatible Regular Expressions) Support",
         "enabled",
     ]);
-    o.row(&["PCRE Library Version", &crate::pcre::version()]);
-    o.row(&["PCRE Unicode Version", &crate::pcre::unicode_version()]);
-    let jit = crate::pcre::jit_supported();
+    o.row(&["PCRE Library Version", &crate::ext::pcre::version()]);
+    o.row(&["PCRE Unicode Version", &crate::ext::pcre::unicode_version()]);
+    let jit = crate::ext::pcre::jit_supported();
     o.row(&["PCRE JIT Support", if jit { "enabled" } else { "disabled" }]);
-    if let Some(t) = crate::pcre::jit_target() {
+    if let Some(t) = crate::ext::pcre::jit_target() {
         o.row(&["PCRE JIT Target", &t]);
     }
     o.table_start();

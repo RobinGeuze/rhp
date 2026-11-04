@@ -6,6 +6,7 @@
 //! Threading: all state is thread-local, so each VM thread has its own. PCRE2
 //! needs no process-wide init, and a compiled pattern never leaves its thread.
 
+pub(crate) mod php_pcre;
 pub(crate) mod sys;
 
 use std::cell::RefCell;

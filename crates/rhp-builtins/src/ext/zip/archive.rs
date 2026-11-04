@@ -992,7 +992,7 @@ fn zip_pcre(cx: &mut Cx<'_>, regexp: &[u8], path: &[u8]) -> Result<Found, Thrown
         return Ok(Ok(None));
     }
     names.sort();
-    let Some(re) = crate::preg_fns::compile_warn(cx.host, &cx.fname, regexp)? else {
+    let Some(re) = crate::ext::pcre::php_pcre::compile_warn(cx.host, &cx.fname, regexp)? else {
         cx.warn("Invalid expression")?;
         return Ok(Err(()));
     };

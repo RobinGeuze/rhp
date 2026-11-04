@@ -21,13 +21,13 @@ mod diag;
 mod host;
 pub mod main;
 pub(crate) mod module;
-pub mod pcre;
 pub mod version;
 pub mod zend;
 
 pub use diag::{
     deprecated, deprecated_fn, flush_stream_diags, notice, open_failed, warn, warn_arg,
 };
+pub use ext::pcre;
 pub use host::{host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta};
 pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 
@@ -40,16 +40,12 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 mod const_modules;
 mod ext;
 mod file_fns;
-mod filter_fns;
 mod fs_fns;
 pub mod http;
 mod inet;
 mod ini_parse;
 #[rustfmt::skip]
 mod ini_table;
-mod json_fns;
-mod opcache_fns;
-mod preg_fns;
 mod proc_fns;
 mod query_fns;
 mod runtime_fns;
@@ -226,7 +222,7 @@ pub fn ini_startup_value(name: &[u8]) -> Option<Vec<u8>> {
     runtime_fns::ini_default_value(name).map(Option::unwrap_or_default)
 }
 
-pub use opcache_fns::{
+pub use ext::opcache::{
     accel_log_dest, accel_log_line, asctime_local, preload_user_check, take_accel_log,
 };
 
@@ -256,8 +252,8 @@ pub fn reset_request_state() {
     ext::date::reset_state();
     runtime_fns::reset_state();
     sapi::cli::reset_state();
-    preg_fns::reset_state();
-    json_fns::reset_state();
+    ext::pcre::php_pcre::reset_state();
+    ext::json::reset_state();
     #[cfg(feature = "mbstring-libmbfl")]
     ext::mbstring::reset_state();
     ext::standard::string::reset_state();
@@ -312,13 +308,13 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("webenc_fns", Box::new(webenc_fns::register)),
         ("html", Box::new(ext::standard::html::register)),
         ("var", Box::new(ext::standard::var::register)),
-        ("filter_fns", Box::new(filter_fns::register)),
+        ("filter", Box::new(ext::filter::register)),
         (
             "formatted_print",
             Box::new(ext::standard::formatted_print::register),
         ),
-        ("preg_fns", Box::new(preg_fns::register)),
-        ("json_fns", Box::new(json_fns::register)),
+        ("pcre", Box::new(ext::pcre::php_pcre::register)),
+        ("json", Box::new(ext::json::register)),
         ("scanf", Box::new(ext::standard::scanf::register)),
         ("soundex", Box::new(ext::standard::soundex::register)),
         (
@@ -348,7 +344,7 @@ fn builtin_modules() -> Vec<(&'static str, Registrar)> {
         ("zpp", Box::new(zend::zpp::register)),
         ("sapi", Box::new(main::sapi::register)),
         ("rfc1867", Box::new(main::rfc1867::register)),
-        ("opcache_fns", Box::new(opcache_fns::register)),
+        ("opcache", Box::new(ext::opcache::register)),
         ("ini_parse", Box::new(ini_parse::register)),
         ("cli", Box::new(sapi::cli::register)),
         ("cgi", Box::new(sapi::cgi::register)),
@@ -657,8 +653,8 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("PHP_OUTPUT_HANDLER_PROCESSED", Value::Int(0x4000)),
     ]
     .into_iter()
-    .chain(preg_fns::preg_constants())
-    .chain(json_fns::json_constants())
+    .chain(ext::pcre::php_pcre::preg_constants())
+    .chain(ext::json::json_constants())
     .chain(ext::standard::info::constants())
     .chain(fs_fns::constants())
     .chain(stdext_fns::constants())

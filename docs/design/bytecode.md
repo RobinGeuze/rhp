@@ -427,7 +427,8 @@ the flattened class table's hash maps; see the note at the top.)
 > `generators`, `include`, `errors` (diagnostics, traces, unwinding),
 > `lifecycle` (`Vm::new`, globals, shutdown), `host` (the `Host` impl) and
 > `streams` (the `StreamTable`), beside `classes`, `compare`, `output`,
-> `request`, `reflect`, `memory` and `opcache`. The sketches below predate it.
+> `request`, `reflect`, `memory` and `opcache`. The sketches below predate it;
+> §3.6 and §3.7 are current.
 
 ### 3.1 Vm struct
 
@@ -606,6 +607,74 @@ control flow wins) — the finally body replaces the top `pending` before
 `FinallyEnd`. `flags.has_finally` lets the common finally-free function skip this
 path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
 `Frame::pending`: `FinallyEnd` *is* FAST_RET; the entry jump *is* FAST_CALL.)
+
+### 3.6 Units: one copy of the bytecode
+
+The VM never copies or patches a proto after compile: a `Program` the
+compiled-script cache keeps runs as it is in every request. Three
+instructions name things by a *file-local* index: `MakeClosure` and
+`DeclareFunc` (the file's `Program::closures`) and `DeclareClass` (its class
+declarations). Each install of a program (the main script, which is unit
+0, every `include`/`require`, every `eval`) appends its closures and class
+declarations to the VM's flat tables (`Vm::closures`, `Vm::decl_classes`)
+and records where they start in a `UnitBase` in `Vm::units`. A frame
+carries its unit, and those three instructions add the unit's base to
+their operand.
+
+Whatever can start a frame records its unit beside its proto: the function
+and closure tables and the class initializer thunks hold a `UnitFn`, a
+`ResolvedMethod` has `unit` (a trait method keeps the trait's), and so do
+declaration slots and `ClassEntry`s. Nested thunks (parameter defaults,
+attribute arguments) run in their owner's unit. Function statics are keyed
+by (proto, unit, class, name), so a file included twice keeps two sets, as
+two compiles would.
+
+`run_frames` takes the running frame's proto (an `Rc` clone) only when a
+call or a return changes the top frame, not per instruction.
+
+### 3.7 Sharing compiled code across threads (design notes)
+
+Each thread compiles and caches its own programs (opcache's cache and the
+compiler's prelude cache are `thread_local!`) because compiled code holds
+`Rc`s. Since the VM no longer writes into protos (§3.6), what is left for
+sharing one `Program` between threads is in the data types:
+
+- **Proto links.** `Program`, `MethodProto`, `PropDefaultProto::Init`,
+  `ConstInitProto::Thunk` and `ParamInfo::default_thunk` hold
+  `Rc<FunctionProto>` / `Rc<ClassProto>`; they become `Arc`. The VM clones
+  these handles when it installs or links (function, closure and method
+  tables, `ClassEntry::proto`), which stays cheap. `Frame::proto` would make
+  every call and return an atomic increment and decrement; a frame could
+  borrow the proto instead, kept alive by an `Arc<Program>` held by its
+  unit.
+- **Constants and names.** `FunctionProto::consts` is a `Vec<Value>`, and
+  `names`, `cv_var_names`, `superglobals`, `debug.file`, the class protos'
+  names, `TypeHint`, `DeclMeta` and attribute arguments hold `PhpStr`
+  (constant arrays hold `PhpArray`): non-atomic `Rc`s, so not `Send`.
+  `LoadConst` clones a constant into the frame, which writes its
+  refcount. Either a shared pool gets a `Send` representation that each
+  thread turns into `Value`s on first use (memory per thread, a lookup per
+  proto), or strings and arrays get php's immutable flag
+  (`GC_IMMUTABLE`): clone and drop skip the counter of an immutable value,
+  so a shared one is never written. The second keeps `LoadConst` a plain
+  clone but adds a branch to every `PhpStr`/`PhpArray` clone and drop;
+  measure it on the benchmarks first.
+- **`Program::compile_diags_reported`** is a `Cell<bool>`; it becomes an
+  atomic.
+- **Caches.** opcache's `Cache` and the compiler's `PRELUDE_CACHE` move
+  from `thread_local!` behind a process-wide lock (only the `opcache`
+  module touches the cache). Preloading can then run once per process; its
+  declarations are still linked into each request's VM.
+- **Memory accounting.** The counters are per thread and a block freed on
+  another thread is charged there, so shared programs are built and freed
+  inside `rhp_values::mem::uncounted`, as the cache already does.
+- **What stays per VM.** Units, the function, closure and declaration
+  tables, linked `ClassEntry`s (static properties, lazily evaluated
+  constants, enum case objects), statics and everything else a request
+  changes. None of it needs to be `Send`.
+
+The model stays one VM per thread with plain `Rc` (sapi.md, *Threading
+model*); `Arc` comes later, behind a flag, once measured.
 
 ---
 

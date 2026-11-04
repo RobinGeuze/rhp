@@ -170,10 +170,13 @@ functions report it; `opcache_reset()` takes effect at the next request.
   `thread_local!`: every request served on a worker thread shares it, as
   php-fpm workers share their shared-memory segment. Once bytecode is
   `Arc`-based it can become process-wide behind a lock; only the module
-  touches it.
-- **Nothing per-request is cached.** A `Program` is immutable and the VM
-  copies the protos it runs into the request, so statics, class statics,
-  constants and globals start fresh in every request.
+  touches it (bytecode.md §3.7 lists what that needs).
+- **Nothing per-request is cached.** A `Program` is immutable: the VM runs
+  its protos as they are (bytecode.md §3.6) and keeps statics, class
+  statics, constants and globals in the request's `Vm`, so they start
+  fresh in every request. Loading a cached file copies none of its code;
+  the request only builds its own entries for it (functions, linked
+  classes).
 - **Preload.** `opcache.preload` runs once per thread, before its first
   request, on an engine of its own (its output goes to stdout). The
   functions and classes it declared are declared again at the start of

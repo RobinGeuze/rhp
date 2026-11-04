@@ -22,26 +22,6 @@ pub use sys::{
     TIMELIB_ZONETYPE_NONE, TIMELIB_ZONETYPE_OFFSET,
 };
 
-/// `timelib_realloc` (glue/timelib_config.h): php's erealloc over the
-/// shim's emalloc. Never NULL.
-///
-/// # Safety
-///
-/// `ptr` is NULL or a live block from `rhp_csrc_emalloc`; it is not used
-/// again.
-#[no_mangle]
-pub unsafe extern "C" fn rhp_timelib_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
-    let new = crate::rhp_csrc_emalloc(size);
-    if !ptr.is_null() {
-        // The block's layout size sits in the header (src/lib.rs).
-        let base = (ptr as *mut u8).sub(crate::EMALLOC_HEADER);
-        let old = (base as *const usize).read() - crate::EMALLOC_HEADER;
-        ptr::copy_nonoverlapping(ptr as *const u8, new as *mut u8, old.min(size));
-        crate::rhp_csrc_efree(ptr);
-    }
-    new
-}
-
 /// The bytes of a C string timelib owns.
 ///
 /// # Safety
@@ -825,19 +805,5 @@ mod tests {
         assert!(iv.begin.is_none() && iv.end.is_none());
         assert_eq!(iv.period.unwrap().d, 1);
         assert!(strtointerval(b"P1X").errors.error_count() > 0);
-    }
-
-    #[test]
-    fn realloc_keeps_contents() {
-        // SAFETY: blocks from the shim's allocator, each freed once.
-        unsafe {
-            let p = rhp_timelib_realloc(ptr::null_mut(), 3) as *mut u8;
-            ptr::copy_nonoverlapping(b"abc".as_ptr(), p, 3);
-            let q = rhp_timelib_realloc(p as *mut c_void, 4096) as *mut u8;
-            assert_eq!(std::slice::from_raw_parts(q, 3), b"abc");
-            let r = rhp_timelib_realloc(q as *mut c_void, 2) as *mut u8;
-            assert_eq!(std::slice::from_raw_parts(r, 2), b"ab");
-            crate::rhp_csrc_efree(r as *mut c_void);
-        }
     }
 }

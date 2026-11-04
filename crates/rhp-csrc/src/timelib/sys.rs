@@ -246,9 +246,9 @@ pub type timelib_tz_get_wrapper = Option<
 >;
 
 extern "C" {
-    // glue/timelib.c and timelib_config.h: timelib's allocator, for memory
+    // timelib_config.h: timelib's allocator (the shim's), for memory
     // timelib frees (php_date.c's timelib_strdup / timelib_free).
-    #[link_name = "rhp_timelib_strdup"]
+    #[link_name = "rhp_csrc_estrdup"]
     pub fn timelib_strdup(s: *const c_char) -> *mut c_char;
     #[link_name = "rhp_csrc_emalloc"]
     pub fn timelib_malloc(size: usize) -> *mut std::ffi::c_void;

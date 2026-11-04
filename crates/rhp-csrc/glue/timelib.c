@@ -1,26 +1,11 @@
 /*
- * Around the vendored timelib: php's ecalloc, estrdup and estrndup for
- * timelib_config.h, and the struct layouts src/timelib.rs mirrors.
+ * Around the vendored timelib: php's estrndup for timelib_config.h, and the
+ * struct layouts src/timelib.rs mirrors.
  */
 #include <string.h>
 
 #include "timelib.h"
 #include "timelib_private.h"
-
-void *rhp_timelib_calloc(size_t nmemb, size_t size)
-{
-	size_t n;
-	/* zend_safe_address_guarded; timelib asks for one element at a time. */
-	if (__builtin_mul_overflow(nmemb, size, &n)) {
-		n = SIZE_MAX;
-	}
-	return memset(rhp_csrc_emalloc(n), 0, n);
-}
-
-char *rhp_timelib_strdup(const char *s)
-{
-	return rhp_timelib_strndup(s, strlen(s));
-}
 
 /* zend_strndup: exactly `length` bytes, then a NUL. */
 char *rhp_timelib_strndup(const char *s, size_t length)

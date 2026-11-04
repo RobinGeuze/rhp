@@ -223,8 +223,8 @@ archives, except LGPL C (see [Licences](#licences)):
   headers, `shim/zend_shim.h`, and builds with php's flags (`php_src()` in
   `build.rs`). timelib needs no Zend: it builds with its own flags from
   ext/date/config0.m4 (`-fwrapv`), and `glue/timelib_config.h` stands in for
-  php's generated timelib_config.h (timelib's allocator on emalloc, so it
-  counts against memory_limit). `timezonedb.h` carries the tz database
+  php's generated timelib_config.h (timelib's allocator on the shim's
+  emalloc family, so it counts against memory_limit). `timezonedb.h` carries the tz database
   twice; the sync script keeps the "slim" branch parse_tz.c compiles, which
   gives a byte-identical object at a third of the size.
 - **Frozen libraries**, whose last release is the one php links: the argon2

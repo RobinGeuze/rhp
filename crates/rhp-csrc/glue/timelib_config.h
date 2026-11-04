@@ -25,19 +25,19 @@
 # define WORDS_BIGENDIAN 1
 #endif
 
-/* emalloc and efree are src/lib.rs's; the rest, php's erealloc, ecalloc,
- * estrdup and estrndup over them, are glue/timelib.c's and src/timelib.rs's. */
+/* The shim's emalloc family (src/lib.rs, shim/zend_shim.c); estrndup,
+ * which the shim lacks, is glue/timelib.c's. */
 void *rhp_csrc_emalloc(size_t size);
 void rhp_csrc_efree(void *ptr);
-void *rhp_timelib_realloc(void *ptr, size_t size);
-void *rhp_timelib_calloc(size_t nmemb, size_t size);
-char *rhp_timelib_strdup(const char *s);
+void *rhp_csrc_erealloc(void *ptr, size_t size);
+void *rhp_csrc_ecalloc(size_t nmemb, size_t size);
+char *rhp_csrc_estrdup(const char *s);
 char *rhp_timelib_strndup(const char *s, size_t length);
 
 #define timelib_malloc  rhp_csrc_emalloc
-#define timelib_realloc rhp_timelib_realloc
-#define timelib_calloc  rhp_timelib_calloc
-#define timelib_strdup  rhp_timelib_strdup
+#define timelib_realloc rhp_csrc_erealloc
+#define timelib_calloc  rhp_csrc_ecalloc
+#define timelib_strdup  rhp_csrc_estrdup
 #define timelib_strndup rhp_timelib_strndup
 #define timelib_free    rhp_csrc_efree
 

@@ -56,6 +56,14 @@ impl Vm {
                         _ if user => Got::Fail,
                         _ => Got::Keep,
                     }
+                } else if let Zpp::Class(base) = sp.kind {
+                    // Past the prefix (or from the prelude) the body
+                    // converts and looks the class up, in php's order.
+                    if user && i < prefix {
+                        self.zpp_class(name, sp, i, &args[i], base)?
+                    } else {
+                        Got::Keep
+                    }
                 } else if user && i < prefix {
                     self.zpp_arg(name, sp, i, &args[i], strict)?
                 } else if user {
@@ -157,7 +165,7 @@ impl Vm {
                 Long | Number | StrOrLong | NumberOrStr | ArrayOrLong => Got::Set(Value::Int(0)),
                 Double => Got::Set(Value::Float(0.0)),
                 Bool => Got::Set(Value::Bool(false)),
-                Str | ArrayOrStr | Array | Other => Got::Keep,
+                Str | ArrayOrStr | Array | Class(_) | Other => Got::Keep,
             });
         }
         let ok = match (sp.kind, v) {
@@ -229,8 +237,56 @@ impl Vm {
                 Value::Bool(b) => Got::Set(Value::Int(*b as i64)),
                 _ => self.zpp_str_object(v)?,
             },
-            Array | Other => Got::Fail,
+            Array | Class(_) | Other => Got::Fail,
         })
+    }
+
+    /// zend_parse_arg_class: null where the type allows it, else the value
+    /// as a string (try_convert_to_string, in either mode), which must name
+    /// a class (autoloaded) derived from `base` when there is one.
+    fn zpp_class(
+        &mut self,
+        name: &str,
+        sp: &ScalarParam,
+        i: usize,
+        v: &Value,
+        base: Option<&str>,
+    ) -> Result<Got, Thrown> {
+        if sp.nullable && matches!(v, Value::Null) {
+            return Ok(Got::Keep);
+        }
+        let s = match v {
+            Value::Closure(_) => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Object of class Closure could not be converted to string",
+                ))
+            }
+            _ => self.to_string_vm(v)?,
+        };
+        let found = builtins::Host::resolve_class_autoload(self, &s)?;
+        let ok = match (found, base) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(id), Some(base)) => {
+                let class = self.class(id).name.as_bytes().to_vec();
+                builtins::Host::reflect_is_a(self, &class, base.as_bytes())
+            }
+        };
+        if !ok {
+            let or_null = if sp.nullable { " or null" } else { "" };
+            let want = match base {
+                Some(b) => format!("a class name derived from {b}{or_null}"),
+                None => format!("a valid class name{or_null}"),
+            };
+            return Err(Thrown::type_error(format!(
+                "{name}(): Argument #{}{} must be {want}, {} given",
+                i + 1,
+                arg_label(sp),
+                String::from_utf8_lossy(&s)
+            )));
+        }
+        Ok(Got::Set(Value::str(s)))
     }
 
     /// The checks of a scalar parameter after one the body checks: an

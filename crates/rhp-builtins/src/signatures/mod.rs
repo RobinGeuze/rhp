@@ -362,6 +362,10 @@ pub enum Zpp {
     ArrayOrStr,
     /// `array|int`: `Z_PARAM_ARRAY_HT_OR_LONG`.
     ArrayOrLong,
+    /// A class name (zpp's `C`, zend_parse_arg_class): converted to a
+    /// string in either mode, then a class that must exist and, when
+    /// given, derive from the named one.
+    Class(Option<&'static str>),
     /// Another mix of scalar types: only the object, array and null checks.
     Other,
 }
@@ -392,7 +396,7 @@ impl Zpp {
             (ArrayOrStr, true) => "array|string|null",
             (ArrayOrLong, false) => "array|int",
             (ArrayOrLong, true) => "array|int|null",
-            (Other, _) => return None,
+            (Class(_) | Other, _) => return None,
         })
     }
 
@@ -431,8 +435,27 @@ const ZPP_OWN: &[(&str, &str)] = &[
 ];
 
 /// Parameters whose zpp differs from what their stub type maps to:
-/// number_format's `float $num` is `Z_PARAM_NUMBER`.
-const ZPP_KIND: &[(&str, &str, Zpp)] = &[("number_format", "num", Zpp::Number)];
+/// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`
+/// parameters php parses as a class name (`C`).
+const ZPP_KIND: &[(&str, &str, Zpp)] = &[
+    ("get_class_vars", "class", Zpp::Class(None)),
+    ("number_format", "num", Zpp::Number),
+    (
+        "simplexml_import_dom",
+        "class_name",
+        Zpp::Class(Some("SimpleXMLElement")),
+    ),
+    (
+        "simplexml_load_file",
+        "class_name",
+        Zpp::Class(Some("SimpleXMLElement")),
+    ),
+    (
+        "simplexml_load_string",
+        "class_name",
+        Zpp::Class(Some("SimpleXMLElement")),
+    ),
+];
 
 /// Extensions whose builtins parse every parameter themselves, in php's
 /// order: a `GMP|int|string` argument's error comes before a later `int`'s.

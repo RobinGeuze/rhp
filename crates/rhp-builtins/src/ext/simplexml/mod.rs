@@ -1681,7 +1681,8 @@ fn read_doc(cx: &mut Cx, data: &[u8], is_file: bool, options: i64) -> Result<*mu
 fn class_arg(host: &mut dyn Host, fname: &str, n: usize, v: Value) -> Result<Vec<u8>, Thrown> {
     let name = match v {
         Value::Null => return Ok(b"SimpleXMLElement".to_vec()),
-        v => conv::to_string_bytes(&v),
+        // try_convert_to_string, in either mode
+        v => zval_get_string(host, &v)?,
     };
     if let Some(id) = host.resolve_class_autoload(&name)? {
         let canonical = host.class_name(id).unwrap_or_else(|| name.clone());
@@ -1808,7 +1809,14 @@ pub(crate) fn document_of(v: &Value) -> *mut lxn::RefObj {
 }
 
 fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zpp "o|C!": any object, then the class name, then the node check.
     let v = arg(args, 0);
+    if !matches!(v, Value::Object(_) | Value::Closure(_)) {
+        return Err(Thrown::type_error(format!(
+            "simplexml_import_dom(): Argument #1 ($node) must be of type object, {} given",
+            zval_value_name(host, &v)
+        )));
+    }
     let class = class_arg(host, "simplexml_import_dom", 2, arg(args, 1))?;
     let Some((mut nodep, document)) = lx::import_node(host, &v)? else {
         return Err(Thrown::type_error(

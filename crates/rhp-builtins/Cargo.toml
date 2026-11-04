@@ -38,8 +38,8 @@ tiger = "0.3"
 gost94 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
-# bcmath + gmp: arbitrary-precision integers (the decimal/scale semantics for
-# bcmath are PHP-specific and hand-rolled in ext/bcmath).
+# bcmath: arbitrary-precision integers (the decimal/scale semantics are
+# PHP-specific and hand-rolled in ext/bcmath). gmp links libgmp.
 num-bigint = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"

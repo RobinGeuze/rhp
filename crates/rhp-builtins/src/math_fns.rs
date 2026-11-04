@@ -262,7 +262,16 @@ fn ipow(mut base: i64, mut exp: u64) -> Option<i64> {
     Some(result)
 }
 
-fn fn_pow(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    // pow_function: ZEND_TRY_BINARY_OBJECT_OPERATION(ZEND_POW), op1's
+    // handler, then op2's.
+    for v in [&args[0], &args[1]] {
+        if let Some(f) = crate::object::handlers_of(host, v).and_then(|t| t.do_operation) {
+            if let Some(r) = f(host, crate::object::Op::Pow, &args[0], Some(&args[1]))? {
+                return Ok(r);
+            }
+        }
+    }
     let base = conv::to_number(&deref(&args[0])).0;
     let exp = conv::to_number(&deref(&args[1])).0;
     match (base, exp) {

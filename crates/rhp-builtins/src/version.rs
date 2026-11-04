@@ -214,12 +214,10 @@ pub const EXT_DOM: &str = "20031129";
 // INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
 // ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
 // linked libcurl (crate::ext::curl), ICONV_* from the system iconv
-// (crate::ext::iconv), ZipArchive::LIBZIP_VERSION from the linked libzip
-// (crate::ext::zip).
+// (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp),
+// ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip).
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
-/// `GMP_VERSION`.
-pub const GMP_VERSION: &str = "6.3.0";
 
 /// `ZLIB_VERSION`, `ZLIB_VERNUM` (the zlib headers php was compiled against).
 pub const ZLIB_VERSION: &str = "1.2.12";

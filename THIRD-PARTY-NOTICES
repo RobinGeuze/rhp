@@ -25,7 +25,8 @@ in their package metadata (see Cargo.lock) and are not repeated here.
                    Suffix List (MPL-2.0); OpenSSL as in 14
 16. iconv          macOS: BSD-2-Clause; Linux: glibc (LGPL-2.1-or-later)
 17. libmbfl        LGPL-2.1-only
-18. libzip         BSD-3-Clause
+18. GMP            LGPL-3.0-or-later OR GPL-2.0-or-later
+19. libzip         BSD-3-Clause
 
 
 ------------------------------------------------------------------------------
@@ -2144,7 +2145,49 @@ Web: http://happysize.com/
 
 
 ------------------------------------------------------------------------------
-18. libzip
+18. GMP
+------------------------------------------------------------------------------
+
+The GNU MP library php links, from the system and linked dynamically:
+Homebrew's gmp on macOS, libgmp-dev on Debian/Ubuntu. rhp contains no code
+from it; ext/gmp declares the functions it calls and compiles a layout check
+against gmp.h. gmp.h carries:
+
+ Copyright 1991, 1993-1997, 1999-2016, 2020, 2021 Free Software
+ Foundation, Inc.
+
+ This file is part of the GNU MP Library.
+
+ The GNU MP Library is free software; you can redistribute it and/or modify
+ it under the terms of either:
+
+   * the GNU Lesser General Public License as published by the Free
+     Software Foundation; either version 3 of the License, or (at your
+     option) any later version.
+
+ or
+
+   * the GNU General Public License as published by the Free Software
+     Foundation; either version 2 of the License, or (at your option) any
+     later version.
+
+ or both in parallel, as here.
+
+ The GNU MP Library is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ for more details.
+
+ You should have received copies of the GNU General Public License and the
+ GNU Lesser General Public License along with the GNU MP Library.  If not,
+ see https://www.gnu.org/licenses/.
+
+rhp uses it under the LGPL-3.0-or-later, as a shared library the user can
+replace.
+
+
+------------------------------------------------------------------------------
+19. libzip
 ------------------------------------------------------------------------------
 
 The system libzip, linked dynamically (neither Homebrew's libzip nor

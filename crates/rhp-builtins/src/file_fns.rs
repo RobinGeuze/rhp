@@ -5,16 +5,10 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn path_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))

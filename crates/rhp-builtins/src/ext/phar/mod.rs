@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 use flate2::read::DeflateDecoder;
 use md5::Md5;
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
@@ -28,13 +29,6 @@ mod tar;
 
 use crate::streams::{StatInfo, StreamWrapper, WrapperReg};
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 // --- little-endian readers ---------------------------------------------------
 

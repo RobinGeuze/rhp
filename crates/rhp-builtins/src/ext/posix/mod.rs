@@ -6,17 +6,11 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
 fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Result<(), Thrown> {

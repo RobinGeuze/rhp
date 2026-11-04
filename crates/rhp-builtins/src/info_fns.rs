@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::{version, Builtin, Host, Thrown};
@@ -39,13 +40,6 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("CREDITS_QA", Value::Int(64)),
         ("CREDITS_ALL", Value::Int(INFO_ALL)),
     ]
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
 }
 
 /// uname(2) fields: (sysname, nodename, release, version, machine).

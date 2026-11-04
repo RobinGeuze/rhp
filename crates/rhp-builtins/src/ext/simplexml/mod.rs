@@ -15,6 +15,7 @@ use std::ffi::c_int;
 use std::ptr;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::argparse::{value_name, zval_get_string};
@@ -1843,13 +1844,6 @@ fn fn_import_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // ---- methods ----
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).map(deref).unwrap_or(Value::Null)

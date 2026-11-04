@@ -11,6 +11,7 @@ pub(crate) mod lexer;
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -18,13 +19,6 @@ use ids::*;
 use lexer::Tok;
 
 pub const TOKEN_PARSE: i64 = 1;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn is_trivia(id: i64) -> bool {
     matches!(id, T_WHITESPACE | T_COMMENT | T_DOC_COMMENT | T_OPEN_TAG)

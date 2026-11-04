@@ -10,17 +10,11 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::streams::{split_scheme, StatInfo};
 use crate::{Builtin, Host, StreamKind, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
     args.get(i)

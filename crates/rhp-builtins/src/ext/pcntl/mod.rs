@@ -15,17 +15,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::proc_fns::zpp_long;
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn value_name(v: &Value) -> &'static str {
     match v {

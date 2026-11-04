@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use digest::Digest;
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 mod haval;
@@ -31,13 +32,6 @@ pub(crate) use primitives::{base64_decode, base64_encode};
 // ---------------------------------------------------------------------------
 // value helpers
 // ---------------------------------------------------------------------------
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn bytes_of(v: &Value) -> Vec<u8> {
     conv::to_string_bytes(&deref(v))

@@ -10,16 +10,10 @@
 //!   match failure. The assignment form (`sscanf($s, $fmt, &$a, ...)`) writes
 //!   through the by-ref positions of its stub signature (`mixed &...$vars`).
 
+use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn first_byte(v: Option<&Value>, default: u8) -> u8 {
     match v {

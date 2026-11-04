@@ -17,16 +17,10 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {

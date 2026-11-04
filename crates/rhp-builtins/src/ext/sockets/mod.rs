@@ -12,18 +12,12 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers};
 use crate::proc_fns::{zpp_long, zpp_type_name};
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// `Socket`'s handlers: no clone, not comparable.
 pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {

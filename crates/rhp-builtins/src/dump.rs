@@ -3,6 +3,7 @@
 //! Indentation and punctuation verified against php 8.5.8
 //! (tests/golden/stdlib/var/{var_dump,print_r,var_export}_nested.out).
 
+use rhp_semantics::deref;
 use rhp_values::conv;
 use rhp_values::{fmt, ArrayKey, PhpStr, Thrown, Value};
 
@@ -684,13 +685,6 @@ fn export_float(f: f64) -> Vec<u8> {
         s
     } else {
         [s, b".0".to_vec()].concat()
-    }
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        other => other.clone(),
     }
 }
 

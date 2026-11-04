@@ -3,17 +3,10 @@
 //! (The `ctype_*` tests moved to `ext::ctype`; the JSON builtins live in
 //! `json_fns`.) All behavior verified byte-for-byte against the local php 8.5.8.
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::{inet, Builtin, Host, Thrown};
-
-/// Local deref: unwrap a `Ref` to an owned clone of its target.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // inet_pton / inet_ntop

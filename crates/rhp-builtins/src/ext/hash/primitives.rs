@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use digest::Digest;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -14,14 +15,6 @@ use crate::{Builtin, Host, Thrown};
 // ---------------------------------------------------------------------------
 // small shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// `(string)` bytes of a value (after deref).
 fn bytes_of(v: &Value) -> Vec<u8> {

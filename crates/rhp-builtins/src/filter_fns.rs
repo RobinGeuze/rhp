@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -47,14 +48,6 @@ const FLAG_NULL_ON_FAILURE: i64 = 1 << 27; // 134217728
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// php's filter whitespace set for the INT/FLOAT/BOOLEAN validators:
 /// space, `\t`, `\n`, `\v`, `\r` — note `\f` (0x0c) is NOT included.

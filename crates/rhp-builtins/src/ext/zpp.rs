@@ -7,13 +7,7 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-/// Deref a (possibly `Ref`) value to an owned value.
-pub fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+pub use rhp_semantics::deref;
 
 /// The type name php's ZPP uses in "must be of type X, Y given" messages.
 pub fn given_type(host: &dyn Host, v: &Value) -> String {

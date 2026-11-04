@@ -6,16 +6,10 @@
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn fn_is_resource(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);

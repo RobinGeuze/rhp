@@ -23,17 +23,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Builtin, Host, Thrown, TypeNameLower};
-
-/// Deref a (possibly `Ref`) value to an owned value.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 const INCOMPLETE: &[u8] = b"__PHP_Incomplete_Class";
 const INCOMPLETE_NAME: &[u8] = b"__PHP_Incomplete_Class_Name";

@@ -15,19 +15,13 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::openssl::xp_ssl::{self, SslSock};
 use crate::fdstream::{poll_fd, FdStream, SockInfo};
 use crate::proc_fns::{zpp_long, zpp_string, zpp_type_name};
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn write_ref(arg: Option<&Value>, value: Value) {
     if let Some(Value::Ref(rc)) = arg {

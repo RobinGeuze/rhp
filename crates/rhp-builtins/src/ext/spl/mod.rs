@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::object::{ClassHandlers, ObjectHandlers, PropPurpose};
@@ -11,13 +12,6 @@ use crate::{Builtin, Host, Thrown};
 
 mod files;
 mod iterators;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 /// `ArrayObject` / `ArrayIterator`'s handlers: spl_array's
 /// `get_properties_for` (the storage stands in for the properties) and its

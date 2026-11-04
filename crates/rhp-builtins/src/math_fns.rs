@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 pub use crate::Builtin;
@@ -26,12 +27,6 @@ use crate::Thrown;
 
 // Deref helper matching the crate-wide pattern; the `conv::*` helpers already
 // recurse through `Value::Ref`, so we only need an owned copy for `match`.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn f(v: &Value) -> f64 {
     conv::to_float(v)

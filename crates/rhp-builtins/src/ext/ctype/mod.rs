@@ -25,17 +25,10 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use rhp_semantics::deref;
 use rhp_values::Value;
 
 use crate::{Builtin, Host, Thrown};
-
-/// Local deref: unwrap a `Ref` to an owned clone of its target.
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // ctype character classes (byte predicates), read from libc under C.UTF-8 like

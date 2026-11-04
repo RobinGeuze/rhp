@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use bzip2::{Action, Compress, Compression, Decompress, Status};
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
@@ -18,13 +19,6 @@ const BZ_PARAM_ERROR: i64 = -2;
 const BZ_MEM_ERROR: i64 = -3;
 const BZ_DATA_ERROR: i64 = -4;
 const BZ_DATA_ERROR_MAGIC: i64 = -5;
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
     match args.get(i).map(deref) {

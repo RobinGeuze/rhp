@@ -17,6 +17,7 @@
 
 use std::cell::Cell;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -89,13 +90,6 @@ fn error_msg(code: i64) -> &'static str {
         JSON_ERROR_UTF16 => "Single unpaired UTF-16 surrogate in unicode escape",
         JSON_ERROR_NON_BACKED_ENUM => "Non-backed enums have no default serialization",
         _ => "Unknown error",
-    }
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
     }
 }
 

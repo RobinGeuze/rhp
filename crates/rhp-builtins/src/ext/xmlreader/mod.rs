@@ -12,6 +12,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
 use crate::ext::libxml::ffi;
@@ -81,13 +82,6 @@ fn intern(v: &Value) -> Option<Rc<Reader>> {
     let r = Rc::new(Reader::new());
     object::set_payload(&h, r.clone());
     Some(r)
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
 }
 
 fn arg(args: &[Value], i: usize) -> Value {

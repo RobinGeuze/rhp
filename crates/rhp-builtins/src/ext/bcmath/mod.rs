@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
+use rhp_semantics::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Builtin, Host, Thrown};
@@ -22,13 +23,6 @@ use crate::{Builtin, Host, Thrown};
 // ---------------------------------------------------------------------------
 // value helpers
 // ---------------------------------------------------------------------------
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn bytes_of(v: &Value) -> Vec<u8> {
     conv::to_string_bytes(&deref(v))

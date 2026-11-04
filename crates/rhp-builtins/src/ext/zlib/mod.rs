@@ -16,17 +16,11 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rhp_semantics::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
 use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
 
 fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))

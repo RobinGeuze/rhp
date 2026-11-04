@@ -36,6 +36,7 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_bytecode::{ClassProto, FunctionProto, Reg};
+use rhp_semantics::deref;
 use rhp_values::{ClassId, ObjectHandle, PhpStr, Thrown, Value};
 
 use calls::NativeCall;
@@ -346,13 +347,6 @@ impl Frame {
             dyn_vars: HashMap::new(),
             global_scope: false,
         }
-    }
-}
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        other => other.clone(),
     }
 }
 

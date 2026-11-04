@@ -1290,6 +1290,25 @@ fn mpz_get_si(n: &BigInt) -> i64 {
     }
 }
 
+/// mpz_get_d: the number as a float, truncated toward zero (not rounded),
+/// infinite past the float range.
+fn mpz_get_d(n: &BigInt) -> f64 {
+    let bits = n.bits();
+    let mag = if bits <= 53 {
+        n.magnitude().to_u64().unwrap_or(0) as f64
+    } else {
+        // The top 53 bits, scaled back: exact, since a float holds them.
+        let shift = bits - 53;
+        let top = (n.magnitude() >> shift).to_u64().unwrap_or(0) as f64;
+        top * 2f64.powi(shift.min(2048) as i32)
+    };
+    if n.sign() == Sign::Minus {
+        -mag
+    } else {
+        mag
+    }
+}
+
 /// gmp_cast_object.
 fn gmp_cast_object(
     host: &mut dyn Host,
@@ -1298,14 +1317,13 @@ fn gmp_cast_object(
 ) -> Result<Option<Value>, Thrown> {
     use object::CastTarget as T;
     let n = gmp_value(host, &Value::Object(h.clone())).unwrap_or_default();
-    let float = |n: &BigInt| n.to_string().parse::<f64>().unwrap_or(0.0);
     Ok(match target {
         T::Str => Some(Value::str(n.to_string())),
         T::Int => Some(Value::Int(mpz_get_si(&n))),
-        T::Float => Some(Value::Float(float(&n))),
+        T::Float => Some(Value::Float(mpz_get_d(&n))),
         T::Number => Some(match n.to_i64() {
             Some(i) => Value::Int(i),
-            None => Value::Float(float(&n)),
+            None => Value::Float(mpz_get_d(&n)),
         }),
         T::Bool => Some(Value::Bool(!n.is_zero())),
         _ => None,
@@ -1328,12 +1346,7 @@ fn gmp_do_operation(
             let Some((x, shift)) = shift_operands(host, op, a, b)? else {
                 return Ok(None);
             };
-            match op {
-                Op::Pow => x.pow(shift),
-                Op::Shl => x << shift,
-                // mpz_fdiv_q_2exp: rounds toward -inf, as BigInt's >> does.
-                _ => x >> shift,
-            }
+            shift_op(op, x, shift)?
         }
         (
             Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::BitOr | Op::BitAnd | Op::BitXor,
@@ -1375,15 +1388,43 @@ fn gmp_do_operation(
     gmp_obj(host, r).map(Some)
 }
 
+/// mpz_pow_ui, mpz_mul_2exp or mpz_fdiv_q_2exp. Results that need no
+/// memory are computed for any shift or exponent; others are refused past
+/// 2^32 bits, where libgmp would allocate gigabytes.
+fn shift_op(op: Op, x: BigInt, shift: u64) -> Result<BigInt, Thrown> {
+    let minus = x.sign() == Sign::Minus;
+    match op {
+        // Rounds toward -inf, as BigInt's >> does.
+        Op::Shr if shift >= x.bits() => return Ok(BigInt::from(-(minus as i64))),
+        Op::Shr => return Ok(x >> shift),
+        Op::Shl if x.is_zero() => return Ok(x),
+        Op::Pow if shift == 0 => return Ok(BigInt::one()),
+        Op::Pow if x.is_zero() || x.is_one() => return Ok(x),
+        Op::Pow if minus && x.magnitude().is_one() => {
+            return Ok(BigInt::from(if shift.is_multiple_of(2) { 1 } else { -1 }))
+        }
+        _ => {}
+    }
+    let Ok(shift) = u32::try_from(shift) else {
+        let what = if op == Op::Pow { "Exponent" } else { "Shift" };
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{what} must be less than 4294967296"),
+        ));
+    };
+    Ok(match op {
+        Op::Pow => x.pow(shift),
+        _ => x << shift,
+    })
+}
+
 /// shift_operator_helper's operands: the number and the shift / exponent.
-/// php has no size limit here (libgmp aborts); rhp refuses a result that
-/// could not be allocated.
 fn shift_operands(
     host: &mut dyn Host,
     op: Op,
     a: &Value,
     b: &Value,
-) -> Result<Option<(BigInt, u32)>, Thrown> {
+) -> Result<Option<(BigInt, u64)>, Thrown> {
     let sigil = match op {
         Op::Pow => "**",
         Op::Shl => "<<",
@@ -1425,19 +1466,15 @@ fn shift_operands(
             format!("{what} must be greater than or equal to 0"),
         ));
     }
-    // A failed conversion of the number is the operand-type error (php
-    // chains the conversion's ValueError as its previous exception).
-    let Ok(Some(x)) = operator_operand(host, a) else {
-        return Err(unsupported(host));
+    // A failed conversion of the number is the operand-type error, with
+    // the conversion's exception as its previous one.
+    let x = match operator_operand(host, a) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(unsupported(host)),
+        Err(e) => {
+            let t = unsupported(host);
+            return Err(host.chain_thrown(t, e));
+        }
     };
-    let shift = u32::try_from(shift).map_err(|_| {
-        Thrown::error(
-            "ValueError",
-            format!(
-                "{} must be less than 4294967296",
-                if op == Op::Pow { "Exponent" } else { "Shift" }
-            ),
-        )
-    })?;
-    Ok(Some((x, shift)))
+    Ok(Some((x, shift as u64)))
 }

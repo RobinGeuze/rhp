@@ -4191,6 +4191,9 @@ impl Vm {
         ctx: &Value,
     ) -> Option<Option<Value>> {
         let w = self.wrapper_for(path)?.clone();
+        if !w.has_stream_opener() {
+            return None;
+        }
         let ctx = match ctx {
             Value::Resource(_) => ctx.clone(),
             _ => self.default_stream_context(),

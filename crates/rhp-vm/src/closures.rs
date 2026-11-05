@@ -461,6 +461,11 @@ impl Vm {
         if scope_cls.is_none() && new_this_h.is_some() && cd.wrapped.is_none() {
             scope_cls = closure_cls;
         }
+        // zend_create_closure_ex: an internal free function keeps no `$this`.
+        let mut new_this_h = new_this_h;
+        if matches!(fake, Some(None)) && self.wraps_internal_function(&cd) {
+            new_this_h = None;
+        }
         let called = new_this_h.as_ref().map(|h| h.borrow().class).or(scope_cls);
         // A method's first-class callable runs on the new object.
         let wrapped = cd.wrapped.as_ref().map(|w| match (deref(w), &new_this_h) {
@@ -484,9 +489,21 @@ impl Vm {
             // php's fake closure shares the static variables and has no handle.
             BindMode::Call => (0, std::cell::RefCell::new(cd.statics.borrow().clone())),
         };
+        // A nested arrow function's `$this` is captured: it follows the
+        // new binding (gone when unbound).
+        let mut captures = cd.captures.clone();
+        if cd.wrapped.is_none() {
+            let this_cv = self
+                .closures
+                .get(cd.fnidx as usize)
+                .and_then(|f| f.proto.this_cv);
+            if let Some(slot) = this_cv.and_then(|cv| captures.get_mut(cv as usize)) {
+                *slot = new_this_h.clone().map_or(Value::Null, Value::Object);
+            }
+        }
         Ok(Value::Closure(Rc::new(ClosureData {
             fnidx: cd.fnidx,
-            captures: cd.captures.clone(),
+            captures,
             bound_this: new_this_h,
             bound_class: scope_cls,
             bound_static: called,
@@ -494,6 +511,22 @@ impl Vm {
             id,
             statics,
         })))
+    }
+
+    /// Whether a first-class callable wraps a function that is not a user
+    /// function (`strlen(...)`).
+    fn wraps_internal_function(&self, cd: &ClosureData) -> bool {
+        let Some(Value::Str(n)) = cd.wrapped.as_deref().map(deref) else {
+            return false;
+        };
+        let n = n.as_bytes();
+        let n = n.strip_prefix(b"\\").unwrap_or(n);
+        if n.windows(2).any(|p| p == b"::") {
+            return false;
+        }
+        self.fn_names
+            .get(&n.to_ascii_lowercase())
+            .is_none_or(|&i| self.functions[i].proto.is_internal())
     }
 
     fn class_name_str(&self, c: u32) -> String {
@@ -510,5 +543,19 @@ impl Vm {
         new_this: &Value,
     ) -> Result<Value, Thrown> {
         self.bind_closure("Closure::call", 1, closure, new_this, None, BindMode::Call)
+    }
+
+    /// After `Closure::call`: static variables the temporary closure
+    /// created become the closure's own (php's fake closure shares them).
+    pub(crate) fn closure_call_done(&self, closure: &Value, bound: &Value) {
+        let (Value::Closure(cd), Value::Closure(tmp)) = (deref(closure), bound) else {
+            return;
+        };
+        let mut own = cd.statics.borrow_mut();
+        for (k, c) in tmp.statics.borrow().iter() {
+            if !own.iter().any(|(n, _)| n == k) {
+                own.push((k.clone(), c.clone()));
+            }
+        }
     }
 }

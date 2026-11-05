@@ -50,3 +50,18 @@ try { $f->p = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { $f->q[] = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { $f->r .= 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { new Closure; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+
+// Closure::call shares the closure's static variables, even ones it
+// initialises first
+$cnt = function () { static $n = 0; return ++$n; };
+var_dump($cnt->call(new K), $cnt->call(new K), $cnt());
+
+// Unbinding a closure whose arrow function uses $this drops that $this too
+class T { public $v = 1; function mk() { return function () { return fn() => $this->v; }; } }
+$u = (new T)->mk()->bindTo(null);
+ob_start();
+var_dump($u);
+echo str_replace(__FILE__, 'FILE', ob_get_clean());
+
+// An internal function's first-class callable keeps no $this
+var_dump(strlen(...)->bindTo(new K));

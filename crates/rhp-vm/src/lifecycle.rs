@@ -461,7 +461,9 @@ impl Vm {
                 }
             }
         }
-        self.shutdown_functions.clear();
+        // php_free_shutdown_functions is step 7: the callbacks (and their
+        // object handles) live until after the destructors.
+        let _registered = std::mem::take(&mut self.shutdown_functions);
         // 2. destructors
         self.enter_shutdown_scope();
         if let Err(t) = self
@@ -486,6 +488,7 @@ impl Vm {
             }
             self.output_end_all();
         }
+        self.shutdown_functions.clear();
         self.stack.clear();
         Ok(status)
     }

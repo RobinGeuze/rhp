@@ -437,7 +437,9 @@ impl Vm {
                     if matches!(bound, Value::Null) {
                         Value::Null
                     } else {
-                        self.call_named(&bound, argv, named, None)?
+                        let r = self.call_named(&bound, argv, named, None);
+                        self.closure_call_done(&o, &bound);
+                        r?
                     }
                 }
                 _ => self.closure_method(&o, &mname, argv)?,
@@ -1101,7 +1103,9 @@ impl Vm {
                 if matches!(bound, Value::Null) {
                     return Ok(Value::Null);
                 }
-                self.call_callable_value(&bound, args)
+                let r = self.call_callable_value(&bound, args);
+                self.closure_call_done(closure, &bound);
+                r
             }
             b"__invoke" => self.call_callable_value(closure, args),
             _ => Err(Thrown::error(

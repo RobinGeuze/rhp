@@ -80,3 +80,23 @@ Cannot create dynamic property Closure::$p
 Cannot create dynamic property Closure::$q
 Cannot create dynamic property Closure::$r
 Instantiation of class Closure is not allowed
+int(1)
+int(2)
+int(3)
+object(Closure)#13 (3) {
+  ["name"]=>
+  string(20) "{closure:T::mk():60}"
+  ["file"]=>
+  string(99) "FILE"
+  ["line"]=>
+  int(60)
+}
+object(Closure)#14 (2) {
+  ["function"]=>
+  string(6) "strlen"
+  ["parameter"]=>
+  array(1) {
+    ["$string"]=>
+    string(10) "<required>"
+  }
+}

@@ -172,14 +172,11 @@ pub struct Vm {
     // ... existing: out, stack, functions, fn_names, constants, max_depth, cursor_* ...
     classes: Vec<ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>,   // lowercased name -> id (names case-insensitive)
-    next_object_id: u32,                    // monotonic spl_object_id source
 }
 ```
 
-*Divergence from PHP, noted:* `next_object_id` is monotonic; Zend reuses freed
-ids. Under `Rc` + deferred GC we never free mid-request, so exact
-`spl_object_id`/`spl_object_hash` values are **not** byte-golden-able — only
-identity *relations* (`$a === $b`, array-of-objects dedup) are preserved.
+Object handles come from `rhp_values::handles`, php's object store: freed
+handles are reused most recently freed first (see oop-model.md, "Fresh id").
 
 ### 1.5 Inheritance strategy: **flatten at registration** (the one choice)
 
@@ -708,10 +705,9 @@ implemented.
    lowercased name but keeps its own `defining_class`; a redeclared property
    replaces the entry **in place** (preserving position + updating default). Verify
    `var_dump` order and `parent::` resolution after override.
-7. **Object id monotonic, advances on every `New` and `Clone`.** `===` is
-   `Rc::ptr_eq` (a fresh `Rc` per object is identity); `id` is for
-   `spl_object_id`/hashing. Does not match PHP's exact (reused) numbers — only
-   relations are golden.
+7. **Object ids are php's handles**, taken on every `New`, `Clone`, closure
+   and generator and reused once freed. `===` is `Rc::ptr_eq` (a fresh `Rc`
+   per object is identity); `id` is for `spl_object_id`/hashing.
 8. **Magic methods go through the normal call path.** `__construct`/`__get`/
    `__call`/`__callStatic`/`__clone` push ordinary frames with `$this` + LSB set —
    no special re-entrancy; a throw inside unwinds like any call.

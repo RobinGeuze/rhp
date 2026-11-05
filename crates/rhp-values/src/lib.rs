@@ -165,10 +165,10 @@ impl ClosureData {
 impl Drop for ClosureData {
     fn drop(&mut self) {
         // What the closure holds is freed before its handle goes back.
-        drop(std::mem::take(&mut self.captures));
-        drop(self.bound_this.take());
-        drop(self.wrapped.take());
-        drop(std::mem::take(self.statics.get_mut()));
+        self.captures.clear();
+        self.bound_this = None;
+        self.wrapped = None;
+        self.statics.get_mut().clear();
         release_object_id(self.id);
     }
 }
@@ -293,7 +293,9 @@ impl Drop for ObjectData {
         }
         // The handle goes back after what the properties held (php frees the
         // object, then puts its handle on the free list).
-        drop(std::mem::take(&mut self.properties));
+        if !self.properties.is_empty() {
+            self.properties.clear();
+        }
         release_object_id(self.id);
     }
 }

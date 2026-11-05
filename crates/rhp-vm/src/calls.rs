@@ -597,25 +597,35 @@ impl Vm {
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
         let count_error = self.internal_arg_count_error(&proto, frame, argc);
-        let slice = match args {
-            Args::Slice(s) => s,
+        let bound = match args {
+            Args::Slice(s) => bind_params(
+                &proto,
+                s.len(),
+                |i, by_ref| if by_ref { s[i].clone() } else { deref(&s[i]) },
+                frame,
+            ),
             Args::Window { top, base, argc } => {
-                &self.stack[top].regs[base as usize..base as usize + argc as usize]
+                // The window's temporaries move into the callee (php moves
+                // arguments into the callee's frame, so they die with it).
+                let f = &mut self.stack[top];
+                let movable = base as usize >= f.proto.num_cvs as usize;
+                let w = &mut f.regs[base as usize..base as usize + argc as usize];
+                bind_params(
+                    &proto,
+                    argc as usize,
+                    |i, by_ref| {
+                        if !movable {
+                            return if by_ref { w[i].clone() } else { deref(&w[i]) };
+                        }
+                        match std::mem::replace(&mut w[i], Value::Null) {
+                            Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                            v => v,
+                        }
+                    },
+                    frame,
+                )
             }
         };
-        let bound = bind_params(&proto, slice, frame);
-        // The caller's argument temporaries are dead once bound (php moves
-        // arguments into the callee's frame).
-        if let Args::Window { top, base, argc } = args {
-            let ncv = self.stack[top].proto.num_cvs as usize;
-            let lo = (base as usize).max(ncv);
-            let hi = base as usize + argc as usize;
-            if lo < hi {
-                for r in &mut self.stack[top].regs[lo..hi] {
-                    *r = Value::Null;
-                }
-            }
-        }
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
@@ -2205,27 +2215,26 @@ pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
 /// Bind positional `args` to a callee's parameter CV registers (by value), with
 /// constant defaults and variadic collection; surplus args (non-variadic callee)
 /// are kept in `extra_args`. `Err(i)`: required parameter `i` was not passed.
-fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Result<(), usize> {
+fn bind_params(
+    proto: &FunctionProto,
+    n: usize,
+    mut arg: impl FnMut(usize, bool) -> Value,
+    frame: &mut Frame,
+) -> Result<(), usize> {
+    // `arg(i, by_ref)`: argument `i`, a by-reference one as passed (the
+    // incoming Ref aliasing the caller's variable), else its value.
     let regs = &mut frame.regs;
     for (i, p) in proto.params.iter().enumerate() {
         if p.variadic {
             // Collect the remaining args into an array (by value).
             let mut arr = PhpArray::new();
-            if i < args.len() {
-                for a in &args[i..] {
-                    arr.push(deref(a));
-                }
+            for j in i..n {
+                arr.push(arg(j, false));
             }
             regs[p.cv as usize] = Value::Array(arr);
             return Ok(()); // variadic is always the last parameter
-        } else if i < args.len() {
-            // By-ref params keep the incoming Ref (aliasing the caller's var);
-            // by-value params receive a dereferenced copy.
-            regs[p.cv as usize] = if p.by_ref {
-                args[i].clone()
-            } else {
-                deref(&args[i])
-            };
+        } else if i < n {
+            regs[p.cv as usize] = arg(i, p.by_ref);
         } else if let Some(def) = &p.default {
             match def {
                 ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
@@ -2235,8 +2244,8 @@ fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Resu
             return Err(i);
         }
     }
-    if args.len() > proto.params.len() {
-        frame.extra_args = args[proto.params.len()..].iter().map(deref).collect();
+    if n > proto.params.len() {
+        frame.extra_args = (proto.params.len()..n).map(|j| arg(j, false)).collect();
     }
     Ok(())
 }

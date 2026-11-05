@@ -54,8 +54,8 @@ priority order rather than rediscovered one framework crash at a time.
 | 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
 | 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
-| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `builtins/core_prelude.php` | rebinding via instance form; scoped invoke | med | high |
-| 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
+| 30 | ~~`Closure::bindTo`/`Closure::call` instance methods missing~~ **done** (`vm/closures.rs`, with php's binding checks) | — | — | — | — |
+| 31 | ~~var_dump object ids — monotonic, no handle recycling~~ **mostly done** (§9.1): handles reused; frees php's cycle collector or an earlier destructor would make still come later | `rhp-values/src/handles.rs` | `#N` after cyclic garbage or destructed temporaries | low | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
@@ -639,30 +639,19 @@ The module is deliberately "READ-ONLY, native format only"
 
 ## 9. VM / object model
 
-### 9.1 var_dump object ids — monotonic counter, no handle recycling
-- **Now:** object ids come from a monotonically increasing `next_object_id`
-  (`vm/classes.rs:321-322`, `:481-482`; `vm/lib.rs:51`, `:589`, `:1795`, `:2377`)
-  and are printed by `var_dump` as `object(Class)#N` (`rhp-builtins/src/dump.rs:69`).
-  php instead *recycles* freed object handles, so a short-lived object's id is
-  reused by the next allocation. Also, closures always dump as `object(Closure)#0`
-  with a hardcoded `#0` (`dump.rs:88`).
-- **OK because:** the difftest suite deliberately never `var_dump`s objects for id
-  comparison (`rhp-difftest/src/sweeps.rs:143`, `:163` note this explicitly for
-  gmp), so the divergence is unobserved in CI.
-- **Breaks:** any `var_dump`/`var_export`/`print_r`-of-object output compared to
-  php byte-for-byte once more than one object is alive, and `spl_object_id`/
-  `spl_object_hash` parity. php's recycling means its ids are smaller and reused;
-  rhp's only grow.
-- **Full impl:** reproduce php's handle allocator — a free-list of released object
-  handle slots that new objects reuse, so ids match php's recycling order. This is
-  invasive (object lifetime → handle release must be tracked, which `Rc` drop
-  timing does not naturally mirror php's refcount-exact frees) and may never be
-  perfectly byte-identical without matching php's exact alloc/free ordering. Treat
-  as "parity only where object lifetimes are simple"; keep object ids out of the
-  byte-exact contract otherwise. Fix the closure `#0` to use a real id as a cheap
-  first step.
-- **Effort/priority:** high / low. High cost, low payoff (tests already avoid it);
-  do the closure-`#0` tidy-up opportunistically, defer the recycling allocator.
+### 9.1 var_dump object ids — handle reuse
+- **Now:** object handles come from `rhp_values::handles`, php's object store:
+  freed handles are reused most recently freed first, none after shutdown
+  destructors start. Objects, closures, generators and enum cases take them.
+  Argument temporaries move into calls and a method call on a temporary releases
+  its object, so most objects are freed when php frees them.
+- **Breaks:** objects php's cycle collector frees (rhp's `Rc` cycles leak, so
+  their handles never come back); destructible objects, which rhp destructs and
+  frees at its next release check rather than at the exact refcount drop; other
+  temporaries that stay in a register until it is overwritten. `#N` then differs
+  from php.
+- **Full impl:** free every dead temporary (php's FREE opcodes / liveness), run
+  destructors at the refcount drop, a cycle collector.
 
 ### 9.2 STDIN/STDOUT/STDERR constants — stale placeholder ints, shadowed at runtime
 - **Now:** `builtins/lib.rs:436-441` defines `STDIN`/`STDOUT`/`STDERR` as

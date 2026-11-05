@@ -11,12 +11,15 @@
 //! engine (and each engine's drop) resets it.
 
 use std::cell::{Cell, RefCell};
+use std::mem::ManuallyDrop;
 
 struct Store {
     /// The next never-used handle (handles start at 1).
     next: Cell<u32>,
-    /// Freed handles, most recently freed last.
-    free: RefCell<Vec<u32>>,
+    /// Freed handles, most recently freed last. Never dropped (a few bytes
+    /// per thread), so the store needs no thread-exit destructor and every
+    /// access stays a plain thread-local read.
+    free: ManuallyDrop<RefCell<Vec<u32>>>,
     /// Shutdown: freed handles are dropped, not reused.
     no_reuse: Cell<bool>,
 }
@@ -25,7 +28,7 @@ thread_local! {
     static STORE: Store = const {
         Store {
             next: Cell::new(1),
-            free: RefCell::new(Vec::new()),
+            free: ManuallyDrop::new(RefCell::new(Vec::new())),
             no_reuse: Cell::new(false),
         }
     };

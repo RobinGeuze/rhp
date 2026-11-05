@@ -10,7 +10,8 @@ description: >
 # wanted extension from the command line (which `-n` does not affect). It
 # injects an extension only if its .so exists and php hasn't compiled it in.
 # Either mistake would print a startup warning to stdout and corrupt every
-# comparison. Non-`-n` invocations pass through untouched.
+# comparison. Non-`-n` invocations pass through untouched. make-shims.sh
+# writes them (also used by .github/scripts/linux-ci.Dockerfile).
 #
 # php-cgi (the reference for CGI .phpt tests and `rhp-difftest app`) gets the
 # same shim, next to the `php` one: the harness finds php-cgi beside php.
@@ -77,35 +78,8 @@ runs:
     - name: Install php and php-cgi shims that force-load extensions under -n
       shell: bash
       run: |
-        EXTDIR="$(php-config --extension-dir)"
-        builtin="$(php -n -m | tr 'A-Z' 'a-z')"
-        inject="-d extension_dir=$EXTDIR"
-        for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
-                 mbstring openssl pcntl phar posix session shmop simplexml sockets sodium \
-                 sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip; do
-          if ! grep -qx "$e" <<<"$builtin" && [ -f "$EXTDIR/$e.so" ]; then
-            inject="$inject -d extension=$e"
-          fi
-        done
-        echo "shims inject under -n: $inject"
-        SHIM="$HOME/php-shim"
-        mkdir -p "$SHIM"
-        v="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-        for bin in php php-cgi; do
-          # php-cgi: the versioned binary checked in the step above.
-          REAL="$(command -v "$bin$([ "$bin" = php-cgi ] && echo "$v")")"
-          cat > "$SHIM/$bin" <<EOF
-        #!/usr/bin/env bash
-        for a in "\$@"; do
-          if [ "\$a" = "-n" ]; then
-            exec "$REAL" $inject "\$@"
-          fi
-        done
-        exec "$REAL" "\$@"
-        EOF
-          chmod +x "$SHIM/$bin"
-        done
-        echo "$SHIM" >> "$GITHUB_PATH"
+        "$GITHUB_ACTION_PATH/make-shims.sh" "$HOME/php-shim"
+        echo "$HOME/php-shim" >> "$GITHUB_PATH"
 
     - name: Confirm extensions load under -n with clean stdout
       shell: bash

@@ -286,7 +286,7 @@ php-src's changes to them come under the PHP License.
 crates/rhp-builtins/src/signatures/table.rs is generated from php-src's
 *.stub.php files.
 
-Commits before the licence files were added (abd69b88, 2026-11-03) contain
+Commits before the licence files were added (65f0b332, #19, 2026-11-03) contain
 the same php-src-derived code, including a verbatim excerpt of
 ext/standard/string.c (bin2hex) in the since-removed
 crates/phrust-zendshim/csrc/php_bin2hex.c; those parts remain under the PHP

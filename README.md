@@ -49,7 +49,7 @@ php-src tests.
 | tests | 506 | 895 | 56.5% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | only php's script-running options (no `-S`, `-h`, `-m`, `-l`, `-i`, `-a`) |
 | sapi/cgi | 4 | 24 | 16.7% | `rhp --cgi` against php-cgi |
-| ext/standard | 1,970 | 3,880 | 50.8% | no user stream wrappers or filters, `dns_*`, `mail`, `getimagesize` |
+| ext/standard | 1,970 | 3,880 | 50.8% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
 | ext/bcmath | 31 | 170 | 18.2% | no `BcMath\Number` |
 | ext/bz2 | 5 | 27 | 18.5% | libbz2 1.0.8, linked statically |
 | ext/ctype | 24 | 49 | 49.0% | |
@@ -60,7 +60,7 @@ php-src tests.
 | ext/gmp | 18 | 99 | 18.2% | on num-bigint, not libgmp |
 | ext/hash | 55 | 83 | 66.3% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 21 | 82 | 25.6% | a built-in charset table, not iconv(3) |
-| ext/intl | 30 | 511 | 5.9% | `grapheme_*`, `Normalizer` and IDN only (on ICU4X) |
+| ext/intl | 30 | 511 | 5.9% | `grapheme_*`, `Normalizer`, IDN and the `intl_*` error functions only (on ICU4X) |
 | ext/json | 67 | 94 | 71.3% | |
 | ext/libxml | 8 | 32 | 25.0% | on libxml2 |
 | ext/mbstring | 68 | 446 | 15.2% | UTF-8, ASCII and ISO-8859-1 only |

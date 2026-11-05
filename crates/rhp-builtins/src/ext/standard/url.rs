@@ -450,3 +450,17 @@ pub fn register(m: &mut crate::Registry) {
 
 #[cfg(test)]
 mod tests;
+
+/// url.c's `PHP_URL_*` components for `parse_url`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("PHP_URL_SCHEME", Value::Int(0)),
+        ("PHP_URL_HOST", Value::Int(1)),
+        ("PHP_URL_PORT", Value::Int(2)),
+        ("PHP_URL_USER", Value::Int(3)),
+        ("PHP_URL_PASS", Value::Int(4)),
+        ("PHP_URL_PATH", Value::Int(5)),
+        ("PHP_URL_QUERY", Value::Int(6)),
+        ("PHP_URL_FRAGMENT", Value::Int(7)),
+    ]
+}

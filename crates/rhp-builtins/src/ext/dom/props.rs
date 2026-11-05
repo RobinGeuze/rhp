@@ -492,7 +492,7 @@ fn deprecated(cx: &mut Cx, msg: &str) -> Result<(), Thrown> {
     if cx.quiet {
         return Ok(());
     }
-    cx.host.emit_diagnostic(crate::E_DEPRECATED, msg)
+    cx.host.emit_diagnostic(crate::E_DEPRECATED, msg.as_bytes())
 }
 
 fn some(v: Value) -> Result<Option<Value>, Thrown> {

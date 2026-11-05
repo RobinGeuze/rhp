@@ -1076,10 +1076,11 @@ impl Vm {
     /// The class half of a `Class::method` / `[Class, method]` callable,
     /// with `self`/`parent`/`static` relative to the calling scope. Returns
     /// (class, called class).
-    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), String> {
+    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), Vec<u8>> {
         let (scope, called, _) = self.callable_scope();
         let lc = name.to_ascii_lowercase();
-        let no_scope = |w: &str| format!("cannot access \"{w}\" when no class scope is active");
+        let no_scope =
+            |w: &str| format!("cannot access \"{w}\" when no class scope is active").into_bytes();
         let forward = |cls: ClassId| match called {
             Some(c) if self.class(c).ancestors.contains(&cls) => c,
             _ => cls,
@@ -1095,7 +1096,7 @@ impl Vm {
             b"parent" => {
                 let c = scope.ok_or_else(|| no_scope("parent"))?;
                 let p = self.class(c).parent.ok_or_else(|| {
-                    "cannot access \"parent\" when current class scope has no parent".to_string()
+                    b"cannot access \"parent\" when current class scope has no parent".to_vec()
                 })?;
                 Ok((p, forward(p)))
             }
@@ -1104,7 +1105,7 @@ impl Vm {
                 .map(|c| (c, c))
                 .map_err(|_| {
                     let n = name.strip_prefix(b"\\").unwrap_or(name);
-                    format!("class \"{}\" not found", String::from_utf8_lossy(n))
+                    [b"class \"", n, b"\" not found"].concat()
                 }),
         }
     }
@@ -1116,9 +1117,9 @@ impl Vm {
         called: ClassId,
         obj: Option<ObjectHandle>,
         mname: &[u8],
-    ) -> Result<Callee, String> {
+    ) -> Result<Callee, Vec<u8>> {
         let (scope, _, this) = self.callable_scope();
-        let cname = || String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+        let cname = || self.class(cls).name.as_bytes();
         let magic = |obj: &Option<ObjectHandle>| -> Option<Callee> {
             let name = mname.to_vec();
             if let Some(o) = obj {
@@ -1143,11 +1144,14 @@ impl Vm {
                 }
             }
             return magic(&obj).ok_or_else(|| {
-                format!(
-                    "class {} does not have a method \"{}\"",
+                [
+                    b"class ",
                     cname(),
-                    String::from_utf8_lossy(mname)
-                )
+                    b" does not have a method \"",
+                    mname,
+                    b"\"",
+                ]
+                .concat()
             });
         };
         if !self.check_access(scope, m.defining_class, m.visibility) {
@@ -1159,11 +1163,16 @@ impl Vm {
                 rhp_values::Visibility::Protected => "protected",
                 rhp_values::Visibility::Public => "public",
             };
-            return Err(format!(
-                "cannot access {v} method {}::{}()",
+            return Err([
+                b"cannot access ",
+                v.as_bytes(),
+                b" method ",
                 cname(),
-                String::from_utf8_lossy(m.proto.name.as_bytes())
-            ));
+                b"::",
+                m.proto.name.as_bytes(),
+                b"()",
+            ]
+            .concat());
         }
         if m.is_static {
             return Ok(Callee::Method(m, None, called));
@@ -1173,17 +1182,20 @@ impl Vm {
                 let oc = o.borrow().class;
                 Ok(Callee::Method(m, Some(o), oc))
             }
-            None => Err(format!(
-                "non-static method {}::{}() cannot be called statically",
+            None => Err([
+                b"non-static method ",
                 cname(),
-                String::from_utf8_lossy(m.proto.name.as_bytes())
-            )),
+                b"::",
+                m.proto.name.as_bytes(),
+                b"() cannot be called statically",
+            ]
+            .concat()),
         }
     }
 
     /// Resolve a callable value (zend_is_callable_ex), or say why it is not
     /// one in zend_is_callable_error's words.
-    pub(crate) fn resolve_callable(&self, callable: &Value) -> Result<Callee, String> {
+    pub(crate) fn resolve_callable(&self, callable: &Value) -> Result<Callee, Vec<u8>> {
         match deref(callable) {
             Value::Closure(cd) => Ok(Callee::Closure(cd)),
             Value::Str(s) => {
@@ -1194,7 +1206,7 @@ impl Vm {
                     .find(|&i| b[i] == b':' && b[i - 1] == b':');
                 if let Some(i) = split {
                     if i == 1 {
-                        return Err("invalid function name".to_string());
+                        return Err(b"invalid function name".to_vec());
                     }
                     let (cls, called) = self.callable_class(&b[..i - 1])?;
                     return self.callable_method(cls, called, None, &b[i + 1..]);
@@ -1208,19 +1220,16 @@ impl Vm {
                 if user_visible_builtin(name) {
                     return Ok(Callee::Builtin(n));
                 }
-                Err(format!(
-                    "function \"{}\" not found or invalid function name",
-                    String::from_utf8_lossy(b)
-                ))
+                Err([b"function \"", b, b"\" not found or invalid function name"].concat())
             }
             Value::Array(a) => {
                 if a.len() != 2 {
-                    return Err("array callback must have exactly two members".to_string());
+                    return Err(b"array callback must have exactly two members".to_vec());
                 }
                 let item0 = a.get(&ArrayKey::Int(0)).map(deref);
                 let item1 = a.get(&ArrayKey::Int(1)).map(deref);
                 let (Some(item0), Some(item1)) = (item0, item1) else {
-                    return Err("array callback must have exactly two members".to_string());
+                    return Err(b"array callback must have exactly two members".to_vec());
                 };
                 let (cls, called, obj) = match item0 {
                     Value::Object(h) => {
@@ -1233,12 +1242,12 @@ impl Vm {
                     }
                     _ => {
                         return Err(
-                            "first array member is not a valid class name or object".to_string()
+                            b"first array member is not a valid class name or object".to_vec()
                         )
                     }
                 };
                 let Value::Str(m) = item1 else {
-                    return Err("second array member is not a valid method".to_string());
+                    return Err(b"second array member is not a valid method".to_vec());
                 };
                 self.callable_method(cls, called, obj, m.as_bytes())
             }
@@ -1246,10 +1255,10 @@ impl Vm {
                 let cls = h.borrow().class;
                 match self.lookup_method(cls, b"__invoke") {
                     Some(m) => Ok(Callee::Method(m, Some(h), cls)),
-                    None => Err("no array or string given".to_string()),
+                    None => Err(b"no array or string given".to_vec()),
                 }
             }
-            _ => Err("no array or string given".to_string()),
+            _ => Err(b"no array or string given".to_vec()),
         }
     }
 

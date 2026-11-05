@@ -520,7 +520,7 @@ fn fn_getdate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn deprecated_fn(host: &mut dyn Host, fname: &str, since: &str, msg: &str) -> Result<(), Thrown> {
     host.emit_diagnostic(
         crate::E_DEPRECATED,
-        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+        format!("Function {fname}() is deprecated since {since}, {msg}").as_bytes(),
     )
 }
 
@@ -951,10 +951,12 @@ fn fn_date_default_timezone_set(host: &mut dyn Host, args: &[Value]) -> Result<V
     if !timezone_id_is_valid(&zone) {
         host.emit_diagnostic(
             crate::E_NOTICE,
-            &format!(
-                "date_default_timezone_set(): Timezone ID '{}' is invalid",
-                String::from_utf8_lossy(c_str(&zone))
-            ),
+            &[
+                b"date_default_timezone_set(): Timezone ID '".as_slice(),
+                c_str(&zone),
+                b"' is invalid",
+            ]
+            .concat(),
         )?;
         return Ok(Value::Bool(false));
     }

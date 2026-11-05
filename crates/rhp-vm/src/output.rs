@@ -269,8 +269,10 @@ impl Vm {
     }
 
     /// `php_error_docref(NULL, level, msg)` named after the active function.
-    pub(crate) fn ob_diag(&mut self, level: i64, msg: &str) {
-        let m = format!("{}{}", self.docref_prefix(), msg);
+    pub(crate) fn ob_diag(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let mut m = self.docref_prefix().into_bytes();
+        m.extend_from_slice(msg.as_ref());
+        let m = self.docref_html(&m).into_owned();
         if self.no_code_running() || self.output.starting {
             self.raise_error_at(level, &m, b"Unknown".to_vec(), 0);
         } else {
@@ -793,7 +795,10 @@ impl Vm {
                     ability_flags(flags),
                 )
             }),
-            cb => match self.check_callable(&cb)? {
+            cb => match self
+                .autoload_callable_class(&cb)
+                .map(|()| self.resolve_callable(&cb).err())?
+            {
                 Some(err) => {
                     self.ob_diag(E_WARNING, &err);
                     None

@@ -45,7 +45,7 @@ pub fn zval_type_name(host: &dyn Host, v: &Value) -> String {
 pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
     match deref(v) {
         Value::Array(_) => {
-            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            host.emit_diagnostic(crate::E_WARNING, b"Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
         o @ Value::Object(_) => {
@@ -81,7 +81,8 @@ pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Throw
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f)).into_owned();
                 host.emit_diagnostic(
                     crate::E_WARNING,
-                    &format!("The float {shown} is not representable as an int, cast occurred"),
+                    format!("The float {shown} is not representable as an int, cast occurred")
+                        .as_bytes(),
                 )?;
             }
             Ok(rhp_values::float_to_int(f))
@@ -98,10 +99,11 @@ pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Throw
         o @ (Value::Object(_) | Value::Closure(_)) => {
             host.emit_diagnostic(
                 crate::E_WARNING,
-                &format!(
+                format!(
                     "Object of class {} could not be converted to int",
                     zval_value_name(host, &o)
-                ),
+                )
+                .as_bytes(),
             )?;
             Ok(1)
         }
@@ -399,10 +401,11 @@ fn long_arg_as(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{fname}(): Passing null to parameter #{} (${pname}) of type int is deprecated",
                     i + 1
-                ),
+                )
+                .as_bytes(),
             )?;
             Ok(0)
         }
@@ -412,7 +415,8 @@ fn long_arg_as(
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                    format!("Implicit conversion from float {shown} to int loses precision")
+                        .as_bytes(),
                 )?;
             }
             Ok(*f as i64)
@@ -423,10 +427,11 @@ fn long_arg_as(
                 if f.fract() != 0.0 {
                     host.emit_diagnostic(
                         crate::E_DEPRECATED,
-                        &format!(
+                        format!(
                             "Implicit conversion from float-string \"{}\" to int loses precision",
                             String::from_utf8_lossy(s.as_bytes())
-                        ),
+                        )
+                        .as_bytes(),
                     )?;
                 }
                 Ok(f as i64)
@@ -516,7 +521,7 @@ fn dval_to_lval(host: &mut dyn Host, d: f64) -> Result<i64, Thrown> {
     let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
     host.emit_diagnostic(
         crate::E_WARNING,
-        &format!("The float {shown} is not representable as an int, cast occurred"),
+        format!("The float {shown} is not representable as an int, cast occurred").as_bytes(),
     )?;
     Ok(if d.is_finite() {
         rhp_values::float_to_int(d)
@@ -543,7 +548,8 @@ pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Throw
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                    format!("Implicit conversion from float {shown} to int loses precision")
+                        .as_bytes(),
                 )?;
             }
             l
@@ -557,7 +563,7 @@ pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Throw
                 .iter()
                 .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
             {
-                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
+                host.emit_diagnostic(crate::E_WARNING, b"A non-numeric value encountered")?;
             }
             match num {
                 conv::Num::Int(n) => n,
@@ -576,10 +582,10 @@ pub fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Throw
                     if l as f64 != f {
                         host.emit_diagnostic(
                             crate::E_DEPRECATED,
-                            &format!(
+                            format!(
                                 "Implicit conversion from float-string \"{}\" to int loses precision",
                                 String::from_utf8_lossy(b)
-                            ),
+                            ).as_bytes(),
                         )?;
                     }
                     l

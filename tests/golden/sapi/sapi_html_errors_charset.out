@@ -1,0 +1,19 @@
+<br />
+<b>Warning</b>:  fopen(/nonexistent/ï¿½&lt;b&gt;ï¿½): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>10</b><br />
+<br />
+<b>Warning</b>:  fopen(/nonexistent/ï¿½( ï¿½ ï¿½ ï¿½ï¿½): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>11</b><br />
+<br />
+<b>Warning</b>:  user â‚ <b> in <b>FILE</b> on line <b>12</b><br />
+<br />
+<b>Warning</b>:  fopen(/nonexistent/â‚&lt;é&gt;): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>14</b><br />
+<br />
+<b>Warning</b>:  fopen(/nonexistent/‚ &lt;&#xFFFD;&gt;): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>16</b><br />
+<br />
+<b>Warning</b>:  fopen(/nonexistent/ï¿½&lt;x&gt;): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>18</b><br />
+<br />
+<b>Warning</b>:  fopen(/nonexistent/â‚&lt;x&gt;): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>21</b><br />
+handler: fopen(/nonexistent/&lt;a&gt;ï¿½): Failed to open stream: No such file or directory
+<br />
+<b>Warning</b>:  fopen(/nonexistent/&lt;a&gt;ï¿½): Failed to open stream: No such file or directory in <b>FILE</b> on line <b>24</b><br />
+string(82) "fopen(/nonexistent/&lt;a&gt;ï¿½): Failed to open stream: No such file or directory"
+string(91) "fopen(/nonexistent/&lt;b&gt;&amp;&quot;'): Failed to open stream: No such file or directory"

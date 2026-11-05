@@ -410,7 +410,7 @@ pub(super) fn x509_fingerprint(
         store_errors();
         host.emit_diagnostic(
             crate::E_ERROR,
-            &format!("{fname}(): Could not generate signature"),
+            format!("{fname}(): Could not generate signature").as_bytes(),
         )?;
         return Ok(None);
     }
@@ -572,7 +572,7 @@ pub(super) fn check_cert(
             store_errors();
             host.emit_diagnostic(
                 crate::E_ERROR,
-                &format!("{fname}(): Memory allocation failure"),
+                format!("{fname}(): Memory allocation failure").as_bytes(),
             )?;
             return Ok(0);
         }
@@ -618,10 +618,10 @@ pub(super) fn setup_verify(
             let Some(path) = check_path(host, fname, &s, arg_num, false, true, None)? else {
                 continue;
             };
-            let shown = String::from_utf8_lossy(path.to_bytes()).into_owned();
-            let meta = std::fs::metadata(OsStr::from_bytes(path.to_bytes()));
+            let shown = path.to_bytes();
+            let meta = std::fs::metadata(OsStr::from_bytes(shown));
             let Ok(meta) = meta else {
-                warn(host, fname, &format!("Unable to stat {shown}"))?;
+                warn(host, fname, &[b"Unable to stat ", shown].concat())?;
                 continue;
             };
             unsafe {
@@ -637,7 +637,7 @@ pub(super) fn setup_verify(
                         ) == 0
                     {
                         store_errors();
-                        warn(host, fname, &format!("Error loading file {shown}"))?;
+                        warn(host, fname, &[b"Error loading file ", shown].concat())?;
                     } else {
                         nfiles += 1;
                     }
@@ -653,7 +653,7 @@ pub(super) fn setup_verify(
                         ) == 0
                     {
                         store_errors();
-                        warn(host, fname, &format!("Error loading directory {shown}"))?;
+                        warn(host, fname, &[b"Error loading directory ", shown].concat())?;
                     } else {
                         ndirs += 1;
                     }

@@ -63,11 +63,15 @@ fn stat_failed(
         crate::warn(
             host,
             fname,
-            &format!(
-                "{}stat failed for {}",
-                if link { "L" } else { "" },
-                String::from_utf8_lossy(&p)
-            ),
+            &[
+                if link {
+                    b"Lstat failed for ".as_slice()
+                } else {
+                    b"stat failed for "
+                },
+                &p,
+            ]
+            .concat(),
         )?;
     }
     Ok(Value::Bool(false))
@@ -256,10 +260,11 @@ fn do_chown(
                     crate::warn(
                         host,
                         fname,
-                        &format!(
-                            "Unable to find {what} ID for {}",
-                            String::from_utf8_lossy(s.as_bytes())
-                        ),
+                        &[
+                            format!("Unable to find {what} ID for ").as_bytes(),
+                            s.as_bytes(),
+                        ]
+                        .concat(),
                     )?;
                     return Ok(Value::Bool(false));
                 }
@@ -313,10 +318,6 @@ fn fn_lchgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     do_chown(host, args, "lchgrp", true, true)
 }
 
-fn as_str(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
-    String::from_utf8_lossy(bytes)
-}
-
 // --- local-fs metadata via libc (matches php's own ext/standard/filestat.c) ---
 
 fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -325,16 +326,18 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_arg(args, 0);
-    let path_str = as_str(&path).into_owned();
     // Create the file if absent (php's touch creates an empty file).
     if !crate::zend::virtual_cwd::os_path(&path).exists() {
         let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC;
         if let Err(e) = crate::zend::virtual_cwd::open(&path, flags, 0o666) {
-            crate::warn(
-                host,
-                "touch",
-                &format!("Unable to create file {path_str} because {}", os_text(&e)),
-            )?;
+            let msg = [
+                b"Unable to create file ",
+                &path[..],
+                b" because ",
+                os_text(&e).as_bytes(),
+            ]
+            .concat();
+            crate::warn(host, "touch", &msg)?;
             return Ok(Value::Bool(false));
         }
     }

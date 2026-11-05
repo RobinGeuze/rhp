@@ -138,10 +138,10 @@ fn debug_info(
             let cname = host.class_name(class).unwrap_or_default();
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "Returning null from {}::__debugInfo() is deprecated, return an empty array instead",
                     String::from_utf8_lossy(&cname)
-                ),
+                ).as_bytes(),
             )?;
             Ok(rhp_values::PhpArray::new())
         }
@@ -905,10 +905,10 @@ impl Serializer {
                 _ => {
                     host.emit_diagnostic(
                         crate::E_WARNING,
-                        &format!(
+                        format!(
                             "serialize(): {}::__sleep() should return an array only containing the names of instance-variables to serialize",
                             String::from_utf8_lossy(&cname)
-                        ),
+                        ).as_bytes(),
                     )?;
                     out.extend_from_slice(b"N;");
                     return Ok(());
@@ -943,19 +943,23 @@ impl Serializer {
                         } else {
                             host.emit_diagnostic(
                                 crate::E_WARNING,
-                                &format!(
-                                    "serialize(): \"{}\" is returned from __sleep() multiple times",
-                                    String::from_utf8_lossy(&n)
-                                ),
+                                &[
+                                    b"serialize(): \"".as_slice(),
+                                    &n,
+                                    b"\" is returned from __sleep() multiple times",
+                                ]
+                                .concat(),
                             )?;
                         }
                     }
                     None => host.emit_diagnostic(
                         crate::E_WARNING,
-                        &format!(
-                            "serialize(): \"{}\" returned as member variable from __sleep() but does not exist",
-                            String::from_utf8_lossy(&n)
-                        ),
+                        &[
+                            b"serialize(): \"".as_slice(),
+                            &n,
+                            b"\" returned as member variable from __sleep() but does not exist",
+                        ]
+                        .concat(),
                     )?,
                 }
             }
@@ -1280,7 +1284,8 @@ impl<'a> Parser<'a, '_> {
                 "unserialize(): Class '{}' not found",
                 String::from_utf8_lossy(class)
             );
-            self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+            self.host
+                .emit_diagnostic(crate::E_WARNING, msg.as_bytes())?;
             return malformed();
         };
         if !self.host.is_enum_class(cid) {
@@ -1432,7 +1437,8 @@ impl<'a> Parser<'a, '_> {
             let msg = format!(
                 "Insufficient data for unserializing - {datalen} required, {present} present"
             );
-            self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+            self.host
+                .emit_diagnostic(crate::E_WARNING, msg.as_bytes())?;
             return self.fail_at(self.pos);
         }
         let end = self.pos + datalen as usize;
@@ -1478,7 +1484,8 @@ impl<'a> Parser<'a, '_> {
                     "Class {} has no unserializer",
                     String::from_utf8_lossy(&name)
                 );
-                self.host.emit_diagnostic(crate::E_WARNING, &msg)?;
+                self.host
+                    .emit_diagnostic(crate::E_WARNING, msg.as_bytes())?;
                 let obj = match cid {
                     Some(_) => self.host.reflect_new_instance(&name, Vec::new(), false)?,
                     None => self
@@ -1855,7 +1862,7 @@ fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     clear_views();
     r?;
     for _ in 0..circular {
-        host.emit_diagnostic(E_WARNING, "var_export does not handle circular references")?;
+        host.emit_diagnostic(E_WARNING, b"var_export does not handle circular references")?;
     }
     let return_mode = args.get(1).map(conv::to_bool).unwrap_or(false);
     if return_mode {

@@ -70,7 +70,8 @@ impl Host for TestHost<'_> {
 
     // --- diagnostics -------------------------------------------------------
 
-    fn raise_diagnostic(&mut self, level: i64, msg: &str) {
+    fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
+        let msg = String::from_utf8_lossy(msg);
         let kind = match level {
             crate::E_WARNING => "Warning",
             crate::E_NOTICE => "Notice",
@@ -100,8 +101,8 @@ impl Host for TestHost<'_> {
     fn silenced(&self) -> bool {
         false
     }
-    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
-        self.emit_diagnostic(level, &format!("Unknown: {msg}"))
+    fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
+        self.emit_diagnostic(level, &[b"Unknown: ", msg].concat())
     }
     fn log_message(&mut self, msg: &[u8]) {
         use std::io::Write;
@@ -240,6 +241,9 @@ impl Host for TestHost<'_> {
     }
     fn function_exists(&self, name: &[u8]) -> bool {
         crate::lookup(&String::from_utf8_lossy(name)).is_some()
+    }
+    fn internal_function_exists(&self, name: &[u8]) -> bool {
+        self.function_exists(name)
     }
 
     // --- constants ---------------------------------------------------------

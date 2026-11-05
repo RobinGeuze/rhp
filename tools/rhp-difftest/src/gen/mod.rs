@@ -15,7 +15,7 @@ pub mod zip_consts;
 
 const USAGE: &str = "usage: rhp-difftest gen <name> [options] [--check]\n\
 generators:\n  curl-consts  ext/curl constant names and version gates from php-src\n\
-\x20 dumps        ini and constant tables from the reference php\n\
+\x20 dumps        ini, constant and function tables from the reference php\n\
 \x20 html-tables  HTML entity tables from php-src's ext/standard/html_tables\n\
 \x20 intl-consts  intl's global constants from php-src's ext/intl stubs\n\
 \x20 parser       token ids and Bison tables from the php release tarball\n\

@@ -1252,10 +1252,10 @@ fn digest_arg(
             let (pname, _) = super::param(f, i);
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{f}(): Passing null to parameter #{} (${pname}) of type string|int is deprecated",
                     i + 1
-                ),
+                ).as_bytes(),
             )?;
             Ok((md_from_algo(0), 0))
         }

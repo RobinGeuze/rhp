@@ -24,6 +24,30 @@ const DEFAULT_FLAGS: i64 = 3 | 8;
 /// The longest entity name, without `&` and `;`.
 const LONGEST_ENTITY_LENGTH: usize = 31;
 
+/// html.c's `ENT_*` flags and `get_html_translation_table`'s tables.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "ENT_QUOTES",
+            Value::Int(ENT_HTML_QUOTE_SINGLE | ENT_HTML_QUOTE_DOUBLE),
+        ),
+        ("ENT_COMPAT", Value::Int(ENT_HTML_QUOTE_DOUBLE)),
+        ("ENT_NOQUOTES", Value::Int(0)),
+        ("ENT_HTML401", Value::Int(ENT_HTML_DOC_HTML401)),
+        ("ENT_HTML5", Value::Int(ENT_HTML_DOC_HTML5)),
+        ("ENT_XML1", Value::Int(ENT_HTML_DOC_XML1)),
+        ("ENT_XHTML", Value::Int(ENT_HTML_DOC_XHTML)),
+        ("ENT_IGNORE", Value::Int(ENT_HTML_IGNORE_ERRORS)),
+        ("ENT_SUBSTITUTE", Value::Int(ENT_HTML_SUBSTITUTE_ERRORS)),
+        (
+            "ENT_DISALLOWED",
+            Value::Int(ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS),
+        ),
+        ("HTML_SPECIALCHARS", Value::Int(0)),
+        ("HTML_ENTITIES", Value::Int(1)),
+    ]
+}
+
 /// `enum entity_charset`, in php's order (the comparisons below rely on it).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Cs {
@@ -567,6 +591,7 @@ fn find_entity_for_char(
 }
 
 /// `php_escape_html_entities_ex`.
+#[allow(clippy::too_many_arguments)]
 fn escape(
     host: &mut dyn Host,
     fname: &str,
@@ -575,8 +600,9 @@ fn escape(
     flags: i64,
     hint: Option<&[u8]>,
     double_encode: bool,
+    quiet: bool,
 ) -> Result<Vec<u8>, Thrown> {
-    let cs = determine_charset(host, fname, hint, false)?;
+    let cs = determine_charset(host, fname, hint, quiet)?;
     let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
     let mut all = all;
     if all {
@@ -835,7 +861,24 @@ fn html_entities(host: &mut dyn Host, args: &[Value], all: bool, f: &str) -> Res
         flags,
         hint.as_deref(),
         double_encode,
+        false,
     )?))
+}
+
+/// main.c's `escape_html`, for `html_errors`: htmlspecialchars with
+/// ENT_COMPAT in the default charset, quietly; a message that is not valid
+/// in that charset is escaped again with its invalid sequences substituted.
+pub(crate) fn escape_html(host: &mut dyn Host, s: &[u8]) -> Vec<u8> {
+    let flags = ENT_HTML_QUOTE_DOUBLE;
+    let run = |host: &mut dyn Host, flags| {
+        escape(host, "", s, false, flags, None, true, true).unwrap_or_default()
+    };
+    let out = run(host, flags);
+    if out.is_empty() {
+        run(host, flags | ENT_HTML_SUBSTITUTE_ERRORS)
+    } else {
+        out
+    }
 }
 
 fn fn_htmlspecialchars_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

@@ -545,7 +545,10 @@ fn count_recursive(
     seen: &mut Vec<usize>,
 ) -> Result<i64, Thrown> {
     if seen.contains(&a.data_ptr()) {
-        host.emit_diagnostic(E_WARNING, &format!("{fname}(): Recursion detected"))?;
+        host.emit_diagnostic(
+            E_WARNING,
+            format!("{fname}(): Recursion detected").as_bytes(),
+        )?;
         return Ok(0);
     }
     seen.push(a.data_ptr());
@@ -779,7 +782,7 @@ fn array_binop(
                 }
                 Some(_) => {
                     if conv::numeric_string(s.as_bytes()).is_none() {
-                        host.emit_diagnostic(E_WARNING, "A non-numeric value encountered")?;
+                        host.emit_diagnostic(E_WARNING, b"A non-numeric value encountered")?;
                     }
                     Some(v.clone())
                 }
@@ -1026,7 +1029,7 @@ fn range_input(
     };
     if s.is_empty() {
         let msg = format!("Argument #{n} (${name}) must not be empty, casted to 0");
-        host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+        host.emit_diagnostic(E_WARNING, format!("range(): {msg}").as_bytes())?;
         return Ok((RangeIn::Long, 0, 0.0));
     }
     match conv::numeric_string(s) {
@@ -1038,7 +1041,7 @@ fn range_input(
                 let msg = format!(
                     "Argument #{n} (${name}) must be a single byte, subsequent bytes are ignored"
                 );
-                host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+                host.emit_diagnostic(E_WARNING, format!("range(): {msg}").as_bytes())?;
             }
             Ok((RangeIn::Char, 0, 0.0))
         }
@@ -1150,7 +1153,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if end_type != RangeIn::Digit {
                     host.emit_diagnostic(
                         E_WARNING,
-                        "range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
+                        b"range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
                     )?;
                 }
                 end_type = RangeIn::Long;
@@ -1158,7 +1161,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if start_type != RangeIn::Digit {
                     host.emit_diagnostic(
                         E_WARNING,
-                        "range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
+                        b"range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
                     )?;
                 }
                 start_type = RangeIn::Long;
@@ -1167,7 +1170,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if start_type == RangeIn::Char || end_type == RangeIn::Char {
                 host.emit_diagnostic(
                     E_WARNING,
-                    "range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
+                    b"range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
                 )?;
             }
             start_type = RangeIn::Long;
@@ -2604,7 +2607,13 @@ pub(crate) fn reset_state() {
 
 /// Forget a freed object's internal pointer.
 pub(crate) fn object_freed(id: u32) {
-    let _ = OBJECT_POS.try_with(|m| m.borrow_mut().remove(&id));
+    // Runs for every object freed: an empty table is not hashed into.
+    let _ = OBJECT_POS.try_with(|m| {
+        let mut m = m.borrow_mut();
+        if !m.is_empty() {
+            m.remove(&id);
+        }
+    });
 }
 
 /// The table php's Z_OBJPROP gives the internal-pointer functions: the
@@ -3196,9 +3205,24 @@ fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(Value::Null))
 }
 
-/// `array_change_key_case`'s `CASE_*` constants.
-pub fn case_constants() -> Vec<(&'static str, Value)> {
-    vec![("CASE_LOWER", Value::Int(0)), ("CASE_UPPER", Value::Int(1))]
+/// array.c's constants: `COUNT_*`, `SORT_*`, `CASE_*`, `ARRAY_FILTER_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("COUNT_NORMAL", Value::Int(0)),
+        ("COUNT_RECURSIVE", Value::Int(1)),
+        ("SORT_REGULAR", Value::Int(0)),
+        ("SORT_NUMERIC", Value::Int(SORT_NUMERIC)),
+        ("SORT_STRING", Value::Int(SORT_STRING)),
+        ("SORT_DESC", Value::Int(SORT_DESC)),
+        ("SORT_ASC", Value::Int(SORT_ASC)),
+        ("SORT_LOCALE_STRING", Value::Int(5)),
+        ("SORT_NATURAL", Value::Int(SORT_NATURAL)),
+        ("SORT_FLAG_CASE", Value::Int(SORT_FLAG_CASE)),
+        ("CASE_LOWER", Value::Int(0)),
+        ("CASE_UPPER", Value::Int(1)),
+        ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
+        ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
+    ]
 }
 
 pub fn register(m: &mut crate::Registry) {

@@ -167,7 +167,7 @@ fn fn_mt_srand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mode = if mode == MT_RAND_PHP {
         host.emit_diagnostic(
             crate::E_DEPRECATED,
-            "The MT_RAND_PHP variant of Mt19937 is deprecated",
+            b"The MT_RAND_PHP variant of Mt19937 is deprecated",
         )?;
         MT_RAND_PHP
     } else {

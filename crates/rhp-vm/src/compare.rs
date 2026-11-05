@@ -241,10 +241,12 @@ impl Vm {
                     if l as f64 != d {
                         self.diag(
                             rhp_builtins::E_DEPRECATED,
-                            &format!(
-                                "Implicit conversion from float-string \"{}\" to int loses precision",
-                                String::from_utf8_lossy(s.as_bytes())
-                            ),
+                            &[
+                                b"Implicit conversion from float-string \"".as_slice(),
+                                s.as_bytes(),
+                                b"\" to int loses precision",
+                            ]
+                            .concat(),
                         )?;
                     }
                     l

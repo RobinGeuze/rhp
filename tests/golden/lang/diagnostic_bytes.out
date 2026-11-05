@@ -1,0 +1,50 @@
+
+Warning: user caféÿ in FILE on line 8
+string(20) "7573657220636166e9ff"
+
+Warning: pack(): Type H: illegal hex digit ÿ in FILE on line 12
+string(2) "40"
+
+Warning: Constant Ccaféÿ already defined, this will be an error in PHP 9 in FILE on line 14
+bool(false)
+string(166) "666f70656e282f6e6f6e6578697374656e742d6469722f636166e9ff2e747874293a204661696c656420746f206f70656e2073747265616d3a204e6f20737563682066696c65206f72206469726563746f7279"
+
+Warning: fopen(/nonexistent-dir/caféÿ.txt): Failed to open stream: No such file or directory in FILE on line 17
+bool(false)
+
+Warning: stat(): stat failed for /nonexistent-dir/caféÿ in FILE on line 18
+bool(false)
+
+Warning: fopen(FILE): Failed to open stream: `zcaféÿ' is not a valid mode for fopen in FILE on line 19
+bool(false)
+
+Notice: date_default_timezone_set(): Timezone ID 'Zone/caféÿ' is invalid in FILE on line 20
+bool(false)
+
+Warning: Illegal string offset "1caféÿ" in FILE on line 22
+string(1) "b"
+
+Warning: touch(): Unable to create file /nonexistent-dir/caféÿ because No such file or directory in FILE on line 23
+bool(false)
+
+Warning: iconv(): Wrong encoding, conversion from "UTF-8" to "Xcaféÿ" is not allowed in FILE on line 24
+bool(false)
+
+Warning: ob_start(): function "fcaféÿ" not found or invalid function name in FILE on line 25
+
+Notice: ob_start(): Failed to create buffer in FILE on line 25
+bool(false)
+
+Warning: ob_start(): class "Ccaféÿ" not found in FILE on line 26
+
+Notice: ob_start(): Failed to create buffer in FILE on line 26
+bool(false)
+
+Warning: ob_start(): class stdClass does not have a method "mcaféÿ" in FILE on line 27
+
+Notice: ob_start(): Failed to create buffer in FILE on line 27
+bool(false)
+handler: 68616e646c656420636166e9ff
+handler: 7061636b28293a205479706520483a20696c6c6567616c2068657820646967697420fe
+string(2) "00"
+PHP Warning:  logged caféÿ in FILE on line 43

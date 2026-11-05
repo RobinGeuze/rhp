@@ -1313,31 +1313,37 @@ fn mime_decode(
 // ---------------------------------------------------------------------------
 
 /// _php_iconv_show_error's diagnostic for `err`: (level, message).
-fn error_message(err: IconvErr, out_charset: &CStr, in_charset: &CStr) -> Option<(i64, String)> {
-    let (level, msg) = match err {
+fn error_message(err: IconvErr, out_charset: &CStr, in_charset: &CStr) -> Option<(i64, Vec<u8>)> {
+    let (level, msg): (i64, &[u8]) = match err {
         Success | OutOfBounds => return None,
-        Converter => (crate::E_WARNING, "Cannot open converter".to_string()),
-        WrongCharset => (
-            crate::E_WARNING,
-            format!(
-                "Wrong encoding, conversion from \"{}\" to \"{}\" is not allowed",
-                in_charset.to_string_lossy(),
-                out_charset.to_string_lossy()
-            ),
-        ),
+        Converter => (crate::E_WARNING, b"Cannot open converter"),
+        WrongCharset => {
+            let msg = [
+                b"Wrong encoding, conversion from \"",
+                in_charset.to_bytes(),
+                b"\" to \"",
+                out_charset.to_bytes(),
+                b"\" is not allowed",
+            ]
+            .concat();
+            return Some((crate::E_WARNING, msg));
+        }
         IllegalChar => (
             crate::E_NOTICE,
-            "Detected an incomplete multibyte character in input string".to_string(),
+            b"Detected an incomplete multibyte character in input string",
         ),
         IllegalSeq => (
             crate::E_NOTICE,
-            "Detected an illegal character in input string".to_string(),
+            b"Detected an illegal character in input string",
         ),
-        TooBig => (crate::E_WARNING, "Buffer length exceeded".to_string()),
-        Malformed => (crate::E_WARNING, "Malformed string".to_string()),
-        Unknown | Alloc => (crate::E_NOTICE, format!("Unknown error ({})", errno())),
+        TooBig => (crate::E_WARNING, b"Buffer length exceeded"),
+        Malformed => (crate::E_WARNING, b"Malformed string"),
+        Unknown | Alloc => {
+            let msg = format!("Unknown error ({})", errno()).into_bytes();
+            return Some((crate::E_NOTICE, msg));
+        }
     };
-    Some((level, msg))
+    Some((level, msg.to_vec()))
 }
 
 /// _php_iconv_show_error from builtin `fname`.
@@ -1357,7 +1363,9 @@ fn show_error(
         ));
     }
     match error_message(err, out_charset, in_charset) {
-        Some((level, msg)) => host.emit_diagnostic(level, &format!("{fname}(): {msg}")),
+        Some((level, msg)) => {
+            host.emit_diagnostic(level, &[fname.as_bytes(), b"(): ", &msg].concat())
+        }
         None => Ok(()),
     }
 }

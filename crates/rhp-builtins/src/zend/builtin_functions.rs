@@ -8,6 +8,7 @@ use rhp_values::{conv, ArrayKey, ClassKind, PhpArray, Value};
 
 use crate::const_modules::CONST_MODULES;
 use crate::ext::standard::string::find_subslice;
+use crate::func_modules::FUNC_MODULES;
 use crate::zend::exceptions::trace_to_string;
 use crate::zend::zpp::{arg_bytes, bool_param, str_param, zval_get_string, zval_value_name};
 use crate::{ext, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
@@ -103,7 +104,7 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
         host.emit_diagnostic(
             E_WARNING,
-            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
+            b"define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
         )?;
     }
     if host.define_const(&name, value) {
@@ -130,13 +131,15 @@ pub fn const_key(name: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
 /// zend_register_constant's warning for a name that is taken: the table
 /// key, printed as a C string.
-pub fn const_redefined_message(name: &[u8]) -> String {
+pub fn const_redefined_message(name: &[u8]) -> Vec<u8> {
     let key = const_key(name);
     let shown = &key[..key.iter().position(|&b| b == 0).unwrap_or(key.len())];
-    format!(
-        "Constant {} already defined, this will be an error in PHP 9",
-        String::from_utf8_lossy(shown)
-    )
+    [
+        b"Constant ".as_slice(),
+        shown,
+        b" already defined, this will be an error in PHP 9",
+    ]
+    .concat()
 }
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
@@ -175,7 +178,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         };
         host.emit_diagnostic(
             E_DEPRECATED,
-            "Calling get_class() without arguments is deprecated",
+            b"Calling get_class() without arguments is deprecated",
         )?;
         return Ok(Value::str(name));
     };
@@ -271,7 +274,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         None => {
             host.emit_diagnostic(
                 E_DEPRECATED,
-                "Calling get_parent_class() without arguments is deprecated",
+                b"Calling get_parent_class() without arguments is deprecated",
             )?;
             Ok(host
                 .caller_scope()
@@ -420,7 +423,9 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
 
 /// Extensions this engine reports as loaded, under php's own module names and
 /// in php 8.5.8's `get_loaded_extensions()` order. These are the ones whose
-/// functions/classes rhp actually provides.
+/// functions/classes rhp actually provides. Every one is a module
+/// (`registry::modules`); the test `modules_are_php_modules` lists the
+/// modules left out.
 pub(crate) const LOADED_EXTS: &[&str] = &[
     "Core",
     "date",
@@ -458,14 +463,13 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "zip",
 ];
 
-/// The extensions the running SAPI has loaded: pcntl only under the CLI
-/// and CGI.
+/// The extensions the running SAPI has loaded (pcntl only under the CLI and
+/// CGI).
 fn sapi_exts() -> impl Iterator<Item = &'static str> {
-    let pcntl = crate::main::sapi::has_pcntl();
     LOADED_EXTS
         .iter()
         .copied()
-        .filter(move |e| pcntl || *e != "pcntl")
+        .filter(|e| crate::registry::module_loaded(e))
 }
 
 /// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
@@ -473,13 +477,22 @@ pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
     sapi_exts().collect()
 }
 
+/// The running SAPI's own module (php-cgi's `cgi-fcgi`), which
+/// `get_loaded_extensions()` lists last.
+fn sapi_ext() -> Option<&'static str> {
+    crate::main::sapi::sapi_module()
+        .and_then(|d| d.module)
+        .map(|(name, _)| name)
+}
+
 /// The loaded extension matching `name` case-insensitively (php's module
 /// lookup lowercases), if any.
 pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
-    if name.eq_ignore_ascii_case(b"cgi-fcgi") {
-        return crate::main::sapi::is_cgi().then_some("cgi-fcgi");
+    let named = |e: &&str| e.as_bytes().eq_ignore_ascii_case(name);
+    match LOADED_EXTS.iter().copied().find(named) {
+        Some(e) => crate::registry::module_loaded(e).then_some(e),
+        None => sapi_ext().filter(named),
     }
-    sapi_exts().find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
@@ -506,14 +519,50 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
     )?;
     let mut a = PhpArray::new();
     if !zend {
-        for e in sapi_exts() {
+        for e in sapi_exts().chain(sapi_ext()) {
             a.push(Value::str(e));
-        }
-        if crate::main::sapi::is_cgi() {
-            a.push(Value::str("cgi-fcgi"));
         }
     } else {
         a.push(Value::str("Zend OPcache"));
+    }
+    Ok(Value::Array(a))
+}
+
+/// `get_extension_funcs($extension)`: the functions of a loaded module, in
+/// php's order ("zend" names Core). php's list for the module, as far as
+/// rhp has the functions (builtin or prelude) under the running SAPI, with
+/// the SAPI's additional functions under `standard`; the SAPI's own module
+/// lists its functions. An array, maybe empty, for a module php gives
+/// functions; false for one it gives none or that is not loaded.
+fn fn_get_extension_funcs(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, "get_extension_funcs", "extension")?;
+    let module = if name.eq_ignore_ascii_case(b"zend") {
+        Some("Core")
+    } else {
+        loaded_ext(&name)
+    };
+    let Some(module) = module else {
+        return Ok(Value::Bool(false));
+    };
+    let sapi = crate::main::sapi::sapi_module();
+    let mut names: Vec<&str> = match sapi.and_then(|d| d.module) {
+        Some((m, fns)) if m == module => fns.iter().map(|(n, _)| *n).collect(),
+        _ => match FUNC_MODULES.iter().find(|(m, _)| *m == module) {
+            Some((_, fns)) => fns.split(' ').collect(),
+            None => return Ok(Value::Bool(false)),
+        },
+    };
+    names.retain(|n| host.internal_function_exists(n.as_bytes()));
+    if module == "standard" {
+        for (n, _) in sapi.map_or(&[][..], |d| d.functions) {
+            if !names.contains(n) {
+                names.push(n);
+            }
+        }
+    }
+    let mut a = PhpArray::new();
+    for n in names {
+        a.push(Value::str(n));
     }
     Ok(Value::Array(a))
 }
@@ -714,7 +763,7 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         256 => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
+                b"Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
             )?;
         }
         512 | 1024 | 16384 => {}
@@ -725,7 +774,7 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             ))
         }
     }
-    host.emit_diagnostic(level, &String::from_utf8_lossy(&msg))?;
+    host.emit_diagnostic(level, &msg)?;
     Ok(Value::Bool(true))
 }
 
@@ -1008,6 +1057,7 @@ pub fn register(m: &mut crate::Registry) {
             ("enum_exists", fn_enum_exists),
             ("extension_loaded", fn_extension_loaded),
             ("get_loaded_extensions", fn_get_loaded_extensions),
+            ("get_extension_funcs", fn_get_extension_funcs),
             ("function_exists", fn_function_exists),
             ("func_num_args", fn_func_num_args),
             ("func_get_args", fn_func_get_args),

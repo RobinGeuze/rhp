@@ -114,10 +114,12 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     host,
                     "fopen",
                     &path,
-                    &format!(
-                        "Failed to open stream: `{}' is not a valid mode for fopen",
-                        String::from_utf8_lossy(&mode)
-                    ),
+                    &[
+                        b"Failed to open stream: `".as_slice(),
+                        &mode,
+                        b"' is not a valid mode for fopen",
+                    ]
+                    .concat(),
                 )?;
             } else {
                 crate::open_failed(host, "fopen", &path)?;
@@ -990,8 +992,22 @@ pub(crate) fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
     realpath_bytes(&t)
 }
 
+/// `file_put_contents`'s flag to append.
+const FILE_APPEND: i64 = 8;
+
 pub fn constants() -> Vec<(&'static str, Value)> {
     vec![
+        ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
+        ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
+        ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
+        ("FILE_APPEND", Value::Int(FILE_APPEND)),
+        ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
+        ("FILE_TEXT", Value::Int(0)),
+        ("FILE_BINARY", Value::Int(0)),
+        ("LOCK_SH", Value::Int(1)),
+        ("LOCK_EX", Value::Int(2)),
+        ("LOCK_UN", Value::Int(3)),
+        ("LOCK_NB", Value::Int(4)),
         ("SEEK_SET", Value::Int(0)),
         ("SEEK_CUR", Value::Int(1)),
         ("SEEK_END", Value::Int(2)),
@@ -1283,7 +1299,6 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         ));
     }
     let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    const FILE_APPEND: i64 = 8;
     if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
         // php opens the target before reading `$data`; the http wrapper
         // refuses to write

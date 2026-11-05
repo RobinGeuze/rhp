@@ -6,6 +6,7 @@
 pub mod bison;
 pub mod builtin_functions;
 pub mod closures;
+pub(crate) mod constants;
 pub mod exceptions;
 pub(crate) mod ini_parser;
 #[rustfmt::skip]

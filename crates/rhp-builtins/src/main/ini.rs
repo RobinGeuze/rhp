@@ -250,14 +250,10 @@ pub(crate) fn reset_state() {
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     rhp_values::fmt::reset_precision();
-    crate::ext::bcmath::set_default_scale(0);
 }
 
 /// Is a directive's owning module loaded in this engine?
 pub(crate) fn module_loaded(module: &str) -> bool {
-    if module == "cgi-fcgi" {
-        return crate::main::sapi::is_cgi();
-    }
     crate::zend::builtin_functions::loaded_ext(module.as_bytes()).is_some()
 }
 
@@ -556,7 +552,7 @@ pub(crate) fn alter_ini_entry(
     mark_changed(&String::from_utf8_lossy(name));
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
-        host.emit_diagnostic(crate::E_WARNING, w)?;
+        host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
     }
     let Some(newv) = stored else {
         return Ok(None);
@@ -567,7 +563,7 @@ pub(crate) fn alter_ini_entry(
     crate::ext::iconv::ini_runtime_update(host, name, func)?;
     if name == b"date.timezone" && !tz_valid(&newv) {
         let func = format!("{func}()");
-        host.emit_diagnostic(crate::E_WARNING, &invalid_timezone(&newv, &func))?;
+        host.emit_diagnostic(crate::E_WARNING, invalid_timezone(&newv, &func).as_bytes())?;
         return Ok(None);
     }
     if ini_validate(name, &newv).is_err() {

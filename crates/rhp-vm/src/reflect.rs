@@ -234,7 +234,7 @@ impl Vm {
             b"attr_args" => self.attr_args(args),
             b"deprecated" => {
                 let msg = arg_bytes(args, 0);
-                self.raise_error(rhp_builtins::E_DEPRECATED, &String::from_utf8_lossy(&msg));
+                self.raise_error(rhp_builtins::E_DEPRECATED, &msg);
                 match self.pending_throw.take() {
                     Some(t) => Err(t),
                     None => Ok(Value::Null),
@@ -270,8 +270,8 @@ impl Vm {
                 Ok(Value::Array(out))
             }
             b"functions" => {
-                let mut internal: Vec<Vec<u8>> = rhp_builtins::registry()
-                    .keys()
+                let mut internal: Vec<Vec<u8>> = rhp_builtins::functions()
+                    .map(|b| b.name)
                     .filter(|n| crate::calls::user_visible_builtin(n.as_bytes()))
                     .map(|n| n.as_bytes().to_ascii_lowercase())
                     .collect();
@@ -1164,9 +1164,8 @@ impl Vm {
                 if let Some(&i) = self.fn_names.get(&lc(name)) {
                     Some(FnSubject::Func(self.functions[i].clone()))
                 } else if crate::calls::user_visible_builtin(name) {
-                    rhp_builtins::registry()
-                        .get_key_value(String::from_utf8_lossy(&lc(name)).as_ref())
-                        .map(|(k, _)| FnSubject::Builtin(k))
+                    rhp_builtins::lookup_lc(String::from_utf8_lossy(&lc(name)).as_ref())
+                        .map(|b| FnSubject::Builtin(b.name))
                 } else {
                     None
                 }
@@ -1800,14 +1799,11 @@ impl Vm {
 
     /// A native builtin's descriptor, from its stub row when there is one.
     fn builtin_fn_info(&self, name: &'static str) -> Value {
-        let b = rhp_builtins::registry().get(name);
+        let b = rhp_builtins::lookup_lc(name);
         let sig = sigs::function(name.as_bytes());
         let mut a = PhpArray::new();
-        put(
-            &mut a,
-            "ext",
-            s(sig.map_or("standard", |f| f.ext).as_bytes()),
-        );
+        let ext = rhp_builtins::sapi_function_module(name).or(sig.map(|f| f.ext));
+        put(&mut a, "ext", s(ext.unwrap_or("standard").as_bytes()));
         put(&mut a, "name", s(sig.map_or(name, |f| f.name).as_bytes()));
         if let Some(f) = sig {
             put(&mut a, "short", s(name.as_bytes()));

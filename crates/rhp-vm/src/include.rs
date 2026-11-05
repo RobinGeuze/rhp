@@ -60,7 +60,7 @@ impl Vm {
         }
         for (level, msg, line) in &prog.compile_diags {
             let file = prog.main.debug.file.as_bytes().to_vec();
-            self.raise_error_at(*level, msg, file, *line as i64);
+            self.raise_error_at(*level, msg.as_bytes(), file, *line as i64);
         }
     }
 

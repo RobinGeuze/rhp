@@ -19,9 +19,6 @@ pub(crate) struct SapiState {
     pub(crate) response: Response,
     /// The request's input, when a SAPI supplied one.
     pub(crate) request: Option<RequestInfo>,
-    /// The message being displayed came from a builtin's
-    /// `php_error_docref` (HTML-escaped under html_errors).
-    pub(crate) docref_msg: bool,
     /// Request startup is running (php's `during_request_startup`):
     /// diagnostics are reported in "Unknown" on line 0.
     pub(crate) startup: bool,
@@ -51,7 +48,6 @@ impl SapiState {
             sapi,
             response,
             request: None,
-            docref_msg: false,
             startup: false,
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
@@ -169,7 +165,7 @@ impl Vm {
         }
         let mut msg = msg.as_bytes().to_vec();
         if crate::ini_bool(&ini(self, b"html_errors")) {
-            msg = builtins::main::sapi::escape_html(&msg, &ini(self, b"default_charset"));
+            msg = builtins::main::sapi::escape_html(self, &msg);
         }
         let trace: &[u8] = if crate::ini_bool(&ini(self, b"fatal_error_backtraces")) {
             b"#0 {main}"

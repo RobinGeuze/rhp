@@ -171,7 +171,7 @@ fn fn_spl_object_id(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// prelude method (php's `#[\Deprecated]` methods / zend_error notices).
 fn fn_spl_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let msg = conv::to_string_bytes(&deref(&args[0]));
-    host.emit_diagnostic(crate::E_DEPRECATED, &String::from_utf8_lossy(&msg))?;
+    host.emit_diagnostic(crate::E_DEPRECATED, &msg)?;
     Ok(Value::Null)
 }
 

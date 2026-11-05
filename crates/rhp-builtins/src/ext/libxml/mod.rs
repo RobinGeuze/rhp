@@ -28,7 +28,7 @@ pub struct XmlError {
     pub code: i32,
     pub line: i32,
     pub column: i32,
-    pub message: String,
+    pub message: Vec<u8>,
     pub file: Option<Vec<u8>>,
 }
 
@@ -115,7 +115,6 @@ pub fn reset_state() {
         s.entity_loader_disabled = false;
     });
     thread_init();
-    crate::ext::xml::reset_state();
 }
 
 /// php_libxml_import_node: the node a DOM node or SimpleXML element stands
@@ -141,7 +140,7 @@ pub fn push_internal_error(msg: &str) -> bool {
                 code: sys::XML_ERR_INTERNAL_ERROR,
                 line: 0,
                 column: 0,
-                message: msg.to_string(),
+                message: msg.as_bytes().to_vec(),
                 file: None,
             });
             true
@@ -176,7 +175,7 @@ fn error_from_raw(e: &sys::XmlErrorRaw) -> XmlError {
         code: e.code,
         line: e.line,
         column: e.int2,
-        message: String::from_utf8_lossy(&text(e.message)).into_owned(),
+        message: text(e.message),
         file: (!e.file.is_null()).then(|| text(e.file)),
     }
 }
@@ -253,7 +252,7 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
                 code: sys::XML_ERR_INTERNAL_ERROR,
                 line,
                 column,
-                message: String::from_utf8_lossy(&msg).into_owned(),
+                message: msg,
                 file: None,
             });
             return None;
@@ -265,7 +264,6 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
     if ffi::aborted() {
         return;
     }
-    let msg = String::from_utf8_lossy(&msg).into_owned();
     let fname = ffi::fname();
     match kind {
         PHP_LIBXML_CTX_ERROR => ctx_error_level(crate::E_WARNING, ctx, &fname, &msg, line),
@@ -277,20 +275,28 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
 }
 
 /// php_libxml_ctx_error_level
-fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &str, line: c_int) {
+fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &[u8], line: c_int) {
     let mut file = std::ptr::null();
     let (mut l, mut c) = (0, 0);
     let has_input = !ctx.is_null()
         && unsafe { sys::rhp_xml_ctxt_input_pos(ctx.cast(), &mut file, &mut l, &mut c) } != 0;
     if has_input {
         let src = if file.is_null() {
-            "Entity".to_string()
+            &b"Entity"[..]
         } else {
-            String::from_utf8_lossy(unsafe { sys::cstr(file) }).into_owned()
+            unsafe { sys::cstr(file) }
         };
-        ffi::call_host(|h| {
-            h.emit_diagnostic(level, &format!("{fname}(): {msg} in {src}, line: {line}"))
-        });
+        let line = format!(", line: {line}");
+        let msg = [
+            fname.as_bytes(),
+            b"(): ",
+            msg,
+            b" in ",
+            src,
+            line.as_bytes(),
+        ]
+        .concat();
+        ffi::call_host(|h| h.emit_diagnostic(level, &msg));
     } else {
         ffi::call_host(|h| crate::warn(h, fname, msg));
     }
@@ -324,10 +330,7 @@ fn error_object(host: &mut dyn Host, e: &XmlError) -> Value {
         (b"level".to_vec(), Value::Int(e.level as i64)),
         (b"code".to_vec(), Value::Int(e.code as i64)),
         (b"column".to_vec(), Value::Int(e.column as i64)),
-        (
-            b"message".to_vec(),
-            Value::str(e.message.as_bytes().to_vec()),
-        ),
+        (b"message".to_vec(), Value::str(e.message.clone())),
         (
             b"file".to_vec(),
             Value::str(e.file.clone().unwrap_or_default()),

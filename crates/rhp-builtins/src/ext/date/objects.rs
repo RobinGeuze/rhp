@@ -679,7 +679,7 @@ fn date_interval_compare_objects(
     {
         return Ok(None);
     }
-    host.emit_diagnostic(crate::E_WARNING, "Cannot compare DateInterval objects")?;
+    host.emit_diagnostic(crate::E_WARNING, b"Cannot compare DateInterval objects")?;
     Ok(Some(1))
 }
 
@@ -788,7 +788,7 @@ pub(crate) fn dval_to_lval(host: &mut dyn Host, d: f64) -> Result<i64, Thrown> {
         let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
         host.emit_diagnostic(
             crate::E_WARNING,
-            &format!("The float {shown} is not representable as an int, cast occurred"),
+            format!("The float {shown} is not representable as an int, cast occurred").as_bytes(),
         )?;
     }
     Ok(rhp_values::float_to_int(d))

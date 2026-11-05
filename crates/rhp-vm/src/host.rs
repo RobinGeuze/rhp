@@ -15,27 +15,28 @@ use crate::streams::{res_id, MemMode, StreamState};
 use crate::{classes, deref, Vm};
 
 impl Host for Vm {
-    fn raise_diagnostic(&mut self, level: i64, msg: &str) {
-        // A builtin's `php_error_docref` ("func(): …"): HTML-escaped when
-        // html_errors is on (engine and sapi errors are not, nor are the
-        // E_USER_* messages trigger_error passes through as given).
+    fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
+        // A builtin's `php_error_docref` ("func(): …") goes through
+        // php_verror; engine and sapi errors do not, nor do the E_USER_*
+        // messages trigger_error passes through as given.
         use builtins::{E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING};
         let user = E_USER_ERROR | E_USER_WARNING | E_USER_NOTICE | E_USER_DEPRECATED;
-        self.sapi.docref_msg = level & user == 0 && is_docref_message(msg);
+        if level & user != 0 || !is_docref_message(msg) {
+            return self.raise_error(level, msg);
+        }
         // php_verror: none while an out-of-memory error is pending.
-        if self.sapi.docref_msg && self.mem.attention() {
-            self.sapi.docref_msg = false;
+        if self.mem.attention() {
             return;
         }
-        self.raise_error(level, msg);
-        self.sapi.docref_msg = false;
+        let msg = self.docref_html(msg);
+        self.raise_error(level, &msg);
     }
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {
         self.pending_throw.take()
     }
 
-    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+    fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
         self.ob_diag(level, msg);
         match self.pending_throw.take() {
             Some(t) => Err(t),
@@ -1834,6 +1835,14 @@ impl Host for Vm {
         self.fn_names.contains_key(&name.to_ascii_lowercase()) || user_visible_builtin(name)
     }
 
+    fn internal_function_exists(&self, name: &[u8]) -> bool {
+        user_visible_builtin(name)
+            || self
+                .fn_names
+                .get(&name.to_ascii_lowercase())
+                .is_some_and(|&i| self.functions[i].proto.is_internal())
+    }
+
     fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
         let cd = match deref(closure) {
             Value::Closure(cd) => cd,
@@ -2120,12 +2129,16 @@ impl Host for Vm {
     }
 
     fn callable_error(&self, callable: &Value) -> Option<String> {
-        self.resolve_callable(callable).err()
+        let e = self.resolve_callable(callable).err()?;
+        Some(String::from_utf8_lossy(&e).into_owned())
     }
 
     fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
         self.autoload_callable_class(callable)?;
-        Ok(self.resolve_callable(callable).err())
+        let Err(e) = self.resolve_callable(callable) else {
+            return Ok(None);
+        };
+        Ok(Some(String::from_utf8_lossy(&e).into_owned()))
     }
 
     fn wrap_callable(&self, callable: Value) -> Value {

@@ -69,7 +69,7 @@ impl Cx<'_> {
             }
         }
         let m = format!("{}(): {msg}", self.fname);
-        self.host.emit_diagnostic(level, &m)
+        self.host.emit_diagnostic(level, m.as_bytes())
     }
     fn value_error(&self, n: usize, pname: &str, msg: &str) -> Thrown {
         crate::zend::zpp::value_error(&self.fname, n, pname, msg)

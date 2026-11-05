@@ -810,7 +810,7 @@ fn parse_string(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!("{fname}(): Passing null to parameter #{n} (${pname}) of type string is deprecated"),
+                format!("{fname}(): Passing null to parameter #{n} (${pname}) of type string is deprecated").as_bytes(),
             )?;
             Some(Vec::new())
         }

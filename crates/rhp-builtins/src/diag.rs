@@ -1,12 +1,27 @@
-//! php_error_docref-style diagnostics raised from builtins.
+//! php_error_docref-style diagnostics raised from builtins. Messages are
+//! bytes, as php's are: a file name or argument quoted in one goes out as
+//! given, never UTF-8-checked.
 
 use crate::main::streams;
 use crate::main::streams::plain_wrapper;
 use crate::{Host, Thrown, E_DEPRECATED, E_NOTICE, E_WARNING};
 
+/// `fname(): msg`, php_error_docref's prefix.
+fn docref(fname: &str, msg: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(fname.len() + 4 + msg.len());
+    m.extend_from_slice(fname.as_bytes());
+    m.extend_from_slice(b"(): ");
+    m.extend_from_slice(msg);
+    m
+}
+
 /// `php_error_docref(NULL, E_WARNING, msg)` from builtin `fname`.
-pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(E_WARNING, &format!("{fname}(): {msg}"))
+pub fn warn(
+    host: &mut dyn Host,
+    fname: &str,
+    msg: &(impl AsRef<[u8]> + ?Sized),
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_WARNING, &docref(fname, msg.as_ref()))
 }
 
 /// Report the diagnostics stream operations queued (see
@@ -14,20 +29,29 @@ pub fn warn(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
 pub fn flush_stream_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
     for d in plain_wrapper::take_diags() {
         if d.docref {
-            host.emit_diagnostic(d.level, &format!("{fname}(): {}", d.msg))?;
+            host.emit_diagnostic(d.level, &docref(fname, d.msg.as_bytes()))?;
         } else {
-            host.emit_diagnostic(d.level, &d.msg)?;
+            host.emit_diagnostic(d.level, d.msg.as_bytes())?;
         }
     }
     Ok(())
 }
 
 /// `php_error_docref1(NULL, arg, E_WARNING, msg)`: `fname(arg): msg`.
-pub fn warn_arg(host: &mut dyn Host, fname: &str, arg: &[u8], msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(
-        E_WARNING,
-        &format!("{fname}({}): {msg}", String::from_utf8_lossy(arg)),
-    )
+pub fn warn_arg(
+    host: &mut dyn Host,
+    fname: &str,
+    arg: &[u8],
+    msg: &(impl AsRef<[u8]> + ?Sized),
+) -> Result<(), Thrown> {
+    let msg = msg.as_ref();
+    let mut m = Vec::with_capacity(fname.len() + arg.len() + 4 + msg.len());
+    m.extend_from_slice(fname.as_bytes());
+    m.push(b'(');
+    m.extend_from_slice(arg);
+    m.extend_from_slice(b"): ");
+    m.extend_from_slice(msg);
+    host.emit_diagnostic(E_WARNING, &m)
 }
 
 /// php_stream_open_wrapper's failure report for `path` from builtin `fname`:
@@ -52,14 +76,10 @@ pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), 
         && !matches!(&scheme[..], b"http" | b"https" | b"data" | b"glob")
         && !known.iter().any(|k| k.eq_ignore_ascii_case(&scheme))
     {
-        let name = String::from_utf8_lossy(&scheme).into_owned();
-        warn(
-            host,
-            fname,
-            &format!(
-                "Unable to find the wrapper \"{name}\" - did you forget to enable it when you configured PHP?"
-            ),
-        )?;
+        let mut m = b"Unable to find the wrapper \"".to_vec();
+        m.extend_from_slice(&scheme);
+        m.extend_from_slice(b"\" - did you forget to enable it when you configured PHP?");
+        warn(host, fname, &m)?;
         reason = streams::strerror(libc::ENOENT);
     }
     warn_arg(
@@ -71,13 +91,21 @@ pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), 
 }
 
 /// `php_error_docref(NULL, E_NOTICE, msg)` from builtin `fname`.
-pub fn notice(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(E_NOTICE, &format!("{fname}(): {msg}"))
+pub fn notice(
+    host: &mut dyn Host,
+    fname: &str,
+    msg: &(impl AsRef<[u8]> + ?Sized),
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_NOTICE, &docref(fname, msg.as_ref()))
 }
 
 /// `php_error_docref(NULL, E_DEPRECATED, msg)` from builtin `fname`.
-pub fn deprecated(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(E_DEPRECATED, &format!("{fname}(): {msg}"))
+pub fn deprecated(
+    host: &mut dyn Host,
+    fname: &str,
+    msg: &(impl AsRef<[u8]> + ?Sized),
+) -> Result<(), Thrown> {
+    host.emit_diagnostic(E_DEPRECATED, &docref(fname, msg.as_ref()))
 }
 
 /// The `#[\Deprecated]` notice php raises on calling a deprecated function:
@@ -90,6 +118,6 @@ pub fn deprecated_fn(
 ) -> Result<(), Thrown> {
     host.emit_diagnostic(
         E_DEPRECATED,
-        &format!("Function {fname}() is deprecated since {since}, {msg}"),
+        format!("Function {fname}() is deprecated since {since}, {msg}").as_bytes(),
     )
 }

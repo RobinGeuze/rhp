@@ -116,9 +116,9 @@ fn unix_addr(
         n = max;
         host.emit_diagnostic(
             crate::E_NOTICE,
-            &format!(
+            format!(
                 "{fname}(): socket path exceeded the maximum allowed length of {max} bytes and was truncated"
-            ),
+            ).as_bytes(),
         )?;
     }
     let resolved = if abstract_ns {

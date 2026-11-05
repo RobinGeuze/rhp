@@ -100,6 +100,18 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// basic_functions.c's `INI_SCANNER_*` and `CONNECTION_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("INI_SCANNER_NORMAL", Value::Int(MODE_NORMAL)),
+        ("INI_SCANNER_RAW", Value::Int(MODE_RAW)),
+        ("INI_SCANNER_TYPED", Value::Int(MODE_TYPED)),
+        ("CONNECTION_ABORTED", Value::Int(1)),
+        ("CONNECTION_NORMAL", Value::Int(0)),
+        ("CONNECTION_TIMEOUT", Value::Int(2)),
+    ]
+}
+
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
 }
@@ -299,7 +311,7 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
     }
     for w in restore.flatten().unwrap_or_default() {
-        host.emit_diagnostic(crate::E_WARNING, &w)?;
+        host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
     }
     // Back to the startup value (`-d`), else the default.
     let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
@@ -875,11 +887,14 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         crate::warn(
             host,
             "move_uploaded_file",
-            &format!(
-                "Unable to move \"{}\" to \"{}\"",
-                String::from_utf8_lossy(&from),
-                String::from_utf8_lossy(&to)
-            ),
+            &[
+                b"Unable to move \"".as_slice(),
+                &from,
+                b"\" to \"",
+                &to,
+                b"\"",
+            ]
+            .concat(),
         )?;
     }
     Ok(Value::Bool(ok))
@@ -983,7 +998,7 @@ fn report_syntax_error(
         " in {} on line {line}\n",
         String::from_utf8_lossy(file)
     ));
-    host.emit_diagnostic(crate::E_WARNING, &m)?;
+    host.emit_diagnostic(crate::E_WARNING, m.as_bytes())?;
     Ok(true)
 }
 

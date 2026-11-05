@@ -428,6 +428,7 @@ Zend/tests/bug81104.phpt
 Zend/tests/bug81159.phpt
 Zend/tests/bug81626.phpt
 Zend/tests/bugGH-8655.phpt
+Zend/tests/builtin_functions_basic.phpt
 Zend/tests/bw_or_assign_with_ref.phpt
 Zend/tests/call_user_functions/bug43426.phpt
 Zend/tests/call_user_functions/call_user_func_001.phpt
@@ -7608,6 +7609,7 @@ ext/standard/tests/general_functions/escapeshellcmd_bug71039.phpt
 ext/standard/tests/general_functions/floatval_basic.phpt
 ext/standard/tests/general_functions/get_debug_type_basic.phpt
 ext/standard/tests/general_functions/get_defined_constants_basic.phpt
+ext/standard/tests/general_functions/get_extension_funcs_basic.phpt
 ext/standard/tests/general_functions/get_include_path_basic.phpt
 ext/standard/tests/general_functions/get_included_files.phpt
 ext/standard/tests/general_functions/get_loaded_extensions_basic.phpt

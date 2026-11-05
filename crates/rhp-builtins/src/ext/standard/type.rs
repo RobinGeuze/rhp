@@ -260,10 +260,11 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         if matches!(cur, Value::Object(_) | Value::Closure(_)) {
             host.emit_diagnostic(
                 crate::E_WARNING,
-                &format!(
+                format!(
                     "Object of class {} could not be converted to {to}",
                     zval_value_name(host, &cur)
-                ),
+                )
+                .as_bytes(),
             )?;
         }
         Ok(())
@@ -279,7 +280,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         b"string" => match &cur {
             Value::Array(_) => {
-                host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+                host.emit_diagnostic(crate::E_WARNING, b"Array to string conversion")?;
                 Value::str("Array")
             }
             // convert_to_string: the object's string cast; a failure is an

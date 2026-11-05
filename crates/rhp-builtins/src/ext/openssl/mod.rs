@@ -390,7 +390,12 @@ pub(super) fn csr_of(v: &Value) -> Option<*mut sys::X509_REQ> {
 /// The object free hook.
 pub(crate) fn object_freed(id: u32) {
     let old = NATIVES
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+        .try_with(|m| {
+            // Runs for every object freed: an empty table is not hashed into.
+            m.try_borrow_mut()
+                .ok()
+                .and_then(|mut m| (!m.is_empty()).then(|| m.remove(&id)).flatten())
+        })
         .ok()
         .flatten();
     drop(old);
@@ -577,7 +582,7 @@ pub(super) fn arg(args: &[Value], i: usize) -> Value {
 pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
     match deref(v) {
         Value::Array(_) => {
-            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            host.emit_diagnostic(crate::E_WARNING, b"Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
         Value::Object(_) => {
@@ -626,10 +631,10 @@ pub(super) fn obj_or_str(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{fname}(): Passing null to parameter #{} (${pname}) of type {ty} is deprecated",
                     i + 1
-                ),
+                ).as_bytes(),
             )?;
             Ok(ObjOrStr::Str(Vec::new()))
         }

@@ -266,7 +266,7 @@ impl Vm {
             } else {
                 d.msg
             };
-            Host::raise_diagnostic(self, d.level, &msg);
+            Host::raise_diagnostic(self, d.level, msg.as_bytes());
         }
     }
 
@@ -316,7 +316,7 @@ impl Vm {
         }
         let func = self.native_calls.last().map_or("Unknown", |n| n.name);
         for (level, msg) in diags {
-            self.raise_diagnostic(level, &format!("{func}(): {msg}"));
+            self.raise_diagnostic(level, format!("{func}(): {msg}").as_bytes());
         }
     }
 

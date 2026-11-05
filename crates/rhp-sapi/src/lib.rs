@@ -185,7 +185,7 @@ fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
 /// rhp-builtins as the compiler sees it.
 static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     prelude: rhp_builtins::prelude,
-    native_function: |name| rhp_builtins::registry().contains_key(name),
+    native_function: rhp_builtins::native_function,
     constant: rhp_builtins::ct_constant,
     cwd: rhp_builtins::zend::virtual_cwd::getcwd,
 };

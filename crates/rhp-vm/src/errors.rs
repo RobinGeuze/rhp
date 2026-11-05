@@ -40,7 +40,7 @@ impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
     /// php 8.5's backtrace, then the request bails out (exit status 255).
-    pub(crate) fn fatal_compile_error(&mut self, msg: &str) -> Thrown {
+    pub(crate) fn fatal_compile_error(&mut self, msg: &[u8]) -> Thrown {
         let (file, line) = match (0..self.stack.len())
             .rev()
             .find(|&i| !self.stack[i].proto.is_internal())
@@ -48,10 +48,10 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
-        self.last_error = Some((64, msg.as_bytes().to_vec(), file.clone(), line));
+        self.last_error = Some((64, msg.to_vec(), file.clone(), line));
         let trace = Value::Array(self.build_trace_ex(false, false));
         let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
-        self.display_error_trace(64, "Fatal error", msg.as_bytes(), &file, line, &trace);
+        self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)
     }
@@ -65,7 +65,8 @@ impl Vm {
     /// returns false, nothing else; otherwise php_error_cb: `error_get_last`
     /// and the display / log step (masked by `error_reporting` and `@`). An
     /// exception from the handler becomes `pending_throw`.
-    pub(crate) fn raise_error(&mut self, level: i64, msg: &str) {
+    pub(crate) fn raise_error(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let msg = msg.as_ref();
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
@@ -80,8 +81,7 @@ impl Vm {
     }
 
     /// [`Vm::raise_error`] reported at `file`:`line`.
-    pub(crate) fn raise_error_at(&mut self, level: i64, msg: &str, file: Vec<u8>, line: i64) {
-        let docref = std::mem::take(&mut self.sapi.docref_msg);
+    pub(crate) fn raise_error_at(&mut self, level: i64, msg: &[u8], file: Vec<u8>, line: i64) {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -105,7 +105,7 @@ impl Vm {
         if let Some(h) = handler {
             let args = vec![
                 Value::Int(level),
-                Value::str(msg.as_bytes().to_vec()),
+                Value::str(msg.to_vec()),
                 Value::str(file.clone()),
                 Value::Int(line),
             ];
@@ -129,13 +129,13 @@ impl Vm {
                 }
             }
         }
-        self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
+        self.last_error = Some((level, msg.to_vec(), file.clone(), line));
         if level == builtins::E_USER_ERROR {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).
             let trace = Value::Array(self.build_trace_ex(false, false));
             let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
-            self.display_error_trace(level, "Fatal error", msg.as_bytes(), &file, line, &trace);
+            self.display_error_trace(level, "Fatal error", msg, &file, line, &trace);
             self.destructed_below = self.next_object_id;
             self.pending_throw = Some(Thrown::Exit(255));
             return;
@@ -152,9 +152,7 @@ impl Vm {
             E_RECOVERABLE_ERROR => "Recoverable fatal error",
             _ => "Unknown error",
         };
-        self.sapi.docref_msg = docref;
-        self.display_error(level, label, msg.as_bytes(), &file, line);
-        self.sapi.docref_msg = false;
+        self.display_error(level, label, msg, &file, line);
     }
 
     /// Source line of the instruction currently executing in frame `top`.
@@ -538,7 +536,6 @@ impl Vm {
         line: i64,
         trace: &[u8],
     ) {
-        let docref = std::mem::take(&mut self.sapi.docref_msg);
         use builtins::{E_COMPILE_ERROR, E_CORE_ERROR, E_ERROR, E_PARSE, E_RECOVERABLE_ERROR};
         let fatal = E_ERROR
             | E_PARSE
@@ -602,13 +599,12 @@ impl Vm {
         if html && !matches!(mode, DisplayErrors::Off) {
             // php_error_cb's html branch: E_ERROR / E_PARSE escape the
             // message and drop the trace; others show it as given (a
-            // builtin's docref message was escaped when it was built).
+            // docref message was escaped when it was made, `docref_html`).
             let fatal = ty == builtins::E_ERROR || ty == builtins::E_PARSE;
             let mut m = ini(self, b"error_prepend_string");
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
-            if fatal || docref {
-                let charset = ini(self, b"default_charset");
-                m.extend_from_slice(&builtins::main::sapi::escape_html(message, &charset));
+            if fatal {
+                m.extend_from_slice(&builtins::main::sapi::escape_html(self, message));
             } else {
                 m.extend_from_slice(message);
             }
@@ -954,9 +950,27 @@ impl Vm {
         }
     }
 
+    /// php_verror's html_errors step: a `php_error_docref` message is
+    /// escaped as it is made, so the user error handler and
+    /// `error_get_last()` see it escaped too.
+    pub(crate) fn docref_html<'a>(&mut self, msg: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        // ASCII without `&<>"` escapes to itself in every charset html.c
+        // knows, so most messages need no ini lookup.
+        let plain = |b: &u8| b.is_ascii() && !matches!(b, b'&' | b'<' | b'>' | b'"');
+        if !msg.iter().all(plain) && ini_bool(&self.ini_get(b"html_errors").unwrap_or_default()) {
+            std::borrow::Cow::Owned(builtins::main::sapi::escape_html(self, msg))
+        } else {
+            std::borrow::Cow::Borrowed(msg)
+        }
+    }
+
     /// Raise a diagnostic from inside an instruction; an exception thrown by
     /// the user error handler is returned to be thrown at this point.
-    pub(crate) fn diag(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+    pub(crate) fn diag(
+        &mut self,
+        level: i64,
+        msg: &(impl AsRef<[u8]> + ?Sized),
+    ) -> Result<(), Thrown> {
         self.raise_error(level, msg);
         match self.pending_throw.take() {
             Some(t) => Err(t),
@@ -967,8 +981,7 @@ impl Vm {
 
 /// Whether a diagnostic text is a builtin's `php_error_docref` message:
 /// it starts with `name(…): ` (a function or `Class::method`).
-pub(crate) fn is_docref_message(msg: &str) -> bool {
-    let b = msg.as_bytes();
+pub(crate) fn is_docref_message(b: &[u8]) -> bool {
     let n = b
         .iter()
         .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b':' | b'\\'))

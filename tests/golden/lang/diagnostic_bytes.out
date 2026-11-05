@@ -23,7 +23,28 @@ bool(false)
 
 Warning: Illegal string offset "1caféÿ" in FILE on line 22
 string(1) "b"
+
+Warning: touch(): Unable to create file /nonexistent-dir/caféÿ because No such file or directory in FILE on line 23
+bool(false)
+
+Warning: iconv(): Wrong encoding, conversion from "UTF-8" to "Xcaféÿ" is not allowed in FILE on line 24
+bool(false)
+
+Warning: ob_start(): function "fcaféÿ" not found or invalid function name in FILE on line 25
+
+Notice: ob_start(): Failed to create buffer in FILE on line 25
+bool(false)
+
+Warning: ob_start(): class "Ccaféÿ" not found in FILE on line 26
+
+Notice: ob_start(): Failed to create buffer in FILE on line 26
+bool(false)
+
+Warning: ob_start(): class stdClass does not have a method "mcaféÿ" in FILE on line 27
+
+Notice: ob_start(): Failed to create buffer in FILE on line 27
+bool(false)
 handler: 68616e646c656420636166e9ff
 handler: 7061636b28293a205479706520483a20696c6c6567616c2068657820646967697420fe
 string(2) "00"
-PHP Warning:  logged caféÿ in FILE on line 38
+PHP Warning:  logged caféÿ in FILE on line 43

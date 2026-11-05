@@ -2129,12 +2129,16 @@ impl Host for Vm {
     }
 
     fn callable_error(&self, callable: &Value) -> Option<String> {
-        self.resolve_callable(callable).err()
+        let e = self.resolve_callable(callable).err()?;
+        Some(String::from_utf8_lossy(&e).into_owned())
     }
 
     fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
         self.autoload_callable_class(callable)?;
-        Ok(self.resolve_callable(callable).err())
+        let Err(e) = self.resolve_callable(callable) else {
+            return Ok(None);
+        };
+        Ok(Some(String::from_utf8_lossy(&e).into_owned()))
     }
 
     fn wrap_callable(&self, callable: Value) -> Value {

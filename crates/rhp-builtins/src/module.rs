@@ -85,7 +85,7 @@ pub struct OutputHandlerCtx<'a> {
     /// Diagnostics (level, message without the `func(): ` prefix) for the
     /// output layer to raise as php_error_docref does, while the handler
     /// still counts as running.
-    pub diags: Vec<(i64, String)>,
+    pub diags: Vec<(i64, Vec<u8>)>,
 }
 
 /// The internal output handler registered as `name` (case-sensitive, like

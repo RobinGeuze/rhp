@@ -289,7 +289,7 @@ pub trait Host {
 
     /// Why a value is not a valid callback (zend_is_callable_error's message,
     /// e.g. `function "f" not found or invalid function name`), or None when it
-    /// is callable.
+    /// is callable. A String: every caller puts it in an exception message.
     fn callable_error(&self, callable: &Value) -> Option<String>;
 
     /// Wrap a callable as a Closure (`Closure::fromCallable`) that resolves it

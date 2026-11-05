@@ -20,6 +20,11 @@ var_dump(fopen(__FILE__, "z$bad"));
 var_dump(date_default_timezone_set("Zone/$bad"));
 $s = "abc";
 var_dump($s["1$bad"]);
+var_dump(touch("/nonexistent-dir/$bad"));
+var_dump(iconv("UTF-8", "X$bad", "a"));
+var_dump(ob_start("f$bad"));
+var_dump(ob_start("C$bad::m"));
+var_dump(ob_start(["stdClass", "m$bad"]));
 
 // a user error handler gets the raw bytes
 set_error_handler(function ($no, $msg) {

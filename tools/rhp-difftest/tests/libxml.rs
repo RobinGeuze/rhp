@@ -305,16 +305,14 @@ var_dump($x->query('//a')->length);
 }
 
 /// SimpleXML's loads go through libxml2's generic error channel: a
-/// three-line warning per error (message, source line, caret). Documents
-/// that are not UTF-8 are left out: rhp's diagnostics carry UTF-8 text, so
-/// a source line with other bytes would differ.
+/// three-line warning per error (message, source line, caret), with the
+/// document's bytes as they are.
 #[test]
 fn simplexml_load_errors_match_php() {
     check(
         "simplexml_load_errors",
         &(PRELUDE.to_string()
             + r#"
-$docs = array_filter($docs, fn($d) => preg_match('//u', $d));
 foreach ($docs as $i => $doc) {
     echo "== $i\n";
     var_dump(simplexml_load_string($doc) !== false);
@@ -327,18 +325,29 @@ foreach ($docs as $doc) {
     libxml_clear_errors();
 }
 var_dump(simplexml_load_file('/nonexistent/file.xml'));
+libxml_use_internal_errors(false);
+
+// A file name that is not UTF-8 reaches the warning and LibXMLError as
+// bytes. (macOS can't create such a file.)
+set_error_handler(function ($no, $str) { echo "W[$no]: ", bin2hex($str), "\n"; return true; });
+$bad = "/nonexistent-dir/x\xe9\xff.xml";
+var_dump(simplexml_load_file($bad));
+$d = new DOMDocument();
+var_dump($d->load($bad));
+libxml_use_internal_errors(true);
+$d->load($bad);
+foreach (libxml_get_errors() as $e) { echo bin2hex((string) $e->file), ' ', bin2hex($e->message), "\n"; }
 "#),
     );
 }
 
-/// XMLReader on the same UTF-8 documents, read to the end.
+/// XMLReader on the same documents, read to the end.
 #[test]
 fn xmlreader_errors_match_php() {
     check(
         "xmlreader_reads",
         &(PRELUDE.to_string()
             + r#"
-$docs = array_filter($docs, fn($d) => preg_match('//u', $d));
 foreach ($docs as $i => $doc) {
     echo "== $i\n";
     if ($doc === '') { continue; }

@@ -795,7 +795,10 @@ impl Vm {
                     ability_flags(flags),
                 )
             }),
-            cb => match self.check_callable(&cb)? {
+            cb => match self
+                .autoload_callable_class(&cb)
+                .map(|()| self.resolve_callable(&cb).err())?
+            {
                 Some(err) => {
                     self.ob_diag(E_WARNING, &err);
                     None

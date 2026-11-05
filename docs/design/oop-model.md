@@ -600,9 +600,54 @@ pub struct Vm {
 - **Trait adaptations** (`insteadof`/`as` renaming + visibility change): basic
   trait method/property merge is in; conflict-resolution adaptations are a
   follow-up.
-- **Enums, property hooks, interfaces-with-constants edge cases, `__get`/`__set`/
+- **Enums, interfaces-with-constants edge cases, `__get`/`__set`/
   `__call` magic, `readonly` enforcement, Closure `$this` rebinding**: layer onto
-  these types later; none require reshaping the class table.
+  these types later; none require reshaping the class table. Property hooks
+  are in (§8.1).
+
+### 8.1 Property hooks
+
+Follows php's zend_compile_property_hooks and the hook branches of
+zend_object_handlers.c.
+
+- **Compile.** Each hook is a method proto named `$prop::get` / `$prop::set`
+  (`ProtoFlags::HOOK`), with `$this` in CV 0; `get` returns the property type,
+  `set` takes `$value` (or its declared parameter) and returns void. A short
+  `get => e` is `return e`, a short `set => e` is `$this->prop = e`.
+  `PropProto` carries `hooks: [Option<HookProto>; 2]`, `is_virtual`
+  (zend_property_is_virtual: no hook body touches `$this->prop`),
+  `is_abstract`, `is_final`. Interface properties are compiled too (always
+  abstract and virtual). The declaration checks of zend_compile_prop_decl and
+  zend_compile_property_hooks are compile errors (`FileCtx::fatal`).
+  `parent::$prop::get()` compiles to `CallParentHook`.
+- **Link.** `PropEntry` grows `hooks` (`Rc<[Option<ResolvedMethod>; 2]>`),
+  `virt`, `is_final`, `is_abstract`; `ClassEntry::hooked` says some property
+  has hooks. `inherit_prop` is do_inherit_property's hook part (final
+  properties and hooks, a backed parent keeps the child backed, abstract
+  hooks a backed property implements, set visibility); interface properties
+  are merged like a parent's. `verify_hooked_props` is
+  zend_verify_hooked_property, `verify_hook_types` the set-hook value type
+  checks (a small subtype test, `type_is_subtype`, until a shared one
+  exists), `verify_abstract_class` php's "contains N abstract methods" for
+  methods and hooks. Link errors are fatal errors at the class's line
+  (`link_fatal`).
+- **Run.** Property access tests `ClassEntry::hooked` once; only then does it
+  look for hooks (vm/src/hooks.rs). A hook runs unless the innermost frame is
+  a hook of the same property (same prototype) on the same object
+  (zend_should_call_hook); then the backing slot is used, or for a virtual
+  property "Must not read from / write to virtual property". Virtual
+  properties have no slot. Cursor paths (`$o->p[] =`, `$o->p .=`, `&$o->p`)
+  treat a hooked property like a `__get` one (`MagicSplit`), with php's
+  "Indirect modification of C::$p is not allowed" unless the get hook returns
+  a reference or an object. `get_object_vars`, `json_encode` and `var_export`
+  read hooked properties through their hooks (`Host::hooked_properties_for`);
+  `var_dump`, `(array)` and `serialize` show the backing values. `foreach`
+  over a hooked object walks a plan of the declared properties lazily, then
+  the dynamic ones (zend_hooked_object_get_iterator).
+- **Reflection.** `isVirtual`, `isAbstract`, `isFinal`, `hasHooks`,
+  `getHooks`, `hasHook`, `getHook` (a ReflectionMethod for the hook) and the
+  `PropertyHookType` enum (the prelude now compiles enums; each request gets
+  its own case objects).
 
 ---
 

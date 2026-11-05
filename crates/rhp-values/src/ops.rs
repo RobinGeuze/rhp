@@ -520,6 +520,11 @@ pub fn compare(a: &Value, b: &Value, cx: &mut dyn CompareCx) -> Result<Ordering,
                 Ordering::Equal
             } else if lt_true(&b) {
                 Ordering::Greater
+            } else if matches!(a, Array(_)) {
+                // An array stays an array after the conversion: greater.
+                Ordering::Greater
+            } else if matches!(b, Array(_)) {
+                Ordering::Less
             } else {
                 cmp_num(conv::to_number(&a).0, conv::to_number(&b).0)
             }
@@ -600,8 +605,44 @@ fn num_vs_str(n: &Value, s: &[u8]) -> Ordering {
 /// `zendi_smart_strcmp`: numeric strings compare as numbers.
 fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
     match (conv::numeric_string(x), conv::numeric_string(y)) {
-        (Some(nx), Some(ny)) => cmp_num(nx, ny),
+        (Some(Num::Int(a)), Some(Num::Int(b))) => a.cmp(&b),
+        (Some(nx), Some(ny)) => {
+            let (o1, o2) = (int_overflow(x, nx), int_overflow(y, ny));
+            match (nx, ny) {
+                // Integers overflowed to the same side and equal as doubles:
+                // the double compare lost the difference.
+                _ if o1 != 0 && o1 == o2 && nx.as_f64() == ny.as_f64() => cmp_bytes(x, y),
+                (Num::Int(_), _) if o2 != 0 => (-o2).cmp(&0),
+                (_, Num::Int(_)) if o1 != 0 => o1.cmp(&0),
+                (Num::Float(a), Num::Float(b)) if a == b && !a.is_finite() => cmp_bytes(x, y),
+                _ => cmp_num(nx, ny),
+            }
+        }
         _ => cmp_bytes(x, y),
+    }
+}
+
+/// `is_numeric_string_ex`'s `oflow`: 1 or -1 when `s` is an integer string
+/// that overflowed to the float `n`, else 0.
+fn int_overflow(s: &[u8], n: Num) -> i8 {
+    let Num::Float(f) = n else { return 0 };
+    let t: Vec<u8> = s
+        .iter()
+        .copied()
+        .filter(|&c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c'))
+        .collect();
+    let digits = t
+        .strip_prefix(b"-")
+        .or_else(|| t.strip_prefix(b"+"))
+        .unwrap_or(&t);
+    if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
+        if f < 0.0 {
+            -1
+        } else {
+            1
+        }
+    } else {
+        0
     }
 }
 

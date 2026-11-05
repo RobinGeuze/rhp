@@ -103,6 +103,9 @@ pub struct MemState {
     /// An OOM was recorded this request (php's `ZEND_HAS_OOM()`): later
     /// crossings are not recorded until [`MemState::reset_oom`].
     latched: Cell<bool>,
+    /// `paged` above this takes the slow path: a new peak or another chunk.
+    /// Never above either threshold ([`MemState::update_mark`]).
+    mark: Cell<usize>,
 }
 
 thread_local! {
@@ -119,6 +122,7 @@ thread_local! {
             attention: Cell::new(false),
             pending: Cell::new(None),
             latched: Cell::new(false),
+            mark: Cell::new(0),
         }
     };
 }
@@ -264,22 +268,53 @@ impl MemState {
         }
     }
 
+    /// Small blocks are inline: the rest, and a new peak or chunk, are not.
     #[inline]
     fn on_alloc(&self, size: usize) {
-        let r = rounded(size);
-        if size <= MAX_LARGE {
-            let paged = self.paged.get().saturating_add(r);
+        if size <= MAX_SMALL {
+            let paged = self.paged.get().saturating_add((size + 15) & !15);
             self.paged.set(paged);
-            if paged > self.chunks.get() * MAX_LARGE {
-                self.grow_chunks(paged);
+            if paged > self.mark.get() {
+                self.passed_mark();
             }
         } else {
+            self.on_alloc_big(size);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn on_alloc_big(&self, size: usize) {
+        let r = rounded(size);
+        if size <= MAX_LARGE {
+            self.paged.set(self.paged.get().saturating_add(r));
+        } else {
             self.add_huge(r);
+        }
+        self.passed_mark();
+    }
+
+    /// `paged` went above the mark: take a chunk if the blocks outgrew
+    /// them, and record a new peak.
+    #[inline(never)]
+    fn passed_mark(&self) {
+        let paged = self.paged.get();
+        if paged > self.chunks.get() * MAX_LARGE {
+            self.grow_chunks(paged);
         }
         let s = self.size();
         if s > self.peak.get() {
             self.peak.set(s);
         }
+        self.update_mark();
+    }
+
+    /// Recompute [`MemState::mark`]: due after `chunks` or `peak` went down
+    /// or `huge` went up.
+    fn update_mark(&self) {
+        let chunk_room = self.chunks.get().saturating_mul(MAX_LARGE);
+        let peak_room = self.peak.get().saturating_sub(self.huge.get());
+        self.mark.set(chunk_room.min(peak_room));
     }
 
     /// zend_mm's `size`: every block, rounded.
@@ -306,6 +341,17 @@ impl MemState {
 
     #[inline]
     fn on_free(&self, size: usize) {
+        if size <= MAX_SMALL {
+            self.paged
+                .set(self.paged.get().saturating_sub((size + 15) & !15));
+        } else {
+            self.on_free_big(size);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn on_free_big(&self, size: usize) {
         let r = rounded(size);
         if size <= MAX_LARGE {
             // The chunk stays: zend_mm keeps emptied chunks cached (still
@@ -339,6 +385,7 @@ impl MemState {
         self.huge.set(self.huge.get().saturating_add(new - old));
         self.real_peak.set(self.real_peak.get().max(self.real()));
         self.peak.set(self.peak.get().max(self.size()));
+        self.update_mark();
     }
 
     /// Whether a limit crossing waits for the VM or is being reported.
@@ -387,6 +434,7 @@ pub fn begin_request() {
     s.chunks.set(1);
     s.huge.set(0);
     s.real_peak.set(CHUNK_SIZE);
+    s.update_mark();
     s.reset_oom();
     s.active.set(true);
 }
@@ -418,6 +466,7 @@ pub fn set_limit(bytes: usize) -> bool {
             return false;
         }
         s.chunks.set(need);
+        s.update_mark();
     }
     s.limit.set(bytes);
     true
@@ -504,6 +553,7 @@ pub fn reset_peak() {
     let s = state();
     s.peak.set(s.size());
     s.real_peak.set(s.real());
+    s.update_mark();
 }
 
 /// php's fallible allocation of a `size`-byte block: `false` when it would
@@ -655,8 +705,9 @@ unsafe impl GlobalAlloc for CountingAlloc {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
+        // Counted first, so that the free is a tail call.
         Self::count(|s| s.on_free(layout.size()));
+        System.dealloc(ptr, layout);
     }
 
     #[inline]

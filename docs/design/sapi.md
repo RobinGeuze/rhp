@@ -408,8 +408,14 @@ Limits of the model:
 
 - The request body is read completely before `run_request`; there is no
   streaming reader yet.
-- `max_execution_time` / `max_input_time` are not enforced.
-- `auto_prepend_file` / `auto_append_file` are ignored (in every SAPI).
+- `max_execution_time` is enforced only under the command-line SAPIs
+  (php-cli, php-cgi): like php's NTS build it uses one process-wide
+  interval timer (`rhp_builtins::zend::timeout`), so threaded embedders
+  get no timeout yet. `max_input_time` is not enforced.
+- `auto_append_file` is ignored (`auto_prepend_file` runs).
+- php.ini: php-cli loads the `-c` file (or `$PHPRC`'s) and the `.ini`
+  files in `$PHP_INI_SCAN_DIR` (`Request::ini_files`); rhp has no built-in
+  search path or scan directory, and php-cgi and embedders load none.
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`.
 - Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.

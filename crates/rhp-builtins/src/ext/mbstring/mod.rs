@@ -5,10 +5,12 @@
 //! around them: argument handling, the per-request settings (MBSTRG), the
 //! substring/position logic and encoding detection.
 //!
+//! The internal encoding follows the ini (mbstring.internal_encoding,
+//! internal_encoding, default_charset) through php's handlers and hook.
 //! Not ported yet: the functions rhp does not register (mb_ereg* and the
-//! other mbstring.c functions without a counterpart here), the mbstring.*
-//! ini handlers and php's internal-encoding hook (the internal encoding
-//! starts as UTF-8 and doesn't follow default_charset), and php's
+//! other mbstring.c functions without a counterpart here), the other
+//! mbstring.* ini handlers (detect_order, language, encoding_translation's
+//! request input conversion, substitute_character), and php's
 //! `IS_STR_VALID_UTF8` string flag (a shortcut
 //! that gives the same result for UTF-8 itself; for the UTF-8-Mobile
 //! variants php's answer can depend on it, and rhp takes the path php

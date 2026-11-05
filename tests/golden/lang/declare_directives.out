@@ -1,0 +1,5 @@
+declare(foo=1); => 128 Unsupported declare 'foo'
+declare(Ticks=1); => nothing
+declare(encoding="UTF-8"); => 128 declare(encoding=...) ignored because Zend multibyte feature is turned off by settings
+declare(encoding="no-such-encoding"); => 128 declare(encoding=...) ignored because Zend multibyte feature is turned off by settings
+declare(strict_types=1, bar=2); => 128 Unsupported declare 'bar'

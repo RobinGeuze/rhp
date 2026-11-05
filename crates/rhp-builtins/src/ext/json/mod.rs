@@ -22,6 +22,11 @@ use rhp_values::{conv, fmt, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::{Host, Thrown};
 
+thread_local! {
+    /// The JsonSerializable objects whose jsonSerialize() is running.
+    static SERIALIZING: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 // --- json_last_error state --------------------------------------------------
 
 // Error codes (php `JSON_ERROR_*`).
@@ -123,7 +128,11 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     };
     if ok {
         // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
-        // json_last_error code.
+        // json_last_error code. Without it nothing failed here: a nested
+        // json_encode() (from jsonSerialize()) leaves no code behind.
+        if flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
+            set_last_error(JSON_ERROR_NONE);
+        }
         Ok(Value::str(out))
     } else {
         // Failure sets json_last_error at the failure site.
@@ -256,14 +265,18 @@ impl Encoder {
         };
         let cname = host.class_name(class_id).unwrap_or_default();
         if host.reflect_is_a(&cname, b"JsonSerializable") {
-            if self.objects.contains(&id) {
+            // php's JSON guard is on the object: a json_encode() that
+            // jsonSerialize() runs sees it too.
+            if self.objects.contains(&id) || SERIALIZING.with(|g| g.borrow().contains(&id)) {
                 return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
             }
             self.objects.push(id);
             let mut cb = PhpArray::new();
             cb.push(Value::Object(h.clone()));
             cb.push(Value::str("jsonSerialize"));
+            SERIALIZING.with(|g| g.borrow_mut().push(id));
             let r = host.call_callable(&Value::Array(cb), &[]);
+            SERIALIZING.with(|g| g.borrow_mut().pop());
             let r = match r {
                 Ok(v) => deref(&v),
                 Err(t) => {

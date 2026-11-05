@@ -835,6 +835,16 @@ impl Vm {
     /// `(array) $object`: every property, keyed with php's visibility mangling —
     /// public `name`, protected `"\0*\0name"`, private `"\0Class\0name"`.
     pub(crate) fn object_to_array_mangled(&self, h: &ObjectHandle) -> Value {
+        self.prop_table_copy(h, false)
+    }
+
+    /// `(array)$obj` (zend_proptable_to_symtable): the mangled properties,
+    /// keeping references other slots share.
+    pub(crate) fn object_cast_array(&self, h: &ObjectHandle) -> Value {
+        self.prop_table_copy(h, true)
+    }
+
+    fn prop_table_copy(&self, h: &ObjectHandle, keep_refs: bool) -> Value {
         let b = h.borrow();
         let cls = b.class;
         let mut a = PhpArray::new();
@@ -844,7 +854,12 @@ impl Vm {
                 continue;
             }
             let key = classes::mangled_prop_key(entry, key);
-            a.insert(ArrayKey::from_bytes(key.as_bytes()), deref(val).clone());
+            let v = if keep_refs {
+                rhp_values::ops::copy_elem(val)
+            } else {
+                deref(val)
+            };
+            a.insert(ArrayKey::from_bytes(key.as_bytes()), v);
         }
         Value::Array(a)
     }

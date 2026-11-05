@@ -277,5 +277,10 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
         return $r;
     }
     public function __serialize(): array { return $this->__d; }
-    public function __unserialize(array $data): void { $this->__d = array_values($data); $this->__size = count($data); }
+    public function __unserialize(array $data): void {
+        // ZVAL_COPY_DEREF: the elements' values, not references.
+        $d = [];
+        foreach ($data as $v) { $d[] = $v; }
+        $this->__d = $d; $this->__size = count($data);
+    }
 }

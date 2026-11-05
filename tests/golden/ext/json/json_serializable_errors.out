@@ -21,3 +21,5 @@ JsonException: Non-backed enums have no default serialization
 caught js
 caught js
 0
+string(43) "{"n":1,"inner":"{\"n\":2,\"inner\":false}"}"
+int(0)

@@ -480,7 +480,7 @@ impl Vm {
                             match builtins::zend::object_handlers::properties_for(self, h, purpose)?
                             {
                                 Some(a) => Value::Array(a),
-                                None => self.object_to_array_mangled(h),
+                                None => self.object_cast_array(h),
                             }
                         }
                         Value::Float(f) if f.is_nan() => {
@@ -1850,6 +1850,14 @@ impl Vm {
     ) -> Result<Vec<(ArrayKey, Value)>, Thrown> {
         let v = self.reg_get(top, src);
         let h = match v {
+            // ZEND_ADD_ARRAY_UNPACK copies a reference only the source
+            // holds as its value.
+            Value::Array(a) if !args => {
+                return Ok(a
+                    .iter()
+                    .map(|(k, v)| (k.clone(), rhp_values::ops::copy_elem(v)))
+                    .collect())
+            }
             Value::Array(a) => return Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
             Value::Object(h) if self.class_implements(h.borrow().class, b"Traversable") => h,
             other => {

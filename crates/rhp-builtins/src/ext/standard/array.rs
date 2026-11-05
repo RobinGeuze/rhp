@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use rhp_values::ops::deref;
+use rhp_values::ops::{copy_elem, deref};
 use rhp_values::{conv, ops, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::random::mt_range;
@@ -88,15 +88,13 @@ fn fn_array_slice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
     };
 
-    let entries: Vec<(ArrayKey, Value)> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut out = PhpArray::new();
-    let begin = start as usize;
-    let end = (start + cnt) as usize;
-    for (k, v) in &entries[begin..end] {
+    for (k, v) in a.iter().skip(start as usize).take(cnt as usize) {
+        let v = copy_elem(v);
         match k {
-            ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
-            ArrayKey::Int(_) if preserve => out.insert(k.clone(), v.clone()),
-            ArrayKey::Int(_) => out.push(v.clone()),
+            ArrayKey::Str(_) => out.insert(k.clone(), v),
+            ArrayKey::Int(_) if preserve => out.insert(k.clone(), v),
+            ArrayKey::Int(_) => out.push(v),
         }
     }
     Ok(Value::Array(out))
@@ -256,7 +254,7 @@ fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     for (k, v) in a.iter() {
         let s = conv::to_string_bytes(v);
         if seen.insert(s) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -447,8 +445,9 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             }
         } else {
             let Value::Array(ref ra) = row else { continue };
+            // array_column_fetch_prop: ZVAL_DEREF.
             match column_ak.as_ref().and_then(|k| ra.get(k)) {
-                Some(v) => v.clone(),
+                Some(v) => deref(v),
                 None => continue,
             }
         };
@@ -844,7 +843,7 @@ fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
-        out.push(v.clone());
+        out.push(copy_elem(v));
     }
     Ok(Value::Array(out))
 }
@@ -860,8 +859,8 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         for (k, v) in a.iter() {
             match k {
                 // integer keys are renumbered; string keys overwrite
-                rhp_values::ArrayKey::Int(_) => out.push(v.clone()),
-                rhp_values::ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
+                rhp_values::ArrayKey::Int(_) => out.push(copy_elem(v)),
+                rhp_values::ArrayKey::Str(_) => out.insert(k.clone(), copy_elem(v)),
             }
         }
     }
@@ -965,7 +964,7 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let preserve = args.get(1).map(conv::to_bool).unwrap_or(false);
     let mut out = PhpArray::new();
-    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), copy_elem(v))).collect();
     for (k, v) in entries.into_iter().rev() {
         match k {
             rhp_values::ArrayKey::Int(_) if !preserve => out.push(v),
@@ -1704,7 +1703,8 @@ enum Behavior {
 fn sorted_lists(ctx: &mut Ctx, arrays: &[PhpArray], behavior: Behavior) -> Vec<Vec<Elem>> {
     let mut lists = Vec::with_capacity(arrays.len());
     for arr in arrays {
-        let mut list: Vec<Elem> = arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        // Values, not references: the result copies from the arrays.
+        let mut list: Vec<Elem> = arr.iter().map(|(k, v)| (k.clone(), deref(v))).collect();
         if list.len() > 1 {
             if behavior == Behavior::Normal {
                 zend_sort(&mut list, &mut |x, y| ctx.data_cmp(x, y));
@@ -1722,9 +1722,10 @@ fn finish(ctx: Ctx, base: &PhpArray, deleted: HashSet<ArrayKey>) -> Result<Value
         return Err(e);
     }
     let mut out = PhpArray::new();
+    // php copies the first array (zend_array_dup) and deletes from it.
     for (k, v) in base.iter() {
         if !deleted.contains(k) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -1970,7 +1971,7 @@ fn assoc_by_key(
             }
         }
         if ok {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2099,7 +2100,7 @@ fn fn_array_diff_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
             .iter()
             .any(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
         if !present {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2119,7 +2120,7 @@ fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value
             .iter()
             .all(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
         if in_all {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2927,7 +2928,7 @@ fn fn_array_diff_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
         if !others.iter().any(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2942,7 +2943,7 @@ fn fn_array_intersect_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
         if others.iter().all(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2972,17 +2973,18 @@ fn merge_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
     for (k, v) in src.iter() {
         match k {
             // Integer keys are always appended (renumbered), never merged.
-            ArrayKey::Int(_) => dest.push(v.clone()),
+            ArrayKey::Int(_) => dest.push(copy_elem(v)),
             ArrayKey::Str(_) => {
                 let existing = dest.get(k).cloned();
                 match existing {
                     None => {
-                        dest.insert(k.clone(), v.clone());
+                        dest.insert(k.clone(), copy_elem(v));
                     }
                     Some(cur) => {
                         // Coerce the existing value to an array (scalars wrap as
                         // a single-element list), then fold in the new value.
-                        let mut cur_arr = match cur {
+                        // SEPARATE_ZVAL: a reference gives up its value.
+                        let mut cur_arr = match deref(&cur) {
                             Value::Array(a) => a,
                             other => {
                                 let mut a = PhpArray::new();

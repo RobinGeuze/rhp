@@ -1,0 +1,73 @@
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  [debugInfo]
+object(Loud)#2 (1) {
+    ["x"]=>
+    int(1)
+  }
+  [2]=>
+  string(5) "after"
+}
+array(2) {
+  [0]=>
+  string(6) "before"
+  [1]=>
+  [error: Returning null from Nul::__debugInfo() is deprecated, return an empty array instead]
+object(Nul)#2 (0) {
+  }
+}
+[debugInfo]
+Array
+(
+    [0] => Loud Object
+        (
+            [x] => 1
+        )
+
+)
+
+object(stdClass)#3 (1) {
+  ["a"]=>
+  &array(1) {
+    [0]=>
+    object(class@anonymous)#2 (0) {
+    }
+  }
+}
+object(Generator)#2 (1) {
+  ["function"]=>
+  string(3) "gen"
+}
+object(Generator)#2 (1) {
+  ["function"]=>
+  string(3) "gen"
+}
+array(1) {
+  ["function"]=>
+  string(3) "gen"
+}
+object(Generator)#5 (1) {
+  ["function"]=>
+  string(4) "G::m"
+}
+object(Generator)#6 (1) {
+  ["function"]=>
+  string(4) "G::s"
+}
+object(Generator)#9 (1) {
+  ["function"]=>
+  string(22) "G::{closure:G::c():39}"
+}
+Generator Object
+(
+    [function] => gen
+)
+
+array(0) {
+}
+array(0) {
+}
+\Generator::__set_state(array(
+))

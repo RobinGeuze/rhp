@@ -12,6 +12,20 @@ use crate::errors::is_docref_message;
 use crate::streams::{res_id, MemMode, StreamState};
 use crate::{classes, deref, Vm};
 
+impl Vm {
+    /// Whether a compiled property default satisfies `hit` (debug_zval_dump's
+    /// interned / shadow-holder checks; a scan).
+    fn is_prop_default(&self, hit: impl Fn(&Value) -> bool) -> bool {
+        use rhp_bytecode::PropDefaultProto;
+        self.decl_classes.iter().any(|d| {
+            d.proto
+                .props
+                .iter()
+                .any(|p| matches!(&p.default, PropDefaultProto::Const(v) if hit(v)))
+        })
+    }
+}
+
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
         // A builtin's `php_error_docref` ("func(): …") goes through
@@ -28,6 +42,50 @@ impl Host for Vm {
         }
         let msg = self.docref_html(msg);
         self.raise_error(level, &msg);
+    }
+
+    fn fatal_error(&mut self, msg: &[u8]) -> Thrown {
+        self.fatal_error_here(builtins::E_ERROR, msg)
+    }
+
+    fn shadow_holders(&self, v: &Value) -> usize {
+        match v {
+            Value::Ref(r) => self.globals.values().filter(|g| Rc::ptr_eq(g, r)).count(),
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.classes[cls as usize]
+                    .enum_cases
+                    .iter()
+                    .any(|c| Rc::ptr_eq(c, h)) as usize
+            }
+            // A property default: the compiled class and the linked one.
+            Value::Array(a) => self
+                .is_prop_default(|d| matches!(d, Value::Array(d) if d.data_ptr() == a.data_ptr()))
+                as usize,
+            Value::Str(s) => {
+                self.is_prop_default(|d| matches!(d, Value::Str(d) if d.ptr_eq(s))) as usize
+            }
+            _ => 0,
+        }
+    }
+
+    fn is_interned_str(&self, s: &PhpStr) -> bool {
+        // A literal is a string constant of a compiled function (php's
+        // compiler interns the literal table). Rare (debug_zval_dump), so
+        // a scan.
+        let lit = |p: &rhp_bytecode::FunctionProto| {
+            p.consts
+                .iter()
+                .any(|c| matches!(c, Value::Str(c) if c.ptr_eq(s)))
+        };
+        self.stack.iter().any(|f| lit(&f.proto))
+            || self.functions.iter().any(|f| lit(&f.proto))
+            || self.closures.iter().any(|f| lit(&f.proto))
+            || self.decl_classes.iter().any(|d| {
+                d.proto.methods.iter().any(|m| lit(&m.proto))
+                    || d.proto.enum_cases.iter().any(|c| c.name.ptr_eq(s))
+            })
+            || self.is_prop_default(|d| matches!(d, Value::Str(d) if d.ptr_eq(s)))
     }
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {
@@ -168,7 +226,12 @@ impl Host for Vm {
         purpose: builtins::zend::object_handlers::PropPurpose,
     ) -> Result<Option<PhpArray>, Thrown> {
         use builtins::zend::object_handlers::PropPurpose as P;
-        if purpose != P::Debug && obj.borrow().is_lazy() {
+        if purpose == P::Debug {
+            let id = obj.borrow().id;
+            if self.generators.contains_key(&id) {
+                return Ok(Some(self.generator_debug_info(id)));
+            }
+        } else if obj.borrow().is_lazy() {
             return self.lazy_properties_for(obj, purpose);
         }
         self.hooked_view(obj, purpose)

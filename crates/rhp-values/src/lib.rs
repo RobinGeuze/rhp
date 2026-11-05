@@ -484,6 +484,16 @@ impl PhpStr {
     pub fn get_mut(&mut self) -> Option<&mut BString> {
         Rc::get_mut(&mut self.0)
     }
+
+    /// How many values share this buffer (debug_zval_dump's refcount).
+    pub fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+
+    /// Whether both share one buffer.
+    pub fn ptr_eq(&self, other: &PhpStr) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl Default for PhpStr {
@@ -723,6 +733,11 @@ impl PhpArray {
 
     pub fn len(&self) -> usize {
         self.0.entries.len()
+    }
+
+    /// How many values share this storage (debug_zval_dump's refcount).
+    pub fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
     }
 
     pub fn is_empty(&self) -> bool {

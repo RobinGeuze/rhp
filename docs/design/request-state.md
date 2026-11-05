@@ -39,9 +39,11 @@ Kinds:
 | `main/streams/mod.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |
 | `main/streams/plain_wrapper.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `plain_wrapper::reset_state` |
 | `ext/standard/var.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `var::clear_views` |
+| `ext/standard/var.rs` | `DUMPING` (the arrays and objects `var_dump` / `debug_zval_dump` are inside of: php's recursion guards) | call | emptied as each dump returns |
 | `ext/standard/array.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `array::reset_state` |
 | `main/streams/xp_socket.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `xp_socket::reset_state` |
 | `ext/json/mod.rs` | `LAST_ERROR` | request | `json::reset_state` |
+| `ext/json/mod.rs` | `SERIALIZING` (objects whose `jsonSerialize()` runs: php's JSON guard) | call | emptied as each call returns |
 | `ext/pcre/php_pcre.rs` | `LAST_ERROR` | request | `php_pcre::reset_state` |
 | `ext/pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `php_pcre::reset_state` |
 | `ext/standard/string.rs` | `STRTOK` | request | `string::reset_state` |

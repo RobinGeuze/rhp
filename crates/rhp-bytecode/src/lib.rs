@@ -73,6 +73,13 @@ pub enum Instr {
         dst: Reg,
         src: Reg,
     },
+    /// `Mov` out of a temporary that is dead afterwards (an argument moved
+    /// into the call window): `src` becomes null, so a freed argument gives
+    /// its object handle back when the call returns, as in php.
+    MovTake {
+        dst: Reg,
+        src: Reg,
+    },
     LoadConst {
         dst: Reg,
         k: CIdx,
@@ -1133,6 +1140,9 @@ impl ProtoFlags {
     /// A property hook, named `$prop::get` / `$prop::set` (php's
     /// `func->common.prop_info`).
     pub const HOOK: ProtoFlags = ProtoFlags(4);
+    /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
+    /// refuses to unbind it.
+    pub const USES_THIS: ProtoFlags = ProtoFlags(8);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0

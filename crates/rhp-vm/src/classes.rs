@@ -2020,10 +2020,26 @@ impl Vm {
             })
     }
 
+    /// A handle for a new object (rhp_values::handles). A reused handle
+    /// drops what the engine still keeps under it (a freed generator's
+    /// state, a freed object's unset typed property flags).
+    pub(crate) fn alloc_object_id(&mut self) -> u32 {
+        let id = rhp_values::alloc_object_id();
+        if !self.generators.is_empty() {
+            drop(self.generators.remove(&id));
+        }
+        if !self.unset_typed_props.is_empty() {
+            self.unset_typed_props.remove(&id);
+        }
+        if !self.readonly_reinit.is_empty() {
+            self.readonly_reinit.remove(&id);
+        }
+        id
+    }
+
     /// Allocate a fresh instance of `class_id`, materializing property defaults.
     pub(crate) fn new_object(&mut self, class_id: ClassId) -> ObjectHandle {
-        let id = self.next_object_id;
-        self.next_object_id += 1;
+        let id = self.alloc_object_id();
         let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
             IndexMap::with_hasher(FxBuildHasher);
         for (name, pe) in &self.classes[class_id as usize].props {
@@ -2182,8 +2198,8 @@ impl Vm {
     /// evaluated (php creates case objects lazily).
     pub(crate) fn touch_enum_case(&mut self, h: &ObjectHandle) {
         if h.borrow().id == 0 {
-            h.borrow_mut().id = self.next_object_id;
-            self.next_object_id += 1;
+            let id = self.alloc_object_id();
+            h.borrow_mut().id = id;
         }
     }
 

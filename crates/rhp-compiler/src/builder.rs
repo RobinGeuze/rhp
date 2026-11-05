@@ -62,6 +62,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// Set once the CV pre-pass is done: every `$var` of the body must already
     /// have its slot (a later slot would alias a temporary).
     pub(crate) cvs_frozen: bool,
+    /// The body refers to `$this` (php's ZEND_ACC_USES_THIS).
+    pub(crate) uses_this: bool,
     /// The enclosing loop/switch and finally-body scopes (unique ids; finally
     /// bodies have the high bit set), for checking `goto` jumps.
     pub(crate) goto_scope: Vec<u32>,
@@ -110,6 +112,7 @@ impl<'c> ProtoBuilder<'c> {
             lines: Vec::new(),
             call_lines: Vec::new(),
             cvs_frozen: false,
+            uses_this: false,
             goto_scope: Vec::new(),
             goto_serial: 0,
             labels: HashMap::new(),
@@ -198,6 +201,9 @@ impl<'c> ProtoBuilder<'c> {
         if self.cx.is_prelude {
             proto.flags.insert(ProtoFlags::INTERNAL);
         }
+        if self.uses_this {
+            proto.flags.insert(ProtoFlags::USES_THIS);
+        }
         // The VM keeps the proto as it is for as long as the program lives
         // (with opcache, across requests): drop the growth slack.
         proto.code.shrink_to_fit();
@@ -271,6 +277,9 @@ impl<'c> ProtoBuilder<'c> {
     }
 
     pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {
+        if self.cvs_frozen && var_name == b"this" {
+            self.uses_this = true;
+        }
         if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
             return i as Reg;
         }

@@ -384,10 +384,15 @@ pub trait Host {
     /// builtin or a prelude function, not a user function.
     fn internal_function_exists(&self, name: &[u8]) -> bool;
 
-    /// `Closure::bind`/`bindTo`: return a copy of `closure` with its `$this`
-    /// rebound to `new_this` (object or null) and its scope set from `scope` (a
-    /// class name string, an object, or null = keep/derive).
-    fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value>;
+    /// `Closure::bind($closure, $newThis, $newScope)`: a new Closure with
+    /// `$this` and the scope rebound, or null (with php's warning) for a
+    /// binding php refuses.
+    fn closure_bind(
+        &mut self,
+        closure: &Value,
+        new_this: &Value,
+        scope: Option<&Value>,
+    ) -> Result<Value, Thrown>;
 
     /// Register an `spl_autoload_register` callable (optionally prepending).
     fn register_autoloader(&mut self, callback: Value, prepend: bool);
@@ -444,6 +449,15 @@ pub trait Host {
     /// A closure's function name (`{closure:scope:line}`), for
     /// `is_callable`'s `$callable_name`.
     fn closure_name(&self, closure: &Value) -> Option<Vec<u8>>;
+
+    /// What `var_dump`/`print_r` show for a Closure
+    /// (zend_closure_get_debug_info): name/file/line/static/this/parameter,
+    /// or function/this/parameter for a first-class callable.
+    fn closure_debug_info(&self, closure: &Value) -> Option<rhp_values::PhpArray>;
+
+    /// The Closure the innermost user frame runs (`Closure::getCurrent()`),
+    /// if that frame is a closure's.
+    fn current_closure(&self) -> Option<Value>;
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins).

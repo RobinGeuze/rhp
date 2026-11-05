@@ -239,13 +239,16 @@ pub type ObjectHandle = Rc<RefCell<ObjectData>>;    // Value::Object(ObjectHandl
    ```
    abstract class A {}  new A;   // Error: Cannot instantiate abstract class A
    ```
-2. **Fresh id.** `id = self.next_object_id; self.next_object_id += 1;` (monotonic
-   `u32` counter in the `Vm`). *Divergence from PHP, noted:* Zend reuses an id
-   after the object is freed (`$a` id 1 → `unset($a)` → next `new` reuses id 1);
-   under `Rc` + deferred GC we never free mid-request, so our ids are monotonic
-   and will not match PHP's exact numbers. `spl_object_id`/`spl_object_hash`
-   exact values are not byte-golden-able against PHP; identity *relations*
-   (`$a === $b`, array-of-objects dedup) are preserved.
+2. **Fresh id.** `id = self.alloc_object_id()`: a handle from
+   `rhp_values::handles`, php's object store. A freed object (its `Rc` dropped)
+   gives its handle back, after what its properties held, and the next object
+   takes the most recently freed one (`$a` id 1 → `unset($a)` → the next `new`
+   is id 1 again). No reuse once shutdown destructors start. Closures and
+   generators take handles too. Ids match php where objects die when php frees
+   them: argument temporaries move into the call (`MovTake`), a method call's
+   temporary object is released by the call. Objects that only php's cycle
+   collector frees, and objects whose destructor rhp runs later than php, still
+   give their handle back later than php does.
 3. **Property initialization**, in `classes[cid].properties` order (parent-first,
    verified below): for each `PropEntry`, insert `name -> v` where `v` is
    `default.clone()` (`PropDefault::Value`), the result of running the `Init`
@@ -562,8 +565,8 @@ pub struct Vm {
     // ... existing: out, stack, functions, fn_names, constants, max_depth, cursor_* ...
     classes: Vec<ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>,   // lowercase name -> id
-    next_object_id: u32,                    // monotonic spl_object_id source
 }
+// Object handles: rhp_values::handles (thread-local; freed from Drop).
 ```
 
 ---

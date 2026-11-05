@@ -577,6 +577,9 @@ impl Vm {
             }
             return Ok(());
         }
+        if let Value::Closure(_) = o {
+            return Err(closure_prop_error(pname.as_bytes()));
+        }
         Err(Thrown::error(
             "Error",
             format!(
@@ -818,10 +821,13 @@ impl Vm {
                         })
                         .unwrap_or(false)
             });
-            if in_clone
-                && (scope == Some(decl) || parent_scope_ok)
-                && self.readonly_reinit.insert((oid, key.clone()))
-            {
+            if in_clone && (scope == Some(decl) || parent_scope_ok) && {
+                let done = self.readonly_reinit.entry(oid).or_default();
+                !done.contains(key) && {
+                    done.push(key.clone());
+                    true
+                }
+            } {
                 return Ok(());
             }
             return Err(Thrown::error(
@@ -889,6 +895,8 @@ impl Vm {
                 bound_class: cd.bound_class,
                 bound_static: cd.bound_static,
                 wrapped: cd.wrapped.clone(),
+                id: rhp_values::alloc_object_id(),
+                statics: cd.statics_copy(),
             };
             self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
             return Ok(());
@@ -926,8 +934,7 @@ impl Vm {
                 ),
             ));
         }
-        let id = self.next_object_id;
-        self.next_object_id += 1;
+        let id = self.alloc_object_id();
         // The clone keeps the property slots' unset flags.
         if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
             self.unset_typed_props.insert(id, ks);
@@ -955,4 +962,16 @@ fn pe_public_implicit_set(vm: &Vm, cls: ClassId, key: &PhpStr) -> bool {
             && pe.visibility == rhp_values::Visibility::Public
             && pe.set_visibility.is_none()
     })
+}
+
+/// A Closure has no properties: writing one fails as a forbidden dynamic
+/// property.
+pub(crate) fn closure_prop_error(name: &[u8]) -> Thrown {
+    Thrown::error(
+        "Error",
+        format!(
+            "Cannot create dynamic property Closure::${}",
+            String::from_utf8_lossy(name)
+        ),
+    )
 }

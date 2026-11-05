@@ -12,6 +12,7 @@
 
 mod calls;
 mod classes;
+mod closures;
 mod compare;
 mod const_link;
 mod dispatch;
@@ -120,7 +121,6 @@ pub struct Vm {
     // OOP class table (see `classes` module).
     classes: Vec<classes::ClassEntry>,
     class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
-    next_object_id: u32,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.
@@ -184,7 +184,7 @@ pub struct Vm {
     streams: StreamTable,
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
-    readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
+    readonly_reinit: HashMap<u32, Vec<PhpStr>>,
     /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
@@ -224,6 +224,10 @@ pub struct Vm {
     // program: its destructor runs at the next check (`dtor_check`), as php's
     // refcount release would. Whatever is left runs at request shutdown.
     destructibles: Vec<ObjectHandle>,
+    // Objects a fatal error's bailout marked destructed
+    // (zend_objects_store_mark_destructed): kept, never destructed, until
+    // shutdown ends.
+    marked_destructed: Vec<ObjectHandle>,
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,
@@ -239,10 +243,6 @@ pub struct Vm {
     finished_main: Option<Frame>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
-    // A fatal error bailed out (php_error_cb's zend_objects_store_mark_destructed):
-    // objects with an id below this never run their destructor (shutdown
-    // functions still run). 0: no bailout.
-    destructed_below: u32,
     // Per-run extension state (`Host::module_state`), by module key.
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
     /// The server API layer: sink, response headers, request input.
@@ -334,6 +334,23 @@ struct Frame {
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
+    /// The Closure object this frame runs (`Closure::getCurrent()`, the
+    /// closure's own static variables).
+    closure: Option<Rc<rhp_values::ClosureData>>,
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        // php frees a frame's variables, then its `$this`: the handles come
+        // back in that order.
+        if let Some(cv) = self.proto.this_cv {
+            if let Some(slot) = self.regs.get_mut(cv as usize) {
+                let this = std::mem::replace(slot, Value::Null);
+                self.regs.clear();
+                drop(this);
+            }
+        }
+    }
 }
 
 impl Frame {
@@ -356,6 +373,7 @@ impl Frame {
             include_caller: None,
             dyn_vars: HashMap::new(),
             global_scope: false,
+            closure: None,
         }
     }
 }

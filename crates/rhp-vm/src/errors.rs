@@ -84,7 +84,7 @@ impl Vm {
         self.last_error = Some((ty, msg.to_vec(), file.clone(), line));
         let trace = self.fatal_trace();
         self.display_error_trace(ty, "Fatal error", msg, &file, line, &trace);
-        self.destructed_below = self.next_object_id;
+        self.mark_objects_destructed();
         Thrown::Exit(255)
     }
 
@@ -220,7 +220,7 @@ impl Vm {
             let trace = Value::Array(self.build_trace_ex(false, false));
             let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
             self.display_error_trace(level, "Fatal error", msg, &file, line, &trace);
-            self.destructed_below = self.next_object_id;
+            self.mark_objects_destructed();
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }

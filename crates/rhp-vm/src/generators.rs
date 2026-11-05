@@ -44,8 +44,7 @@ impl Vm {
         let cls = self
             .resolve_class_by_name(b"Generator")
             .expect("Generator prelude class");
-        let id = self.next_object_id;
-        self.next_object_id += 1;
+        let id = self.alloc_object_id();
         let obj = Rc::new(RefCell::new(ObjectData::new(
             cls,
             id,

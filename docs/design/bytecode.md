@@ -263,6 +263,7 @@ from isa.md are the disassembly spelling of the same variants.
 ```
 Nop
 Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
+MovTake    { dst, src }           dst = deref(src); src = Null             (a dead temporary into a call window)
 LoadConst  { dst, k }             dst = consts[k].clone()
 LoadNull   { dst }                dst = Null
 LoadBool   { dst, b: bool }       dst = Bool(b)
@@ -387,6 +388,9 @@ CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err i
 CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
 Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
 RetNull     {}                                    return Null
+-- argument temporaries move into the callee as they are bound (and a builtin
+   takes them), so an object passed as a temporary is freed when the call
+   returns and its handle comes back as in php (oop-model.md, "Fresh id")
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)

@@ -262,6 +262,11 @@ impl ProtoBuilder<'_> {
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
+                // A temporary holding the argument is dead once it is in
+                // the window.
+                ArgSlot::Value(r) if r as usize >= self.cv_map.len() => {
+                    self.emit(Instr::MovTake { dst, src: r })
+                }
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
                 ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
@@ -581,6 +586,11 @@ impl ProtoBuilder<'_> {
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
+                // A temporary holding the argument is dead once it is in
+                // the window.
+                Slot::Value(r) if r as usize >= self.cv_map.len() => {
+                    self.emit(Instr::MovTake { dst, src: r })
+                }
                 Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
             }

@@ -42,6 +42,7 @@ final class __PHP_Incomplete_Class {}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
     public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
+    public static function getCurrent(): Closure { return __closure_current(); }
 }
 class Exception implements Throwable {
     protected $message = "";

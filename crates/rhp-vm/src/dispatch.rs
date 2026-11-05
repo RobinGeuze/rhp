@@ -267,6 +267,10 @@ impl Vm {
                     let v = self.reg_get_fast(top, src);
                     self.reg_set_fast(top, dst, v);
                 }
+                Instr::MovTake { dst, src } => {
+                    let v = self.take_temp(top, src);
+                    self.reg_set_fast(top, dst, v);
+                }
                 Instr::LoadConst { dst, k } => {
                     let v = proto.consts[k as usize].clone();
                     self.reg_set_fast(top, dst, v);
@@ -361,8 +365,8 @@ impl Vm {
                         continue;
                     }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    let v = if matches!(x, Value::Object(_) | Value::Array(_))
-                        || matches!(y, Value::Object(_) | Value::Array(_))
+                    let v = if matches!(x, Value::Object(_) | Value::Array(_) | Value::Closure(_))
+                        || matches!(y, Value::Object(_) | Value::Array(_) | Value::Closure(_))
                     {
                         self.concat_object(&x, &y)?
                     } else {
@@ -589,14 +593,14 @@ impl Vm {
                     self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
                 }
                 Instr::ArrPush { arr, val } => {
-                    let v = self.reg_get(top, val);
+                    let v = self.elem_operand(top, &proto, val);
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.push(v);
                     }
                 }
                 Instr::ArrSet { arr, key, val } => {
                     let k = self.reg_get(top, key);
-                    let v = self.reg_get(top, val);
+                    let v = self.elem_operand(top, &proto, val);
                     let key = ArrayKey::from_value(&k)
                         .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
@@ -692,25 +696,7 @@ impl Vm {
                     base,
                     ncaptures,
                 } => {
-                    // Raw (non-deref) read: a by-reference capture arrives as a
-                    // `Value::Ref` (from MakeRef) and must stay a Ref so writes
-                    // inside the closure reach the outer variable; by-value
-                    // captures were already deref'd into the window by Mov.
-                    let captures: Vec<Value> = (0..ncaptures)
-                        .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-                        .collect();
-                    // Bind the defining/static class scope so the closure body can
-                    // reach private members and resolve `self::`/`static::`.
-                    let cd = Rc::new(rhp_values::ClosureData {
-                        // `fnidx` is file-local; resolve into the flat table.
-                        fnidx: self.unit_base(top).closures + fnidx,
-                        captures,
-                        bound_this: None,
-                        bound_class: self.stack[top].defining_class,
-                        bound_static: self.stack[top].called_class,
-                        wrapped: None,
-                    });
-                    self.reg_set(top, dst, Value::Closure(cd));
+                    self.make_closure(top, dst, fnidx, base, ncaptures)?;
                 }
                 Instr::BindGlobal { cv, name } => {
                     let gname = proto.names[name as usize].clone();
@@ -725,26 +711,15 @@ impl Vm {
                     self.var_var_bind(top, &gname, cell);
                 }
                 Instr::BindStatic { cv, name, init } => {
-                    let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = self.static_key(top, &proto, sname);
-                    let statics = self.static_table(top);
-                    let cell = match statics.get(&key) {
-                        Some(c) => c.clone(),
-                        None => {
-                            let initv = if init == u32::MAX {
-                                Value::Null
-                            } else {
-                                proto.consts[init as usize].clone()
-                            };
-                            let c = Rc::new(RefCell::new(initv));
-                            statics.insert(key, c.clone());
-                            c
-                        }
-                    };
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
-                    self.sync_global_cv(top, cv);
+                    self.bind_static(top, &proto, cv, name, init);
                 }
                 Instr::BindStaticOrJmp { cv, name, target } => {
+                    if self.stack[top].closure.is_some() {
+                        if self.bind_closure_static(top, cv, &proto.names[name as usize], None) {
+                            self.stack[top].pc = target as usize;
+                        }
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.static_table(top).get(&key) {
@@ -755,9 +730,13 @@ impl Vm {
                     }
                 }
                 Instr::BindStaticInit { cv, name, src } => {
+                    let v = self.reg_get(top, src);
+                    if self.stack[top].closure.is_some() {
+                        self.bind_closure_static(top, cv, &proto.names[name as usize], Some(v));
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
-                    let v = self.reg_get(top, src);
                     let cell = self
                         .static_table(top)
                         .entry(key)
@@ -783,21 +762,7 @@ impl Vm {
                     callee,
                     ns_name,
                 } => {
-                    let mut c = self.reg_get(top, callee);
-                    if let Value::Str(name) = &c {
-                        if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
-                            c = Value::Str(n);
-                        }
-                    }
-                    let cd = Rc::new(rhp_values::ClosureData {
-                        fnidx: u32::MAX,
-                        captures: Vec::new(),
-                        bound_this: None,
-                        bound_class: self.stack[top].defining_class,
-                        bound_static: self.stack[top].called_class,
-                        wrapped: Some(Box::new(c)),
-                    });
-                    self.reg_set(top, dst, Value::Closure(cd));
+                    self.make_fcc(top, &proto, dst, callee, ns_name)?;
                 }
                 Instr::CallDyn {
                     dst,
@@ -805,24 +770,7 @@ impl Vm {
                     base,
                     argc,
                 } => {
-                    let c = self.reg_get(top, callee);
-                    let strict = self.caller_strict();
-                    // A user closure binds by-reference parameters to the
-                    // variables passed (the window holds them as `Ref`s), as
-                    // call_callable_value_mode would run it; anything else
-                    // gets plain values.
-                    if let Value::Closure(cd) = &c {
-                        if cd.wrapped.is_none() {
-                            self.fcc_scope.set(None);
-                            let args = Args::Window { top, base, argc };
-                            let out = self.run_closure_sync(cd, args, Some(strict))?;
-                            self.reg_set(top, dst, out);
-                            continue;
-                        }
-                    }
-                    let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                    let out = self.call_callable_value_mode(&c, args, Some(strict))?;
-                    self.reg_set(top, dst, out);
+                    self.call_dyn(top, dst, callee, base, argc)?;
                 }
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_get(top, callee);
@@ -1401,13 +1349,16 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let o = self.reg_get(top, obj);
+                    // An object in a temporary (`(new A)->m()`) is released
+                    // by the call (php frees it when the call returns).
+                    let o = if obj >= proto.num_cvs && !self.holds_destructible(top, obj) {
+                        self.take_temp(top, obj)
+                    } else {
+                        self.reg_get(top, obj)
+                    };
                     let mname = proto.names[name as usize].as_bytes();
                     if let Value::Closure(_) = o {
-                        let args: Vec<Value> =
-                            (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                        let r = self.closure_method(&o, mname, args)?;
-                        self.reg_set(top, dst, r);
+                        self.call_closure_method(top, &o, mname, dst, base, argc)?;
                         continue;
                     }
                     let Value::Object(h) = o else {
@@ -2678,4 +2629,295 @@ fn perl_increment(s: &[u8]) -> Vec<u8> {
         v.insert(0, if last == b'0' { b'1' } else { last });
     }
     v
+}
+
+impl Vm {
+    /// `MakeClosure`: a new Closure object over the captured window.
+    #[inline(never)]
+    fn make_closure(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        fnidx: u32,
+        base: Reg,
+        ncaptures: u16,
+    ) -> Result<(), Thrown> {
+        // Raw (non-deref) read: a by-reference capture arrives as a
+        // `Value::Ref` (from MakeRef) and must stay a Ref so writes
+        // inside the closure reach the outer variable; by-value
+        // captures were already deref'd into the window by Mov.
+        let captures: Vec<Value> = (0..ncaptures)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
+        // Bind the defining/static class scope so the closure body can
+        // reach private members and resolve `self::`/`static::`.
+        // `fnidx` is file-local; resolve into the flat table.
+        let fnidx = self.unit_base(top).closures + fnidx;
+        // A non-static closure binds the creating frame's `$this`
+        // (zend_create_closure), whether or not it uses it.
+        let bound_this = if self.closures[fnidx as usize].proto.is_static {
+            None
+        } else {
+            self.current_this(top)
+        };
+        let cd = Rc::new(rhp_values::ClosureData {
+            fnidx,
+            captures,
+            bound_this,
+            bound_class: self.stack[top].defining_class,
+            bound_static: self.stack[top].called_class,
+            wrapped: None,
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
+        });
+        self.reg_set(top, dst, Value::Closure(cd));
+        Ok(())
+    }
+
+    /// `MakeFcc`: a first-class callable Closure over `callee`.
+    #[inline(never)]
+    fn make_fcc(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        dst: Reg,
+        callee: Reg,
+        ns_name: NIdx,
+    ) -> Result<(), Thrown> {
+        // A callee built in a temporary (`[$o, 'm']`) is dead
+        // after this: the closure owns it.
+        let mut c = if callee >= proto.num_cvs {
+            match std::mem::replace(&mut self.stack[top].regs[callee as usize], Value::Null) {
+                Value::Ref(rc) => rc.borrow().clone(),
+                v => v,
+            }
+        } else {
+            self.reg_get(top, callee)
+        };
+        // `$closure->__invoke(...)` is that Closure.
+        if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+            self.reg_set(top, dst, cl);
+            return Ok(());
+        }
+        if let Value::Str(name) = &c {
+            if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
+                c = Value::Str(n);
+            }
+        }
+        let cd = Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: self.stack[top].defining_class,
+            bound_static: self.stack[top].called_class,
+            wrapped: Some(Box::new(c)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
+        });
+        self.reg_set(top, dst, Value::Closure(cd));
+        Ok(())
+    }
+
+    /// `CallDyn`: `$f(...)` with the arguments in a window.
+    #[inline(never)]
+    fn call_dyn(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        callee: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let c = self.reg_get(top, callee);
+        let strict = self.caller_strict();
+        // A user closure binds by-reference parameters to the
+        // variables passed (the window holds them as `Ref`s), as
+        // call_callable_value_mode would run it; anything else
+        // gets plain values.
+        if let Value::Closure(cd) = &c {
+            if cd.wrapped.is_none() {
+                self.fcc_scope.set(None);
+                let args = Args::Window { top, base, argc };
+                let out = self.run_closure_sync(cd, args, Some(strict))?;
+                self.reg_set(top, dst, out);
+                return Ok(());
+            }
+            // A user function's first-class callable: a direct
+            // call (by-reference parameters and return).
+            if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
+                let n = n.as_bytes();
+                let n = n.strip_prefix(b"\\").unwrap_or(n);
+                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                    let callee = self.functions[i].clone();
+                    if !callee.proto.is_internal() {
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        // An invokable object: a call of its __invoke method, with
+        // by-reference parameters and return.
+        if let Value::Object(h) = &c {
+            let cls = h.borrow().class;
+            if self
+                .lookup_method(cls, b"__invoke")
+                .is_some_and(|m| !m.is_static && m.visibility == rhp_values::Visibility::Public)
+            {
+                self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
+                return Ok(());
+            }
+        }
+        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        let out = self.call_callable_value_mode(&c, args, Some(strict))?;
+        self.reg_set(top, dst, out);
+        Ok(())
+    }
+}
+
+impl Vm {
+    /// `BindStatic`: bind CV `cv` to static variable `name` (the running
+    /// closure's own, else the function's), created with constant `init`.
+    #[inline(never)]
+    fn bind_static(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        cv: Reg,
+        name: NIdx,
+        init: u32,
+    ) {
+        if self.stack[top].closure.is_some() {
+            let initv = if init == u32::MAX {
+                Value::Null
+            } else {
+                proto.consts[init as usize].clone()
+            };
+            let n = &proto.names[name as usize];
+            self.bind_closure_static(top, cv, n, Some(initv));
+            return;
+        }
+        let sname = proto.names[name as usize].as_bytes().to_vec();
+        let key = self.static_key(top, proto, sname);
+        let statics = self.static_table(top);
+        let cell = match statics.get(&key) {
+            Some(c) => c.clone(),
+            None => {
+                let initv = if init == u32::MAX {
+                    Value::Null
+                } else {
+                    proto.consts[init as usize].clone()
+                };
+                let c = Rc::new(RefCell::new(initv));
+                statics.insert(key, c.clone());
+                c
+            }
+        };
+        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        self.sync_global_cv(top, cv);
+    }
+}
+
+impl Vm {
+    /// An array literal's element: an object in a temporary moves into the
+    /// array (the temporary is dead, and php frees it there).
+    #[inline]
+    fn elem_operand(&mut self, top: usize, proto: &FunctionProto, r: Reg) -> Value {
+        if r >= proto.num_cvs
+            && matches!(
+                self.stack[top].regs[r as usize],
+                Value::Object(_) | Value::Closure(_)
+            )
+        {
+            return std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null);
+        }
+        self.reg_get(top, r)
+    }
+}
+
+impl Vm {
+    /// Whether register `r` holds an object with a destructor. Such a
+    /// temporary stays until overwritten: rhp destructs released objects in
+    /// creation order, so freeing it with the callee's frame would destruct
+    /// it before the callee's locals (php: locals first, then `$this`).
+    #[inline(never)]
+    fn holds_destructible(&self, top: usize, r: Reg) -> bool {
+        match &self.stack[top].regs[r as usize] {
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.class(cls)
+                    .handlers
+                    .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some())
+                    || self.lookup_method(cls, b"__destruct").is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// Move a temporary's value out (dereferenced), leaving null.
+    #[inline(never)]
+    fn take_temp(&mut self, top: usize, r: Reg) -> Value {
+        match std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null) {
+            Value::Ref(rc) => rc.borrow().clone(),
+            v => v,
+        }
+    }
+
+    /// `$closure->m(...)`: `__invoke` runs the closure (by-reference
+    /// parameters; Closure::__invoke is internal, so it runs as called from
+    /// internal code), anything else is one of Closure's methods.
+    #[inline(never)]
+    fn call_closure_method(
+        &mut self,
+        top: usize,
+        o: &Value,
+        mname: &[u8],
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        if let Value::Closure(cd) = o {
+            if cd.wrapped.is_none() && mname.eq_ignore_ascii_case(b"__invoke") {
+                self.fcc_scope.set(None);
+                let args = Args::Window { top, base, argc };
+                let out = self.run_closure_sync(cd, args, None)?;
+                self.reg_set(top, dst, out);
+                return Ok(());
+            }
+        }
+        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        let r = self.closure_method(o, mname, args)?;
+        self.reg_set(top, dst, r);
+        Ok(())
+    }
+}
+
+impl Vm {
+    /// Bind CV `cv` to the running closure's own static variable `name`,
+    /// creating it with `init` (`None`: only if it exists). Whether it is
+    /// bound.
+    #[inline(never)]
+    fn bind_closure_static(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        name: &PhpStr,
+        init: Option<Value>,
+    ) -> bool {
+        let Some(cd) = self.stack[top].closure.clone() else {
+            return false;
+        };
+        let mut st = cd.statics.borrow_mut();
+        let cell = match st.iter().find(|(k, _)| k == name) {
+            Some((_, c)) => c.clone(),
+            None => {
+                let Some(v) = init else { return false };
+                let c = Rc::new(RefCell::new(v));
+                st.push((name.clone(), c.clone()));
+                c
+            }
+        };
+        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        true
+    }
 }

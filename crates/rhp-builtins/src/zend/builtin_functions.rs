@@ -207,6 +207,7 @@ fn subject_class(
 ) -> Result<Option<Vec<u8>>, Thrown> {
     Ok(match subject {
         Value::Object(h) => host.class_name(h.borrow().class),
+        Value::Closure(_) => Some(b"Closure".to_vec()),
         Value::Str(s) if allow_string => {
             host.resolve_class_autoload(s.as_bytes())?;
             Some(s.as_bytes().to_vec())
@@ -294,6 +295,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
     Ok(match deref(v) {
         Value::Object(h) => Some(h.borrow().class),
+        Value::Closure(_) => host.resolve_class(b"Closure"),
         Value::Str(s) => host.resolve_class_autoload(s.as_bytes())?,
         _ => None,
     })
@@ -302,7 +304,17 @@ fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
 fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = conv::to_string_bytes(&deref(&args[1]));
     let found = class_id_of(host, &args[0])?
-        .map(|cid| host.class_has_method(cid, &method))
+        .map(|cid| {
+            host.class_has_method(cid, &method)
+                // zend_closure_get_method: Closure's __invoke; the
+                // instance methods the engine implements.
+                || ([&b"__invoke"[..], b"bindto", b"call"]
+                    .iter()
+                    .any(|m| method.eq_ignore_ascii_case(m))
+                    && host
+                        .class_name(cid)
+                        .is_some_and(|n| n.eq_ignore_ascii_case(b"Closure")))
+        })
         .unwrap_or(false);
     Ok(Value::Bool(found))
 }

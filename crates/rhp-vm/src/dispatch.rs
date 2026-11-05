@@ -186,7 +186,14 @@ impl Vm {
                     // request like any other exit.
                     let thrown = if thrown.is_catchable() {
                         match self.unwind(thrown, 0) {
-                            Ok(UnwindResult::Caught) => continue, // handler installed; re-enter
+                            Ok(UnwindResult::Caught) => {
+                                // Unwinding may have released objects (a builtin's
+                                // temporaries): their destructors run before the handler.
+                                if !self.destructibles.is_empty() {
+                                    self.dtor_check = true;
+                                }
+                                continue; // handler installed; re-enter
+                            }
                             Ok(UnwindResult::Escaped(t)) => return Err(t), // uncaught
                             Err(t) if t.is_catchable() => return Err(t),
                             Err(t) => t,

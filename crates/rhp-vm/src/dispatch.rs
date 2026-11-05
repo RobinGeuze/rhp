@@ -328,7 +328,11 @@ impl Vm {
                         self.bin_inf(top, dst, a, b, Op::Mod)?
                     }
                 }
-                Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
+                Instr::Pow { dst, a, b } => {
+                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let v = self.pow_op(&x, &y)?;
+                    self.reg_set(top, dst, v);
+                }
                 // Int operands (shift counts 0..63): what ops::bitwise
                 // returns for them.
                 Instr::BitAnd { dst, a, b } => {

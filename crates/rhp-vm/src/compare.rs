@@ -142,6 +142,41 @@ impl Vm {
         f(&a, &b)
     }
 
+    /// `pow_function`: numbers directly, else the object handler, then the
+    /// scalar conversion; `0 ** negative` is deprecated (`safe_pow`).
+    pub(crate) fn pow_op(&mut self, x: &Value, y: &Value) -> Result<Value, Thrown> {
+        let num = |v: &Value| match v {
+            Value::Int(n) => Some(Num::Int(*n)),
+            Value::Float(f) => Some(Num::Float(*f)),
+            _ => None,
+        };
+        let (a, b) = match (num(x), num(y)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                if let Some(v) = self.try_do_operation(Op::Pow, x, y)? {
+                    return Ok(v);
+                }
+                let Some(a) = self.try_number(x)? else {
+                    return Err(self.binop_error(Op::Pow, x, y));
+                };
+                let Some(b) = self.try_number(y)? else {
+                    return Err(self.binop_error(Op::Pow, x, y));
+                };
+                (
+                    num(&a).unwrap_or(Num::Int(0)),
+                    num(&b).unwrap_or(Num::Int(0)),
+                )
+            }
+        };
+        if rhp_values::ops::pow_base0_neg_exp(a, b) {
+            self.diag(
+                rhp_builtins::E_DEPRECATED,
+                "Power of base 0 and negative exponent is deprecated",
+            )?;
+        }
+        Ok(rhp_values::ops::pow_num(a, b))
+    }
+
     /// `% << >> | & ^` (`convert_op1_op2_long`): two strings combine
     /// bytewise for `| & ^`; else op1's `do_operation`, then op1 as an int,
     /// then the same for op2. A failed conversion is the operand-type

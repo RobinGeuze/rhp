@@ -29,8 +29,7 @@ fn array_values(v: &Value, fname: &str, argno: usize) -> Result<Vec<Value>, Thro
 fn fn_vprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
     let values = array_values(&args[1], "vprintf", 2)?;
-    // `given` mimics the equivalent printf() call: format + each value.
-    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, None)?;
     let len = out.len() as i64;
     host.write_out(&out);
     Ok(Value::Int(len))
@@ -46,9 +45,7 @@ fn fn_vprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_fprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = crate::ext::standard::file::stream_param(host, args, 0, "fprintf", "stream")?;
     let fmt = conv::to_string_bytes(&args[1]);
-    // Argument numbering follows php: the format is arg 2, values start at arg 3,
-    // so the error-reporting `given` excludes the stream argument.
-    let out = do_sprintf(host, &fmt, &args[2..], args.len() - 1)?;
+    let out = do_sprintf(host, &fmt, &args[2..], Some(2))?;
     let len = out.len() as i64;
     host.stream_write(&h, &out);
     Ok(Value::Int(len))
@@ -60,7 +57,7 @@ fn fn_vfprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = crate::ext::standard::file::stream_param(host, args, 0, "vfprintf", "stream")?;
     let fmt = conv::to_string_bytes(&args[1]);
     let values = array_values(&args[2], "vfprintf", 3)?;
-    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, None)?;
     let len = out.len() as i64;
     host.stream_write(&h, &out);
     Ok(Value::Int(len))
@@ -81,473 +78,575 @@ mod tests;
 // sprintf / printf / vsprintf
 // ---------------------------------------------------------------------------
 
-struct Conv {
-    arg: Option<usize>, // explicit `N$` (1-based)
+const ALIGN_LEFT: bool = true;
+const FLOAT_PRECISION: i64 = 6;
+const MAX_FLOAT_PRECISION: i64 = 53;
+const INT_MAX: i64 = i32::MAX as i64;
+
+/// "Field width %zd is too long": a fatal error.
+fn field_too_long(host: &mut dyn Host, width: usize) -> Result<(), Thrown> {
+    host.emit_diagnostic(
+        crate::E_ERROR,
+        format!("Field width {width} is too long").as_bytes(),
+    )?;
+    Err(Thrown::Exit(255))
+}
+
+fn value_error(msg: impl Into<String>) -> Thrown {
+    Thrown::error("ValueError", msg.into())
+}
+
+/// `php_sprintf_appendstring`: pad `add` to `min_width`; with `expprec`
+/// only the first `max_width` bytes are kept. A right-aligned zero-padded
+/// number keeps its sign in front of the padding.
+#[allow(clippy::too_many_arguments)]
+fn append_string(
+    out: &mut Vec<u8>,
+    add: &[u8],
+    min_width: usize,
+    max_width: usize,
+    padding: u8,
     left: bool,
-    plus: bool,
-    pad: u8,
+    neg: bool,
+    expprec: bool,
+    always_sign: bool,
+) -> Result<(), usize> {
+    let mut add = add;
+    let mut copy_len = if expprec {
+        max_width.min(add.len())
+    } else {
+        add.len()
+    };
+    let npad = min_width.saturating_sub(copy_len);
+    let m_width = min_width.max(copy_len);
+    if m_width as u64 > (i32::MAX as u64).saturating_sub(out.len() as u64 + 1) {
+        return Err(m_width);
+    }
+    if !left {
+        if (neg || always_sign) && padding == b'0' {
+            out.push(if neg { b'-' } else { b'+' });
+            add = &add[1.min(add.len())..];
+            copy_len = copy_len.saturating_sub(1);
+        }
+        out.extend(std::iter::repeat_n(padding, npad));
+    }
+    out.extend_from_slice(&add[..copy_len.min(add.len())]);
+    if left {
+        out.extend(std::iter::repeat_n(padding, npad));
+    }
+    Ok(())
+}
+
+/// `php_sprintf_appendint`.
+fn append_int(
+    out: &mut Vec<u8>,
+    number: i64,
     width: usize,
-    prec: Option<usize>,
-    spec: u8,
+    padding: u8,
+    left: bool,
+    always_sign: bool,
+) -> Result<(), usize> {
+    // Can't right-pad 0's on integers.
+    let padding = if left && padding == b'0' {
+        b' '
+    } else {
+        padding
+    };
+    let mut buf = Vec::with_capacity(21);
+    if number < 0 {
+        buf.push(b'-');
+    } else if always_sign {
+        buf.push(b'+');
+    }
+    buf.extend_from_slice(number.unsigned_abs().to_string().as_bytes());
+    append_string(
+        out,
+        &buf,
+        width,
+        0,
+        padding,
+        left,
+        number < 0,
+        false,
+        always_sign,
+    )
 }
 
-enum Piece {
-    Lit(Vec<u8>),
-    Conv(Conv),
+/// `php_sprintf_appenduint`.
+fn append_uint(
+    out: &mut Vec<u8>,
+    number: u64,
+    width: usize,
+    padding: u8,
+    left: bool,
+) -> Result<(), usize> {
+    let padding = if left && padding == b'0' {
+        b' '
+    } else {
+        padding
+    };
+    let buf = number.to_string();
+    append_string(
+        out,
+        buf.as_bytes(),
+        width,
+        0,
+        padding,
+        left,
+        false,
+        false,
+        false,
+    )
 }
 
-fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
-    let mut pieces = Vec::new();
-    let mut lit = Vec::new();
-    let mut i = 0;
-    while i < fmt.len() {
-        if fmt[i] != b'%' {
-            lit.push(fmt[i]);
-            i += 1;
-            continue;
+/// `php_sprintf_append2n`: binary, octal or hex digits of the unsigned
+/// value. With a precision (`expprec`) the maximum width is 0, so nothing
+/// is printed but the padding, as in php.
+#[allow(clippy::too_many_arguments)]
+fn append_2n(
+    out: &mut Vec<u8>,
+    number: i64,
+    width: usize,
+    padding: u8,
+    left: bool,
+    n: u32,
+    upper: bool,
+    expprec: bool,
+) -> Result<(), usize> {
+    let chars: &[u8; 16] = if upper {
+        b"0123456789ABCDEF"
+    } else {
+        b"0123456789abcdef"
+    };
+    let mask = (1u64 << n) - 1;
+    let mut num = number as u64;
+    let mut buf = Vec::with_capacity(64);
+    loop {
+        buf.push(chars[(num & mask) as usize]);
+        num >>= n;
+        if num == 0 {
+            break;
         }
-        // '%' found
-        i += 1;
-        if i < fmt.len() && fmt[i] == b'%' {
-            lit.push(b'%');
-            i += 1;
-            continue;
-        }
-        if !lit.is_empty() {
-            pieces.push(Piece::Lit(std::mem::take(&mut lit)));
-        }
+    }
+    buf.reverse();
+    append_string(out, &buf, width, 0, padding, left, false, expprec, false)
+}
 
-        // optional argnum: digits followed by '$'
-        let mut arg = None;
+/// `php_conv_fp` for `F`, `e` and `E` on a finite number: the digits with
+/// `precision` places, without the sign.
+fn conv_fp(format: u8, num: f64, precision: usize) -> Vec<u8> {
+    let abs = num.abs();
+    match format {
+        b'F' => format!("{abs:.precision$}").into_bytes(),
+        _ => {
+            let r = format!("{abs:.precision$e}");
+            let (m, e) = r.split_once('e').unwrap_or((&r, "0"));
+            let exp: i64 = e.parse().unwrap_or(0);
+            let mut out = m.as_bytes().to_vec();
+            out.push(format);
+            out.push(if exp < 0 { b'-' } else { b'+' });
+            out.extend_from_slice(exp.unsigned_abs().to_string().as_bytes());
+            out
+        }
+    }
+}
+
+/// `php_sprintf_appenddouble`.
+#[allow(clippy::too_many_arguments)]
+fn append_double(
+    host: &mut dyn Host,
+    out: &mut Vec<u8>,
+    number: f64,
+    width: usize,
+    padding: u8,
+    left: bool,
+    precision: i64,
+    adjust_precision: bool,
+    fmt: u8,
+    always_sign: bool,
+) -> Result<(), Thrown> {
+    let mut precision = precision;
+    if !adjust_precision {
+        precision = FLOAT_PRECISION;
+    } else if precision > MAX_FLOAT_PRECISION {
+        host.docref_diagnostic(
+            crate::E_NOTICE,
+            format!(
+                "Requested precision of {precision} digits was truncated to PHP maximum of {MAX_FLOAT_PRECISION} digits"
+            )
+            .as_bytes(),
+        )?;
+        precision = MAX_FLOAT_PRECISION;
+    }
+    if number.is_nan() {
+        return append_string(out, b"NaN", 3, 0, padding, left, false, false, always_sign)
+            .or_else(|w| field_too_long(host, w));
+    }
+    if number.is_infinite() {
+        let neg = number < 0.0;
+        let s: &[u8] = if neg { b"-INF" } else { b"INF" };
+        return append_string(out, s, s.len(), 0, padding, left, neg, false, always_sign)
+            .or_else(|w| field_too_long(host, w));
+    }
+    let mut s = Vec::new();
+    let is_negative;
+    match fmt {
+        b'e' | b'E' | b'f' | b'F' => {
+            let f = if fmt == b'f' { b'F' } else { fmt };
+            is_negative = number < 0.0;
+            if is_negative {
+                s.push(b'-');
+            } else if always_sign {
+                s.push(b'+');
+            }
+            s.extend_from_slice(&conv_fp(f, number, precision.max(0) as usize));
+        }
+        _ => {
+            // g G h H
+            if precision == 0 {
+                precision = 1;
+            }
+            let exp_char = if fmt == b'G' || fmt == b'H' {
+                b'E'
+            } else {
+                b'e'
+            };
+            let g = rhp_values::fmt::zend_gcvt(number, precision, exp_char);
+            is_negative = g.first() == Some(&b'-');
+            if !is_negative && always_sign {
+                s.push(b'+');
+            }
+            s.extend_from_slice(&g);
+        }
+    }
+    append_string(
+        out,
+        &s,
+        width,
+        0,
+        padding,
+        left,
+        is_negative,
+        false,
+        always_sign,
+    )
+    .or_else(|w| field_too_long(host, w))
+}
+
+/// `php_sprintf_getnumber`: the digits at `*i` as a number, -1 when it
+/// does not fit below INT_MAX.
+fn get_number(fmt: &[u8], i: &mut usize) -> i64 {
+    let start = *i;
+    let mut num: i64 = 0;
+    let mut overflow = false;
+    while *i < fmt.len() && fmt[*i].is_ascii_digit() {
+        match num
+            .checked_mul(10)
+            .and_then(|n| n.checked_add((fmt[*i] - b'0') as i64))
         {
-            let mut j = i;
-            while j < fmt.len() && fmt[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i && j < fmt.len() && fmt[j] == b'$' {
-                let n: usize = std::str::from_utf8(&fmt[i..j])
-                    .unwrap()
-                    .parse()
-                    .unwrap_or(0);
-                if n == 0 || n >= i32::MAX as usize {
-                    return Err(Thrown::error(
-                        "ValueError",
-                        "Argument number specifier must be greater than zero and less than 2147483647",
-                    ));
-                }
-                arg = Some(n);
-                i = j + 1;
-            }
+            Some(n) => num = n,
+            None => overflow = true,
         }
+        *i += 1;
+    }
+    if *i == start {
+        return 0;
+    }
+    if overflow || num >= INT_MAX {
+        -1
+    } else {
+        num
+    }
+}
 
-        // flags
-        let mut left = false;
-        let mut plus = false;
-        let mut pad = b' ';
-        loop {
-            if i >= fmt.len() {
-                break;
-            }
-            match fmt[i] {
-                b'-' => left = true,
-                b'+' => plus = true,
-                b' ' => pad = b' ',
-                b'0' => pad = b'0',
-                b'\'' => {
-                    i += 1;
-                    if i >= fmt.len() {
-                        return Err(Thrown::error(
-                            "ValueError",
-                            "Missing format specifier at end of string",
-                        ));
-                    }
-                    pad = fmt[i];
-                }
-                _ => break,
-            }
-            i += 1;
-        }
+/// `php_sprintf_get_argnum`: `Ok(None)` when no `N$` follows (the next
+/// argument), else the 0-based argument number.
+fn get_argnum(fmt: &[u8], i: &mut usize) -> Result<Option<usize>, Thrown> {
+    let mut t = *i;
+    while t < fmt.len() && fmt[t].is_ascii_digit() {
+        t += 1;
+    }
+    if fmt.get(t) != Some(&b'$') {
+        return Ok(None);
+    }
+    let argnum = get_number(fmt, i);
+    if argnum <= 0 {
+        return Err(value_error(format!(
+            "Argument number specifier must be greater than zero and less than {INT_MAX}"
+        )));
+    }
+    *i += 1; // the '$'
+    Ok(Some(argnum as usize - 1))
+}
 
-        // width
-        let ws = i;
-        while i < fmt.len() && fmt[i].is_ascii_digit() {
-            i += 1;
-        }
-        let width: usize = if i > ws {
-            std::str::from_utf8(&fmt[ws..i])
-                .unwrap()
-                .parse()
-                .unwrap_or(0)
-        } else {
-            0
+/// `php_formatted_print`: `args` are the values after the format;
+/// `nb_additional` is how many arguments precede them (format included)
+/// for the ArgumentCountError, or `None` for the `v*` functions' ValueError.
+pub(crate) fn do_sprintf(
+    host: &mut dyn Host,
+    fmt: &[u8],
+    args: &[Value],
+    nb_additional: Option<usize>,
+) -> Result<Vec<u8>, Thrown> {
+    let argc = args.len();
+    let mut out = Vec::with_capacity(fmt.len() + 16);
+    let mut currarg = 0usize;
+    let mut max_missing: Option<usize> = None;
+    let at = |i: usize| fmt.get(i).copied().unwrap_or(0);
+    let mut i = 0usize;
+    while i < fmt.len() {
+        let Some(p) = fmt[i..].iter().position(|&c| c == b'%') else {
+            out.extend_from_slice(&fmt[i..]);
+            break;
         };
-
-        // precision
-        let mut prec = None;
-        if i < fmt.len() && fmt[i] == b'.' {
+        out.extend_from_slice(&fmt[i..i + p]);
+        i += p + 1; // skip the '%'
+        if at(i) == b'%' {
+            out.push(b'%');
             i += 1;
-            let ps = i;
-            while i < fmt.len() && fmt[i].is_ascii_digit() {
+            continue;
+        }
+        let mut left = false;
+        let mut adjust_precision = false;
+        let mut padding = b' ';
+        let mut always_sign = false;
+        let mut expprec = false;
+        let mut width: i64 = 0;
+        let mut precision: i64 = 0;
+        let mut argnum: Option<usize> = None;
+        if !at(i).is_ascii_alphabetic() {
+            argnum = get_argnum(fmt, &mut i)?;
+            // modifiers
+            loop {
+                match at(i) {
+                    c @ (b' ' | b'0') => padding = c,
+                    b'-' => left = ALIGN_LEFT,
+                    b'+' => always_sign = true,
+                    b'\'' => {
+                        if fmt.len() - i > 1 {
+                            i += 1;
+                            padding = at(i);
+                        } else {
+                            return Err(value_error("Missing padding character"));
+                        }
+                    }
+                    _ => break,
+                }
                 i += 1;
             }
-            prec = Some(if i > ps {
-                std::str::from_utf8(&fmt[ps..i])
-                    .unwrap()
-                    .parse()
-                    .unwrap_or(0)
-            } else {
-                0
-            });
+            // width
+            if at(i) == b'*' {
+                i += 1;
+                let wa = match get_argnum(fmt, &mut i)? {
+                    Some(n) => n,
+                    None => {
+                        currarg += 1;
+                        currarg - 1
+                    }
+                };
+                if wa >= argc {
+                    max_missing = max_missing.max(Some(wa));
+                    continue;
+                }
+                let Value::Int(w) = deref(&args[wa]) else {
+                    return Err(value_error("Width must be an integer"));
+                };
+                if !(0..=INT_MAX).contains(&w) {
+                    return Err(value_error(format!(
+                        "Width must be between 0 and {INT_MAX}"
+                    )));
+                }
+                width = w;
+            } else if at(i).is_ascii_digit() {
+                width = get_number(fmt, &mut i);
+                if width < 0 {
+                    return Err(value_error(format!(
+                        "Width must be between 0 and {INT_MAX}"
+                    )));
+                }
+            }
+            // precision
+            if at(i) == b'.' {
+                i += 1;
+                adjust_precision = true;
+                if at(i) == b'*' {
+                    i += 1;
+                    let pa = match get_argnum(fmt, &mut i)? {
+                        Some(n) => n,
+                        None => {
+                            currarg += 1;
+                            currarg - 1
+                        }
+                    };
+                    if pa >= argc {
+                        max_missing = max_missing.max(Some(pa));
+                        continue;
+                    }
+                    let Value::Int(p) = deref(&args[pa]) else {
+                        return Err(value_error("Precision must be an integer"));
+                    };
+                    if !(-1..=INT_MAX).contains(&p) {
+                        return Err(value_error(format!(
+                            "Precision must be between -1 and {INT_MAX}"
+                        )));
+                    }
+                    precision = p;
+                    expprec = true;
+                } else if at(i).is_ascii_digit() {
+                    precision = get_number(fmt, &mut i);
+                    if precision < 0 {
+                        return Err(value_error(format!(
+                            "Precision must be between 0 and {INT_MAX}"
+                        )));
+                    }
+                    expprec = true;
+                }
+            }
         }
-
-        // A C length modifier is skipped.
-        if i < fmt.len() && fmt[i] == b'l' {
+        if at(i) == b'l' {
             i += 1;
         }
-        if i >= fmt.len() {
-            return Err(Thrown::error(
-                "ValueError",
-                "Missing format specifier at end of string",
+        let argnum = match argnum {
+            Some(n) => n,
+            None => {
+                currarg += 1;
+                currarg - 1
+            }
+        };
+        if argnum >= argc {
+            max_missing = max_missing.max(Some(argnum));
+            continue;
+        }
+        let spec = at(i);
+        if expprec && precision == -1 && !matches!(spec, b'g' | b'G' | b'h' | b'H') {
+            return Err(value_error(
+                "Precision -1 is only supported for %g, %G, %h and %H",
             ));
         }
-        let spec = fmt[i];
+        let width = width as usize;
+        let tmp = &args[argnum];
+        match spec {
+            b's' => {
+                let s = crate::zend::zpp::zval_get_string(host, tmp)?;
+                append_string(
+                    &mut out,
+                    &s,
+                    width,
+                    precision.max(0) as usize,
+                    padding,
+                    left,
+                    false,
+                    expprec,
+                    false,
+                )
+                .or_else(|w| field_too_long(host, w))?;
+            }
+            b'd' => {
+                let n = crate::zend::zpp::zval_get_long(host, tmp)?;
+                append_int(&mut out, n, width, padding, left, always_sign)
+                    .or_else(|w| field_too_long(host, w))?;
+            }
+            b'u' => {
+                let n = crate::zend::zpp::zval_get_long(host, tmp)?;
+                append_uint(&mut out, n as u64, width, padding, left)
+                    .or_else(|w| field_too_long(host, w))?;
+            }
+            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'h' | b'H' => {
+                let d = zval_get_double(host, tmp)?;
+                append_double(
+                    host,
+                    &mut out,
+                    d,
+                    width,
+                    padding,
+                    left,
+                    precision,
+                    adjust_precision,
+                    spec,
+                    always_sign,
+                )?;
+            }
+            b'c' => {
+                let n = crate::zend::zpp::zval_get_long(host, tmp)?;
+                out.push(n as u8);
+            }
+            b'o' | b'x' | b'X' | b'b' => {
+                let n = crate::zend::zpp::zval_get_long(host, tmp)?;
+                let bits = match spec {
+                    b'o' => 3,
+                    b'b' => 1,
+                    _ => 4,
+                };
+                append_2n(
+                    &mut out,
+                    n,
+                    width,
+                    padding,
+                    left,
+                    bits,
+                    spec == b'X',
+                    expprec,
+                )
+                .or_else(|w| field_too_long(host, w))?;
+            }
+            b'%' => out.push(b'%'),
+            0 if i >= fmt.len() => {
+                return Err(value_error("Missing format specifier at end of string"));
+            }
+            c => {
+                return Err(value_error(format!(
+                    "Unknown format specifier \"{}\"",
+                    char::from(c)
+                )));
+            }
+        }
         i += 1;
-        if !matches!(
-            spec,
-            b's' | b'd'
-                | b'f'
-                | b'F'
-                | b'b'
-                | b'o'
-                | b'x'
-                | b'X'
-                | b'c'
-                | b'u'
-                | b'e'
-                | b'E'
-                | b'g'
-                | b'G'
-        ) {
-            return Err(Thrown::error(
-                "ValueError",
-                format!("Unknown format specifier \"{}\"", spec as char),
-            ));
-        }
-        pieces.push(Piece::Conv(Conv {
-            arg,
-            left,
-            plus,
-            pad,
-            width,
-            prec,
-            spec,
-        }));
     }
-    if !lit.is_empty() {
-        pieces.push(Piece::Lit(lit));
+    if let Some(missing) = max_missing {
+        return Err(match nb_additional {
+            None => value_error(format!(
+                "The arguments array must contain {} items, {argc} given",
+                missing + 1
+            )),
+            Some(nb) => Thrown::error(
+                "ArgumentCountError",
+                format!(
+                    "{} arguments are required, {} given",
+                    missing + nb + 1,
+                    argc + nb
+                ),
+            ),
+        });
     }
-    Ok(pieces)
-}
-
-/// Field-pad a string conversion (pad char used as-is on either side).
-fn pad_field(body: Vec<u8>, width: usize, pad: u8, left: bool) -> Vec<u8> {
-    if body.len() >= width {
-        return body;
-    }
-    let fill = width - body.len();
-    let mut out = Vec::with_capacity(width);
-    if left {
-        out.extend_from_slice(&body);
-        out.extend(std::iter::repeat_n(pad, fill));
-    } else {
-        out.extend(std::iter::repeat_n(pad, fill));
-        out.extend_from_slice(&body);
-    }
-    out
-}
-
-/// Field-pad a numeric conversion (sign kept with the magnitude; `'0'` pads
-/// after the sign when right-aligned, and degrades to space when left-aligned).
-fn pad_numeric(sign: &[u8], mag: &[u8], width: usize, pad: u8, left: bool) -> Vec<u8> {
-    let total = sign.len() + mag.len();
-    let mut out = Vec::with_capacity(width.max(total));
-    if total >= width {
-        out.extend_from_slice(sign);
-        out.extend_from_slice(mag);
-        return out;
-    }
-    let fill = width - total;
-    if left {
-        let p = if pad == b'0' { b' ' } else { pad };
-        out.extend_from_slice(sign);
-        out.extend_from_slice(mag);
-        out.extend(std::iter::repeat_n(p, fill));
-    } else if pad == b'0' {
-        out.extend_from_slice(sign);
-        out.extend(std::iter::repeat_n(b'0', fill));
-        out.extend_from_slice(mag);
-    } else {
-        out.extend(std::iter::repeat_n(pad, fill));
-        out.extend_from_slice(sign);
-        out.extend_from_slice(mag);
-    }
-    out
-}
-
-/// php-style exponent reformat: Rust's `{:e}` gives `1.23e4`; php wants
-/// `1.23e+4` (signed, minimal digits). Applies to the already-built mantissa.
-fn reformat_exp(rust_e: &str, upper: bool) -> Vec<u8> {
-    let (m, e) = rust_e.split_once('e').unwrap();
-    let exp: i64 = e.parse().unwrap();
-    let mut out = m.as_bytes().to_vec();
-    out.push(if upper { b'E' } else { b'e' });
-    out.push(if exp < 0 { b'-' } else { b'+' });
-    out.extend_from_slice(exp.unsigned_abs().to_string().as_bytes());
-    out
-}
-
-/// php `%g` / `%G`: `zend_gcvt` with the given significant-digit precision.
-fn gcvt(f: f64, precision: usize, upper: bool) -> Vec<u8> {
-    let prec = precision.max(1);
-    let negative = f < 0.0;
-    let sign: &[u8] = if negative { b"-" } else { b"" };
-    let abs = f.abs();
-    if abs == 0.0 {
-        return [sign, b"0"].concat();
-    }
-    let s = format!("{:.*e}", prec - 1, abs);
-    let (mant, exp) = s.split_once('e').unwrap();
-    let exp10: i32 = exp.parse().unwrap();
-    let digits: Vec<u8> = mant.bytes().filter(|&b| b != b'.').collect();
-    // trim trailing zeros, keep >= 1
-    let mut end = digits.len();
-    while end > 1 && digits[end - 1] == b'0' {
-        end -= 1;
-    }
-    let digits = &digits[..end];
-
-    let cutoff = prec as i32;
-    let body = if exp10 < -4 || exp10 >= cutoff {
-        // exponential, always >= 1 fractional digit
-        let mut out = Vec::new();
-        out.push(digits[0]);
-        out.push(b'.');
-        if digits.len() > 1 {
-            out.extend_from_slice(&digits[1..]);
-        } else {
-            out.push(b'0');
-        }
-        out.push(if upper { b'E' } else { b'e' });
-        out.push(if exp10 < 0 { b'-' } else { b'+' });
-        out.extend_from_slice(exp10.unsigned_abs().to_string().as_bytes());
-        out
-    } else if exp10 >= 0 {
-        let int_len = (exp10 as usize) + 1;
-        let mut out = Vec::new();
-        if digits.len() <= int_len {
-            out.extend_from_slice(digits);
-            out.extend(std::iter::repeat_n(b'0', int_len - digits.len()));
-        } else {
-            out.extend_from_slice(&digits[..int_len]);
-            out.push(b'.');
-            out.extend_from_slice(&digits[int_len..]);
-        }
-        out
-    } else {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"0.");
-        out.extend(std::iter::repeat_n(b'0', (-exp10 - 1) as usize));
-        out.extend_from_slice(digits);
-        out
-    };
-    [sign, &body].concat()
-}
-
-/// Format one non-special float conversion (f/F/e/E). Returns (sign, magnitude).
-fn float_parts(f: f64, spec: u8, prec: usize) -> (Vec<u8>, Vec<u8>) {
-    let negative = f < 0.0;
-    let abs = f.abs();
-    let mag = match spec {
-        b'f' | b'F' => format!("{abs:.prec$}").into_bytes(),
-        b'e' | b'E' => {
-            let r = format!("{:.*e}", prec, abs);
-            reformat_exp(&r, spec == b'E')
-        }
-        _ => unreachable!(),
-    };
-    let sign: Vec<u8> = if negative { b"-".to_vec() } else { Vec::new() };
-    (sign, mag)
+    Ok(out)
 }
 
 /// zval_get_double: an object warns and is 1.0.
 fn zval_get_double(host: &mut dyn Host, v: &Value) -> Result<f64, Thrown> {
+    let v = deref(v);
     if let Value::Object(_) | Value::Closure(_) = v {
         host.emit_diagnostic(
             crate::E_WARNING,
             format!(
                 "Object of class {} could not be converted to float",
-                crate::zend::zpp::zval_value_name(host, v)
+                crate::zend::zpp::zval_value_name(host, &v)
             )
             .as_bytes(),
         )?;
         return Ok(1.0);
     }
-    Ok(conv::to_float(v))
-}
-
-fn render_conv(host: &mut dyn Host, c: &Conv, arg: &Value) -> Result<Vec<u8>, Thrown> {
-    let v = deref(arg);
-    let int = |host: &mut dyn Host| crate::zend::zpp::zval_get_long(host, &v);
-    Ok(match c.spec {
-        b's' => {
-            let mut s = crate::zend::zpp::zval_get_string(host, &v)?;
-            if let Some(p) = c.prec {
-                s.truncate(p);
-            }
-            pad_field(s, c.width, c.pad, c.left)
-        }
-        b'c' => {
-            // single byte, width/precision/flags ignored (php behavior)
-            let n = int(host)?;
-            vec![(n & 0xff) as u8]
-        }
-        b'd' => {
-            let n = int(host)?;
-            let neg = n < 0;
-            let mag = n.unsigned_abs().to_string().into_bytes();
-            let sign: &[u8] = if neg {
-                b"-"
-            } else if c.plus {
-                b"+"
-            } else {
-                b""
-            };
-            pad_numeric(sign, &mag, c.width, c.pad, c.left)
-        }
-        b'u' => {
-            let n = int(host)? as u64;
-            pad_numeric(b"", n.to_string().as_bytes(), c.width, c.pad, c.left)
-        }
-        b'o' => {
-            let n = int(host)? as u64;
-            pad_numeric(b"", format!("{n:o}").as_bytes(), c.width, c.pad, c.left)
-        }
-        b'x' => {
-            let n = int(host)? as u64;
-            pad_numeric(b"", format!("{n:x}").as_bytes(), c.width, c.pad, c.left)
-        }
-        b'X' => {
-            let n = int(host)? as u64;
-            pad_numeric(b"", format!("{n:X}").as_bytes(), c.width, c.pad, c.left)
-        }
-        b'b' => {
-            let n = int(host)? as u64;
-            pad_numeric(b"", format!("{n:b}").as_bytes(), c.width, c.pad, c.left)
-        }
-        b'f' | b'F' | b'e' | b'E' => {
-            let f = zval_get_double(host, &v)?;
-            if f.is_nan() {
-                return Ok(b"NaN".to_vec());
-            }
-            if f.is_infinite() {
-                return Ok(if f < 0.0 {
-                    b"-INF".to_vec()
-                } else {
-                    b"INF".to_vec()
-                });
-            }
-            let prec = c.prec.unwrap_or(6);
-            let (mut sign, mag) = float_parts(f, c.spec, prec);
-            if sign.is_empty() && c.plus {
-                sign = b"+".to_vec();
-            }
-            pad_numeric(&sign, &mag, c.width, c.pad, c.left)
-        }
-        b'g' | b'G' => {
-            let f = zval_get_double(host, &v)?;
-            if f.is_nan() {
-                return Ok(b"NaN".to_vec());
-            }
-            if f.is_infinite() {
-                return Ok(if f < 0.0 {
-                    b"-INF".to_vec()
-                } else {
-                    b"INF".to_vec()
-                });
-            }
-            let prec = c.prec.unwrap_or(6);
-            let body = gcvt(f, prec, c.spec == b'G');
-            // split sign for numeric padding
-            if let Some(stripped) = body.strip_prefix(b"-") {
-                pad_numeric(b"-", stripped, c.width, c.pad, c.left)
-            } else {
-                let sign: &[u8] = if c.plus { b"+" } else { b"" };
-                pad_numeric(sign, &body, c.width, c.pad, c.left)
-            }
-        }
-        _ => Vec::new(),
-    })
-}
-
-/// Core of sprintf/vsprintf: `fmt` + value args (not including the format).
-/// `given` is the total argument count (incl. the format) for error messages.
-pub(crate) fn do_sprintf(
-    host: &mut dyn Host,
-    fmt: &[u8],
-    value_args: &[Value],
-    given: usize,
-) -> Result<Vec<u8>, Thrown> {
-    let pieces = parse_format(fmt)?;
-
-    // Resolve argument indices (positional does not advance the sequential ptr).
-    let mut seq = 1usize;
-    let mut resolved: Vec<usize> = Vec::new();
-    let mut max_idx = 0usize;
-    for p in &pieces {
-        if let Piece::Conv(c) = p {
-            let idx = match c.arg {
-                Some(n) => n,
-                None => {
-                    let v = seq;
-                    seq += 1;
-                    v
-                }
-            };
-            resolved.push(idx);
-            max_idx = max_idx.max(idx);
-        }
-    }
-    if max_idx > value_args.len() {
-        return Err(Thrown::error(
-            "ArgumentCountError",
-            format!("{} arguments are required, {} given", max_idx + 1, given),
-        ));
-    }
-
-    let mut out = Vec::new();
-    let mut ci = 0;
-    for p in &pieces {
-        match p {
-            Piece::Lit(b) => out.extend_from_slice(b),
-            Piece::Conv(c) => {
-                let idx = resolved[ci];
-                ci += 1;
-                out.extend_from_slice(&render_conv(host, c, &value_args[idx - 1])?);
-            }
-        }
-    }
-    Ok(out)
+    Ok(conv::to_float(&v))
 }
 
 fn fn_sprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
-    let out = do_sprintf(host, &fmt, &args[1..], args.len())?;
+    let out = do_sprintf(host, &fmt, &args[1..], Some(1))?;
     Ok(Value::str(out))
 }
 
 fn fn_printf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
-    let out = do_sprintf(host, &fmt, &args[1..], args.len())?;
+    let out = do_sprintf(host, &fmt, &args[1..], Some(1))?;
     let len = out.len() as i64;
     host.write_out(&out);
     Ok(Value::Int(len))
@@ -561,8 +660,7 @@ fn fn_vsprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     };
     let values: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
-    // `given` mimics the equivalent sprintf() call: format + each value.
-    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, None)?;
     Ok(Value::str(out))
 }
 

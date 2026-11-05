@@ -7,10 +7,9 @@
 //!
 //! Notes on fidelity:
 //! - `floor`/`ceil`/`round`/`sqrt`/trig/… always return `float`, as in PHP.
-//! - `round()` ports php 8.5's `_php_math_round` with every rounding mode
-//!   (RoundingMode itself is not implemented, its int values are).
-//! - `pow()` returns `int` only for an int base with a non-negative int
-//!   exponent that does not overflow `i64`; otherwise `float`.
+//! - `round()` ports php 8.5's `_php_math_round` with every rounding mode;
+//!   the `RoundingMode` enum is PHP source ([`PRELUDE_PHP`]).
+//! - `pow()` is the `**` operator (`Host::pow_op`).
 //! - `hexdec`/`bindec`/`octdec`/`base_convert` reproduce PHP's `_php_math_*`
 //!   routines exactly, including the int→float switch on overflow and the
 //!   lossy float→base rendering used by `base_convert` for large values.
@@ -41,14 +40,43 @@ fn fn_ceil(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(f(&args[0]).ceil()))
 }
 
-fn fn_round(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+/// math.c's `RoundingMode` enum.
+pub const PRELUDE_PHP: &str = include_str!("math/prelude.php");
+
+/// `php_math_round_mode_from_enum`, or the int mode.
+pub(crate) fn rounding_mode(host: &mut dyn Host, v: &Value) -> i64 {
+    match deref(v) {
+        o @ Value::Object(_) => {
+            let name = host
+                .object_prop(&o, b"name")
+                .map(|n| conv::to_string_bytes(&n))
+                .unwrap_or_default();
+            match name.as_slice() {
+                b"HalfAwayFromZero" => PHP_ROUND_HALF_UP,
+                b"HalfTowardsZero" => PHP_ROUND_HALF_DOWN,
+                b"HalfEven" => PHP_ROUND_HALF_EVEN,
+                b"HalfOdd" => PHP_ROUND_HALF_ODD,
+                b"TowardsZero" => PHP_ROUND_TOWARD_ZERO,
+                b"AwayFromZero" => PHP_ROUND_AWAY_FROM_ZERO,
+                b"NegativeInfinity" => PHP_ROUND_FLOOR,
+                _ => PHP_ROUND_CEILING,
+            }
+        }
+        v => conv::to_int(&v),
+    }
+}
+
+fn fn_round(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     let value = deref(&args[0]);
     let places = args
         .get(1)
         .map(conv::to_int)
         .unwrap_or(0)
         .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    let mode = args.get(2).map(conv::to_int).unwrap_or(PHP_ROUND_HALF_UP);
+    let mode = match args.get(2) {
+        Some(v) => rounding_mode(host, v),
+        None => PHP_ROUND_HALF_UP,
+    };
     if !(1..=8).contains(&mode) {
         return Err(Thrown::error(
             "ValueError",
@@ -70,6 +98,7 @@ const PHP_ROUND_HALF_ODD: i64 = 4;
 const PHP_ROUND_CEILING: i64 = 5;
 const PHP_ROUND_FLOOR: i64 = 6;
 const PHP_ROUND_TOWARD_ZERO: i64 = 7;
+const PHP_ROUND_AWAY_FROM_ZERO: i64 = 8;
 
 /// `php_intpow10`: an exact table for 0..=22, else C `pow`.
 fn php_intpow10(power: i32) -> f64 {
@@ -240,47 +269,14 @@ fn fn_atanh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(unsafe { atanh(f(&args[0])) }))
 }
 
-/// Integer exponentiation by squaring with overflow detection.
-fn ipow(mut base: i64, mut exp: u64) -> Option<i64> {
-    let mut result: i64 = 1;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = result.checked_mul(base)?;
-        }
-        exp >>= 1;
-        if exp > 0 {
-            base = base.checked_mul(base)?;
-        }
-    }
-    Some(result)
+/// `pow()` is `pow_function`, the `**` operator.
+fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    host.pow_op(&args[0], &args[1])
 }
 
-fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    // pow_function: ZEND_TRY_BINARY_OBJECT_OPERATION(ZEND_POW), op1's
-    // handler, then op2's.
-    for v in [&args[0], &args[1]] {
-        if let Some(f) =
-            crate::zend::object_handlers::handlers_of(host, v).and_then(|t| t.do_operation)
-        {
-            if let Some(r) = f(
-                host,
-                crate::zend::object_handlers::Op::Pow,
-                &args[0],
-                Some(&args[1]),
-            )? {
-                return Ok(r);
-            }
-        }
-    }
-    let base = conv::to_number(&deref(&args[0])).0;
-    let exp = conv::to_number(&deref(&args[1])).0;
-    match (base, exp) {
-        (conv::Num::Int(b), conv::Num::Int(e)) if e >= 0 => match ipow(b, e as u64) {
-            Some(r) => Ok(Value::Int(r)),
-            None => Ok(Value::Float((b as f64).powf(e as f64))),
-        },
-        _ => Ok(Value::Float(base.as_f64().powf(exp.as_f64()))),
-    }
+/// `fpow()`: C `pow` on two floats, no deprecation.
+fn fn_fpow(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(f(&args[0]).powf(f(&args[1]))))
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +523,7 @@ pub fn register(m: &mut crate::Registry) {
             ("round", fn_round),
             ("sqrt", fn_sqrt),
             ("pow", fn_pow),
+            ("fpow", fn_fpow),
             ("exp", fn_exp),
             ("expm1", fn_expm1),
             ("log1p", fn_log1p),

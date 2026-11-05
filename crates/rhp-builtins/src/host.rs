@@ -745,4 +745,9 @@ pub trait Host {
     /// function (the running builtin, else the innermost user function,
     /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown>;
+    /// `pow_function` (the `**` operator) with the engine's diagnostics and
+    /// object handlers.
+    fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        rhp_values::ops::pow(a, b)
+    }
 }

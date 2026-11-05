@@ -128,11 +128,18 @@ fn constants() -> Vec<(&'static str, Value)> {
     .concat()
 }
 
-/// The module's PHP source: dir.c's `Directory` class, then string.c's
-/// prelude functions.
+/// The module's PHP source: dir.c's `Directory` class, string.c's
+/// prelude functions and math.c's `RoundingMode` enum.
 fn prelude() -> &'static str {
     static PRELUDE: OnceLock<String> = OnceLock::new();
-    PRELUDE.get_or_init(|| format!("{}\n{}", dir::PRELUDE_PHP, string::PRELUDE_PHP))
+    PRELUDE.get_or_init(|| {
+        format!(
+            "{}\n{}\n{}",
+            dir::PRELUDE_PHP,
+            string::PRELUDE_PHP,
+            math::PRELUDE_PHP
+        )
+    })
 }
 
 fn reset_state() {

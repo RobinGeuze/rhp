@@ -174,30 +174,62 @@ pub fn modulo(a: &Value, b: &Value) -> Result<Value, Thrown> {
     long_binop(BitOp::Mod, p, q)
 }
 
+/// `**` without an engine. `0 ** negative` is an error here: php deprecates
+/// it at run time, so constant folding must leave it alone.
 pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
     let x = arith_num(a, "**")?;
     let y = arith_num(b, "**")?;
+    if pow_base0_neg_exp(x, y) {
+        return Err(unsupported("**"));
+    }
+    Ok(pow_num(x, y))
+}
+
+/// `safe_pow`'s condition for "Power of base 0 and negative exponent is
+/// deprecated".
+pub fn pow_base0_neg_exp(x: Num, y: Num) -> bool {
+    match (x, y) {
+        (Num::Int(_), Num::Int(e)) if e >= 0 => false,
+        _ => x.as_f64() == 0.0 && y.as_f64() < 0.0,
+    }
+}
+
+/// pow_function_base on two numbers: an int power by squaring while it fits,
+/// else a float.
+pub fn pow_num(x: Num, y: Num) -> Value {
     if let (Num::Int(base), Num::Int(exp)) = (x, y) {
         if exp >= 0 {
-            // integer power with overflow → float
-            let mut acc: i64 = 1;
-            let mut overflow = false;
-            for _ in 0..exp {
-                match acc.checked_mul(base) {
-                    Some(v) => acc = v,
-                    None => {
-                        overflow = true;
-                        break;
+            let (mut l1, mut l2, mut i) = (1i64, base, exp);
+            if i == 0 {
+                return Value::Int(1);
+            } else if l2 == 0 {
+                return Value::Int(0);
+            }
+            while i >= 1 {
+                if i % 2 != 0 {
+                    i -= 1;
+                    match l1.checked_mul(l2) {
+                        Some(v) => l1 = v,
+                        None => {
+                            let d = l1 as f64 * l2 as f64;
+                            return Value::Float(d * (l2 as f64).powf(i as f64));
+                        }
+                    }
+                } else {
+                    i /= 2;
+                    match l2.checked_mul(l2) {
+                        Some(v) => l2 = v,
+                        None => {
+                            let d = l2 as f64 * l2 as f64;
+                            return Value::Float(l1 as f64 * d.powf(i as f64));
+                        }
                     }
                 }
             }
-            if !overflow {
-                return Ok(Value::Int(acc));
-            }
-            return Ok(Value::Float((base as f64).powf(exp as f64)));
+            return Value::Int(l1);
         }
     }
-    Ok(Value::Float(x.as_f64().powf(y.as_f64())))
+    Value::Float(x.as_f64().powf(y.as_f64()))
 }
 
 /// `| & ^ << >> %` on two plain values (no diagnostics: see [`arith_num`]).

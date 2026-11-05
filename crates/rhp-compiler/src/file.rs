@@ -262,6 +262,22 @@ impl<'s> FileCtx<'s> {
         )
     }
 
+    /// Inline text that is no statement for php: empty after the newline
+    /// folded into `?>`, or the shebang line of the file.
+    pub(crate) fn inline_is_empty(&self, i: &crate::parse::cst::Inline) -> bool {
+        use mago_span::HasSpan;
+        let at = i.span().start.offset;
+        if at == 0 && i.value.starts_with(b"#!") {
+            let rest = i
+                .value
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(&b""[..], |p| &i.value[p + 1..]);
+            return rest.is_empty();
+        }
+        self.strip_close_tag_newline(at, i.value).is_empty()
+    }
+
     /// php's lexer folds one newline (`\n`, `\r\n` or `\r`) right after `?>`
     /// into the closing tag: drop it from inline text that starts there.
     pub(crate) fn strip_close_tag_newline<'t>(&self, offset: u32, text: &'t [u8]) -> &'t [u8] {
@@ -328,18 +344,11 @@ fn is_class_like(st: &Statement) -> bool {
 
 /// Whether the program's leading statement is `declare(strict_types=1)`.
 fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
-    use mago_span::HasSpan;
     for stmt in program.statements.iter() {
         match stmt {
             // skip the opening `<?php` / inline-html prelude
             Statement::OpeningTag(_) | Statement::ClosingTag(_) => continue,
-            Statement::Inline(i)
-                if cx
-                    .strip_close_tag_newline(i.span().start.offset, i.value)
-                    .is_empty() =>
-            {
-                continue
-            }
+            Statement::Inline(i) if cx.inline_is_empty(i) => continue,
             Statement::Declare(d) => {
                 for item in d.items.iter() {
                     if item.name.value.eq_ignore_ascii_case(b"strict_types") {

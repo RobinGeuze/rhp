@@ -79,10 +79,7 @@ pub(crate) fn check_file(cx: &FileCtx, program: &Program) {
     for stmt in program.statements.iter() {
         match stmt {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) => {}
-            Statement::Inline(i)
-                if cx
-                    .strip_close_tag_newline(i.span().start.offset, i.value)
-                    .is_empty() => {}
+            Statement::Inline(i) if cx.inline_is_empty(i) => {}
             Statement::Declare(d) => {
                 st.first_declare = d as *const _ as usize;
                 break;
@@ -155,10 +152,7 @@ fn top_stmts(
             Statement::Use(u) => compile_use(cx, u, st)?,
             Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => {}
             Statement::HaltCompiler(_) => st.halted = true,
-            Statement::Inline(i)
-                if cx
-                    .strip_close_tag_newline(i.span().start.offset, i.value)
-                    .is_empty() => {}
+            Statement::Inline(i) if cx.inline_is_empty(i) => {}
             _ => {
                 declarations(cx, Node::Statement(stmt), st, true)?;
                 if st.has_bracketed && !st.in_namespace {
@@ -185,10 +179,7 @@ fn is_first_statement(cx: &FileCtx, program: &Program, target: &Statement) -> bo
             | Statement::OpeningTag(_)
             | Statement::ClosingTag(_)
             | Statement::Noop(_) => {}
-            Statement::Inline(i)
-                if cx
-                    .strip_close_tag_newline(i.span().start.offset, i.value)
-                    .is_empty() => {}
+            Statement::Inline(i) if cx.inline_is_empty(i) => {}
             _ => return false,
         }
     }

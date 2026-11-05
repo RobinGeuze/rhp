@@ -210,7 +210,16 @@ impl Vm {
             let cur = frame.regs[p.cv as usize].clone();
             match self.check_one(&cur, ty, strict, ctx) {
                 Ok(None) => {}
-                Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
+                Ok(Some(coerced)) => {
+                    let at = || {
+                        (!proto.is_internal())
+                            .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64))
+                    };
+                    if let Err(t) = self.coercion_diag_at(&cur, &coerced, at) {
+                        return Err((i, t));
+                    }
+                    frame.regs[p.cv as usize] = coerced
+                }
                 // A prelude (built-in) function takes null for a scalar
                 // parameter like an internal one in coercive mode: deprecated,
                 // then coerced (zend_null_arg_deprecated).
@@ -347,7 +356,7 @@ impl Vm {
     }
 
     pub(crate) fn check_return_type(
-        &self,
+        &mut self,
         proto: &FunctionProto,
         top: usize,
         v: Value,
@@ -368,7 +377,10 @@ impl Vm {
         let strict = proto.strict_types;
         match self.check_one(&v, ty, strict, ctx) {
             Ok(None) => Ok(v),
-            Ok(Some(coerced)) => Ok(coerced),
+            Ok(Some(coerced)) => {
+                self.coercion_diag(&v, &coerced)?;
+                Ok(coerced)
+            }
             Err(()) => {
                 let fname = self.func_display_name(proto, ctx);
                 let called = self.stack[top].called_class;
@@ -527,8 +539,10 @@ impl Vm {
                 ),
             ));
         }
-        if let Value::Array(_) = d {
-            self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
+        match d {
+            Value::Array(_) => self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?,
+            Value::Float(f) if f.is_nan() => self.nan_warning("string")?,
+            _ => {}
         }
         if let Value::Closure(_) = d {
             return Err(Thrown::error(
@@ -545,8 +559,74 @@ impl Vm {
     pub(crate) fn truthy(&mut self, v: &Value) -> Result<bool, Thrown> {
         match v {
             Value::Object(_) => self.truthy_object(v),
+            Value::Float(f) if f.is_nan() => {
+                self.nan_warning("bool")?;
+                Ok(true)
+            }
             _ => Ok(conv::to_bool(v)),
         }
+    }
+
+    /// The diagnostic of a weak scalar coercion `check_one` did, raised
+    /// at `at` (a user function's parameter) or the current line.
+    pub(crate) fn coercion_diag_at(
+        &mut self,
+        orig: &Value,
+        coerced: &Value,
+        at: impl FnOnce() -> Option<(Vec<u8>, i64)>,
+    ) -> Result<(), Thrown> {
+        let Some((level, msg)) = coercion_message(orig, coerced) else {
+            return Ok(());
+        };
+        match at() {
+            Some((file, line)) => {
+                self.raise_error_at(level, &msg, file, line);
+                match self.pending_throw.take() {
+                    Some(t) => Err(t),
+                    None => Ok(()),
+                }
+            }
+            None => self.diag(level, &msg),
+        }
+    }
+
+    pub(crate) fn coercion_diag(&mut self, orig: &Value, coerced: &Value) -> Result<(), Thrown> {
+        self.coercion_diag_at(orig, coerced, || None)
+    }
+
+    /// php 8.5's `zend_nan_coerced_to_type_warning`.
+    #[cold]
+    pub(crate) fn nan_warning(&mut self, ty: &str) -> Result<(), Thrown> {
+        self.diag(
+            rhp_builtins::E_WARNING,
+            &format!("unexpected NAN value was coerced to {ty}"),
+        )
+    }
+
+    /// `zend_dval_to_lval`: php 8.5 warns when the float is out of range
+    /// (then wraps modulo 2^64) or not finite (then 0).
+    pub(crate) fn dval_to_lval(&mut self, d: f64) -> Result<i64, Thrown> {
+        if !d.is_finite()
+            || !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&d)
+        {
+            self.oob_float(d)?;
+        }
+        Ok(rhp_values::float_to_int(d))
+    }
+
+    /// `zend_oob_double_to_long_error`.
+    #[cold]
+    pub(crate) fn oob_float(&mut self, d: f64) -> Result<(), Thrown> {
+        let shown = rhp_values::fmt::float_serialize(d);
+        self.diag(
+            rhp_builtins::E_WARNING,
+            &[
+                b"The float ".as_slice(),
+                &shown,
+                b" is not representable as an int, cast occurred",
+            ]
+            .concat(),
+        )
     }
 
     #[inline(never)]
@@ -555,6 +635,43 @@ impl Vm {
             Some(b) => conv::to_bool(&b),
             None => true,
         })
+    }
+}
+
+/// The diagnostic of a weak scalar coercion: zend_parse_arg_long_weak's
+/// lost-fraction deprecation, the NAN warning of the string and bool
+/// coercions.
+fn coercion_message(orig: &Value, coerced: &Value) -> Option<(i64, Vec<u8>)> {
+    let lost = |what: &[u8], shown: &[u8]| {
+        [
+            b"Implicit conversion from ".as_slice(),
+            what,
+            shown,
+            b" to int loses precision",
+        ]
+        .concat()
+    };
+    match (deref(orig), coerced) {
+        (Value::Float(f), Value::Int(n)) if *n as f64 != f => Some((
+            rhp_builtins::E_DEPRECATED,
+            lost(b"float ", &rhp_values::fmt::float_serialize(f)),
+        )),
+        (Value::Str(s), Value::Int(n)) => match conv::numeric_string(s.as_bytes()) {
+            Some(rhp_values::conv::Num::Float(f)) if *n as f64 != f => Some((
+                rhp_builtins::E_DEPRECATED,
+                lost(b"float-string ", &[b"\"", s.as_bytes(), b"\""].concat()),
+            )),
+            _ => None,
+        },
+        (Value::Float(f), Value::Str(_)) if f.is_nan() => Some((
+            rhp_builtins::E_WARNING,
+            b"unexpected NAN value was coerced to string".to_vec(),
+        )),
+        (Value::Float(f), Value::Bool(_)) if f.is_nan() => Some((
+            rhp_builtins::E_WARNING,
+            b"unexpected NAN value was coerced to bool".to_vec(),
+        )),
+        _ => None,
     }
 }
 

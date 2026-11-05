@@ -301,7 +301,22 @@ fn class_id_of(host: &mut dyn Host, v: &Value) -> Result<Option<u32>, Thrown> {
     })
 }
 
+/// The TypeError of method_exists() / property_exists() for an argument
+/// that is neither an object nor a string.
+fn object_or_class_error(host: &dyn Host, func: &str, v: &Value) -> Option<Thrown> {
+    match deref(v) {
+        Value::Object(_) | Value::Closure(_) | Value::Str(_) => None,
+        other => Some(Thrown::type_error(format!(
+            "{func}(): Argument #1 ($object_or_class) must be of type object|string, {} given",
+            crate::zend::zpp::zval_value_name(host, &other)
+        ))),
+    }
+}
+
 fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if let Some(e) = object_or_class_error(host, "method_exists", &args[0]) {
+        return Err(e);
+    }
     let method = conv::to_string_bytes(&deref(&args[1]));
     let found = class_id_of(host, &args[0])?
         .map(|cid| {
@@ -320,6 +335,9 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 }
 
 fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if let Some(e) = object_or_class_error(host, "property_exists", &args[0]) {
+        return Err(e);
+    }
     let prop = conv::to_string_bytes(&deref(&args[1]));
     let found = match deref(&args[0]) {
         // SimpleXML's has_property handler: a child element (or attribute)

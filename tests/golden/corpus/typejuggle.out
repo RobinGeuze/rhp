@@ -7,7 +7,11 @@ bool(true)
 bool(true)
 bool(true)
 bool(true)
+
+Warning: A non-numeric value encountered in F on line 12
 int(6)
+
+Warning: A non-numeric value encountered in F on line 13
 float(3.14)
 int(2)
 string(9) "5 apples3"

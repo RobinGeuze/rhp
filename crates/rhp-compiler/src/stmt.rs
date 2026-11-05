@@ -1,6 +1,6 @@
 //! Statement lowering.
 
-use crate::parse::cst::{Statement, Variable};
+use crate::parse::cst::{Expression, Statement, Variable};
 use rhp_bytecode::{ClassProto, Instr};
 use rhp_values::{Thrown, Value};
 
@@ -67,7 +67,9 @@ impl ProtoBuilder<'_> {
                 let from = self.next_temp;
                 let saved_hw = self.high_water;
                 self.high_water = self.next_temp;
+                self.result_unused = matches!(s.expression, Expression::Assignment(_));
                 self.compile_expr(s.expression)?;
+                self.result_unused = false;
                 let to = self.high_water;
                 self.high_water = saved_hw.max(to);
                 if to > from {

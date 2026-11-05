@@ -30,7 +30,7 @@ fn fn_vprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
     let values = array_values(&args[1], "vprintf", 2)?;
     // `given` mimics the equivalent printf() call: format + each value.
-    let out = do_sprintf(&fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
     let len = out.len() as i64;
     host.write_out(&out);
     Ok(Value::Int(len))
@@ -48,7 +48,7 @@ fn fn_fprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[1]);
     // Argument numbering follows php: the format is arg 2, values start at arg 3,
     // so the error-reporting `given` excludes the stream argument.
-    let out = do_sprintf(&fmt, &args[2..], args.len() - 1)?;
+    let out = do_sprintf(host, &fmt, &args[2..], args.len() - 1)?;
     let len = out.len() as i64;
     host.stream_write(&h, &out);
     Ok(Value::Int(len))
@@ -60,7 +60,7 @@ fn fn_vfprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = crate::ext::standard::file::stream_param(host, args, 0, "vfprintf", "stream")?;
     let fmt = conv::to_string_bytes(&args[1]);
     let values = array_values(&args[2], "vfprintf", 3)?;
-    let out = do_sprintf(&fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
     let len = out.len() as i64;
     host.stream_write(&h, &out);
     Ok(Value::Int(len))
@@ -129,6 +129,12 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
                     .unwrap()
                     .parse()
                     .unwrap_or(0);
+                if n == 0 || n >= i32::MAX as usize {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        "Argument number specifier must be greater than zero and less than 2147483647",
+                    ));
+                }
                 arg = Some(n);
                 i = j + 1;
             }
@@ -373,11 +379,28 @@ fn float_parts(f: f64, spec: u8, prec: usize) -> (Vec<u8>, Vec<u8>) {
     (sign, mag)
 }
 
-fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
+/// zval_get_double: an object warns and is 1.0.
+fn zval_get_double(host: &mut dyn Host, v: &Value) -> Result<f64, Thrown> {
+    if let Value::Object(_) | Value::Closure(_) = v {
+        host.emit_diagnostic(
+            crate::E_WARNING,
+            format!(
+                "Object of class {} could not be converted to float",
+                crate::zend::zpp::zval_value_name(host, v)
+            )
+            .as_bytes(),
+        )?;
+        return Ok(1.0);
+    }
+    Ok(conv::to_float(v))
+}
+
+fn render_conv(host: &mut dyn Host, c: &Conv, arg: &Value) -> Result<Vec<u8>, Thrown> {
     let v = deref(arg);
-    match c.spec {
+    let int = |host: &mut dyn Host| crate::zend::zpp::zval_get_long(host, &v);
+    Ok(match c.spec {
         b's' => {
-            let mut s = conv::to_string_bytes(&v);
+            let mut s = crate::zend::zpp::zval_get_string(host, &v)?;
             if let Some(p) = c.prec {
                 s.truncate(p);
             }
@@ -385,11 +408,11 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
         }
         b'c' => {
             // single byte, width/precision/flags ignored (php behavior)
-            let n = conv::to_int(&v);
+            let n = int(host)?;
             vec![(n & 0xff) as u8]
         }
         b'd' => {
-            let n = conv::to_int(&v);
+            let n = int(host)?;
             let neg = n < 0;
             let mag = n.unsigned_abs().to_string().into_bytes();
             let sign: &[u8] = if neg {
@@ -402,36 +425,36 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
             pad_numeric(sign, &mag, c.width, c.pad, c.left)
         }
         b'u' => {
-            let n = conv::to_int(&v) as u64;
+            let n = int(host)? as u64;
             pad_numeric(b"", n.to_string().as_bytes(), c.width, c.pad, c.left)
         }
         b'o' => {
-            let n = conv::to_int(&v) as u64;
+            let n = int(host)? as u64;
             pad_numeric(b"", format!("{n:o}").as_bytes(), c.width, c.pad, c.left)
         }
         b'x' => {
-            let n = conv::to_int(&v) as u64;
+            let n = int(host)? as u64;
             pad_numeric(b"", format!("{n:x}").as_bytes(), c.width, c.pad, c.left)
         }
         b'X' => {
-            let n = conv::to_int(&v) as u64;
+            let n = int(host)? as u64;
             pad_numeric(b"", format!("{n:X}").as_bytes(), c.width, c.pad, c.left)
         }
         b'b' => {
-            let n = conv::to_int(&v) as u64;
+            let n = int(host)? as u64;
             pad_numeric(b"", format!("{n:b}").as_bytes(), c.width, c.pad, c.left)
         }
         b'f' | b'F' | b'e' | b'E' => {
-            let f = conv::to_float(&v);
+            let f = zval_get_double(host, &v)?;
             if f.is_nan() {
-                return b"NaN".to_vec();
+                return Ok(b"NaN".to_vec());
             }
             if f.is_infinite() {
-                return if f < 0.0 {
+                return Ok(if f < 0.0 {
                     b"-INF".to_vec()
                 } else {
                     b"INF".to_vec()
-                };
+                });
             }
             let prec = c.prec.unwrap_or(6);
             let (mut sign, mag) = float_parts(f, c.spec, prec);
@@ -441,16 +464,16 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
             pad_numeric(&sign, &mag, c.width, c.pad, c.left)
         }
         b'g' | b'G' => {
-            let f = conv::to_float(&v);
+            let f = zval_get_double(host, &v)?;
             if f.is_nan() {
-                return b"NaN".to_vec();
+                return Ok(b"NaN".to_vec());
             }
             if f.is_infinite() {
-                return if f < 0.0 {
+                return Ok(if f < 0.0 {
                     b"-INF".to_vec()
                 } else {
                     b"INF".to_vec()
-                };
+                });
             }
             let prec = c.prec.unwrap_or(6);
             let body = gcvt(f, prec, c.spec == b'G');
@@ -463,12 +486,13 @@ fn render_conv(c: &Conv, arg: &Value) -> Vec<u8> {
             }
         }
         _ => Vec::new(),
-    }
+    })
 }
 
 /// Core of sprintf/vsprintf: `fmt` + value args (not including the format).
 /// `given` is the total argument count (incl. the format) for error messages.
 pub(crate) fn do_sprintf(
+    host: &mut dyn Host,
     fmt: &[u8],
     value_args: &[Value],
     given: usize,
@@ -508,28 +532,28 @@ pub(crate) fn do_sprintf(
             Piece::Conv(c) => {
                 let idx = resolved[ci];
                 ci += 1;
-                out.extend_from_slice(&render_conv(c, &value_args[idx - 1]));
+                out.extend_from_slice(&render_conv(host, c, &value_args[idx - 1])?);
             }
         }
     }
     Ok(out)
 }
 
-fn fn_sprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_sprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
-    let out = do_sprintf(&fmt, &args[1..], args.len())?;
+    let out = do_sprintf(host, &fmt, &args[1..], args.len())?;
     Ok(Value::str(out))
 }
 
 fn fn_printf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
-    let out = do_sprintf(&fmt, &args[1..], args.len())?;
+    let out = do_sprintf(host, &fmt, &args[1..], args.len())?;
     let len = out.len() as i64;
     host.write_out(&out);
     Ok(Value::Int(len))
 }
 
-fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_vsprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fmt = conv::to_string_bytes(&args[0]);
     let Value::Array(arr) = deref(&args[1]) else {
         return Err(Thrown::type_error(
@@ -538,7 +562,7 @@ fn fn_vsprintf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let values: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
     // `given` mimics the equivalent sprintf() call: format + each value.
-    let out = do_sprintf(&fmt, &values, values.len() + 1)?;
+    let out = do_sprintf(host, &fmt, &values, values.len() + 1)?;
     Ok(Value::str(out))
 }
 

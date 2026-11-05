@@ -136,7 +136,7 @@ impl ProtoBuilder<'_> {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(target, &mut steps)?;
                 self.emit_cursor(root, &steps);
-                self.emit(Instr::AssignLval { src });
+                self.emit(Instr::AssignLval { src, dst: src });
             }
             _ => return Err(Thrown::unsupported("destructuring target", "deferred")),
         }
@@ -274,6 +274,7 @@ impl ProtoBuilder<'_> {
         &mut self,
         a: &crate::parse::cst::Assignment,
     ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.result_unused);
         check_globals_write(a.lhs, self.cur_line)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
@@ -408,8 +409,13 @@ impl ProtoBuilder<'_> {
             return match &a.operator {
                 AssignmentOperator::Assign(_) => {
                     self.emit_cursor(root, &steps);
-                    self.emit(Instr::AssignLval { src: rhs });
-                    Ok(rhs)
+                    let dst = if result_unused {
+                        rhs
+                    } else {
+                        self.alloc_temp()
+                    };
+                    self.emit(Instr::AssignLval { src: rhs, dst });
+                    Ok(dst)
                 }
                 op => {
                     self.emit_cursor(root, &steps);
@@ -417,7 +423,7 @@ impl ProtoBuilder<'_> {
                     self.emit(Instr::FetchLvalRw { dst: cur });
                     let res = self.alloc_temp();
                     self.emit(compound_op(op, res, cur, rhs, lvalue_desc(a.lhs))?);
-                    self.emit(Instr::AssignLval { src: res });
+                    self.emit(Instr::AssignLval { src: res, dst: res });
                     Ok(res)
                 }
             };
@@ -601,7 +607,7 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::Nop);
                 let r = self.compile_expr(rhs)?;
                 self.emit_cursor(root, &steps);
-                self.emit(Instr::AssignLval { src: r });
+                self.emit(Instr::AssignLval { src: r, dst: r });
                 self.emit(Instr::Mov { dst, src: r });
                 let end = self.here();
                 self.code[jnn] = Instr::JmpNotNull {

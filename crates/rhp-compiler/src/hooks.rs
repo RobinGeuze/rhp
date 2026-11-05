@@ -348,7 +348,7 @@ fn compile_hook_body(
                     let name = c.intern_name(p.prop_name);
                     c.emit(Instr::LvalCv { cv: 0 });
                     c.emit(Instr::LvalProp { name });
-                    c.emit(Instr::AssignLval { src });
+                    c.emit(Instr::AssignLval { src, dst: src });
                 }
             }
             is_generator = expr_has_yield(expr);

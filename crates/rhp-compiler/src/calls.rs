@@ -78,6 +78,14 @@ impl ProtoBuilder<'_> {
             return Ok(dst);
         }
 
+        if fallback.is_none() && name_bytes.eq_ignore_ascii_case(b"sprintf") {
+            if let Some(r) =
+                self.sprintf_rope(&fc.argument_list.arguments.iter().collect::<Vec<_>>())?
+            {
+                return Ok(r);
+            }
+        }
+
         // Per-parameter by-ref flags of the (statically-known) callee: a user
         // function's recorded signature (tried under the namespaced name, then the
         // global fallback), or a known by-ref builtin (always global).
@@ -295,6 +303,114 @@ impl ProtoBuilder<'_> {
             flags,
         });
         Ok(dst)
+    }
+
+    /// zend_compile_func_sprintf: `sprintf` with a constant format of only
+    /// `%s`, `%d` and `%%` (shorter than 256 bytes) and one argument per
+    /// placeholder compiles to string concatenation (php's rope): the
+    /// values are evaluated first, `%d` casts to int. `None` when the call
+    /// doesn't have that shape.
+    fn sprintf_rope(&mut self, args: &[&Argument]) -> Result<Option<Reg>, Thrown> {
+        let Some(Argument::Positional(first)) = args.first().copied() else {
+            return Ok(None);
+        };
+        let Ok(Value::Str(fmt)) = crate::fold::fold_const(self.cx, first.value) else {
+            return Ok(None);
+        };
+        let fmt = fmt.as_bytes().to_vec();
+        if fmt.len() >= 256 {
+            return Ok(None);
+        }
+        // Literal runs and placeholders ('s' / 'd').
+        enum Part {
+            Lit(Vec<u8>),
+            Val(u8),
+        }
+        let mut parts = Vec::new();
+        let mut lit = Vec::new();
+        let mut i = 0;
+        while i < fmt.len() {
+            if fmt[i] != b'%' {
+                lit.push(fmt[i]);
+                i += 1;
+                continue;
+            }
+            match fmt.get(i + 1) {
+                Some(b'%') => lit.push(b'%'),
+                Some(&c @ (b's' | b'd')) => {
+                    if !lit.is_empty() {
+                        parts.push(Part::Lit(std::mem::take(&mut lit)));
+                    }
+                    parts.push(Part::Val(c));
+                }
+                _ => return Ok(None),
+            }
+            i += 2;
+        }
+        if !lit.is_empty() {
+            parts.push(Part::Lit(lit));
+        }
+        let placeholders = parts.iter().filter(|p| matches!(p, Part::Val(_))).count();
+        if placeholders != args.len() - 1 {
+            return Ok(None);
+        }
+        let mut values = Vec::new();
+        for a in &args[1..] {
+            let Argument::Positional(p) = *a else {
+                return Ok(None);
+            };
+            values.push(p.value);
+        }
+        let mut regs = Vec::new();
+        for v in values {
+            regs.push(self.compile_expr(v)?);
+        }
+        let mut regs = regs.into_iter();
+        let mut acc: Option<Reg> = None;
+        let single = parts.len() == 1;
+        for part in parts {
+            let r = match part {
+                Part::Lit(b) => {
+                    let dst = self.alloc_temp();
+                    let k = self.intern_const(Value::str(b));
+                    self.emit(Instr::LoadConst { dst, k });
+                    dst
+                }
+                Part::Val(c) => {
+                    let mut r = regs.next().expect("one value per placeholder");
+                    if c == b'd' {
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CastInt { dst, a: r });
+                        r = dst;
+                    }
+                    // A one-element rope is a string cast.
+                    if single {
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CastString { dst, a: r });
+                        r = dst;
+                    }
+                    r
+                }
+            };
+            acc = Some(match acc {
+                None => r,
+                Some(a) => {
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::Concat { dst, a, b: r });
+                    dst
+                }
+            });
+        }
+        let dst = match acc {
+            Some(r) => r,
+            None => {
+                let dst = self.alloc_temp();
+                let k = self.intern_const(Value::str(""));
+                self.emit(Instr::LoadConst { dst, k });
+                dst
+            }
+        };
+        Ok(Some(dst))
     }
 
     /// zend_compile_func_in_array: a compile-time-resolved `in_array` call

@@ -215,6 +215,19 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
+    /// After both operands of `.` are compiled: php casts a constant array
+    /// operand to string (ZEND_CAST, which warns) before the concat.
+    fn concat_const_array_cast(&mut self, e: &Expression, r: Reg) -> Reg {
+        if matches!(e, Expression::Array(_) | Expression::LegacyArray(_))
+            && matches!(crate::fold::fold_const(self.cx, e), Ok(Value::Array(_)))
+        {
+            let dst = self.alloc_temp();
+            self.emit(Instr::CastString { dst, a: r });
+            return dst;
+        }
+        r
+    }
+
     fn compile_binary(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
         use BinaryOperator as Op;
         // Short-circuit operators lower to branches.
@@ -232,8 +245,11 @@ impl ProtoBuilder<'_> {
             _ => {}
         }
 
-        let a = self.compile_expr(b.lhs)?;
-        let r = self.compile_expr(b.rhs)?;
+        let (mut a, mut r) = (self.compile_expr(b.lhs)?, self.compile_expr(b.rhs)?);
+        if let Op::StringConcat(_) = &b.operator {
+            a = self.concat_const_array_cast(b.lhs, a);
+            r = self.concat_const_array_cast(b.rhs, r);
+        }
         // zend_vm's SPEC_RULE_COMMUTATIVE: php swaps the operands of these
         // opcodes when op1's kind is lower than op2's, which decides whose
         // object handler runs first.
@@ -284,12 +300,15 @@ impl ProtoBuilder<'_> {
             Op::GreaterThanOrEqual(_) => cmp(CmpKind::Ge),
             Op::Spaceship(_) => cmp(CmpKind::Spaceship),
             Op::LowXor(_) => {
-                // a xor b == (bool)a != (bool)b, via cast+compare
+                // ZEND_BOOL_XOR: (bool)a !== (bool)b.
+                let (ta, tb) = (self.alloc_temp(), self.alloc_temp());
+                self.emit(Instr::CastBool { dst: ta, a });
+                self.emit(Instr::CastBool { dst: tb, a: r });
                 Instr::Cmp {
                     dst,
-                    a,
-                    b: r,
-                    kind: CmpKind::Ne,
+                    a: ta,
+                    b: tb,
+                    kind: CmpKind::NotIdentical,
                 }
             }
             Op::And(_)
@@ -392,14 +411,11 @@ impl ProtoBuilder<'_> {
             Op::ObjectCast(..) => Instr::CastObject { dst, a },
             _ => unreachable!("handled above"),
         };
-        // `+x` is "unary plus" = numeric coercion, not (int). Use Neg-of-Neg? No:
-        // emit Mul by 1 would change int->int; simplest faithful lowering is a
-        // dedicated path — represent +x as (x * 1) via Add with 0.
+        // php compiles `+x` to `x * 1`.
         if matches!(u.operator, Op::Plus(_)) {
-            // +x == 0 + x  → preserves int/float per ops::add numeric coercion
-            let zero = self.alloc_temp();
-            self.emit(Instr::LoadInt { dst: zero, n: 0 });
-            self.emit(Instr::Add { dst, a: zero, b: a });
+            let one = self.alloc_temp();
+            self.emit(Instr::LoadInt { dst: one, n: 1 });
+            self.emit(Instr::Mul { dst, a, b: one });
             return Ok(dst);
         }
         self.emit(instr);

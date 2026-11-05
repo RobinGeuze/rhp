@@ -161,7 +161,10 @@ pub(crate) fn compile_method(
         } else {
             c.emit(Instr::LvalCv { cv: 0 });
             c.emit(Instr::LvalProp { name: prop_name });
-            c.emit(Instr::AssignLval { src: param_cv });
+            c.emit(Instr::AssignLval {
+                src: param_cv,
+                dst: param_cv,
+            });
         }
     }
 

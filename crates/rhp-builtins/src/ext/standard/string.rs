@@ -1366,18 +1366,14 @@ fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 crate::zend::zpp::zval_value_name(host, &args[1])
             )));
         };
-        let table: Vec<(Vec<u8>, Vec<u8>)> = pairs
-            .iter()
-            .filter_map(|(k, v)| {
-                let kb = key_bytes(k);
-                // php ignores empty-string keys (and emits a warning to stderr).
-                if kb.is_empty() {
-                    None
-                } else {
-                    Some((kb, conv::to_string_bytes(v)))
-                }
-            })
-            .collect();
+        let mut table: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs.iter() {
+            let kb = key_bytes(k);
+            // php ignores empty-string keys (and emits a warning to stderr).
+            if !kb.is_empty() {
+                table.push((kb, zval_get_string(host, v)?));
+            }
+        }
         let maxlen = table.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         if maxlen == 0 {
             return Ok(Value::str(s));
@@ -1444,7 +1440,7 @@ fn substr_replace_one(subject: &[u8], start: i64, length: Option<i64>, replace: 
     out
 }
 
-fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let subject = deref(&args[0]);
     let replace = deref(&args[1]);
     let start_arg = deref(&args[2]);
@@ -1453,32 +1449,31 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
         for (i, (k, v)) in subj.iter().enumerate() {
-            let sbytes = conv::to_string_bytes(v);
+            let sbytes = zval_get_string(host, v)?;
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
-                Value::Array(ra) => ra
-                    .get_index(i)
-                    .map(|(_, rv)| conv::to_string_bytes(rv))
-                    .unwrap_or_default(),
+                Value::Array(ra) => match ra.get_index(i) {
+                    Some((_, rv)) => zval_get_string(host, rv)?,
+                    None => Vec::new(),
+                },
                 other => conv::to_string_bytes(other),
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
             let st = match &start_arg {
-                Value::Array(sa) => sa
-                    .get_index(i)
-                    .map(|(_, sv)| conv::to_int(&deref(sv)))
-                    .unwrap_or(0),
+                Value::Array(sa) => match sa.get_index(i) {
+                    Some((_, sv)) => crate::zend::zpp::zval_get_long(host, sv)?,
+                    None => 0,
+                },
                 other => conv::to_int(other),
             };
             // length: omitted -> to end; array -> nth element (else full string);
             // scalar -> per-subject.
             let ln = match &length_arg {
                 None => None,
-                Some(Value::Array(la)) => Some(
-                    la.get_index(i)
-                        .map(|(_, lv)| conv::to_int(&deref(lv)))
-                        .unwrap_or(sbytes.len() as i64),
-                ),
+                Some(Value::Array(la)) => Some(match la.get_index(i) {
+                    Some((_, lv)) => crate::zend::zpp::zval_get_long(host, lv)?,
+                    None => sbytes.len() as i64,
+                }),
                 Some(other) => Some(conv::to_int(other)),
             };
             out.insert(
@@ -1501,11 +1496,10 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
         let sbytes = conv::to_string_bytes(&subject);
         let rep = match &replace {
-            Value::Array(ra) => ra
-                .iter()
-                .next()
-                .map(|(_, rv)| conv::to_string_bytes(rv))
-                .unwrap_or_default(),
+            Value::Array(ra) => match ra.iter().next() {
+                Some((_, rv)) => zval_get_string(host, rv)?,
+                None => Vec::new(),
+            },
             other => conv::to_string_bytes(other),
         };
         let st = conv::to_int(&start_arg);
@@ -1991,7 +1985,7 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s.repeat(n)))
 }
 
-fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_implode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
         (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
@@ -2007,13 +2001,17 @@ fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             ))
         }
     };
-    let parts: Vec<std::borrow::Cow<[u8]>> = arr
-        .iter()
-        .map(|(_, v)| match v {
+    // php_implode: arrays warn, objects use their string cast (or throw).
+    let mut parts: Vec<std::borrow::Cow<[u8]>> = Vec::with_capacity(arr.len());
+    for (_, v) in arr.iter() {
+        parts.push(match v {
             Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
-            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
-        })
-        .collect();
+            Value::Int(_) | Value::Bool(_) | Value::Null => {
+                std::borrow::Cow::Owned(conv::to_string_bytes(v))
+            }
+            v => std::borrow::Cow::Owned(zval_get_string(host, v)?),
+        });
+    }
     let len: usize = parts.iter().map(|p| p.len()).sum();
     // zend_string_safe_falloc(n - 1, glue_len, len): the glue repeated per
     // element can dwarf the input, so php checks the limit first.

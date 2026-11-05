@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 3,237 | 5,396 | 60.0% | no Fiber (0/113) or lazy objects (1/229); property hooks and the pipe operator `\|>` are refused |
-| tests | 590 | 895 | 65.9% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 3,333 | 5,396 | 61.8% | no Fiber (0/113) or lazy objects (1/229); property hooks and the pipe operator `\|>` are refused |
+| tests | 614 | 895 | 68.6% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | most tests run the php binary or `-S`, which rhp lacks |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,526 | 3,880 | 65.1% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
+| ext/standard | 2,556 | 3,880 | 65.9% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 7 | 27 | 25.9% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **10,804** | **22,219** | **48.6%** | |
+| **total** | **10,954** | **22,219** | **49.3%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

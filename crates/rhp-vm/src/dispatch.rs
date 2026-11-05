@@ -15,7 +15,7 @@ use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, Call
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
-    aa_key, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
+    aa_key, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
@@ -315,29 +315,28 @@ impl Vm {
                     }
                 }
                 Instr::Div { dst, a, b } => self.bin(top, dst, a, b, Op::Div, ops::div)?,
-                Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, Op::Mod, ops::modulo)?,
+                Instr::Mod { dst, a, b } => {
+                    let m = |x: i64, y: i64| (y != 0 && y != -1).then(|| Value::Int(x % y));
+                    if !self.int_binop(top, dst, a, b, m) {
+                        self.bin_inf(top, dst, a, b, Op::Mod)?
+                    }
+                }
                 Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
                 // Int operands (shift counts 0..63): what ops::bitwise
                 // returns for them.
                 Instr::BitAnd { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x & y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitAnd, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::And)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitAnd)?
                     }
                 }
                 Instr::BitOr { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x | y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitOr, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Or)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitOr)?
                     }
                 }
                 Instr::BitXor { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x ^ y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitXor, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Xor)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitXor)?
                     }
                 }
                 Instr::Shl { dst, a, b } => {
@@ -347,17 +346,13 @@ impl Vm {
                             .then(|| Value::Int(x.wrapping_shl(y as u32)))
                     };
                     if !self.int_binop(top, dst, a, b, shl) {
-                        self.bin_inf(top, dst, a, b, Op::Shl, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Shl)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::Shl)?
                     }
                 }
                 Instr::Shr { dst, a, b } => {
                     let shr = |x: i64, y: i64| (0..64).contains(&y).then(|| Value::Int(x >> y));
                     if !self.int_binop(top, dst, a, b, shr) {
-                        self.bin_inf(top, dst, a, b, Op::Shr, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Shr)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::Shr)?
                     }
                 }
                 Instr::Concat { dst, a, b } => {
@@ -365,9 +360,12 @@ impl Vm {
                         continue;
                     }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    let v = if matches!(x, Value::Object(_) | Value::Array(_) | Value::Closure(_))
-                        || matches!(y, Value::Object(_) | Value::Array(_) | Value::Closure(_))
-                    {
+                    let slow = |v: &Value| match v {
+                        Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
+                        Value::Float(f) => f.is_nan(),
+                        _ => false,
+                    };
+                    let v = if slow(&x) || slow(&y) {
                         self.concat_object(&x, &y)?
                     } else {
                         ops::concat(&x, &y)
@@ -377,31 +375,21 @@ impl Vm {
 
                 Instr::Neg { dst, a } => {
                     let v = self.reg_get(top, a);
-                    let r = if let Value::Object(_) | Value::Closure(_) = v {
+                    let r = match v {
+                        Value::Int(n) if n != i64::MIN => Value::Int(-n),
+                        Value::Float(f) => Value::Float(-f),
                         // php compiles `-$x` to `$x * -1`.
-                        self.arith_object(Op::Mul, ops::mul, &v, &Value::Int(-1))?
-                    } else {
-                        ops::negate(&v)?
+                        _ => self.bin_slow(Op::Mul, ops::mul, &v, &Value::Int(-1))?,
                     };
                     self.reg_set(top, dst, r);
                 }
                 Instr::BitNot { dst, a } => {
                     let v = self.reg_get(top, a);
-                    if let Value::Object(h) = &v {
-                        if let Some(f) = self.handlers_of(h).and_then(|t| t.do_operation) {
-                            if let Some(r) = f(self, Op::BitNot, &v, None)? {
-                                self.reg_set(top, dst, r);
-                                continue;
-                            }
-                        }
-                    }
-                    if let Value::Object(_) | Value::Closure(_) = v {
-                        return Err(Thrown::type_error(format!(
-                            "Cannot perform bitwise not on {}",
-                            rhp_builtins::zval_value_name(self, &v)
-                        )));
-                    }
-                    self.reg_set(top, dst, ops::bitwise_not(&v));
+                    let r = match v {
+                        Value::Int(n) => Value::Int(!n),
+                        _ => self.bitwise_not_slow(&v)?,
+                    };
+                    self.reg_set(top, dst, r);
                 }
                 Instr::Not { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -443,6 +431,7 @@ impl Vm {
                                 None => conv::to_int(&v),
                             }
                         }
+                        Value::Float(f) => self.dval_to_lval(f)?,
                         _ => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
@@ -487,12 +476,21 @@ impl Vm {
                                 None => self.object_to_array_mangled(h),
                             }
                         }
+                        Value::Float(f) if f.is_nan() => {
+                            self.nan_warning("array")?;
+                            cast_to_array(v)
+                        }
                         _ => cast_to_array(v),
                     };
                     self.reg_set(top, dst, out);
                 }
                 Instr::CastObject { dst, a } => {
                     let v = self.reg_get(top, a);
+                    if let Value::Float(f) = v {
+                        if f.is_nan() {
+                            self.nan_warning("object")?;
+                        }
+                    }
                     let obj = self.cast_to_object(v);
                     self.reg_set(top, dst, obj);
                 }
@@ -601,8 +599,7 @@ impl Vm {
                 Instr::ArrSet { arr, key, val } => {
                     let k = self.reg_get(top, key);
                     let v = self.elem_operand(top, &proto, val);
-                    let key = ArrayKey::from_value(&k)
-                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                    let key = self.init_array_key(&k)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.insert(key, v);
                     }
@@ -616,8 +613,7 @@ impl Vm {
                 Instr::ArrSetRef { arr, key, val } => {
                     let k = self.reg_get(top, key);
                     let v = self.stack[top].regs[val as usize].clone();
-                    let key = ArrayKey::from_value(&k)
-                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                    let key = self.init_array_key(&k)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.insert(key, v);
                     }
@@ -682,7 +678,21 @@ impl Vm {
                             .then(|| self.caller_strict());
                         let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
-                        let out = out?;
+                        let out = match out {
+                            // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
+                            Err(Thrown::Error { class: "TypeError", message })
+                                if inline
+                                    && message
+                                        == "array_key_exists(): Argument #1 ($key) must be a valid array offset type" =>
+                            {
+                                let k = self.reg_get(top, base);
+                                return Err(Thrown::type_error(format!(
+                                    "Cannot access offset of type {} on array",
+                                    rhp_builtins::zval_type_name(self, &k)
+                                )));
+                            }
+                            o => o?,
+                        };
                         self.reg_set(top, dst, out);
                     }
                     CallTarget::Missing => {
@@ -800,7 +810,36 @@ impl Vm {
                             let v = cell.borrow().clone();
                             v
                         }
+                        // The object of a property write (FETCH_DIM_W then
+                        // ASSIGN_OBJ & co.): zend_wrong_string_offset_error.
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
                         _ => self.dim_read(&a, &k, DimMode::Read)?,
+                    };
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchUnset { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = match deref(&a) {
+                        Value::Array(_) => self.dim_read(&a, &k, DimMode::Is)?,
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
+                        Value::Null => Value::Null,
+                        Value::Bool(false) => {
+                            self.diag(
+                                builtins::E_DEPRECATED,
+                                "Automatic conversion of false to array is deprecated",
+                            )?;
+                            Value::Null
+                        }
+                        Value::Object(_) | Value::Closure(_) => {
+                            self.dim_read(&a, &k, DimMode::Read)?
+                        }
+                        _ => {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot unset offset in a non-array variable",
+                            ))
+                        }
                     };
                     self.reg_set(top, dst, r);
                 }
@@ -944,10 +983,18 @@ impl Vm {
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
-                Instr::AssignLval { src } => {
+                Instr::AssignLval { src, dst } => {
                     let v = self.reg_get(top, src);
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let r = self.cursor_write(top, &steps, v);
+                    let r = if dst == src {
+                        self.cursor_write(top, &steps, v)
+                    } else {
+                        crate::lvalue::take_string_offset_result();
+                        let r = self.cursor_write(top, &steps, v.clone());
+                        let res = crate::lvalue::take_string_offset_result().unwrap_or(v);
+                        self.reg_set(top, dst, res);
+                        r
+                    };
                     self.cursor_release();
                     r?;
                 }
@@ -1266,7 +1313,8 @@ impl Vm {
                             ),
                         ));
                     }
-                    self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
+                    let r = self.isset_isempty_dim(&a, &k, false)?;
+                    self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyDim { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
@@ -1283,7 +1331,11 @@ impl Vm {
                                 Value::Null
                             }
                         }
-                        _ => self.dim_read(&a, &k, DimMode::Is)?,
+                        _ => {
+                            let r = self.isset_isempty_dim(&a, &k, true)?;
+                            self.reg_set(top, dst, Value::Bool(r));
+                            continue;
+                        }
                     };
                     let b = self.truthy(&v)?;
                     self.reg_set(top, dst, Value::Bool(!b));
@@ -1759,11 +1811,13 @@ impl Vm {
                 )?;
                 Ok(Value::str(perl_increment(b)))
             }
-            arr @ Value::Array(_) => Err(Thrown::type_error(format!(
-                "Cannot {} {}",
-                what.to_ascii_lowercase(),
-                rhp_builtins::zval_value_name(self, &arr)
-            ))),
+            arr @ (Value::Array(_) | Value::Resource(_) | Value::Closure(_)) => {
+                Err(Thrown::type_error(format!(
+                    "Cannot {} {}",
+                    what.to_ascii_lowercase(),
+                    rhp_builtins::zval_value_name(self, &arr)
+                )))
+            }
             // increment_function: `do_operation(ADD, 1)`, else the object
             // as a number (`cast_object(_IS_NUMBER)`), else a TypeError.
             obj @ Value::Object(_) => {
@@ -1886,8 +1940,8 @@ impl Vm {
         Ok(out)
     }
 
-    /// Binary op that may throw (arithmetic). An object operand goes
-    /// through [`Vm::bin_object`]; plain values take the operator directly.
+    /// Binary op that may throw (arithmetic). Two numbers take the operator
+    /// directly; anything else goes through [`Vm::bin_slow`].
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn bin(
@@ -1900,62 +1954,25 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
-            || matches!(y, Value::Object(_) | Value::Closure(_))
+        let v = if matches!(x, Value::Int(_) | Value::Float(_))
+            && matches!(y, Value::Int(_) | Value::Float(_))
         {
-            self.bin_object(op, f, x, y)?
-        } else {
             f(&x, &y)?
-        };
-        self.reg_set(top, dst, v);
-        Ok(())
-    }
-
-    /// An operator with an object operand: php's order of `do_operation`
-    /// and operand conversion (see `compare.rs`).
-    #[inline(never)]
-    fn bin_object(
-        &mut self,
-        op: Op,
-        f: fn(&Value, &Value) -> Result<Value, Thrown>,
-        x: Value,
-        y: Value,
-    ) -> Result<Value, Thrown> {
-        match op {
-            Op::Mod => self.long_op_object(op, &x, &y),
-            _ => self.arith_object(op, f, &x, &y),
-        }
-    }
-
-    /// Bitwise binary op. An object operand goes through
-    /// [`Vm::bin_inf_object`].
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
-    fn bin_inf(
-        &mut self,
-        top: usize,
-        dst: Reg,
-        a: Reg,
-        b: Reg,
-        op: Op,
-        f: fn(&Value, &Value) -> Value,
-    ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
-            || matches!(y, Value::Object(_) | Value::Closure(_))
-        {
-            self.bin_inf_object(op, x, y)?
         } else {
-            f(&x, &y)
+            self.bin_slow(op, f, &x, &y)?
         };
         self.reg_set(top, dst, v);
         Ok(())
     }
 
-    /// A bitwise operator with an object operand (`convert_op1_op2_long`).
+    /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    fn bin_inf_object(&mut self, op: Op, x: Value, y: Value) -> Result<Value, Thrown> {
-        self.long_op_object(op, &x, &y)
+    fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
+        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let v = self.long_op(op, &x, &y)?;
+        self.reg_set(top, dst, v);
+        Ok(())
     }
 
     /// `echo` / `print` / inline HTML: write through the output layer; an

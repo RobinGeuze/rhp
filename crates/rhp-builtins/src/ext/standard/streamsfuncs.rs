@@ -1008,14 +1008,19 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         select_array(args.get(1)),
         select_array(args.get(2)),
     ];
-    let sec = match args.get(3).map(deref) {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(conv::to_int(&v)),
+    // Z_PARAM_LONG_OR_NULL: a float with a fraction is deprecated.
+    let mut long_or_null = |v: Option<Value>| -> Result<Option<i64>, Thrown> {
+        Ok(match v {
+            None | Some(Value::Null) => None,
+            Some(Value::Float(f)) if f.is_finite() && f.fract() != 0.0 => {
+                crate::zend::operators::incompatible_double_to_long_error(host, f)?;
+                Some(f as i64)
+            }
+            Some(v) => Some(conv::to_int(&v)),
+        })
     };
-    let usec = match args.get(4).map(deref) {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(conv::to_int(&v)),
-    };
+    let sec = long_or_null(args.get(3).map(deref))?;
+    let usec = long_or_null(args.get(4).map(deref))?;
 
     let mut sets: [libc::fd_set; 3] = unsafe { std::mem::zeroed() };
     for s in sets.iter_mut() {

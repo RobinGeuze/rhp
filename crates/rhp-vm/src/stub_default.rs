@@ -225,11 +225,11 @@ impl Parser<'_, '_> {
             self.at += 1;
             let rhs = self.expr(p + 1)?;
             lhs = match op {
-                "|" => ops::bitwise(&lhs, &rhs, BitOp::Or),
-                "^" => ops::bitwise(&lhs, &rhs, BitOp::Xor),
-                "&" => ops::bitwise(&lhs, &rhs, BitOp::And),
-                "<<" => ops::bitwise(&lhs, &rhs, BitOp::Shl),
-                ">>" => ops::bitwise(&lhs, &rhs, BitOp::Shr),
+                "|" => ops::bitwise(&lhs, &rhs, BitOp::Or)?,
+                "^" => ops::bitwise(&lhs, &rhs, BitOp::Xor)?,
+                "&" => ops::bitwise(&lhs, &rhs, BitOp::And)?,
+                "<<" => ops::bitwise(&lhs, &rhs, BitOp::Shl)?,
+                ">>" => ops::bitwise(&lhs, &rhs, BitOp::Shr)?,
                 "." => ops::concat(&lhs, &rhs),
                 "+" => ops::add(&lhs, &rhs)?,
                 "-" => ops::sub(&lhs, &rhs)?,
@@ -249,7 +249,7 @@ impl Parser<'_, '_> {
             return ops::mul(&self.unary()?, &Value::Int(1));
         }
         if self.eat("~") {
-            return Ok(ops::bitwise_not(&self.unary()?));
+            return ops::bitwise_not(&self.unary()?);
         }
         if self.eat("!") {
             return Ok(Value::Bool(!rhp_values::conv::to_bool(&self.unary()?)));

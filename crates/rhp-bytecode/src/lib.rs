@@ -318,6 +318,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// An element on the way to an `unset($a[$k]->p)` (FETCH_DIM_UNSET):
+    /// a missing key is silent, a string offset or a scalar container an
+    /// Error.
+    DimFetchUnset {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
     /// absent string offset reads as Null.
     DimFetchIs {
@@ -345,10 +353,14 @@ pub enum Instr {
     FetchLvalRw {
         dst: Reg,
     }, // read the current cursor location (null if absent), keep cursor open
+    /// Write `src` at the cursor location (COW-bubbling), close the cursor.
+    /// The assignment's value goes to `dst` when that is another register:
+    /// `src`, or for a string offset the byte written (null if none was).
     AssignLval {
         src: Reg,
-    }, // write `src` at the cursor location (COW-bubbling), close cursor
-    UnsetLval,  // remove the cursor's leaf key, close cursor
+        dst: Reg,
+    },
+    UnsetLval, // remove the cursor's leaf key, close cursor
     /// `++`/`--` on the cursor location (ref-correct inc_dec); dst = new/old. Closes cursor.
     IncDecLval {
         dst: Reg,

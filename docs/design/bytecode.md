@@ -124,8 +124,8 @@ each other — only `rhp-cli` knits them.
 // rhp_values::ops  (was rhp-semantics::ops; first moved from rhp-runtime/src/ops.rs)
 pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
 pub fn negate(a: &Value) -> Result<Value, Thrown>;
-pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
-pub fn bitwise_not(a: &Value) -> Value;
+pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Result<Value, Thrown>; // BitOp::{And,Or,Xor,Shl,Shr,Mod}
+pub fn bitwise_not(a: &Value) -> Result<Value, Thrown>;
 pub fn concat(a: &Value, b: &Value) -> Value;
 pub fn loose_compare(a: &Value, b: &Value) -> std::cmp::Ordering;
 pub fn loose_eq(a: &Value, b: &Value) -> bool;
@@ -239,6 +239,14 @@ read) is applied on-use wherever a *value* is required:
 
 ### 2.3 Delegation rule (load-bearing)
 
+> **Today.** Only two numbers (ints for `% << >> | & ^`) take the `ops::`
+> function directly. Everything else goes through the VM's slow path
+> (`vm/compare.rs`: `bin_slow`, `long_op`, `bitwise_not_slow`), a port of
+> `zend_operators.c` that raises php's diagnostics (they can run a user
+> error handler). The engine-free `ops::` functions return an error for
+> any operand php would diagnose; constant folding then leaves the
+> expression to run time.
+
 Arithmetic / compare / concat / bitwise / unary opcodes are **thin wrappers that
 call the matching `ops::` function**; echo/print and all builtins go through
 `Host`/`registry()`. The VM contributes only operand fetch, `?`-propagation of
@@ -333,11 +341,13 @@ ArrSet     { arr, key, val }          arr[ArrayKey::from_value(key)] = deref(val
 ArrSpread  { arr, src }               merge: int keys renumber (push), string keys overwrite
 DimFetchR  { dst, arr, key }          dst = deref(arr)[norm(key)] or Null (+undef-key warning); no autovivify ?
 DimFetchIs { dst, arr, key }          like R but NO warning, Null if arr not array   (for ?? / nested isset)
+DimFetchUnset { dst, arr, key }       element below `unset($a[$k]->p)`: missing key silent; string offset / scalar container Err ?
 -- lvalue cursor (nested `$a[$i][$j]=v` without dangling COW borrows) --
 LvalCv     { cv }                     push a cursor rooted at CV cv (autovivify Null→[] on descent)
 LvalDim    { key }                    descend top cursor into norm(key) (create Null if missing; Err if scalar) ?
 LvalAppend {}                         descend into a freshly appended element
-AssignLval { src }                    commit deref(src) into cursor slot, bubbling make_mut up the path; pop. ref-aware at leaf
+AssignLval { src, dst }               commit deref(src) into cursor slot, bubbling make_mut up the path; pop. ref-aware at leaf.
+                                      dst (when not src) gets the assignment's value: src, or the byte a string offset got (null if none)
 FetchLvalRw{ dst }                    read current cursor value into dst AND keep cursor open (compound/inc-dec on `$a[$i]`)
 -- isset / empty / unset --
 IssetCv    { dst, cv }                Bool(!is_null(deref(cv)))           (unset≡null to isset)

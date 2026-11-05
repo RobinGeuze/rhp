@@ -86,13 +86,26 @@ pub fn to_int(v: &Value) -> i64 {
         Value::Float(f) => crate::float_to_int(*f),
         Value::Str(s) => match scan_number(s.as_bytes()) {
             Some((Num::Int(n), _)) => n,
-            Some((Num::Float(f), _)) => crate::float_to_int(f),
+            Some((Num::Float(f), _)) => float_to_int_cap(f),
             None => 0,
         },
         Value::Array(a) => !a.is_empty() as i64,
         Value::Object(_) | Value::Closure(_) => 1,
         Value::Resource(r) => r.id as i64,
         Value::Ref(r) => to_int(&r.borrow()),
+    }
+}
+
+/// `zend_dval_to_lval_cap`: a float string saturates (as strtol did).
+pub fn float_to_int_cap(f: f64) -> i64 {
+    if !f.is_finite() {
+        0
+    } else if f >= 9_223_372_036_854_775_808.0 {
+        i64::MAX
+    } else if f < -9_223_372_036_854_775_808.0 {
+        i64::MIN
+    } else {
+        f as i64
     }
 }
 

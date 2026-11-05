@@ -341,6 +341,10 @@ the "linked" section for that reason.
   crate gets an exact licence expression (libmbfl: `rhp-mbfl-sys`,
   `LGPL-2.1-only AND PHP-3.01 AND MIT`).
   Never compile or transliterate libbcmath's LGPL arithmetic.
+- On macOS a linked library's own dependencies are linked statically when
+  Homebrew ships an archive for them, but only those in `STATIC_DEPS`
+  (`crates/rhp-builtins/build/native.rs`); any other fails the build until
+  its licence has been checked and its notice added.
 - Code ported from php-src is under the PHP License 3.01 (Zend Engine
   License 2.00 for most of `Zend/`; each file's header says which). Keep both
   notices and php's acknowledgement in `THIRD-PARTY-NOTICES`.

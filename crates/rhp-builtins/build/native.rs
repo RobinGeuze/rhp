@@ -409,7 +409,8 @@ fn archive_dir(key: &str, archive: &Path, file: &str) -> Result<PathBuf, String>
 /// archive's own dependencies; Homebrew's .pc files name Cellar paths, which
 /// are mapped to the formula's opt prefix (the build php's dylibs load).
 /// Every other `-l` must be an OS library in the SDK, and `-framework`s are
-/// linked as frameworks.
+/// linked as frameworks. Only the archives in [`STATIC_DEPS`] may be linked
+/// this way.
 ///
 /// Elsewhere the archive's direct dependencies are linked dynamically: its
 /// `Libs.private`, and the `Libs` of the modules in its `Requires.private`.
@@ -420,6 +421,24 @@ fn link_private(lib: &Lib, pc_file: &Path, os: &str) -> Result<(), String> {
         link_private_dynamic(lib, pc_file)
     }
 }
+
+/// The dependency archives `link_private_macos` may link statically, each
+/// with its licence checked against docs/design/libraries.md ("Licences")
+/// and listed in THIRD-PARTY-NOTICES (libcurl's, section 15). Any other
+/// archive a Homebrew .pc file pulls in fails the build: a new dependency of
+/// a formula, such as libidn2 or libunistring (LGPL), must not end up linked
+/// statically unnoticed.
+const STATIC_DEPS: &[&str] = &[
+    "brotlicommon",
+    "brotlidec",
+    "nghttp2",
+    "nghttp3",
+    "ngtcp2",
+    "ngtcp2_crypto_ossl",
+    "psl",
+    "ssh2",
+    "zstd",
+];
 
 fn link_private_macos(lib: &Lib, pc_file: &Path) -> Result<(), String> {
     // Only the Homebrew prefix the library itself comes from.
@@ -469,6 +488,16 @@ fn link_private_macos(lib: &Lib, pc_file: &Path) -> Result<(), String> {
             let file = format!("lib{n}.a");
             match dirs.iter().map(|d| d.join(&file)).find(|a| a.is_file()) {
                 Some(a) => {
+                    if !STATIC_DEPS.contains(&n.as_str()) {
+                        return Err(format!(
+                            "{} needs lib{n}, which would be linked statically from {}, but \
+                             it is not in STATIC_DEPS (build/native.rs). Check its licence \
+                             against docs/design/libraries.md (\"Licences\"), add it to \
+                             THIRD-PARTY-NOTICES, then to STATIC_DEPS.",
+                            lib.name,
+                            a.display()
+                        ));
+                    }
                     if let Some(p) = pc_naming(&a, &n) {
                         queue.push_back(p);
                     }

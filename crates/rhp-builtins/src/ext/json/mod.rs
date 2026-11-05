@@ -196,6 +196,11 @@ impl Encoder {
     ) -> Result<bool, Thrown> {
         let flags = self.flags;
         let pretty = flags & JSON_PRETTY_PRINT != 0;
+        // php_json_encode_array's stack check.
+        if matches!(v, Value::Array(_) | Value::Object(_)) && crate::zend::call_stack::overflowed()
+        {
+            return Ok(self.fail(JSON_ERROR_DEPTH, out, b"null"));
+        }
         match v {
             Value::Null => out.extend_from_slice(b"null"),
             Value::Bool(true) => out.extend_from_slice(b"true"),

@@ -261,11 +261,44 @@ impl Vm {
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.
             if builtins::pcntl_interrupt_pending() {
-                // A throwing handler raises at this (not yet run) instruction;
-                // otherwise the instruction then runs as usual.
-                builtins::pcntl_dispatch(self)?;
-                self.stack[top].pc = pc;
-                continue;
+                // max_execution_time ran out (zend_timeout): the fatal error
+                // comes where a jump lands or a user function starts.
+                if builtins::zend::timeout::timed_out() {
+                    if !proto.is_internal() {
+                        let landed = match self.timeout_prev {
+                            Some((d, p)) if d == top => pc != p + 1,
+                            Some((d, _)) => d < top && pc == 0,
+                            None => false,
+                        };
+                        let mut at_check = self.timeout_wait == Some((top, pc));
+                        if landed && !at_check {
+                            match loop_body_start(&proto.code, pc) {
+                                Some(body) if body != pc => {
+                                    self.timeout_wait = Some((top, body));
+                                }
+                                _ => at_check = true,
+                            }
+                        }
+                        if at_check {
+                            self.timeout_wait = None;
+                            if let Some(msg) = builtins::zend::timeout::take_timed_out() {
+                                self.timeout_prev = None;
+                                // Located at this instruction (pc + 1, as
+                                // when it runs).
+                                self.stack[top].pc = pc + 1;
+                                return Err(self.fatal_error_here(1, msg.as_bytes()));
+                            }
+                        }
+                        self.timeout_prev = Some((top, pc));
+                    }
+                } else {
+                    // A throwing handler raises at this (not yet run)
+                    // instruction; otherwise the instruction then runs as
+                    // usual.
+                    builtins::pcntl_dispatch(self)?;
+                    self.stack[top].pc = pc;
+                    continue;
+                }
             }
 
             match instr {
@@ -2972,4 +3005,28 @@ impl Vm {
         self.stack[top].regs[cv as usize] = Value::Ref(cell);
         true
     }
+}
+
+/// Where php's code for the loop whose head (condition) is at `pc` starts
+/// its body: rhp tests a while/for condition at the top, behind a
+/// `Jmp` to the next instruction, and leaves through a `JmpFalse` to just
+/// past the back edge; php tests it at the bottom. `None`: not a loop head.
+fn loop_body_start(code: &[Instr], pc: usize) -> Option<usize> {
+    let back_edge = |i: &Instr| matches!(i, Instr::Jmp { target } if *target as usize == pc);
+    if pc == 0 || !back_edge(&code[pc - 1]) {
+        return None;
+    }
+    for (k, i) in code.iter().enumerate().skip(pc) {
+        match i {
+            Instr::JmpFalse { target, .. }
+                if (*target as usize) > 0
+                    && code.get(*target as usize - 1).is_some_and(back_edge) =>
+            {
+                return Some(k + 1);
+            }
+            i if back_edge(i) => return Some(pc),
+            _ => {}
+        }
+    }
+    None
 }

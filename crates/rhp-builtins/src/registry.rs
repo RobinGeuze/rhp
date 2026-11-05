@@ -219,9 +219,74 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
     })
 }
 
-/// Whether the running SAPI has builtin `b`.
+/// Whether the running SAPI has builtin `b`, and disable_functions left it.
 fn available(b: &Builtin) -> bool {
-    b.sapis == 0 || b.sapis & main::sapi::sapi_bit() != 0
+    (b.sapis == 0 || b.sapis & main::sapi::sapi_bit() != 0) && !is_disabled(b.name)
+}
+
+thread_local! {
+    /// Functions removed by disable_functions (zend_disable_functions), by
+    /// lowercase name. Startup state: set before anything compiles.
+    static DISABLED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    static ANY_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether disable_functions removed builtin `name_lc`.
+fn is_disabled(name_lc: &str) -> bool {
+    ANY_DISABLED.with(|a| a.get()) && DISABLED.with(|d| d.borrow().contains(&name_lc))
+}
+
+/// zend_disable_functions: drop each name in `list` (separated by spaces
+/// or commas) from the function table. exit, die and clone can't be
+/// disabled: the warnings (printed with the rest of the list, as php's
+/// `%s` does) are returned.
+pub fn disable_functions(list: &[u8]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut start = None;
+    let mut disable = |s: usize, e: usize| {
+        let name = &list[s..e];
+        if matches!(name, b"exit" | b"die" | b"clone") {
+            let rest = &list[s..];
+            let rest = rest.split(|&b| b == 0).next().unwrap_or(rest);
+            warnings.push(format!(
+                "Cannot disable function {}()",
+                String::from_utf8_lossy(rest)
+            ));
+            return;
+        }
+        // The function table is keyed by lowercase name: an exact match.
+        let Ok(name) = std::str::from_utf8(name) else {
+            return;
+        };
+        if let Some((&key, _)) = registry().get_key_value(name) {
+            DISABLED.with(|d| d.borrow_mut().push(key));
+            ANY_DISABLED.with(|a| a.set(true));
+        }
+    };
+    for (i, &c) in list.iter().enumerate() {
+        match c {
+            b' ' | b',' => {
+                if let Some(s) = start.take() {
+                    disable(s, i);
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            }
+        }
+    }
+    if let Some(s) = start {
+        disable(s, list.len());
+    }
+    warnings
+}
+
+/// Forget disable_functions (a new engine).
+pub(crate) fn reset_disabled() {
+    DISABLED.with(|d| d.borrow_mut().clear());
+    ANY_DISABLED.with(|a| a.set(false));
 }
 
 /// Every builtin function of the running SAPI.
@@ -240,7 +305,7 @@ pub fn sapi_function_module(name_lc: &str) -> Option<&'static str> {
 /// Whether some SAPI has a builtin `name_lc` (lowercase): what the compiler
 /// asks, so that compiling does not depend on the SAPI.
 pub fn native_function(name_lc: &str) -> bool {
-    registry().contains_key(name_lc)
+    registry().contains_key(name_lc) && !is_disabled(name_lc)
 }
 
 /// Case-insensitive builtin lookup.

@@ -85,12 +85,8 @@ fn descend<'a>(arr: &'a mut PhpArray, key: Option<&[u8]>) -> Option<&'a mut PhpA
     }
 }
 
-/// `php_register_variable_ex(var_name, val, array)`.
-pub(crate) fn register_variable(root: &mut PhpArray, var_name: &[u8], val: Vec<u8>) {
-    register_variable_ex(root, var_name, val, false)
-}
-
-/// [`register_variable`]; `cookie`: the target is `$_COOKIE`, where a
+/// `php_register_variable_ex(var_name, val, array)`; `cookie`: the
+/// target is `$_COOKIE`, where a
 /// duplicate top-level name keeps the first value (rfc2965 ordering).
 pub(crate) fn register_variable_ex(
     root: &mut PhpArray,

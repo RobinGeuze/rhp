@@ -31,7 +31,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
 | 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::run_main` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
-| 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
+| 7 | `gc_*` — no-ops (~~`set_time_limit`~~ **done**: max_execution_time, `zend/timeout.rs`) | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
 | 9 | `php_uname` — hardcoded Darwin/arm64 strings | `php_fns.rs:81` | platform probes on non-macOS hosts | low | low |
 | 10 | `extension_loaded('reflection')` → true, **no Reflection class exists** | `php_fns.rs:42` | `class_exists`/Reflection-gated code paths lie | med | high |
@@ -166,10 +166,11 @@ The original notes:
   — document it as "best-effort, not php-identical" rather than chase parity.
 - **Effort/priority:** low / low.
 
-### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`, `set_time_limit`
-- **Now:** no-ops (`true`/`true`/`0`/`true`) (`php_fns.rs:445-448`).
-- **OK because:** rhp uses `Rc` + the planned cycle story is separate; there is no
-  settable time limit.
+### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`
+- **Now:** no-ops (`true`/`true`/`0`) (`php_fns.rs:445-448`). `set_time_limit`
+  is real now: it sets max_execution_time, whose timer
+  (`rhp_builtins::zend::timeout`) the command-line SAPIs arm.
+- **OK because:** rhp uses `Rc` + the planned cycle story is separate.
 - **Full impl:** `gc_collect_cycles` could return a real freed-count if/when a
   cycle collector exists; otherwise these are permanently cosmetic. Leave as-is.
 - **Effort/priority:** low / low (likely never).

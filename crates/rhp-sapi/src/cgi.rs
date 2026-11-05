@@ -709,6 +709,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         info: Some(request),
         php_binary: None,
         cwd,
+        ini_files: None,
     };
     match run_request(Box::new(CgiSapi::new()), req) {
         Outcome::Exit(code) => code,

@@ -1,0 +1,4 @@
+include(no-such-file-here.php): Failed to open stream: No such file or directory
+include(no-such-file-here.php): Failed to open stream: No such file or directory
+include(no-such-file-here.php) [<a href='https://php.example/manual/function.include'>function.include</a>]: Failed to open stream: No such file or directory
+include_once(no-such-file-here.php) [<a href='https://php.example/manual/function.include-once.html'>function.include-once.html</a>]: Failed to open stream: No such file or directory

@@ -82,6 +82,10 @@ fn resolve_in(
     seen_arrays: &mut Vec<usize>,
     seen_objects: &mut Vec<u32>,
 ) -> Result<(), Thrown> {
+    // Past the stack limit the dump itself stops ("nesting level too deep").
+    if crate::zend::call_stack::overflowed() {
+        return Ok(());
+    }
     match deref(v) {
         Value::Array(a) => {
             if seen_arrays.contains(&a.data_ptr()) {
@@ -433,6 +437,10 @@ impl Dumper<'_> {
                 let mut res = Ok(());
                 for (k, val) in a.iter() {
                     sp(level + 1, &mut self.out);
+                    if crate::zend::call_stack::overflowed() {
+                        self.put(b"nesting level too deep");
+                        continue;
+                    }
                     dump_key(&mut self.out, k);
                     self.put(b"=>\n");
                     res = self.value(val, level + 2);
@@ -635,6 +643,11 @@ impl Dumper<'_> {
             let Some((k, val)) = entries.get(i) else {
                 break;
             };
+            if crate::zend::call_stack::overflowed() {
+                sp(level + 1, &mut self.out);
+                self.put(b"nesting level too deep");
+                continue;
+            }
             self.prop_key(k, level);
             self.value(val, level + 2)?;
         }
@@ -1111,6 +1124,7 @@ impl Serializer {
     }
 
     fn value(&mut self, host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
+        crate::zend::call_stack::check()?;
         match self.add_var_hash(v) {
             0 => {}
             -1 => {

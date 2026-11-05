@@ -678,7 +678,8 @@ impl Vm {
                 line.extend_from_slice(&stamp);
                 line.extend_from_slice(b"] ");
                 line.extend_from_slice(&m);
-                if builtins::zend::virtual_cwd::append_file(&target, &line, 0o644).is_err() {
+                let mode = builtins::main::ini::error_log_mode();
+                if builtins::zend::virtual_cwd::append_file(&target, &line, mode).is_err() {
                     self.write_stderr(&m);
                 }
             }
@@ -1045,11 +1046,61 @@ impl Vm {
         // ASCII without `&<>"` escapes to itself in every charset html.c
         // knows, so most messages need no ini lookup.
         let plain = |b: &u8| b.is_ascii() && !matches!(b, b'&' | b'<' | b'>' | b'"');
-        if !msg.iter().all(plain) && ini_bool(&self.ini_get(b"html_errors").unwrap_or_default()) {
+        let escaped = if !msg.iter().all(plain)
+            && ini_bool(&self.ini_get(b"html_errors").unwrap_or_default())
+        {
             std::borrow::Cow::Owned(builtins::main::sapi::escape_html(self, msg))
         } else {
             std::borrow::Cow::Borrowed(msg)
+        };
+        match self.docref_link(&escaped) {
+            Some(linked) => std::borrow::Cow::Owned(linked),
+            None => escaped,
         }
+    }
+
+    /// php_verror's manual link: with html_errors and docref_root set, the
+    /// origin `func(…)` is followed by ` [<a href='…'>function.func</a>]`.
+    fn docref_link(&self, msg: &[u8]) -> Option<Vec<u8>> {
+        let root = self.ini_get(b"docref_root").filter(|r| !r.is_empty())?;
+        if !ini_bool(&self.ini_get(b"html_errors").unwrap_or_default()) {
+            return None;
+        }
+        let n = msg
+            .iter()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b':' | b'\\'))
+            .count();
+        let close = n + msg[n..].iter().position(|&c| c == b')')?;
+        if !msg[close + 1..].starts_with(b": ") {
+            return None;
+        }
+        let name = &msg[..n];
+        let mut docref = match name.windows(2).position(|w| w == b"::") {
+            Some(p) => [&name[..p], b".", &name[p + 2..]].concat(),
+            None => {
+                let f = name
+                    .iter()
+                    .position(|&c| c != b'_')
+                    .map_or(&name[..0], |i| &name[i..]);
+                [&b"function."[..], f].concat()
+            }
+        };
+        for c in docref.iter_mut() {
+            if *c == b'_' {
+                *c = b'-';
+            }
+            c.make_ascii_lowercase();
+        }
+        docref.extend_from_slice(&self.ini_get(b"docref_ext").unwrap_or_default());
+        let mut out = msg[..=close].to_vec();
+        out.extend_from_slice(b" [<a href='");
+        out.extend_from_slice(&root);
+        out.extend_from_slice(&docref);
+        out.extend_from_slice(b"'>");
+        out.extend_from_slice(&docref);
+        out.extend_from_slice(b"</a>]");
+        out.extend_from_slice(&msg[close + 1..]);
+        Some(out)
     }
 
     /// Raise a diagnostic from inside an instruction; an exception thrown by

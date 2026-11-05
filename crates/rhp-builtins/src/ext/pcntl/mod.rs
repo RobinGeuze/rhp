@@ -94,11 +94,17 @@ static ASYNC: AtomicBool = AtomicBool::new(false);
 /// php's `EG(vm_interrupt)`: set by the handler when async signals are on.
 static INTERRUPT: AtomicBool = AtomicBool::new(false);
 
-/// Is a signal waiting for asynchronous dispatch? (The VM polls this between
-/// instructions; a relaxed load.)
+/// Is a signal waiting for asynchronous dispatch, or did the execution
+/// time run out? (The VM polls this between instructions; a relaxed load.)
 #[inline]
 pub fn interrupt_pending() -> bool {
     INTERRUPT.load(Ordering::Relaxed)
+}
+
+/// Ask the VM to stop at the next instruction (`EG(vm_interrupt) = 1`);
+/// async-signal-safe.
+pub(crate) fn raise_interrupt() {
+    INTERRUPT.store(true, Ordering::Relaxed);
 }
 
 /// (pid, uid, status, addr, band, utime, stime) of a `siginfo_t`. For SIGPOLL

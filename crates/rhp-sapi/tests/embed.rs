@@ -55,6 +55,7 @@ fn run(code: &str, ini: &[(&str, &str)], info: RequestInfo) -> (Vec<String>, Out
             info: Some(info),
             php_binary: None,
             cwd: None,
+            ini_files: None,
         },
     );
     let events = rec.events.borrow().clone();

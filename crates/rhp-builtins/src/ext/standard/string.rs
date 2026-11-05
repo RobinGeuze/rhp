@@ -11,7 +11,6 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::random::mt_range;
 use crate::ext::standard::file::path_arg;
-use crate::main::php_variables::{register_variable, url_decode};
 use crate::zend::builtin_functions::{binary_strncasecmp, binary_strncmp};
 use crate::zend::zpp::{bool_param, str_or_null_param, str_param, zval_get_string};
 use crate::{deprecated, Host, Thrown};
@@ -2420,20 +2419,22 @@ fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(p) => s[..p].to_vec(),
         None => s,
     };
-    let mut out = PhpArray::new();
-    let mut count = 0usize;
-    for var in s.split(|&b| b == b'&').filter(|t| !t.is_empty()) {
-        count += 1;
-        if count > 1000 {
-            // php: Warning "Input variables exceeded 1000 ..."
-            break;
-        }
-        let (name, val) = match var.iter().position(|&b| b == b'=') {
-            Some(p) => (&var[..p], url_decode(&var[p + 1..])),
-            None => (var, Vec::new()),
-        };
-        let name = url_decode(name);
-        register_variable(&mut out, &name, val);
+    // php_default_treat_data(PARSE_STRING): arg_separator.input and
+    // max_input_vars apply.
+    let ini = |n: &[u8]| crate::ini_value(n).flatten().unwrap_or_default();
+    let max_vars = crate::main::ini::c_atol(&ini(b"max_input_vars"));
+    let (out, exceeded) = crate::main::php_variables::treat_data(
+        crate::main::php_variables::TreatData::Form,
+        &s,
+        &ini(b"arg_separator.input"),
+        max_vars,
+    );
+    if exceeded {
+        crate::warn(
+            host,
+            "parse_str",
+            &format!("Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."),
+        )?;
     }
     if let Some(Value::Ref(r)) = args.get(1) {
         *r.borrow_mut() = Value::Array(out);

@@ -335,9 +335,10 @@ impl Vm {
         // Enum built-in static methods (cases/from/tryFrom) when not overridden.
         if found.is_none() && self.class(cls).kind == ClassKind::Enum {
             let lc = mname.to_ascii_lowercase();
-            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+            if self.is_enum_builtin(cls, &lc) {
                 let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                let r = self.enum_builtin_static(cls, &lc, args)?;
+                let strict = self.stack[top].proto.strict_types;
+                let r = self.enum_builtin_static(cls, &lc, args, strict)?;
                 self.reg_set(top, dst, r);
                 return Ok(());
             }
@@ -519,9 +520,10 @@ impl Vm {
         let found = self.lookup_method(cls, &mname);
         if found.is_none() && self.class(cls).kind == ClassKind::Enum {
             let lc = mname.to_ascii_lowercase();
-            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+            if self.is_enum_builtin(cls, &lc) {
                 let (argv, _named) = self.split_call_args(&arr)?;
-                let r = self.enum_builtin_static(cls, &lc, argv)?;
+                let strict = self.stack[top].proto.strict_types;
+                let r = self.enum_builtin_static(cls, &lc, argv, strict)?;
                 self.reg_set(top, dst, r);
                 return Ok(());
             }
@@ -944,13 +946,38 @@ impl Vm {
         }
     }
 
-    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`.
+    /// `lc` names a built-in static method of enum `cls`: `cases()`, and
+    /// `from()`/`tryFrom()` of a backed enum.
+    fn is_enum_builtin(&self, cls: ClassId, lc: &[u8]) -> bool {
+        match lc {
+            b"cases" => true,
+            b"from" | b"tryfrom" => self.class(cls).enum_backing.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`,
+    /// called from code in strict mode when `strict`.
     fn enum_builtin_static(
         &mut self,
         cls: ClassId,
         method_lc: &[u8],
         args: Vec<Value>,
+        strict: bool,
     ) -> Result<Value, Thrown> {
+        let want = usize::from(method_lc != b"cases");
+        if args.len() != want {
+            let name = String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+            let m = match method_lc {
+                b"from" => "from",
+                b"tryfrom" => "tryFrom",
+                _ => "cases",
+            };
+            return Err(
+                zpp_count_error(&format!("{name}::{m}"), want, Some(want), args.len())
+                    .expect("count mismatch"),
+            );
+        }
         // zend_enum_from_base parses its argument (int for an int-backed
         // enum, else string, or int|string in coercive mode) before it
         // loads the class.
@@ -967,7 +994,6 @@ impl Vm {
             );
             let v = args.first().map(deref).unwrap_or(Value::Null);
             let int = backing == rhp_bytecode::EnumBacking::Int;
-            let strict = self.caller_strict();
             let parsed = self.zpp_enum_value(&fname, int, &v, strict)?;
             if let Some(a) = args.first_mut() {
                 *a = parsed;
@@ -1189,7 +1215,7 @@ impl Vm {
         let Some(m) = self.lookup_method(cls, mname) else {
             if self.class(cls).kind == ClassKind::Enum {
                 let lc = mname.to_ascii_lowercase();
-                if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                if self.is_enum_builtin(cls, &lc) {
                     return Ok(Callee::EnumStatic(cls, lc));
                 }
             }
@@ -1405,7 +1431,9 @@ impl Vm {
                     caller,
                 )
             }
-            Callee::EnumStatic(cls, lc) => self.enum_builtin_static(cls, &lc, args),
+            Callee::EnumStatic(cls, lc) => {
+                self.enum_builtin_static(cls, &lc, args, caller == Some(true))
+            }
         }
     }
 

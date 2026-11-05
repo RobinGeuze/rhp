@@ -198,7 +198,9 @@ fn umask_keeps_the_bits_the_kernel_keeps() {
         0o777
     };
     assert_eq!(umask(), kept);
-    assert_eq!(create_mode(0o7777), 0);
+    // open(2)'s mode & ~umask: Linux's mask leaves the setuid, setgid and
+    // sticky bits.
+    assert_eq!(create_mode(0o7777), 0o7777 & !kept);
     reset_state();
     assert_eq!(umask(), process);
 }

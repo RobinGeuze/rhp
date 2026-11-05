@@ -4304,11 +4304,8 @@ ext/date/tests/timezone_offset_get_error.phpt
 ext/date/tests/timezone_open_basic1.phpt
 ext/date/tests/timezone_open_warning.phpt
 ext/date/tests/timezone_transitions_get_basic1.phpt
-ext/date/tests/timezone_version_get.phpt
-ext/date/tests/timezone_version_get_basic1.phpt
 ext/date/tests/timezones-list.phpt
 ext/date/tests/timezones.phpt
-ext/dba/tests/dba_ndbm.phpt
 ext/dom/tests/DOM4_ChildNode_wrong_document.phpt
 ext/dom/tests/DOM4_DOMNode_ElementSiblings.phpt
 ext/dom/tests/DOM4_DOMNode_after.phpt
@@ -5172,7 +5169,6 @@ ext/libxml/tests/004.phpt
 ext/libxml/tests/bug42112.phpt
 ext/libxml/tests/bug54138.phpt
 ext/libxml/tests/bug63389.phpt
-ext/libxml/tests/bug79191.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt
 ext/libxml/tests/libxml_get_external_entity_loader.phpt
@@ -5378,7 +5374,6 @@ ext/mbstring/tests/simpletest.phpt
 ext/mbstring/tests/unicode_versions.phpt
 ext/mbstring/tests/utf8_error_handling.phpt
 ext/mbstring/tests/uuencode_encoding.phpt
-ext/mysqli/tests/mysqli_constants_categories.phpt
 ext/opcache/tests/001_cli.phpt
 ext/opcache/tests/assign_obj_exceptions.phpt
 ext/opcache/tests/assign_obj_op_of_fetch_dim.phpt
@@ -6452,21 +6447,6 @@ ext/pcre/tests/split.phpt
 ext/pcre/tests/split2.phpt
 ext/pcre/tests/study.phpt
 ext/pcre/tests/ungreedy.phpt
-ext/pdo_odbc/tests/autocommit.phpt
-ext/pdo_odbc/tests/autocommit_change_mode.phpt
-ext/pdo_odbc/tests/bug44643.phpt
-ext/pdo_odbc/tests/bug67465.phpt
-ext/pdo_odbc/tests/bug80783.phpt
-ext/pdo_odbc/tests/bug80783a.phpt
-ext/pdo_odbc/tests/get_attribute_server.phpt
-ext/pdo_odbc/tests/gh22349.phpt
-ext/pdo_odbc/tests/gh23443.phpt
-ext/pdo_odbc/tests/gh23444.phpt
-ext/pdo_odbc/tests/gh9372.phpt
-ext/pdo_odbc/tests/long_columns.phpt
-ext/pdo_odbc/tests/max_columns.phpt
-ext/pdo_odbc/tests/pdoodbc_001.phpt
-ext/pdo_odbc/tests/pdoodbc_002.phpt
 ext/phar/tests/002.phpt
 ext/phar/tests/003.phpt
 ext/phar/tests/003a.phpt
@@ -6534,9 +6514,6 @@ ext/random/tests/01_functions/random_bytes_error.phpt
 ext/random/tests/01_functions/random_int.phpt
 ext/random/tests/01_functions/random_int_error.phpt
 ext/random/tests/01_functions/reflection.phpt
-ext/readline/tests/readline_basic.phpt
-ext/readline/tests/readline_clear_history_001.phpt
-ext/readline/tests/readline_without_input.phpt
 ext/reflection/tests/001.phpt
 ext/reflection/tests/003.phpt
 ext/reflection/tests/004.phpt
@@ -8394,7 +8371,6 @@ ext/standard/tests/file/bug75679.phpt
 ext/standard/tests/file/bug76735.phpt
 ext/standard/tests/file/bug78296.phpt
 ext/standard/tests/file/bug79099.phpt
-ext/standard/tests/file/bug81145.phpt
 ext/standard/tests/file/chgrp.phpt
 ext/standard/tests/file/chmod_basic.phpt
 ext/standard/tests/file/chmod_error.phpt
@@ -8460,7 +8436,6 @@ ext/standard/tests/file/file_exists_variation1.phpt
 ext/standard/tests/file/file_get_contents_basic.phpt
 ext/standard/tests/file/file_get_contents_basic001.phpt
 ext/standard/tests/file/file_get_contents_error.phpt
-ext/standard/tests/file/file_get_contents_error001.phpt
 ext/standard/tests/file/file_get_contents_error002.phpt
 ext/standard/tests/file/file_get_contents_error_folder.phpt
 ext/standard/tests/file/file_get_contents_file_put_contents_basic.phpt
@@ -9449,7 +9424,6 @@ ext/standard/tests/streams/stream_context_set_options_basic.phpt
 ext/standard/tests/streams/stream_context_set_options_error.phpt
 ext/standard/tests/streams/stream_context_set_params_notification_error.phpt
 ext/standard/tests/streams/stream_context_set_params_notification_valid_then_invalid.phpt
-ext/standard/tests/streams/stream_context_tcp_nodelay_server.phpt
 ext/standard/tests/streams/stream_copy_to_stream_socket.phpt
 ext/standard/tests/streams/stream_get_contents_001.phpt
 ext/standard/tests/streams/stream_get_contents_002.phpt
@@ -10075,7 +10049,6 @@ ext/standard/tests/url/bug68917.phpt
 ext/standard/tests/url/bug69976.phpt
 ext/standard/tests/url/bug73192.phpt
 ext/standard/tests/url/bug74780.phpt
-ext/standard/tests/url/get_headers_error_003.phpt
 ext/standard/tests/url/parse_url_basic_001.phpt
 ext/standard/tests/url/parse_url_basic_002.phpt
 ext/standard/tests/url/parse_url_basic_003.phpt
@@ -10095,7 +10068,6 @@ ext/standard/tests/versioning/phpversion.phpt
 ext/standard/tests/versioning/version_compare.phpt
 ext/standard/tests/versioning/version_compare_invalid_operator.phpt
 ext/standard/tests/versioning/version_compare_op_abbrev.phpt
-ext/tidy/tests/001.phpt
 ext/tokenizer/tests/001.phpt
 ext/tokenizer/tests/002.phpt
 ext/tokenizer/tests/003.phpt
@@ -10576,7 +10548,6 @@ tests/basic/array_key_exists_null_deprecation.phpt
 tests/basic/array_null_offset_deprecation.phpt
 tests/basic/bug45986.phpt
 tests/basic/bug53180.phpt
-tests/basic/bug54514.phpt
 tests/basic/bug55500.phpt
 tests/basic/bug61000.phpt
 tests/basic/bug67988.phpt

@@ -958,8 +958,9 @@ pub enum Instr {
         from: Reg,
         to: Reg,
     },
-    /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
-    /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
+    /// `exit`/`die`: `arg` is php 8.4's `int|string $status` (`Reg::MAX`: no
+    /// argument, status 0); a string is printed (status 0). Terminates the
+    /// script via the SAPI exit path.
     Exit {
         arg: Reg,
     },

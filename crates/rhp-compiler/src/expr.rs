@@ -774,13 +774,11 @@ impl ProtoBuilder<'_> {
         &mut self,
         arguments: Option<&crate::parse::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
+        // php 8.4: exit(int|string $status = 0), named arguments included.
         let arg = match arguments.and_then(|a| a.arguments.first()) {
             Some(Argument::Positional(p)) => self.compile_expr(p.value)?,
-            _ => {
-                let r = self.alloc_temp();
-                self.emit(Instr::LoadNull { dst: r });
-                r
-            }
+            Some(Argument::Named(n)) if n.name.value == b"status" => self.compile_expr(n.value)?,
+            _ => Reg::MAX,
         };
         self.emit(Instr::Exit { arg });
         // `exit` never returns a value, but expressions expect a result register.

@@ -434,7 +434,17 @@ class ReflectionParameter implements Reflector {
         return $s === null ? null : new ReflectionClass($s);
     }
     public function getClass(): ?ReflectionClass {
+        __reflect('deprecated', 'Method ReflectionParameter::getClass() is deprecated since 8.0, use ReflectionParameter::getType() instead');
         $t = $this->__p['type'];
+        // ZEND_TYPE_HAS_NAME: one class name, maybe beside builtin types.
+        if ($t !== null && $t['kind'] === 'union') {
+            $names = [];
+            foreach ($t['types'] as $u) {
+                if ($u['kind'] !== 'named') { return null; }
+                if (!$u['builtin']) { $names[] = $u; }
+            }
+            $t = count($names) === 1 ? $names[0] : null;
+        }
         if ($t === null || $t['kind'] !== 'named' || $t['builtin']) { return null; }
         $n = $t['name'];
         if ($n === 'self' || $n === 'static') { return $this->getDeclaringClass(); }
@@ -443,8 +453,8 @@ class ReflectionParameter implements Reflector {
     }
     public function hasType(): bool { return $this->__p['type'] !== null; }
     public function getType(): ?ReflectionType { return Reflection::__type($this->__p['type']); }
-    public function isArray(): bool { $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'array'; }
-    public function isCallable(): bool { $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'callable'; }
+    public function isArray(): bool { __reflect('deprecated', 'Method ReflectionParameter::isArray() is deprecated since 8.0, use ReflectionParameter::getType() instead'); $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'array'; }
+    public function isCallable(): bool { __reflect('deprecated', 'Method ReflectionParameter::isCallable() is deprecated since 8.0, use ReflectionParameter::getType() instead'); $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'callable'; }
     public function allowsNull(): bool { return $this->__p['type'] === null || $this->__p['type']['nullable']; }
     public function getPosition(): int { return $this->__p['pos']; }
     public function isOptional(): bool { return $this->__p['optional']; }

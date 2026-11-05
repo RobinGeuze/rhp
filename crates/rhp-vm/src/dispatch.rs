@@ -1704,19 +1704,22 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Exit { arg } => {
-                    // A string message is printed through the output buffers (code
-                    // 0); an int is the code.
-                    let code = match self.reg_get(top, arg) {
-                        Value::Int(n) => n as i32,
-                        Value::Str(s) => {
-                            self.output_write(s.as_bytes());
-                            0
-                        }
-                        Value::Null => 0,
-                        other => {
-                            let s = conv::to_string_bytes(&other);
-                            self.output_write(&s);
-                            0
+                    // php 8.4's exit(): no argument is status 0; otherwise
+                    // Z_PARAM_STR_OR_LONG (a string is printed, status 0).
+                    let code = if arg == Reg::MAX {
+                        0
+                    } else {
+                        let v = deref(&self.reg_get(top, arg));
+                        let strict = proto.strict_types;
+                        match self.zpp_exit_status(&v, strict)? {
+                            Value::Int(n) => n as i32,
+                            v => {
+                                let s = conv::to_string_bytes(&v);
+                                if !s.is_empty() {
+                                    self.output_write(&s);
+                                }
+                                0
+                            }
                         }
                     };
                     return Err(Thrown::Exit(code));

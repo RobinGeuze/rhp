@@ -36,7 +36,14 @@ impl Vm {
             K::False => matches!(v, Value::Bool(false)),
             K::Array => matches!(v, Value::Array(_)),
             K::Object => matches!(v, Value::Object(_) | Value::Closure(_)),
-            K::Callable => self.is_callable_value(v),
+            K::Callable => {
+                // zend_verify_arg_type checks a callable in the callee's
+                // scope (its private methods count).
+                let saved = self.fcc_scope.replace(Some((ctx, ctx)));
+                let ok = self.is_callable_value(v);
+                self.fcc_scope.set(saved);
+                ok
+            }
             K::Iterable => matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable"),
             K::Null => matches!(v, Value::Null),
             K::Named(n) => self.value_instanceof(v, n.as_bytes()),

@@ -1496,6 +1496,45 @@ impl Vm {
         }
     }
 
+    /// `forward_static_call`: call `callable` as `call_user_func` does, but
+    /// a static method whose class the caller's called scope extends runs
+    /// with that called scope (late static binding forwarded).
+    pub(crate) fn call_callable_forward(
+        &mut self,
+        callable: &Value,
+        args: Vec<Value>,
+    ) -> Result<Value, Thrown> {
+        let c = deref(callable);
+        let fwd = self.stack.last().and_then(|f| f.called_class);
+        if let (Some(fwd), false) = (fwd, matches!(c, Value::Closure(_))) {
+            self.autoload_callable_class(&c)?;
+            let forwarded = |vm: &Self, called: ClassId| {
+                if vm.classes[fwd as usize].ancestors.contains(&called) {
+                    fwd
+                } else {
+                    called
+                }
+            };
+            match self.resolve_callable(&c) {
+                Ok(Callee::Method(m, None, called)) => {
+                    let called = forwarded(self, called);
+                    return self.call_sync_mode(&m, None, called, args, None);
+                }
+                Ok(Callee::Magic(m, None, called, name)) => {
+                    let called = forwarded(self, called);
+                    let mut arr = PhpArray::new();
+                    for a in args {
+                        arr.push(a);
+                    }
+                    let argv = vec![Value::str(name), Value::Array(arr)];
+                    return self.call_sync_mode(&m, None, called, argv, None);
+                }
+                _ => {}
+            }
+        }
+        self.call_callable_value_mode(callable, args, None)
+    }
+
     /// The Error a dynamic call of a non-callable value raises
     /// (ZEND_INIT_DYNAMIC_CALL).
     fn dynamic_call_error(&self, c: &Value) -> Thrown {
@@ -1900,6 +1939,15 @@ impl Vm {
     /// Call a builtin by name with a pre-collected argument vector, its
     /// arguments parsed in strict mode when `strict` (a call from a
     /// `strict_types` file, not from another builtin).
+    /// The frame a builtin runs on when it is a function's (php's
+    /// prev_execute_data without ZEND_CALL_CODE): not the script, an
+    /// include or eval.
+    pub(crate) fn caller_function_frame(&self) -> Option<&Frame> {
+        self.stack
+            .last()
+            .filter(|f| f.include_kind.is_none() && f.proto.name.as_bytes() != b"{main}")
+    }
+
     pub(crate) fn invoke_builtin(
         &mut self,
         name: &str,

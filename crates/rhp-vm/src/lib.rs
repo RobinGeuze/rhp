@@ -100,6 +100,9 @@ pub struct Vm {
     /// at compile time and renames it in place when it is declared), so
     /// `get_declared_classes()` lists classes in compile order.
     class_order: Vec<usize>,
+    /// `class_alias()` entries of the class table: (lowercased alias, class,
+    /// `decl_classes.len()` when added), for `get_declared_classes()`.
+    class_aliases: Vec<(Vec<u8>, ClassId, usize)>,
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
@@ -189,6 +192,9 @@ pub struct Vm {
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
     next_resource_id: u32,
+    /// The resource values made, by id, for `get_resources()` (php's
+    /// EG(regular_list)): a resource is listed while a value holds it.
+    resource_list: std::collections::BTreeMap<u32, Vec<std::rc::Weak<rhp_values::ResourceData>>>,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds
     // a reference so the handle stays open).

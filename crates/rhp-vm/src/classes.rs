@@ -1462,8 +1462,16 @@ impl Vm {
 
         // Class constants.
         self.check_const_types(proto, parent)?;
+        // A parent's private constants are not inherited (do_inherit_constant).
         let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
-            .map(|p| self.classes[p as usize].constants.clone())
+            .map(|p| {
+                self.classes[p as usize]
+                    .constants
+                    .iter()
+                    .filter(|(_, c)| c.visibility != Visibility::Private)
+                    .map(|(k, c)| (k.clone(), c.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];

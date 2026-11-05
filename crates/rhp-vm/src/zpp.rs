@@ -551,6 +551,38 @@ impl Vm {
     }
 }
 
+impl Vm {
+    /// exit()'s `Z_PARAM_STR_OR_LONG` status: an Int (the exit status) or a
+    /// Str (printed), in the caller's typing mode.
+    pub(crate) fn zpp_exit_status(&mut self, v: &Value, strict: bool) -> Result<Value, Thrown> {
+        let sp = ScalarParam {
+            pos: 0,
+            name: "status",
+            ty: "string|int",
+            kind: Zpp::StrOrLong,
+            variadic: false,
+            nullable: false,
+            has_str: true,
+            has_arr: false,
+            by_ref: false,
+        };
+        Ok(match self.zpp_arg("exit", &sp, 0, v, strict)? {
+            Got::Keep => match v {
+                Value::Null => Value::Int(0),
+                other => other.clone(),
+            },
+            Got::KeepStr => Value::str(conv::to_string_bytes(v)),
+            Got::Set(n) => n,
+            Got::Fail => {
+                let given = rhp_builtins::zval_value_name(self, v);
+                return Err(Thrown::type_error(format!(
+                    "exit(): Argument #1 ($status) must be of type string|int, {given} given"
+                )));
+            }
+        })
+    }
+}
+
 /// ` ($name)` after "Argument #n", or nothing for a variadic argument
 /// (get_function_arg_name has no name past the declared parameters).
 fn arg_label(sp: &ScalarParam) -> String {

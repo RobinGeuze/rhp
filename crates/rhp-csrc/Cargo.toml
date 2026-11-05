@@ -4,11 +4,12 @@ description = "php-src's own C, and frozen C libraries php links, vendored and c
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
-# Our Rust, shim and glue: MIT OR Apache-2.0. Vendored (see NOTICE): php-src
-# (PHP-3.01), crypt_freesec (BSD-3-Clause), crypt_blowfish and crypt_sha256/512
-# (public domain), argon2 (CC0-1.0 OR Apache-2.0; Thomas Pornin's code in
+# Our Rust, shim and glue: MIT OR Apache-2.0 (shim/ follows php-src's header
+# API: Zend-2.0, PHP-3.01). Vendored (see NOTICE): php-src (PHP-3.01),
+# crypt_freesec (BSD-3-Clause), crypt_blowfish and crypt_sha256/512 (public
+# domain), argon2 (CC0-1.0 OR Apache-2.0; Thomas Pornin's code in
 # src/encoding.c is CC0-1.0 only).
-license = "(MIT OR Apache-2.0) AND PHP-3.01 AND BSD-3-Clause AND LicenseRef-Public-Domain AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0"
+license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND BSD-3-Clause AND LicenseRef-Public-Domain AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0"
 links = "rhp_csrc"
 build = "build.rs"
 

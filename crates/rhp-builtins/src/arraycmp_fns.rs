@@ -20,7 +20,9 @@ use crate::argparse::value_name;
 use crate::{Builtin, Host, Thrown};
 
 // ---------------------------------------------------------------------------
-// zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort
+// zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort, derived
+// from LLVM's libc++ std::sort (NCSA OR MIT, Copyright (c) 2009-2012 by the
+// libc++ contributors); see THIRD-PARTY-NOTICES, section 14.
 // ---------------------------------------------------------------------------
 
 type CmpFn<'a, T> = dyn FnMut(&T, &T) -> i32 + 'a;

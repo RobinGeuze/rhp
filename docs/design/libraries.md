@@ -143,7 +143,10 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
 
 ## Licences
 
-- Never GPL.
+- Never GPL. The one exception is the Bison skeleton that
+  `zend/bison.rs` ports: it is GPL-3.0-or-later WITH Bison-exception-2.2,
+  and the exception lets a parser that uses it be distributed under any
+  terms.
 - Permissive licences (MIT, BSD, Apache-2.0, ISC, Zlib, curl, Unicode-3.0,
   CC0-1.0, public domain) may be linked or vendored; their notices go in
   `THIRD-PARTY-NOTICES`.
@@ -152,8 +155,19 @@ neither has a row in the "linked" section of `tools/capture-ref-build.php`.
   expression (libmbfl: `rhp-mbfl-sys`, `LGPL-2.1-only AND PHP-3.01 AND MIT`).
   Never compile or transliterate libbcmath's LGPL arithmetic.
 - Code ported from php-src is under the PHP License 3.01 (Zend Engine
-  License 2.00 for `Zend/`). Keep both notices and php's acknowledgement in
-  `THIRD-PARTY-NOTICES`.
+  License 2.00 for most of `Zend/`; each file's header says which). Keep both
+  notices and php's acknowledgement in `THIRD-PARTY-NOTICES`.
+- Some php-src files carry a licence of their own in their header (php-src
+  lists most of them in README.REDIST.BINS). Porting one means adding its own
+  `THIRD-PARTY-NOTICES` entry, with the notice copied from the file, and a
+  comment in the port that points to it. Such files include
+  `main/php_glob.c`, `ext/standard/strnatcmp.c`,
+  `ext/random/engine_mt19937.c`, the libc++ part of `Zend/zend_sort.c`,
+  `ext/standard/scanf.c`, `ext/standard/uuencode.c`, `main/snprintf.c` and
+  `main/spprintf.c` (parts under the Apache Group's 1995-1998 licence, which
+  has an advertising clause) and `Zend/zend_strtod.c`.
+- Code ported from timelib (php-src's `ext/date/lib`) is MIT; it gets the
+  timelib entry in `THIRD-PARTY-NOTICES`.
 - Adding or vendoring a library means adding its entry to
   `THIRD-PARTY-NOTICES` in the same change.
 

@@ -7,6 +7,7 @@
 
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use super::http::set_last_http_headers;
 use crate::ext::openssl::xp_ssl;
 use crate::main::streams::plain_wrapper::FdStream;
 use crate::main::streams::xp_socket::{xport_client, Opened};
@@ -1298,7 +1299,7 @@ pub fn open(
     ctx: &Value,
     only_headers: bool,
 ) -> Result<Option<Value>, Thrown> {
-    host.set_http_response_headers(None);
+    set_last_http_headers(host, None);
     let mut cx = Cx {
         host,
         fname,
@@ -1317,7 +1318,7 @@ pub fn open(
     } = cx;
     if let Some(h) = &headers {
         let lines = h.iter().map(|(_, v)| conv::to_string_bytes(v)).collect();
-        host.set_http_response_headers(Some(lines));
+        set_last_http_headers(host, Some(lines));
         host.set_local_var(b"http_response_header", Value::Array(h.clone()));
     }
     let stream = r?;

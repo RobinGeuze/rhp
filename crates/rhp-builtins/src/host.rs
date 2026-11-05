@@ -489,10 +489,6 @@ pub trait Host {
         value: Value,
     );
 
-    /// Response header lines (status line first) of every hop of the last
-    /// http(s) request; `None` before one sent a request.
-    fn set_http_response_headers(&mut self, headers: Option<Vec<Vec<u8>>>);
-    fn http_response_headers(&self) -> Option<Vec<Vec<u8>>>;
     /// The `notification` callback of a stream context (or of a stream's
     /// context).
     fn stream_context_notifier(&self, ctx: &Value) -> Option<Value>;

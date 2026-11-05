@@ -112,7 +112,6 @@ impl Vm {
             next_resource_id: 1,
             stream_contexts: HashMap::new(),
             stream_notifiers: HashMap::new(),
-            last_response_headers: None,
             argv: Vec::new(),
             silence: 0,
             silence_stack: Vec::new(),

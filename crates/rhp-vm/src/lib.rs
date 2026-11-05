@@ -190,9 +190,6 @@ pub struct Vm {
     stream_contexts: HashMap<u32, Value>,
     // The `notification` callback of each stream context, by context id.
     stream_notifiers: HashMap<u32, Value>,
-    // Response header lines from the last http(s) request (status line first).
-    last_response_headers: Option<Vec<Vec<u8>>>,
-    // Open ZipArchive handles, id -> parsed archive.
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
     // `@` nesting depth: diagnostics are recorded but not displayed while > 0.

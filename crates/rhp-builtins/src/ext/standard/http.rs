@@ -206,11 +206,29 @@ fn fn_http_build_query(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     Ok(Value::str(e.out))
 }
 
+/// php's `BG(last_http_headers)`: the response header lines (status line
+/// first) of every hop of the last http(s) request; `None` before one.
+#[derive(Default)]
+struct LastHttpHeaders(Option<Vec<Vec<u8>>>);
+
+fn last_http_headers(host: &mut dyn Host) -> Option<&mut Option<Vec<Vec<u8>>>> {
+    host.module_state("last_http_headers", || Box::<LastHttpHeaders>::default())
+        .and_then(|st| st.downcast_mut::<LastHttpHeaders>())
+        .map(|st| &mut st.0)
+}
+
+/// Replace the request's [`LastHttpHeaders`].
+pub(crate) fn set_last_http_headers(host: &mut dyn Host, headers: Option<Vec<Vec<u8>>>) {
+    if let Some(slot) = last_http_headers(host) {
+        *slot = headers;
+    }
+}
+
 fn fn_http_get_last_response_headers(
     host: &mut dyn Host,
     _args: &[Value],
 ) -> Result<Value, Thrown> {
-    let Some(headers) = host.http_response_headers() else {
+    let Some(headers) = last_http_headers(host).and_then(|h| h.clone()) else {
         return Ok(Value::Null);
     };
     let mut a = rhp_values::PhpArray::new();
@@ -224,7 +242,7 @@ fn fn_http_clear_last_response_headers(
     host: &mut dyn Host,
     _args: &[Value],
 ) -> Result<Value, Thrown> {
-    host.set_http_response_headers(None);
+    set_last_http_headers(host, None);
     Ok(Value::Null)
 }
 

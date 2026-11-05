@@ -504,10 +504,6 @@ impl Host for TestHost<'_> {
         _value: Value,
     ) {
     }
-    fn set_http_response_headers(&mut self, _headers: Option<Vec<Vec<u8>>>) {}
-    fn http_response_headers(&self) -> Option<Vec<Vec<u8>>> {
-        None
-    }
     fn stream_context_notifier(&self, _ctx: &Value) -> Option<Value> {
         None
     }

@@ -394,13 +394,6 @@ impl Host for Vm {
         }
     }
 
-    fn set_http_response_headers(&mut self, headers: Option<Vec<Vec<u8>>>) {
-        self.last_response_headers = headers;
-    }
-    fn http_response_headers(&self) -> Option<Vec<Vec<u8>>> {
-        self.last_response_headers.clone()
-    }
-
     fn current_arg_count(&self) -> i64 {
         self.stack.last().map(|f| f.argc as i64).unwrap_or(0)
     }

@@ -694,6 +694,8 @@ pub enum Instr {
     /// `parent::$prop::get()` / `parent::$prop::set($v)` inside a hook of
     /// `$prop` (php's INIT_PARENT_PROPERTY_HOOK_CALL): the parent class's
     /// hook, or a plain read / write of the backing value when it has none.
+    /// `argc` [`PACKED_ARGS`]: `base` holds the packed arguments array (a
+    /// call with named arguments).
     CallParentHook {
         dst: Reg,
         /// The property name.
@@ -1483,4 +1485,7 @@ pub enum ConstInitProto {
 
 // The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
 // it without decoding a niche.
+/// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
+pub const PACKED_ARGS: u16 = u16::MAX;
+
 const _: () = assert!(std::mem::size_of::<Instr>() == 24);

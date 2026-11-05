@@ -459,6 +459,10 @@ impl Vm {
                                 a.push(deref(v));
                             }
                         }
+                        // SAFETY: as for `args`.
+                        for (name, v) in unsafe { &*n.named } {
+                            a.insert(ArrayKey::Str(name.clone()), deref(v));
+                        }
                         e.insert(k(b"args"), Value::Array(a));
                     }
                     out.push(Value::Array(e));

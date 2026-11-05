@@ -41,8 +41,11 @@ pub(crate) struct FileCtx<'s> {
     /// flags, so a call site can pass by reference to a function it names.
     pub(crate) sigs: HashMap<Vec<u8>, Vec<bool>>,
     /// Same keys: the parameter names (no `$`), and whether the last one
-    /// is variadic (a by-reference variadic covers every later position).
+    /// is variadic (a by-reference variadic covers every later position;
+    /// the names place named arguments at compile time).
     pub(crate) sig_names: HashMap<Vec<u8>, (Vec<Vec<u8>>, bool)>,
+    /// The same functions that return by reference.
+    pub(crate) ref_returning: std::collections::HashSet<Vec<u8>>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -117,6 +120,7 @@ impl<'s> FileCtx<'s> {
             strict_types: false,
             sigs: HashMap::new(),
             sig_names: HashMap::new(),
+            ref_returning: Default::default(),
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -160,16 +164,13 @@ impl<'s> FileCtx<'s> {
                 let params = &func.parameter_list.parameters;
                 let names = params
                     .iter()
-                    .map(|p| {
-                        p.variable
-                            .name
-                            .strip_prefix(b"$")
-                            .unwrap_or(p.variable.name)
-                            .to_vec()
-                    })
+                    .map(|p| crate::util::strip_dollar(p.variable.name).to_vec())
                     .collect();
-                let variadic = params.last().is_some_and(|p| p.ellipsis.is_some());
+                let variadic = params.iter().last().is_some_and(|p| p.ellipsis.is_some());
                 cx.sig_names.insert(fqn.clone(), (names, variadic));
+                if func.ampersand.is_some() {
+                    cx.ref_returning.insert(fqn.clone());
+                }
                 cx.sigs.insert(fqn, flags);
             }
         }

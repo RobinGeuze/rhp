@@ -61,7 +61,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 | 35 | ~~Arithmetic on a leading-numeric string — no "A non-numeric value encountered" warning~~ — RESOLVED (§7.2) | VM arithmetic | — | — | — |
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
-| 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
+| 37 | ~~Named arguments to builtins — refused (`RHP_UNSUPPORTED`)~~ RESOLVED (§8.4) | `vm/calls.rs` | — | — | — |
 | 38 | ~~`metaphone()` — not implemented~~ — **done** (`ext/standard/metaphone.rs`) | — | — | — | — |
 | 39 | Typed class constant compatibility — no autoload, types only for traits (§8.5) | `vm/const_link.rs` | a redeclaration whose check needs a class an autoloader would load | low | low |
 
@@ -635,16 +635,22 @@ The module is deliberately "READ-ONLY, native format only"
   `xml_parser_free`, …) raise it in the body, so a prelude parameter's
   TypeError still comes first there (`utf8_encode([])`).
 
-### 8.4 Named arguments to builtins — refused
-- **Now:** a call with named arguments to a builtin function stops with
-  `RHP_UNSUPPORTED: named arguments to a builtin function is not supported
-  (deferred)` (`vm/lib.rs`, both call paths).
-- **Workaround:** `tests/golden/corpus/namedargs.php` keeps only named
-  arguments to user functions; restore the `str_replace(search: …)` lines
-  when this lands.
-- **Full impl:** map names to positions with the builtin's arginfo (the
-  generated signatures already hold parameter names) and fill skipped
-  optional parameters with their defaults.
+### 8.4 Named arguments to builtins — RESOLVED
+- `Vm::place_builtin_named_args` places them from the stub arginfo
+  (zend_handle_named_arg + zend_handle_undef_args): a skipped optional
+  parameter gets its stub default (evaluated as Reflection does), `= UNKNOWN`
+  ones raise "must be passed explicitly, because the default value is not
+  known". Unknown names to a variadic builtin are kept and refused by zpp
+  after the count check (they show in the trace); `call_user_func` forwards
+  them. Native `Closure` and `Generator` methods use their `m(...)` rows.
+  Goldens `lang/named_args_builtins`, `corpus/namedargs`.
+- By-reference parameters by name are resolved at compile time for a
+  function the compiler knows (a function of the file or a builtin). For
+  any other callee a plain variable travels as a reference, as in a
+  method's argument window, unless a later argument may change it (then
+  by value). **Left:** a property or element passed by name to such a
+  callee, or a variable followed by such an argument, goes by value (php's
+  CHECK_FUNC_ARG by name).
 
 ### 8.5 Typed class constant compatibility — no autoload
 - **Now:** linking checks a redeclared typed constant (and a trait's

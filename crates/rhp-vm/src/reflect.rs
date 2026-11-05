@@ -1376,7 +1376,7 @@ impl Vm {
     }
 
     /// A stub default's value (zend_get_default_from_internal_arg_info).
-    fn stub_default(&mut self, text: &str) -> Result<Value, Thrown> {
+    pub(crate) fn stub_default(&mut self, text: &str) -> Result<Value, Thrown> {
         crate::stub_default::eval(text, &mut |n| match n {
             crate::stub_default::Name::Const(c) => {
                 let c = c.trim_start_matches('\\');

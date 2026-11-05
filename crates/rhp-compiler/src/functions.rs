@@ -546,6 +546,11 @@ impl ProtoBuilder<'_> {
         let mut params = Vec::new();
         let mut nonconst = Vec::new();
         let mut types = Vec::new();
+        // The last parameter without a default (not variadic).
+        let last_required = list
+            .parameters
+            .iter()
+            .rposition(|p| p.default_value.is_none() && p.ellipsis.is_none());
         for (idx, p) in list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
             let cv = self.cv(var); // params get CVs in order
@@ -559,10 +564,12 @@ impl ProtoBuilder<'_> {
                 .map(|dv| crate::fold::fold_const(cx, dv.value).map_err(|_| dv.value));
             let mut type_hint = None;
             let mut php_type = None;
+            let mut forced_nullable = false;
             if let Some(h) = &p.hint {
                 let force_null = matches!(folded, Some(Ok(Value::Null))) && !promoted;
                 if let Some((t, forced)) = compile_type_ex(cx, h, closure, force_null) {
                     let pname = String::from_utf8_lossy(var);
+                    forced_nullable = forced;
                     if forced {
                         cx.compile_diags.borrow_mut().push((
                             rhp_values::E_DEPRECATED,
@@ -596,6 +603,26 @@ impl ProtoBuilder<'_> {
                     php_type = Some(t.ty);
                 }
             }
+            // An optional parameter before a required one is required: it
+            // loses its default (php compiles it to RECV).
+            let mut dmeta = param_default_meta(cx, p, class_name);
+            if folded.is_some() && last_required.is_some_and(|r| idx < r) {
+                if !forced_nullable {
+                    let r = &list.parameters.iter().nth(last_required.unwrap_or(0));
+                    let rname = r.map(|r| strip_dollar(r.variable.name)).unwrap_or_default();
+                    cx.compile_diags.borrow_mut().push((
+                        rhp_values::E_DEPRECATED,
+                        format!(
+                            "{display}(): Optional parameter ${} declared before required parameter ${} is implicitly treated as a required parameter",
+                            String::from_utf8_lossy(var),
+                            String::from_utf8_lossy(rname)
+                        ),
+                        line,
+                    ));
+                }
+                folded = None;
+                dmeta = (None, None);
+            }
             let default = folded.map(|d| match d {
                 Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),
                 Err(e) => {
@@ -603,7 +630,6 @@ impl ProtoBuilder<'_> {
                     rhp_bytecode::ParamDefault::Init
                 }
             });
-            let dmeta = param_default_meta(cx, p, class_name);
             params.push(rhp_bytecode::ParamInfo {
                 name,
                 cv,

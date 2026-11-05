@@ -1,0 +1,14 @@
+Exception: Use of "self" in callables is deprecated
+  previous: none
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, (null)
+  previous: Exception: Use of "self" in callables is deprecated
+TypeError: call_user_func_array(): Argument #1 ($callback) must be a valid callback, (null)
+  previous: Exception: Use of "self" in callables is deprecated
+Exception: Use of "self" in callables is deprecated
+  previous: none
+Exception: Use of "static" in callables is deprecated
+  previous: none
+Exception: Use of "self" in callables is deprecated
+  previous: none
+Exception: Use of "self" in callables is deprecated
+  previous: none

@@ -81,16 +81,22 @@ impl Vm {
             _ => {}
         }
         self.callable_dep_thrown = false;
-        let why = match self.check_callable_ex(v, false) {
+        // An error handler run by a deprecation would consume it.
+        let cuf = self.cuf_caller;
+        let checked = self.check_callable_ex(v, false);
+        self.cuf_caller = cuf;
+        let why = match checked {
             Ok(Ok(callee)) => {
                 // Kept for the builtin's call of this argument (php's fcc).
                 self.zpp_fcc = Some((v as *const Value, callee));
                 return Ok(());
             }
             Ok(Err(why)) => why,
-            // A user error handler threw from a deprecation: php still
-            // raises its TypeError (with no reason), chained to that.
-            Err(t) if std::mem::take(&mut self.callable_dep_thrown) => {
+            // A user error handler threw from a deprecation. zpp keeps
+            // just that exception; `call_user_func[_array]` compiled as
+            // ZEND_INIT_USER_CALL still raises its TypeError (with no
+            // reason), chained to it.
+            Err(t) if std::mem::take(&mut self.callable_dep_thrown) && cuf.is_some() => {
                 let e = Thrown::type_error(format!(
                     "{name}(): Argument #{}{} must be a valid callback{}, (null)",
                     i + 1,

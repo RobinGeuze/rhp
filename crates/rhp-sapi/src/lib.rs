@@ -218,6 +218,7 @@ fn include_error(t: Thrown) -> IncludeError {
         } => IncludeError::Compile {
             message,
             line: rhp_compiler::compile_error_line(),
+            diags: rhp_compiler::take_compile_error_diags(),
         },
         t => IncludeError::Thrown(t),
     }
@@ -310,8 +311,12 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             vm.finish_request();
             return Outcome::Exit(255);
         }
-        Err(IncludeError::Compile { message, line }) => {
-            vm.compile_error(&message, file.as_bytes(), line);
+        Err(IncludeError::Compile {
+            message,
+            line,
+            diags,
+        }) => {
+            vm.compile_failure(&diags, &message, file.as_bytes(), line);
             vm.finish_request();
             return Outcome::Exit(255);
         }

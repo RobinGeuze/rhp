@@ -47,6 +47,16 @@ thread_local! {
     /// See [`compile_error_line`]: the result channel of a failed compile,
     /// not per-file state.
     static COMPILE_ERROR_LINE: Cell<u32> = const { Cell::new(0) };
+    /// See [`take_compile_error_diags`].
+    static COMPILE_ERROR_DIAGS: std::cell::RefCell<Vec<(i64, String, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The diagnostics (level, message, line) php raises before the compile
+/// error behind the last failed compile of this thread: the ones compiled
+/// ahead of it in source order.
+pub fn take_compile_error_diags() -> Vec<(i64, String, u32)> {
+    COMPILE_ERROR_DIAGS.with(|d| d.take())
 }
 
 /// The line of the compile error (E_COMPILE_ERROR) behind the last
@@ -122,6 +132,13 @@ fn compile_program(
     match cx.take_fatal() {
         Some((line, message)) => {
             COMPILE_ERROR_LINE.with(|l| l.set(line));
+            let all = match r {
+                Ok(p) => p.compile_diags,
+                Err(_) => cx.compile_diags.take(),
+            };
+            let mut diags: Vec<_> = all.into_iter().filter(|d| d.2 <= line).collect();
+            diags.sort_by_key(|d| d.2);
+            COMPILE_ERROR_DIAGS.with(|d| *d.borrow_mut() = diags);
             Err(Thrown::error("CompileError", message))
         }
         None => r,

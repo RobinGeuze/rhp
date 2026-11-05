@@ -22,6 +22,7 @@ mod hooks;
 mod host;
 mod include;
 mod inherit;
+mod lazy;
 mod lifecycle;
 mod link_checks;
 mod lvalue;

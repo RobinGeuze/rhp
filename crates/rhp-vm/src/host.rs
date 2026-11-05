@@ -168,16 +168,14 @@ impl Host for Vm {
         purpose: builtins::zend::object_handlers::PropPurpose,
     ) -> Result<Option<PhpArray>, Thrown> {
         use builtins::zend::object_handlers::PropPurpose as P;
-        let cls = obj.borrow().class;
-        if !self.classes[cls as usize].hooked {
-            return Ok(None);
+        if purpose != P::Debug && obj.borrow().is_lazy() {
+            return self.lazy_properties_for(obj, purpose);
         }
-        let scope = match purpose {
-            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
-            P::Json | P::VarExport => None,
-            _ => return Ok(None),
-        };
-        self.hooked_props_table(obj, scope).map(Some)
+        self.hooked_view(obj, purpose)
+    }
+
+    fn lazy_props_object(&mut self, obj: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        Vm::lazy_props_object(self, obj)
     }
 
     fn std_cast_object(

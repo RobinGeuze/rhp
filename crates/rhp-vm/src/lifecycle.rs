@@ -380,7 +380,7 @@ impl Vm {
     /// most once): the class's native `dtor_obj` first, then `__destruct`
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
-    fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
+    pub(crate) fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
         let cls = h.borrow().class;
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
@@ -388,7 +388,9 @@ impl Vm {
             None => Ok(()),
         };
         let mut kept = false;
-        if let Some(m) = self.lookup_method(cls, b"__destruct") {
+        // zend_objects_destroy_object: a lazy object is not destructed.
+        let lazy = h.borrow().is_lazy();
+        if let Some(m) = self.lookup_method(cls, b"__destruct").filter(|_| !lazy) {
             let before = Rc::strong_count(&h);
             self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
             kept = Rc::strong_count(&h) > before;

@@ -79,6 +79,9 @@ enum FnSubject {
 impl Vm {
     /// Dispatch one reflection metadata op (see the module docs).
     pub(crate) fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
+        if op.starts_with(b"lazy_") {
+            return self.lazy_reflect_op(op, args);
+        }
         match op {
             b"class" => {
                 let name = arg_bytes(args, 0);
@@ -760,7 +763,7 @@ impl Vm {
 
     /// The storage key of the declared instance property `name` as seen on
     /// class `cid` (a private of `cid` itself wins).
-    fn decl_prop_key(&self, cid: ClassId, name: &PhpStr) -> Option<PhpStr> {
+    pub(crate) fn decl_prop_key(&self, cid: ClassId, name: &PhpStr) -> Option<PhpStr> {
         let e = &self.classes[cid as usize];
         if let Some(k) = e.own_private.get(name) {
             return Some(k.clone());

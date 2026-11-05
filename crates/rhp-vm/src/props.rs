@@ -51,6 +51,11 @@ impl Vm {
                         if let Some(v) = h.borrow().properties.get(&k) {
                             return Ok(deref(v));
                         }
+                        // A lazy slot skips __get() and initializes.
+                        if self.lazy_slot(&h, Some(&k)) {
+                            let inst = self.lazy_init(&h)?;
+                            return self.prop_fetch_as(Value::Object(inst), pname, scope);
+                        }
                         // Skip __get() for an uninitialized typed property.
                         if self.uninit_typed(&h, &k) {
                             if let Some(e) = self.typed_slot(cls, &k) {
@@ -68,10 +73,20 @@ impl Vm {
                     }
                     PropRes::Denied(vis) => Some(vis),
                 };
+                if let Some(inst) = self.proxy_guarded(&h, b"__get", &pname) {
+                    return self.prop_fetch_as(Value::Object(inst), pname, scope);
+                }
                 match self.magic(&h, cls, b"__get", &pname) {
                     Some(getter) => {
                         let arg = Value::str(pname.as_bytes().to_vec());
                         self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?
+                    }
+                    None if denied.is_none() && self.lazy_slot(&h, absent_slot.as_ref()) => {
+                        let inst = self.lazy_init(&h)?;
+                        let guarded = self.lookup_method(cls, b"__get").is_some();
+                        return self.with_guard(&inst, guarded, b"__get", &pname, |vm| {
+                            vm.prop_fetch_as(Value::Object(inst.clone()), pname.clone(), scope)
+                        });
                     }
                     None => match denied {
                         Some(vis) => {
@@ -132,34 +147,101 @@ impl Vm {
         };
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
-        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        let present = match &res {
             PropRes::Slot(k)
-                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
             {
-                match self.hooked_read(&h, cls, &k) {
+                match self.hooked_read(&h, cls, k) {
                     Some(r) => return Ok(!matches!(deref(&r?), Value::Null)),
-                    None if self.uninit_typed(&h, &k) => return Ok(false),
-                    None => h.borrow().properties.get(&k).cloned(),
+                    None => h.borrow().properties.get(k).cloned(),
                 }
             }
-            // Skip __isset() for an uninitialized typed property.
-            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(false),
-            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
-        Ok(match present {
+        if let Some(v) = present {
             // A declared/dynamic property: set iff non-null.
-            Some(v) => !matches!(deref(&v), Value::Null),
-            None => match self.magic(&h, cls, b"__isset", &pname) {
-                Some(m) => {
-                    let nm = Value::str(pname.as_bytes().to_vec());
-                    let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm])?;
-                    self.truthy(&r)?
-                }
-                None => false,
-            },
+            return Ok(!matches!(deref(&v), Value::Null));
+        }
+        if let PropRes::Slot(k) = &res {
+            // Skip __isset() for an uninitialized typed or lazy property.
+            if self.lazy_slot(&h, Some(k)) {
+                return self.lazy_isset(top, &h, pname, |vm, t, o, n| vm.prop_isset(t, o, n));
+            }
+            if self.uninit_typed(&h, k) {
+                return Ok(false);
+            }
+        }
+        if let Some(inst) = self.proxy_guarded(&h, b"__isset", &pname) {
+            return self.prop_isset(top, Value::Object(inst), pname);
+        }
+        match self.magic(&h, cls, b"__isset", &pname) {
+            Some(m) => {
+                let nm = Value::str(pname.as_bytes().to_vec());
+                let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm])?;
+                self.truthy(&r)
+            }
+            None if !matches!(res, PropRes::Slot(_)) && self.lazy_slot(&h, None) => {
+                self.lazy_isset(top, &h, pname, |vm, t, o, n| vm.prop_isset(t, o, n))
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// has_property's lazy_init label: initialize `h`, then ask the
+    /// instance, holding its `__isset` guard for the property.
+    fn lazy_isset<T>(
+        &mut self,
+        top: usize,
+        h: &ObjectHandle,
+        pname: PhpStr,
+        f: impl FnOnce(&mut Self, usize, Value, PhpStr) -> Result<T, Thrown>,
+    ) -> Result<T, Thrown> {
+        let inst = self.lazy_init(h)?;
+        let icls = inst.borrow().class;
+        let guarded = self.lookup_method(icls, b"__isset").is_some();
+        let n = pname.clone();
+        self.with_guard(&inst, guarded, b"__isset", &n, |vm| {
+            f(vm, top, Value::Object(inst.clone()), pname)
         })
+    }
+
+    /// Run `f` holding the magic guard `which` for `name` on `h` (when
+    /// `guard` is set and it is not held already).
+    pub(crate) fn with_guard<T>(
+        &mut self,
+        h: &ObjectHandle,
+        guard: bool,
+        which: &'static [u8],
+        name: &PhpStr,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let key = (h.borrow().id, which, name.clone());
+        if !guard || self.prop_guards.contains(&key) {
+            return f(self);
+        }
+        self.prop_guards.insert(key.clone());
+        let r = f(self);
+        self.prop_guards.remove(&key);
+        r
+    }
+
+    /// For an initialized proxy whose instance holds the magic guard `which`
+    /// for `name` (a recursive call from the instance's magic method,
+    /// GH-21478): the instance, to forward to.
+    fn proxy_guarded(
+        &self,
+        h: &ObjectHandle,
+        which: &'static [u8],
+        name: &PhpStr,
+    ) -> Option<ObjectHandle> {
+        let inst = h.borrow().lazy_instance()?;
+        let id = inst.borrow().id;
+        self.prop_guards
+            .contains(&(id, which, name.clone()))
+            .then_some(inst)
     }
 
     /// `empty($o->name)` (zend_std_has_property, ZEND_PROPERTY_NOT_EMPTY): a
@@ -176,18 +258,17 @@ impl Vm {
         };
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
-        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        let present = match &res {
             PropRes::Slot(k)
-                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
             {
-                match self.hooked_read(&h, cls, &k) {
+                match self.hooked_read(&h, cls, k) {
                     Some(r) => return Ok(!self.truthy(&deref(&r?))?),
-                    None if self.uninit_typed(&h, &k) => return Ok(true),
-                    None => h.borrow().properties.get(&k).cloned(),
+                    None => h.borrow().properties.get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(true),
-            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
@@ -195,8 +276,22 @@ impl Vm {
         if let Some(v) = present {
             return Ok(!self.truthy(&deref(&v))?);
         }
+        if let PropRes::Slot(k) = &res {
+            if self.lazy_slot(&h, Some(k)) {
+                return self.lazy_isset(top, &h, pname, |vm, t, o, n| vm.prop_empty(t, o, n));
+            }
+            if self.uninit_typed(&h, k) {
+                return Ok(true);
+            }
+        }
+        if let Some(inst) = self.proxy_guarded(&h, b"__isset", &pname) {
+            return self.prop_empty(top, Value::Object(inst), pname);
+        }
         let nm = || Value::str(pname.as_bytes().to_vec());
         let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
+            if !matches!(res, PropRes::Slot(_)) && self.lazy_slot(&h, None) {
+                return self.lazy_isset(top, &h, pname, |vm, t, o, n| vm.prop_empty(t, o, n));
+            }
             return Ok(true);
         };
         self.pending_magic_fetch = builtins::MagicFetch::Empty;
@@ -227,23 +322,44 @@ impl Vm {
         };
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
-        let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        let present = match &res {
             PropRes::Slot(k)
-                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
             {
-                match self.hooked_read(&h, cls, &k) {
+                match self.hooked_read(&h, cls, k) {
                     Some(r) => return r.map(|v| deref(&v)),
-                    None if self.uninit_typed(&h, &k) => return Ok(Value::Null),
-                    None => h.borrow().properties.get(&k).cloned(),
+                    None => h.borrow().properties.get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(Value::Null),
-            PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
+            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
         if let Some(v) = present {
             return Ok(deref(&v));
+        }
+        let has_isset = self.lookup_method(cls, b"__isset").is_some();
+        let lazy_fetch = |vm: &mut Self, pname: PhpStr| {
+            let inst = vm.lazy_init(&h)?;
+            let which: &'static [u8] = if has_isset { b"__isset" } else { b"__get" };
+            let guarded = vm.lookup_method(cls, which).is_some();
+            let n = pname.clone();
+            vm.with_guard(&inst, guarded, which, &n, |vm| {
+                vm.prop_fetch_is(top, Value::Object(inst.clone()), pname)
+            })
+        };
+        if let PropRes::Slot(k) = &res {
+            if self.lazy_slot(&h, Some(k)) {
+                return lazy_fetch(self, pname);
+            }
+            if self.uninit_typed(&h, k) {
+                return Ok(Value::Null);
+            }
+        }
+        let which: &'static [u8] = if has_isset { b"__isset" } else { b"__get" };
+        if let Some(inst) = self.proxy_guarded(&h, which, &pname) {
+            return self.prop_fetch_is(top, Value::Object(inst), pname);
         }
         let nm = || Value::str(pname.as_bytes().to_vec());
         if let Some(m) = self.magic(&h, cls, b"__isset", &pname) {
@@ -255,6 +371,9 @@ impl Vm {
         // (No `__isset`, or inside this property's own `__isset`: `__get`.)
         match self.magic(&h, cls, b"__get", &pname) {
             Some(g) => self.call_magic(&g, &h, cls, b"__get", &pname, vec![nm()]),
+            None if !matches!(res, PropRes::Slot(_)) && self.lazy_slot(&h, None) => {
+                lazy_fetch(self, pname)
+            }
             None => Ok(Value::Null),
         }
     }
@@ -324,6 +443,19 @@ impl Vm {
                 }
             }
         }
+        if !present {
+            if let PropRes::Slot(k) = &res {
+                if self.lazy_slot(&h, Some(k)) {
+                    let inst = self.lazy_init(&h)?;
+                    return self.prop_unset(top, Value::Object(inst), pname);
+                }
+            }
+            if matches!(res, PropRes::Dynamic) {
+                if let Some(inst) = self.proxy_guarded(&h, b"__unset", &pname) {
+                    return self.prop_unset(top, Value::Object(inst), pname);
+                }
+            }
+        }
         let was_uninit = matches!(&res, PropRes::Slot(k) if self.uninit_typed(&h, k));
         if present {
             let key = key.unwrap();
@@ -335,6 +467,13 @@ impl Vm {
         } else if let Some(m) = self.magic(&h, cls, b"__unset", &pname) {
             let nm = Value::str(pname.as_bytes().to_vec());
             self.call_magic(&m, &h, cls, b"__unset", &pname, vec![nm])?;
+        } else if matches!(res, PropRes::Dynamic) && self.lazy_slot(&h, None) {
+            let inst = self.lazy_init(&h)?;
+            let guarded = self.lookup_method(cls, b"__unset").is_some();
+            let n = pname.clone();
+            return self.with_guard(&inst, guarded, b"__unset", &n, |vm| {
+                vm.prop_unset(top, Value::Object(inst.clone()), pname)
+            });
         } else if let PropRes::Denied(vis) = res {
             return Err(classes::prop_access_err(
                 &self.classes,
@@ -513,6 +652,43 @@ impl Vm {
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
             };
             let present = denied.is_none() && h.borrow().properties.contains_key(&key);
+            if !present && denied.is_none() {
+                // A lazy slot (bypassing __set()) or an undefined property
+                // with no unguarded __set() initializes the object, and the
+                // write goes to the instance (forward_write_to_lazy_object).
+                let slot = if is_dyn { None } else { Some(&key) };
+                if self.lazy_slot(&h, slot) {
+                    if is_dyn {
+                        if let Some(inst) = self.proxy_guarded(&h, b"__set", &pname) {
+                            return self.prop_store_as(
+                                top,
+                                Value::Object(inst),
+                                pname,
+                                val,
+                                scope,
+                                called,
+                                strict,
+                            );
+                        }
+                    }
+                    let has_set = self.lookup_method(cls, b"__set").is_some();
+                    if !is_dyn || self.magic(&h, cls, b"__set", &pname).is_none() {
+                        let inst = self.lazy_init(&h)?;
+                        let n = pname.clone();
+                        return self.with_guard(&inst, is_dyn && has_set, b"__set", &n, |vm| {
+                            vm.prop_store_as(
+                                top,
+                                Value::Object(inst.clone()),
+                                pname,
+                                val,
+                                scope,
+                                called,
+                                strict,
+                            )
+                        });
+                    }
+                }
+            }
             // Writes to uninitialized typed properties bypass __set().
             let uninit = !present && denied.is_none() && !is_dyn && self.uninit_typed(&h, &key);
             if denied.is_none() {
@@ -896,6 +1072,29 @@ impl Vm {
                 "__clone method called on non-object",
             ));
         };
+        if h.borrow().is_lazy() {
+            let new_obj = self.lazy_clone(&h)?;
+            self.reg_set(top, dst, Value::Object(new_obj.clone()));
+            let cls = new_obj.borrow().class;
+            if !new_obj.borrow().is_lazy() {
+                if let Some(m) = self.lookup_method(cls, b"__clone") {
+                    self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
+                }
+            }
+            return Ok(());
+        }
+        let new_obj = self.clone_members(&h)?;
+        self.reg_set(top, dst, Value::Object(new_obj.clone()));
+        let cls = new_obj.borrow().class;
+        if let Some(m) = self.lookup_method(cls, b"__clone") {
+            self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
+        }
+        Ok(())
+    }
+
+    /// zend_objects_clone_obj without `__clone`: a new object with copies
+    /// of `h`'s properties.
+    pub(crate) fn clone_members(&mut self, h: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
         // php's zval_add_ref: a reference only this object holds is
         // copied as a plain value, so the clone gets its own slot.
         // Holders other than the object and our copy that are
@@ -933,13 +1132,9 @@ impl Vm {
         if let Some(rhp_builtins::zend::object_handlers::CloneObj::Custom(f)) =
             self.class(cls).handlers.map(|t| t.clone_obj)
         {
-            f(self, &h, &new_obj)?;
+            f(self, h, &new_obj)?;
         }
-        self.reg_set(top, dst, Value::Object(new_obj.clone()));
-        if let Some(m) = self.lookup_method(cls, b"__clone") {
-            self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
-        }
-        Ok(())
+        Ok(new_obj)
     }
 }
 

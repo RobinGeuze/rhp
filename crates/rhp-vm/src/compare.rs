@@ -417,6 +417,10 @@ impl CompareCx for Vm {
         bare != b"__s" && self.internal_slot(class, name)
     }
 
+    fn props_object(&mut self, obj: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        self.lazy_props_object(obj)
+    }
+
     fn class_name(&self, class: ClassId) -> Vec<u8> {
         self.class(class).name.as_bytes().to_vec()
     }

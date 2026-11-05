@@ -239,6 +239,12 @@ pub trait Host {
         Ok(None)
     }
 
+    /// php's get_properties on a lazy object: initialize it; the object
+    /// whose properties to read (an initialized proxy's instance).
+    fn lazy_props_object(&mut self, obj: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        Ok(obj.clone())
+    }
+
     /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
     /// string, true for bool, FAILURE (`Ok(None)`) otherwise; what a
     /// `cast_object` handler defers to.

@@ -4,7 +4,7 @@
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::Host;
 use rhp_bytecode::FunctionProto;
-use rhp_values::{conv, ArrayKey, ClassId, Thrown, Value};
+use rhp_values::{conv, ArrayKey, ClassId, PhpStr, Thrown, Value};
 
 use crate::{deref, Frame, Vm};
 
@@ -513,6 +513,21 @@ impl Vm {
         match self.resolve_class_by_name(name) {
             Ok(target) => self.classes[class_id as usize].ancestors.contains(&target),
             Err(_) => false,
+        }
+    }
+
+    /// The name of `$o->$name` (an object name converts through
+    /// `__toString`).
+    pub(crate) fn dyn_prop_name(
+        &mut self,
+        top: usize,
+        name: rhp_bytecode::Reg,
+    ) -> Result<PhpStr, Thrown> {
+        let v = self.reg_get(top, name);
+        match &v {
+            Value::Str(s) => Ok(s.clone()),
+            Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),
+            _ => Ok(PhpStr::from_bytes(conv::to_string_bytes(&v))),
         }
     }
 

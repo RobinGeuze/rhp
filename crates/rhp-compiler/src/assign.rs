@@ -274,6 +274,7 @@ impl ProtoBuilder<'_> {
         &mut self,
         a: &crate::parse::cst::Assignment,
     ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.result_unused);
         check_globals_write(a.lhs)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
@@ -408,7 +409,11 @@ impl ProtoBuilder<'_> {
             return match &a.operator {
                 AssignmentOperator::Assign(_) => {
                     self.emit_cursor(root, &steps);
-                    let dst = self.alloc_temp();
+                    let dst = if result_unused {
+                        rhs
+                    } else {
+                        self.alloc_temp()
+                    };
                     self.emit(Instr::AssignLval { src: rhs, dst });
                     Ok(dst)
                 }

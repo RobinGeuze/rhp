@@ -59,7 +59,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
-| 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
+| 35 | ~~Arithmetic on a leading-numeric string — no "A non-numeric value encountered" warning~~ — RESOLVED (§7.2) | VM arithmetic | — | — | — |
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
 | 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
@@ -525,17 +525,14 @@ The module is deliberately "READ-ONLY, native format only"
 - **Effort/priority:** high / med. Co-dependent with #1.2–#1.4. Not required for
   composer (which runs clean), but a prerequisite for faithful framework dev-mode.
 
-### 7.2 Arithmetic on leading-numeric strings — no warning
-- **Now:** `"1abc" + 5` and `"8k" % 3` give php's values (6, 2) but no
-  `Warning: A non-numeric value encountered`, which php 8.5 emits for an
-  operand with trailing data. Found folding tests/corpus into goldens
-  (2026-11).
-- **Workaround:** `tests/golden/corpus/typejuggle.php` silences that line
-  with `@`; drop the `@` when this is fixed.
-- **Full impl:** warn where the arithmetic operators convert a string
-  operand, as php's `_zendi_try_convert_scalar_to_number` and
-  `zendi_try_get_long` (for `%`, `<<`, `>>`, `|`, `&`, `^`) do in
-  `Zend/zend_operators.c`.
+### 7.2 Arithmetic on leading-numeric strings — RESOLVED
+- Operands that are not both numbers take the zend_operators slow path in
+  the VM (`vm/compare.rs`: `bin_slow`, `long_op`): the warning, the
+  operand-type TypeError naming both original operands, bytewise string
+  `| & ^ ~`, shift-count and `%` errors, and php 8.5's float/NAN
+  diagnostics. `rhp_values::ops` stays engine-free and refuses whatever
+  php would diagnose, so constant folding leaves it to run time.
+  `tests/golden/lang/operator_diagnostics.php` pins the cases.
 
 ---
 

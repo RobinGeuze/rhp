@@ -1089,8 +1089,19 @@ impl Vm {
     /// php's array-offset key conversion for a read (`zend_fetch_dimension_
     /// address_inner` / `slow_index_convert`), with its diagnostics. `None`:
     /// an illegal offset type (TypeError raised by the caller).
+    #[inline]
     fn dim_key(&mut self, key: &Value, quiet: bool) -> Result<Option<ArrayKey>, Thrown> {
         let _ = quiet;
+        match key {
+            Value::Int(n) => return Ok(Some(ArrayKey::Int(*n))),
+            Value::Str(s) => return Ok(Some(ArrayKey::from_bytes(s.as_bytes()))),
+            _ => {}
+        }
+        self.dim_key_slow(key)
+    }
+
+    #[inline(never)]
+    fn dim_key_slow(&mut self, key: &Value) -> Result<Option<ArrayKey>, Thrown> {
         match key {
             Value::Null => self.diag(
                 builtins::E_DEPRECATED,
@@ -1470,6 +1481,11 @@ fn key_diags(k: &Value, null_dep: bool) {
 /// The array key for a write / fetch-for-write with `k`: php's key
 /// diagnostics, the TypeError for an unusable key.
 fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
+    match k {
+        Value::Int(n) => return Ok(ArrayKey::Int(*n)),
+        Value::Str(s) => return Ok(ArrayKey::from_bytes(s.as_bytes())),
+        _ => {}
+    }
     let k = deref(k);
     let key = ArrayKey::from_value(&k).ok_or_else(|| illegal_offset_on_array(&k, cx))?;
     key_diags(&k, true);

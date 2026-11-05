@@ -509,10 +509,6 @@ impl Vm {
                 self.nan_warning("bool")?;
                 Ok(true)
             }
-            Value::Ref(r) => {
-                let inner = r.borrow().clone();
-                self.truthy(&inner)
-            }
             _ => Ok(conv::to_bool(v)),
         }
     }

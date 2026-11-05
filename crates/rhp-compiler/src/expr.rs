@@ -209,23 +209,17 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    /// An operand of `.`: php converts a constant operand to a string while
-    /// compiling, so a constant array warns then (and is "Array").
-    fn concat_operand(&mut self, e: &Expression) -> Result<Reg, Thrown> {
-        if matches!(e, Expression::Array(_) | Expression::LegacyArray(_)) {
-            if let Ok(Value::Array(_)) = crate::fold::fold_const(self.cx, e) {
-                self.cx.compile_diags.borrow_mut().push((
-                    rhp_values::E_WARNING,
-                    "Array to string conversion".into(),
-                    self.cur_line,
-                ));
-                let dst = self.alloc_temp();
-                let k = self.intern_const(Value::str("Array"));
-                self.emit(Instr::LoadConst { dst, k });
-                return Ok(dst);
-            }
+    /// After both operands of `.` are compiled: php casts a constant array
+    /// operand to string (ZEND_CAST, which warns) before the concat.
+    fn concat_const_array_cast(&mut self, e: &Expression, r: Reg) -> Reg {
+        if matches!(e, Expression::Array(_) | Expression::LegacyArray(_))
+            && matches!(crate::fold::fold_const(self.cx, e), Ok(Value::Array(_)))
+        {
+            let dst = self.alloc_temp();
+            self.emit(Instr::CastString { dst, a: r });
+            return dst;
         }
-        self.compile_expr(e)
+        r
     }
 
     fn compile_binary(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
@@ -245,11 +239,11 @@ impl ProtoBuilder<'_> {
             _ => {}
         }
 
-        let (a, r) = if let Op::StringConcat(_) = &b.operator {
-            (self.concat_operand(b.lhs)?, self.concat_operand(b.rhs)?)
-        } else {
-            (self.compile_expr(b.lhs)?, self.compile_expr(b.rhs)?)
-        };
+        let (mut a, mut r) = (self.compile_expr(b.lhs)?, self.compile_expr(b.rhs)?);
+        if let Op::StringConcat(_) = &b.operator {
+            a = self.concat_const_array_cast(b.lhs, a);
+            r = self.concat_const_array_cast(b.rhs, r);
+        }
         // zend_vm's SPEC_RULE_COMMUTATIVE: php swaps the operands of these
         // opcodes when op1's kind is lower than op2's, which decides whose
         // object handler runs first.

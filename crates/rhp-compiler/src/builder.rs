@@ -46,6 +46,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) num_cvs: u16,
     pub(crate) next_temp: Reg,
     pub(crate) high_water: Reg,
+    /// The assignment being compiled is a statement of its own: its value
+    /// is not used.
+    pub(crate) result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
     pub(crate) temp_floor: Reg,
@@ -101,6 +104,7 @@ impl<'c> ProtoBuilder<'c> {
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
+            result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
             cur_line: 0,

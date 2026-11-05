@@ -1,0 +1,209 @@
+"5 apples" + "3":
+  [2] A non-numeric value encountered
+int(8)
+"a" - "b":
+  TypeError: Unsupported operand types: string - string
+"1 " + 1:
+int(2)
+[1] - [1]:
+  TypeError: Unsupported operand types: array - array
+STDIN + 1:
+  TypeError: Unsupported operand types: resource + int
+-"x":
+  TypeError: Unsupported operand types: string * int
++"7 up":
+  [2] A non-numeric value encountered
+int(7)
++(-0.0):
+float(-0)
+null ** []:
+  TypeError: Unsupported operand types: null ** array
+"abc" % 3:
+  TypeError: Unsupported operand types: string % int
+[1] % [1]:
+  TypeError: Unsupported operand types: array % array
+7 % "2.5":
+  [8192] Implicit conversion from float-string "2.5" to int loses precision
+int(1)
+"8" << 64:
+int(0)
+"-8" >> 70:
+int(-1)
+"1" << -1:
+  ArithmeticError: Bit shift by negative number
+1.5 | 4:
+  [8192] Implicit conversion from float 1.5 to int loses precision
+int(5)
+1e30 & 1:
+  [2] The float 1.0E+30 is not representable as an int, cast occurred
+int(0)
+"ab" | "c":
+string(4) "6362"
+"ab" & "c":
+string(2) "61"
+"ab" ^ "cde":
+string(4) "0206"
+~"ab":
+string(4) "9e9d"
+~1.5:
+  [8192] Implicit conversion from float 1.5 to int loses precision
+int(-2)
+~null:
+  TypeError: Cannot perform bitwise not on null
+~[]:
+  TypeError: Cannot perform bitwise not on array
+new stdClass xor 2:
+bool(false)
+"0" xor 0.0:
+bool(false)
+resource++:
+  TypeError: Cannot increment resource
+[]--:
+  TypeError: Cannot decrement array
+(int)1e19:
+  [2] The float 1.0E+19 is not representable as an int, cast occurred
+int(-8446744073709551616)
+(int)-INF:
+  [2] The float -INF is not representable as an int, cast occurred
+int(0)
+(int)"1e1000":
+int(0)
+(int)"-1e30":
+int(-9223372036854775808)
+(bool)NAN:
+  [2] unexpected NAN value was coerced to bool
+bool(true)
+(string)NAN:
+  [2] unexpected NAN value was coerced to string
+string(3) "NAN"
+"x" . NAN:
+  [2] unexpected NAN value was coerced to string
+string(4) "xNAN"
+if (NAN):
+  [2] unexpected NAN value was coerced to bool
+string(5) "taken"
+(array)NAN:
+  [2] unexpected NAN value was coerced to array
+array(1) {
+  [0]=>
+  float(NAN)
+}
+[1.5 => "a"]:
+  [8192] Implicit conversion from float 1.5 to int loses precision
+array(1) {
+  [1]=>
+  string(1) "a"
+}
+[null => "a"]:
+  [8192] Using null as an array offset is deprecated, use an empty string instead
+array(1) {
+  [""]=>
+  string(1) "a"
+}
+[1e20 => "a"]:
+  [2] The float 1.0E+20 is not representable as an int, cast occurred
+array(1) {
+  [7766279631452241920]=>
+  string(1) "a"
+}
+0x1FFFFFFFFFFFFFFFF:
+float(3.6893488147419103E+19)
+100000000000000000000:
+float(1.0E+20)
+takes_int(2.5):
+  [8192] Implicit conversion from float 2.5 to int loses precision
+int(2)
+takes_int("2.5"):
+  [8192] Implicit conversion from float-string "2.5" to int loses precision
+int(2)
+takes_string(NAN):
+  [2] unexpected NAN value was coerced to string
+string(3) "NAN"
+isset($a[[]]):
+  TypeError: Cannot access offset of type array in isset or empty
+empty($a[new stdClass]):
+  TypeError: Cannot access offset of type stdClass in isset or empty
+isset($a[null]):
+  [8192] Using null as an array offset is deprecated, use an empty string instead
+bool(true)
+isset($s["1x"]):
+bool(false)
+$s["1x"] ?? "d":
+  [2] Illegal string offset "1x"
+string(1) "b"
+$s[[]] ?? "d":
+  TypeError: Cannot access offset of type array on string
+unset($i[0][0]):
+  Error: Cannot unset offset in a non-array variable
+unset($o[0]):
+  Error: Cannot use object of type stdClass as array
+unset($f[0]):
+  [8192] Automatic conversion of false to array is deprecated
+bool(false)
+$a[$k] += 1 with $k = []:
+  TypeError: Cannot access offset of type array on array
+$a[STDIN] = 1:
+  [2] Resource ID#1 used as offset, casting to integer (1)
+array(1) {
+  [1]=>
+  int(1)
+}
+array_key_exists(null, ...):
+  [8192] Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead
+bool(true)
+array_key_exists([], ...):
+  TypeError: Cannot access offset of type array on array
+$x = $s[1] = "yz":
+  [2] Only the first byte will be assigned to the string offset
+array(2) {
+  [0]=>
+  string(1) "y"
+  [1]=>
+  string(3) "ayc"
+}
+$x = $s[-9] = "q":
+  [2] Illegal string offset -9
+array(2) {
+  [0]=>
+  NULL
+  [1]=>
+  string(3) "abc"
+}
+$s[0]->p = 1:
+  Error: Cannot use string offset as an object
+unset($s[0]->p):
+  Error: Cannot use string offset as an object
+sprintf("%s-%d", new Str, "7x"):
+string(3) "S-7"
+sprintf("%d", 1e30):
+  [2] The float 1.0E+30 is not representable as an int, cast occurred
+string(19) "5076964154930102272"
+sprintf("%s", []):
+  [2] Array to string conversion
+string(5) "Array"
+sprintf("%s", new stdClass):
+  Error: Object of class stdClass could not be converted to string
+vsprintf("%5.1f|%x", [new stdClass, 255]):
+  [2] Object of class stdClass could not be converted to float
+string(8) "  1.0|ff"
+implode(",", [new Str, [], 1.5]):
+  [2] Array to string conversion
+string(11) "S,Array,1.5"
+strtr("ab", ["a" => new Str]):
+string(2) "Sb"
+property_exists(1, "x"):
+  TypeError: property_exists(): Argument #1 ($object_or_class) must be of type object|string, int given
+method_exists(null, "x"):
+  TypeError: method_exists(): Argument #1 ($object_or_class) must be of type object|string, null given
+settype($n, "int"):
+  [2] The float NAN is not representable as an int, cast occurred
+int(0)
+settype($n, "array"):
+  [2] unexpected NAN value was coerced to array
+array(1) {
+  [0]=>
+  float(NAN)
+}
+[] . "x" with an object:
+  [2] Array to string conversion
+  Error: Object of class stdClass could not be converted to string

@@ -1408,6 +1408,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             },
         );
     }
+    if url.eq_ignore_ascii_case(b"php://stdin") {
+        return stdin_contents(host, offset, maxlen);
+    }
     let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
     if host
         .stream_wrapper(&scheme)
@@ -1487,6 +1490,43 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// file_get_contents("php://stdin"): a fresh stream on a dup of fd 0, seeked
+/// to `offset` as any stream. It seeks only where fd 0 does (a regular file;
+/// on Linux also /dev/null and the other memory devices); elsewhere the seek
+/// fails with php's two warnings.
+fn stdin_contents(
+    host: &mut dyn Host,
+    offset: i64,
+    maxlen: Option<usize>,
+) -> Result<Value, Thrown> {
+    use crate::main::streams::plain_wrapper::{dup_raw, FdStream};
+    let Some(fd) = dup_raw(0) else {
+        crate::open_failed(host, "file_get_contents", b"php://stdin")?;
+        return Ok(Value::Bool(false));
+    };
+    host.consume_resource_ids(1);
+    let mut stream = FdStream::new(fd);
+    if offset != 0 {
+        let whence = if offset > 0 {
+            libc::SEEK_SET
+        } else {
+            libc::SEEK_END
+        };
+        if !stream.seek(offset, whence) {
+            if !stream.is_seekable() {
+                crate::warn(host, "file_get_contents", "Stream does not support seeking")?;
+            }
+            crate::warn(
+                host,
+                "file_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::str(stream.read_all(maxlen.map_or(-1, |m| m as i64))))
 }
 
 /// file_get_contents over a wrapper's own stream (`zip://`): open with the

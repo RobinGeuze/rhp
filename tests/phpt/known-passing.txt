@@ -1520,9 +1520,11 @@ Zend/tests/match/012.phpt
 Zend/tests/match/017.phpt
 Zend/tests/match/023.phpt
 Zend/tests/match/024.phpt
+Zend/tests/match/037.phpt
 Zend/tests/match/039.phpt
 Zend/tests/match/040.phpt
 Zend/tests/match/041.phpt
+Zend/tests/match/043.phpt
 Zend/tests/match/044.phpt
 Zend/tests/match/045.phpt
 Zend/tests/match/046.phpt
@@ -1530,6 +1532,7 @@ Zend/tests/match/047.phpt
 Zend/tests/match/gh11134.phpt
 Zend/tests/match/match_of_phi_optimization.phpt
 Zend/tests/match/match_scdf_cleanup.phpt
+Zend/tests/match/unmatched_enum.phpt
 Zend/tests/memory_get_peak_usage.phpt
 Zend/tests/memory_reset_peak_usage.phpt
 Zend/tests/method_exists.phpt
@@ -3965,6 +3968,7 @@ ext/hash/tests/gost.phpt
 ext/hash/tests/hash-clone.phpt
 ext/hash/tests/hash_algos.phpt
 ext/hash/tests/hash_copy_001.phpt
+ext/hash/tests/hash_equals.phpt
 ext/hash/tests/hash_error.phpt
 ext/hash/tests/hash_file_basic.phpt
 ext/hash/tests/hash_file_basic1.phpt
@@ -4959,6 +4963,7 @@ ext/opcache/tests/opt/sccp_037.phpt
 ext/opcache/tests/opt/sccp_039.phpt
 ext/opcache/tests/opt/sccp_041.phpt
 ext/opcache/tests/opt/sccp_exception.phpt
+ext/opcache/tests/opt/sccp_exception3.phpt
 ext/opcache/tests/opt/sccp_in_array.phpt
 ext/opcache/tests/opt/sccp_isset_dim_partial_object.phpt
 ext/opcache/tests/optimize_static_001.phpt
@@ -6662,6 +6667,7 @@ ext/standard/tests/array/array_merge_recursive_variation5.phpt
 ext/standard/tests/array/array_merge_recursive_variation6.phpt
 ext/standard/tests/array/array_merge_recursive_variation8.phpt
 ext/standard/tests/array/array_merge_recursive_variation9.phpt
+ext/standard/tests/array/array_merge_variation1.phpt
 ext/standard/tests/array/array_merge_variation10.phpt
 ext/standard/tests/array/array_merge_variation2.phpt
 ext/standard/tests/array/array_merge_variation3.phpt

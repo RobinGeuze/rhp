@@ -73,6 +73,18 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// The scanner's "Octal escape sequence overflow" warnings for a string
+    /// body starting at source `offset`.
+    fn octal_overflow_warnings(&self, raw: &[u8], offset: u32) {
+        for (at, digits) in crate::strings::octal_overflows(raw) {
+            self.cx.diag(
+                rhp_values::E_COMPILE_WARNING,
+                offset + at as u32,
+                format!("Octal escape sequence overflow \\{digits} is greater than \\377"),
+            );
+        }
+    }
+
     /// A nullsafe guard on `src` for the open chain.
     pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
         let pos = self.code.len();
@@ -282,6 +294,12 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_literal(&mut self, lit: &Literal) -> Result<Reg, Thrown> {
+        if let Literal::String(s) = lit {
+            if matches!(s.raw.first(), Some(b'"') | Some(b'b' | b'B')) {
+                use mago_span::HasSpan;
+                self.octal_overflow_warnings(s.raw, s.span().start.offset);
+            }
+        }
         let dst = self.alloc_temp();
         match literal_value(lit) {
             Value::Null => self.emit(Instr::LoadNull { dst }),
@@ -752,11 +770,30 @@ impl ProtoBuilder<'_> {
         let dst = self.alloc_temp();
         let empty = self.intern_const(Value::str(""));
         self.emit(Instr::LoadConst { dst, k: empty });
+        use crate::parse::cst::{DocumentIndentation, DocumentKind};
+        let (heredoc, flat) = match cs {
+            CompositeString::Document(d) => (
+                d.kind == DocumentKind::Heredoc,
+                matches!(d.indentation, DocumentIndentation::None),
+            ),
+            _ => (false, false),
+        };
+        let escapes = !matches!(cs, CompositeString::Document(d) if d.kind == DocumentKind::Nowdoc);
         for part in parts.iter() {
             let pr = match part {
                 StringPart::Literal(l) => {
+                    if escapes {
+                        self.octal_overflow_warnings(l.raw, l.span.start.offset);
+                    }
+                    let mut v = l.value.unwrap_or(l.raw).to_vec();
+                    // A heredoc keeps `\"` as written.
+                    if heredoc && flat {
+                        if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
+                            v = fixed;
+                        }
+                    }
                     let r = self.alloc_temp();
-                    let k = self.intern_const(Value::str(l.value.unwrap_or(l.raw).to_vec()));
+                    let k = self.intern_const(Value::str(v));
                     self.emit(Instr::LoadConst { dst: r, k });
                     r
                 }

@@ -44,6 +44,7 @@ pub mod parse;
 mod prelude;
 mod shrink;
 mod stmt;
+mod strings;
 mod symbols;
 mod util;
 

@@ -489,3 +489,66 @@ fn cgi_output_splits_and_version_is_rewritten() {
     assert!(v.starts_with(b"X-Powered-By: PHP/8.5.8\r\n"));
     assert!(v.ends_with(b"body PHP/8.5.9"), "the body is left alone");
 }
+
+#[test]
+fn capture_stdio_follows_run_tests() {
+    let p = Phpt::parse(b"--CAPTURE_STDIO--\nstdin STDERR\n--FILE--\n<?php\n");
+    assert_eq!(
+        Capture::of(&p),
+        Capture {
+            stdin: true,
+            stdout: false,
+            stderr: true
+        }
+    );
+    assert_eq!(
+        Capture::of(&Phpt::parse(b"--FILE--\n<?php\n")),
+        Capture::ALL
+    );
+}
+
+#[test]
+fn uncaptured_streams_are_a_terminal() {
+    let script = "[ -t 0 ] && echo in-tty; [ -t 1 ] && echo out-tty >&2; [ -t 2 ] && echo err-tty; echo out; echo err >&2";
+    let run = |capture| {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        let o = run_proc_capturing(cmd, None, Duration::from_secs(5), capture);
+        String::from_utf8_lossy(&o.out).into_owned()
+    };
+    let only = |stdin, stdout, stderr| Capture {
+        stdin,
+        stdout,
+        stderr,
+    };
+    assert_eq!(run(Capture::ALL), "out\nerr\n");
+    // Only stderr captured: stdin and stdout are the pty.
+    assert_eq!(run(only(false, false, true)), "out-tty\nerr\n");
+    // Only stdout captured.
+    assert_eq!(run(only(true, true, false)), "err-tty\nout\n");
+    assert_eq!(run(only(false, false, false)), "");
+}
+
+#[test]
+fn conflicts_and_flakiness_follow_run_tests() {
+    assert_eq!(
+        parse_conflicts(b"# comment\nall\n  server # why\n"),
+        ["all", "server"]
+    );
+    let p = |s: &str| Phpt::parse(s.as_bytes());
+    assert!(is_flaky(&p("--FLAKY--\nwhy\n--FILE--\n<?php\n")));
+    assert!(is_flaky(&p("--FILE--\n<?php usleep(1);\n")));
+    assert!(is_flaky(&p("--FILE--\n<?php $t = HRTIME();\n")));
+    assert!(!is_flaky(&p("--FILE--\n<?php my_sleep(1);\n")));
+    assert!(is_flaky(&p(
+        "--SKIPIF--\n<?php getenv('SKIP_PERF_SENSITIVE');\n--FILE--\n<?php\n"
+    )));
+    assert!(is_flaky_output(b"Error: Connection refused."));
+    assert!(!is_flaky_output(b"timed outs"));
+}
+
+#[test]
+fn shell_quoting_matches_php() {
+    assert_eq!(escapeshellarg("/a b/it's"), r"'/a b/it'\''s'");
+    assert_eq!(addslashes(r#"a"b'c\d"#), r#"a\"b\'c\\d"#);
+}

@@ -102,17 +102,10 @@ fn section_header(line: &[u8]) -> Option<String> {
 }
 
 /// Sections whose semantics this runner doesn't reproduce (debugger,
-/// redirection, timing-sensitive or resource-conflicting tests). Web input
-/// (`--GET--`, `--POST--`, `--CGI--`, ...) runs through the CGI SAPI instead;
-/// see [`Phpt::is_cgi`] and [`CgiRequest`].
-const UNSUPPORTED_SECTIONS: &[&str] = &[
-    "HEADERS",
-    "PHPDBG",
-    "REDIRECTTEST",
-    "CAPTURE_STDIO",
-    "FLAKY",
-    "CONFLICTS",
-];
+/// redirection, response headers). Web input (`--GET--`, `--POST--`,
+/// `--CGI--`, ...) runs through the CGI SAPI instead; see [`Phpt::is_cgi`]
+/// and [`CgiRequest`].
+const UNSUPPORTED_SECTIONS: &[&str] = &["HEADERS", "PHPDBG", "REDIRECTTEST"];
 
 /// run-tests.php's `$ini_overwrites` (php 8.5), verbatim.
 const PHP_DEFAULT_INI: &[&str] = &[
@@ -157,25 +150,31 @@ const PHP_DEFAULT_INI: &[&str] = &[
 ];
 
 /// Environment run-tests.php provides by default (offline, non-interactive),
-/// plus skipping slow and timing-sensitive tests, which would make a CI
-/// ratchet flaky, and one locale for every machine: libc and ICU's default
-/// locale (intl) come from it.
+/// plus skipping performance-sensitive tests, which would make a CI ratchet
+/// flaky, and one locale for every machine: libc and ICU's default locale
+/// (intl) come from it. Slow tests run, as with run-tests' default
+/// (`--skip-slow` sets `SKIP_SLOW_TESTS`, like its `-x`).
 const BASE_ENV: &[(&str, &str)] = &[
     ("NO_INTERACTION", "1"),
     ("SKIP_ONLINE_TESTS", "1"),
-    ("SKIP_SLOW_TESTS", "1"),
     ("SKIP_PERF_SENSITIVE", "1"),
     ("LC_ALL", "C"),
 ];
 
-/// Tests that spawn "the php under test" as a subprocess. rhp's CLI doesn't
-/// take php's flags, and pointing it at the real php would let rhp's run
-/// delegate the work to php, so such tests are skipped rather than compared.
-const SUBPROCESS_MARKERS: &[&str] = &[
-    "TEST_PHP_EXECUTABLE",
-    "TEST_PHP_CGI_EXECUTABLE",
-    "TEST_PHP_EXTRA_ARGS",
-    "PHP_BINARY",
+/// Tests that start php's CLI server (`-S`), which rhp doesn't have, are
+/// skipped, except under [`CLI_SERVER_PEERS`]. Other tests that spawn "the
+/// php under test" (`TEST_PHP_EXECUTABLE`, `PHP_BINARY`,
+/// `TEST_PHP_CGI_EXECUTABLE`) run: each engine spawns itself.
+const CLI_SERVER_MARKERS: &[&str] = &["php_cli_server", "'-S'", "\"-S\"", " -S "];
+
+/// Test directories whose tests start php's CLI server only as the HTTP
+/// peer of the client code under test (curl, the http:// wrapper): both
+/// engines get `TEST_PHP_EXECUTABLE=php` there. The server only answers.
+const CLI_SERVER_PEERS: &[&str] = &[
+    "ext/curl/tests/",
+    "ext/standard/tests/http/",
+    "ext/standard/tests/streams/",
+    "ext/standard/tests/url/",
 ];
 
 /// Lines of output php's error display produces (stripped for the
@@ -198,9 +197,11 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
+    "arg_separator.input",
     "bcmath.scale",
     "date.timezone",
     "default_charset",
+    "default_socket_timeout",
     "display_errors",
     "error_reporting",
     "html_errors",
@@ -279,10 +280,15 @@ struct IniRules {
 }
 
 impl IniRules {
-    /// Whether `kv` (`name=value`) is passed to rhp too.
+    /// Whether `kv` (`name=value`) is passed to rhp too. A directive php
+    /// doesn't know is: php keeps it as a cfg entry only (`get_cfg_var()`),
+    /// and so should rhp.
     fn rhp_applies(&self, kv: &str) -> bool {
         let k = ini_key(kv);
-        RHP_INI.contains(&k) || k.starts_with("opcache.") || self.extra.iter().any(|e| e == k)
+        RHP_INI.contains(&k)
+            || k.starts_with("opcache.")
+            || self.extra.iter().any(|e| e == k)
+            || self.probe.is_unknown(k)
     }
 
     /// A test's `--INI--` as php `-d` args, or why it can't run. A setting
@@ -329,6 +335,7 @@ impl IniRules {
                         .get(k)
                         .is_some_and(|d| ini_bool(d).is_some() && ini_bool(d) == ini_bool(v))
                     || self.probe.is_noop(k, &line)
+                    || self.probe.is_unknown(k)
             };
             if !pass_through && !self.rhp_applies(&line) && !noop() {
                 return Err(format!("ini:{k}"));
@@ -364,8 +371,8 @@ fn substitute_ini(line: &str, dir: &Path) -> Result<String, String> {
 /// unchanged is a no-op: php behaves as without it, so rhp needn't get it.
 /// The answer comes from the php under test (one `php -r` per directive and
 /// per setting, cached for the run), so it is deterministic for a given
-/// php. A directive php doesn't know (`ini_get()` is false) is never a
-/// no-op: an extension php lacks may own it.
+/// php. A directive php doesn't know (`ini_get()` is false) only becomes a
+/// cfg entry (`get_cfg_var()`); both engines get it.
 struct IniProbe {
     /// `None` in unit tests: no setting is a no-op by probing.
     php: Option<PathBuf>,
@@ -390,6 +397,11 @@ impl IniProbe {
         }
         let base = self.value(k, None);
         base.starts_with(b"s:") && base == self.value(k, Some(line))
+    }
+
+    /// Whether php doesn't know the directive `k` (`ini_get()` is false).
+    fn is_unknown(&self, k: &str) -> bool {
+        self.php.is_some() && !k.is_empty() && self.value(k, None) == b"b:0;"
     }
 
     fn value(&self, k: &str, line: Option<&str>) -> Vec<u8> {
@@ -674,11 +686,83 @@ fn kill_group(pgid: u32) {
     unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL) };
 }
 
+/// Which of a run's standard streams the runner captures (run-tests.php's
+/// `--CAPTURE_STDIO--`; all three by default). An uncaptured stream is a
+/// terminal, as run-tests' own would be when run from one: a pty whose
+/// output is drained and dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capture {
+    pub stdin: bool,
+    pub stdout: bool,
+    pub stderr: bool,
+}
+
+impl Capture {
+    pub const ALL: Capture = Capture {
+        stdin: true,
+        stdout: true,
+        stderr: true,
+    };
+
+    /// run-tests.php: a stream is captured when the section names it
+    /// (case-insensitively, anywhere in the text).
+    pub fn of(phpt: &Phpt) -> Capture {
+        let Some(body) = phpt.section("CAPTURE_STDIO") else {
+            return Capture::ALL;
+        };
+        let text = String::from_utf8_lossy(body).to_ascii_uppercase();
+        Capture {
+            stdin: text.contains("STDIN"),
+            stdout: text.contains("STDOUT"),
+            stderr: text.contains("STDERR"),
+        }
+    }
+}
+
+/// A pty pair: (master, slave).
+fn open_pty() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::FromRawFd;
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty(3) writes two new descriptors into the out-params; the
+    // name, termios and winsize arguments may be null.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both descriptors were just opened and are owned by nobody else.
+    Ok(unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(master),
+            std::os::fd::OwnedFd::from_raw_fd(slave),
+        )
+    })
+}
+
 /// Run `cmd` to completion or `timeout`, with stdout and stderr on one pipe,
 /// in its own process group. A process that outlives the child while holding
 /// the pipe (a backgrounded grandchild) is killed with the group, and the
 /// reader is only waited on briefly, so nothing can stall the harness.
-fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcome {
+fn run_proc(cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcome {
+    run_proc_capturing(cmd, stdin, timeout, Capture::ALL)
+}
+
+/// [`run_proc`], capturing only the streams `capture` names. Output is the
+/// merged stream when stdout and stderr are both captured (run-tests'
+/// `2>&1`), else whichever one is.
+fn run_proc_capturing(
+    mut cmd: Command,
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    capture: Capture,
+) -> Outcome {
     let failed = |e: std::io::Error| Outcome {
         out: format!("spawn failed: {e}").into_bytes(),
         timed_out: false,
@@ -693,14 +777,39 @@ fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcom
         Ok(w) => w,
         Err(e) => return failed(e),
     };
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
+    let pty = if capture == Capture::ALL {
+        None
     } else {
-        Stdio::null()
-    })
-    .stdout(writer)
-    .stderr(writer2)
-    .process_group(0);
+        match open_pty() {
+            Ok(p) => Some(p),
+            Err(e) => return failed(e),
+        }
+    };
+    let tty =
+        || -> std::io::Result<Stdio> { Ok(Stdio::from(pty.as_ref().unwrap().1.try_clone()?)) };
+    let streams = (|| -> std::io::Result<(Stdio, Stdio, Stdio)> {
+        let input = match (capture.stdin, stdin) {
+            (false, _) => tty()?,
+            (true, Some(_)) => Stdio::piped(),
+            (true, None) => Stdio::null(),
+        };
+        let out = if capture.stdout {
+            writer.into()
+        } else {
+            tty()?
+        };
+        let err = if capture.stderr {
+            writer2.into()
+        } else {
+            tty()?
+        };
+        Ok((input, out, err))
+    })();
+    let (input, out, err) = match streams {
+        Ok(s) => s,
+        Err(e) => return failed(e),
+    };
+    cmd.stdin(input).stdout(out).stderr(err).process_group(0);
     let spawned = cmd.spawn();
     drop(cmd); // release our copies of the pipe's write end, or EOF never comes
     let mut child = match spawned {
@@ -708,6 +817,16 @@ fn run_proc(mut cmd: Command, stdin: Option<&[u8]>, timeout: Duration) -> Outcom
         Err(e) => return failed(e),
     };
     let pgid = child.id();
+    if let Some((master, slave)) = pty {
+        // Drain what goes to the terminal; the reader ends once every copy
+        // of the slave is closed.
+        drop(slave);
+        let mut master = fs::File::from(master);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while matches!(master.read(&mut buf), Ok(n) if n > 0) {}
+        });
+    }
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
         let input = input.to_vec();
         std::thread::spawn(move || {
@@ -1195,6 +1314,13 @@ struct Ctx {
     skew: Duration,
     /// Which `--INI--` settings run, and which reach rhp.
     ini: std::sync::Arc<IniRules>,
+    /// run-tests' `TEST_PHP_EXECUTABLE`, `TEST_PHP_CGI_EXECUTABLE` and their
+    /// `_ESCAPED` forms, for php's runs: php and php-cgi.
+    php_sub_env: Vec<(String, String)>,
+    /// The same for rhp's runs: rhp itself, and a shim running the CGI
+    /// candidate. A test spawning "the php under test" spawns the engine
+    /// it runs on.
+    rhp_sub_env: Vec<(String, String)>,
 }
 
 /// Everything needed to run one script through both engines.
@@ -1210,6 +1336,8 @@ struct Invocation<'a> {
     /// A CGI test's request: the script then runs under `php-cgi -C` and the
     /// CGI candidate instead of the CLIs.
     cgi: Option<&'a CgiRequest>,
+    /// The streams the script's runs capture (`--CAPTURE_STDIO--`).
+    capture: Capture,
     /// The test directory as it was before any engine ran (plus our script).
     snapshot: Snapshot,
 }
@@ -1230,24 +1358,37 @@ impl Ctx {
         cmd.arg("-n")
             .current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
+            .envs(self.php_sub_env.iter().cloned())
             .envs(inv.env.iter().cloned());
         for kv in self.php_ini.iter().chain(extra_ini) {
             cmd.arg("-d").arg(kv);
         }
         cmd.arg(script).args(inv.args);
-        run_proc(cmd, inv.stdin, timeout)
+        let capture = if script == inv.script {
+            inv.capture
+        } else {
+            Capture::ALL
+        };
+        run_proc_capturing(cmd, inv.stdin, timeout, capture)
     }
 
     /// `<program> -C -n -d opcache.enable=0 <ini> -f <script> [-- args]` with
     /// the request's CGI environment: run-tests.php's CGI command line.
     /// opcache is built into php 8.5 and on by default under CGI; the
     /// reference always runs with it off (rhp mimics "built in, disabled").
-    fn cgi_cmd(&self, program: &[String], inv: &Invocation, req: &CgiRequest) -> Command {
+    fn cgi_cmd(
+        &self,
+        program: &[String],
+        sub_env: &[(String, String)],
+        inv: &Invocation,
+        req: &CgiRequest,
+    ) -> Command {
         let mut cmd = Command::new(&program[0]);
         cmd.args(&program[1..])
             .args(["-C", "-n", "-d", "opcache.enable=0"])
             .current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
+            .envs(sub_env.iter().cloned())
             .envs(req.env.iter());
         for kv in self.php_ini.iter().chain(inv.ini) {
             cmd.arg("-d").arg(kv);
@@ -1270,6 +1411,7 @@ impl Ctx {
         cmd.args(["-n", "-q", "-d", "opcache.enable=0"])
             .current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
+            .envs(self.php_sub_env.iter().cloned())
             .envs(inv.env.iter().cloned());
         for kv in self.php_ini.iter().chain(inv.ini) {
             cmd.arg("-d").arg(kv);
@@ -1281,12 +1423,13 @@ impl Ctx {
 
     fn rhp(&self, inv: &Invocation) -> Outcome {
         if let (Some(req), Some(cgi)) = (inv.cgi, &self.cgi) {
-            let cmd = self.cgi_cmd(&cgi.candidate, inv, req);
+            let cmd = self.cgi_cmd(&cgi.candidate, &self.rhp_sub_env, inv, req);
             return run_proc(cmd, req.body.as_deref(), self.timeout);
         }
         let mut cmd = Command::new(&self.rhp_bin);
         cmd.current_dir(inv.dir)
             .envs(self.base_env.iter().cloned())
+            .envs(self.rhp_sub_env.iter().cloned())
             .envs(inv.env.iter().cloned());
         // run-tests' ini overwrites, as php gets them, then the test's
         // settings rhp applies.
@@ -1295,7 +1438,7 @@ impl Ctx {
             cmd.arg("-d").arg(kv);
         }
         cmd.arg(inv.script).args(inv.args);
-        run_proc(cmd, inv.stdin, self.timeout)
+        run_proc_capturing(cmd, inv.stdin, self.timeout, inv.capture)
     }
 
     /// Undo an engine run: run `--CLEAN--` (for files outside the test dir),
@@ -1320,7 +1463,7 @@ impl Ctx {
             (Some(req), Some(cgi)) => {
                 let program = [cgi.php_cgi.to_string_lossy().into_owned()];
                 let mut out = run_proc(
-                    self.cgi_cmd(&program, inv, req),
+                    self.cgi_cmd(&program, &self.php_sub_env, inv, req),
                     req.body.as_deref(),
                     timeout,
                 );
@@ -1415,6 +1558,15 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     }
     let file = match (phpt.section("FILE"), phpt.section("FILE_EXTERNAL")) {
         (Some(f), _) => f.to_vec(),
+        // run-tests: FILE with its trailing newlines removed.
+        (None, None) if phpt.has("FILEEOF") => {
+            let f = phpt.section("FILEEOF").unwrap();
+            let end = f
+                .iter()
+                .rposition(|&b| b != b'\r' && b != b'\n')
+                .map_or(0, |e| e + 1);
+            f[..end].to_vec()
+        }
         (None, Some(ext)) => {
             let name = String::from_utf8_lossy(ext).trim().to_string();
             match fs::read(dir.join(&name)) {
@@ -1430,8 +1582,9 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         };
         hay(Some(&file)) || hay(phpt.section("SKIPIF")) || hay(phpt.section("CLEAN"))
     };
-    if let Some(m) = SUBPROCESS_MARKERS.iter().find(|m| mentions(m)) {
-        return skipped(rel, format!("subprocess:{m}"));
+    let server_peer = CLI_SERVER_MARKERS.iter().any(|m| mentions(m));
+    if server_peer && !CLI_SERVER_PEERS.iter().any(|d| rel.starts_with(d)) {
+        return skipped(rel, "subprocess:cli-server");
     }
     let ini = match ctx.ini.test_ini(&phpt, &dir, is_cgi) {
         Ok(ini) => ini,
@@ -1454,12 +1607,21 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
                 .collect()
         })
         .unwrap_or_default();
-    // ext/curl's server.inc starts `TEST_PHP_EXECUTABLE -S` as the HTTP peer
-    // of the transfers under test: php's CLI server for both engines (rhp
-    // has no -S). The server only answers; curl is the code compared.
-    if rel.starts_with("ext/curl/tests/") {
-        env.push(("TEST_PHP_EXECUTABLE".into(), php_bin()));
+    // ext/curl's server.inc and php_cli_server.inc start
+    // `TEST_PHP_EXECUTABLE -S` as the HTTP peer of the client under test:
+    // php's CLI server for both engines (rhp has no -S).
+    if server_peer || rel.starts_with("ext/curl/tests/") {
+        let php = which(&php_bin()).to_string_lossy().into_owned();
+        env.push(("TEST_PHP_EXECUTABLE_ESCAPED".into(), escapeshellarg(&php)));
+        env.push(("TEST_PHP_EXECUTABLE".into(), php));
     }
+    // run-tests: `$pass_options . ' ' . $ini_settings` (settings2params of
+    // its ini overwrites and the test's INI); php runs with -n.
+    let mut extra_args = String::from(" -n ");
+    for kv in ctx.php_ini.iter().chain(&ini) {
+        let _ = write!(extra_args, " -d \"{}\"", addslashes(kv));
+    }
+    env.insert(0, ("TEST_PHP_EXTRA_ARGS".into(), extra_args));
     let args: Vec<String> = phpt
         .section("ARGS")
         .map(|b| {
@@ -1495,7 +1657,9 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         clean: phpt.section("CLEAN").map(|c| (clean_script.as_path(), c)),
         snapshot: (*pristine).clone(),
         cgi: cgi_req.as_ref(),
+        capture: Capture::of(&phpt),
     };
+    let mut flaky = is_flaky(&phpt);
 
     if let Some(skipif) = phpt.section("SKIPIF") {
         let skip_script = root.join(format!("{stem}.skip.php"));
@@ -1510,6 +1674,8 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         if text.len() >= 4 && text[..4].eq_ignore_ascii_case("skip") {
             return skipped(rel, "skipif");
         }
+        // run-tests: a SKIPIF printing "flaky" marks the test FLAKY.
+        flaky |= text.len() >= 5 && text[..5].eq_ignore_ascii_case("flaky");
     }
 
     if fs::write(&script, &file).is_err() {
@@ -1535,8 +1701,25 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         }
     }
     std::thread::sleep(ctx.skew);
+    // The test (or its CLEAN) may have rewritten or deleted the script.
+    let _ = fs::write(&script, &file);
     let rhp_out = ctx.rhp_script(&inv);
     let mut v = classify(&php_out, &rhp_out);
+    // run-tests retries a failing flaky test once; so does a pair of runs
+    // here.
+    let (php_out, rhp_out) = if v.status != Status::Match
+        && (flaky || is_flaky_output(&php_out.out) || is_flaky_output(&rhp_out.out))
+    {
+        let _ = fs::write(&script, &file);
+        let php_again = ctx.php_script(&inv);
+        std::thread::sleep(ctx.skew);
+        let _ = fs::write(&script, &file);
+        let rhp_again = ctx.rhp_script(&inv);
+        v = classify(&php_again, &rhp_again);
+        (php_again, rhp_again)
+    } else {
+        (php_out, rhp_out)
+    };
     // Some php output is unspecified (raw memcmp() magnitudes, ids, sizes) and
     // can differ run to run; php-src marks it with EXPECTF/EXPECTREGEX. When
     // the engines differ but both satisfy the test's own spec, it passes —
@@ -1588,6 +1771,7 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
                 sinks.mstats.lock().unwrap().php_only += 1;
                 continue; // rhp doesn't match the unmutated test; comparing is noise
             }
+            let _ = fs::write(&script, &m.source);
             let rhp_m = ctx.rhp_script(&inv);
             let mv = classify(&php_m, &rhp_m);
             if mv.status == Status::Skipped {
@@ -1619,6 +1803,73 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
         status: v.status,
         key: v.key,
     }
+}
+
+/// PHP's `addslashes()`.
+fn addslashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\'' | '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\0' => out.push_str("\\0"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// run-tests.php's `is_flaky()`: a FLAKY section, a SKIPIF that checks
+/// SKIP_PERF_SENSITIVE, or a FILE calling a timing function.
+fn is_flaky(phpt: &Phpt) -> bool {
+    let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    if phpt.has("FLAKY")
+        || phpt
+            .section("SKIPIF")
+            .is_some_and(|s| has(s, b"SKIP_PERF_SENSITIVE"))
+    {
+        return true;
+    }
+    let Some(file) = phpt.section("FILE") else {
+        return false;
+    };
+    let file = file.to_ascii_lowercase();
+    ["disk_free_space", "hrtime", "microtime", "sleep", "usleep"]
+        .iter()
+        .any(|f| {
+            file.windows(f.len() + 1).enumerate().any(|(i, w)| {
+                w[..f.len()] == *f.as_bytes()
+                    && w[f.len()] == b'('
+                    && (i == 0 || !is_word(file[i - 1]))
+            })
+        })
+}
+
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// run-tests.php's `is_flaky_output()`: words of a transient failure.
+fn is_flaky_output(out: &[u8]) -> bool {
+    let out = out.to_ascii_lowercase();
+    [
+        "404: page not found",
+        "address already in use",
+        "connection refused",
+        "deadlock",
+        "mailbox already exists",
+        "timed out",
+    ]
+    .iter()
+    .any(|m| {
+        out.windows(m.len()).enumerate().any(|(i, w)| {
+            w == m.as_bytes()
+                && (i == 0 || !is_word(out[i - 1]))
+                && out.get(i + m.len()).is_none_or(|&b| !is_word(b))
+        })
+    })
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -1846,6 +2097,7 @@ fn emit_fixture(
         clean: None,
         snapshot: Snapshot::default(),
         cgi: None,
+        capture: Capture::ALL,
     };
     let php = ctx.php(&here, &[], &php_path);
     let rhp = ctx.rhp(&here);
@@ -2259,6 +2511,7 @@ fn version_skew(ctx: &Ctx, scratch: &Path) -> Option<(String, String)> {
         clean: None,
         snapshot: Snapshot::default(),
         cgi: None,
+        capture: Capture::ALL,
     };
     let php = String::from_utf8_lossy(&ctx.php(&inv, &[], &script).out)
         .trim()
@@ -2280,6 +2533,64 @@ pub(crate) fn find_php_cgi(explicit: Option<&Path>) -> Option<PathBuf> {
 /// Whether the file at `root/rel` is a CGI test (for `--cgi-only`).
 fn is_cgi_test(root: &Path, rel: &str) -> bool {
     fs::read(root.join(rel)).is_ok_and(|d| Phpt::parse(&d).is_cgi())
+}
+
+/// PHP's `escapeshellarg()` (POSIX).
+fn escapeshellarg(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// `name` as an absolute path: itself if it has a `/`, else found on PATH.
+fn which(name: &str) -> PathBuf {
+    if name.contains('/') {
+        let p = PathBuf::from(name);
+        return p.canonicalize().unwrap_or(p);
+    }
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|d| d.join(name))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// The "php under test" environment run-tests.php sets
+/// (`TEST_PHP_EXECUTABLE`, `TEST_PHP_CGI_EXECUTABLE` and their `_ESCAPED`
+/// forms), for php's runs and for rhp's. rhp's CGI executable is a shim in
+/// `work` that runs the CGI candidate. Without a php-cgi, neither side gets
+/// a CGI executable (tests needing one then skip, as under run-tests).
+type SubEnv = Vec<(String, String)>;
+fn sub_envs(
+    work: &Path,
+    rhp_bin: &Path,
+    cgi: Option<&CgiEngines>,
+) -> Result<(SubEnv, SubEnv), String> {
+    let pair = |k: &str, v: &str| {
+        [
+            (k.to_string(), v.to_string()),
+            (format!("{k}_ESCAPED"), escapeshellarg(v)),
+        ]
+    };
+    let php = which(&php_bin()).to_string_lossy().into_owned();
+    let mut php_env: SubEnv = pair("TEST_PHP_EXECUTABLE", &php).into();
+    let mut rhp_env: SubEnv = pair("TEST_PHP_EXECUTABLE", &rhp_bin.to_string_lossy()).into();
+    if let Some(c) = cgi {
+        use std::os::unix::fs::PermissionsExt;
+        php_env.extend(pair(
+            "TEST_PHP_CGI_EXECUTABLE",
+            &c.php_cgi.to_string_lossy(),
+        ));
+        let shim = work.join("rhp-cgi");
+        let words: Vec<String> = c.candidate.iter().map(|w| escapeshellarg(w)).collect();
+        let script = format!("#!/bin/sh\nexec {} \"$@\"\n", words.join(" "));
+        fs::write(&shim, script)
+            .and_then(|()| fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)))
+            .map_err(|e| format!("writing {}: {e}", shim.display()))?;
+        let shim = shim.canonicalize().unwrap_or(shim);
+        rhp_env.extend(pair("TEST_PHP_CGI_EXECUTABLE", &shim.to_string_lossy()));
+    }
+    Ok((php_env, rhp_env))
 }
 
 /// Run `tests` across the worker roots (one worker per root), sorted by path.
@@ -2322,18 +2633,122 @@ fn faketime_env(lib: &str) -> Result<Vec<(String, String)>, String> {
 /// Confirming runs per job slot (they mostly sleep; see `--write-known`).
 const CONFIRM_OVERSUBSCRIBE: usize = 4;
 
-fn run_parallel(ctx: &Ctx, roots: &[PathBuf], tests: &[String], sinks: &Sinks) -> Vec<TestResult> {
+/// run-tests.php's `parse_conflicts()`: one key per line, `#` comments.
+fn parse_conflicts(text: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(text);
+    let text: String = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.trim()
+        .split('\n')
+        .map(|k| k.trim().to_string())
+        .collect()
+}
+
+/// Each test's conflict keys, as run-tests.php reads them: its
+/// `--CONFLICTS--` section, else a `CONFLICTS` file in its directory. While
+/// a test holding key K runs, no other test holding K may; tests holding
+/// `all` run alone, after everything else.
+fn conflict_keys(php_src: &Path, tests: &[String]) -> HashMap<String, Vec<String>> {
+    let mut dirs: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut out = HashMap::new();
+    for rel in tests {
+        let path = php_src.join(rel);
+        let section = fs::read(&path)
+            .ok()
+            .and_then(|d| Phpt::parse(&d).section("CONFLICTS").map(parse_conflicts));
+        let keys = section.unwrap_or_else(|| {
+            let dir = path.parent().unwrap_or(php_src).to_path_buf();
+            dirs.entry(dir)
+                .or_insert_with_key(|d| {
+                    fs::read(d.join("CONFLICTS"))
+                        .map(|c| parse_conflicts(&c))
+                        .unwrap_or_default()
+                })
+                .clone()
+        });
+        let keys: Vec<String> = keys.into_iter().filter(|k| !k.is_empty()).collect();
+        if !keys.is_empty() {
+            out.insert(rel.clone(), keys);
+        }
+    }
+    out
+}
+
+/// Run `tests` the way run-tests.php schedules them: in parallel, never two
+/// tests sharing a conflict key at once, then the `all` tests one by one on
+/// the first worker. Results come back sorted by path.
+fn run_phases(
+    ctx: &Ctx,
+    roots: &[PathBuf],
+    tests: &[String],
+    sinks: &Sinks,
+    conflicts: &HashMap<String, Vec<String>>,
+) -> Vec<TestResult> {
+    let alone = |t: &String| {
+        conflicts
+            .get(t)
+            .is_some_and(|k| k.iter().any(|k| k == "all"))
+    };
+    let (sequential, parallel): (Vec<String>, Vec<String>) = tests.iter().cloned().partition(alone);
+    let mut results = run_parallel(ctx, roots, &parallel, sinks, conflicts);
+    if !sequential.is_empty() {
+        eprintln!(
+            "phpt: {} tests that conflict with all, one at a time",
+            sequential.len()
+        );
+        results.extend(run_parallel(
+            ctx,
+            &roots[..1],
+            &sequential,
+            sinks,
+            conflicts,
+        ));
+        results.sort_by(|a, b| a.test.cmp(&b.test));
+    }
+    results
+}
+
+fn run_parallel(
+    ctx: &Ctx,
+    roots: &[PathBuf],
+    tests: &[String],
+    sinks: &Sinks,
+    conflicts: &HashMap<String, Vec<String>>,
+) -> Vec<TestResult> {
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(tests.len()));
+    // Conflict keys held by running tests.
+    let held = (
+        Mutex::new(BTreeSet::<String>::new()),
+        std::sync::Condvar::new(),
+    );
     let started = Instant::now();
     std::thread::scope(|s| {
         for root in roots {
-            let (next, done, results) = (&next, &done, &results);
+            let (next, done, results, held) = (&next, &done, &results, &held);
             s.spawn(move || loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(rel) = tests.get(i) else { break };
+                let keys = conflicts.get(rel).map_or(&[][..], Vec::as_slice);
+                if !keys.is_empty() {
+                    let mut h = held.0.lock().unwrap();
+                    while keys.iter().any(|k| h.contains(k)) {
+                        h = held.1.wait(h).unwrap();
+                    }
+                    h.extend(keys.iter().cloned());
+                }
                 let r = run_test(ctx, root, rel, sinks);
+                if !keys.is_empty() {
+                    let mut h = held.0.lock().unwrap();
+                    for k in keys {
+                        h.remove(k);
+                    }
+                    held.1.notify_all();
+                }
                 results.lock().unwrap().push(r);
                 let d = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if d.is_multiple_of(500) {
@@ -2385,6 +2800,7 @@ running:
   --timeout <secs>       per-process timeout (default: 10)
   --work <dir>           scratch copy of the test trees (default: a temp dir)
   --keep-work            don't delete the scratch copy
+  --skip-slow            set SKIP_SLOW_TESTS, so slow tests skip (run-tests' -x)
   --faketime <lib|auto>  run every php/rhp process under libfaketime, all starting
                          at the same instant (FAKETIME=\"@2026-01-01 12:00:00\"), so
                          tests that print the date/time compare equal; the
@@ -2431,6 +2847,7 @@ struct Opts {
     write_known: Option<PathBuf>,
     top: usize,
     rhp_ini: Vec<String>,
+    skip_slow: bool,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -2461,6 +2878,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         write_known: None,
         top: 25,
         rhp_ini: Vec::new(),
+        skip_slow: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -2509,6 +2927,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--write-known" => o.write_known = Some(val()?.into()),
             "--top" => o.top = num(val()?)? as usize,
             "--rhp-ini" => o.rhp_ini.push(val()?),
+            "--skip-slow" => o.skip_slow = true,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown option {other:?}")),
         }
@@ -2683,7 +3102,19 @@ pub fn main(args: &[String]) -> ExitCode {
         eprintln!("phpt: clocks faked from {FAKETIME_START} ({})", f[1].1);
         base_env.extend(f.iter().cloned());
     }
+    if o.skip_slow {
+        base_env.push(("SKIP_SLOW_TESTS".into(), "1".into()));
+    }
+    let (php_sub_env, rhp_sub_env) = match sub_envs(&work, &rhp_bin, cgi.as_ref()) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("rhp-difftest phpt: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let ctx = Ctx {
+        php_sub_env,
+        rhp_sub_env,
         php_modules: php_modules(&php_ini),
         php_ini: php_ini.clone(),
         base_env,
@@ -2739,7 +3170,8 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     let sinks = Sinks::default();
     let started = Instant::now();
-    let mut results = run_parallel(&ctx, &worker_roots, &tests, &sinks);
+    let conflicts = conflict_keys(&o.php_src, &tests);
+    let mut results = run_phases(&ctx, &worker_roots, &tests, &sinks, &conflicts);
 
     // A ratchet list must not contain tests that only match by luck (output
     // with the current time, say): re-run every match and keep the steady ones.
@@ -2785,7 +3217,7 @@ pub fn main(args: &[String]) -> ExitCode {
                 Err(e) => eprintln!("phpt: confirming on {jobs} workers only ({e})"),
             }
         }
-        let again = run_parallel(&confirm_ctx, &pool, &matched, &Sinks::default());
+        let again = run_phases(&confirm_ctx, &pool, &matched, &Sinks::default(), &conflicts);
         for r in again.into_iter().filter(|r| r.status != Status::Match) {
             if let Some(orig) = results.iter_mut().find(|o| o.test == r.test) {
                 orig.status = Status::Mismatch;

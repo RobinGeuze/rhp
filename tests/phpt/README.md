@@ -32,7 +32,9 @@ How it compares, mirroring `run-tests.php`:
   like `run-tests.php` and matched with PCRE, the test passes. The summary
   says how many matches came about this way.
 - php gets run-tests' INI overrides and environment (offline,
-  non-interactive). Slow and timing-sensitive tests are skipped too. Both
+  non-interactive). Performance-sensitive tests (`SKIP_PERF_SENSITIVE`) are
+  skipped; slow tests run, as with run-tests' default (`--skip-slow` sets
+  `SKIP_SLOW_TESTS`, like run-tests' `-x`). Both
   engines run with `LC_ALL=C`, so the locale (libc's, and ICU's default
   locale behind intl) is the same on every machine; run-tests itself passes
   the caller's environment through.
@@ -40,7 +42,9 @@ How it compares, mirroring `run-tests.php`:
   lines, both sides trimmed, the last value of a name kept.
 - A test's `--INI--` setting that leaves php's effective value as run-tests'
   defaults have it (`ini_get()`, asked of the php under test once per
-  setting) is a no-op. A setting that changes it runs only if rhp applies
+  setting) is a no-op. A directive php doesn't know (`ini_get()` is false)
+  only becomes a cfg entry (`get_cfg_var()`): both engines get it. A
+  setting that changes a known directive's value runs only if rhp applies
   the directive (`RHP_INI` in `tools/rhp-difftest/src/phpt.rs`, e.g.
   `pcre.jit`, `error_reporting`, and every `opcache.*`); both engines then get
   the setting. `--rhp-ini <directive>` runs the tests a directive blocks, to
@@ -54,11 +58,26 @@ How it compares, mirroring `run-tests.php`:
 - Each worker has its own copy of the test trees. After every engine run, the
   runner executes `--CLEAN--` and restores the test's directory, so php and rhp
   (and every mutant) start from the same files.
-- Tests that spawn "the php under test" (`TEST_PHP_EXECUTABLE`, `PHP_BINARY`)
-  are skipped, because rhp's CLI doesn't accept php's flags. ext/curl's
-  tests start php's CLI server through their `server.inc` as the HTTP peer
-  of the transfers under test: both engines get `TEST_PHP_EXECUTABLE=php`
-  there (rhp has no `-S`).
+- Tests that spawn "the php under test" spawn the engine they run on:
+  `TEST_PHP_EXECUTABLE` (and `_ESCAPED`) is php for php's run and rhp for
+  rhp's, `PHP_BINARY` is each engine's own binary, and
+  `TEST_PHP_CGI_EXECUTABLE` is php-cgi for php and a shim running the CGI
+  candidate (`rhp --cgi`) for rhp. `TEST_PHP_EXTRA_ARGS` is run-tests'
+  ` -n` plus the `-d` settings. Tests that start php's CLI server (`-S`,
+  which rhp lacks) are skipped, except where the server is only the HTTP
+  peer of the client code under test (ext/curl, and ext/standard's `http`,
+  `streams` and `url` tests): both engines get `TEST_PHP_EXECUTABLE=php`
+  there.
+- `--CONFLICTS--` (or a `CONFLICTS` file in the test's directory) is
+  scheduled as run-tests schedules it: two tests sharing a key never run at
+  once, and tests that conflict with `all` run one by one after the rest.
+- `--CAPTURE_STDIO--` captures only the streams it names; the others are a
+  pty, as a terminal would be under run-tests. Output is stdout and stderr
+  merged when both are captured, else the captured one.
+- `--FILEEOF--` is the script minus its trailing newlines. A flaky test
+  (run-tests' `is_flaky()`: `--FLAKY--`, a timing function, ...) or one
+  whose output looks like a transient failure is run once more when it
+  doesn't match, like run-tests' retry.
 - `--write-known` re-runs every match with 1.1s between the two engines, and
   leaves out any test that then diverges. That keeps output depending on the
   current time out of the list.

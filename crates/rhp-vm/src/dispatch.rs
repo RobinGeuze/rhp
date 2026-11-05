@@ -480,7 +480,7 @@ impl Vm {
                             match builtins::zend::object_handlers::properties_for(self, h, purpose)?
                             {
                                 Some(a) => Value::Array(a),
-                                None => self.object_to_array_mangled(h),
+                                None => self.object_cast_array(h),
                             }
                         }
                         Value::Float(f) if f.is_nan() => {

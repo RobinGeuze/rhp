@@ -70,3 +70,10 @@ $s = 1;
 $src = [&$s];
 unset($s);
 var_dump([...$src]);
+
+// (array) of an object keeps the references its properties share
+$shared = 1;
+$po = new stdClass;
+$po->r = &$shared;
+$po->v = 2;
+var_dump((array) $po);

@@ -400,7 +400,17 @@ impl Vm {
             };
             let v = match &pe.hooks {
                 Some(hooks) => {
-                    if pe.virt && hooks[HookKind::Get as usize].is_none() {
+                    if hooks[HookKind::Get as usize].is_none() {
+                        if pe.virt {
+                            continue;
+                        }
+                        // A backed read without a get hook is silent:
+                        // uninitialized reads as null.
+                        let v = h.borrow().properties.get(&key).map(deref);
+                        out.insert(
+                            ArrayKey::from_bytes(shown.as_bytes()),
+                            v.unwrap_or(Value::Null),
+                        );
                         continue;
                     }
                     let mut v = self.prop_fetch_as(

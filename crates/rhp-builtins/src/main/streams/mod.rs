@@ -615,7 +615,18 @@ impl LocalFile {
         // _php_stream_fopen opens expand_filepath()'s result: `..` folds
         // lexically, so a missing directory before it does not matter
         let local = file_path(path);
-        let mut real = crate::zend::virtual_cwd::expand_filepath(local);
+        // expand_filepath starts from getcwd(3): the directory's current
+        // name; when it is gone the relative path opens as given
+        let mut real = if local.starts_with(b"/") {
+            crate::zend::virtual_cwd::expand_filepath(local)
+        } else {
+            match crate::zend::virtual_cwd::current_dir() {
+                Ok(cwd) => {
+                    crate::zend::virtual_cwd::expand_filepath(&[&cwd[..], b"/", local].concat())
+                }
+                Err(_) => local.to_vec(),
+            }
+        };
         // a trailing slash stays: "file/" must not open "file"
         if local.ends_with(b"/") && !real.ends_with(b"/") {
             real.push(b'/');

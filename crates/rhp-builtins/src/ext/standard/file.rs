@@ -1255,7 +1255,7 @@ fn exec_dir(host: &dyn Host) -> Option<Vec<u8>> {
 /// first include_path entry (then the executing script's directory) that
 /// holds `name`.
 pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u8>> {
-    if name.is_empty() || name.contains(&0) {
+    if name.contains(&0) {
         return None;
     }
     // Paths with a protocol: only the plain-files wrapper resolves.

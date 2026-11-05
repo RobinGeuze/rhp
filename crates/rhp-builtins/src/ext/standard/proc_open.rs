@@ -729,8 +729,12 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         "proc_open(): supplied resource is not a valid stream resource",
                     ));
                 }
-                // _php_stream_cast: read-ahead the child cannot see
-                let lost = host.stream_meta(&item).map_or(0, |m| m.unread_bytes);
+                // _php_stream_cast: a seekable stream seeks back to its
+                // position; an unseekable one's read-ahead is lost
+                let lost = host
+                    .stream_meta(&item)
+                    .filter(|m| !m.seekable)
+                    .map_or(0, |m| m.unread_bytes);
                 if lost > 0 {
                     crate::warn(
                         host,

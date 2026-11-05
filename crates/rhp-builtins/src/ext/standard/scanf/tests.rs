@@ -88,12 +88,14 @@ fn sscanf_assign_form() {
     .unwrap();
     assert!(matches!(n2, Value::Int(1)));
 
-    // 0 matched -> NULL.
+    // a mismatch before any conversion: 0; input used up first: -1.
     let a3 = Rc::new(RefCell::new(Value::Null));
     let n3 = fn_sscanf(
         &mut TestHost::new(),
-        &[s("nomatch"), s("%d"), Value::Ref(a3)],
+        &[s("nomatch"), s("%d"), Value::Ref(a3.clone())],
     )
     .unwrap();
-    assert!(matches!(n3, Value::Null));
+    assert!(matches!(n3, Value::Int(0)));
+    let n4 = fn_sscanf(&mut TestHost::new(), &[s(""), s("%d"), Value::Ref(a3)]).unwrap();
+    assert!(matches!(n4, Value::Int(-1)));
 }

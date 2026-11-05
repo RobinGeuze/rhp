@@ -108,6 +108,21 @@ impl ProtoBuilder<'_> {
                     fc.argument_list.arguments.len(),
                 )
             });
+        // A user function's parameter names, and a by-reference variadic's
+        // later positions.
+        let user_meta = self
+            .cx
+            .sig_names
+            .get(&name_lc)
+            .or_else(|| global_lc.as_ref().and_then(|g| self.cx.sig_names.get(g)))
+            .cloned();
+        let sig = match (sig, &user_meta) {
+            (Some(mut s), Some((_, true))) if s.last() == Some(&true) => {
+                s.resize(s.len().max(fc.argument_list.arguments.len()), true);
+                Some(s)
+            }
+            (s, _) => s,
+        };
         // The builtin whose stub gave `sig` (not a user function of the file).
         let builtin = (!self.cx.sigs.contains_key(&name_lc)
             && !global_lc
@@ -208,15 +223,21 @@ impl ProtoBuilder<'_> {
                         );
                         slots.push(ArgSlot::Value(self.emit_throw_error(&msg)));
                     }
+                    // zend_cannot_pass_by_reference, raised at run time.
                     _ => {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "{}(): Argument #{} could not be passed by reference",
-                                String::from_utf8_lossy(&name_bytes),
-                                i + 1
-                            ),
-                        ))
+                        self.compile_expr(p.value)?;
+                        let named = user_meta
+                            .as_ref()
+                            .filter(|(names, variadic)| !(*variadic && i + 1 >= names.len()))
+                            .and_then(|(names, _)| names.get(i))
+                            .map(|n| format!(" (${})", String::from_utf8_lossy(n)))
+                            .unwrap_or_default();
+                        let msg = format!(
+                            "{}(): Argument #{}{named} could not be passed by reference",
+                            String::from_utf8_lossy(&name_bytes),
+                            i + 1
+                        );
+                        slots.push(ArgSlot::Value(self.emit_throw_error(&msg)));
                     }
                 }
             } else if let (2, Some(b)) = (i, in_array_flag) {
@@ -493,7 +514,22 @@ impl ProtoBuilder<'_> {
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
-        let callee = self.compile_expr(fc.function)?;
+        // A string literal names the function as written, fully qualified
+        // (zend_compile_dynamic_call: INIT_FCALL_BY_NAME, leading `\` cut).
+        let mut lit = fc.function;
+        while let Expression::Parenthesized(p) = lit {
+            lit = p.expression;
+        }
+        let callee = match lit {
+            Expression::Literal(crate::parse::cst::Literal::String(s))
+                if s.value
+                    .is_some_and(|v| v.starts_with(b"\\") && !v.windows(2).any(|w| w == b"::")) =>
+            {
+                let v = s.value.expect("checked");
+                self.load_string_const(&v[1..])
+            }
+            _ => self.compile_expr(fc.function)?,
+        };
 
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args = self.build_args_array(Some(&fc.argument_list))?;

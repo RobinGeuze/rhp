@@ -585,6 +585,9 @@ pub trait Host {
     /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
     /// resource.
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value>;
+    /// Record the mode a stream was opened with (`stream_get_meta_data`'s
+    /// `mode`), for streams opened without a path (`popen`).
+    fn stream_set_mode(&mut self, _res: &Value, _mode: &[u8]) {}
     /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
     /// process (`proc_open` descriptor given as a resource). `Err` carries
     /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).

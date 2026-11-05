@@ -59,7 +59,9 @@ fn stat_failed(
     link: bool,
 ) -> Result<Value, Thrown> {
     let p = str_arg(args, 0);
-    if !p.is_empty() && !p.contains(&0) {
+    if p.contains(&0) {
+        crate::warn(host, fname, "Filename contains null byte")?;
+    } else if !p.is_empty() {
         crate::warn(
             host,
             fname,
@@ -325,7 +327,19 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = path_arg(args, 0);
+    let path = crate::ext::standard::file::path_param(args, 0, "touch", "filename")?;
+    if path.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let null_at = |i: usize| matches!(args.get(i).map(deref), None | Some(Value::Null));
+    if null_at(1) && !null_at(2) {
+        return Err(crate::zend::zpp::value_error(
+            "touch",
+            2,
+            "mtime",
+            "cannot be null when argument #3 ($atime) is an integer",
+        ));
+    }
     // Create the file if absent (php's touch creates an empty file).
     if !crate::zend::virtual_cwd::os_path(&path).exists() {
         let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC;
@@ -411,7 +425,8 @@ fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
 
 /// `disk_free_space` — `f_bavail * f_frsize` as a float (php's formula).
 fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match statvfs_of(&path_arg(args, 0)) {
+    let path = crate::ext::standard::file::path_param(args, 0, "disk_free_space", "directory")?;
+    match statvfs_of(&path) {
         Some(s) => Ok(Value::Float(s.f_bavail as f64 * s.f_frsize as f64)),
         None => {
             crate::warn(
@@ -426,7 +441,8 @@ fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 
 /// `disk_total_space` — `f_blocks * f_frsize` as a float (php's formula).
 fn fn_disk_total_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match statvfs_of(&path_arg(args, 0)) {
+    let path = crate::ext::standard::file::path_param(args, 0, "disk_total_space", "directory")?;
+    match statvfs_of(&path) {
         Some(s) => Ok(Value::Float(s.f_blocks as f64 * s.f_frsize as f64)),
         None => {
             crate::warn(

@@ -321,6 +321,29 @@ fn fn_access(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(true))
 }
 
+/// `posix_mkfifo($filename, $permissions)`.
+fn fn_mkfifo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = zpp_string(host, args, 0, "posix_mkfifo", "filename")?;
+    if path.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "posix_mkfifo(): Argument #1 ($filename) must not contain any null bytes",
+        ));
+    }
+    let mode = zpp_long(host, args, 1, "posix_mkfifo", "permissions")?;
+    let Some(c) = crate::zend::virtual_cwd::c_path(&path) else {
+        return Ok(Value::Bool(false));
+    };
+    let r = crate::zend::virtual_cwd::library_created(&path, mode as u32, || unsafe {
+        libc::mkfifo(c.as_ptr(), mode as libc::mode_t)
+    });
+    if r < 0 {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
 fn fn_get_last_error(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(last_error(host) as i64))
 }
@@ -420,6 +443,7 @@ pub fn register(m: &mut crate::Registry) {
             ("posix_uname", fn_uname),
             ("posix_getcwd", fn_getcwd),
             ("posix_access", fn_access),
+            ("posix_mkfifo", fn_mkfifo),
             ("posix_get_last_error", fn_get_last_error),
             ("posix_errno", fn_get_last_error),
             ("posix_strerror", fn_strerror),

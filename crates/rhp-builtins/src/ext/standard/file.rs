@@ -135,24 +135,48 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-/// A plain-file open with USE_PATH: the resolved path, else each
-/// `_php_stream_fopen_with_path` candidate in turn.
+/// A plain-file open with USE_PATH: php_stream_open_wrapper_ex opens the
+/// php_resolve_path result when there is one, else the name as given.
 pub(crate) fn open_with_path(
     host: &mut dyn Host,
     path: &[u8],
     mode: &[u8],
     ctx: &Value,
 ) -> Option<Value> {
-    if let Some(r) = resolve_include_path(host, path) {
-        return host.stream_open_ctx(&r, mode, ctx);
+    let target = include_path_target(host, path);
+    host.stream_open_ctx(&target, mode, ctx)
+}
+
+// --- fsync() / fdatasync() ------------------------------------------------------
+
+/// The descriptor behind a plain-file or fd stream (the streams whose ops
+/// support SYNC and LOCKING); `None` for sockets, memory and wrapper
+/// streams.
+pub(crate) fn plain_fd(host: &dyn Host, h: &Value) -> Option<i32> {
+    if host.stream_sock_info(h).is_some() {
+        return None;
     }
-    for c in include_path_candidates(host, path) {
-        crate::main::streams::clear_errno();
-        if let Some(v) = host.stream_open_ctx(&c, mode, ctx) {
-            return Some(v);
-        }
-    }
-    None
+    host.stream_fd(h)
+}
+
+/// `fsync` / `fdatasync`: flush, then sync the descriptor (macOS has no
+/// fdatasync; php uses fsync there too).
+fn stream_sync(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, fname, "stream")?;
+    let Some(fd) = plain_fd(host, &h) else {
+        crate::warn(host, fname, "Can't fsync this stream!")?;
+        return Ok(Value::Bool(false));
+    };
+    host.stream_flush(&h);
+    Ok(Value::Bool(unsafe { libc::fsync(fd) } == 0))
+}
+
+fn fn_fsync(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_sync(host, args, "fsync")
+}
+
+fn fn_fdatasync(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    stream_sync(host, args, "fdatasync")
 }
 
 // --- fscanf() ------------------------------------------------------------------
@@ -795,6 +819,9 @@ fn fn_tempnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `readfile($filename)`: copy a file to the output; bytes written or false.
 fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "readfile", "filename")?;
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     touch_ctx(host, args, 2);
     if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
         let Some(data) = crate::ext::standard::http_fopen_wrapper::get_contents(
@@ -844,29 +871,225 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(data.len() as i64))
 }
 
-/// `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"",
-/// $escape = "\\")`: one CSV record, reading on while an enclosure is open;
-/// false at EOF, `[null]` for a blank line.
-fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let (h, _) = stream_param(host, args, 0, "fgetcsv", "stream")?;
-    if args.len() < 5 {
-        crate::deprecated(
-            host,
-            "fgetcsv",
-            "the $escape parameter must be provided as its default value will change",
-        )?;
+/// The separator / enclosure / escape arguments of the CSV functions
+/// (`sep_idx` is the separator's index): single characters, then
+/// `php_csv_handle_escape_argument` (`None`: no escape character).
+pub(crate) fn csv_args(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    sep_idx: usize,
+) -> Result<(u8, u8, Option<u8>), Thrown> {
+    let mut chars = [b',', b'"'];
+    for (k, pname) in ["separator", "enclosure"].iter().enumerate() {
+        let i = sep_idx + k;
+        if let Some(v) = args.get(i) {
+            let v = conv::to_string_bytes(&deref(v));
+            if v.len() != 1 {
+                return Err(crate::zend::zpp::value_error(
+                    fname,
+                    i + 1,
+                    pname,
+                    "must be a single character",
+                ));
+            }
+            chars[k] = v[0];
+        }
     }
-    let ch = |i: usize, d: u8| -> Option<u8> {
-        match args.get(i).map(deref) {
-            None | Some(Value::Null) => Some(d),
-            Some(v) => conv::to_string_bytes(&v).first().copied(),
+    let esc_idx = sep_idx + 2;
+    let esc = match args.get(esc_idx) {
+        Some(v) => {
+            let v = conv::to_string_bytes(&deref(v));
+            if v.len() > 1 {
+                return Err(crate::zend::zpp::value_error(
+                    fname,
+                    esc_idx + 1,
+                    "escape",
+                    "must be empty or a single character",
+                ));
+            }
+            v.first().copied()
+        }
+        None => {
+            crate::deprecated(
+                host,
+                fname,
+                "the $escape parameter must be provided as its default value will change",
+            )?;
+            Some(b'\\')
         }
     };
-    let sep = ch(2, b',').unwrap_or(b',');
-    let enc = ch(3, b'"').unwrap_or(b'"');
-    let esc = ch(4, b'\\');
-    // $length: the first line is read up to that many bytes (0 or null:
-    // the whole line); continuation lines are read whole.
+    Ok((chars[0], chars[1], esc))
+}
+
+/// `php_fgetcsv_lookup_trailing_spaces` (with a single-byte locale): the
+/// length without a final "\n", "\r" or "\r\n".
+fn csv_trailing(b: &[u8]) -> usize {
+    match b {
+        [.., b'\r', b'\n'] => b.len() - 2,
+        [.., b'\n' | b'\r'] => b.len() - 1,
+        _ => b.len(),
+    }
+}
+
+/// `php_fgetcsv`: parse one CSV record from `buf`; an enclosure still open
+/// at the end of the line continues on the lines `next_line` returns
+/// (`None` for str_getcsv, which has no stream). `None` for a blank line.
+///
+/// php steps through the line with mblen(); in the "C" locale every byte
+/// is one character, which is what this port assumes.
+pub(crate) fn php_fgetcsv(
+    mut buf: Vec<u8>,
+    delimiter: u8,
+    enclosure: u8,
+    escape: Option<u8>,
+    mut next_line: Option<&mut dyn FnMut() -> Option<Vec<u8>>>,
+) -> Option<Vec<Vec<u8>>> {
+    let at = |b: &[u8], i: usize| b.get(i).copied().unwrap_or(0);
+    let isspace = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let mut bptr = 0usize;
+    let mut limit = csv_trailing(&buf);
+    let mut line_end = limit;
+    let mut values = Vec::new();
+    let mut temp: Vec<u8> = Vec::new();
+    let mut first_field = true;
+    loop {
+        temp.clear();
+        let mut inc_len = usize::from(bptr < limit);
+        if inc_len == 1 {
+            let mut tmp = bptr;
+            while at(&buf, tmp) != delimiter && isspace(at(&buf, tmp)) {
+                tmp += 1;
+            }
+            if at(&buf, tmp) == enclosure && tmp < limit {
+                bptr = tmp;
+            }
+        }
+        if first_field && bptr == line_end {
+            return None;
+        }
+        first_field = false;
+        let copy = |temp: &mut Vec<u8>, b: &[u8], from: usize, to: usize| {
+            let to = to.min(b.len());
+            if from < to {
+                temp.extend_from_slice(&b[from..to]);
+            }
+        };
+        let comp_end;
+        if inc_len != 0 && at(&buf, bptr) == enclosure {
+            let mut state = 0;
+            bptr += 1;
+            let mut hunk = bptr;
+            loop {
+                if inc_len == 0 {
+                    if state == 2 {
+                        copy(&mut temp, &buf, hunk, bptr - 1);
+                        hunk = bptr;
+                        break;
+                    }
+                    if state == 1 {
+                        copy(&mut temp, &buf, hunk, bptr);
+                        hunk = bptr;
+                    }
+                    if hunk != line_end {
+                        copy(&mut temp, &buf, hunk, bptr);
+                        hunk = bptr;
+                    }
+                    // the embedded line end belongs to the field
+                    copy(&mut temp, &buf, line_end, buf.len());
+                    let more = match next_line.as_mut() {
+                        Some(f) => f(),
+                        None => None,
+                    };
+                    let Some(nb) = more else {
+                        // unterminated enclosure: the rest is the field
+                        if bptr > limit {
+                            if hunk == bptr {
+                                hunk -= 1;
+                            }
+                            bptr -= 1;
+                        }
+                        break;
+                    };
+                    buf = nb;
+                    bptr = 0;
+                    hunk = 0;
+                    limit = csv_trailing(&buf);
+                    line_end = limit;
+                    state = 0;
+                } else {
+                    match state {
+                        1 => {
+                            bptr += 1;
+                            state = 0;
+                        }
+                        2 => {
+                            if at(&buf, bptr) != enclosure {
+                                copy(&mut temp, &buf, hunk, bptr - 1);
+                                hunk = bptr;
+                                break;
+                            }
+                            copy(&mut temp, &buf, hunk, bptr);
+                            bptr += 1;
+                            hunk = bptr;
+                            state = 0;
+                        }
+                        _ => {
+                            let c = at(&buf, bptr);
+                            if c == enclosure {
+                                state = 2;
+                            } else if escape == Some(c) {
+                                state = 1;
+                            }
+                            bptr += 1;
+                        }
+                    }
+                }
+                inc_len = usize::from(bptr < limit);
+            }
+            // up to the delimiter
+            while inc_len != 0 && at(&buf, bptr) != delimiter {
+                bptr += 1;
+                inc_len = usize::from(bptr < limit);
+            }
+            copy(&mut temp, &buf, hunk, bptr);
+            bptr += inc_len;
+            comp_end = temp.len();
+        } else {
+            let hunk = bptr;
+            while inc_len != 0 && at(&buf, bptr) != delimiter {
+                bptr += 1;
+                inc_len = usize::from(bptr < limit);
+            }
+            copy(&mut temp, &buf, hunk, bptr);
+            comp_end = csv_trailing(&temp);
+            if at(&buf, bptr) == delimiter {
+                bptr += 1;
+            }
+        }
+        values.push(temp[..comp_end].to_vec());
+        if inc_len == 0 {
+            break;
+        }
+    }
+    Some(values)
+}
+
+/// A parsed record as php returns it: `[null]` for a blank line.
+pub(crate) fn csv_record(rec: Option<Vec<Vec<u8>>>) -> Value {
+    let mut out = PhpArray::new();
+    match rec {
+        Some(fields) => fields.into_iter().for_each(|f| out.push(Value::str(f))),
+        None => out.push(Value::Null),
+    }
+    Value::Array(out)
+}
+
+/// `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"",
+/// $escape = "\\")`: one record; false at EOF.
+fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgetcsv", "stream")?;
+    let (sep, enc, esc) = csv_args(host, args, "fgetcsv", 2)?;
     let len = match args.get(1).map(deref) {
         None | Some(Value::Null) => 0,
         Some(v) => conv::to_int(&v),
@@ -885,42 +1108,11 @@ fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     } else {
         host.stream_gets_max(&h, len as usize)
     };
-    let Some(mut buf) = first else {
+    let Some(buf) = first else {
         return Ok(Value::Bool(false));
     };
-    // An enclosure left open at the end of the line continues on the next.
-    let open = |b: &[u8]| {
-        let (mut inq, mut i) = (false, 0);
-        while i < b.len() {
-            let c = b[i];
-            if inq && Some(c) == esc && Some(c) != Some(enc) && i + 1 < b.len() {
-                i += 2;
-                continue;
-            }
-            if c == enc {
-                inq = !inq;
-            }
-            i += 1;
-        }
-        inq
-    };
-    while open(&buf) {
-        match host.stream_gets(&h) {
-            Some(more) => buf.extend_from_slice(&more),
-            None => break,
-        }
-    }
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-        if buf.last() == Some(&b'\r') {
-            buf.pop();
-        }
-    } else if buf.last() == Some(&b'\r') {
-        buf.pop();
-    }
-    Ok(Value::Array(crate::ext::standard::string::parse_csv(
-        &buf, sep, enc, esc,
-    )))
+    let mut next = || host.stream_gets(&h);
+    Ok(csv_record(php_fgetcsv(buf, sep, enc, esc, Some(&mut next))))
 }
 
 /// php_fputcsv: a field is enclosed when it holds the separator, the
@@ -928,27 +1120,12 @@ fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// doubled (unless escaped). Returns the bytes written.
 fn fn_fputcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fputcsv", "stream")?;
-    if args.len() < 5 {
-        crate::deprecated(
-            host,
-            "fputcsv",
-            "the $escape parameter must be provided as its default value will change",
-        )?;
-    }
     let Value::Array(fields) = args.get(1).map(deref).unwrap_or(Value::Null) else {
         return Err(Thrown::type_error(
             "fputcsv(): Argument #2 ($fields) must be of type array",
         ));
     };
-    let ch = |i: usize, d: u8| -> Option<u8> {
-        match args.get(i).map(deref) {
-            None | Some(Value::Null) => Some(d),
-            Some(v) => conv::to_string_bytes(&v).first().copied(),
-        }
-    };
-    let sep = ch(2, b',').unwrap_or(b',');
-    let enc = ch(3, b'"').unwrap_or(b'"');
-    let esc = ch(4, b'\\');
+    let (sep, enc, esc) = csv_args(host, args, "fputcsv", 2)?;
     let eol = match args.get(5).map(deref) {
         None | Some(Value::Null) => b"\n".to_vec(),
         Some(v) => conv::to_string_bytes(&v),
@@ -1101,31 +1278,7 @@ pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u
     try_path(&trypath, wrapper)
 }
 
-/// The paths `_php_stream_fopen_with_path` tries, in order, for a plain
-/// file opened with `use_include_path` that did not resolve (a new file
-/// is created in the first directory that allows it).
-pub(crate) fn include_path_candidates(host: &dyn Host, name: &[u8]) -> Vec<Vec<u8>> {
-    let relative = name.first() == Some(&b'.') && {
-        let dots = name.iter().take_while(|&&c| c == b'.').count();
-        name.get(dots) == Some(&b'/') && (dots == 1 || name.get(1) == Some(&b'.'))
-    };
-    let path = host.ini_get(b"include_path").unwrap_or_default();
-    if relative || name.starts_with(b"/") || path.is_empty() {
-        return vec![name.to_vec()];
-    }
-    let mut pathbuf = path;
-    if let Some(dir) = exec_dir(host) {
-        pathbuf.push(b':');
-        pathbuf.extend_from_slice(&dir);
-    }
-    pathbuf
-        .split(|&c| c == b':')
-        .filter(|d| !d.is_empty())
-        .map(|d| [d, b"/", name].concat())
-        .collect()
-}
-
-/// Where a plain-file read with `use_include_path` opens: the resolved
+/// Where a plain-file open with `use_include_path` goes: the resolved
 /// path, else the name as given.
 pub(crate) fn include_path_target(host: &dyn Host, name: &[u8]) -> Vec<u8> {
     if split_scheme(name).0 != b"file" {
@@ -1184,7 +1337,7 @@ fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let url = path_arg(args, 0);
+    let url = path_param(args, 0, "file_get_contents", "filename")?;
     let offset = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let maxlen = match args.get(4).map(deref) {
         None | Some(Value::Null) => None,
@@ -1438,7 +1591,7 @@ fn read_file_part(url: &[u8], offset: i64, maxlen: Option<usize>) -> Option<Opti
 }
 
 fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = path_arg(args, 0);
+    let path = path_param(args, 0, "file_put_contents", "filename")?;
     let src = deref(&args[1]);
     if matches!(src, Value::Resource(_)) && host.stream_kind(&src).is_none() {
         return Err(Thrown::type_error(
@@ -1446,14 +1599,43 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         ));
     }
     let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
+    match &ctx {
+        Value::Resource(r) if r.type_name != "stream-context" => {
+            return Err(Thrown::type_error(
+                "file_put_contents(): supplied resource is not a valid Stream-Context resource",
+            ));
+        }
+        Value::Null if flags & 16 == 0 => {
+            host.default_stream_context();
+        }
+        _ => {}
+    }
+    const LOCK_EX: i64 = 2;
+    let mode: &[u8] = if flags & FILE_APPEND != 0 {
+        b"ab"
+    } else if flags & LOCK_EX != 0 {
+        if path.windows(3).any(|w| w == b"://")
+            && !path
+                .get(..7)
+                .is_some_and(|p| p.eq_ignore_ascii_case(b"file://"))
+        {
+            crate::warn(
+                host,
+                "file_put_contents",
+                "Exclusive locks may only be set for regular files",
+            )?;
+            return Ok(Value::Bool(false));
+        }
+        b"cb"
+    } else {
+        b"wb"
+    };
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
-        // php opens the target before reading `$data`; the http wrapper
-        // refuses to write
-        let mode: &[u8] = if flags & FILE_APPEND != 0 {
-            b"ab"
-        } else {
-            b"wb"
-        };
+        // the http wrapper refuses to write
         if let Some(res) = crate::ext::standard::http_fopen_wrapper::open_arg(
             host,
             "file_put_contents",
@@ -1465,41 +1647,109 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         return Ok(Value::Bool(false));
     }
-    // `$data` is a string, an array (concatenated) or a stream resource
-    // (copied from its current position to the end).
-    let data = match src {
-        r @ Value::Resource(_) => host.stream_read(&r, -1).unwrap_or_default(),
-        Value::Array(a) => {
-            let mut b = Vec::new();
-            for (_, v) in a.iter() {
-                b.extend_from_slice(&conv::to_string_bytes(v));
-            }
-            b
-        }
-        other => conv::to_string_bytes(&other),
-    };
-    if flags & 16 == 0 {
-        touch_ctx(host, args, 3);
-    }
-    let to_write = if flags & FILE_APPEND != 0 {
-        let mut existing = host.stream_get_contents(&path).unwrap_or_default();
-        existing.extend_from_slice(&data);
-        existing
-    } else {
-        data.clone()
-    };
     crate::main::streams::clear_errno();
-    match host.stream_put_contents(&path, &to_write) {
-        // php returns the number of bytes written (the `$data` length).
-        Some(_) => {
-            host.consume_resource_ids(1);
-            Ok(Value::Int(data.len() as i64))
-        }
-        None => {
-            crate::open_failed(host, "file_put_contents", &path)?;
-            Ok(Value::Bool(false))
+    let opened = if flags & 1 != 0 && split_scheme(&path).0 == b"file" {
+        open_with_path(host, &path, mode, &ctx)
+    } else {
+        host.stream_open_ctx(&path, mode, &ctx)
+    };
+    let Some(stream) = opened else {
+        crate::open_failed(host, "file_put_contents", &path)?;
+        return Ok(Value::Bool(false));
+    };
+    if flags & LOCK_EX != 0 {
+        let locked = host
+            .stream_fd(&stream)
+            .is_some_and(|fd| unsafe { libc::flock(fd, libc::LOCK_EX) } == 0);
+        if !locked {
+            host.stream_close(&stream);
+            crate::warn(
+                host,
+                "file_put_contents",
+                "Exclusive locks are not supported for this stream",
+            )?;
+            return Ok(Value::Bool(false));
         }
     }
+    if mode[0] == b'c' {
+        host.stream_truncate(&stream, 0);
+    }
+    let write_all = |host: &mut dyn Host, data: &[u8]| -> i64 {
+        match host.stream_write(&stream, data) {
+            Some(n) if n == data.len() => n as i64,
+            Some(n) => {
+                let _ = crate::warn(
+                    host,
+                    "file_put_contents",
+                    &format!(
+                        "Only {n} of {} bytes written, possibly out of free disk space",
+                        data.len()
+                    ),
+                );
+                -1
+            }
+            None => -1,
+        }
+    };
+    let mut numbytes: i64 = 0;
+    let mut thrown = None;
+    match &src {
+        r @ Value::Resource(_) => {
+            let data = host.stream_read(r, -1).unwrap_or_default();
+            if !data.is_empty() && host.stream_write(&stream, &data).is_none() {
+                numbytes = -1;
+            } else {
+                numbytes = data.len() as i64;
+            }
+        }
+        Value::Array(a) => {
+            for (_, v) in a.iter() {
+                let piece = match crate::zend::zpp::zval_get_string(host, v) {
+                    Ok(p) => p,
+                    Err(t) => {
+                        thrown = Some(t);
+                        break;
+                    }
+                };
+                if piece.is_empty() {
+                    continue;
+                }
+                numbytes += piece.len() as i64;
+                if host.stream_write(&stream, &piece) != Some(piece.len()) {
+                    let msg = [
+                        format!("Failed to write {} bytes to ", piece.len()).as_bytes(),
+                        &path[..],
+                    ]
+                    .concat();
+                    let _ = crate::warn(host, "file_put_contents", &msg);
+                    numbytes = -1;
+                    break;
+                }
+            }
+        }
+        o @ (Value::Object(_) | Value::Closure(_)) => {
+            match crate::zend::object_handlers::to_string(host, o) {
+                Ok(Some(d)) => numbytes = write_all(host, &d),
+                Ok(None) => numbytes = -1,
+                Err(t) => thrown = Some(t),
+            }
+        }
+        other => {
+            let d = conv::to_string_bytes(other);
+            if !d.is_empty() {
+                numbytes = write_all(host, &d);
+            }
+        }
+    }
+    host.stream_close(&stream);
+    if let Some(t) = thrown {
+        return Err(t);
+    }
+    Ok(if numbytes < 0 {
+        Value::Bool(false)
+    } else {
+        Value::Int(numbytes)
+    })
 }
 
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1524,8 +1774,8 @@ pub(crate) fn os_text(e: &std::io::Error) -> String {
 }
 
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "rmdir", "directory")?;
     touch_ctx(host, args, 1);
-    let path = path_arg(args, 0);
     if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(&path)) {
         crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
         return Ok(Value::Bool(false));
@@ -1587,10 +1837,26 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use std::os::unix::ffi::OsStrExt;
     use std::process::{Command, Stdio};
     let cmd = zpp_path(args, 0, "popen", "command")?;
-    let mode = zpp_path(args, 1, "popen", "mode")?;
-    let write = match mode.first() {
-        Some(b'r') if !mode.contains(&b'+') => false,
-        Some(b'w') if !mode.contains(&b'+') => true,
+    let mode = str_arg(args, 1);
+    // php drops the first 'b', then allows "r", "w", "rb" and "wb"
+    let mut posix_mode = mode.clone();
+    if let Some(i) = posix_mode.iter().position(|&c| c == b'b') {
+        posix_mode.remove(i);
+    }
+    let write = match &posix_mode[..] {
+        [b'r'] | [b'r', b'b'] => false,
+        [b'w'] | [b'w', b'b'] => true,
+        [] => {
+            // popen(3) with an empty mode: EINVAL
+            let arg = [&cmd[..], b","].concat();
+            crate::warn_arg(
+                host,
+                "popen",
+                &arg,
+                &crate::main::streams::strerror(libc::EINVAL),
+            )?;
+            return Ok(Value::Bool(false));
+        }
         _ => {
             return Err(Thrown::error(
                 "ValueError",
@@ -1638,6 +1904,7 @@ fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(stream) = host.stream_from_fd(fd) else {
         return Ok(Value::Bool(false));
     };
+    host.stream_set_mode(&stream, &mode);
     if let (Value::Resource(r), Some(st)) = (&stream, popen_state(host)) {
         st.0.insert(r.id, child);
     }
@@ -1764,6 +2031,8 @@ pub fn register(m: &mut crate::Registry) {
             ("pclose", fn_pclose),
             ("fnmatch", fn_fnmatch),
             ("fscanf", fn_fscanf),
+            ("fsync", fn_fsync),
+            ("fdatasync", fn_fdatasync),
         ],
     );
 }

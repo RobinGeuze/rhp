@@ -868,6 +868,12 @@ impl Host for Vm {
         Some(self.make_stream(st, "stream"))
     }
 
+    fn stream_set_mode(&mut self, res: &Value, mode: &[u8]) {
+        if let Some(s) = res_id(res).and_then(|id| self.streams.record_mut(id)) {
+            s.mode = Some(mode.to_vec());
+        }
+    }
+
     fn stream_from_socket(
         &mut self,
         fd: std::os::fd::OwnedFd,
@@ -1187,6 +1193,11 @@ impl Host for Vm {
                 Some(f) => f.seek(offset, whence),
                 None => false,
             },
+            // php_plain_files_dirstream_rewind: any seek rewinds
+            Some(StreamState::Dir { pos, .. }) => {
+                *pos = 0;
+                true
+            }
             Some(StreamState::Mem {
                 buf,
                 pos,
@@ -1194,15 +1205,24 @@ impl Host for Vm {
                 eof,
                 ..
             }) => {
-                // _php_stream_seek + php_stream_memory_seek: a negative
-                // SEEK_SET fails without touching the stream; SEEK_CUR is
-                // resolved against php's position; any other failure resets
-                // the buffer offset to 0 and php's position to -1. Seeking
-                // past the end is allowed (the next write zero-fills).
+                // _php_stream_seek + php_stream_memory_seek: SEEK_CUR is
+                // turned into a SEEK_SET against php's position, and a
+                // negative SEEK_SET fails without touching the stream; any
+                // other failure resets the buffer offset to 0 and php's
+                // position to -1. Seeking past the end is allowed (the next
+                // write zero-fills).
                 let target = match whence {
-                    0 if offset < 0 => return false,
-                    0 => offset,
-                    1 => (*pos as i64 + *skew).saturating_add(offset),
+                    0 | 1 => {
+                        let t = if whence == 1 {
+                            (*pos as i64 + *skew).saturating_add(offset)
+                        } else {
+                            offset
+                        };
+                        if t < 0 {
+                            return false;
+                        }
+                        t
+                    }
                     2 => (buf.len() as i64).saturating_add(offset),
                     _ => {
                         *skew = 0;
@@ -1432,16 +1452,19 @@ impl Host for Vm {
                             rfc2397: None,
                         },
                         // A pipe (proc_open, popen): no wrapper, no uri; the mode is
-                        // the descriptor's direction.
+                        // popen's, else the descriptor's direction.
                         None => M {
                             wrapper_type: "",
                             stream_type: "STDIO",
-                            mode: match f
-                                .raw_fd()
-                                .map(builtins::main::streams::plain_wrapper::fd_access_mode)
-                            {
-                                Some(Some(true)) => b"w".to_vec(),
-                                _ => b"r".to_vec(),
+                            mode: match self.streams.record(id).and_then(|s| s.mode.clone()) {
+                                Some(m) => m,
+                                None => match f
+                                    .raw_fd()
+                                    .map(builtins::main::streams::plain_wrapper::fd_access_mode)
+                                {
+                                    Some(Some(true)) => b"w".to_vec(),
+                                    _ => b"r".to_vec(),
+                                },
                             },
                             uri: Vec::new(),
                             unread_bytes: 0,

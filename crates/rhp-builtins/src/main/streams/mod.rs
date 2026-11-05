@@ -533,7 +533,10 @@ impl LocalFile {
         if path.contains(&0) {
             return None;
         }
-        let fd = match crate::zend::virtual_cwd::open(file_path(path), flags, 0o666) {
+        // _php_stream_fopen opens expand_filepath()'s result: `..` folds
+        // lexically, so a missing directory before it does not matter
+        let real = crate::zend::virtual_cwd::expand_filepath(file_path(path));
+        let fd = match crate::zend::virtual_cwd::open(&real, flags, 0o666) {
             Ok(fd) => fd,
             Err(e) => {
                 note_io_err(&e);

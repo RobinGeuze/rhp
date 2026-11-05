@@ -1315,6 +1315,14 @@ fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Bool(!(is_url || is_data)))
 }
 
+/// `stream_supports_lock`: plain-file and fd streams lock (flock).
+fn fn_stream_supports_lock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "stream_supports_lock", "stream")?;
+    Ok(Value::Bool(
+        crate::ext::standard::file::plain_fd(host, &h).is_some(),
+    ))
+}
+
 fn fn_stream_resolve_include_path(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = path_param(args, 0, "stream_resolve_include_path", "filename")?;
     Ok(resolve_include_path(host, &name)
@@ -1337,6 +1345,7 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_context_set_option", fn_stream_context_set_option),
             ("stream_set_blocking", fn_stream_set_blocking),
             ("stream_set_write_buffer", fn_stream_set_write_buffer),
+            ("stream_supports_lock", fn_stream_supports_lock),
             ("set_file_buffer", fn_set_file_buffer),
             ("stream_socket_server", fn_stream_socket_server),
             ("stream_socket_client", fn_stream_socket_client),

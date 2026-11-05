@@ -63,7 +63,7 @@ thread_local! {
 /// Whether `scheme` names a registered wrapper (as written: php's hash is
 /// case-sensitive, the lowercase retry is the caller's).
 pub(crate) fn wrapper_registered(host: &dyn Host, scheme: &[u8]) -> bool {
-    scheme == b"glob" || host.stream_wrapper_schemes().iter().any(|s| s == scheme)
+    host.stream_wrapper_schemes().iter().any(|s| s == scheme)
 }
 
 /// `php_stream_locate_url_wrapper(path)` from builtin `fname`, with its

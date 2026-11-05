@@ -637,14 +637,10 @@ pub(crate) fn php_sscanf_internal(
                                 false
                             }
                         }
-                        b'x' | b'X' => {
-                            if flags & SCAN_XOK != 0 && buf.len() == 1 {
-                                base = 16;
-                                flags &= !SCAN_XOK;
-                                true
-                            } else {
-                                false
-                            }
+                        b'x' | b'X' if flags & SCAN_XOK != 0 && buf.len() == 1 => {
+                            base = 16;
+                            flags &= !SCAN_XOK;
+                            true
                         }
                         _ => false,
                     };
@@ -711,15 +707,10 @@ pub(crate) fn php_sscanf_internal(
                                 false
                             }
                         }
-                        b'e' | b'E' => {
-                            if flags & (SCAN_NODIGITS | SCAN_EXPOK) == SCAN_EXPOK {
-                                flags = (flags & !(SCAN_EXPOK | SCAN_PTOK))
-                                    | SCAN_SIGNOK
-                                    | SCAN_NODIGITS;
-                                true
-                            } else {
-                                false
-                            }
+                        b'e' | b'E' if flags & (SCAN_NODIGITS | SCAN_EXPOK) == SCAN_EXPOK => {
+                            flags =
+                                (flags & !(SCAN_EXPOK | SCAN_PTOK)) | SCAN_SIGNOK | SCAN_NODIGITS;
+                            true
                         }
                         _ => false,
                     };

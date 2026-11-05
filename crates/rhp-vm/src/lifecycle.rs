@@ -55,6 +55,10 @@ impl Vm {
         // module-provided wrapper (`phar://`, …).
         let mut wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>> = HashMap::new();
         wrappers.insert(b"file".to_vec(), builtins::main::streams::file_wrapper());
+        wrappers.insert(
+            b"glob".to_vec(),
+            builtins::main::streams::glob_wrapper::glob_wrapper(),
+        );
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }

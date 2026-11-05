@@ -912,7 +912,7 @@ pub(crate) fn csv_args(
     fname: &str,
     sep_idx: usize,
 ) -> Result<(u8, u8, Option<u8>), Thrown> {
-    let mut chars = [b',', b'"'];
+    let mut chars = *b",\"";
     for (k, pname) in ["separator", "enclosure"].iter().enumerate() {
         let i = sep_idx + k;
         if let Some(v) = args.get(i) {

@@ -275,6 +275,16 @@ The original notes:
   `fread`, `fgets($h, $len)`. `fseek`/`ftell`/`rewind`/`ftruncate`/`fstat`/
   `flock` work on it; `php://memory` seeks/truncates in its buffer. Non-local
   wrappers (`phar://`) still use the buffered `Mem`/`FileWrite` states.
+- Opens go through a port of `php_stream_locate_url_wrapper`
+  (`streams::locate_url_wrapper`): schemes match as written then
+  lowercased, an unknown scheme warns and opens the plain file, `file://host/`
+  is refused. Plain files open their `expand_filepath()` path. Failed
+  `read(2)`/`write(2)` raise php's "Read/Write of N bytes failed with
+  errno=..." notices. Still missing: open_basedir, stream filters on plain
+  files, `php://fd` outside the CLI check.
+- `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
+  php uses `mblen()` there, which is the same in the "C" locale rhp always
+  runs in (see 1.8).
 
 ### 2.2 `stream_set_blocking` / `_timeout` / write-buffer knobs
 - **Now:** no-ops (`stream_fns.rs:124-127`), explicitly labelled "accepted so

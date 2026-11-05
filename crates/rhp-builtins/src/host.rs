@@ -588,6 +588,11 @@ pub trait Host {
     /// Record the mode a stream was opened with (`stream_get_meta_data`'s
     /// `mode`), for streams opened without a path (`popen`).
     fn stream_set_mode(&mut self, _res: &Value, _mode: &[u8]) {}
+    /// Return bytes just read from `res` to the front of its read buffer
+    /// (php leaves them buffered); false when the stream cannot.
+    fn stream_push_back(&mut self, _res: &Value, _data: &[u8]) -> bool {
+        false
+    }
     /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
     /// process (`proc_open` descriptor given as a resource). `Err` carries
     /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).

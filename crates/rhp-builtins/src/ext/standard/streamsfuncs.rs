@@ -1309,7 +1309,14 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             return Ok(Value::str(out));
         }
     }
-    if out.is_empty() && host.stream_eof(&h) {
+    // php_stream_get_record: no delimiter, short of $length and not at
+    // eof (a non-blocking stream out of data) returns false and leaves the
+    // data buffered; so does nothing at eof
+    let eof = host.stream_eof(&h);
+    if (out.len() as i64) < max && !eof && host.stream_push_back(&h, &out) {
+        return Ok(Value::Bool(false));
+    }
+    if out.is_empty() && eof {
         return Ok(Value::Bool(false));
     }
     Ok(Value::str(out))

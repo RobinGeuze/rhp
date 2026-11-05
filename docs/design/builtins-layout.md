@@ -81,6 +81,7 @@ These have no php-src counterpart.
 | `main/network.rs` | main/network.c, and the libc `inet_pton`/`inet_ntop` php calls |
 | `main/streams/mod.rs` | main/streams/streams.c (wrappers and their registry), with the plain-files wrapper (plain_wrapper.c) and `data:` URLs (memory.c) |
 | `main/streams/ops.rs` | main/streams/streams.c: the generic layer over `php_stream_ops` |
+| `main/streams/glob_wrapper.rs` | main/streams/glob_wrapper.c |
 | `main/streams/plain_wrapper.rs` | main/streams/plain_wrapper.c |
 | `main/streams/xp_socket.rs` | main/streams/xp_socket.c and transports.c |
 
@@ -119,7 +120,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `pageinfo.rs` | pageinfo.c |
 | `password.rs` | password.c |
 | `proc_open.rs` | proc_open.c |
-| `scanf.rs` | scanf.c, and `sscanf` itself: php-src defines `PHP_FUNCTION(sscanf)` in string.c as a wrapper around scanf.c's `php_sscanf_internal` |
+| `scanf.rs` | scanf.c, and `sscanf` itself: php-src defines `PHP_FUNCTION(sscanf)` in string.c as a wrapper around scanf.c's `php_sscanf_internal` (`fscanf` is in file.rs, as in file.c) |
 | `sha1.rs` | sha1.c |
 | `soundex.rs` | soundex.c |
 | `streamsfuncs.rs` | streamsfuncs.c |

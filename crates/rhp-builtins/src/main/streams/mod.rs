@@ -11,6 +11,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
+pub mod glob_wrapper;
 pub mod ops;
 pub mod plain_wrapper;
 pub mod xp_socket;
@@ -613,7 +614,12 @@ impl LocalFile {
         }
         // _php_stream_fopen opens expand_filepath()'s result: `..` folds
         // lexically, so a missing directory before it does not matter
-        let real = crate::zend::virtual_cwd::expand_filepath(file_path(path));
+        let local = file_path(path);
+        let mut real = crate::zend::virtual_cwd::expand_filepath(local);
+        // a trailing slash stays: "file/" must not open "file"
+        if local.ends_with(b"/") && !real.ends_with(b"/") {
+            real.push(b'/');
+        }
         let fd = match crate::zend::virtual_cwd::open(&real, flags, 0o666) {
             Ok(fd) => fd,
             Err(e) => {
@@ -740,6 +746,12 @@ impl LocalFile {
         } else {
             Some(out)
         }
+    }
+
+    /// Put bytes just read back in front of the read buffer.
+    pub fn push_back(&mut self, data: &[u8]) {
+        self.rbuf.splice(self.rpos..self.rpos, data.iter().copied());
+        self.pos -= data.len() as i64;
     }
 
     /// Drop any read-ahead, re-syncing the descriptor to the logical position.

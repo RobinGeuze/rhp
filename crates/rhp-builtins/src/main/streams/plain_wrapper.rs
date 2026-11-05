@@ -541,6 +541,13 @@ impl FdStream {
         self.rbuf.drain(..n).collect()
     }
 
+    /// Put bytes just read back in front of the read buffer (what php's
+    /// `php_stream_get_record` leaves buffered when it returns nothing).
+    pub fn push_back(&mut self, data: &[u8]) {
+        self.rbuf.splice(0..0, data.iter().copied());
+        self.position -= data.len() as i64;
+    }
+
     /// `fread($h, $len)`: buffered bytes first, then reads of one chunk — a
     /// single fill for pipes / stdio (php returns after one fill for streams
     /// not opened through the plain-files wrapper), looping until `len` bytes
@@ -1066,6 +1073,45 @@ pub fn set_fd_blocking(raw: RawFd, blocking: bool) -> bool {
 }
 
 /// A `dup(2)` of a raw fd (e.g. the process's own 0/1/2) as an owned fd.
+/// `php://fd/<n>`: a dup() of descriptor `n` (`spec` is what follows
+/// `fd/`), or `None` with the wrapper's error noted.
+pub fn open_php_fd(spec: &[u8]) -> Option<OwnedFd> {
+    // ZEND_STRTOL: leading space, a sign, digits, and nothing after
+    let t = spec.iter().take_while(|c| c.is_ascii_whitespace()).count();
+    let mut i = t;
+    if matches!(spec.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits = spec[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || i + digits != spec.len() {
+        super::note_wrapper_error(
+            "php://fd/ stream must be specified in the form php://fd/<orig fd>",
+        );
+        return None;
+    }
+    let n: i64 = std::str::from_utf8(&spec[t..])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(if spec[t] == b'-' { i64::MIN } else { i64::MAX });
+    let dtablesize = unsafe { libc::getdtablesize() };
+    if n < 0 || n >= i64::from(dtablesize) {
+        super::note_wrapper_error(format!(
+            "The file descriptors must be non-negative numbers smaller than {dtablesize}"
+        ));
+        return None;
+    }
+    let fd = unsafe { libc::dup(n as RawFd) };
+    if fd < 0 {
+        let e = super::errno();
+        super::note_wrapper_error(format!(
+            "Error duping file descriptor {n}; possibly it doesn't exist: [{e}]: {}",
+            super::strerror(e)
+        ));
+        return None;
+    }
+    Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
+}
+
 pub fn dup_raw(raw: RawFd) -> Option<OwnedFd> {
     let d = unsafe { libc::dup(raw) };
     (d >= 0).then(|| unsafe { OwnedFd::from_raw_fd(d) })

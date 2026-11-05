@@ -691,7 +691,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(Value::Array(a)) => {
             let mut e: Vec<Vec<u8>> = Vec::new();
             for (k, v) in a.iter() {
-                let s = conv::to_string_bytes(&deref(v));
+                let s = crate::zend::zpp::zval_get_string(host, v)?;
                 if s.is_empty() {
                     continue;
                 }
@@ -728,6 +728,15 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     return Err(Thrown::type_error(
                         "proc_open(): supplied resource is not a valid stream resource",
                     ));
+                }
+                // _php_stream_cast: read-ahead the child cannot see
+                let lost = host.stream_meta(&item).map_or(0, |m| m.unread_bytes);
+                if lost > 0 {
+                    crate::warn(
+                        host,
+                        "proc_open",
+                        &format!("{lost} bytes of buffered data lost during stream conversion!"),
+                    )?;
                 }
                 match host.stream_dup_fd(&item) {
                     Ok(fd) => {

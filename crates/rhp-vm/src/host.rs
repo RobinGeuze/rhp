@@ -501,6 +501,17 @@ impl Host for Vm {
                 self.next_resource_id += 1;
             }
             return Some(v);
+        } else if path.len() >= 9 && path[..9].eq_ignore_ascii_case(b"php://fd/") {
+            // php_stream_url_wrap_php's fd/: a dup() of the descriptor
+            let fd = builtins::main::streams::plain_wrapper::open_php_fd(&path[9..])?;
+            let v = self.make_stream(
+                StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new(fd)),
+                "stream",
+            );
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.fd_name = Some((path.to_vec(), mode.to_vec()));
+            }
+            return Some(v);
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
         } else if builtins::main::streams::is_data_url(path) {
@@ -868,6 +879,17 @@ impl Host for Vm {
         Some(self.make_stream(st, "stream"))
     }
 
+    fn stream_push_back(&mut self, res: &Value, data: &[u8]) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.push_back(data),
+            Some(StreamState::File(f)) => f.push_back(data),
+            Some(StreamState::Mem { pos, .. }) if *pos >= data.len() => *pos -= data.len(),
+            _ => return false,
+        }
+        true
+    }
+
     fn stream_set_mode(&mut self, res: &Value, mode: &[u8]) {
         if let Some(s) = res_id(res).and_then(|id| self.streams.record_mut(id)) {
             s.mode = Some(mode.to_vec());
@@ -1203,22 +1225,23 @@ impl Host for Vm {
                 pos,
                 skew,
                 eof,
+                temp,
                 ..
             }) => {
-                // _php_stream_seek + php_stream_memory_seek: SEEK_CUR is
-                // turned into a SEEK_SET against php's position, and a
-                // negative SEEK_SET fails without touching the stream; any
-                // other failure resets the buffer offset to 0 and php's
-                // position to -1. Seeking past the end is allowed (the next
-                // write zero-fills).
+                // _php_stream_seek + php_stream_memory_seek: a negative
+                // SEEK_SET fails without touching the stream; SEEK_CUR is
+                // turned into a SEEK_SET past that check, so a negative
+                // target reaches the memory stream, which resets its offset
+                // to 0 and php's position to -1 (as any other failure does).
+                // A temp stream (php://temp, data:) seeks its inner memory
+                // stream with SEEK_SET, so there it fails untouched. Seeking
+                // past the end is allowed (the next write zero-fills).
                 let target = match whence {
-                    0 | 1 => {
-                        let t = if whence == 1 {
-                            (*pos as i64 + *skew).saturating_add(offset)
-                        } else {
-                            offset
-                        };
-                        if t < 0 {
+                    0 if offset < 0 => return false,
+                    0 => offset,
+                    1 => {
+                        let t = (*pos as i64 + *skew).saturating_add(offset);
+                        if t < 0 && temp.is_some() {
                             return false;
                         }
                         t
@@ -1442,7 +1465,7 @@ impl Host for Vm {
                             stream_type: "STDIO",
                             mode: mode.clone(),
                             uri: uri.clone(),
-                            unread_bytes: 0,
+                            unread_bytes: f.unread() as i64,
                             seekable: f.is_seekable(),
                             eof: f.eof(),
                             blocked: true,
@@ -1467,7 +1490,7 @@ impl Host for Vm {
                                 },
                             },
                             uri: Vec::new(),
-                            unread_bytes: 0,
+                            unread_bytes: f.unread() as i64,
                             seekable: f.is_seekable(),
                             eof: f.eof(),
                             blocked: true,

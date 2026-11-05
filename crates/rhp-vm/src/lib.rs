@@ -115,7 +115,7 @@ pub struct Vm {
     cursor_global: Option<Vec<u8>>,
     // OOP class table (see `classes` module).
     classes: Vec<classes::ClassEntry>,
-    class_ids: HashMap<Vec<u8>, ClassId>, // lowercase name -> id
+    class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
     next_object_id: u32,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included

@@ -84,7 +84,7 @@ impl Vm {
             cursor_steps: Default::default(),
             cursor_global: None,
             classes: Vec::new(),
-            class_ids: HashMap::new(),
+            class_ids: Default::default(),
             next_object_id: 1,
             globals: indexmap::IndexMap::new(),
             jit_globals: HashMap::new(),

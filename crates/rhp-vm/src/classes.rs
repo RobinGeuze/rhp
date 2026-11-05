@@ -39,7 +39,7 @@ pub struct ClassEntry {
     pub traits: Vec<ClassId>,
     /// Flattened vtable, keyed by lowercase method name, in php's member
     /// order (see [`php_member_order`]).
-    pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
+    pub methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
     /// Flattened instance-property slots in php's object layout order, keyed
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
@@ -529,11 +529,11 @@ fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
 /// parent's table, itself already in this order, followed by interface
 /// members). Only the order changes — which member won is decided by the
 /// caller. This is what reflection and `get_class_*` enumerate.
-fn php_member_order<V>(
-    mut map: IndexMap<Vec<u8>, V>,
+fn php_member_order<V, S: std::hash::BuildHasher + Default>(
+    mut map: IndexMap<Vec<u8>, V, S>,
     first: impl IntoIterator<Item = Vec<u8>>,
-) -> IndexMap<Vec<u8>, V> {
-    let mut out = IndexMap::with_capacity(map.len());
+) -> IndexMap<Vec<u8>, V, S> {
+    let mut out = IndexMap::with_capacity_and_hasher(map.len(), S::default());
     for k in first {
         if let Some(v) = map.shift_remove(&k) {
             out.insert(k, v);
@@ -559,7 +559,7 @@ struct LinkedPrelude {
     /// per thread, so every program compiled on the thread shares them.
     protos: Vec<Rc<ClassProto>>,
     classes: Vec<ClassEntry>,
-    class_ids: std::collections::HashMap<Vec<u8>, ClassId>,
+    class_ids: FxHashMap<Vec<u8>, ClassId>,
     class_order: Vec<usize>,
     /// The capacities linking left `classes` and `class_order` with: the
     /// copies keep them, so the request's memory accounting is the same.
@@ -913,20 +913,21 @@ impl Vm {
         // An *abstract* method is only a requirement: it must never clobber an
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
-        let mut methods: IndexMap<Vec<u8>, ResolvedMethod> = parent
+        let mut methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].methods.clone())
             .unwrap_or_default();
-        let insert_method =
-            |methods: &mut IndexMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
-                if m.is_abstract {
-                    if let Some(existing) = methods.get(&k) {
-                        if !existing.is_abstract {
-                            return; // keep the concrete method
-                        }
+        let insert_method = |methods: &mut IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
+                             k: Vec<u8>,
+                             m: ResolvedMethod| {
+            if m.is_abstract {
+                if let Some(existing) = methods.get(&k) {
+                    if !existing.is_abstract {
+                        return; // keep the concrete method
                     }
                 }
-                methods.insert(k, m);
-            };
+            }
+            methods.insert(k, m);
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {

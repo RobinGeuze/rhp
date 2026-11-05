@@ -1582,6 +1582,18 @@ impl Vm {
                     let result = match v {
                         Value::Object(h) => match self.resolve_class_autoload(top, class) {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                            // self/parent/static without a scope throw
+                            // (zend_fetch_class).
+                            Err(e)
+                                if matches!(
+                                    class,
+                                    ClassRef::SelfClass
+                                        | ClassRef::ParentClass
+                                        | ClassRef::StaticClass
+                                ) =>
+                            {
+                                return Err(e)
+                            }
                             Err(_) => false,
                         },
                         // Closures / arrow fns / first-class callables are

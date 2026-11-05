@@ -115,7 +115,8 @@ impl ProtoBuilder<'_> {
 
     /// zend_ensure_valid_class_fetch_type.
     pub(crate) fn ensure_valid_class_fetch(&self, kind: &str) -> Result<(), Thrown> {
-        if !self.scope_known() {
+        // Constant expressions check `X::class` only (constexpr.rs).
+        if !self.scope_known() || self.in_const_expr() {
             return Ok(());
         }
         let msg = match self.cx.class_scope.borrow().as_ref() {

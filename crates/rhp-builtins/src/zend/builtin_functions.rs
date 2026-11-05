@@ -816,7 +816,7 @@ fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     };
     match id {
         // php: Warning "Cannot declare class X, because the name is already in use"
-        Some(id) => Ok(Value::Bool(host.class_alias(id, &alias))),
+        Some(id) => Ok(Value::Bool(host.class_alias(id, &alias)?)),
         // php: Warning "Class "X" not found"
         None => Ok(Value::Bool(false)),
     }

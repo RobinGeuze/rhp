@@ -311,8 +311,9 @@ pub trait Host {
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown>;
 
     /// `class_alias`: register `alias` as another name for class `class_id`.
-    /// Returns false if the alias name is already taken.
-    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool;
+    /// Returns false if the alias name is already taken; a reserved name is
+    /// a fatal error (zend_register_class_alias_ex).
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> Result<bool, Thrown>;
 
     /// A class's relations for `class_parents` / `class_implements` /
     /// `class_uses`: (parent chain nearest-first, interfaces in php order,

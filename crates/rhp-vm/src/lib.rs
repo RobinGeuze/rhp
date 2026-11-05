@@ -19,6 +19,7 @@ mod generators;
 mod host;
 mod include;
 mod lifecycle;
+mod link_checks;
 mod lvalue;
 mod memory;
 mod opcache;

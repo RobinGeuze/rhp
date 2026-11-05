@@ -105,7 +105,12 @@ const COMPILE_ERROR: &str = "CompileError";
 /// unexpected …, expecting …`), a scanner error or a grammar action's error.
 /// `None` when php's parser accepts the file.
 pub fn syntax_error(src: &[u8]) -> Option<ParseFailure> {
-    let toks = lexer::tokenize(src);
+    syntax_error_ex(src, lexer::short_tags())
+}
+
+/// [`syntax_error`] with short_open_tag given.
+pub fn syntax_error_ex(src: &[u8], short_tags: bool) -> Option<ParseFailure> {
+    let toks = lexer::tokenize_ex(src, short_tags);
     PARSE_WARNINGS.with(|w| w.borrow_mut().clear());
     let mut feed = Feed {
         src,

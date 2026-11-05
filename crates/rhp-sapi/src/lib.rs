@@ -177,8 +177,8 @@ impl Sapi for CliSapi {
 /// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
 /// does not (mago's bugs, or its recursion limit on deeply nested code),
 /// mago's error, which is not php's.
-fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
-    rhp_builtins::zend::syntax_error(src).or_else(|| {
+fn parse_error(parsed: &Parsed, src: &[u8], short_tags: bool) -> Option<ParseFailure> {
+    rhp_builtins::zend::syntax_error_ex(src, short_tags).or_else(|| {
         let (message, line) = parsed.parse_error()?;
         Some(ParseFailure {
             class: "ParseError",
@@ -190,8 +190,12 @@ fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
 
 /// [`parse_error`] as the includer reports it, with the warnings php's
 /// parser raised before it.
-fn parse_failure(parsed: &Parsed, src: &[u8]) -> Result<Vec<(i64, String, u32)>, IncludeError> {
-    let failure = parse_error(parsed, src);
+fn parse_failure(
+    parsed: &Parsed,
+    src: &[u8],
+    short_tags: bool,
+) -> Result<Vec<(i64, String, u32)>, IncludeError> {
+    let failure = parse_error(parsed, src, short_tags);
     let diags = rhp_builtins::zend::take_parse_warnings()
         .into_iter()
         .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
@@ -261,7 +265,7 @@ fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, Include
     let arena = Arena::new();
     let short_tags = rhp_builtins::short_open_tag();
     let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
-    let parse_diags = parse_failure(&parsed, src)?;
+    let parse_diags = parse_failure(&parsed, src, short_tags)?;
     let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
     if parse_diags.is_empty() {
         return r.map_err(include_error);

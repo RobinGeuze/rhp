@@ -1075,7 +1075,6 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Tokenize `src` exactly as `token_get_all($src)` does (without TOKEN_PARSE).
 /// The short_open_tag ini (`<?` opens PHP code).
 pub fn short_tags() -> bool {
     crate::ini_value(b"short_open_tag")
@@ -1083,7 +1082,13 @@ pub fn short_tags() -> bool {
         .is_none_or(|v| crate::main::ini::ini_parse_bool(&v))
 }
 
+/// Tokenize `src` exactly as `token_get_all($src)` does (without TOKEN_PARSE).
 pub fn tokenize(src: &[u8]) -> Vec<Tok> {
+    tokenize_ex(src, short_tags())
+}
+
+/// [`tokenize`] with short_open_tag given.
+pub fn tokenize_ex(src: &[u8], short_tags: bool) -> Vec<Tok> {
     let mut lx = Lexer {
         s: src,
         p: 0,
@@ -1095,7 +1100,7 @@ pub fn tokenize(src: &[u8]) -> Vec<Tok> {
         // token (a string, inline HTML) mustn't charge memory_limit 10
         // bytes per source byte.
         out: Vec::with_capacity(src.len().min(1 << 16) / 4),
-        short_tags: short_tags(),
+        short_tags,
     };
     lx.run_with_halt();
     lx.out

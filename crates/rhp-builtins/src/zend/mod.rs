@@ -23,4 +23,4 @@ pub mod timeout;
 pub mod virtual_cwd;
 pub(crate) mod zpp;
 
-pub use language_parser::{syntax_error, take_parse_warnings, ParseFailure};
+pub use language_parser::{syntax_error, syntax_error_ex, take_parse_warnings, ParseFailure};

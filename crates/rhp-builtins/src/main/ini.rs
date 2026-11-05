@@ -418,9 +418,22 @@ pub(crate) fn module_loaded(module: &str) -> bool {
 fn ini_entry(
     name: &[u8],
 ) -> Option<&'static (&'static str, &'static str, Option<&'static str>, u8)> {
-    INI_TABLE
+    // INI_TABLE's rows by name (a name can belong to several modules), so
+    // a lookup doesn't scan the whole table.
+    static BY_NAME: std::sync::OnceLock<HashMap<&'static [u8], Vec<usize>>> =
+        std::sync::OnceLock::new();
+    let by_name = BY_NAME.get_or_init(|| {
+        let mut m: HashMap<&'static [u8], Vec<usize>> = HashMap::new();
+        for (i, e) in INI_TABLE.iter().enumerate() {
+            m.entry(e.1.as_bytes()).or_default().push(i);
+        }
+        m
+    });
+    by_name
+        .get(name)?
         .iter()
-        .find(|e| e.1.as_bytes() == name && module_loaded(e.0))
+        .map(|&i| &INI_TABLE[i])
+        .find(|e| module_loaded(e.0))
         // php registers pcre.jit only when the PCRE2 it links has a JIT.
         .filter(|e| e.1 != "pcre.jit" || crate::ext::pcre::jit_supported())
 }

@@ -185,6 +185,11 @@ pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
     Ok(pow_num(x, y))
 }
 
+/// Both operands of `op` as numbers, without an engine (see [`arith_num`]).
+pub fn arith_pair(a: &Value, b: &Value, op: &str) -> Result<(Num, Num), Thrown> {
+    Ok((arith_num(a, op)?, arith_num(b, op)?))
+}
+
 /// `safe_pow`'s condition for "Power of base 0 and negative exponent is
 /// deprecated".
 pub fn pow_base0_neg_exp(x: Num, y: Num) -> bool {
@@ -626,23 +631,28 @@ fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
 /// that overflowed to the float `n`, else 0.
 fn int_overflow(s: &[u8], n: Num) -> i8 {
     let Num::Float(f) = n else { return 0 };
-    let t: Vec<u8> = s
-        .iter()
-        .copied()
-        .filter(|&c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c'))
-        .collect();
-    let digits = t
-        .strip_prefix(b"-")
-        .or_else(|| t.strip_prefix(b"+"))
-        .unwrap_or(&t);
-    if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
-        if f < 0.0 {
-            -1
+    let ws = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c');
+    let mut it = s.iter().skip_while(|c| ws(c)).peekable();
+    if matches!(it.peek(), Some(b'-' | b'+')) {
+        it.next();
+    }
+    let mut digits = 0;
+    for c in it.by_ref() {
+        if c.is_ascii_digit() {
+            digits += 1;
+        } else if ws(c) {
+            break;
         } else {
-            1
+            return 0;
         }
+    }
+    if digits == 0 || !it.all(ws) {
+        return 0;
+    }
+    if f < 0.0 {
+        -1
     } else {
-        0
+        1
     }
 }
 

@@ -748,6 +748,14 @@ pub trait Host {
     /// `pow_function` (the `**` operator) with the engine's diagnostics and
     /// object handlers.
     fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
-        rhp_values::ops::pow(a, b)
+        use rhp_values::ops;
+        let (x, y) = ops::arith_pair(a, b, "**")?;
+        if ops::pow_base0_neg_exp(x, y) {
+            self.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"Power of base 0 and negative exponent is deprecated",
+            )?;
+        }
+        Ok(ops::pow_num(x, y))
     }
 }

@@ -1,4 +1,6 @@
 //! ext/standard/uuencode.c: `convert_uuencode` and `convert_uudecode`.
+//! Partly based on Berkeley's uuencode (BSD licence; see THIRD-PARTY-NOTICES,
+//! section 27).
 
 use rhp_values::{conv, Value};
 
@@ -34,7 +36,7 @@ fn uuencode(src: &[u8]) -> Vec<u8> {
         if ee > e {
             ee = e;
             len = ee - s;
-            if len % 3 != 0 {
+            if !len.is_multiple_of(3) {
                 ee = s + len / 3 * 3;
             }
         }

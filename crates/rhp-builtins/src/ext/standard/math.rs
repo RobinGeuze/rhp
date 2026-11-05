@@ -643,7 +643,7 @@ fn fn_abs(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn group_thousands(out: &mut Vec<u8>, digits: &[u8], sep: &[u8]) {
     let n = digits.len();
     for (i, &d) in digits.iter().enumerate() {
-        if i > 0 && (n - i) % 3 == 0 {
+        if i > 0 && (n - i).is_multiple_of(3) {
             out.extend_from_slice(sep);
         }
         out.push(d);

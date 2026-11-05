@@ -1,0 +1,65 @@
+int(4611686018427387904)
+float(9.223372036854776E+18)
+int(-9223372036854775808)
+float(-3.647299637717079E+19)
+int(1)
+int(0)
+int(-9223372036854775808)
+int(81)
+float(6.25)
+int(1)
+[8192] Power of base 0 and negative exponent is deprecated
+[8192] Power of base 0 and negative exponent is deprecated
+[8192] Power of base 0 and negative exponent is deprecated
+float(INF)
+float(INF)
+float(INF)
+[8192] Power of base 0 and negative exponent is deprecated
+float(INF)
+TypeError: Unsupported operand types: array ** int
+TypeError: Unsupported operand types: int ** string
+TypeError: Unsupported operand types: stdClass ** int
+float(INF)
+float(NAN)
+float(1.4142135623730951)
+HalfAwayFromZero: 3 -3 1.96
+HalfTowardsZero: 2 -2 1.95
+HalfEven: 2 -2 1.96
+HalfOdd: 3 -3 1.95
+TowardsZero: 2 -2 1.95
+AwayFromZero: 3 -3 1.96
+NegativeInfinity: 2 -3 1.95
+PositiveInfinity: 3 -2 1.96
+float(-0)
+float(10)
+float(20)
+string(25) "9,223,372,036,854,775,807"
+string(29) "-9,223,372,036,854,775,808.00"
+string(10) "-1,235,000"
+string(21) "9,007,199,254,740,992"
+string(1) "0"
+string(4) "1.01"
+string(24) "1.000.000.000.000.000,00"
+string(7) "1234568"
+string(1) "1"
+string(2) "-1"
+bool(true)
+string(3) "inf"
+string(3) "inf"
+string(3) "nan"
+[8192] Invalid characters passed for attempted conversion, these have been ignored
+int(255)
+int(511)
+int(10)
+int(5)
+string(11) "10100001111"
+An infinite value cannot be converted to base 10
+int(26)
+int(26)
+int(10)
+int(0)
+int(-5)
+int(9223372036854775807)
+int(-9223372036854775808)
+int(0)
+int(34)

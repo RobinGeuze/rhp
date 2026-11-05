@@ -1,0 +1,61 @@
+Thompson => 0MPSN 0M
+knight => NFT NF
+Schmidt => SXMTT SX
+Xavier => SFR SF
+wheel => WL WL
+aero => ER ER
+ghost => FST FS
+dumb => TM TM
+Science => SNS SN
+laugh => LF LF
+Chris => XRS XR
+ =>  
+123 =>  
+=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=
+=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=
+=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09=C3=A9 ab=3Dc=09
+end=20
+
+bool(true)
+string(3) "a=4"
+string(6) "abc=zz"
+M5&AE('%U:6-K(&)R;W=N(&9O>"!4:&4@<75I8VL@8G)O=VX@9F]X(%1H92!Q
+M=6EC:R!B<F]W;B!F;W@@5&AE('%U:6-K(&)R;W=N(&9O>"!4:&4@<75I8VL@
+*8G)O=VX@9F]X(```
+`
+bool(true)
+[2] convert_uudecode(): Argument #1 ($data) is not a valid uuencoded string
+string(2) "`
+"
+string(8) "!80``
+`
+"
+bool(false)
+string(30) "e2e1e00a6162630a28e3290a646566"
+string(7) "bye 1.5"
+string(2) "cb"
+string(3) "yzc"
+string(3) "abc"
+string(0) ""
+[2] ltrim(): Invalid '..'-range, '..'-range needs to be incrementing
+[2] rtrim(): Invalid '..'-range, no character to the right of '..'
+string(3) "abc"
+string(3) "xyz"
+string(2) "bc"
+string(3) "abc"
+string(15) "Hello-World foo"
+array(3) {
+  [0]=>
+  string(3) "tis"
+  [1]=>
+  string(5) "-the-"
+  [2]=>
+  string(3) "end"
+}
+array(1) {
+  [0]=>
+  string(4) "a1b2"
+}
+int(1)
+int(-19)
+int(-1)

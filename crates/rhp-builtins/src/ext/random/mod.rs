@@ -10,6 +10,8 @@ use crate::zend::zpp::{int_or_null_param, int_param};
 use crate::{Host, Thrown};
 
 // --- Mt19937 (ext/random/engine_mt19937.c) ----------------------------------
+// Based on MTRand by Richard J. Wagner and on code by Makoto Matsumoto and
+// Takuji Nishimura (BSD-3-Clause); see THIRD-PARTY-NOTICES, section 24.
 
 const MT_N: usize = 624;
 const MT_M: usize = 397;

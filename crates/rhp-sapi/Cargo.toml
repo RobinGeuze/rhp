@@ -2,7 +2,9 @@
 name = "rhp-sapi"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+# Our code: MIT OR Apache-2.0; code translated from php-src (sapi/cgi/cgi_main.c, main/getopt.c) keeps
+# the PHP License 3.01 (THIRD-PARTY-NOTICES, section 4).
+license = "(MIT OR Apache-2.0) AND PHP-3.01"
 publish.workspace = true
 
 [dependencies]

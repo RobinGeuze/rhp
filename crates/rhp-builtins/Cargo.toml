@@ -2,7 +2,12 @@
 name = "rhp-builtins"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+# Our code: MIT OR Apache-2.0. Translated or derived code keeps its licence
+# (THIRD-PARTY-NOTICES, by section): php-src (4: PHP-3.01, Zend-2.0),
+# md5crypt (8: Beerware), the Bison skeleton (10), charset maps (11), glob and
+# Mt19937 (21, 24: BSD-3-Clause), libc++ sort (22), strnatcmp (23: Zlib), the
+# email regexes (25). The C libraries it links are not part of its source.
+license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND Beerware AND GPL-3.0-or-later WITH Bison-exception-2.2 AND LicenseRef-Unicode-Mapping-Files AND BSD-3-Clause AND (NCSA OR MIT) AND Zlib AND LicenseRef-Rushton-Email-Regex"
 publish.workspace = true
 
 [features]

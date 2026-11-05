@@ -9,6 +9,7 @@ pub mod dumps;
 pub mod html_tables;
 pub mod intl_consts;
 pub mod parser;
+pub mod readme;
 pub mod signatures;
 mod util;
 pub mod zip_consts;
@@ -19,6 +20,7 @@ generators:\n  curl-consts  ext/curl constant names and version gates from php-s
 \x20 html-tables  HTML entity tables from php-src's ext/standard/html_tables\n\
 \x20 intl-consts  intl's global constants from php-src's ext/intl stubs\n\
 \x20 parser       token ids and Bison tables from the php release tarball\n\
+\x20 readme       README.md's PHP test table from tests/phpt (--php-src: recount totals)\n\
 \x20 signatures   builtin signatures from php-src's *.stub.php\n\
 \x20 zip-consts   ZipArchive's constant names and guards from php-src\n";
 
@@ -29,6 +31,7 @@ pub fn main(args: &[String]) -> ExitCode {
         Some("html-tables") => html_tables::main(&args[1..]),
         Some("intl-consts") => intl_consts::main(&args[1..]),
         Some("parser") => parser::main(&args[1..]),
+        Some("readme") => readme::main(&args[1..]),
         Some("signatures") => signatures::main(&args[1..]),
         Some("zip-consts") => zip_consts::main(&args[1..]),
         _ => {

@@ -10,10 +10,16 @@ need no special handling.
   `phpt` job) fails if one of them stops matching, goes missing, or is skipped
   for any reason other than its own `--SKIPIF--`. This list ratchets: add tests
   as they start passing, and remove a line only for a deliberate reason. CI
-  and the nightly check out `Zend/tests`, `tests`, `ext/*/tests` and
-  `sapi/*/tests`: every php-src test except the 5 in `ext/intl/uchar/tests`
-  (none pass yet), which the list must not contain.
+  and the nightly check out `Zend/tests`, `tests`, `ext/*/tests`,
+  `ext/*/*/tests` (`ext/intl/uchar/tests`) and `sapi/*/tests`: every php-src
+  test.
 - `ignored.txt` lists tests that never run (see [the ignore list](#the-ignore-list)).
+- `totals.txt` counts php-src's tests per directory, for the PHP test support
+  table in the top-level README.md. `rhp-difftest gen readme` rewrites that
+  table from `known-passing.txt`, `ignored.txt` and `totals.txt`; run it in
+  the change that edits them (`cargo test` fails until you do). When
+  `php-src.ref` changes, run `rhp-difftest gen readme --php-src ../php-src`
+  so `totals.txt` is recounted too (CI's `generated tables` job checks it).
 
 How it compares, mirroring `run-tests.php`:
 

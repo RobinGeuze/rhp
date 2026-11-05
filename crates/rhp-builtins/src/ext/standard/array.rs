@@ -1337,7 +1337,9 @@ fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 // sequence of callback invocations are observable.
 
 // ---------------------------------------------------------------------------
-// zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort
+// zend_sort (Zend/zend_sort.c): hybrid insertion sort / quicksort, derived
+// from LLVM's libc++ std::sort (NCSA OR MIT, Copyright (c) 2009-2012 by the
+// libc++ contributors); see THIRD-PARTY-NOTICES, section 22.
 // ---------------------------------------------------------------------------
 
 type CmpFn<'a, T> = dyn FnMut(&T, &T) -> i32 + 'a;

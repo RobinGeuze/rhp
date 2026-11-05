@@ -472,6 +472,12 @@ fn sapi_exts() -> impl Iterator<Item = &'static str> {
         .filter(|e| crate::registry::module_loaded(e))
 }
 
+/// Every extension rhp reports as loaded under some SAPI ([`LOADED_EXTS`]),
+/// whichever SAPI runs: `rhp-difftest gen readme` gives each its own row.
+pub fn reported_extension_names() -> &'static [&'static str] {
+    LOADED_EXTS
+}
+
 /// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
 pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
     sapi_exts().collect()

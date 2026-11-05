@@ -1062,6 +1062,7 @@ dependencies = [
  "rhp-sapi",
  "rhp-values",
  "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]

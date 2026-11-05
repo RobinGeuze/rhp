@@ -81,7 +81,7 @@ impl Vm {
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),
             cursor_root: CursorRoot::Cv(0),
-            cursor_steps: Vec::new(),
+            cursor_steps: Default::default(),
             cursor_global: None,
             classes: Vec::new(),
             class_ids: HashMap::new(),

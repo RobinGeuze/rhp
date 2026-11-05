@@ -45,7 +45,7 @@ use calls::NativeCall;
 use errors::FinallyCont;
 use generators::GenState;
 use include::Includer;
-use lvalue::{CursorRoot, CursorStep};
+use lvalue::{CursorRoot, CursorSteps};
 use streams::StreamTable;
 
 pub use include::IncludeError;
@@ -109,7 +109,7 @@ pub struct Vm {
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
     cursor_root: CursorRoot,
-    cursor_steps: Vec<CursorStep>,
+    cursor_steps: CursorSteps,
     // The global's name when the open cursor is rooted at `$GLOBALS[name]`
     // (`$GLOBALS[name] = &$v` rebinds the symbol-table entry itself).
     cursor_global: Option<Vec<u8>>,

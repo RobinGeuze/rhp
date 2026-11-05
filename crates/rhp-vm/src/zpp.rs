@@ -24,6 +24,11 @@ impl Vm {
     /// object, array and null checks run here, so that parameter's error
     /// still comes first. `frameless`: php runs the call's
     /// ZEND_FRAMELESS_FUNCTION variant, whose zpp may differ.
+    ///
+    /// On an error `args` hold what php's frame would: the string, number
+    /// and class-name conversions zpp makes in place, but not those into a
+    /// C variable (an int, float or bool parameter), and none for a
+    /// frameless call, which parses into temporaries.
     pub(crate) fn coerce_builtin_args(
         &mut self,
         name: &str,
@@ -32,6 +37,27 @@ impl Vm {
         user: bool,
         strict: bool,
         frameless: bool,
+    ) -> Result<(), Thrown> {
+        let mut undo = Vec::new();
+        let r = self.coerce_args(name, sig, args, user, strict, frameless, &mut undo);
+        if r.is_err() {
+            for (i, v) in undo.into_iter().rev() {
+                args[i] = v;
+            }
+        }
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn coerce_args(
+        &mut self,
+        name: &str,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
+        args: &mut [Value],
+        user: bool,
+        strict: bool,
+        frameless: bool,
+        undo: &mut Vec<(usize, Value)>,
     ) -> Result<(), Thrown> {
         let sps =
             sig.and_then(|f| rhp_bytecode::signatures::scalar_params_for(f, args.len(), frameless));
@@ -69,7 +95,19 @@ impl Vm {
                 };
                 match got {
                     Got::Keep => {}
-                    Got::Set(v) => args[i] = v,
+                    Got::Set(v) => {
+                        use Zpp::*;
+                        let in_place = !frameless
+                            && match sp.kind {
+                                Str | ArrayOrStr | Number | NumberOrStr | Class => true,
+                                StrOrLong => matches!(v, Value::Str(_)),
+                                _ => false,
+                            };
+                        let old = std::mem::replace(&mut args[i], v);
+                        if !in_place {
+                            undo.push((i, old));
+                        }
+                    }
                     Got::Fail => {
                         let given = rhp_builtins::zval_value_name(self, &deref(&args[i]));
                         let ty = sp.kind.expected(sp.nullable).unwrap_or(sp.ty);
@@ -190,9 +228,9 @@ impl Vm {
             Str | ArrayOrStr => match v {
                 Value::Float(f) => {
                     self.nan_coerced(*f, "string")?;
-                    Got::Keep
+                    Got::Set(Value::str(conv::to_string_bytes(v)))
                 }
-                Value::Int(_) | Value::Bool(_) => Got::Keep,
+                Value::Int(_) | Value::Bool(_) => Got::Set(Value::str(conv::to_string_bytes(v))),
                 _ => self.zpp_str_object(v)?,
             },
             Long | ArrayOrLong => self.zpp_long(v)?,

@@ -1812,7 +1812,24 @@ impl Vm {
         }
         let count_error = builtin_arg_count_error(builtin, args.len());
         if count_error.is_none() {
-            self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)?;
+            if let Err(e) =
+                self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)
+            {
+                // php's zpp runs in the builtin's frame: the error's trace
+                // lists the call, with the arguments as converted so far.
+                if frameless || !user || !matches!(e, Thrown::Error { .. }) {
+                    return Err(e);
+                }
+                self.native_calls.push(NativeCall {
+                    name: builtin.name,
+                    args: args.as_slice() as *const [Value],
+                    caller,
+                    frameless_icall: icall,
+                });
+                let e = self.materialize(e, None);
+                self.native_calls.pop();
+                return Err(e);
+            }
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).

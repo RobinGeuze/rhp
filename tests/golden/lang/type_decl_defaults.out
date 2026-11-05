@@ -30,3 +30,7 @@ dnf(): Argument #1 ($v) must be of type (I&J)|string|int|null, array given, call
 NULL
 only_null(): Argument #1 ($n) must be of type null, int given, called in X
 unloaded(): Argument #1 ($m) must be of type Ns\Missing, stdClass given, called in X
+Parameter #0 [ <optional> float $a = 3.0 ]
+Parameter #1 [ <optional> $b = 1.0 ]
+Parameter #2 [ <optional> $c = -0.0 ]
+Parameter #3 [ <optional> $d = 2.5 ]

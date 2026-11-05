@@ -60,3 +60,9 @@ try {
 } catch (TypeError $e) {
     echo preg_replace('/called in .*/', 'called in X', $e->getMessage()), "\n";
 }
+
+// Reflection prints a float default with its fraction.
+function fdef(float $a = 3, $b = 1.0, $c = -0.0, $d = 2.5) {}
+foreach ((new ReflectionFunction('fdef'))->getParameters() as $p) {
+    echo $p, "\n";
+}

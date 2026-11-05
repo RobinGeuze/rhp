@@ -89,6 +89,20 @@ pub struct Request {
     /// the process's directory, as php-cgi opens the script before its
     /// chdir. The process's own directory never changes.
     pub cwd: Option<Vec<u8>>,
+    /// Which ini files to load (php_init_config); `None`: none at all.
+    pub ini_files: Option<IniFiles>,
+}
+
+/// php_init_config's inputs: php-cli's `-c` and `-n`. The php.ini is the
+/// `-c` file (or `php-<sapi>.ini` / `php.ini` in that directory), else
+/// `$PHPRC`'s; then, unless `-n`, the `.ini` files in `$PHP_INI_SCAN_DIR`.
+/// rhp has no built-in search path or scan directory of its own.
+#[derive(Clone, Debug, Default)]
+pub struct IniFiles {
+    /// `-c <path>`.
+    pub path_override: Option<String>,
+    /// `-n`.
+    pub ignore: bool,
 }
 
 impl Request {
@@ -102,6 +116,7 @@ impl Request {
             info: None,
             php_binary: None,
             cwd: None,
+            ini_files: None,
         }
     }
 }
@@ -351,6 +366,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Some(dir) = &req.cwd {
         vm.set_cwd(dir);
     }
+    if let Some(files) = &req.ini_files {
+        load_ini_files(&mut vm, files);
+    }
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
@@ -358,6 +376,10 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         vm.set_request(info);
     }
     vm.start_request();
+    if vm.startup_failed() {
+        vm.finish_request();
+        return Outcome::Exit(1);
+    }
 
     // Compile to owned bytecode (the arena is dropped after this). A script
     // file goes through the compiled-script cache; `-r` code and standard
@@ -417,6 +439,83 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     };
     vm.finish_request();
     Outcome::Exit(code)
+}
+
+/// php_init_config: the php.ini, then the scanned `.ini` files, into the
+/// configuration hash (the `-d` settings come after).
+fn load_ini_files(vm: &mut Vm, files: &IniFiles) {
+    use std::path::{Path, PathBuf};
+    let sapi_name = rhp_builtins::main::sapi::sapi_name();
+    let (file_name, search) = match &files.path_override {
+        Some(p) => (Some(p.clone()), Some(p.clone())),
+        None if !files.ignore => match std::env::var("PHPRC") {
+            Ok(p) if !p.is_empty() => (Some(p.clone()), Some(p)),
+            _ => (None, None),
+        },
+        None => (None, None),
+    };
+    let mut opened: Option<(PathBuf, Vec<u8>)> = None;
+    if let Some(f) = file_name.filter(|f| Path::new(f).is_file()) {
+        if let Ok(src) = std::fs::read(&f) {
+            let abs = std::path::absolute(&f).unwrap_or_else(|_| PathBuf::from(&f));
+            opened = Some((abs, src));
+        }
+    }
+    if opened.is_none() {
+        let dirs: Vec<String> = search
+            .map(|s| s.split(':').map(str::to_string).collect())
+            .unwrap_or_default();
+        'search: for name in [format!("php-{sapi_name}.ini"), "php.ini".to_string()] {
+            for d in dirs.iter().filter(|d| !d.is_empty()) {
+                let p = Path::new(d).join(&name);
+                if p.is_file() {
+                    if let Ok(src) = std::fs::read(&p) {
+                        opened = Some((p, src));
+                        break 'search;
+                    }
+                }
+            }
+        }
+    }
+    if let Some((path, src)) = opened {
+        vm.load_ini_file(&src);
+        use std::os::unix::ffi::OsStrExt;
+        rhp_builtins::config_set_opened_path(path.as_os_str().as_bytes());
+    }
+    if files.ignore {
+        return;
+    }
+    let Ok(scan) = std::env::var("PHP_INI_SCAN_DIR") else {
+        return;
+    };
+    let mut scanned = Vec::new();
+    for dir in scan.split(':').filter(|d| !d.is_empty()) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        names.sort();
+        for name in names {
+            use std::os::unix::ffi::OsStrExt;
+            if !name.as_bytes().ends_with(b".ini") {
+                continue;
+            }
+            let path = if dir.ends_with('/') {
+                format!("{dir}{}", name.to_string_lossy())
+            } else {
+                format!("{dir}/{}", name.to_string_lossy())
+            };
+            if !Path::new(&path).is_file() {
+                continue;
+            }
+            if let Ok(src) = std::fs::read(&path) {
+                if vm.load_ini_file(&src) {
+                    scanned.push(path.into_bytes());
+                }
+            }
+        }
+    }
+    rhp_builtins::config_set_scanned_files(&scanned);
 }
 
 /// The SAPI `opcache.preload` runs under: the request's SAPI name and ini
@@ -748,7 +847,12 @@ fn ini_constant(name: &str) -> Option<String> {
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
-pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -> i32 {
+pub fn run_cli(
+    script: Script,
+    ini: Vec<(String, String)>,
+    args: Vec<Vec<u8>>,
+    ini_files: IniFiles,
+) -> i32 {
     // PHP_BINARY is this engine's own executable (composer re-invokes it for
     // `@php` scripts).
     let php_binary = std::env::current_exe().ok().map(|exe| {
@@ -765,6 +869,7 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
         info: None,
         php_binary,
         cwd: None,
+        ini_files: Some(ini_files),
     };
     match run_request(Box::new(CliSapi), req) {
         Outcome::Exit(code) => code,

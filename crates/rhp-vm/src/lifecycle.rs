@@ -160,6 +160,12 @@ impl Vm {
         builtins::ini_startup_set(name, value);
     }
 
+    /// Load an ini file into the configuration hash (php_init_config);
+    /// false on a syntax error.
+    pub fn load_ini_file(&mut self, src: &[u8]) -> bool {
+        builtins::config_load_file(self, src)
+    }
+
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
     pub fn set_argv(&mut self, argv: Vec<Vec<u8>>) {
         self.argv = argv;

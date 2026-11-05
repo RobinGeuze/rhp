@@ -225,7 +225,38 @@ impl Vm {
         // before opening anything: a cached absolute path needs no open, and
         // no realpath while its revalidate window lasts; a file that is gone
         // may still be served.
-        let found = if self.opcache_fast_hit(&raw_path) {
+        // data: URLs (php's rfc2397 wrapper, a URL wrapper): only with
+        // allow_url_fopen and allow_url_include.
+        let mut reason_override = None;
+        let found = if builtins::main::streams::is_data_url(&raw_path) {
+            let on = |vm: &Self, n: &[u8]| crate::ini_bool(&vm.ini_get(n).unwrap_or_default());
+            let off = if !on(self, b"allow_url_fopen") {
+                Some("allow_url_fopen")
+            } else if !on(self, b"allow_url_include") {
+                Some("allow_url_include")
+            } else {
+                None
+            };
+            if let Some(off) = off {
+                let fname = kind.name();
+                self.diag(
+                    builtins::E_WARNING,
+                    &format!(
+                        "{fname}(): data:// wrapper is disabled in the server configuration by {off}=0"
+                    ),
+                )?;
+                reason_override = Some("no suitable wrapper could be found".to_string());
+                None
+            } else {
+                match builtins::main::streams::parse_data_url(&raw_path) {
+                    Ok((data, _)) => Some((raw_path.clone(), IncludeSource::Bytes(data))),
+                    Err(e) => {
+                        reason_override = Some(e.to_string());
+                        None
+                    }
+                }
+            }
+        } else if self.opcache_fast_hit(&raw_path) {
             Some((raw_path.clone(), IncludeSource::Cached))
         } else {
             self.resolve_include_file(top, &path_str).or_else(|| {
@@ -243,6 +274,8 @@ impl Vm {
                         .into_owned();
                 let reason = if path_str.is_empty() {
                     None
+                } else if let Some(r) = reason_override {
+                    Some(r)
                 } else {
                     Some(match builtins::main::streams::last_errno() {
                         Some(c) => builtins::main::streams::strerror(c),

@@ -504,11 +504,15 @@ fn fn_php_sapi_name(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 
 /// rhp has no php.ini, so this reports "no scanned files".
 fn fn_php_ini_scanned_files(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
+    Ok(crate::main::ini::config_files()
+        .1
+        .map_or(Value::Bool(false), Value::str))
 }
 
 fn fn_php_ini_loaded_file(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
+    Ok(crate::main::ini::config_files()
+        .0
+        .map_or(Value::Bool(false), Value::str))
 }
 
 pub fn register(m: &mut crate::Registry) {

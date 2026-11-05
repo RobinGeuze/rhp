@@ -197,6 +197,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
+    "allow_url_include",
     "arg_separator.input",
     "auto_globals_jit",
     "bcmath.scale",
@@ -227,6 +228,7 @@ const RHP_INI: &[&str] = &[
     "pcre.recursion_limit",
     "precision",
     "register_argc_argv",
+    "report_memleaks",
     "serialize_precision",
     "variables_order",
     "zend.detect_unicode",

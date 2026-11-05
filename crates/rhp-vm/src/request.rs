@@ -30,6 +30,8 @@ pub(crate) struct SapiState {
     /// The exit status when the script ends without `exit`: 255 after an
     /// E_ERROR at module startup (`EG(exit_status)`).
     pub(crate) startup_status: i32,
+    /// Module startup failed (an E_CORE_ERROR): the request doesn't run.
+    pub(crate) startup_failed: bool,
     /// What has been read of the request body, and this request's uploads
     /// (deleted when the request ends).
     pub(crate) body: BodyState,
@@ -52,6 +54,7 @@ impl SapiState {
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
             startup_status: 0,
+            startup_failed: false,
             body: BodyState::default(),
         }
     }
@@ -95,6 +98,10 @@ impl Vm {
         if diags.iter().any(|d| d.0 == 1) {
             self.sapi.startup_status = 255;
         }
+        // An E_CORE_ERROR fails module startup: nothing runs.
+        if diags.iter().any(|d| d.0 == rhp_builtins::E_CORE_ERROR) {
+            self.sapi.startup_failed = true;
+        }
         if builtins::main::sapi::is_cgi() {
             self.sapi.deferred_startup_diags = diags;
         } else {
@@ -127,6 +134,12 @@ impl Vm {
         }
     }
 
+    /// Whether module startup failed (php exits with status 1 before
+    /// running anything).
+    pub fn startup_failed(&self) -> bool {
+        self.sapi.startup_failed
+    }
+
     /// A warning raised during request startup ("PHP Request Startup: …"
     /// in Unknown on line 0, as php's docref reports it with no function
     /// running).
@@ -147,7 +160,7 @@ impl Vm {
             crate::errors::display_errors_mode(&ini(self, b"display_errors")),
             crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
-        if level != rhp_builtins::E_ERROR {
+        if level != rhp_builtins::E_ERROR && level != rhp_builtins::E_CORE_ERROR {
             let (level, label) = if level == rhp_builtins::E_DEPRECATED {
                 (level, "Deprecated")
             } else {
@@ -161,7 +174,7 @@ impl Vm {
             }
             return;
         }
-        if builtins::zend::builtin_functions::error_reporting_level(self) & 1 == 0 {
+        if builtins::zend::builtin_functions::error_reporting_level(self) & level == 0 {
             return;
         }
         let mut msg = msg.as_bytes().to_vec();

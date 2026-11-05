@@ -31,6 +31,105 @@ thread_local! {
     pub(crate) static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
 
+thread_local! {
+    /// php's `configuration_hash`: every php.ini, scanned .ini and `-d`
+    /// entry, known directive or not (`get_cfg_var`).
+    static CONFIG: RefCell<rhp_values::PhpArray> = RefCell::new(rhp_values::PhpArray::new());
+    /// `php_ini_opened_path` and `php_ini_scanned_files`.
+    static OPENED_PATH: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    static SCANNED_FILES: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// A configuration hash entry: `name=value`, or `name[off]=value` /
+/// `name[]=value` (an array entry, as php_ini_parser_cb's POP_ENTRY).
+pub fn config_define(name: &[u8], value: &[u8]) {
+    use rhp_values::{ArrayKey, PhpArray, Value};
+    CONFIG.with(|c| {
+        let mut c = c.borrow_mut();
+        let open = name.iter().position(|&b| b == b'[');
+        match open.filter(|_| name.ends_with(b"]")) {
+            Some(i) => {
+                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(name[..i].to_vec()));
+                let off = &name[i + 1..name.len() - 1];
+                if !matches!(c.get(&key), Some(Value::Array(_))) {
+                    c.insert(key.clone(), Value::Array(PhpArray::new()));
+                }
+                if let Some(Value::Array(sub)) = c.get_mut(&key) {
+                    if off.is_empty() {
+                        sub.push(Value::str(value.to_vec()));
+                    } else {
+                        sub.insert(ArrayKey::from_bytes(off), Value::str(value.to_vec()));
+                    }
+                }
+            }
+            None => {
+                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(name.to_vec()));
+                c.insert(key, Value::str(value.to_vec()));
+            }
+        }
+    });
+}
+
+/// `cfg_get_entry`: a configuration hash entry.
+pub(crate) fn cfg_get(name: &[u8]) -> Option<rhp_values::Value> {
+    let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name.to_vec()));
+    CONFIG.with(|c| c.borrow().get(&key).cloned())
+}
+
+/// zend_parse_ini_file into the configuration hash (php_init_config): its
+/// entries also set the directives they name. False on a syntax error.
+pub fn config_load_file(host: &dyn Host, src: &[u8]) -> bool {
+    use rhp_values::Value;
+    let mode = crate::zend::ini_scanner::MODE_NORMAL;
+    let Some(entries) = crate::ext::standard::basic_functions::parse_ini(host, src, false, mode)
+    else {
+        return false;
+    };
+    for (k, v) in entries.iter() {
+        let name = k.to_value();
+        let name = rhp_values::conv::to_string_bytes(&name);
+        match v {
+            Value::Array(_) => {
+                let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name));
+                CONFIG.with(|c| c.borrow_mut().insert(key, v.clone()));
+            }
+            v => {
+                let value = rhp_values::conv::to_string_bytes(v);
+                config_define(&name, &value);
+                ini_startup(&name, &value);
+            }
+        }
+    }
+    true
+}
+
+/// The php.ini php_init_config opened (`cfg_file_path` too).
+pub fn config_set_opened_path(path: &[u8]) {
+    config_define(b"cfg_file_path", path);
+    OPENED_PATH.with(|p| *p.borrow_mut() = Some(path.to_vec()));
+}
+
+/// The scanned .ini files, as php_ini_scanned_files() lists them.
+pub fn config_set_scanned_files(files: &[Vec<u8>]) {
+    if files.is_empty() {
+        return;
+    }
+    let mut list = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        list.extend_from_slice(f);
+        list.extend_from_slice(if i + 1 < files.len() { b",\n" } else { b"\n" });
+    }
+    SCANNED_FILES.with(|s| *s.borrow_mut() = Some(list));
+}
+
+/// `php_ini_opened_path` / `php_ini_scanned_files`.
+pub(crate) fn config_files() -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    (
+        OPENED_PATH.with(|p| p.borrow().clone()),
+        SCANNED_FILES.with(|s| s.borrow().clone()),
+    )
+}
+
 /// Diagnostics of startup (`-d`) ini values, and of re-applying them when a
 /// runtime change is undone (`ini_restore`, `zend_ini_deactivate` at request
 /// end).
@@ -236,9 +335,53 @@ pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
             diags.push((pos, String::new(), level, format!("PHP Startup: {msg}")));
         }
     }
+    // php_module_startup's check of removed and deprecated directives.
+    for (level, phrase, names) in REMOVED_DIRECTIVES {
+        for name in *names {
+            let set = cfg_get(name.as_bytes())
+                .is_some_and(|v| c_atol(&rhp_values::conv::to_string_bytes(&v)) != 0);
+            if set {
+                let msg = phrase.replace("%s", name);
+                diags.push((usize::MAX, String::new(), *level, msg));
+            }
+        }
+    }
     diags.sort_by_key(|d| d.0);
     diags.into_iter().map(|d| (d.2, d.3)).collect()
 }
+
+/// php_module_startup's directives that are deprecated or gone.
+const REMOVED_DIRECTIVES: &[(i64, &str, &[&str])] = &[
+    (
+        crate::E_DEPRECATED,
+        "Directive '%s' is deprecated",
+        &["allow_url_include"],
+    ),
+    (
+        crate::E_CORE_ERROR,
+        "Directive '%s' is no longer available in PHP",
+        &[
+            "allow_call_time_pass_reference",
+            "asp_tags",
+            "define_syslog_variables",
+            "highlight.bg",
+            "magic_quotes_gpc",
+            "magic_quotes_runtime",
+            "magic_quotes_sybase",
+            "register_globals",
+            "register_long_arrays",
+            "safe_mode",
+            "safe_mode_gid",
+            "safe_mode_include_dir",
+            "safe_mode_exec_dir",
+            "safe_mode_allowed_env_vars",
+            "safe_mode_protected_env_vars",
+            "zend.ze1_compatibility_mode",
+            "track_errors",
+            "disable_classes",
+        ],
+    ),
+];
 
 /// The warnings raised at request end when startup values are restored
 /// over runtime changes, once.
@@ -261,6 +404,9 @@ pub(crate) fn reset_state() {
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     crate::registry::reset_disabled();
+    CONFIG.with(|c| *c.borrow_mut() = rhp_values::PhpArray::new());
+    OPENED_PATH.with(|p| *p.borrow_mut() = None);
+    SCANNED_FILES.with(|s| *s.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
 }
 
@@ -337,6 +483,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             String::from_utf8_lossy(v)
         );
         (vec![msg], None)
+    } else if name == b"report_memleaks" && !ini_parse_bool(v) {
+        // OnUpdateReportMemleaks.
+        level = crate::E_DEPRECATED;
+        let msg = "PHP Startup: Directive 'report_memleaks' is deprecated".to_string();
+        (vec![msg], Some(v.to_vec()))
     } else if name == b"disable_functions" {
         // php_module_startup's zend_disable_functions, once the ini is in.
         crate::registry::reset_disabled();
@@ -566,6 +717,9 @@ pub(crate) fn alter_ini_entry(
         return Ok(None);
     }
     mark_changed(&String::from_utf8_lossy(name));
+    if name == b"report_memleaks" && !ini_parse_bool(&newv) {
+        crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;

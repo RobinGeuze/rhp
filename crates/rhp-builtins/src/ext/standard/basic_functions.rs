@@ -696,9 +696,8 @@ fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // No php.ini is loaded, so the configuration hash is empty.
-    let _ = str_param(host, args, 0, "get_cfg_var", "option")?;
-    Ok(Value::Bool(false))
+    let name = str_param(host, args, 0, "get_cfg_var", "option")?;
+    Ok(crate::main::ini::cfg_get(&name).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_get_include_path(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -1003,7 +1002,12 @@ fn report_syntax_error(
 }
 
 /// Parse ini text; `None` = syntax error (php returns false).
-fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
+pub(crate) fn parse_ini(
+    host: &dyn Host,
+    src: &[u8],
+    sections: bool,
+    mode: i64,
+) -> Option<PhpArray> {
     let mut lx = lexer(src, mode);
     let first = lx.next();
     let mut p = Parser {

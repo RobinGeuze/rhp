@@ -612,27 +612,23 @@ impl LocalFile {
         if path.contains(&0) {
             return None;
         }
-        // _php_stream_fopen opens expand_filepath()'s result: `..` folds
-        // lexically, so a missing directory before it does not matter
-        let local = file_path(path);
-        // expand_filepath starts from getcwd(3): the directory's current
-        // name; when it is gone the relative path opens as given
-        let mut real = if local.starts_with(b"/") {
-            crate::zend::virtual_cwd::expand_filepath(local)
-        } else {
-            match crate::zend::virtual_cwd::current_dir() {
-                Ok(cwd) => {
-                    crate::zend::virtual_cwd::expand_filepath(&[&cwd[..], b"/", local].concat())
-                }
-                Err(_) => local.to_vec(),
+        // _php_stream_fopen opens expand_filepath()'s result: symlinks
+        // resolved, `..` after a missing directory folded, and a file
+        // followed by `/`, `/.` or `/..` refused (ENOENT)
+        let real = match crate::zend::virtual_cwd::filepath_for_open(file_path(path)) {
+            Ok(real) => real,
+            Err(e) => {
+                note_io_err(&std::io::Error::from_raw_os_error(e));
+                return None;
             }
         };
-        // a trailing slash stays: "file/" must not open "file"
-        if local.ends_with(b"/") && !real.ends_with(b"/") {
-            real.push(b'/');
-        }
         let fd = match crate::zend::virtual_cwd::open(&real, flags, 0o666) {
             Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(libc::ENOTDIR) => {
+                // php's expansion already failed on the file used as a dir
+                note_io_err(&std::io::Error::from_raw_os_error(libc::ENOENT));
+                return None;
+            }
             Err(e) => {
                 note_io_err(&e);
                 return None;

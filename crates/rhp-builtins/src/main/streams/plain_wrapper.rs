@@ -1072,7 +1072,6 @@ pub fn set_fd_blocking(raw: RawFd, blocking: bool) -> bool {
     }
 }
 
-/// A `dup(2)` of a raw fd (e.g. the process's own 0/1/2) as an owned fd.
 /// `php://fd/<n>`: a dup() of descriptor `n` (`spec` is what follows
 /// `fd/`), or `None` with the wrapper's error noted.
 pub fn open_php_fd(spec: &[u8]) -> Option<OwnedFd> {
@@ -1112,6 +1111,7 @@ pub fn open_php_fd(spec: &[u8]) -> Option<OwnedFd> {
     Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
 }
 
+/// A `dup(2)` of a raw fd (e.g. the process's own 0/1/2) as an owned fd.
 pub fn dup_raw(raw: RawFd) -> Option<OwnedFd> {
     let d = unsafe { libc::dup(raw) };
     (d >= 0).then(|| unsafe { OwnedFd::from_raw_fd(d) })

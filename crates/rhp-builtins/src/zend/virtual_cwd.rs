@@ -361,8 +361,12 @@ pub fn expand_filepath(path: &[u8]) -> Vec<u8> {
 }
 
 /// [`expand_filepath`] of any path, a `scheme://` one included (php's
-/// plain-files fallback for an unknown wrapper).
+/// plain-files fallback for an unknown wrapper). Where php's
+/// expand_filepath fails, the lexical expansion.
 pub fn expand_local(path: &[u8]) -> Vec<u8> {
+    if let Ok(p) = expand_filepath_checked(path) {
+        return p;
+    }
     let full = expand_path(path);
     let parts: Vec<&[u8]> = full
         .split(|&b| b == b'/')
@@ -384,6 +388,226 @@ pub fn expand_local(path: &[u8]) -> Vec<u8> {
         }
     }
     full
+}
+
+/// php's `expand_filepath` (virtual_file_ex with CWD_FILEPATH) from the
+/// working directory's current name: `Err(errno)` where php's fails, e.g.
+/// a regular file followed by `/`, `/.` or `/..` (ENOENT).
+pub fn expand_filepath_checked(path: &[u8]) -> Result<Vec<u8>, i32> {
+    let max = libc::PATH_MAX as usize;
+    if path.is_empty() || path.len() >= max - 1 {
+        return Err(libc::EINVAL);
+    }
+    let (mut buf, start) = if path.starts_with(b"/") {
+        (path.to_vec(), 1)
+    } else {
+        match current_dir() {
+            Ok(cwd) => {
+                let full = join(&cwd, path);
+                if full.len() >= max - 1 {
+                    return Err(libc::ENAMETOOLONG);
+                }
+                (full, 1)
+            }
+            Err(_) => (path.to_vec(), 0),
+        }
+    };
+    let add_slash = buf.ends_with(b"/");
+    let len = buf.len();
+    let mut ll = 0;
+    let n = realpath_r(&mut buf, start, len, &mut ll, true, false, None).ok_or(libc::ENOENT)?;
+    buf.resize(n, 0);
+    if start == 0 && n == 0 {
+        buf.push(b'.');
+    }
+    if add_slash && !buf.is_empty() && !buf.ends_with(b"/") {
+        buf.push(b'/');
+    }
+    Ok(buf)
+}
+
+/// A path that opens what php's `expand_filepath` result opens. Without
+/// `.`, `..`, empty components or a trailing slash that is the absolute
+/// path itself (the kernel follows the symlinks as tsrm_realpath_r does),
+/// which saves an lstat per component; else [`expand_filepath_checked`].
+/// The caller reports ENOTDIR from the open as ENOENT, as php's
+/// expansion fails on a file used as a directory.
+pub fn filepath_for_open(path: &[u8]) -> Result<Vec<u8>, i32> {
+    let rest = path.strip_prefix(b"/").unwrap_or(path);
+    let simple = !rest.is_empty()
+        && path.len() < libc::PATH_MAX as usize - 1
+        && rest
+            .split(|&b| b == b'/')
+            .all(|seg| !matches!(seg, b"" | b"." | b".."));
+    if simple {
+        if path.starts_with(b"/") {
+            return Ok(path.to_vec());
+        }
+        if let Ok(cwd) = current_dir() {
+            let full = join(&cwd, path);
+            if full.len() < libc::PATH_MAX as usize - 1 {
+                return Ok(full);
+            }
+        }
+    }
+    expand_filepath_checked(path)
+}
+
+/// Write `b` at `i`, growing `path` as php's fixed buffer would allow.
+fn put(path: &mut Vec<u8>, i: usize, b: u8) {
+    if path.len() <= i {
+        path.resize(i + 1, 0);
+    }
+    path[i] = b;
+}
+
+/// Symlinks followed before php gives up (php: LINK_MAX; a loop fails
+/// either way).
+const MAX_LINKS: u32 = 40;
+
+/// php's `tsrm_realpath_r` (POSIX, no realpath cache): resolve
+/// `path[..len]` in place, from the last component back; the new length,
+/// or `None` on failure. `save` is CWD_FILEPATH (lstat each component,
+/// following symlinks; a missing one is kept as written) against
+/// CWD_EXPAND (lexical only).
+fn realpath_r(
+    path: &mut Vec<u8>,
+    start: usize,
+    mut len: usize,
+    ll: &mut u32,
+    save_mode: bool,
+    mut is_dir: bool,
+    link_is_dir: Option<&mut bool>,
+) -> Option<usize> {
+    loop {
+        if len <= start {
+            if let Some(d) = link_is_dir {
+                *d = true;
+            }
+            return Some(start);
+        }
+        let mut i = len;
+        while i > start && path[i - 1] != b'/' {
+            i -= 1;
+        }
+        if i == len || (i + 1 == len && path[i] == b'.') {
+            // double slashes and '.'
+            len = i.saturating_sub(1);
+            is_dir = true;
+            continue;
+        }
+        if i + 2 == len && path[i] == b'.' && path[i + 1] == b'.' {
+            // '..' and the directory before it
+            if let Some(d) = link_is_dir {
+                *d = true;
+            }
+            if i <= start + 1 {
+                return Some(if start != 0 { start } else { len });
+            }
+            let j = realpath_r(path, start, i - 1, ll, save_mode, true, None)?;
+            if j > start {
+                let mut j = j - 1;
+                while j > start && path[j] != b'/' {
+                    j -= 1;
+                }
+                if start == 0 {
+                    // a leading '..' of a relative path stays
+                    let at = |p: &Vec<u8>, k: usize| p.get(k).copied().unwrap_or(0);
+                    if j == 0 && path.starts_with(b"../") {
+                        put(path, 3, b'.');
+                        put(path, 4, b'.');
+                        put(path, 5, b'/');
+                        j = 5;
+                    } else if j > 0
+                        && at(path, j + 1) == b'.'
+                        && at(path, j + 2) == b'.'
+                        && at(path, j + 3) == b'/'
+                    {
+                        j += 4;
+                        put(path, j, b'.');
+                        put(path, j + 1, b'.');
+                        put(path, j + 2, b'/');
+                        j += 2;
+                    }
+                }
+                return Some(j);
+            }
+            if start == 0 && j == 0 {
+                put(path, 0, b'.');
+                put(path, 1, b'.');
+                put(path, 2, b'/');
+                return Some(2);
+            }
+            return Some(j);
+        }
+        let mut save = save_mode;
+        let mut st = None;
+        if save {
+            match stat(&path[..len], false) {
+                Ok(s) => st = Some(s),
+                // missing: go on, keeping the name as written
+                Err(_) => save = false,
+            }
+        }
+        let tmp = path[..len].to_vec();
+        let mode = st.map_or(0, |s| s.st_mode as u32 & libc::S_IFMT as u32);
+        if save && mode == libc::S_IFLNK as u32 {
+            *ll += 1;
+            if *ll > MAX_LINKS {
+                return None;
+            }
+            let target = std::fs::read_link(os_path(&tmp))
+                .ok()?
+                .into_os_string()
+                .into_vec();
+            let mut directory = false;
+            let j = if target.starts_with(b"/") {
+                let n = target.len();
+                *path = target;
+                realpath_r(path, 1, n, ll, save_mode, is_dir, Some(&mut directory))?
+            } else {
+                // the link's directory, then the relative target
+                let mut p = tmp[..i.saturating_sub(1)].to_vec();
+                if i > 0 {
+                    p.push(b'/');
+                }
+                p.extend_from_slice(&target);
+                let n = p.len();
+                *path = p;
+                realpath_r(path, start, n, ll, save_mode, is_dir, Some(&mut directory))?
+            };
+            if let Some(d) = link_is_dir {
+                *d = directory;
+            }
+            return Some(j);
+        }
+        if save {
+            let directory = mode == libc::S_IFDIR as u32;
+            if let Some(d) = link_is_dir {
+                *d = directory;
+            }
+            if is_dir && !directory {
+                return None;
+            }
+        }
+        let mut j = if i <= start + 1 {
+            start
+        } else {
+            // some leading directories may be inaccessible
+            let j = realpath_r(path, start, i - 1, ll, save_mode, true, None)?;
+            if j > start {
+                put(path, j, b'/');
+                j + 1
+            } else {
+                j
+            }
+        };
+        path.truncate(j);
+        path.resize(j, 0);
+        path.extend_from_slice(&tmp[i..len]);
+        j += len - i;
+        return Some(j);
+    }
 }
 
 /// `realpath()` (php's tsrm_realpath): the canonical path of an existing

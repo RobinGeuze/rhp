@@ -32,3 +32,5 @@ t(function () use ($anon) { $s = "abc"; $x = $s[$anon]; });
 t(function () use ($a) { $a[new stdClass] = 1; });
 t(function () use ($a) { $a[[]] = 1; });
 t(function () use ($a) { unset($a[function () {}]); });
+$ao = new class extends ArrayObject {};
+t(function () use ($ao) { $ao[[]][] = 1; });

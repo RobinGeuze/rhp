@@ -28,3 +28,4 @@ TypeError: Cannot access offset of type class@anonymous on string
 TypeError: Cannot access offset of type stdClass on array
 TypeError: Cannot access offset of type array on array
 TypeError: Cannot unset offset of type Closure on array
+TypeError: Cannot access offset of type array on ArrayObject@anonymous

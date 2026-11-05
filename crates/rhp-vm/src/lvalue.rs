@@ -981,7 +981,7 @@ impl Vm {
             return Err(Thrown::type_error(format!(
                 "Cannot access offset of type {} on {}",
                 rhp_builtins::zval_type_name(self, key),
-                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes())
+                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
             )));
         };
         let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());

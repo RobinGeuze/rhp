@@ -81,6 +81,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// The declared return type, for zend_emit_return_type_check's
     /// compile-time checks.
     pub(crate) ret_type: Option<rhp_bytecode::TypeHint>,
+    /// CV 0 is `$this`, always set (instance methods and hooks).
+    pub(crate) this_bound: bool,
     /// The body contains `yield`.
     pub(crate) is_generator: bool,
     /// A `yield` was compiled (the generator type check runs once).
@@ -134,6 +136,7 @@ impl<'c> ProtoBuilder<'c> {
             gotos: Vec::new(),
             hook: None,
             ret_type: None,
+            this_bound: false,
             is_generator: false,
             yield_seen: false,
         }
@@ -310,6 +313,22 @@ impl<'c> ProtoBuilder<'c> {
 
     pub(crate) fn here(&self) -> u32 {
         self.code.len() as u32
+    }
+
+    /// php's this_guaranteed_exists: an instance method (or hook), whose
+    /// CV 0 always holds the object.
+    pub(crate) fn this_guaranteed(&self) -> bool {
+        self.this_bound
+    }
+
+    /// The register of `$this` for a read (ZEND_FETCH_THIS): checked
+    /// unless the object is guaranteed.
+    pub(crate) fn this_reg(&mut self) -> Reg {
+        let cv = self.cv(b"this");
+        if !self.this_guaranteed() {
+            self.emit(Instr::CheckThis { cv });
+        }
+        cv
     }
 
     pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {

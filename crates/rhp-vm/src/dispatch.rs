@@ -888,6 +888,9 @@ impl Vm {
                 }
                 Instr::LvalVarVar { name } => {
                     let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    if vname == b"this" {
+                        return Err(Thrown::error("Error", "Cannot re-assign $this"));
+                    }
                     self.cursor_root = match self.var_var_slot(top, &vname) {
                         Ok(cv) => CursorRoot::Cv(cv),
                         Err(cell) => CursorRoot::Cell(cell),
@@ -1088,6 +1091,26 @@ impl Vm {
                         "UnhandledMatchError",
                         format!("Unhandled match case {}", self.match_case_desc(&v)),
                     ));
+                }
+                Instr::CheckThis { cv } => {
+                    let ok = match &self.stack[top].regs[cv as usize] {
+                        Value::Object(_) => true,
+                        Value::Ref(rc) => matches!(*rc.borrow(), Value::Object(_)),
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Using $this when not in object context",
+                        ));
+                    }
+                }
+                Instr::ThrowError { k } => {
+                    let msg = match &proto.consts[k as usize] {
+                        Value::Str(m) => String::from_utf8_lossy(m.as_bytes()).into_owned(),
+                        _ => String::new(),
+                    };
+                    return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
                     let v = self.reg_get(top, src);

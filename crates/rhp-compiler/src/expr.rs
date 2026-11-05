@@ -31,6 +31,9 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::FetchGlobals { dst });
                 Ok(dst)
             }
+            Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"this" => {
+                Ok(self.this_reg())
+            }
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
             Expression::Variable(v) => self.compile_variable(v),
             Expression::Binary(b) => self.compile_binary(b),
@@ -726,7 +729,12 @@ impl ProtoBuilder<'_> {
                         jumps.push((pos, r, true));
                         continue;
                     }
-                    let r = self.compile_quiet(v)?; // null if absent (DimFetch returns null)
+                    // isset($this): ZEND_ISSET_ISEMPTY_THIS, no error.
+                    let r = if crate::util::is_this(v) {
+                        self.cv(b"this")
+                    } else {
+                        self.compile_quiet(v)? // null if absent (DimFetch returns null)
+                    };
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false
                     jumps.push((pos, r, false));
@@ -783,7 +791,11 @@ impl ProtoBuilder<'_> {
                     }
                 }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
-                let r = self.compile_quiet(e.value)?;
+                let r = if crate::util::is_this(e.value) {
+                    self.cv(b"this")
+                } else {
+                    self.compile_quiet(e.value)?
+                };
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });
                 Ok(dst)

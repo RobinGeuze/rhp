@@ -261,6 +261,7 @@ fn compile_hook_body(
     c.hook = Some((p.prop_name.to_vec(), kind));
     let this = c.cv(b"this");
     debug_assert_eq!(this, 0);
+    c.this_bound = true;
 
     let mut params = Vec::new();
     if kind == HookKind::Set {

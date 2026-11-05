@@ -16,7 +16,7 @@ use crate::expr::{block_has_yield, expr_has_yield, stmt_has_yield};
 use crate::file::FileCtx;
 use crate::hints::{compile_type, compile_type_ex, PhpType};
 use crate::names::join_ns;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 /// The body form of a closure being lowered.
 enum ClosureBody<'a> {
@@ -46,6 +46,7 @@ pub(crate) fn compile_method(
     if !is_static {
         let this = c.cv(b"this");
         debug_assert_eq!(this, 0);
+        c.this_bound = true;
     }
 
     // Constructor property promotion: a param with a modifier declares a property.
@@ -366,6 +367,45 @@ impl ProtoBuilder<'_> {
             captures.push((b"this".to_vec(), false));
         }
         if let Some(uses) = &cl.use_clause {
+            // zend_compile_closure_binding / zend_compile_closure_uses.
+            let mut seen: Vec<&[u8]> = Vec::new();
+            for u in uses.variables.iter() {
+                use mago_span::HasSpan;
+                let name = strip_dollar(u.variable.name);
+                let line = self.cx.line_of(u.span().start.offset);
+                let msg = if name == b"this" {
+                    "Cannot use $this as lexical variable".to_string()
+                } else if crate::util::is_superglobal(name) {
+                    "Cannot use auto-global as lexical variable".to_string()
+                } else if seen.contains(&name) {
+                    format!(
+                        "Cannot use variable ${} twice",
+                        String::from_utf8_lossy(name)
+                    )
+                } else {
+                    seen.push(name);
+                    continue;
+                };
+                return Err(compile_error(msg, line));
+            }
+            for u in uses.variables.iter() {
+                use mago_span::HasSpan;
+                let name = strip_dollar(u.variable.name);
+                if cl
+                    .parameter_list
+                    .parameters
+                    .iter()
+                    .any(|p| strip_dollar(p.variable.name) == name)
+                {
+                    return Err(compile_error(
+                        format!(
+                            "Cannot use lexical variable ${} as a parameter name",
+                            String::from_utf8_lossy(name)
+                        ),
+                        self.cx.line_of(u.span().start.offset),
+                    ));
+                }
+            }
             for u in uses.variables.iter() {
                 let name = strip_dollar(u.variable.name).to_vec();
                 let by_ref = u.ampersand.is_some();
@@ -560,6 +600,12 @@ impl ProtoBuilder<'_> {
         let mut types = Vec::new();
         for (idx, p) in list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
+            if var == b"this" {
+                return Err(compile_error(
+                    "Cannot use $this as parameter",
+                    cx.line_of(p.span().start.offset),
+                ));
+            }
             let cv = self.cv(var); // params get CVs in order
             let name = self.intern_name(var);
             let at = p.span().start.offset;

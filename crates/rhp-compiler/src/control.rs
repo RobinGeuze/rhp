@@ -11,7 +11,7 @@ use crate::assign::{check_globals_write, globals_index};
 use crate::builder::ProtoBuilder;
 use crate::hints::hint_class_names;
 use crate::oop::Sel;
-use crate::util::{compile_error, strip_dollar};
+use crate::util::{compile_error, is_this, reassign_this, strip_dollar};
 
 impl ProtoBuilder<'_> {
     /// Compile a single statement or a colon-delimited statement sequence.
@@ -265,6 +265,17 @@ impl ProtoBuilder<'_> {
             }
             _ => {}
         }
+        let inner_val = match val_expr {
+            Expression::UnaryPrefix(u)
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                u.operand
+            }
+            e => e,
+        };
+        if is_this(inner_val) || key_expr.is_some_and(is_this) {
+            return Err(reassign_this(self.cur_line));
+        }
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
         let by_ref = matches!(
@@ -453,6 +464,9 @@ impl ProtoBuilder<'_> {
     pub(crate) fn compile_unset(&mut self, u: &crate::parse::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
             check_globals_write(v, self.cur_line)?;
+            if is_this(v) {
+                return Err(compile_error("Cannot unset $this", self.cur_line));
+            }
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
@@ -519,6 +533,14 @@ impl ProtoBuilder<'_> {
         for clause in t.catch_clauses.iter() {
             let target = self.here();
             let classes = hint_class_names(self.cx, &clause.hint)?;
+            if clause
+                .variable
+                .as_ref()
+                .is_some_and(|v| strip_dollar(v.name) == b"this")
+            {
+                use mago_span::HasSpan;
+                return Err(reassign_this(self.cx.line_of(clause.span().start.offset)));
+            }
             let var_reg = clause
                 .variable
                 .as_ref()

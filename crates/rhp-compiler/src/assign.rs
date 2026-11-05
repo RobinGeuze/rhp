@@ -9,7 +9,7 @@ use rhp_values::Thrown;
 
 use crate::builder::ProtoBuilder;
 use crate::oop::Sel;
-use crate::util::{compile_error, strip_dollar};
+use crate::util::{compile_error, is_this, reassign_this, strip_dollar};
 
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
 pub(crate) enum CursorStep {
@@ -221,6 +221,9 @@ impl ProtoBuilder<'_> {
     /// array element, or property).
     pub(crate) fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
         check_globals_write(target, self.cur_line)?;
+        if is_this(target) {
+            return Err(reassign_this(self.cur_line));
+        }
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -376,6 +379,14 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         let result_unused = std::mem::take(&mut self.result_unused);
         check_globals_write(a.lhs, self.cur_line)?;
+        if is_this(a.lhs)
+            && matches!(
+                a.operator,
+                AssignmentOperator::Assign(_) | AssignmentOperator::Coalesce(_)
+            )
+        {
+            return Err(reassign_this(self.cur_line));
+        }
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {

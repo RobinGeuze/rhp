@@ -136,6 +136,12 @@ impl ProtoBuilder<'_> {
             Statement::Try(t) => self.compile_try(t)?,
             Statement::Global(g) => {
                 for v in g.variables.iter() {
+                    if matches!(v, Variable::Direct(d) if strip_dollar(d.name) == b"this") {
+                        return Err(compile_error(
+                            "Cannot use $this as global variable",
+                            self.cur_line,
+                        ));
+                    }
                     if let Variable::Direct(d) = v {
                         let var = strip_dollar(d.name);
                         let cv = self.cv(var);
@@ -150,6 +156,16 @@ impl ProtoBuilder<'_> {
             Statement::Static(s) => {
                 for item in s.items.iter() {
                     use crate::parse::cst::StaticItem;
+                    let var = match item {
+                        StaticItem::Abstract(a) => &a.variable,
+                        StaticItem::Concrete(c) => &c.variable,
+                    };
+                    if strip_dollar(var.name) == b"this" {
+                        return Err(compile_error(
+                            "Cannot use $this as static variable",
+                            self.cur_line,
+                        ));
+                    }
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
                         StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {

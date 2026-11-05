@@ -481,6 +481,16 @@ pub enum Instr {
     ThrowMatchError {
         subject: Reg,
     },
+    /// A read of `$this` where it may be missing: throw php's "Using $this
+    /// when not in object context" unless `cv` holds an object.
+    CheckThis {
+        cv: Reg,
+    },
+    /// Throw an `Error` whose message is the string constant `k`: a form
+    /// php compiles but always rejects when it runs.
+    ThrowError {
+        k: CIdx,
+    },
     /// A call result passed for a by-reference parameter: raise php's notice
     /// "Only variables should be passed by reference" and pass the value.
     SendNoRef {

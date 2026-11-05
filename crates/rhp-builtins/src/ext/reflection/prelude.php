@@ -256,6 +256,15 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
     const IS_FINAL = 32;
     public string $class;
     public function __construct(object|string $objectOrMethod, ?string $method = null) {
+        if (self::$__hookOf !== null) {
+            $i = __reflect('fn', self::$__hookOf);
+            self::$__hookOf = null;
+            $this->__i = $i;
+            $this->__l = [$i['class'], $i['name']];
+            $this->name = $i['name'];
+            $this->class = $i['class'];
+            return;
+        }
         if (func_num_args() === 1 && !self::$__fromName) {
             __reflect('deprecated', 'Calling ReflectionMethod::__construct() with 1 argument is deprecated, use ReflectionMethod::createFromMethodName() instead');
         }
@@ -299,6 +308,12 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         $this->class = $i['class'];
     }
     private static $__fromName = false;
+    private static $__hookOf = null;
+    /** A property hook's ReflectionMethod (ReflectionProperty::getHook). */
+    public static function __hook($class, $prop, $kind) {
+        self::$__hookOf = [$class, $prop, $kind];
+        try { return new ReflectionMethod($class, $prop); } finally { self::$__hookOf = null; }
+    }
     public static function createFromMethodName(string $method): static {
         self::$__fromName = true;
         try { return new static($method); } finally { self::$__fromName = false; }
@@ -742,9 +757,20 @@ class ReflectionProperty implements Reflector {
         if (!is_object($objectOrValue)) { throw new TypeError('ReflectionProperty::setValue(): Argument #1 ($objectOrValue) must be of type object, ' . get_debug_type($objectOrValue) . ' given'); }
         __reflect_set_prop($objectOrValue, $this->name, $value, $this->class);
     }
-    public function getRawValue(object $object): mixed { return $this->getValue($object); }
-    public function setRawValue(object $object, mixed $value): void { $this->setValue($object, $value); }
-    public function setRawValueWithoutLazyInitialization(object $object, mixed $value): void { $this->setValue($object, $value); }
+    public function getRawValue(object $object): mixed {
+        if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
+        if ($this->__i['static']) { throw new ReflectionException('May not use getRawValue on static properties'); }
+        return __reflect('raw_get', $object, $this->class, $this->name);
+    }
+    public function setRawValue(object $object, mixed $value): void {
+        if ($this->__i['static']) { throw new ReflectionException('May not use setRawValue on static properties'); }
+        __reflect('raw_set', $object, $this->class, $this->name, $value);
+    }
+    public function setRawValueWithoutLazyInitialization(object $object, mixed $value): void {
+        if ($this->__i['static']) { throw new ReflectionException('Can not use setRawValueWithoutLazyInitialization on static property ' . $this->class . '::$' . $this->name); }
+        if (($this->__i['modifiers'] & 512) !== 0) { throw new ReflectionException('Can not use setRawValueWithoutLazyInitialization on virtual property ' . $this->class . '::$' . $this->name); }
+        __reflect('raw_set', $object, $this->class, $this->name, $value);
+    }
     public function skipLazyInitialization(object $object): void {}
     public function isLazy(object $object): bool { return false; }
     public function isInitialized(?object $object = null): bool {
@@ -762,8 +788,8 @@ class ReflectionProperty implements Reflector {
     public function isReadOnly(): bool { return $this->__i['readonly']; }
     public function isDefault(): bool { return !isset($this->__i['dynamic']); }
     public function isDynamic(): bool { return isset($this->__i['dynamic']); }
-    public function isAbstract(): bool { return false; }
-    public function isVirtual(): bool { return false; }
+    public function isAbstract(): bool { return ($this->__i['modifiers'] & 64) !== 0; }
+    public function isVirtual(): bool { return ($this->__i['modifiers'] & 512) !== 0; }
     public function isPromoted(): bool { return $this->__i['promoted']; }
     public function getModifiers(): int { return $this->__i['modifiers']; }
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
@@ -781,11 +807,23 @@ class ReflectionProperty implements Reflector {
         return $this->__i['default'];
     }
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionProperty'); }
-    public function hasHooks(): bool { return false; }
-    public function getHooks(): array { return []; }
-    public function hasHook($type): bool { return false; }
-    public function getHook($type): ?ReflectionMethod { return null; }
+    public function hasHooks(): bool { return ($this->__i['hooks'] ?? []) !== []; }
+    public function getHooks(): array {
+        $o = [];
+        foreach ($this->__i['hooks'] ?? [] as $k) { $o[$k] = ReflectionMethod::__hook($this->class, $this->name, $k); }
+        return $o;
+    }
+    public function hasHook(PropertyHookType $type): bool { return in_array($type->value, $this->__i['hooks'] ?? [], true); }
+    public function getHook(PropertyHookType $type): ?ReflectionMethod {
+        if (!in_array($type->value, $this->__i['hooks'] ?? [], true)) { return null; }
+        return ReflectionMethod::__hook($this->class, $this->name, $type->value);
+    }
     public function isFinal(): bool { return ($this->__i['modifiers'] & 32) !== 0; }
+}
+
+enum PropertyHookType: string {
+    case Get = 'get';
+    case Set = 'set';
 }
 
 class ReflectionClassConstant implements Reflector {

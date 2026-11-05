@@ -34,6 +34,7 @@ mod file;
 mod fold;
 mod functions;
 mod hints;
+mod hooks;
 mod hrh;
 mod names;
 mod oop;

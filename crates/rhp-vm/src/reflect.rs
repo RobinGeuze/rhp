@@ -365,6 +365,23 @@ impl Vm {
                     None => Ok(Value::Bool(false)),
                 }
             }
+            b"raw_get" | b"raw_set" => {
+                // (object, class, name[, value]): ReflectionProperty's raw
+                // access, as php's hook trampolines: the backing value.
+                let obj = arg(args, 0);
+                let cid = self.refl_class(args.get(1..).unwrap_or(&[]))?;
+                let name = PhpStr::from_bytes(arg_bytes(args, 2));
+                let saved = std::mem::replace(&mut self.hook_bypass, true);
+                let r = if op == b"raw_get" {
+                    self.prop_fetch_as(obj, name, Some(cid))
+                } else {
+                    let top = self.stack.len() - 1;
+                    self.prop_store_as(top, obj, name, arg(args, 3), Some(cid), Some(cid), false)
+                        .map(|()| Value::Null)
+                };
+                self.hook_bypass = saved;
+                r
+            }
             b"default_props" => {
                 let cid = self.refl_class(args)?;
                 self.update_class_constants(cid)?;
@@ -379,6 +396,14 @@ impl Vm {
                 let cid = self.refl_class(args.get(1..).unwrap_or(&[]))?;
                 let name = PhpStr::from_bytes(arg_bytes(args, 2));
                 let key = self.decl_prop_key(cid, &name);
+                // A virtual property is always initialized.
+                if key
+                    .as_ref()
+                    .and_then(|k| self.classes[cid as usize].props.get(k))
+                    .is_some_and(|pe| pe.virt)
+                {
+                    return Ok(Value::Bool(true));
+                }
                 let b = h.borrow();
                 Ok(Value::Bool(match key {
                     Some(k) => b.properties.contains_key(&k),
@@ -847,6 +872,27 @@ impl Vm {
         if readonly && setvis.is_none() && vis == Visibility::Public {
             mods |= 2048;
         }
+        let mut hooks = PhpArray::new();
+        if let Some(pe) = self
+            .decl_prop_key(cid, &pname)
+            .and_then(|k| e.props.get(&k))
+        {
+            if pe.virt {
+                mods |= 512;
+            }
+            if pe.is_abstract {
+                mods |= 64;
+            }
+            if pe.is_final {
+                mods |= 32;
+            }
+            for (kind, h) in pe.hooks.iter().flat_map(|h| h.iter().enumerate()) {
+                if h.is_some() {
+                    hooks.push(s(if kind == 0 { b"get" } else { b"set" }));
+                }
+            }
+        }
+        put(&mut a, "hooks", Value::Array(hooks));
         put(&mut a, "modifiers", Value::Int(mods));
         put(&mut a, "readonly", Value::Bool(readonly));
         put(&mut a, "promoted", Value::Bool(promoted));
@@ -1030,6 +1076,9 @@ impl Vm {
                 }
             } else if let Some(key) = self.decl_prop_key(cid, &name) {
                 let pe = &e.props[&key];
+                if pe.virt {
+                    continue; // no default table slot
+                }
                 let v = if pe.starts_uninit() {
                     if !vars {
                         continue;
@@ -1183,6 +1232,24 @@ impl Vm {
                         proto: f.proto.clone(),
                     }),
             },
+            Value::Array(a) if a.len() == 3 => {
+                // [class, property, "get"|"set"]: a property hook.
+                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let n = rhp_values::conv::to_string_bytes(&v[0]);
+                let Ok(cid) = self.resolve_class_by_name(&n) else {
+                    return Ok(None);
+                };
+                let pname = PhpStr::from_bytes(rhp_values::conv::to_string_bytes(&v[1]));
+                let kind = usize::from(rhp_values::conv::to_string_bytes(&v[2]) == b"set");
+                self.decl_prop_key(cid, &pname)
+                    .and_then(|k| self.classes[cid as usize].props.get(&k))
+                    .and_then(|pe| pe.hooks.as_ref())
+                    .and_then(|h| h[kind].clone())
+                    .map(|m| FnSubject::Method {
+                        class: m.defining_class,
+                        m,
+                    })
+            }
             Value::Array(a) => {
                 let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
                 if v.len() != 2 {
@@ -1199,6 +1266,24 @@ impl Vm {
                     }
                 };
                 let mname = rhp_values::conv::to_string_bytes(&v[1]);
+                if let Some(rest) = mname.strip_prefix(b"$") {
+                    // A hook's own name, `$prop::get`.
+                    let (prop, kind) = match rest.len().checked_sub(5).map(|i| rest.split_at(i)) {
+                        Some((p, b"::get")) => (p, 0),
+                        Some((p, b"::set")) => (p, 1),
+                        _ => return Ok(None),
+                    };
+                    let pname = PhpStr::from_bytes(prop.to_vec());
+                    return Ok(self
+                        .decl_prop_key(cid, &pname)
+                        .and_then(|k| self.classes[cid as usize].props.get(&k))
+                        .and_then(|pe| pe.hooks.as_ref())
+                        .and_then(|h| h[kind].clone())
+                        .map(|m| FnSubject::Method {
+                            class: m.defining_class,
+                            m,
+                        }));
+                }
                 match self.lookup_method(cid, &mname) {
                     // An engine-internal helper of a prelude class is not a
                     // user-visible method.

@@ -324,7 +324,10 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         })
         .unwrap_or_default();
 
-    let m = compile_members(cx, &class.members, &name)?;
+    let saved = cx.in_readonly_class.replace(flags.is_readonly);
+    let m = compile_members(cx, &class.members, &name);
+    cx.in_readonly_class.set(saved);
+    let m = m?;
     let mut interfaces = interfaces;
     add_stringable(&mut interfaces, &m.methods, &name);
     let meta = decl_meta(
@@ -396,7 +399,10 @@ pub(crate) fn compile_anon_class(
         not_serializable: true,
         ..ClassFlags::default()
     };
-    let m = compile_members(cx, &ac.members, &name)?;
+    let saved = cx.in_readonly_class.replace(flags.is_readonly);
+    let m = compile_members(cx, &ac.members, &name);
+    cx.in_readonly_class.set(saved);
+    let m = m?;
     let mut interfaces = interfaces;
     add_stringable(&mut interfaces, &m.methods, &name);
     let meta = decl_meta(
@@ -618,66 +624,36 @@ fn compile_member(
             out.methods.push(mp);
             out.props.extend(promoted);
         }
-        ClassLikeMember::Property(_) if cx.in_interface.get() => {}
         ClassLikeMember::Property(Property::Plain(p)) => {
-            let visibility = modifiers_visibility(&p.modifiers);
-            let set_visibility = modifiers_set_visibility(&p.modifiers);
-            let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
-            let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
-            let hint = p.hint.as_ref().map(|h| type_hint(cx, h));
-            let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
-            let (pstart, pend) = span_of(p);
-            for item in p.items.iter() {
-                let (var, default) = match item {
-                    PropertyItem::Concrete(c) => (
-                        &c.variable,
-                        coerce_prop_default(
-                            prop_default_or_thunk(cx, c.value, Some(class_name))?,
-                            hint.as_ref(),
-                        ),
-                    ),
-                    PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
-                };
-                let meta = rhp_bytecode::DeclMeta {
-                    attributes: attributes.clone(),
-                    doc_comment: cx.doc_comment_before(var.span.start.offset),
-                    start_line: cx.line_of(pstart),
-                    offset: var.span.start.offset,
-                    end_line: cx.line_of(pend),
-                };
-                let pname = PhpStr::from_bytes(strip_dollar(var.name).to_vec());
-                if is_static {
-                    let has_default = !matches!(default, PropDefaultProto::None);
-                    let init = match default {
-                        PropDefaultProto::Const(v) => ConstInitProto::Const(v),
-                        PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
-                        PropDefaultProto::None => ConstInitProto::Const(Value::Null),
-                    };
-                    out.static_props.push(StaticPropProto {
-                        name: pname,
-                        visibility,
-                        is_readonly,
-                        init,
-                        type_hint: hint.clone(),
-                        meta,
-                        has_default,
-                    });
-                } else {
-                    out.props.push(PropProto {
-                        name: pname,
-                        visibility,
-                        set_visibility,
-                        is_readonly,
-                        default,
-                        type_hint: hint.clone(),
-                        meta,
-                        promoted: false,
-                    });
-                }
-            }
+            let items: Vec<&PropertyItem> = p.items.iter().collect();
+            compile_property(
+                cx,
+                out,
+                PropDecl {
+                    attribute_lists: &p.attribute_lists,
+                    modifiers: &p.modifiers,
+                    hint: p.hint.as_ref(),
+                    items: &items,
+                    hooks: None,
+                    span: span_of(p),
+                },
+                class_name,
+            )?;
         }
-        ClassLikeMember::Property(Property::Hooked(_)) => {
-            return Err(Thrown::unsupported("property hooks", "deferred"))
+        ClassLikeMember::Property(Property::Hooked(p)) => {
+            compile_property(
+                cx,
+                out,
+                PropDecl {
+                    attribute_lists: &p.attribute_lists,
+                    modifiers: &p.modifiers,
+                    hint: p.hint.as_ref(),
+                    items: &[&p.item],
+                    hooks: Some(&p.hook_list),
+                    span: span_of(p),
+                },
+                class_name,
+            )?;
         }
         ClassLikeMember::Constant(c) => {
             let visibility = modifiers_visibility(&c.modifiers);
@@ -740,6 +716,193 @@ fn compile_member(
     Ok(())
 }
 
+/// One property declaration statement (php's ZEND_AST_PROP_GROUP).
+struct PropDecl<'a> {
+    attribute_lists: &'a crate::parse::cst::Sequence<'a, crate::parse::cst::AttributeList<'a>>,
+    modifiers: &'a crate::parse::cst::Sequence<'a, Modifier<'a>>,
+    hint: Option<&'a Hint<'a>>,
+    items: &'a [&'a PropertyItem<'a>],
+    hooks: Option<&'a crate::parse::cst::PropertyHookList<'a>>,
+    span: (u32, u32),
+}
+
+/// zend_compile_prop_decl: the declaration checks, then one property (or
+/// static property) per item, with its hooks.
+fn compile_property(
+    cx: &FileCtx,
+    out: &mut CompiledMembers,
+    p: PropDecl,
+    class_name: &PhpStr,
+) -> Result<(), Thrown> {
+    let visibility = modifiers_visibility(p.modifiers);
+    let set_visibility = modifiers_set_visibility(p.modifiers);
+    let is_static = has_modifier(p.modifiers, |m| matches!(m, Modifier::Static(_)));
+    let is_readonly = has_modifier(p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+    let is_final = has_modifier(p.modifiers, |m| matches!(m, Modifier::Final(_)));
+    let mut is_abstract = has_modifier(p.modifiers, |m| matches!(m, Modifier::Abstract(_)));
+    let in_interface = cx.in_interface.get();
+    let (pstart, _) = p.span;
+    if is_final && visibility == Visibility::Private {
+        cx.fatal(pstart, "Property cannot be both final and private".into());
+        return Ok(());
+    }
+    if in_interface {
+        if is_final {
+            cx.fatal(pstart, "Property in interface cannot be final".into());
+            return Ok(());
+        }
+        if visibility != Visibility::Public {
+            cx.fatal(
+                pstart,
+                "Property in interface cannot be protected or private".into(),
+            );
+            return Ok(());
+        }
+        if is_abstract {
+            cx.fatal(
+                pstart,
+                "Property in interface cannot be explicitly abstract. \
+                 All interface members are implicitly abstract"
+                    .into(),
+            );
+            return Ok(());
+        }
+        is_abstract = true;
+    }
+    let hint = p.hint.map(|h| type_hint(cx, h));
+    let first = p
+        .items
+        .first()
+        .map(|i| strip_dollar(i.variable().name).to_vec());
+    *cx.cur_property.borrow_mut() = first;
+    let r = compile_property_items(
+        cx,
+        out,
+        &p,
+        class_name,
+        hint,
+        is_abstract,
+        visibility,
+        set_visibility,
+        is_static,
+        is_readonly,
+        is_final,
+        in_interface,
+    );
+    *cx.cur_property.borrow_mut() = None;
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_property_items(
+    cx: &FileCtx,
+    out: &mut CompiledMembers,
+    p: &PropDecl,
+    class_name: &PhpStr,
+    hint: Option<rhp_bytecode::TypeHint>,
+    is_abstract: bool,
+    visibility: Visibility,
+    set_visibility: Option<Visibility>,
+    is_static: bool,
+    is_readonly: bool,
+    is_final: bool,
+    in_interface: bool,
+) -> Result<(), Thrown> {
+    let (pstart, pend) = p.span;
+    let attributes = compile_attributes(cx, p.attribute_lists, Some(class_name))?;
+    for item in p.items {
+        *cx.cur_property.borrow_mut() = Some(strip_dollar(item.variable().name).to_vec());
+        let (var, default) = match item {
+            PropertyItem::Concrete(c) => (
+                &c.variable,
+                coerce_prop_default(
+                    prop_default_or_thunk(cx, c.value, Some(class_name))?,
+                    hint.as_ref(),
+                ),
+            ),
+            PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
+        };
+        let name_bytes = strip_dollar(var.name);
+        if p.hooks.is_none() {
+            if in_interface {
+                cx.fatal(
+                    pstart,
+                    "Interfaces may only include hooked properties".into(),
+                );
+                return Ok(());
+            }
+            if is_abstract {
+                cx.fatal(
+                    pstart,
+                    "Only hooked properties may be declared abstract".into(),
+                );
+                return Ok(());
+            }
+        }
+        let meta = rhp_bytecode::DeclMeta {
+            attributes: attributes.clone(),
+            doc_comment: cx.doc_comment_before(var.span.start.offset),
+            start_line: cx.line_of(pstart),
+            offset: var.span.start.offset,
+            end_line: cx.line_of(pend),
+        };
+        let pname = PhpStr::from_bytes(name_bytes.to_vec());
+        let (hooks, is_virtual) = match p.hooks {
+            Some(list) => {
+                let hcx = crate::hooks::HookCtx {
+                    class_name,
+                    prop_name: name_bytes,
+                    hint: p.hint,
+                    visibility,
+                    is_abstract,
+                    is_static,
+                    is_readonly: is_readonly || cx.in_readonly_class.get(),
+                    in_interface,
+                    offset: pstart,
+                };
+                (
+                    crate::hooks::compile_hooks(cx, &hcx, list)?,
+                    crate::hooks::property_is_virtual(name_bytes, list, in_interface),
+                )
+            }
+            None => ([None, None], false),
+        };
+        if is_static {
+            let has_default = !matches!(default, PropDefaultProto::None);
+            let init = match default {
+                PropDefaultProto::Const(v) => ConstInitProto::Const(v),
+                PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
+                PropDefaultProto::None => ConstInitProto::Const(Value::Null),
+            };
+            out.static_props.push(StaticPropProto {
+                name: pname,
+                visibility,
+                is_readonly,
+                init,
+                type_hint: hint.clone(),
+                meta,
+                has_default,
+            });
+        } else {
+            out.props.push(PropProto {
+                name: pname,
+                visibility,
+                set_visibility,
+                is_readonly,
+                default,
+                type_hint: hint.clone(),
+                meta,
+                promoted: false,
+                hooks,
+                is_virtual,
+                is_abstract,
+                is_final,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn compile_trait(
     cx: &FileCtx,
     t: &crate::parse::cst::Trait,
@@ -791,8 +954,8 @@ pub(crate) fn compile_interface(
                 .collect()
         })
         .unwrap_or_default();
-    // Constants and (abstract) method signatures; interface properties
-    // contribute no runtime members.
+    // Constants, (abstract) method signatures and (abstract, hooked)
+    // properties.
     let saved = cx.in_interface.replace(true);
     let m = compile_members(cx, &iface.members, &name);
     cx.in_interface.set(saved);
@@ -823,7 +986,7 @@ pub(crate) fn compile_interface(
         interfaces,
         traits: Vec::new(),
         methods,
-        props: Vec::new(),
+        props: m.props,
         static_props: Vec::new(),
         constants: m.constants,
         enum_cases: Vec::new(),

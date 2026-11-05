@@ -68,11 +68,44 @@ pub(crate) fn compile_method(
                     rhp_bytecode::ParamDefault::Init
                 }
             });
-        let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
-        if !p.modifiers.is_empty() {
+        let is_promoted = !p.modifiers.is_empty() || p.hooks.is_some();
+        if is_promoted {
+            *cx.cur_property.borrow_mut() = Some(var.to_vec());
+        }
+        let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name));
+        let attributes = match attributes {
+            Ok(a) => a,
+            Err(e) => {
+                *cx.cur_property.borrow_mut() = None;
+                return Err(e);
+            }
+        };
+        if is_promoted {
             let vis = modifiers_visibility(&p.modifiers);
             let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+            let is_final = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Final(_)));
             let (pstart, pend) = span_of(p);
+            let (hooks, is_virtual) = match &p.hooks {
+                Some(list) => {
+                    let hcx = crate::hooks::HookCtx {
+                        class_name,
+                        prop_name: var,
+                        hint: p.hint.as_ref(),
+                        visibility: vis,
+                        is_abstract: false,
+                        is_static: false,
+                        is_readonly: ro || cx.in_readonly_class.get(),
+                        in_interface: false,
+                        offset: pstart,
+                    };
+                    (
+                        crate::hooks::compile_hooks(cx, &hcx, list)?,
+                        crate::hooks::property_is_virtual(var, list, false),
+                    )
+                }
+                None => ([None, None], false),
+            };
+            *cx.cur_property.borrow_mut() = None;
             promoted.push(PropProto {
                 name: PhpStr::from_bytes(var.to_vec()),
                 visibility: vis,
@@ -88,6 +121,10 @@ pub(crate) fn compile_method(
                     end_line: cx.line_of(pend),
                 },
                 promoted: true,
+                hooks,
+                is_virtual,
+                is_abstract: false,
+                is_final,
             });
             promo_stores.push((c.intern_name(var), cv));
         }
@@ -104,7 +141,7 @@ pub(crate) fn compile_method(
                 cx.line_of(p.span().start.offset)
             },
             attributes,
-            promoted: !p.modifiers.is_empty(),
+            promoted: is_promoted,
             default_thunk: dmeta.0,
             default_const: dmeta.1,
         });

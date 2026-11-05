@@ -431,6 +431,14 @@ impl ProtoBuilder<'_> {
                 let name = self.selector_string(&m.method)?;
                 self.build_pair(obj, &name)
             }
+            Pa::StaticMethod(s) if is_parent_hook_call(s.class, &s.method) => {
+                use mago_span::HasSpan;
+                self.cx.fatal(
+                    s.span().start.offset,
+                    "Cannot create Closure for parent property hook call".into(),
+                );
+                self.alloc_temp()
+            }
             Pa::StaticMethod(s) => {
                 let class = match s.class {
                     Expression::Identifier(id) => {
@@ -799,6 +807,9 @@ impl ProtoBuilder<'_> {
         &mut self,
         smc: &crate::parse::cst::StaticMethodCall,
     ) -> Result<Reg, Thrown> {
+        if let Some(r) = self.compile_parent_hook_call(smc)? {
+            return Ok(r);
+        }
         let class = self.class_ref(smc.class)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
@@ -856,6 +867,105 @@ impl ProtoBuilder<'_> {
             }
         }
     }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_parent_property_hook_call: `parent::$prop::get()` /
+    /// `parent::$prop::set($v)`, only in that same hook of `$prop`.
+    fn compile_parent_hook_call(
+        &mut self,
+        smc: &crate::parse::cst::StaticMethodCall,
+    ) -> Result<Option<Reg>, Thrown> {
+        use crate::parse::cst::{Access, ClassLikeMemberSelector, Variable};
+        let Expression::Access(Access::StaticProperty(spa)) = smc.class else {
+            return Ok(None);
+        };
+        let pname: Vec<u8> = match (spa.class, &spa.property) {
+            (Expression::Parent(_), Variable::Direct(prop)) => {
+                crate::util::strip_dollar(prop.name).to_vec()
+            }
+            // `parent::${0}`: a constant name.
+            (Expression::Parent(_), Variable::Indirect(iv)) => match iv.expression {
+                Expression::Literal(crate::parse::cst::Literal::String(s)) => match s.value {
+                    Some(v) => v.to_vec(),
+                    None => return Ok(None),
+                },
+                Expression::Literal(crate::parse::cst::Literal::Integer(i)) => match i.value {
+                    Some(v) => v.to_string().into_bytes(),
+                    None => return Ok(None),
+                },
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let ClassLikeMemberSelector::Identifier(m) = &smc.method else {
+            return Ok(None);
+        };
+        let kind = if m.value.eq_ignore_ascii_case(b"get") {
+            rhp_bytecode::HookKind::Get
+        } else if m.value.eq_ignore_ascii_case(b"set") {
+            rhp_bytecode::HookKind::Set
+        } else {
+            return Ok(None);
+        };
+        let at = {
+            use mago_span::HasSpan;
+            smc.span().start.offset
+        };
+        let shown = String::from_utf8_lossy(&pname).into_owned();
+        let hname = String::from_utf8_lossy(m.value).into_owned();
+        if self.class_name.is_none() {
+            self.cx.fatal(
+                at,
+                "Cannot use \"parent\" when no class scope is active".into(),
+            );
+            return Ok(Some(self.alloc_temp()));
+        }
+        match self.hook.clone() {
+            None => self.cx.fatal(
+                at,
+                format!("Must not use parent::${shown}::{hname}() outside a property hook"),
+            ),
+            Some((hp, _)) if hp != pname => self.cx.fatal(
+                at,
+                format!(
+                    "Must not use parent::${shown}::{hname}() in a different property (${})",
+                    String::from_utf8_lossy(&hp)
+                ),
+            ),
+            Some((_, hk)) if hk != kind => self.cx.fatal(
+                at,
+                format!(
+                    "Must not use parent::${shown}::{hname}() in a different property hook ({})",
+                    hk.name()
+                ),
+            ),
+            Some(_) => {}
+        }
+        let name = self.intern_name(&pname);
+        let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
+        let dst = self.alloc_temp();
+        self.emit(Instr::CallParentHook {
+            dst,
+            name,
+            kind,
+            base,
+            argc,
+        });
+        Ok(Some(dst))
+    }
+}
+
+/// `parent::$prop::get` / `::set` (unparenthesized).
+fn is_parent_hook_call(
+    class: &Expression,
+    method: &crate::parse::cst::ClassLikeMemberSelector,
+) -> bool {
+    use crate::parse::cst::{Access, ClassLikeMemberSelector, Variable};
+    matches!(class, Expression::Access(Access::StaticProperty(spa))
+        if matches!((spa.class, &spa.property), (Expression::Parent(_), Variable::Direct(_))))
+        && matches!(method, ClassLikeMemberSelector::Identifier(m)
+            if m.value.eq_ignore_ascii_case(b"get") || m.value.eq_ignore_ascii_case(b"set"))
 }
 
 fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {

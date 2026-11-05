@@ -801,7 +801,7 @@ impl Vm {
 
     /// [`Self::call_sync`] with the caller's `strict_types` mode for the
     /// argument checks (an internal caller is always coercive).
-    fn call_sync_mode(
+    pub(crate) fn call_sync_mode(
         &mut self,
         method: &classes::ResolvedMethod,
         this: Option<ObjectHandle>,

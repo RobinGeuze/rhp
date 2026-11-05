@@ -169,6 +169,11 @@ impl Vm {
                 Ok(self.cursor_read_steps(top, steps))
             }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
+            MagicSplit::Nested(i, h, name) if self.cursor_hooked(top, &h, &name) => {
+                let cell = self.magic_write_cell(top, h, name)?;
+                let rest = &steps[i + 1..];
+                self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, rest, incdec))
+            }
             MagicSplit::Nested(i, h, name) => {
                 let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
                     vm.prop_fetch(top, Value::Object(h), name)
@@ -347,6 +352,13 @@ impl Vm {
                     }
                 }
                 (Value::Object(h), CursorStep::Prop(name)) => {
+                    if self.cursor_hooked(top, &h, name) {
+                        return if i + 1 == steps.len() {
+                            MagicSplit::Leaf(h, name.clone())
+                        } else {
+                            MagicSplit::Nested(i, h, name.clone())
+                        };
+                    }
                     let cls = h.borrow().class;
                     let present = match classes::resolve_prop(&self.classes, cls, scope, name) {
                         PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
@@ -423,6 +435,12 @@ impl Vm {
         h: ObjectHandle,
         name: PhpStr,
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
+        if self.cursor_hooked(top, &h, &name) {
+            return Ok(match self.hook_write_fetch(top, &h, &name)? {
+                Value::Ref(rc) => rc,
+                other => Rc::new(RefCell::new(other)),
+            });
+        }
         let got = self.fetching_as(builtins::MagicFetch::Write, |vm| {
             vm.prop_fetch(top, Value::Object(h), name)
         })?;
@@ -611,6 +629,21 @@ impl Vm {
         self.cursor_readonly_check(top, steps, false)?;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
+            // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
+            // the write fetch runs the get hook, then the reference cannot be
+            // made.
+            MagicSplit::Leaf(h, name)
+                if matches!(v, Value::Ref(_)) && self.cursor_hooked(top, &h, &name) =>
+            {
+                let e = Thrown::error("Error", "Cannot assign by reference to overloaded object");
+                return Err(match self.hook_write_fetch(top, &h, &name) {
+                    Ok(_) => e,
+                    Err(prev) => {
+                        use rhp_builtins::Host;
+                        self.chain_thrown(e, prev)
+                    }
+                });
+            }
             MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
             MagicSplit::Nested(i, h, name) => {
                 let cell = self.magic_write_cell(top, h, name)?;

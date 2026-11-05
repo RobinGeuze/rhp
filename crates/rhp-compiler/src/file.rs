@@ -50,9 +50,13 @@ pub(crate) struct FileCtx<'s> {
     /// A trait body is being compiled: `__CLASS__` there names the *using*
     /// class, so it is lowered to a runtime `self::class`.
     pub(crate) in_trait: Cell<bool>,
-    /// An interface body is being compiled (its property declarations,
-    /// hooked or not, contribute no runtime members).
+    /// An interface body is being compiled.
     pub(crate) in_interface: Cell<bool>,
+    /// A `readonly class` body is being compiled.
+    pub(crate) in_readonly_class: Cell<bool>,
+    /// The property whose declaration is being compiled (`__PROPERTY__` in
+    /// its default value and attributes).
+    pub(crate) cur_property: RefCell<Option<Vec<u8>>>,
     /// Closure and arrow-function protos, and functions declared in control
     /// flow, from anywhere in the file: `Program::closures`. A closure's
     /// `fnidx` is its position here.
@@ -89,6 +93,8 @@ impl<'s> FileCtx<'s> {
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
             in_interface: Cell::new(false),
+            in_readonly_class: Cell::new(false),
+            cur_property: RefCell::new(None),
             closures: RefCell::new(Vec::new()),
             anon_classes: RefCell::new(Vec::new()),
             cond_classes: RefCell::new(Vec::new()),

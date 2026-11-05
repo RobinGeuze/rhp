@@ -43,6 +43,11 @@ impl Vm {
                 let mut absent_slot = None;
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
+                        if self.classes[cls as usize].hooked {
+                            if let Some(r) = self.hooked_read(&h, cls, &k) {
+                                return r.map(|v| deref(&v));
+                            }
+                        }
                         if let Some(v) = h.borrow().properties.get(&k) {
                             return Ok(deref(v));
                         }
@@ -128,6 +133,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return Ok(!matches!(deref(&r?), Value::Null)),
+                    None if self.uninit_typed(&h, &k) => return Ok(false),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             // Skip __isset() for an uninitialized typed property.
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(false),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
@@ -163,6 +177,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return Ok(!self.truthy(&deref(&r?))?),
+                    None if self.uninit_typed(&h, &k) => return Ok(true),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(true),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
@@ -205,6 +228,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return r.map(|v| deref(&v)),
+                    None if self.uninit_typed(&h, &k) => return Ok(Value::Null),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(Value::Null),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
@@ -245,6 +277,11 @@ impl Vm {
         }
         let scope = self.stack[top].defining_class;
         let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        if let PropRes::Slot(k) = &res {
+            if let Some(pe) = self.hooked_entry(cls, k) {
+                return Err(self.hooked_unset_err(cls, pe));
+            }
+        }
         let key = match &res {
             PropRes::Slot(k) => Some(k.clone()),
             PropRes::Dynamic => Some(pname.clone()),
@@ -460,6 +497,15 @@ impl Vm {
                 ));
             }
             let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+            let val = match &res {
+                PropRes::Slot(k) if self.classes[cls as usize].hooked => {
+                    match self.hooked_store(&h, cls, k, scope, called, val)? {
+                        Some(v) => v,
+                        None => return Ok(()),
+                    }
+                }
+                _ => val,
+            };
             let is_dyn = matches!(res, PropRes::Dynamic);
             let (key, denied) = match res {
                 PropRes::Slot(k) => (k, None),

@@ -2,7 +2,8 @@
 // zpp errors are raised in the builtin's frame, so the trace lists the
 // call. Its arguments show the conversions zpp makes in place (to a string,
 // a number, a class name) but not those into an int, float or bool, and
-// none for a frameless call. (The handler keeps the checkout's path out.)
+// none for a frameless call; so do the traces of errors the body raises or
+// its callbacks throw. (The handler keeps the checkout's path out.)
 set_error_handler(function ($no, $msg) {
     echo $no === E_DEPRECATED ? "Deprecated" : "Warning", ": $msg\n";
     return true;
@@ -31,3 +32,8 @@ t(fn() => strpos(5, "x", "y"));
 $f = "substr";
 t(fn() => $f(5, []));
 t(fn() => lcg_value(1));
+t(fn() => str_repeat(5, -1));
+t(fn() => str_repeat(false, -1));
+spl_autoload_register(function ($c) { throw new Exception("load $c"); });
+t(fn() => spl_autoload_call(5));
+t(fn() => class_exists(5));

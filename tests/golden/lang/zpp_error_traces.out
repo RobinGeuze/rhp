@@ -1,67 +1,89 @@
 TypeError: str_repeat(): Argument #2 ($times) must be of type int, array given
-#0 zpp_error_traces.php(19): str_repeat('x', Array)
-#1 zpp_error_traces.php(20): f()
-#2 zpp_error_traces.php(13): {closure:zpp_error_traces.php:20}()
-#3 zpp_error_traces.php(20): t(Object(Closure))
+#0 zpp_error_traces.php(20): str_repeat('x', Array)
+#1 zpp_error_traces.php(21): f()
+#2 zpp_error_traces.php(14): {closure:zpp_error_traces.php:21}()
+#3 zpp_error_traces.php(21): t(Object(Closure))
 #4 {main}
 TypeError: str_repeat(): Argument #2 ($times) must be of type int, array given
-#0 zpp_error_traces.php(21): str_repeat('5', Array)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:21}()
-#2 zpp_error_traces.php(21): t(Object(Closure))
-#3 {main}
-TypeError: str_repeat(): Argument #2 ($times) must be of type int, array given
-#0 zpp_error_traces.php(22): str_repeat('s', Array)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:22}()
+#0 zpp_error_traces.php(22): str_repeat('5', Array)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:22}()
 #2 zpp_error_traces.php(22): t(Object(Closure))
 #3 {main}
-TypeError: str_pad(): Argument #2 ($length) must be of type int, string given
-#0 zpp_error_traces.php(23): str_pad('5', 'x')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:23}()
+TypeError: str_repeat(): Argument #2 ($times) must be of type int, array given
+#0 zpp_error_traces.php(23): str_repeat('s', Array)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:23}()
 #2 zpp_error_traces.php(23): t(Object(Closure))
 #3 {main}
-TypeError: intdiv(): Argument #2 ($num2) must be of type int, string given
-#0 zpp_error_traces.php(24): intdiv('4', 'x')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:24}()
+TypeError: str_pad(): Argument #2 ($length) must be of type int, string given
+#0 zpp_error_traces.php(24): str_pad('5', 'x')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:24}()
 #2 zpp_error_traces.php(24): t(Object(Closure))
 #3 {main}
-TypeError: array_slice(): Argument #3 ($length) must be of type ?int, array given
-#0 zpp_error_traces.php(25): array_slice(Array, '1', Array)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:25}()
+TypeError: intdiv(): Argument #2 ($num2) must be of type int, string given
+#0 zpp_error_traces.php(25): intdiv('4', 'x')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:25}()
 #2 zpp_error_traces.php(25): t(Object(Closure))
 #3 {main}
-TypeError: round(): Argument #2 ($precision) must be of type int, string given
-#0 zpp_error_traces.php(26): round(1.5, 'x')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:26}()
+TypeError: array_slice(): Argument #3 ($length) must be of type ?int, array given
+#0 zpp_error_traces.php(26): array_slice(Array, '1', Array)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:26}()
 #2 zpp_error_traces.php(26): t(Object(Closure))
 #3 {main}
-TypeError: fwrite(): Argument #3 ($length) must be of type ?int, string given
-#0 zpp_error_traces.php(27): fwrite(Resource id #2, '5', 'x')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:27}()
+TypeError: round(): Argument #2 ($precision) must be of type int, string given
+#0 zpp_error_traces.php(27): round(1.5, 'x')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:27}()
 #2 zpp_error_traces.php(27): t(Object(Closure))
 #3 {main}
-TypeError: fread(): Argument #2 ($length) must be of type int, string given
-#0 zpp_error_traces.php(28): fread(Resource id #1, 'x')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:28}()
+TypeError: fwrite(): Argument #3 ($length) must be of type ?int, string given
+#0 zpp_error_traces.php(28): fwrite(Resource id #2, '5', 'x')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:28}()
 #2 zpp_error_traces.php(28): t(Object(Closure))
 #3 {main}
-TypeError: substr(): Argument #2 ($offset) must be of type int, array given
-#0 zpp_error_traces.php(29): substr(5, Array)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:29}()
+TypeError: fread(): Argument #2 ($length) must be of type int, string given
+#0 zpp_error_traces.php(29): fread(Resource id #1, 'x')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:29}()
 #2 zpp_error_traces.php(29): t(Object(Closure))
 #3 {main}
-TypeError: strpos(): Argument #3 ($offset) must be of type int, string given
-#0 zpp_error_traces.php(30): strpos(5, 'x', 'y')
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:30}()
+TypeError: substr(): Argument #2 ($offset) must be of type int, array given
+#0 zpp_error_traces.php(30): substr(5, Array)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:30}()
 #2 zpp_error_traces.php(30): t(Object(Closure))
 #3 {main}
+TypeError: strpos(): Argument #3 ($offset) must be of type int, string given
+#0 zpp_error_traces.php(31): strpos(5, 'x', 'y')
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:31}()
+#2 zpp_error_traces.php(31): t(Object(Closure))
+#3 {main}
 TypeError: substr(): Argument #2 ($offset) must be of type int, array given
-#0 zpp_error_traces.php(32): substr('5', Array)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:32}()
-#2 zpp_error_traces.php(32): t(Object(Closure))
+#0 zpp_error_traces.php(33): substr('5', Array)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:33}()
+#2 zpp_error_traces.php(33): t(Object(Closure))
 #3 {main}
 Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
 ArgumentCountError: lcg_value() expects exactly 0 arguments, 1 given
-#0 zpp_error_traces.php(33): lcg_value(1)
-#1 zpp_error_traces.php(13): {closure:zpp_error_traces.php:33}()
-#2 zpp_error_traces.php(33): t(Object(Closure))
+#0 zpp_error_traces.php(34): lcg_value(1)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:34}()
+#2 zpp_error_traces.php(34): t(Object(Closure))
 #3 {main}
+ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0
+#0 zpp_error_traces.php(35): str_repeat('5', -1)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:35}()
+#2 zpp_error_traces.php(35): t(Object(Closure))
+#3 {main}
+ValueError: str_repeat(): Argument #2 ($times) must be greater than or equal to 0
+#0 zpp_error_traces.php(36): str_repeat('', -1)
+#1 zpp_error_traces.php(14): {closure:zpp_error_traces.php:36}()
+#2 zpp_error_traces.php(36): t(Object(Closure))
+#3 {main}
+Exception: load 5
+#0 [internal function]: {closure:zpp_error_traces.php:37}('5')
+#1 zpp_error_traces.php(38): spl_autoload_call('5')
+#2 zpp_error_traces.php(14): {closure:zpp_error_traces.php:38}()
+#3 zpp_error_traces.php(38): t(Object(Closure))
+#4 {main}
+Exception: load 5
+#0 [internal function]: {closure:zpp_error_traces.php:37}('5')
+#1 zpp_error_traces.php(39): class_exists(5)
+#2 zpp_error_traces.php(14): {closure:zpp_error_traces.php:39}()
+#3 zpp_error_traces.php(39): t(Object(Closure))
+#4 {main}

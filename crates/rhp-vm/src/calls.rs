@@ -69,6 +69,9 @@ pub(crate) struct NativeCall {
     /// `run_builtin`, only shared-borrowed by the builtin) is alive and
     /// unmodified — so the pointer is valid whenever it is in `native_calls`.
     pub(crate) args: *const [Value],
+    /// Bit `i`: argument `i` is a scalar zpp converted to a string in
+    /// place, so a trace shows it as one (the builtin got the scalar).
+    pub(crate) shown_str: u64,
     /// Index of the frame that made the call.
     pub(crate) caller: usize,
     /// php 8.4 runs the call without a frame of its own
@@ -1812,11 +1815,14 @@ impl Vm {
         }
         // php's zpp runs in the builtin's frame: a count or parse error is
         // raised as the call's, with the arguments as converted so far.
-        let zpp_error = match builtin_arg_count_error(builtin, args.len()) {
-            Some(e) => Some(e),
-            None => self
-                .coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)
-                .err(),
+        let (zpp_error, shown_str) = match builtin_arg_count_error(builtin, args.len()) {
+            Some(e) => (Some(e), 0),
+            None => {
+                match self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall) {
+                    Ok(shown) => (None, shown),
+                    Err((e, shown)) => (Some(e), shown),
+                }
+            }
         };
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
@@ -1836,6 +1842,7 @@ impl Vm {
         self.native_calls.push(NativeCall {
             name: builtin.name,
             args: args.as_slice() as *const [Value],
+            shown_str,
             caller,
             frameless_icall: icall,
         });

@@ -368,8 +368,12 @@ impl Vm {
                         // SAFETY: see `NativeCall::args` — every entry
                         // still in `native_calls` points at a live slice.
                         let call_args = unsafe { &*n.args };
-                        for v in call_args {
-                            a.push(deref(v));
+                        for (j, v) in call_args.iter().enumerate() {
+                            if j < 64 && n.shown_str >> j & 1 != 0 {
+                                a.push(Value::str(rhp_values::conv::to_string_bytes(&deref(v))));
+                            } else {
+                                a.push(deref(v));
+                            }
                         }
                         e.insert(k(b"args"), Value::Array(a));
                     }

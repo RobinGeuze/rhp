@@ -592,7 +592,9 @@ The module is deliberately "READ-ONLY, native format only"
   (`fwrite($fp, null)` under `strict_types` is php's TypeError). Goldens
   `lang/zpp_resource_params` and its strict twin.
 - A zpp error carries the builtin's frame, with the arguments as php's
-  frame has them then (`lang/zpp_error_traces`).
+  frame has them then (`lang/zpp_error_traces`). A scalar zpp would turn
+  into a string in place reaches the builtin unconverted (a string per
+  call costs too much); a trace taken during the call shows the string.
 - **Left:** past the first parameter whose checks are still a builtin
   body's (a callable, an object or class type, an iterable, a function
   whose parse is in a helper or follows code that may raise), the VM only

@@ -25,10 +25,13 @@ impl Vm {
     /// still comes first. `frameless`: php runs the call's
     /// ZEND_FRAMELESS_FUNCTION variant, whose zpp may differ.
     ///
-    /// On an error `args` hold what php's frame would: the string, number
-    /// and class-name conversions zpp makes in place, but not those into a
-    /// C variable (an int, float or bool parameter), and none for a
-    /// frameless call, which parses into temporaries.
+    /// On an error `args` hold what php's frame would: the number and
+    /// class-name conversions zpp makes in place, but not those into a C
+    /// variable (an int, float or bool parameter), and none for a
+    /// frameless call, which parses into temporaries. A scalar zpp would
+    /// turn into a string in place is left for the builtin to convert:
+    /// the returned mask (with the error too) has its bit set, so a trace
+    /// shows the string.
     pub(crate) fn coerce_builtin_args(
         &mut self,
         name: &str,
@@ -37,15 +40,28 @@ impl Vm {
         user: bool,
         strict: bool,
         frameless: bool,
-    ) -> Result<(), Thrown> {
+    ) -> Result<u64, (Thrown, u64)> {
         let mut undo = Vec::new();
-        let r = self.coerce_args(name, sig, args, user, strict, frameless, &mut undo);
-        if r.is_err() {
-            for (i, v) in undo.into_iter().rev() {
-                args[i] = v;
+        let mut shown_str = 0;
+        let r = self.coerce_args(
+            name,
+            sig,
+            args,
+            user,
+            strict,
+            frameless,
+            &mut undo,
+            &mut shown_str,
+        );
+        match r {
+            Ok(()) => Ok(shown_str),
+            Err(e) => {
+                for (i, v) in undo.into_iter().rev() {
+                    args[i] = v;
+                }
+                Err((e, shown_str))
             }
         }
-        r
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -58,6 +74,7 @@ impl Vm {
         strict: bool,
         frameless: bool,
         undo: &mut Vec<(usize, Value)>,
+        shown_str: &mut u64,
     ) -> Result<(), Thrown> {
         let sps =
             sig.and_then(|f| rhp_bytecode::signatures::scalar_params_for(f, args.len(), frameless));
@@ -95,6 +112,11 @@ impl Vm {
                 };
                 match got {
                     Got::Keep => {}
+                    Got::KeepStr => {
+                        if !frameless && i < 64 {
+                            *shown_str |= 1 << i;
+                        }
+                    }
                     Got::Set(v) => {
                         use Zpp::*;
                         let in_place = !frameless
@@ -228,9 +250,9 @@ impl Vm {
             Str | ArrayOrStr => match v {
                 Value::Float(f) => {
                     self.nan_coerced(*f, "string")?;
-                    Got::Set(Value::str(conv::to_string_bytes(v)))
+                    Got::KeepStr
                 }
-                Value::Int(_) | Value::Bool(_) => Got::Set(Value::str(conv::to_string_bytes(v))),
+                Value::Int(_) | Value::Bool(_) => Got::KeepStr,
                 _ => self.zpp_str_object(v)?,
             },
             Long | ArrayOrLong => self.zpp_long(v)?,
@@ -470,6 +492,9 @@ impl Vm {
 /// What zpp made of one argument.
 enum Got {
     Keep,
+    /// A scalar zpp converts to a string in place: the builtin converts
+    /// it (cheaper than a string per call), a trace shows the string.
+    KeepStr,
     Set(Value),
     Fail,
 }

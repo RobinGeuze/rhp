@@ -165,7 +165,19 @@ impl<'s> FileCtx<'s> {
         cx.halt_offset = flat.iter().find_map(|(_, st)| match st {
             Statement::HaltCompiler(h) => {
                 use mago_span::HasSpan;
-                Some(h.span().end.offset as i64)
+                let end = h.span().end.offset as usize;
+                // A closing `?>` takes one newline with it.
+                let rest = &src[end.min(src.len())..];
+                let nl = if !src[..end.min(src.len())].ends_with(b"?>") {
+                    0
+                } else if rest.starts_with(b"\r\n") {
+                    2
+                } else if rest.starts_with(b"\n") || rest.starts_with(b"\r") {
+                    1
+                } else {
+                    0
+                };
+                Some((end + nl) as i64)
             }
             _ => None,
         });
@@ -342,7 +354,7 @@ fn is_class_like(st: &Statement) -> bool {
     )
 }
 
-/// Whether the program's leading statement is `declare(strict_types=1)`.
+/// Whether the program's leading declares set `declare(strict_types=1)`.
 fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
     for stmt in program.statements.iter() {
         match stmt {
@@ -350,12 +362,12 @@ fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) => continue,
             Statement::Inline(i) if cx.inline_is_empty(i) => continue,
             Statement::Declare(d) => {
+                // Other declares may come first (zend_is_first_statement).
                 for item in d.items.iter() {
                     if item.name.value.eq_ignore_ascii_case(b"strict_types") {
                         return matches!(fold_const(cx, item.value), Ok(Value::Int(1)));
                     }
                 }
-                return false;
             }
             _ => return false, // strict_types must be the first statement
         }

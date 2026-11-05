@@ -161,7 +161,10 @@ fn compile_pass(cx: &FileCtx, e: &Expression, allow_dynamic: bool) -> Result<(),
         Expression::Access(Access::ClassConstant(cca)) => {
             if is_class_name(&cca.constant) {
                 match cca.class {
-                    Expression::Identifier(_) | Expression::Self_(_) | Expression::Parent(_) => {}
+                    Expression::Identifier(_)
+                    | Expression::Self_(_)
+                    | Expression::Parent(_)
+                    | Expression::Literal(_) => {}
                     Expression::Static(_) => {
                         return fail(
                             e,

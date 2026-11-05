@@ -31,9 +31,9 @@ struct State {
     top_functions: HashMap<Vec<u8>, u32>,
     /// `__halt_compiler();` was reached: php compiles nothing after it.
     halted: bool,
-    /// The declare statement that is the file's first statement, if any
-    /// (where strict_types may be set).
-    first_declare: usize,
+    /// The declare statements before the file's first other statement
+    /// (where strict_types may be set: zend_is_first_statement).
+    leading_declares: Vec<usize>,
 }
 
 fn s(b: &[u8]) -> String {
@@ -81,8 +81,7 @@ pub(crate) fn check_file(cx: &FileCtx, program: &Program) {
             Statement::OpeningTag(_) | Statement::ClosingTag(_) => {}
             Statement::Inline(i) if cx.inline_is_empty(i) => {}
             Statement::Declare(d) => {
-                st.first_declare = d as *const _ as usize;
-                break;
+                st.leading_declares.push(d as *const _ as usize);
             }
             _ => break,
         }
@@ -214,14 +213,27 @@ fn compile_use(cx: &FileCtx, u: &crate::parse::cst::Use, st: &mut State) -> Opti
             }
         }
     }
+    // php reports at the statement's line: its first name's (the prefix of
+    // a group use).
+    let at = match &u.items {
+        UseItems::TypedList(tl) => tl.namespace.span().start.offset,
+        UseItems::MixedList(ml) => ml.namespace.span().start.offset,
+        _ => items.first().map_or(0, |i| i.2.name.span().start.offset),
+    };
     for (kind, pfx, it) in items {
-        use_one(cx, kind, &pfx, it, st)?;
+        use_one(cx, kind, &pfx, it, at, st)?;
     }
     Some(())
 }
 
-fn use_one(cx: &FileCtx, kind: u8, pfx: &[u8], it: &UseItem, st: &mut State) -> Option<()> {
-    let at = it.span().start.offset;
+fn use_one(
+    cx: &FileCtx,
+    kind: u8,
+    pfx: &[u8],
+    it: &UseItem,
+    at: u32,
+    st: &mut State,
+) -> Option<()> {
     let raw = identifier_raw(&it.name);
     let mut old = pfx.strip_prefix(b"\\").unwrap_or(pfx).to_vec();
     if !old.is_empty() {
@@ -303,7 +315,8 @@ fn use_one(cx: &FileCtx, kind: u8, pfx: &[u8], it: &UseItem, st: &mut State) -> 
 /// imports and record them as seen.
 fn declarations(cx: &FileCtx, node: Node, st: &mut State, top: bool) -> Option<()> {
     let (kind, short, at): (u8, &[u8], u32) = match node {
-        Node::Function(f) => (FUNCTION, f.name.value, f.span().start.offset),
+        // php's decl line is the `function` keyword's, after any attributes.
+        Node::Function(f) => (FUNCTION, f.name.value, f.function.span().start.offset),
         Node::Class(c) => (CLASS, c.name.value, c.span().start.offset),
         Node::Interface(i) => (CLASS, i.name.value, i.span().start.offset),
         Node::Trait(t) => (CLASS, t.name.value, t.span().start.offset),
@@ -334,7 +347,7 @@ fn declarations(cx: &FileCtx, node: Node, st: &mut State, top: bool) -> Option<(
                 .iter()
                 .any(|i| i.name.value.eq_ignore_ascii_case(b"strict_types"));
             if strict {
-                let msg = if d as *const _ as usize != st.first_declare {
+                let msg = if !st.leading_declares.contains(&(d as *const _ as usize)) {
                     Some("strict_types declaration must be the very first statement in the script")
                 } else if !matches!(
                     &d.body,

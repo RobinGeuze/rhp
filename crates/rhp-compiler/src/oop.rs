@@ -79,6 +79,28 @@ impl ProtoBuilder<'_> {
             Expression::Self_(_) | Expression::Static(_) | Expression::Parent(_) => {
                 self.class_ref(e)?
             }
+            // zend_try_compile_const_expr_resolve_class_name: a string names
+            // the class as written (one leading `\` dropped), or self/parent/
+            // static.
+            Expression::Literal(crate::parse::cst::Literal::String(s)) => {
+                let name = s.value.unwrap_or(s.raw);
+                let class = if name.eq_ignore_ascii_case(b"self") {
+                    ClassRef::SelfClass
+                } else if name.eq_ignore_ascii_case(b"parent") {
+                    ClassRef::ParentClass
+                } else if name.eq_ignore_ascii_case(b"static") {
+                    ClassRef::StaticClass
+                } else {
+                    let name = name.strip_prefix(b"\\").unwrap_or(name);
+                    let k = self.intern_const(Value::str(name.to_vec()));
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst, k });
+                    return Ok(dst);
+                };
+                let kind = std::str::from_utf8(name).unwrap_or("").to_ascii_lowercase();
+                self.ensure_valid_class_fetch(&kind)?;
+                class
+            }
             Expression::Literal(_) => {
                 return Err(compile_error("Illegal class name", self.cur_line))
             }

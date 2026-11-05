@@ -198,10 +198,12 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
     "arg_separator.input",
+    "auto_globals_jit",
     "bcmath.scale",
     "date.timezone",
     "default_charset",
     "default_socket_timeout",
+    "disable_functions",
     "display_errors",
     "error_reporting",
     "html_errors",
@@ -219,7 +221,9 @@ const RHP_INI: &[&str] = &[
     "pcre.jit",
     "pcre.recursion_limit",
     "precision",
+    "register_argc_argv",
     "serialize_precision",
+    "variables_order",
     // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
     // rhp both ignore them.
     "iconv.http_input",

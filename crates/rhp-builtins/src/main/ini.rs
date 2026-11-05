@@ -249,6 +249,7 @@ pub(crate) fn reset_state() {
     INI.with(|m| m.borrow_mut().clear());
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
+    crate::registry::reset_disabled();
     rhp_values::fmt::reset_precision();
 }
 
@@ -325,6 +326,10 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             String::from_utf8_lossy(v)
         );
         (vec![msg], None)
+    } else if name == b"disable_functions" {
+        // php_module_startup's zend_disable_functions, once the ini is in.
+        crate::registry::reset_disabled();
+        (crate::registry::disable_functions(v), Some(v.to_vec()))
     } else if let Some(w) = crate::ext::opcache::startup_check(name, v) {
         crate::ext::opcache::accel_log(name, crate::ext::opcache::LOG_WARNING, w);
         (Vec::new(), None)

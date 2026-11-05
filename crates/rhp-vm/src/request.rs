@@ -438,6 +438,21 @@ impl Vm {
                 let a = argv_array(argv);
                 server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(a));
                 server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argv.len() as i64));
+            } else if crate::ini_bool(&ini(self, b"register_argc_argv")) {
+                // php_build_argv from the query string, split on '+'.
+                self.raise_error(
+                    builtins::E_DEPRECATED,
+                    "Deriving $_SERVER['argv'] from the query string is deprecated. Configure register_argc_argv=0 to turn this message off",
+                );
+                let mut a = PhpArray::new();
+                if let Some(q) = req.query_string.as_deref().filter(|q| !q.is_empty()) {
+                    for part in q.split(|&b| b == b'+') {
+                        a.push(Value::str(part.to_vec()));
+                    }
+                }
+                let argc = a.len() as i64;
+                server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(a));
+                server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argc));
             }
             check_http_proxy(&mut server, &req.env);
         }

@@ -267,6 +267,18 @@ impl Drop for Regex {
     }
 }
 
+/// The address PCRE2 gets for a pattern or subject. php's are zend_strings,
+/// so an empty one is still a readable NUL; an empty slice's pointer is
+/// dangling, and PCRE2's JIT on aarch64 Linux reads at it.
+fn buf_ptr(s: &[u8]) -> *const u8 {
+    static NUL: u8 = 0;
+    if s.is_empty() {
+        &NUL
+    } else {
+        s.as_ptr()
+    }
+}
+
 /// Match data sized for one pattern; freed on drop.
 struct MatchData(*mut pcre2_match_data_8);
 
@@ -338,7 +350,7 @@ impl Regex {
         let mut erroffset: usize = 0;
         let code = unsafe {
             pcre2_compile_8(
-                body.as_ptr(),
+                buf_ptr(body),
                 body.len(),
                 options,
                 &mut errcode,
@@ -396,7 +408,7 @@ impl Regex {
             if self.jit && options == PCRE2_NO_UTF_CHECK {
                 pcre2_jit_match_8(
                     self.code,
-                    subject.as_ptr(),
+                    buf_ptr(subject),
                     subject.len(),
                     start,
                     options,
@@ -406,7 +418,7 @@ impl Regex {
             } else {
                 pcre2_match_8(
                     self.code,
-                    subject.as_ptr(),
+                    buf_ptr(subject),
                     subject.len(),
                     start,
                     options,

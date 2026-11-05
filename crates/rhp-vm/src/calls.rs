@@ -951,6 +951,28 @@ impl Vm {
         method_lc: &[u8],
         args: Vec<Value>,
     ) -> Result<Value, Thrown> {
+        // zend_enum_from_base parses its argument (int for an int-backed
+        // enum, else string, or int|string in coercive mode) before it
+        // loads the class.
+        let mut args = args;
+        if let (b"from" | b"tryfrom", Some(backing)) = (method_lc, self.class(cls).enum_backing) {
+            let fname = format!(
+                "{}::{}",
+                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                if method_lc == b"from" {
+                    "from"
+                } else {
+                    "tryFrom"
+                }
+            );
+            let v = args.first().map(deref).unwrap_or(Value::Null);
+            let int = backing == rhp_bytecode::EnumBacking::Int;
+            let strict = self.caller_strict();
+            let parsed = self.zpp_enum_value(&fname, int, &v, strict)?;
+            if let Some(a) = args.first_mut() {
+                *a = parsed;
+            }
+        }
         // Case values may be pending constant expressions: cases() evaluates
         // just the pending case constants (php's zend_enum_cases_func), while
         // from()/tryFrom() load the whole class (building the value table).

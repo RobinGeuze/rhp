@@ -367,8 +367,12 @@ fn declarations(cx: &FileCtx, node: Node, st: &mut State, top: bool) -> Option<(
             }
             return Some(());
         }
-        // Closures and anonymous classes declare no names.
-        Node::Closure(_) | Node::ArrowFunction(_) | Node::AnonymousClass(_) => {
+        // Declarations are statements: an expression holds none, except in
+        // closures and anonymous classes, which declare no names.
+        Node::Expression(_)
+        | Node::Closure(_)
+        | Node::ArrowFunction(_)
+        | Node::AnonymousClass(_) => {
             return Some(());
         }
         _ => {

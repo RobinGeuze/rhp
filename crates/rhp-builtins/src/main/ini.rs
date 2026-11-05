@@ -170,7 +170,7 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
     if name == b"memory_limit" {
         return memory_limit_modify(v);
     }
-    if crate::ext::iconv::ini_refuses(name, v) {
+    if crate::ext::iconv::ini_refuses(name, v) || (v.is_empty() && STRING_UNEMPTY.contains(&name)) {
         return (Vec::new(), None);
     }
     let mut warnings = Vec::new();
@@ -457,6 +457,16 @@ pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
     INI.with(|m| m.borrow_mut().insert(key, Some(v)));
 }
 
+/// main.c's directives whose handler is OnUpdateStringUnempty.
+const STRING_UNEMPTY: &[&[u8]] = &[
+    b"doc_root",
+    b"extension_dir",
+    b"include_path",
+    b"sys_temp_dir",
+    b"upload_tmp_dir",
+    b"variables_order",
+];
+
 /// `-d name=value` at startup: no INI_USER / validator checks. The
 /// directive's handler runs: its warnings are reported "in Unknown on line
 /// 0", and a refused value leaves the default (NULL for
@@ -472,7 +482,10 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     };
     let key = String::from_utf8_lossy(name).into_owned();
     let mut level = crate::E_WARNING;
-    let (warnings, stored) = if name == b"date.timezone" && !tz_valid(v) {
+    let (warnings, stored) = if v.is_empty() && STRING_UNEMPTY.contains(&name) {
+        // OnUpdateStringUnempty refuses an empty value: the default stays.
+        (Vec::new(), None)
+    } else if name == b"date.timezone" && !tz_valid(v) {
         (vec![invalid_timezone(v, "PHP Startup")], None)
     } else if name == b"openssl.libctx" && !matches!(v, b"default" | b"custom") {
         // OnUpdateLibCtx: an E_ERROR at startup, and the entry keeps

@@ -642,9 +642,10 @@ The module is deliberately "READ-ONLY, native format only"
   them. Native `Closure` and `Generator` methods use their `m(...)` rows.
   Goldens `lang/named_args_builtins`, `corpus/namedargs`.
 - By-reference parameters by name are resolved at compile time for a
-  function the compiler knows (a function of the file or a builtin). A
-  dynamic callee, a method or a call after an unpack passes the argument by
-  value. **Left:** php's runtime SEND_VAR_EX / CHECK_FUNC_ARG by name.
+  function the compiler knows (a function of the file or a builtin). For
+  any other callee a plain variable travels as a reference, as in a
+  method's argument window. **Left:** a property or element passed by name
+  to such a callee goes by value (php's CHECK_FUNC_ARG by name).
 
 ### 8.5 Typed class constant compatibility — no autoload
 - **Now:** linking checks a redeclared typed constant (and a trait's

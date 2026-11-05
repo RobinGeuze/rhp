@@ -392,6 +392,9 @@ pub enum Zpp {
     /// An untyped parameter php parses with `PHP_Z_PARAM_STREAM` ([`ST`]):
     /// a resource that is an open stream.
     Stream,
+    /// `callable` / `?callable`: `Z_PARAM_FUNC(_OR_NULL)`, a callable check
+    /// (zend_is_callable_ex) the engine makes.
+    Callable,
     /// Another mix of scalar types: only the object, array and null checks.
     Other,
 }
@@ -424,7 +427,7 @@ impl Zpp {
             (ArrayOrLong, true) => "array|int|null",
             (Resource | Stream, false) => "resource",
             (Resource | Stream, true) => "resource or null",
-            (Class | Other, _) => return None,
+            (Class | Callable | Other, _) => return None,
         })
     }
 
@@ -506,6 +509,19 @@ fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> 
     }
     if p.ty.is_empty() || ZPP_OWN.contains(&(f.name, p.name)) {
         return None;
+    }
+    if (p.ty == "callable" || p.ty == "?callable") && !p.by_ref() {
+        return Some(ScalarParam {
+            pos,
+            name: p.name,
+            ty: p.ty,
+            kind: Zpp::Callable,
+            variadic: p.variadic(),
+            nullable: p.ty.starts_with('?'),
+            has_str: false,
+            has_arr: false,
+            by_ref: false,
+        });
     }
     let parts = || p.ty.trim_start_matches('?').split('|');
     let scalar = parts().all(|t| {

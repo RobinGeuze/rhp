@@ -215,7 +215,34 @@ impl Vm {
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
-            match self.check_one(&cur, ty, strict, ctx) {
+            // zend_check_type_slow's zend_is_callable runs in the callee's
+            // frame (its scope and `$this`), deprecations included.
+            let callable = ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
+                && matches!(deref(&cur), Value::Str(_) | Value::Array(_));
+            let checked = if callable {
+                let this = proto.this_cv.and_then(|cv| match &frame.regs[cv as usize] {
+                    Value::Object(h) => Some(h.clone()),
+                    _ => None,
+                });
+                let saved = self
+                    .fcc_scope
+                    .replace(Some((frame.defining_class, frame.called_class)));
+                let saved_this = self.fcc_this.replace(this);
+                let mut deps = Vec::new();
+                let _ = self.resolve_callable_ex(&cur, proto.is_internal(), &mut deps);
+                let r = self.check_one(&cur, ty, strict, ctx);
+                self.fcc_scope.set(saved);
+                *self.fcc_this.borrow_mut() = saved_this;
+                for d in deps {
+                    if let Err(t) = self.diag(rhp_builtins::E_DEPRECATED, &d) {
+                        return Err((i, t));
+                    }
+                }
+                r
+            } else {
+                self.check_one(&cur, ty, strict, ctx)
+            };
+            match checked {
                 Ok(None) => {}
                 Ok(Some(coerced)) => {
                     let at = || {

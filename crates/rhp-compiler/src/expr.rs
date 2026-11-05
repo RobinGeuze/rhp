@@ -529,20 +529,22 @@ impl ProtoBuilder<'_> {
             match el {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
-                    if let Some(inner) = as_reference(kv.value) {
+                    if let Some(inner) = as_reference(kv.value).filter(|i| !is_this_var(i)) {
                         let val = self.compile_ref_source(inner)?;
                         self.emit(Instr::ArrSetRef { arr: dst, key, val });
                     } else {
-                        let val = self.compile_expr(kv.value)?;
+                        let v = as_reference(kv.value).unwrap_or(kv.value);
+                        let val = self.compile_expr(v)?;
                         self.emit(Instr::ArrSet { arr: dst, key, val });
                     }
                 }
                 ArrayElement::Value(v) => {
-                    if let Some(inner) = as_reference(v.value) {
+                    if let Some(inner) = as_reference(v.value).filter(|i| !is_this_var(i)) {
                         let val = self.compile_ref_source(inner)?;
                         self.emit(Instr::ArrPushRef { arr: dst, val });
                     } else {
-                        let val = self.compile_expr(v.value)?;
+                        let e = as_reference(v.value).unwrap_or(v.value);
+                        let val = self.compile_expr(e)?;
                         self.emit(Instr::ArrPush { arr: dst, val });
                     }
                 }
@@ -999,4 +1001,10 @@ fn expr_kind(e: &Expression) -> &'static str {
         Expression::Throw(_) => "throw",
         _ => "this",
     }
+}
+
+/// `$this`: php's `&$this` (ZEND_FETCH_THIS) yields a plain value, so an
+/// array element `&$this` is not a reference.
+fn is_this_var(e: &Expression) -> bool {
+    matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == b"$this")
 }

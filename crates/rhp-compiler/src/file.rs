@@ -53,6 +53,9 @@ pub(crate) struct FileCtx<'s> {
     /// An interface body is being compiled (its property declarations,
     /// hooked or not, contribute no runtime members).
     pub(crate) in_interface: Cell<bool>,
+    /// The class-like whose body is being compiled (php's
+    /// `CG(active_class_entry)`), for `self`/`parent`/`static` in types.
+    pub(crate) class_scope: RefCell<Option<Rc<ClassScope>>>,
     /// Closure and arrow-function protos, and functions declared in control
     /// flow, from anywhere in the file: `Program::closures`. A closure's
     /// `fnidx` is its position here.
@@ -74,7 +77,25 @@ pub(crate) struct FileCtx<'s> {
     pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
 }
 
+/// The class-like a declaration sits in, as type compilation needs it.
+pub(crate) struct ClassScope {
+    /// Resolved class name.
+    pub(crate) name: Vec<u8>,
+    /// Resolved parent name (`extends` of a class; none for interfaces).
+    pub(crate) parent: Option<Vec<u8>>,
+    pub(crate) is_trait: bool,
+    pub(crate) is_anon: bool,
+}
+
 impl<'s> FileCtx<'s> {
+    /// Run `f` with `scope` as the active class-like.
+    pub(crate) fn with_class_scope<R>(&self, scope: ClassScope, f: impl FnOnce() -> R) -> R {
+        let saved = self.class_scope.replace(Some(Rc::new(scope)));
+        let r = f();
+        *self.class_scope.borrow_mut() = saved;
+        r
+    }
+
     fn empty(builtins: &'s Builtins, file: PhpStr, src: &'s [u8]) -> Self {
         FileCtx {
             builtins,
@@ -89,6 +110,7 @@ impl<'s> FileCtx<'s> {
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
             in_interface: Cell::new(false),
+            class_scope: RefCell::new(None),
             closures: RefCell::new(Vec::new()),
             anon_classes: RefCell::new(Vec::new()),
             cond_classes: RefCell::new(Vec::new()),

@@ -15,7 +15,9 @@ impl Vm {
                 Ok(cid) => self.classes[h.borrow().class as usize]
                     .ancestors
                     .contains(&cid),
-                Err(_) => true,
+                // No object is an instance of a class that is not loaded
+                // (type checks do not autoload).
+                Err(_) => false,
             },
             Value::Closure(_) => name.eq_ignore_ascii_case(b"Closure"),
             _ => false,
@@ -271,6 +273,49 @@ impl Vm {
         Ok(())
     }
 
+    /// php's RECV_INIT type check of a non-constant default just stored
+    /// into parameter `index` (coerced under the caller's strict_types).
+    pub(crate) fn recv_init_check(&mut self, top: usize, index: u16) -> Result<(), Thrown> {
+        let proto = self.stack[top].proto.clone();
+        let p = &proto.params[index as usize];
+        let Some(ty) = &p.type_hint else {
+            return Ok(());
+        };
+        let from_user = top > 0 && !self.stack[top].capture;
+        let strict = from_user && self.stack[top - 1].proto.strict_types;
+        let ctx = self.stack[top].defining_class;
+        let cur = self.stack[top].regs[p.cv as usize].clone();
+        match self.check_one(&cur, ty, strict, ctx) {
+            Ok(None) => Ok(()),
+            Ok(Some(v)) => {
+                self.stack[top].regs[p.cv as usize] = v;
+                Ok(())
+            }
+            Err(()) => {
+                let fname = self.func_display_name(&proto, ctx);
+                let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes());
+                let site = if from_user && !self.is_internal_frame(top - 1) {
+                    format!(
+                        ", called in {} on line {}",
+                        String::from_utf8_lossy(&self.current_file(top - 1)),
+                        self.current_line(top - 1)
+                    )
+                } else {
+                    String::new()
+                };
+                Err(Thrown::error(
+                    "TypeError",
+                    format!(
+                        "{fname}(): Argument #{} (${pname}) must be of type {}, {} given{site}",
+                        index + 1,
+                        self.type_string_resolved(ty, ctx, self.stack[top].called_class),
+                        rhp_builtins::zval_value_name(self, &deref(&cur)),
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Enforce a function's declared return type on `v`, coercing in coercive
     /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
     /// Falling off the end of (or a bare `return;` in) a function with a
@@ -357,7 +402,7 @@ impl Vm {
         if has(&K::Mixed) {
             return "mixed".into();
         }
-        let mut parts: Vec<String> = dnf_group_strings(ty);
+        let mut parts: Vec<String> = Vec::new();
         for k in &ty.kinds {
             match k {
                 K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -372,6 +417,7 @@ impl Vm {
                 _ => {}
             }
         }
+        interleave_groups(&mut parts, dnf_group_strings(ty), &ty.group_pos);
         if has(&K::StaticType) {
             let name = match (scope, called) {
                 (Some(_), Some(c)) => cname(c),
@@ -588,6 +634,15 @@ fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
             format!("({})", names.join("&"))
         })
         .collect()
+}
+
+/// Put a DNF type's `(A&B)` groups among its class members (`classes`)
+/// at their declared positions.
+pub(crate) fn interleave_groups<T>(classes: &mut Vec<T>, groups: Vec<T>, pos: &[u16]) {
+    for (i, g) in groups.into_iter().enumerate() {
+        let at = pos.get(i).map_or(i, |&p| p as usize + i);
+        classes.insert(at.min(classes.len()), g);
+    }
 }
 
 /// The type name and zero value a null argument coerces to for a scalar

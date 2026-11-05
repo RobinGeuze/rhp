@@ -13,10 +13,11 @@ use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
-use crate::file::FileCtx;
+use crate::file::{ClassScope, FileCtx};
 use crate::fold::fold_const;
 use crate::functions::compile_method;
-use crate::hints::type_hint;
+use crate::functions::const_type_name;
+use crate::hints::{compile_type, PhpType, MAY_CALLABLE, MAY_NEVER, MAY_VOID};
 use crate::names::{identifier_raw, join_ns};
 use crate::util::strip_dollar;
 
@@ -324,7 +325,13 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         })
         .unwrap_or_default();
 
-    let m = compile_members(cx, &class.members, &name)?;
+    let scope = ClassScope {
+        name: name.as_bytes().to_vec(),
+        parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
+        is_trait: false,
+        is_anon: false,
+    };
+    let m = cx.with_class_scope(scope, || compile_members(cx, &class.members, &name))?;
     let mut interfaces = interfaces;
     add_stringable(&mut interfaces, &m.methods, &name);
     let meta = decl_meta(
@@ -396,7 +403,13 @@ pub(crate) fn compile_anon_class(
         not_serializable: true,
         ..ClassFlags::default()
     };
-    let m = compile_members(cx, &ac.members, &name)?;
+    let scope = ClassScope {
+        name: name.as_bytes().to_vec(),
+        parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
+        is_trait: false,
+        is_anon: true,
+    };
+    let m = cx.with_class_scope(scope, || compile_members(cx, &ac.members, &name))?;
     let mut interfaces = interfaces;
     add_stringable(&mut interfaces, &m.methods, &name);
     let meta = decl_meta(
@@ -468,7 +481,13 @@ pub(crate) fn compile_enum(
         interfaces.push(PhpStr::from("BackedEnum"));
     }
 
-    let m = compile_members(cx, &en.members, &name)?;
+    let scope = ClassScope {
+        name: name.as_bytes().to_vec(),
+        parent: None,
+        is_trait: false,
+        is_anon: false,
+    };
+    let m = cx.with_class_scope(scope, || compile_members(cx, &en.members, &name))?;
     add_stringable(&mut interfaces, &m.methods, &name);
     let meta = decl_meta(
         cx,
@@ -548,37 +567,88 @@ fn prop_default_or_thunk(
     }
 }
 
-/// php's `zend_is_valid_default_value`: a literal int initializer of a
-/// property / class constant whose type admits float but not int becomes a
-/// float at compile time.
-fn widen_int_default(v: Value, hint: Option<&rhp_bytecode::TypeHint>) -> Value {
-    use rhp_bytecode::TypeKind as K;
-    match (v, hint) {
-        (Value::Int(n), Some(h))
-            if h.kinds.contains(&K::Float)
-                && !h.kinds.iter().any(|k| matches!(k, K::Int | K::Mixed)) =>
-        {
-            Value::Float(n as f64)
-        }
-        (v, _) => v,
-    }
-}
-
-fn coerce_prop_default(
-    d: PropDefaultProto,
-    hint: Option<&rhp_bytecode::TypeHint>,
+/// zend_compile_prop_decl's type checks: the type itself, then a constant
+/// default against it (an int default of a float type becomes a float).
+fn check_prop_default(
+    cx: &FileCtx,
+    ty: &PhpType,
+    default: PropDefaultProto,
+    class_name: &PhpStr,
+    var: &crate::parse::cst::DirectVariable,
+    at: u32,
 ) -> PropDefaultProto {
-    match d {
-        PropDefaultProto::Const(v) => PropDefaultProto::Const(widen_int_default(v, hint)),
-        other => other,
+    let cname = String::from_utf8_lossy(class_name.as_bytes());
+    let pname = String::from_utf8_lossy(strip_dollar(var.name));
+    if ty.has(MAY_VOID | MAY_NEVER | MAY_CALLABLE) {
+        cx.fatal(
+            at,
+            format!(
+                "Property {cname}::${pname} cannot have type {}",
+                ty.to_php_string()
+            ),
+        );
+        return default;
     }
+    let PropDefaultProto::Const(mut v) = default else {
+        return default;
+    };
+    if !ty.accepts_default(&mut v) {
+        let t = ty.to_php_string();
+        let msg = if matches!(v, Value::Null) && !ty.is_intersection() {
+            format!(
+                "Default value for property of type {t} may not be null. Use the nullable type {} to allow null default value",
+                ty.with_null().to_php_string()
+            )
+        } else {
+            let vname = match v {
+                Value::Bool(true) => "true",
+                Value::Bool(false) => "false",
+                ref other => const_type_name(other),
+            };
+            format!(
+                "Cannot use {vname} as default value for property {cname}::${pname} of type {t}"
+            )
+        };
+        cx.fatal(at, msg);
+    }
+    PropDefaultProto::Const(v)
 }
 
-fn coerce_const_init(d: ConstInitProto, hint: Option<&rhp_bytecode::TypeHint>) -> ConstInitProto {
-    match d {
-        ConstInitProto::Const(v) => ConstInitProto::Const(widen_int_default(v, hint)),
-        other => other,
+/// zend_compile_class_const_decl's type checks.
+fn check_const_value(
+    cx: &FileCtx,
+    ty: &PhpType,
+    value: ConstInitProto,
+    class_name: &PhpStr,
+    name: &[u8],
+    at: u32,
+) -> ConstInitProto {
+    let cname = String::from_utf8_lossy(class_name.as_bytes());
+    let name = String::from_utf8_lossy(name);
+    if !ty.is_mixed() && ty.has(MAY_VOID | MAY_NEVER | MAY_CALLABLE) {
+        cx.fatal(
+            at,
+            format!(
+                "Class constant {cname}::{name} cannot have type {}",
+                ty.to_php_string()
+            ),
+        );
+        return value;
     }
+    let ConstInitProto::Const(mut v) = value else {
+        return value;
+    };
+    if !ty.accepts_default(&mut v) {
+        cx.fatal(
+            at,
+            format!(
+                "Cannot use {} as value for class constant {cname}::{name} of type {}",
+                const_type_name(&v),
+                ty.to_php_string()
+            ),
+        );
+    }
+    ConstInitProto::Const(v)
 }
 
 #[derive(Default)]
@@ -624,19 +694,21 @@ fn compile_member(
             let set_visibility = modifiers_set_visibility(&p.modifiers);
             let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
             let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
-            let hint = p.hint.as_ref().map(|h| type_hint(cx, h));
+            let compiled = p.hint.as_ref().and_then(|h| compile_type(cx, h, false));
+            let hint = compiled.as_ref().map(|t| t.hint.clone());
             let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
             let (pstart, pend) = span_of(p);
             for item in p.items.iter() {
                 let (var, default) = match item {
                     PropertyItem::Concrete(c) => (
                         &c.variable,
-                        coerce_prop_default(
-                            prop_default_or_thunk(cx, c.value, Some(class_name))?,
-                            hint.as_ref(),
-                        ),
+                        prop_default_or_thunk(cx, c.value, Some(class_name))?,
                     ),
                     PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
+                };
+                let default = match &compiled {
+                    Some(t) => check_prop_default(cx, &t.ty, default, class_name, var, pstart),
+                    None => default,
                 };
                 let meta = rhp_bytecode::DeclMeta {
                     attributes: attributes.clone(),
@@ -681,18 +753,23 @@ fn compile_member(
         }
         ClassLikeMember::Constant(c) => {
             let visibility = modifiers_visibility(&c.modifiers);
-            let hint = c.hint.as_ref().map(|h| type_hint(cx, h));
+            let compiled = c.hint.as_ref().and_then(|h| compile_type(cx, h, false));
+            let hint = compiled.as_ref().map(|t| t.hint.clone());
             let is_final = has_modifier(&c.modifiers, |m| matches!(m, Modifier::Final(_)));
             let attributes = compile_attributes(cx, &c.attribute_lists, Some(class_name))?;
             let (cstart, cend) = span_of(c);
             for item in c.items.iter() {
+                let value = const_init_or_thunk(cx, item.value, Some(class_name))?;
+                let value = match &compiled {
+                    Some(t) => {
+                        check_const_value(cx, &t.ty, value, class_name, item.name.value, cstart)
+                    }
+                    None => value,
+                };
                 out.constants.push(ConstProto {
                     name: PhpStr::from_bytes(item.name.value.to_vec()),
                     visibility,
-                    value: coerce_const_init(
-                        const_init_or_thunk(cx, item.value, Some(class_name))?,
-                        hint.as_ref(),
-                    ),
+                    value,
                     type_hint: hint.clone(),
                     meta: rhp_bytecode::DeclMeta {
                         attributes: attributes.clone(),
@@ -746,7 +823,13 @@ pub(crate) fn compile_trait(
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), t.name.value));
     let saved = cx.in_trait.replace(true);
-    let m = compile_members(cx, &t.members, &name);
+    let scope = ClassScope {
+        name: name.as_bytes().to_vec(),
+        parent: None,
+        is_trait: true,
+        is_anon: false,
+    };
+    let m = cx.with_class_scope(scope, || compile_members(cx, &t.members, &name));
     cx.in_trait.set(saved);
     let m = m?;
     let meta = decl_meta(
@@ -794,7 +877,13 @@ pub(crate) fn compile_interface(
     // Constants and (abstract) method signatures; interface properties
     // contribute no runtime members.
     let saved = cx.in_interface.replace(true);
-    let m = compile_members(cx, &iface.members, &name);
+    let scope = ClassScope {
+        name: name.as_bytes().to_vec(),
+        parent: None,
+        is_trait: false,
+        is_anon: false,
+    };
+    let m = cx.with_class_scope(scope, || compile_members(cx, &iface.members, &name));
     cx.in_interface.set(saved);
     let m = m?;
     let methods: Vec<MethodProto> = m

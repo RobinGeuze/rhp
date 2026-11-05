@@ -1618,35 +1618,8 @@ impl Vm {
                 &mut d,
                 "type",
                 match &p.type_hint {
-                    Some(t) => {
-                        // php: a `= null` default makes the type implicitly
-                        // nullable.
-                        let implicit_null = matches!(
-                            &p.default,
-                            Some(rhp_bytecode::ParamDefault::Const(k))
-                                if matches!(proto.consts[*k as usize], Value::Null)
-                        );
-                        if implicit_null && !t.nullable {
-                            let mut t2 = t.clone();
-                            t2.nullable = true;
-                            if t2.intersection {
-                                let g: Vec<PhpStr> = t2
-                                    .kinds
-                                    .iter()
-                                    .filter_map(|k| match k {
-                                        TypeKind::Named(n) => Some(n.clone()),
-                                        _ => None,
-                                    })
-                                    .collect();
-                                t2.intersection = false;
-                                t2.kinds.clear();
-                                t2.groups.push(g);
-                            }
-                            self.type_desc(&t2, scope_ctx)
-                        } else {
-                            self.type_desc(t, scope_ctx)
-                        }
-                    }
+                    // (a `= null` default made the type nullable already)
+                    Some(t) => self.type_desc(t, scope_ctx),
                     None => Value::Null,
                 },
             );
@@ -1951,7 +1924,7 @@ impl Vm {
         // Members in php's getTypes() order: class-likes (declaration order),
         // then static, callable, object, array, string, int, float, bool /
         // false / true, void, never.
-        let mut members: Vec<Value> = Vec::new();
+        let mut groups: Vec<Value> = Vec::new();
         for g in &ty.groups {
             let mut types = PhpArray::new();
             for n in g {
@@ -1961,7 +1934,7 @@ impl Vm {
             put(&mut d, "kind", s(b"intersection"));
             put(&mut d, "types", Value::Array(types));
             put(&mut d, "nullable", Value::Bool(false));
-            members.push(Value::Array(d));
+            groups.push(Value::Array(d));
         }
         let iterable_alone = has(&K::Iterable) && ty.kinds.len() == 1 && ty.groups.is_empty();
         let mut names: Vec<(Vec<u8>, bool)> = Vec::new();
@@ -2011,16 +1984,18 @@ impl Vm {
             }
         }
         let nullable = ty.nullable || has(&K::Null);
-        if members.is_empty() && names.is_empty() {
+        if groups.is_empty() && names.is_empty() {
             return named_desc(b"null", true, true);
         }
-        if members.is_empty() && names.len() == 1 {
+        if groups.is_empty() && names.len() == 1 {
             let (n, builtin) = &names[0];
             return named_desc(n, nullable, *builtin);
         }
-        for (n, builtin) in names {
-            members.push(named_desc(&n, false, builtin));
-        }
+        let mut members: Vec<Value> = names
+            .into_iter()
+            .map(|(n, builtin)| named_desc(&n, false, builtin))
+            .collect();
+        crate::types::interleave_groups(&mut members, groups, &ty.group_pos);
         if nullable {
             members.push(named_desc(b"null", true, true));
         }

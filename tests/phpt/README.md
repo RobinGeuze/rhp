@@ -111,6 +111,29 @@ An emitted repro is a `NAME.php` / `NAME.out` pair in the `tests/golden` format,
 with php's output as the expectation. Once rhp is fixed, move the pair into
 the right `tests/golden/` subdirectory so it stays covered.
 
+## Checking on Linux
+
+CI runs the ratchet on Ubuntu (GitHub's `ubuntu-latest`) with Debian-packaged
+php, whose extensions are shared modules; development mostly happens on
+macOS. A test can match on one and not the other (`/dev/null` is seekable on
+Linux, `fallocate` exists only there, ...), so check new tests on Linux
+before adding them to `known-passing.txt`. `.github/scripts/linux-ci.sh` runs
+in a container close to the runner (`.github/scripts/linux-ci.Dockerfile`:
+Ubuntu 26.04, php 8.5 and php-cgi from the repository setup-php uses, the same
+extensions and `-n` shims, rhp's native libraries). It builds rhp inside
+Linux (the cargo target directory is the docker volume `rhp-linux-ci-target`)
+and runs the ratchet against a php-src checkout at `php-src.ref`:
+
+```sh
+# the whole ratchet (about 12 minutes with 4 jobs on 4 CPUs), or a --filter subset
+PHP_SRC=../php-src .github/scripts/linux-ci.sh phpt --jobs 4
+PHP_SRC=../php-src .github/scripts/linux-ci.sh phpt --filter ext/standard/tests/file
+
+# anything else, e.g. CI's clippy, or a shell
+.github/scripts/linux-ci.sh cargo clippy --workspace --all-targets -- -D warnings
+.github/scripts/linux-ci.sh shell
+```
+
 ## The ignore list
 
 `ignored.txt` lists tests whose expected output rhp can never print. One test

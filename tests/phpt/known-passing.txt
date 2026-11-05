@@ -9561,6 +9561,7 @@ ext/standard/tests/general_functions/var_dump_null.phpt
 ext/standard/tests/general_functions/var_dump_object.phpt
 ext/standard/tests/general_functions/var_dump_object_circular.phpt
 ext/standard/tests/general_functions/var_dump_resources.phpt
+ext/standard/tests/general_functions/var_dump_stack_limit.phpt
 ext/standard/tests/general_functions/var_dump_strings.phpt
 ext/standard/tests/general_functions/var_dump_strings_nul_bytes.phpt
 ext/standard/tests/general_functions/var_export-locale.phpt

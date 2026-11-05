@@ -3,7 +3,8 @@
 function d(...$v) {
     ob_start();
     var_dump(...$v);
-    echo str_replace(__FILE__, 'FILE', ob_get_clean());
+    // The path and its length depend on the checkout.
+    echo str_replace('string(' . strlen(__FILE__) . ') "' . __FILE__, 'string(N) "FILE', ob_get_clean());
 }
 class P { public $q; }
 $a = new P; $a->q = new P;
@@ -59,9 +60,7 @@ var_dump($cnt->call(new K), $cnt->call(new K), $cnt());
 // Unbinding a closure whose arrow function uses $this drops that $this too
 class T { public $v = 1; function mk() { return function () { return fn() => $this->v; }; } }
 $u = (new T)->mk()->bindTo(null);
-ob_start();
-var_dump($u);
-echo str_replace(__FILE__, 'FILE', ob_get_clean());
+d($u);
 
 // An internal function's first-class callable keeps no $this
 var_dump(strlen(...)->bindTo(new K));

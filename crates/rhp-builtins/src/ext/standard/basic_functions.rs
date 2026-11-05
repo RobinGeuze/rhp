@@ -1064,7 +1064,7 @@ fn fn_parse_ini_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         MODE_NORMAL,
     )?;
     if !mode_ok(mode) {
-        // php: Warning "Invalid scanner mode"
+        host.raise_diagnostic(crate::E_WARNING, b"Invalid scanner mode");
         return Ok(Value::Bool(false));
     }
     if report_syntax_error(host, &s, mode, b"Unknown")? {
@@ -1092,10 +1092,15 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
     let sections = bool_param(host, args, 1, "parse_ini_file", "process_sections", false)?;
     let mode = int_param(host, args, 2, "parse_ini_file", "scanner_mode", MODE_NORMAL)?;
-    let Some(src) = host.stream_get_contents(&path) else {
+    // zend_stream_open: USE_PATH | REPORT_ERRORS
+    crate::main::streams::clear_errno();
+    let target = crate::ext::standard::file::include_path_target(host, &path);
+    let Some(src) = host.stream_get_contents(&target) else {
+        crate::open_failed(host, "parse_ini_file", &path)?;
         return Ok(Value::Bool(false));
     };
     if !mode_ok(mode) {
+        host.raise_diagnostic(crate::E_WARNING, b"Invalid scanner mode");
         return Ok(Value::Bool(false));
     }
     if report_syntax_error(host, &src, mode, &path)? {

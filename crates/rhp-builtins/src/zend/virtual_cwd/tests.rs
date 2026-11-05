@@ -204,3 +204,24 @@ fn umask_keeps_the_bits_the_kernel_keeps() {
     reset_state();
     assert_eq!(umask(), process);
 }
+
+#[test]
+fn expand_filepath_checked_follows_links_before_dotdot() {
+    reset_state();
+    let s = Scratch::new("expand_checked");
+    std::fs::create_dir_all(s.0.join("real/sub")).unwrap();
+    std::fs::write(s.0.join("real/f"), b"").unwrap();
+    std::fs::write(s.0.join("f"), b"").unwrap();
+    std::os::unix::fs::symlink(s.0.join("real/sub"), s.0.join("link")).unwrap();
+    assert!(set_cwd(&s.bytes()));
+    let with = |tail: &[u8]| [&s.bytes()[..], tail].concat();
+    // php's tsrm_realpath_r: the link first, then its parent
+    assert_eq!(expand_filepath_checked(b"link/../f"), Ok(with(b"/real/f")));
+    assert_eq!(expand_filepath_checked(b"nodir/../f"), Ok(with(b"/f")));
+    assert_eq!(expand_filepath_checked(b"real/"), Ok(with(b"/real/")));
+    for bad in [&b"f/"[..], b"f/.", b"f/../f"] {
+        assert_eq!(expand_filepath_checked(bad), Err(libc::ENOENT));
+    }
+    assert_eq!(expand_filepath_checked(b""), Err(libc::EINVAL));
+    reset_state();
+}

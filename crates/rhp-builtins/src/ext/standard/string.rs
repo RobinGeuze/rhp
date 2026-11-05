@@ -1956,16 +1956,6 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
     out
 }
 
-fn first_byte(v: Option<&Value>, default: u8) -> u8 {
-    match v {
-        None => default,
-        Some(v) => conv::to_string_bytes(&deref(v))
-            .first()
-            .copied()
-            .unwrap_or(default),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // str_getcsv
 // ---------------------------------------------------------------------------
@@ -1974,100 +1964,11 @@ fn first_byte(v: Option<&Value>, default: u8) -> u8 {
 /// Parses a single CSV record into an array of fields. An empty input yields
 /// `[null]`, matching php.
 fn fn_str_getcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if args.len() < 4 {
-        crate::deprecated(
-            host,
-            "str_getcsv",
-            "the $escape parameter must be provided as its default value will change",
-        )?;
-    }
     let s = conv::to_string_bytes(&deref(&args[0]));
-    let sep = first_byte(args.get(1), b',');
-    let enc = first_byte(args.get(2), b'"');
-    // The escape may be disabled by passing "" in php; default is backslash.
-    let esc: Option<u8> = match args.get(3) {
-        Some(v) => conv::to_string_bytes(&deref(v)).first().copied(),
-        None => Some(b'\\'),
-    };
-
-    Ok(Value::Array(parse_csv(&s, sep, enc, esc)))
-}
-
-/// One CSV record into its fields (`str_getcsv` / `fgetcsv`); an empty
-/// record is `[null]`.
-pub(crate) fn parse_csv(s: &[u8], sep: u8, enc: u8, esc: Option<u8>) -> PhpArray {
-    let mut out = PhpArray::new();
-    if s.is_empty() {
-        out.push(Value::Null);
-        return out;
-    }
-
-    let bytes = s;
-    let mut i = 0usize;
-    loop {
-        let mut field = Vec::new();
-        if bytes.get(i) == Some(&enc) {
-            // Quoted field.
-            i += 1;
-            loop {
-                match bytes.get(i) {
-                    None => break,
-                    Some(&c) if Some(c) == esc && i + 1 < bytes.len() => {
-                        // php keeps BOTH the escape char and the escaped char.
-                        field.push(c);
-                        field.push(bytes[i + 1]);
-                        i += 2;
-                    }
-                    Some(&c) if c == enc => {
-                        if bytes.get(i + 1) == Some(&enc) {
-                            // Doubled enclosure -> one literal enclosure.
-                            field.push(enc);
-                            i += 2;
-                        } else {
-                            i += 1; // closing enclosure
-                            break;
-                        }
-                    }
-                    Some(&c) => {
-                        field.push(c);
-                        i += 1;
-                    }
-                }
-            }
-            // Trailing content after the closing quote, up to the separator, is
-            // appended to the field (php behaviour).
-            while let Some(&c) = bytes.get(i) {
-                if c == sep {
-                    break;
-                }
-                field.push(c);
-                i += 1;
-            }
-        } else {
-            // Unquoted field: read until the separator.
-            while let Some(&c) = bytes.get(i) {
-                if c == sep {
-                    break;
-                }
-                field.push(c);
-                i += 1;
-            }
-        }
-        out.push(Value::str(field));
-        match bytes.get(i) {
-            None => break,
-            Some(&c) if c == sep => {
-                i += 1;
-                if i == bytes.len() {
-                    // Trailing separator -> one final empty field.
-                    out.push(Value::str(Vec::new()));
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    out
+    let (sep, enc, esc) = crate::ext::standard::file::csv_args(host, args, "str_getcsv", 1)?;
+    Ok(crate::ext::standard::file::csv_record(
+        crate::ext::standard::file::php_fgetcsv(s, sep, enc, esc, None),
+    ))
 }
 
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

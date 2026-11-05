@@ -11,6 +11,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
+pub mod glob_wrapper;
 pub mod ops;
 pub mod plain_wrapper;
 pub mod xp_socket;
@@ -379,10 +380,76 @@ pub fn split_scheme(path: &[u8]) -> (&[u8], &[u8]) {
                 .iter()
                 .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'))
         {
+            // php finds the plain-files wrapper whatever the case
+            if scheme.eq_ignore_ascii_case(b"file") {
+                return (b"file", path);
+            }
             return (scheme, path);
         }
     }
     (b"file", path)
+}
+
+/// The length of the protocol `php_stream_locate_url_wrapper` sees at the
+/// start of `path`: `[A-Za-z0-9+.-]{2,}` followed by `://`, or `data:`.
+pub fn protocol_len(path: &[u8]) -> Option<usize> {
+    let n = path
+        .iter()
+        .position(|&c| !(c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.')))
+        .unwrap_or(path.len());
+    let ok = path.get(n) == Some(&b':')
+        && n > 1
+        && (path[n + 1..].starts_with(b"//") || (n == 4 && path.starts_with(b"data:")));
+    ok.then_some(n)
+}
+
+/// Where `php_stream_locate_url_wrapper` sends a path.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Located {
+    /// The plain-files wrapper, with the local path to open (a `file://`
+    /// prefix taken off).
+    Plain(Vec<u8>),
+    /// A registered wrapper; the URL with its scheme as registered.
+    Wrapper(Vec<u8>),
+    /// `file://host/...`: "Remote host file access not supported".
+    RemoteHost,
+    /// No wrapper has this scheme (`name`, at most 31 bytes): php warns and
+    /// opens the whole path as a plain file.
+    Unknown(Vec<u8>),
+}
+
+/// `php_stream_locate_url_wrapper`: `registered` says whether a scheme
+/// names a wrapper (php tries it as written, then lowercased).
+pub fn locate_url_wrapper(path: &[u8], registered: impl Fn(&[u8]) -> bool) -> Located {
+    let Some(n) = protocol_len(path) else {
+        return Located::Plain(path.to_vec());
+    };
+    let proto = &path[..n];
+    let lower = proto.to_ascii_lowercase();
+    let exact = registered(proto);
+    if !exact && !registered(&lower) {
+        return Located::Unknown(proto[..n.min(31)].to_vec());
+    }
+    if lower == b"file" {
+        let localhost = path.len() >= 17 && path[..17].eq_ignore_ascii_case(b"file://localhost/");
+        if !localhost && !matches!(path.get(n + 3), None | Some(b'/')) {
+            return Located::RemoteHost;
+        }
+        // skip the protocol and all but the last leading slash
+        let mut p = n + 1 + if localhost { 11 } else { 0 };
+        loop {
+            p += 1;
+            if path.get(p) != Some(&b'/') {
+                break;
+            }
+        }
+        return Located::Plain(path[p - 1..].to_vec());
+    }
+    if exact {
+        Located::Wrapper(path.to_vec())
+    } else {
+        Located::Wrapper([&lower[..], &path[n..]].concat())
+    }
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -391,10 +458,22 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 // --- the default `file://` wrapper ------------------------------------------
 
-/// Strip a leading `file://` (keeping an absolute leading slash) for the local
-/// filesystem path.
+/// The local path of a `file://` URL (any case), as
+/// `php_stream_locate_url_wrapper`'s `path_for_open`: the protocol (and a
+/// `localhost` host) and all but one leading slash taken off.
 pub fn file_path(url: &[u8]) -> &[u8] {
-    url.strip_prefix(b"file://").unwrap_or(url)
+    if url.len() < 7 || !url[..7].eq_ignore_ascii_case(b"file://") {
+        return url;
+    }
+    let localhost = url.len() >= 17 && url[..17].eq_ignore_ascii_case(b"file://localhost/");
+    let mut p = 5 + if localhost { 11 } else { 0 };
+    loop {
+        p += 1;
+        if url.get(p) != Some(&b'/') {
+            break;
+        }
+    }
+    &url[p - 1..]
 }
 
 /// The default local-filesystem wrapper.
@@ -486,7 +565,8 @@ pub struct LocalFile {
     rpos: usize,
     pos: i64,
     eof: bool,
-    readable: bool,
+    /// The last read failed (php's read op returned -1).
+    failed: bool,
     writable: bool,
     /// The mode string as passed to `fopen` (for `stream_get_meta_data`).
     pub mode: Vec<u8>,
@@ -528,12 +608,27 @@ pub fn parse_fopen_mode(mode: &[u8]) -> Option<(libc::c_int, bool, bool)> {
 impl LocalFile {
     /// `open(2)` a local path with php's fopen-mode rules (perms 0666 & ~umask).
     pub fn open(path: &[u8], mode: &[u8]) -> Option<LocalFile> {
-        let (flags, readable, writable) = parse_fopen_mode(mode)?;
+        let (flags, _, writable) = parse_fopen_mode(mode)?;
         if path.contains(&0) {
             return None;
         }
-        let fd = match crate::zend::virtual_cwd::open(file_path(path), flags, 0o666) {
+        // _php_stream_fopen opens expand_filepath()'s result: symlinks
+        // resolved, `..` after a missing directory folded, and a file
+        // followed by `/`, `/.` or `/..` refused (ENOENT)
+        let real = match crate::zend::virtual_cwd::filepath_for_open(file_path(path)) {
+            Ok(real) => real,
+            Err(e) => {
+                note_io_err(&std::io::Error::from_raw_os_error(e));
+                return None;
+            }
+        };
+        let fd = match crate::zend::virtual_cwd::open(&real, flags, 0o666) {
             Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(libc::ENOTDIR) => {
+                // php's expansion already failed on the file used as a dir
+                note_io_err(&std::io::Error::from_raw_os_error(libc::ENOENT));
+                return None;
+            }
             Err(e) => {
                 note_io_err(&e);
                 return None;
@@ -545,7 +640,7 @@ impl LocalFile {
             rpos: 0,
             pos: 0,
             eof: false,
-            readable,
+            failed: false,
             writable,
             mode: mode.to_vec(),
             uri: path.to_vec(),
@@ -577,8 +672,17 @@ impl LocalFile {
                     return n;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    self.eof = true;
+                Err(e) => {
+                    let err = e.raw_os_error().unwrap_or(0);
+                    if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
+                        return 0;
+                    }
+                    // php_stdiop_read's notice; EBADF leaves eof unset
+                    plain_wrapper::read_failed(CHUNK, err);
+                    self.failed = true;
+                    if err != libc::EBADF {
+                        self.eof = true;
+                    }
                     return 0;
                 }
             }
@@ -596,9 +700,7 @@ impl LocalFile {
     /// `fread`: greedy (plain files keep reading until `len` bytes or eof).
     /// `None` when the stream is not readable.
     pub fn read(&mut self, len: usize) -> Option<Vec<u8>> {
-        if !self.readable {
-            return None;
-        }
+        self.failed = false;
         let mut out = Vec::new();
         while out.len() < len {
             if self.rpos >= self.rbuf.len() && self.fill() == 0 {
@@ -607,20 +709,20 @@ impl LocalFile {
             let more = self.take(len - out.len());
             out.extend_from_slice(&more);
         }
+        if out.is_empty() && self.failed {
+            return None;
+        }
         Some(out)
     }
 
     /// Read to eof (`stream_get_contents` with no limit).
     pub fn read_all(&mut self) -> Option<Vec<u8>> {
-        self.read(usize::MAX)
+        Some(self.read(usize::MAX).unwrap_or_default())
     }
 
     /// `fgets`: up to and including the next "\n", at most `max` bytes (when
     /// given); `None` at eof with nothing read.
     pub fn gets(&mut self, max: Option<usize>) -> Option<Vec<u8>> {
-        if !self.readable {
-            return None;
-        }
         let mut out = Vec::new();
         loop {
             if let Some(m) = max {
@@ -653,6 +755,12 @@ impl LocalFile {
         }
     }
 
+    /// Put bytes just read back in front of the read buffer.
+    pub fn push_back(&mut self, data: &[u8]) {
+        self.rbuf.splice(self.rpos..self.rpos, data.iter().copied());
+        self.pos -= data.len() as i64;
+    }
+
     /// Drop any read-ahead, re-syncing the descriptor to the logical position.
     fn sync(&mut self) {
         if self.rpos < self.rbuf.len() {
@@ -667,9 +775,6 @@ impl LocalFile {
     /// `fwrite`: `None` when not writable / the write fails.
     pub fn write(&mut self, data: &[u8]) -> Option<usize> {
         use std::io::Write;
-        if !self.writable {
-            return None;
-        }
         self.sync();
         if data.is_empty() {
             return Some(0);
@@ -679,7 +784,14 @@ impl LocalFile {
                 self.pos += data.len() as i64;
                 Some(data.len())
             }
-            Err(_) => None,
+            Err(e) => {
+                // php_stdiop_write's notice
+                let err = e.raw_os_error().unwrap_or(0);
+                if err != libc::EAGAIN && err != libc::EWOULDBLOCK {
+                    plain_wrapper::write_failed(data.len(), err);
+                }
+                None
+            }
         }
     }
 

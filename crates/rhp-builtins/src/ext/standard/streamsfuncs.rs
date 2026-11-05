@@ -178,34 +178,67 @@ fn fn_stream_context_get_options(host: &mut dyn Host, args: &[Value]) -> Result<
 }
 
 fn fn_stream_context_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // Two forms: ($ctx, $wrapper, $option, $value) or ($ctx, $options_array).
-    if args.len() >= 4 {
-        let wrapper = conv::to_string_bytes(&deref(&args[1]));
-        let option = conv::to_string_bytes(&deref(&args[2]));
-        host.stream_context_set_option(&deref(&args[0]), &wrapper, &option, deref(&args[3]));
-    } else if let Value::Array(opts) = deref(&args[1]) {
-        for (wk, wv) in opts.iter() {
-            if let Value::Array(inner) = wv {
-                let wrapper = key_bytes(wk);
-                for (ok, ov) in inner.iter() {
-                    host.stream_context_set_option(
-                        &deref(&args[0]),
-                        &wrapper,
-                        &key_bytes(ok),
-                        ov.clone(),
-                    );
-                }
+    let fname = "stream_context_set_option";
+    if args.len() == 2 {
+        host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"Calling stream_context_set_option() with 2 arguments is deprecated, use stream_context_set_options() instead",
+        )?;
+    }
+    let ctx = context_param(host, args, fname)?;
+    match args.get(1).map(deref) {
+        Some(Value::Array(opts)) => {
+            if !matches!(args.get(2).map(deref), None | Some(Value::Null)) {
+                return Err(crate::zend::zpp::value_error(
+                    fname,
+                    3,
+                    "option_name",
+                    "must be null when argument #2 ($wrapper_or_options) is an array",
+                ));
             }
+            if args.get(3).is_some() {
+                return Err(crate::zend::zpp::value_error(
+                    fname,
+                    4,
+                    "value",
+                    "cannot be provided when argument #2 ($wrapper_or_options) is an array",
+                ));
+            }
+            parse_context_options(host, &ctx, &opts)?;
+        }
+        w => {
+            let wrapper = conv::to_string_bytes(&w.unwrap_or(Value::Null));
+            let option = match args.get(2).map(deref) {
+                None | Some(Value::Null) => {
+                    return Err(crate::zend::zpp::value_error(
+                        fname,
+                        3,
+                        "option_name",
+                        "cannot be null when argument #2 ($wrapper_or_options) is a string",
+                    ))
+                }
+                Some(v) => conv::to_string_bytes(&v),
+            };
+            let Some(value) = args.get(3).map(deref) else {
+                return Err(crate::zend::zpp::value_error(
+                    fname,
+                    4,
+                    "value",
+                    "must be provided when argument #2 ($wrapper_or_options) is a string",
+                ));
+            };
+            host.stream_context_set_option(&ctx, &wrapper, &option, value);
         }
     }
     Ok(Value::Bool(true))
 }
 
-fn key_bytes(k: &rhp_values::ArrayKey) -> Vec<u8> {
-    match k {
-        rhp_values::ArrayKey::Int(n) => n.to_string().into_bytes(),
-        rhp_values::ArrayKey::Str(s) => s.as_bytes().to_vec(),
-    }
+fn fn_stream_context_set_options(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "stream_context_set_options";
+    let ctx = context_param(host, args, fname)?;
+    let opts = crate::zend::zpp::array_param(host, args, 1, fname)?;
+    parse_context_options(host, &ctx, &opts)?;
+    Ok(Value::Bool(true))
 }
 
 /// `stream_copy_to_stream($from, $to, ?int $length = null, int $offset = 0)`:
@@ -1128,15 +1161,7 @@ fn fn_stream_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ctx = host.default_stream_context();
     if let Some(Value::Array(opts)) = args.first().map(deref) {
-        for (wk, wv) in opts.iter() {
-            if let Value::Array(inner) = wv {
-                let w = conv::to_string_bytes(&wk.to_value());
-                for (ok, ov) in inner.iter() {
-                    let o = conv::to_string_bytes(&ok.to_value());
-                    host.stream_context_set_option(&ctx, &w, &o, ov.clone());
-                }
-            }
-        }
+        parse_context_options(host, &ctx, &opts)?;
     }
     Ok(ctx)
 }
@@ -1190,10 +1215,8 @@ fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
         }
         return Ok(Value::str(out));
     }
-    Ok(host
-        .stream_read(&h, maxlen)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+    // php_stream_copy_to_mem failing still returns ""
+    Ok(Value::str(host.stream_read(&h, maxlen).unwrap_or_default()))
 }
 
 fn fn_stream_get_meta_data(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1286,7 +1309,14 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             return Ok(Value::str(out));
         }
     }
-    if out.is_empty() && host.stream_eof(&h) {
+    // php_stream_get_record: no delimiter, short of $length and not at
+    // eof (a non-blocking stream out of data) returns false and leaves the
+    // data buffered; so does nothing at eof
+    let eof = host.stream_eof(&h);
+    if (out.len() as i64) < max && !eof && host.stream_push_back(&h, &out) {
+        return Ok(Value::Bool(false));
+    }
+    if out.is_empty() && eof {
         return Ok(Value::Bool(false));
     }
     Ok(Value::str(out))
@@ -1315,9 +1345,17 @@ fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Bool(!(is_url || is_data)))
 }
 
-fn fn_stream_resolve_include_path(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// `stream_supports_lock`: plain-file and fd streams lock (flock).
+fn fn_stream_supports_lock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "stream_supports_lock", "stream")?;
+    Ok(Value::Bool(
+        crate::ext::standard::file::plain_fd(host, &h).is_some(),
+    ))
+}
+
+fn fn_stream_resolve_include_path(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = path_param(args, 0, "stream_resolve_include_path", "filename")?;
-    Ok(resolve_include_path(&name)
+    Ok(resolve_include_path(host, &name)
         .map(Value::str)
         .unwrap_or(Value::Bool(false)))
 }
@@ -1335,8 +1373,10 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_context_set_params", fn_stream_context_set_params),
             ("stream_context_get_params", fn_stream_context_get_params),
             ("stream_context_set_option", fn_stream_context_set_option),
+            ("stream_context_set_options", fn_stream_context_set_options),
             ("stream_set_blocking", fn_stream_set_blocking),
             ("stream_set_write_buffer", fn_stream_set_write_buffer),
+            ("stream_supports_lock", fn_stream_supports_lock),
             ("set_file_buffer", fn_set_file_buffer),
             ("stream_socket_server", fn_stream_socket_server),
             ("stream_socket_client", fn_stream_socket_client),

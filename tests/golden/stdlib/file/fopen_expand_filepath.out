@@ -1,0 +1,14 @@
+link/../f.txt: REAL
+nodir/../f.txt: TOP
+[2] fopen(fopen_expand_filepath.dir/f.txt/): Failed to open stream: No such file or directory
+f.txt/: false
+[2] fopen(fopen_expand_filepath.dir/f.txt/.): Failed to open stream: No such file or directory
+f.txt/.: false
+[2] fopen(fopen_expand_filepath.dir/f.txt/../f.txt): Failed to open stream: No such file or directory
+f.txt/../f.txt: false
+real/./f.txt: REAL
+real//f.txt: REAL
+[2] fopen(fopen_expand_filepath.dir/f.txt/x): Failed to open stream: No such file or directory
+f.txt/x: false
+[2] fopen(fopen_expand_filepath.dir/link/f.txt): Failed to open stream: No such file or directory
+link/f.txt: false

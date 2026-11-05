@@ -90,11 +90,8 @@ fn eval_pass(cx: &FileCtx, e: &Expression, scope_known: bool) -> Result<(), Fail
         Expression::Access(Access::ClassConstant(cca))
             if is_class_name(&cca.constant) && scope_known =>
         {
-            let kind = match cca.class {
-                Expression::Self_(_) => "self",
-                Expression::Parent(_) => "parent",
-                Expression::Static(_) => "static",
-                _ => return Ok(()),
+            let Some(kind) = fetch_kind(cca.class) else {
+                return Ok(());
             };
             match cx.class_scope.borrow().as_ref() {
                 None => fail(
@@ -109,6 +106,23 @@ fn eval_pass(cx: &FileCtx, e: &Expression, scope_known: bool) -> Result<(), Fail
             }
         }
         _ => Ok(()),
+    }
+}
+
+/// zend_get_class_fetch_type of a class operand: self/parent/static as a
+/// keyword or a string literal.
+fn fetch_kind(e: &Expression) -> Option<&'static str> {
+    match e {
+        Expression::Self_(_) => Some("self"),
+        Expression::Parent(_) => Some("parent"),
+        Expression::Static(_) => Some("static"),
+        Expression::Literal(crate::parse::cst::Literal::String(s)) => {
+            let v = s.value.unwrap_or(s.raw);
+            ["self", "parent", "static"]
+                .into_iter()
+                .find(|k| v.eq_ignore_ascii_case(k.as_bytes()))
+        }
+        _ => None,
     }
 }
 
@@ -161,6 +175,12 @@ fn compile_pass(cx: &FileCtx, e: &Expression, allow_dynamic: bool) -> Result<(),
         Expression::Access(Access::ClassConstant(cca)) => {
             if is_class_name(&cca.constant) {
                 match cca.class {
+                    _ if fetch_kind(cca.class) == Some("static") => {
+                        return fail(
+                            e,
+                            "static::class cannot be used for compile-time class name resolution",
+                        )
+                    }
                     Expression::Identifier(_)
                     | Expression::Self_(_)
                     | Expression::Parent(_)

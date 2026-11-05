@@ -68,3 +68,17 @@ array(2) {
 Error: Unknown named parameter $x
 Error: Named parameter $a overwrites previous argument
 Error: Named parameter $b overwrites previous argument
+got v
+int(2)
+int(1)
+array(1) {
+  ["z"]=>
+  int(2)
+}
+int(5)
+array(1) {
+  ["q"]=>
+  int(1)
+}
+bool(true)
+Error: Unknown named parameter $foo

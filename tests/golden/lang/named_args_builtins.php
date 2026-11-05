@@ -63,3 +63,21 @@ function d($a, $b = 0) {
 }
 t(fn() => d(a: 1, a: 2));
 t(fn() => d(...[1, 'b' => 2], b: 3));
+
+// native Closure and Generator methods
+function gen() {
+    $x = yield 1;
+    echo "got $x\n";
+    yield 2;
+}
+$g = gen();
+$g->current();
+var_dump($g->send(value: 'v'));
+$c = function ($a, ...$r) {
+    var_dump($a, $r);
+};
+$c->__invoke(a: 1, z: 2);
+class Holder {}
+$c->call(new Holder, 5, q: 1);
+var_dump($c->bindTo(newThis: null, newScope: null) instanceof Closure);
+t(fn() => $c->bindTo(foo: 1));

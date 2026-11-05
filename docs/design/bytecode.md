@@ -413,9 +413,13 @@ An `Init` block is guarded by `JmpIfArg { index, target }`; for a typed
 parameter it ends in `RecvInitCheck { index }`, php's RECV_INIT check of the
 evaluated default (a constant default was checked, and an int one widened
 for a float type, at compile time).
-Named args against a statically-known callee are resolved to positions at compile
-time; dynamic callee reorders at the call site via `proto.params`. The fixed-arity
-register-window path is the fast path; spread uses the `_V` path.
+A call with an unpack or a named argument marshals its arguments into an
+array (int keys positional, string keys named) and uses the `_V` path
+(`CallV`, `CallMethodV`, `NewV`, …; `CallParentHook` with `argc ==
+PACKED_ARGS`): the VM places the names with the callee's `proto.params`
+(`place_named_args`) or a builtin's stub arginfo (`place_builtin_named_args`).
+The compiler only resolves by-reference parameters by name, for a callee it
+knows. The fixed-arity register-window path is the fast path.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

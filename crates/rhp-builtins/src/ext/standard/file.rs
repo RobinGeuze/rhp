@@ -702,6 +702,8 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Some(b) => b,
             None => return Ok(Value::Bool(false)),
         }
+    } else if let Some(copied) = copy_plain_files(host, &from, &to)? {
+        return Ok(Value::Bool(copied));
     } else {
         let Some(data) = host.stream_get_contents(&from) else {
             crate::open_failed(host, "copy", &from)?;
@@ -725,6 +727,35 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
+}
+
+/// copy() from one local file to another through the default `file://`
+/// wrapper: php opens the source "rb" and the target "wb", then copies
+/// between the descriptors (copy_file_range(2) on Linux), so a file of any
+/// size is copied without holding it in memory. `None` when either side is
+/// not a plain file.
+fn copy_plain_files(host: &mut dyn Host, from: &[u8], to: &[u8]) -> Result<Option<bool>, Thrown> {
+    use crate::main::streams::{FileWrapper, LocalFile};
+    if split_scheme(from).0 != b"file"
+        || split_scheme(to).0 != b"file"
+        || !host
+            .stream_wrapper(b"file")
+            .is_some_and(|w| w.as_any().is::<FileWrapper>())
+    {
+        return Ok(None);
+    }
+    let Some(mut src) = LocalFile::open(from, b"rb") else {
+        crate::open_failed(host, "copy", from)?;
+        return Ok(Some(false));
+    };
+    host.consume_resource_ids(1);
+    crate::main::streams::clear_errno();
+    let Some(mut dst) = LocalFile::open(to, b"wb") else {
+        crate::open_failed(host, "copy", to)?;
+        return Ok(Some(false));
+    };
+    host.consume_resource_ids(1);
+    Ok(Some(src.copy_to(&mut dst)))
 }
 
 // --- temp files / paths ------------------------------------------------------------

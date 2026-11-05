@@ -81,3 +81,19 @@ class Holder {}
 $c->call(new Holder, 5, q: 1);
 var_dump($c->bindTo(newThis: null, newScope: null) instanceof Closure);
 t(fn() => $c->bindTo(foo: 1));
+
+// by-reference parameters by name of callees known only at run time
+class K {
+    function m(&$a, $b = 1) { $a = 7; }
+    static function s(&$a) { $a = 8; }
+    function v($a) { $a = 0; }
+}
+$k = new K;
+$k->m(b: 2, a: $rx);
+K::s(a: $ry);
+$fn = function (&$a) { $a = 9; };
+$fn(a: $rz);
+$rw = 1;
+$k->v(a: $rw);
+var_dump($rx, $ry, $rz, $rw);
+var_dump(call_user_func('strlen', string: 'abcd'));

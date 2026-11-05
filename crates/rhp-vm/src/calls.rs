@@ -1891,10 +1891,23 @@ impl Vm {
                 }
             }
         }
+        let by_ref = |i: usize| {
+            params
+                .get(i)
+                .or_else(|| params.last().filter(|p| p.variadic()))
+                .is_some_and(|p| p.by_ref())
+        };
+        // A call site that did not know the callee passes variables as
+        // references; a by-value parameter takes the value.
+        for (k, (_, v)) in extra.iter_mut().enumerate() {
+            if !by_ref(params.len() + k) {
+                *v = deref(v);
+            }
+        }
         let mut out = Vec::with_capacity(slots.len());
         for (i, slot) in slots.into_iter().enumerate() {
             if let Some(v) = slot {
-                out.push(v);
+                out.push(if by_ref(i) { v } else { deref(&v) });
                 continue;
             }
             let p = &params[i];
@@ -2067,7 +2080,7 @@ impl Vm {
                         Some((m, this, called, name)) => {
                             let mut arr = PhpArray::new();
                             for a in args {
-                                arr.push(a);
+                                arr.push(deref(&a));
                             }
                             for (k, v) in named {
                                 arr.insert(ArrayKey::Str(k), deref(&v));

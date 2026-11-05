@@ -649,7 +649,6 @@ impl ProtoBuilder<'_> {
         if let Some(list) = args {
             let mut names: Vec<&[u8]> = Vec::new();
             let (mut pos, mut unpacked) = (0usize, false);
-            let known = known.filter(|k| k.by_ref.iter().any(|&r| r));
             for arg in list.arguments.iter() {
                 match arg {
                     // A repeated name: zend_handle_named_arg finds the slot
@@ -728,8 +727,9 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    /// An argument for by-reference parameter `idx` of a known callee, as
-    /// a register holding a reference; `None` when it goes by value.
+    /// An argument for by-reference parameter `idx` of a known callee, or
+    /// for an unknown callee (`known` None), as a register holding a
+    /// reference; `None` when it goes by value.
     /// php's SEND_REF for a variable; SEND_VAR_NO_REF for a call result
     /// (by value, with a notice); SEND_VAL for a temporary, which throws.
     fn compile_known_ref_arg(
@@ -738,12 +738,21 @@ impl ProtoBuilder<'_> {
         known: Option<&KnownParams>,
         idx: Option<usize>,
     ) -> Result<Option<Reg>, Thrown> {
-        let (Some(k), Some(i)) = (known, idx) else {
+        let Some(k) = known else {
+            // A callee only known at run time: as in a method's argument
+            // window, a plain variable travels as a reference and a
+            // by-value parameter dereferences it.
+            let Some(var) = send_var_ex_name(e) else {
+                return Ok(None);
+            };
+            let cv = self.cv(var);
+            let dst = self.alloc_temp();
+            self.emit(Instr::MakeRef { dst, cv });
+            return Ok(Some(dst));
+        };
+        let Some(i) = idx.filter(|&i| k.by_ref[i]) else {
             return Ok(None);
         };
-        if !k.by_ref[i] {
-            return Ok(None);
-        }
         let dst = self.alloc_temp();
         match e {
             Expression::Variable(Variable::Direct(d))

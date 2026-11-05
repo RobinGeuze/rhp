@@ -82,3 +82,8 @@ array(1) {
 }
 bool(true)
 Error: Unknown named parameter $foo
+int(7)
+int(8)
+int(9)
+int(1)
+int(4)

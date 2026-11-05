@@ -46,3 +46,9 @@ class Plain {
     private $priv = 2;
 }
 debug_zval_dump(new Dbg, new Plain);
+
+// two global names bound to one reference
+$ga = 1;
+$gb = &$ga;
+$garr = [&$ga];
+debug_zval_dump($garr);

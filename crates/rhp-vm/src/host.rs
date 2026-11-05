@@ -50,7 +50,7 @@ impl Host for Vm {
 
     fn shadow_holders(&self, v: &Value) -> usize {
         match v {
-            Value::Ref(r) => self.globals.values().any(|g| Rc::ptr_eq(g, r)) as usize,
+            Value::Ref(r) => self.globals.values().filter(|g| Rc::ptr_eq(g, r)).count(),
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 self.classes[cls as usize]

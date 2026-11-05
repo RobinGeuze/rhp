@@ -94,3 +94,9 @@ object(Plain)#4 (2) refcount(1){
   ["priv":"Plain":private]=>
   int(2)
 }
+array(1) packed refcount(2){
+  [0]=>
+  reference refcount(3) {
+    int(1)
+  }
+}

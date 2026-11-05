@@ -948,17 +948,20 @@ impl Vm {
                 let private = existing.visibility == Visibility::Private
                     && !m.name.as_bytes().eq_ignore_ascii_case(b"__construct");
                 if existing.is_final && existing.defining_class != id && !private {
-                    return Err(Thrown::error(
-                        "Error",
-                        format!(
-                            "Cannot override final method {}::{}()",
-                            String::from_utf8_lossy(
-                                self.classes[existing.defining_class as usize]
-                                    .name
-                                    .as_bytes()
-                            ),
-                            String::from_utf8_lossy(existing.proto.name.as_bytes())
+                    let msg = format!(
+                        "Cannot override final method {}::{}()",
+                        String::from_utf8_lossy(
+                            self.classes[existing.defining_class as usize]
+                                .name
+                                .as_bytes()
                         ),
+                        String::from_utf8_lossy(existing.proto.name.as_bytes())
+                    );
+                    // zend_error_at: the overriding method's line.
+                    return Err(self.fatal_compile_error_at(
+                        msg.as_bytes(),
+                        proto.decl_file.as_bytes().to_vec(),
+                        m.proto.meta.start_line as i64,
                     ));
                 }
             }

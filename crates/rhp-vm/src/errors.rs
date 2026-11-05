@@ -39,7 +39,8 @@ pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
-    /// php 8.5's backtrace, then the request bails out (exit status 255).
+    /// php 8.5's backtrace (when `fatal_error_backtraces` is on), then the
+    /// request bails out (exit status 255).
     pub(crate) fn fatal_compile_error(&mut self, msg: &[u8]) -> Thrown {
         let (file, line) = match (0..self.stack.len())
             .rev()
@@ -48,9 +49,25 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
+        self.fatal_compile_error_at(msg, file, line)
+    }
+
+    /// [`Vm::fatal_compile_error`] reported at `file`:`line` (php's
+    /// zend_error_at for errors found while linking a class).
+    pub(crate) fn fatal_compile_error_at(
+        &mut self,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
         self.last_error = Some((64, msg.to_vec(), file.clone(), line));
-        let trace = Value::Array(self.build_trace_ex(false, false));
-        let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
+        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
+        let trace = if ini_bool(&backtraces) {
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            builtins::zend::exceptions::trace_to_string(self, &trace)
+        } else {
+            Vec::new()
+        };
         self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)

@@ -56,6 +56,10 @@ pub fn compile_error_line() -> u32 {
     COMPILE_ERROR_LINE.with(Cell::get)
 }
 
+pub(crate) fn set_compile_error_line(line: u32) {
+    COMPILE_ERROR_LINE.with(|l| l.set(line));
+}
+
 /// What a file is compiled for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -118,13 +122,21 @@ fn compile_program(
     let cx = FileCtx::new(builtins, file, source, program, &flat);
     let r = compile_file(&cx, &flat, with_prelude);
     // A recorded compile error came first in source order (compilation stops
-    // at the first one in php), so it wins over a later refusal too.
+    // at the first one in php), so it wins over a later refusal too, and over
+    // a compile error that unwound the compile from a later line.
+    let unwound = match &r {
+        Err(Thrown::Error {
+            class: "CompileError",
+            ..
+        }) => Some(compile_error_line()),
+        _ => None,
+    };
     match cx.take_fatal() {
-        Some((line, message)) => {
-            COMPILE_ERROR_LINE.with(|l| l.set(line));
+        Some((line, message)) if unwound.is_none_or(|l| line <= l) => {
+            set_compile_error_line(line);
             Err(Thrown::error("CompileError", message))
         }
-        None => r,
+        _ => r,
     }
 }
 

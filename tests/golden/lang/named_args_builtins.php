@@ -97,3 +97,9 @@ $rw = 1;
 $k->v(a: $rw);
 var_dump($rx, $ry, $rz, $rw);
 var_dump(call_user_func('strlen', string: 'abcd'));
+
+// a by-reference function result for a by-reference parameter: no notice
+function refs(&$a, &$b = 1) { echo "$a $b\n"; }
+function &byref($x) { return $x; }
+refs(byref("A"), byref("B"));
+refs(byref("A"), b: byref("B"));

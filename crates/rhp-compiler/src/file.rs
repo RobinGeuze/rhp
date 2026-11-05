@@ -43,6 +43,8 @@ pub(crate) struct FileCtx<'s> {
     /// The parameter names of the same functions, and whether the last one
     /// is variadic (for placing named arguments at compile time).
     pub(crate) sig_names: HashMap<Vec<u8>, (Vec<Vec<u8>>, bool)>,
+    /// The same functions that return by reference.
+    pub(crate) ref_returning: std::collections::HashSet<Vec<u8>>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -114,6 +116,7 @@ impl<'s> FileCtx<'s> {
             strict_types: false,
             sigs: HashMap::new(),
             sig_names: HashMap::new(),
+            ref_returning: Default::default(),
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -159,6 +162,9 @@ impl<'s> FileCtx<'s> {
                     .collect();
                 let variadic = params.iter().last().is_some_and(|p| p.ellipsis.is_some());
                 cx.sig_names.insert(fqn.clone(), (names, variadic));
+                if func.ampersand.is_some() {
+                    cx.ref_returning.insert(fqn.clone());
+                }
                 cx.sigs.insert(fqn, flags);
             }
         }

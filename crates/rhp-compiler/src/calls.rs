@@ -133,6 +133,8 @@ impl ProtoBuilder<'_> {
             RefLval(&'e Expression<'e>),
             /// A call result for a by-ref parameter (passed with a notice).
             NoRef(Reg),
+            /// The result of a function that returns by reference.
+            RefCall(Reg),
             /// SEND_VAR_EX of a variable to an unresolved function.
             VarEx {
                 cv: Reg,
@@ -186,6 +188,8 @@ impl ProtoBuilder<'_> {
                         let r = self.compile_expr(p.value)?;
                         if prefer_ref(i) {
                             slots.push(ArgSlot::Value(r))
+                        } else if self.returns_ref_call(p.value) {
+                            slots.push(ArgSlot::RefCall(r))
                         } else {
                             slots.push(ArgSlot::NoRef(r))
                         }
@@ -280,6 +284,7 @@ impl ProtoBuilder<'_> {
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
                 ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
+                ArgSlot::RefCall(src) => self.emit(Instr::MakeRefVal { dst, src }),
                 ArgSlot::RefLval(expr) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(expr, &mut steps)?;
@@ -773,7 +778,11 @@ impl ProtoBuilder<'_> {
             _ if k.prefer_ref[i] => return Ok(None),
             Expression::Call(_) => {
                 let src = self.compile_expr(e)?;
-                self.emit(Instr::SendNoRef { dst, src });
+                if self.returns_ref_call(e) {
+                    self.emit(Instr::MakeRefVal { dst, src });
+                } else {
+                    self.emit(Instr::SendNoRef { dst, src });
+                }
             }
             _ => {
                 self.compile_expr(e)?;
@@ -791,6 +800,25 @@ impl ProtoBuilder<'_> {
             }
         }
         Ok(Some(dst))
+    }
+
+    /// Whether `e` calls a function of this file that returns by reference
+    /// (SEND_VAR_NO_REF finds a reference then: no notice).
+    fn returns_ref_call(&self, e: &Expression) -> bool {
+        let Expression::Call(crate::parse::cst::Call::Function(fc)) = e else {
+            return false;
+        };
+        let id = match fc.function {
+            Expression::Identifier(id) => id,
+            Expression::ConstantAccess(ca) => &ca.name,
+            _ => return false,
+        };
+        let (name, fallback) = self.cx.resolve_name(id, NameKind::Func);
+        let lc = name.to_ascii_lowercase();
+        if self.cx.sigs.contains_key(&lc) {
+            return self.cx.ref_returning.contains(&lc);
+        }
+        fallback.is_some_and(|f| self.cx.ref_returning.contains(&f.to_ascii_lowercase()))
     }
 
     /// zend_compile_args' compile-time order checks: no positional argument

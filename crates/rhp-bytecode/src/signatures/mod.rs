@@ -387,6 +387,11 @@ pub enum Zpp {
     /// string in either mode, then a class that must exist and derive from
     /// [`class_param_base`] when it names one.
     Class,
+    /// An untyped parameter php parses with `Z_PARAM_RESOURCE` ([`RS`]).
+    Resource,
+    /// An untyped parameter php parses with `PHP_Z_PARAM_STREAM` ([`ST`]):
+    /// a resource that is an open stream.
+    Stream,
     /// Another mix of scalar types: only the object, array and null checks.
     Other,
 }
@@ -417,6 +422,8 @@ impl Zpp {
             (ArrayOrStr, true) => "array|string|null",
             (ArrayOrLong, false) => "array|int",
             (ArrayOrLong, true) => "array|int|null",
+            (Resource | Stream, false) => "resource",
+            (Resource | Stream, true) => "resource or null",
             (Class | Other, _) => return None,
         })
     }
@@ -445,15 +452,9 @@ impl Zpp {
 }
 
 /// Parameters whose zpp is looser than their stub type: fputcsv's `$eol` is
-/// `Z_PARAM_STR_OR_NULL`, ini_set's `$value` raises its own TypeError, and
-/// hash_equals takes zvals and checks them itself.
-const ZPP_OWN: &[(&str, &str)] = &[
-    ("fputcsv", "eol"),
-    ("hash_equals", "known_string"),
-    ("hash_equals", "user_string"),
-    ("ini_alter", "value"),
-    ("ini_set", "value"),
-];
+/// `Z_PARAM_STR_OR_NULL`. (Typed parameters php parses as any value, such
+/// as hash_equals' and ini_set's, carry [`ZV`].)
+const ZPP_OWN: &[(&str, &str)] = &[("fputcsv", "eol")];
 
 /// Parameters whose zpp differs from what their stub type maps to:
 /// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`
@@ -482,7 +483,27 @@ pub fn class_param_base(func: &str, param: &str) -> Option<&'static str> {
 const ZPP_OWN_EXT: &[&str] = &["gmp"];
 
 fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> {
-    if p.ty.is_empty() || ZPP_OWN.contains(&(f.name, p.name)) || ZPP_OWN_EXT.contains(&f.ext) {
+    if p.flags & ZV != 0 || ZPP_OWN_EXT.contains(&f.ext) {
+        return None;
+    }
+    if p.flags & (RS | ST) != 0 {
+        return Some(ScalarParam {
+            pos,
+            name: p.name,
+            ty: p.ty,
+            kind: if p.flags & ST != 0 {
+                Zpp::Stream
+            } else {
+                Zpp::Resource
+            },
+            variadic: p.variadic(),
+            nullable: p.flags & NUL != 0,
+            has_str: false,
+            has_arr: false,
+            by_ref: false,
+        });
+    }
+    if p.ty.is_empty() || ZPP_OWN.contains(&(f.name, p.name)) {
         return None;
     }
     let parts = || p.ty.trim_start_matches('?').split('|');
@@ -514,8 +535,9 @@ fn scalar_param(f: &Func, pos: usize, p: &'static Param) -> Option<ScalarParam> 
 }
 
 /// A function row's [`ScalarParam`]s, and how many of its parameters come
-/// before the first one whose checks are the body's (`prefix`: a resource,
-/// a callable, a class type, …; `mixed` does not count): zpp reports an
+/// before the first one whose checks are the body's (`prefix`: a callable,
+/// a class type, a resource php does not parse as one, …; `mixed` and
+/// parameters php parses as any value do not count): zpp reports an
 /// earlier parameter's error first, so the checks of a later scalar
 /// parameter that the body's error would beat stay with the body.
 #[derive(Debug)]
@@ -543,21 +565,26 @@ pub fn scalar_params(f: &'static Func) -> Option<&'static ScalarParams> {
                     .enumerate()
                     .filter_map(|(i, p)| scalar_param(f, i, p))
                     .collect();
-                // `mixed` and untyped by-reference parameters accept anything.
+                // `mixed`, untyped by-reference parameters and those php
+                // parses as any value accept anything.
                 let prefix = (0..f.params.len())
                     .find(|&i| {
                         let p = &f.params[i];
                         !params.iter().any(|sp| sp.pos == i)
                             && p.ty != "mixed"
+                            && p.flags & ZV == 0
                             && !(p.ty.is_empty() && p.by_ref())
                     })
                     .unwrap_or(usize::MAX);
-                // Past the prefix a class name is the body's: it converts
-                // and looks the class up after the earlier checks.
+                // Past the prefix a class name or a resource is the body's:
+                // it checks them after the earlier checks.
                 let params = params
                     .into_vec()
                     .into_iter()
-                    .filter(|sp| sp.kind != Zpp::Class || sp.pos < prefix)
+                    .filter(|sp| {
+                        !matches!(sp.kind, Zpp::Class | Zpp::Resource | Zpp::Stream)
+                            || sp.pos < prefix
+                    })
                     .collect();
                 ScalarParams {
                     params,

@@ -18,7 +18,7 @@ use super::{
     PROPQ,
 };
 use crate::zend::zpp::deref;
-use crate::{deprecated_fn, warn, Host, Thrown};
+use crate::{warn, Host, Thrown};
 
 pub(super) fn register(m: &mut crate::Registry) {
     crate::register(
@@ -764,16 +764,12 @@ fn fn_get_public(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     key_object(host, k.release(), false)
 }
 
-const FREE_DEPRECATION: &str = "as OpenSSLAsymmetricKey objects are freed automatically";
-
 fn fn_pkey_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    deprecated_fn(host, "openssl_pkey_free", "8.0", FREE_DEPRECATION)?;
     key_arg(host, args, 0, "openssl_pkey_free")?;
     Ok(Value::Null)
 }
 
 fn fn_free_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    deprecated_fn(host, "openssl_free_key", "8.0", FREE_DEPRECATION)?;
     key_arg(host, args, 0, "openssl_free_key")?;
     Ok(Value::Null)
 }

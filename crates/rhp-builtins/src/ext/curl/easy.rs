@@ -2467,7 +2467,6 @@ pub(super) fn fn_curl_errno(host: &mut dyn Host, args: &[Value]) -> Result<Value
 
 pub(super) fn fn_curl_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_close";
-    crate::deprecated_fn(host, f, "8.5", "as it has no effect since PHP 8.0")?;
     let (_, e) = easy_arg(host, args, 0, f, "handle")?;
     if e.borrow().in_callback {
         return Err(Thrown::error(

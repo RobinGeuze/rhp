@@ -99,6 +99,27 @@ pub fn notice(
     host.emit_diagnostic(E_NOTICE, &docref(fname, msg.as_ref()))
 }
 
+/// zend_deprecated_function: the notice for calling `#[\Deprecated]`
+/// function `fname`, from its stub's `since` and `message`. The VM raises
+/// it for a builtin call; a builtin a prelude wrapper reaches raises it
+/// itself.
+pub fn deprecated_function(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
+    let f = rhp_bytecode::signatures::function(fname.as_bytes());
+    let (since, message) = f
+        .and_then(rhp_bytecode::signatures::deprecation)
+        .unwrap_or_default();
+    let mut msg = format!("Function {fname}() is deprecated");
+    if !since.is_empty() {
+        msg.push_str(" since ");
+        msg.push_str(since);
+    }
+    if !message.is_empty() {
+        msg.push_str(", ");
+        msg.push_str(message);
+    }
+    host.emit_diagnostic(E_DEPRECATED, msg.as_bytes())
+}
+
 /// `php_error_docref(NULL, E_DEPRECATED, msg)` from builtin `fname`.
 pub fn deprecated(
     host: &mut dyn Host,
@@ -106,18 +127,4 @@ pub fn deprecated(
     msg: &(impl AsRef<[u8]> + ?Sized),
 ) -> Result<(), Thrown> {
     host.emit_diagnostic(E_DEPRECATED, &docref(fname, msg.as_ref()))
-}
-
-/// The `#[\Deprecated]` notice php raises on calling a deprecated function:
-/// `Function f() is deprecated since V, MSG`.
-pub fn deprecated_fn(
-    host: &mut dyn Host,
-    fname: &str,
-    since: &str,
-    msg: &str,
-) -> Result<(), Thrown> {
-    host.emit_diagnostic(
-        E_DEPRECATED,
-        format!("Function {fname}() is deprecated since {since}, {msg}").as_bytes(),
-    )
 }

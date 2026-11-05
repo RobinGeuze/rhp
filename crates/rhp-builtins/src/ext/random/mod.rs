@@ -276,13 +276,7 @@ fn fn_getrandmax(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(2147483647))
 }
 
-fn fn_lcg_value(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    crate::deprecated_fn(
-        host,
-        "lcg_value",
-        "8.4",
-        "use \\Random\\Randomizer::getFloat() instead",
-    )?;
+fn fn_lcg_value(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut b = [0u8; 8];
     let _ = getrandom::getrandom(&mut b);
     // 53 random bits → [0, 1).

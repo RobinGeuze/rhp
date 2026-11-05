@@ -1804,16 +1804,20 @@ impl Vm {
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero; what that throws is thrown there).
         self.reap_dropped_streams()?;
+        let caller = self.stack.len().saturating_sub(1);
+        let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
+        // ZEND_DO_FCALL's zend_deprecated_function, before the arguments
+        // are parsed (also for a callback or a Reflection invoke).
+        if let Some(f) = sig.filter(|f| f.flags & rhp_bytecode::signatures::DEPRECATED != 0) {
+            builtins::deprecated_function(self, f.name)?;
+        }
         let count_error = builtin_arg_count_error(builtin, args.len());
         if count_error.is_none() {
-            let caller = self.stack.len().saturating_sub(1);
-            let user = !self.stack.is_empty() && !self.is_internal_frame(caller);
             self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)?;
         }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
-        let caller = self.stack.len().saturating_sub(1);
-        if frameless || self.stack.is_empty() || self.is_internal_frame(caller) {
+        if frameless || !user {
             let r = match count_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),

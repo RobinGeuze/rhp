@@ -10,7 +10,7 @@ use rhp_values::{ResourceData, Value};
 
 use super::sys::{self, zip_file_t, zip_t};
 use super::{check_path, deref, expand_filepath, must_not_be_empty};
-use crate::{Host, Thrown, E_DEPRECATED};
+use crate::{Host, Thrown};
 
 const DIR: &str = "Zip Directory";
 const ENTRY: &str = "Zip Entry";
@@ -51,16 +51,6 @@ impl Drop for ZipEntry {
             unsafe { sys::zip_fclose(zf) };
         }
     }
-}
-
-/// The `#[\Deprecated]` notice, before anything else (php raises it on the
-/// call).
-fn deprecated(host: &mut dyn Host, fname: &str, msg: Option<&str>) -> Result<(), Thrown> {
-    let m = match msg {
-        Some(m) => format!("Function {fname}() is deprecated since 8.0, {m}"),
-        None => format!("Function {fname}() is deprecated since 8.0"),
-    };
-    host.emit_diagnostic(E_DEPRECATED, m.as_bytes())
 }
 
 /// zpp `r`.
@@ -111,7 +101,6 @@ fn fetch<'h, T: 'static>(
 
 fn zip_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_open";
-    deprecated(host, fname, Some("use ZipArchive::open() instead"))?;
     let filename = crate::zend::zpp::str_arg(host, args, 0, fname, "filename")?;
     check_path(fname, 1, "filename", &filename)?;
     if filename.is_empty() {
@@ -140,7 +129,6 @@ fn zip_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn zip_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_close";
-    deprecated(host, fname, Some("use ZipArchive::close() instead"))?;
     fetch::<ZipDir>(host, args, 0, fname, "zip", DIR)?;
     // zend_list_close: the resource stays, closed.
     let v = deref(&args[0]);
@@ -150,7 +138,6 @@ fn zip_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn zip_read(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_read";
-    deprecated(host, fname, Some("use ZipArchive::statIndex() instead"))?;
     let d = fetch::<ZipDir>(host, args, 0, fname, "zip", DIR)?;
     let za = d.za.get();
     if za.is_null() {
@@ -186,7 +173,6 @@ fn zip_read(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn zip_entry_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_entry_open";
-    deprecated(host, fname, None)?;
     resource_arg(host, args, 0, fname, "zip_dp")?;
     resource_arg(host, args, 1, fname, "zip_entry")?;
     if args.len() > 2 {
@@ -202,7 +188,6 @@ fn zip_entry_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 fn zip_entry_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_entry_close";
-    deprecated(host, fname, None)?;
     fetch::<ZipEntry>(host, args, 0, fname, "zip_entry", ENTRY)?;
     let v = deref(&args[0]);
     drop(host.resource_remove(&v));
@@ -211,7 +196,6 @@ fn zip_entry_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 
 fn zip_entry_read(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "zip_entry_read";
-    deprecated(host, fname, Some("use ZipArchive::getFromIndex() instead"))?;
     resource_arg(host, args, 0, fname, "zip_entry")?;
     let mut len = match args.get(1) {
         Some(_) => crate::zend::zpp::long_arg(host, args, 1, fname, "len")?,
@@ -261,29 +245,21 @@ fn entry_info(host: &mut dyn Host, args: &[Value], fname: &str, opt: u8) -> Resu
 }
 
 fn zip_entry_name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    deprecated(
-        host,
-        "zip_entry_name",
-        Some("use ZipArchive::statIndex() instead"),
-    )?;
     entry_info(host, args, "zip_entry_name", 0)
 }
 
 fn zip_entry_compressedsize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "zip_entry_compressedsize";
-    deprecated(host, f, Some("use ZipArchive::statIndex() instead"))?;
     entry_info(host, args, f, 1)
 }
 
 fn zip_entry_filesize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "zip_entry_filesize";
-    deprecated(host, f, Some("use ZipArchive::statIndex() instead"))?;
     entry_info(host, args, f, 2)
 }
 
 fn zip_entry_compressionmethod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "zip_entry_compressionmethod";
-    deprecated(host, f, Some("use ZipArchive::statIndex() instead"))?;
     entry_info(host, args, f, 3)
 }
 

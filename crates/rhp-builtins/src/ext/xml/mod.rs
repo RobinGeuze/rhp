@@ -979,12 +979,8 @@ setter!(
 /// xml_set_object, with PHP_XML_CHECK_NEW_THIS_METHODS.
 fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_set_object";
-    crate::deprecated_fn(
-        host,
-        F,
-        "8.4",
-        "provide a proper method callable to xml_set_*_handler() functions",
-    )?;
+    // Reached through the prelude's wrapper, not the VM's builtin call.
+    crate::deprecated_function(host, F)?;
     let p = parser_arg(host, args, 0, F)?;
     let new_this = arg(args, 1);
     if !matches!(new_this, Value::Object(_)) {
@@ -1168,7 +1164,7 @@ fn fn_get_current_byte_index(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 
 fn fn_parser_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_free";
-    crate::deprecated_fn(host, F, "8.5", "as it has no effect since PHP 8.0")?;
+    crate::deprecated_function(host, F)?;
     let p = parser_arg(host, args, 0, F)?;
     if p.borrow().isparsing {
         crate::warn(host, F, "Parser cannot be freed while it is parsing")?;

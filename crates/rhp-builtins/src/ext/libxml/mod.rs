@@ -402,13 +402,7 @@ fn fn_clear_errors(_h: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Null)
 }
 
-fn fn_disable_entity_loader(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    crate::deprecated_fn(
-        host,
-        "libxml_disable_entity_loader",
-        "8.0",
-        "as external entity loading is disabled by default",
-    )?;
+fn fn_disable_entity_loader(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let on = args
         .first()
         .map(|v| conv::to_bool(&deref(v)))

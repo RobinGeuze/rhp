@@ -1810,31 +1810,18 @@ impl Vm {
         if let Some(f) = sig.filter(|f| f.flags & rhp_bytecode::signatures::DEPRECATED != 0) {
             builtins::deprecated_function(self, f.name)?;
         }
-        let count_error = builtin_arg_count_error(builtin, args.len());
-        if count_error.is_none() {
-            if let Err(e) =
-                self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)
-            {
-                // php's zpp runs in the builtin's frame: the error's trace
-                // lists the call, with the arguments as converted so far.
-                if frameless || !user || !matches!(e, Thrown::Error { .. }) {
-                    return Err(e);
-                }
-                self.native_calls.push(NativeCall {
-                    name: builtin.name,
-                    args: args.as_slice() as *const [Value],
-                    caller,
-                    frameless_icall: icall,
-                });
-                let e = self.materialize(e, None);
-                self.native_calls.pop();
-                return Err(e);
-            }
-        }
+        // php's zpp runs in the builtin's frame: a count or parse error is
+        // raised as the call's, with the arguments as converted so far.
+        let zpp_error = match builtin_arg_count_error(builtin, args.len()) {
+            Some(e) => Some(e),
+            None => self
+                .coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall)
+                .err(),
+        };
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
         if frameless || !user {
-            let r = match count_error {
+            let r = match zpp_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
@@ -1852,7 +1839,7 @@ impl Vm {
             caller,
             frameless_icall: icall,
         });
-        let r = match count_error {
+        let r = match zpp_error {
             Some(e) => Err(e),
             None => (builtin.func)(self, &args),
         };

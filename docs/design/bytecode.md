@@ -395,6 +395,10 @@ SpreadArgs { src }                    dynamic argc: switch to the *_V path (Call
 Param binding in `CallUser` is driven by `ParamInfo` (by-value clone / by-ref
 bind to the passed `Ref` / variadic collects window tail into a `PhpArray` /
 default `Const` copy or `Init` block; missing+no-default ⇒ `ArgumentCountError`).
+An `Init` block is guarded by `JmpIfArg { index, target }`; for a typed
+parameter it ends in `RecvInitCheck { index }`, php's RECV_INIT check of the
+evaluated default (a constant default was checked, and an int one widened
+for a float type, at compile time).
 Named args against a statically-known callee are resolved to positions at compile
 time; dynamic callee reorders at the call site via `proto.params`. The fixed-arity
 register-window path is the fast path; spread uses the `_V` path.

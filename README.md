@@ -95,7 +95,7 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 |---|---|---|
 | Composer | 2.11.1 (phar) | Read-only commands (`list`, `about`, `show` except `--platform`, `validate`, `licenses`, `depends`, `why-not`, `outdated`, `audit`, `search`, ...) print what php prints. `update` and `require` write the same `composer.lock`, and `install --no-autoloader` the same `vendor/`. Generating the autoloader fails (rhp's `^` on two strings returns an int), so `install`, `update`, `require` and `dump-autoload` stop at "Generating autoload files". Installed code may still fail: monolog's `Logger` needs `Fiber`. |
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | Compiles only: 1,749 of its 1,751 PHP files compile under rhp. It does not boot: every console command and request stops at `get_error_handler()`, a PHP 8.5 function rhp lacks. |
-| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: the container calls `spl_object_id()` on a closure, which rhp rejects, so every artisan command and request fails. |
+| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: `config/logging.php` uses the syslog constant `LOG_USER`, which rhp lacks, and reporting that error needs `Fiber`, so `artisan --version` fails. |
 
 ## Build and test
 

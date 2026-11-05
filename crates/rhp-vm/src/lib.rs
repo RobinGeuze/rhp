@@ -330,6 +330,20 @@ struct Frame {
     closure: Option<Rc<rhp_values::ClosureData>>,
 }
 
+impl Drop for Frame {
+    fn drop(&mut self) {
+        // php frees a frame's variables, then its `$this`: the handles come
+        // back in that order.
+        if let Some(cv) = self.proto.this_cv {
+            if let Some(slot) = self.regs.get_mut(cv as usize) {
+                let this = std::mem::replace(slot, Value::Null);
+                self.regs.clear();
+                drop(this);
+            }
+        }
+    }
+}
+
 impl Frame {
     fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
         let regs = vec![Value::Null; proto.num_registers as usize];

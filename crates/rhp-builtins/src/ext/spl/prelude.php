@@ -45,7 +45,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
             $k = (string)$k;
             if ($k !== '' && $k[0] === "\0") {
                 $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
             } else { $this->$k = $v; }
         }
     }
@@ -82,7 +82,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
             $k = (string)$k;
             if ($k !== '' && $k[0] === "\0") {
                 $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
             } else { $this->$k = $v; }
         }
         if (isset($data[3])) { $this->__i = $data[3]; }

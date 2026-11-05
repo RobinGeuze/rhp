@@ -1350,7 +1350,7 @@ impl Vm {
                 } => {
                     // An object in a temporary (`(new A)->m()`) is released
                     // by the call (php frees it when the call returns).
-                    let o = if obj >= proto.num_cvs {
+                    let o = if obj >= proto.num_cvs && !self.holds_destructible(top, obj) {
                         self.take_temp(top, obj)
                     } else {
                         self.reg_get(top, obj)
@@ -2780,6 +2780,24 @@ impl Vm {
 }
 
 impl Vm {
+    /// Whether register `r` holds an object with a destructor. Such a
+    /// temporary stays until overwritten: rhp destructs released objects in
+    /// creation order, so freeing it with the callee's frame would destruct
+    /// it before the callee's locals (php: locals first, then `$this`).
+    #[inline(never)]
+    fn holds_destructible(&self, top: usize, r: Reg) -> bool {
+        match &self.stack[top].regs[r as usize] {
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.class(cls)
+                    .handlers
+                    .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some())
+                    || self.lookup_method(cls, b"__destruct").is_some()
+            }
+            _ => false,
+        }
+    }
+
     /// Move a temporary's value out (dereferenced), leaving null.
     #[inline(never)]
     fn take_temp(&mut self, top: usize, r: Reg) -> Value {

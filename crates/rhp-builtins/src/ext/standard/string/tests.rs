@@ -853,7 +853,7 @@ fn i(n: i64) -> Value {
 
 fn dumped(v: &Value) -> String {
     let mut out = Vec::new();
-    crate::ext::standard::var::var_dump(&TestHost::new(), &mut out, v, 0);
+    crate::ext::standard::var::var_dump(&mut TestHost::new(), &mut out, v).expect("no throw");
     String::from_utf8_lossy(&out).into_owned()
 }
 

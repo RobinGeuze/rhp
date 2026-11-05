@@ -740,6 +740,24 @@ pub trait Host {
             None => Ok(()),
         }
     }
+    /// An E_ERROR a builtin raises (zend_error_noreturn): reported at the
+    /// innermost user frame with the backtrace, then the request bails out
+    /// with the returned value.
+    fn fatal_error(&mut self, msg: &[u8]) -> Thrown {
+        Thrown::error("Error", String::from_utf8_lossy(msg).into_owned())
+    }
+    /// Whether php holds `s` as an interned string: a string literal of
+    /// the compiled code (debug_zval_dump prints `interned`).
+    fn is_interned_str(&self, _s: &rhp_values::PhpStr) -> bool {
+        false
+    }
+    /// Holders of `v` rhp keeps where php has one slot, left out of the
+    /// refcounts var_dump and debug_zval_dump show: a global variable's
+    /// cell (held by the globals table and by main's CV), an enum case
+    /// (held by its class constant and the case list).
+    fn shadow_holders(&self, _v: &Value) -> usize {
+        0
+    }
     /// `php_error_docref(NULL, level, msg)` raised outside a builtin of its
     /// own (an object or resource freed): prefixed with php's active
     /// function (the running builtin, else the innermost user function,

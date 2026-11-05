@@ -422,7 +422,9 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
 
 /// Extensions this engine reports as loaded, under php's own module names and
 /// in php 8.5.8's `get_loaded_extensions()` order. These are the ones whose
-/// functions/classes rhp actually provides.
+/// functions/classes rhp actually provides. Every one is a module
+/// (`registry::modules`); the test `modules_are_php_modules` lists the
+/// modules left out.
 pub(crate) const LOADED_EXTS: &[&str] = &[
     "Core",
     "date",
@@ -460,14 +462,13 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "zip",
 ];
 
-/// The extensions the running SAPI has loaded: pcntl only under the CLI
-/// and CGI.
+/// The extensions the running SAPI has loaded (pcntl only under the CLI and
+/// CGI).
 fn sapi_exts() -> impl Iterator<Item = &'static str> {
-    let pcntl = crate::main::sapi::has_pcntl();
     LOADED_EXTS
         .iter()
         .copied()
-        .filter(move |e| pcntl || *e != "pcntl")
+        .filter(|e| crate::registry::module_loaded(e))
 }
 
 /// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).

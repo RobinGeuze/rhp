@@ -250,7 +250,6 @@ pub(crate) fn reset_state() {
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
     rhp_values::fmt::reset_precision();
-    crate::ext::bcmath::set_default_scale(0);
 }
 
 /// Is a directive's owning module loaded in this engine?

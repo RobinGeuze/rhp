@@ -27,6 +27,16 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(m, &[("set_time_limit", fn_set_time_limit)]);
 }
 
+/// A new request: reset main/'s thread-locals (the stream layer's, the ini
+/// overrides, the SAPI).
+pub(crate) fn reset_state() {
+    streams::reset_state();
+    streams::plain_wrapper::reset_state();
+    streams::xp_socket::reset_state();
+    ini::reset_state();
+    sapi::reset_state();
+}
+
 /// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.
 fn php_os() -> (&'static str, &'static str) {
     if cfg!(target_os = "macos") {

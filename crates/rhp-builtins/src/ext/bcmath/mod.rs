@@ -489,6 +489,11 @@ pub(crate) fn set_default_scale(scale: i64) {
     DEFAULT_SCALE.with(|s| s.set(scale));
 }
 
+/// A new request: back to the default `bcmath.scale` of 0.
+pub(crate) fn reset_state() {
+    set_default_scale(0);
+}
+
 /// The default scale: the `bcmath.scale` setting.
 fn default_scale() -> i64 {
     DEFAULT_SCALE.with(Cell::get)

@@ -5,13 +5,15 @@ dropped (see [`sapi.md`](./sapi.md), *Threading model*). State that
 builtins, the compiler or the VM keep outside the `Vm` struct lives in
 `thread_local!`s, as php's ZTS build keeps its module globals per thread.
 This is every one of them, what it holds and how a request gets a clean
-copy. Phase 8 turns the resets into a mandatory hook per module; until
-then `rhp_builtins::reset_request_state` (`registry.rs`) is the list, and a new
+copy. Every module (`ModuleDef`, `module.rs`) states its reset hook,
+`no_state` when it has none, so a module cannot forget one: a new
 `thread_local!` must go into this table and, when it holds request state,
-into that function. rhp-vm's `lifecycle::reset_request_state` runs it,
-with the VM's own resets, first thing in `Vm::new` and again when the `Vm`
-drops (after its values), so an idle thread holds nothing of its last
-request.
+into its module's `reset`. `rhp_builtins::reset_request_state`
+(`registry.rs`) runs every module's reset in module order, then
+`rhp_values::reset_dropped_streams`; no reset may depend on another
+module's. rhp-vm's `lifecycle::reset_request_state` runs it, with the VM's
+own resets, first thing in `Vm::new` and again when the `Vm` drops (after
+its values), so an idle thread holds nothing of its last request.
 
 Kinds:
 
@@ -47,7 +49,7 @@ Kinds:
 | `sapi/cli.rs` | `TITLE` (`cli_set_process_title`) | request | `cli::reset_state` |
 | `ext/standard/basic_functions.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `basic_functions::reset_state` |
 | `main/sapi.rs` | `SAPI_NAME`, `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
-| `ext/bcmath` | `DEFAULT_SCALE` | request | `ini::reset_state` |
+| `ext/bcmath` | `DEFAULT_SCALE` | request | `bcmath::reset_state` |
 | `ext/bz2` | `BZ_ERRORS` | request | `bz2::reset_state` |
 | `ext/curl/mod.rs` | `EASY`, `MULTI`, `SHARE` (handle tables) | request | `curl::reset_state` |
 | `ext/curl/share.rs` | `PERSISTENT` (php's `CURL_G(persistent_curlsh)`) | thread, as in php | — |
@@ -61,7 +63,7 @@ Kinds:
 | `ext/libxml/mod.rs` | `STATE` (errors, stream context, entity loader) | request | `libxml::reset_state` |
 | `ext/libxml/mod.rs` | `INSTALLED` (php's handlers set on this thread) | thread | — |
 | `ext/libxml/ffi.rs` | `FRAMES` (hosts of running libxml2 calls) | call | — |
-| `ext/xml` | `LIVE` (parsers, to break their cycles) | request | `xml::reset_state` via `libxml::reset_state` |
+| `ext/xml` | `LIVE` (parsers, to break their cycles) | request | `xml::reset_state` |
 | `ext/mbstring` | `STATE` | request | `mbstring::reset_state` |
 | `ext/openssl` | `NATIVES` (keys, certificates by object id) | request | `openssl::reset_state` |
 | `ext/openssl` | `ERRORS`, `ERRORS_MARK` (`openssl_error_string` ring) | request (php: per worker) | `openssl::reset_state` |
@@ -104,8 +106,9 @@ Not per thread, so shared by every engine in the process:
 - pcntl's signal queue and flags (`ext/pcntl`, atomics written from the
   signal handler). Signal handlers belong to the process; pcntl exists
   only under the CLI and CGI (`sapi::has_pcntl`).
-- `OnceLock`s and `Once`s that compute something once: the builtin
-  registry, signatures, the process's umask (`virtual_cwd`), libxml2's process
+- `OnceLock`s and `Once`s that compute something once: the module list,
+  the builtin registry, signatures, the process's umask (`virtual_cwd`),
+  libxml2's process
   init and default entity loader, curl's and OpenSSL's global init.
 - C libraries' own globals, set once to dispatchers that read the calling
   thread's state (see [`libraries.md`](./libraries.md), *Threading*).

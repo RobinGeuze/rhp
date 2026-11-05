@@ -1,6 +1,12 @@
 //! php's standard extension (php-src ext/standard/), one file per php-src
 //! file.
 
+use std::sync::OnceLock;
+
+use rhp_values::Value;
+
+use crate::module::{no_wrappers, ModuleDef};
+
 pub mod array;
 pub mod assert;
 pub mod base64;
@@ -41,3 +47,100 @@ pub mod uniqid;
 pub mod url;
 pub mod var;
 pub mod versioning;
+
+/// The standard module. Its functions include the ones of main/ that php
+/// declares in basic_functions.stub.php (output control, `header`,
+/// `set_time_limit`), and php registers a SAPI's additional functions
+/// under it too.
+pub(crate) fn module() -> ModuleDef {
+    ModuleDef {
+        name: "standard",
+        cli_only: false,
+        functions: register,
+        constants,
+        prelude_php: prelude(),
+        wrappers: no_wrappers,
+        reset: reset_state,
+        object_freed: Some(array::object_freed),
+    }
+}
+
+fn register(m: &mut crate::Registry) {
+    string::register(m);
+    base64::register(m);
+    md5::register(m);
+    sha1::register(m);
+    crc32::register(m);
+    math::register(m);
+    array::register(m);
+    basic_functions::register(m);
+    file::register(m);
+    filestat::register(m);
+    dir::register(m);
+    link::register(m);
+    r#type::register(m);
+    password::register(m);
+    url::register(m);
+    head::register(m);
+    html::register(m);
+    var::register(m);
+    formatted_print::register(m);
+    scanf::register(m);
+    soundex::register(m);
+    levenshtein::register(m);
+    pack::register(m);
+    uniqid::register(m);
+    microtime::register(m);
+    hrtime::register(m);
+    assert::register(m);
+    pageinfo::register(m);
+    dns::register(m);
+    versioning::register(m);
+    info::register(m);
+    streamsfuncs::register(m);
+    fsock::register(m);
+    http::register(m);
+    crypt::register(m);
+    proc_open::register(m);
+    exec::register(m);
+    crate::main::output::register(m);
+    crate::main::register(m);
+    crate::main::sapi::register(m);
+    crate::sapi::cli::register(m);
+    crate::sapi::cgi::register(m);
+}
+
+fn constants() -> Vec<(&'static str, Value)> {
+    [
+        basic_functions::constants(),
+        array::constants(),
+        string::constants(),
+        math::constants(),
+        file::constants(),
+        file::fnmatch_constants(),
+        dir::constants(),
+        url::constants(),
+        http::constants(),
+        html::constants(),
+        info::constants(),
+        crypt::constants(),
+        streamsfuncs::constants(),
+        password::constants(),
+    ]
+    .concat()
+}
+
+/// The module's PHP source: dir.c's `Directory` class, then string.c's
+/// prelude functions.
+fn prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| format!("{}\n{}", dir::PRELUDE_PHP, string::PRELUDE_PHP))
+}
+
+fn reset_state() {
+    var::clear_views();
+    array::reset_state();
+    string::reset_state();
+    basic_functions::reset_state();
+    crate::sapi::cli::reset_state();
+}

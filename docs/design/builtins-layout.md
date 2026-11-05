@@ -10,10 +10,17 @@ where rhp implements a function, look up where php-src defines it.
   has one: `main/mod.rs` is main/main.c, `main/streams/mod.rs` is
   main/streams/streams.c, `ext/<name>/mod.rs` is the extension's main file.
 - A new builtin goes into the file of its php-src file, which is created if
-  it does not exist yet. Files in `ext/standard/`, `zend/`, `main/` and
-  `sapi/`, and json, pcre, filter, opcache, random and readline, register
-  through `builtin_modules()` in `registry.rs`; the other extensions are
-  `ModuleDef`s in `ext/mod.rs`.
+  it does not exist yet, and registers through its php module. Every php
+  module is a `ModuleDef` (`module.rs`, php's `zend_module_entry`):
+  `registry::modules()` lists Core (zend/ and main/, in `registry.rs`),
+  standard (`ext/standard/mod.rs`) and the other extensions (`ext/mod.rs`).
+  A module states php's name for it, its functions, constants, prelude
+  classes, stream wrappers, its per-request reset (`no_state` when it has
+  none) and its object-freed hook (`None` when it keeps nothing by object
+  id). The function table, the constants, the prelude, the wrappers, the
+  reset and the object free hook are all built from that list.
+- A constant is defined once, by the module and file that register it in
+  php-src, next to the Rust constant its code uses.
 - Helpers stay with their callers. A helper several files call lives where
   php-src keeps its counterpart (`zend/zpp.rs` for argument parsing,
   `main/ini.rs` for ini values).
@@ -32,7 +39,7 @@ These have no php-src counterpart.
 | file | holds |
 |---|---|
 | `lib.rs` | the module tree and the crate's public API (re-exports) |
-| `registry.rs` (+ `registry/tests.rs`) | the function table, the constant table, the prelude, lookup, and the hooks the engine calls into every module (request reset, object freed, constant deprecation) |
+| `registry.rs` (+ `registry/tests.rs`) | the module list and Core's module; the function table, the constant table, the prelude, lookup, and the hooks the engine calls into every module (request reset, object freed, constant deprecation) |
 | `host.rs` | the `Host` trait: what builtins may ask of the VM |
 | `diag.rs` | `php_error_docref`-style diagnostics (main/main.c's `php_error_docref`) |
 | `module.rs` | `ModuleDef` (the role of `zend_module_entry`) and internal output handler aliases |
@@ -46,6 +53,7 @@ These have no php-src counterpart.
 | file | php-src |
 |---|---|
 | `zend/builtin_functions.rs` | Zend/zend_builtin_functions.c; also zend_operators.c's `zend_binary_strcmp` family and zend_constants.c's constant name folding |
+| `zend/constants.rs` | Zend/zend_constants.c: the standard constants (`E_*`, `TRUE`, …) |
 | `zend/zpp.rs` | Zend/zend_API.c: `zend_parse_parameters` helpers, `zend_zval_type_name` |
 | `zend/object_handlers.rs` | Zend/zend_object_handlers.c (see object-handlers.md) |
 | `zend/exceptions.rs` | Zend/zend_exceptions.c: trace and Throwable strings |
@@ -61,7 +69,7 @@ These have no php-src counterpart.
 
 | file | php-src |
 |---|---|
-| `main/mod.rs` | main/main.c (`set_time_limit`) |
+| `main/mod.rs` | main/main.c (`set_time_limit`, the `PHP_*` constants), and main/'s per-request reset |
 | `main/sapi.rs` | main/SAPI.c, with `sapi_header_op` |
 | `main/output.rs` | main/output.c: the `ob_*` functions (the handler stack is the VM's) |
 | `main/rfc1867.rs` | main/rfc1867.c |

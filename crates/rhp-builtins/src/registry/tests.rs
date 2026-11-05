@@ -6,17 +6,41 @@ use super::*;
 fn no_duplicate_builtins() {
     let mut owner: HashMap<&'static str, &'static str> = HashMap::new();
     let mut dups = Vec::new();
-    for (module, register) in builtin_modules() {
+    for md in modules() {
         let mut m = HashMap::new();
-        register(&mut m);
+        (md.functions)(&mut m);
         for name in m.keys() {
-            if let Some(prev) = owner.insert(name, module) {
-                dups.push(format!("{name}: {prev} and {module}"));
+            if let Some(prev) = owner.insert(name, md.name) {
+                dups.push(format!("{name}: {prev} and {}", md.name));
             }
         }
     }
     dups.sort();
     assert!(dups.is_empty(), "duplicate builtins:\n{}", dups.join("\n"));
+}
+
+/// A module carries php's name for it: the modules and the loaded
+/// extensions rhp reports agree, apart from the ones it deliberately
+/// leaves unreported.
+#[test]
+fn modules_are_php_modules() {
+    use crate::zend::builtin_functions::LOADED_EXTS;
+    // Modules rhp has but does not report as loaded, until they are
+    // complete enough that code testing `extension_loaded()` should use
+    // them.
+    const UNREPORTED_MODULES: &[&str] = &["intl", "readline", "sockets"];
+    let names: Vec<&str> = modules().iter().map(|md| md.name).collect();
+    let mut seen = std::collections::HashSet::new();
+    for n in &names {
+        assert!(seen.insert(n), "module {n} defined twice");
+        assert!(
+            LOADED_EXTS.contains(n) != UNREPORTED_MODULES.contains(n),
+            "module {n}: in exactly one of LOADED_EXTS and UNREPORTED_MODULES"
+        );
+    }
+    for e in LOADED_EXTS.iter().chain(UNREPORTED_MODULES) {
+        assert!(names.contains(e), "{e} is not a module");
+    }
 }
 
 /// Every constant has one definition. The engines load `constants()`

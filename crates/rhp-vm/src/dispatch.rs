@@ -847,7 +847,36 @@ impl Vm {
                             let v = cell.borrow().clone();
                             v
                         }
+                        // The object of a property write (FETCH_DIM_W then
+                        // ASSIGN_OBJ & co.): zend_wrong_string_offset_error.
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
                         _ => self.dim_read(&a, &k, DimMode::Read)?,
+                    };
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchUnset { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = match deref(&a) {
+                        Value::Array(_) => self.dim_read(&a, &k, DimMode::Is)?,
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
+                        Value::Null => Value::Null,
+                        Value::Bool(false) => {
+                            self.diag(
+                                builtins::E_DEPRECATED,
+                                "Automatic conversion of false to array is deprecated",
+                            )?;
+                            Value::Null
+                        }
+                        Value::Object(_) | Value::Closure(_) => {
+                            self.dim_read(&a, &k, DimMode::Read)?
+                        }
+                        _ => {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot unset offset in a non-array variable",
+                            ))
+                        }
                     };
                     self.reg_set(top, dst, r);
                 }
@@ -991,10 +1020,18 @@ impl Vm {
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
-                Instr::AssignLval { src } => {
+                Instr::AssignLval { src, dst } => {
                     let v = self.reg_get(top, src);
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let r = self.cursor_write(top, &steps, v);
+                    let r = if dst == src {
+                        self.cursor_write(top, &steps, v)
+                    } else {
+                        crate::lvalue::take_string_offset_result();
+                        let r = self.cursor_write(top, &steps, v.clone());
+                        let res = crate::lvalue::take_string_offset_result().unwrap_or(v);
+                        self.reg_set(top, dst, res);
+                        r
+                    };
                     self.cursor_release();
                     r?;
                 }

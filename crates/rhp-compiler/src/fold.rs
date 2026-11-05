@@ -262,15 +262,9 @@ pub(crate) fn literal_value(lit: &Literal) -> Value {
     match lit {
         Literal::Integer(i) => match i.value {
             Some(u) if u <= i64::MAX as u64 => Value::Int(u as i64),
-            Some(u) => Value::Float(u as f64),
-            None => {
-                let cleaned: Vec<u8> = i.raw.iter().copied().filter(|&b| b != b'_').collect();
-                std::str::from_utf8(&cleaned)
-                    .ok()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(Value::Float)
-                    .unwrap_or(Value::Int(0))
-            }
+            // The parser's value saturates: php reads the digits as a double
+            // (zend_strtod, or zend_hex/oct/bin_strtod).
+            _ => Value::Float(big_int_literal(i.raw)),
         },
         Literal::Float(f) => Value::Float(f.value.0),
         Literal::String(s) => Value::str(s.value.unwrap_or(s.raw).to_vec()),
@@ -278,6 +272,26 @@ pub(crate) fn literal_value(lit: &Literal) -> Value {
         Literal::False(_) => Value::Bool(false),
         Literal::Null(_) => Value::Null,
     }
+}
+
+/// An integer literal too big for an int, as php's scanner makes it a float.
+fn big_int_literal(raw: &[u8]) -> f64 {
+    let digits: Vec<u8> = raw.iter().copied().filter(|&b| b != b'_').collect();
+    let (base, body) = match digits.as_slice() {
+        [b'0', b'x' | b'X', rest @ ..] => (16, rest),
+        [b'0', b'b' | b'B', rest @ ..] => (2, rest),
+        [b'0', b'o' | b'O', rest @ ..] => (8, rest),
+        [b'0', rest @ ..] if !rest.is_empty() => (8, rest),
+        d => {
+            return std::str::from_utf8(d)
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        }
+    };
+    body.iter().fold(0.0, |acc, &c| {
+        acc * base as f64 + (c as char).to_digit(16).unwrap_or(0) as f64
+    })
 }
 
 /// Structural equality for constant-pool deduplication.

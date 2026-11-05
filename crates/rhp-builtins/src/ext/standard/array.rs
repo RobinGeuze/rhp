@@ -1311,14 +1311,35 @@ fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(false))
 }
 
-fn fn_array_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_key_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Array(a) = deref(&args[1]) else {
         return Err(Thrown::type_error(
             "array_key_exists(): Argument #2 ($array) must be of type array",
         ));
     };
-    let Some(key) = rhp_values::ArrayKey::from_value(&args[0]) else {
-        return Ok(Value::Bool(false));
+    let k = deref(&args[0]);
+    match &k {
+        Value::Null => host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead",
+        )?,
+        Value::Float(f) => {
+            crate::zend::operators::dval_to_lval_safe(host, *f)?;
+        }
+        Value::Resource(r) => host.emit_diagnostic(
+            E_WARNING,
+            format!(
+                "Resource ID#{} used as offset, casting to integer ({})",
+                r.id, r.id
+            )
+            .as_bytes(),
+        )?,
+        _ => {}
+    }
+    let Some(key) = rhp_values::ArrayKey::from_value(&k) else {
+        return Err(Thrown::type_error(
+            "array_key_exists(): Argument #1 ($key) must be a valid array offset type",
+        ));
     };
     Ok(Value::Bool(a.get(&key).is_some()))
 }

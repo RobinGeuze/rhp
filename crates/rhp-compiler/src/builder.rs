@@ -78,6 +78,13 @@ pub(crate) struct ProtoBuilder<'c> {
     /// In a property hook: the property's name and the hook (php's
     /// `active_property_info_name` / `active_property_hook_kind`).
     pub(crate) hook: Option<(Vec<u8>, rhp_bytecode::HookKind)>,
+    /// The declared return type, for zend_emit_return_type_check's
+    /// compile-time checks.
+    pub(crate) ret_type: Option<rhp_bytecode::TypeHint>,
+    /// The body contains `yield`.
+    pub(crate) is_generator: bool,
+    /// A `yield` was compiled (the generator type check runs once).
+    pub(crate) yield_seen: bool,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -87,6 +94,10 @@ pub(crate) struct LoopCtx {
     /// `finally_rets.len()` when the loop was entered: a break/continue
     /// inside more try-with-finally levels than this must run them.
     pub(crate) finally_depth: usize,
+    /// Finally bodies around the loop: a jump from a deeper one leaves a
+    /// finally block.
+    pub(crate) finally_bodies: usize,
+    pub(crate) is_switch: bool,
     pub(crate) break_jumps: Vec<usize>,
     pub(crate) continue_jumps: Vec<usize>,
 }
@@ -122,10 +133,31 @@ impl<'c> ProtoBuilder<'c> {
             labels: HashMap::new(),
             gotos: Vec::new(),
             hook: None,
+            ret_type: None,
+            is_generator: false,
+            yield_seen: false,
         }
     }
 
     /// Enter a loop/switch (`finally == false`) or finally-body scope.
+    /// A new loop (or switch) level for break/continue.
+    pub(crate) fn loop_ctx(&self, is_switch: bool) -> LoopCtx {
+        LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            finally_bodies: self.finally_bodies(),
+            is_switch,
+            ..LoopCtx::default()
+        }
+    }
+
+    /// The finally bodies being compiled.
+    pub(crate) fn finally_bodies(&self) -> usize {
+        self.goto_scope
+            .iter()
+            .filter(|s| *s & (1 << 31) != 0)
+            .count()
+    }
+
     pub(crate) fn enter_goto_scope(&mut self, finally: bool) {
         self.goto_serial += 1;
         let id = self.goto_serial | if finally { 1 << 31 } else { 0 };

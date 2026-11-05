@@ -62,6 +62,11 @@ pub(crate) fn compile_method(
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    c.ret_type = return_type.clone();
+    c.is_generator = match &m.body {
+        MethodBody::Concrete(block) => block.statements.iter().any(stmt_has_yield),
+        MethodBody::Abstract(_) => false,
+    };
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
     for ((p, info), ty) in m.parameter_list.parameters.iter().zip(&params).zip(&types) {
@@ -215,6 +220,8 @@ pub(crate) fn compile_function(
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    c.ret_type = return_type.clone();
+    c.is_generator = block_has_yield(&func.body.statements);
     let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
     let (params, nonconst_defaults, _) =
         c.lower_params(&func.parameter_list, &display, false, None)?;
@@ -424,6 +431,11 @@ impl ProtoBuilder<'_> {
             c.cv(name); // captures occupy CVs 0..nc
         }
         let return_type = ret_hint.and_then(|h| compile_type(self.cx, h, true).map(|t| t.hint));
+        c.ret_type = return_type.clone();
+        c.is_generator = match body {
+            ClosureBody::Block(b) => block_has_yield(&b.statements),
+            ClosureBody::Arrow(e) => expr_has_yield(e),
+        };
         let display = match &self.class_name {
             Some(cn) => format!(
                 "{}::{}",

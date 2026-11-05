@@ -182,18 +182,24 @@ impl ProtoBuilder<'_> {
             }
             Statement::Unset(u) => self.compile_unset(u)?,
             Statement::Return(r) => {
+                let line = self.cur_line;
                 if self.finally_rets.is_empty() {
                     match r.value {
                         // By-ref function: `return $lval` yields a reference.
                         Some(e) if self.returns_ref => {
                             let src = self.compile_ref_source(e)?;
+                            self.check_return(r.value, line)?;
                             self.emit(Instr::RetRef { src });
                         }
                         Some(e) => {
                             let src = self.compile_expr(e)?;
+                            self.check_return(r.value, line)?;
                             self.emit(Instr::Ret { src });
                         }
-                        None => self.emit(Instr::RetNull),
+                        None => {
+                            self.check_return(None, line)?;
+                            self.emit(Instr::RetNull)
+                        }
                     }
                 } else {
                     // Route the return through the innermost enclosing finally.
@@ -205,14 +211,19 @@ impl ProtoBuilder<'_> {
                             t
                         }
                     };
+                    self.check_return(r.value, line)?;
                     self.emit(Instr::SetPendingRet { src });
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // Jmp -> finally (patched)
                     self.finally_rets.last_mut().unwrap().push(pos);
                 }
             }
-            Statement::Break(b) => self.compile_break_continue(b.level, true)?,
-            Statement::Continue(c) => self.compile_break_continue(c.level, false)?,
+            Statement::Break(b) => {
+                self.compile_break_continue(b.level, true, b.span().start.offset)?
+            }
+            Statement::Continue(c) => {
+                self.compile_break_continue(c.level, false, c.span().start.offset)?
+            }
             // `declare(strict_types=1|ticks=…|encoding=…)` — the directives are
             // no-ops for this engine; compile the body (usually just `;`).
             Statement::Declare(d) => {
@@ -263,6 +274,56 @@ impl ProtoBuilder<'_> {
             }
         }
         self.reset_temps();
+        Ok(())
+    }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_emit_return_type_check's compile-time errors for `return`.
+    fn check_return(&self, value: Option<&Expression>, line: u32) -> Result<(), Thrown> {
+        use crate::checks::{type_mask, NEVER, NULL, VOID};
+        let Some(t) = &self.ret_type else {
+            return Ok(());
+        };
+        if self.is_generator {
+            return Ok(());
+        }
+        let what = if self.cx.class_scope.borrow().is_some() {
+            "method"
+        } else {
+            "function"
+        };
+        let (mask, _) = type_mask(t);
+        if mask & VOID != 0 {
+            return match value {
+                None => Ok(()),
+                Some(e) if matches!(fold_const(self.cx, e), Ok(Value::Null)) => Err(compile_error(
+                    format!("A void {what} must not return a value (did you mean \"return;\" instead of \"return null;\"?)"),
+                    line,
+                )),
+                Some(_) => Err(compile_error(
+                    format!("A void {what} must not return a value"),
+                    line,
+                )),
+            };
+        }
+        if mask & NEVER != 0 {
+            return Err(compile_error(
+                format!("A never-returning {what} must not return"),
+                line,
+            ));
+        }
+        if value.is_none() {
+            let hint = if mask & NULL != 0 {
+                " (did you mean \"return null;\" instead of \"return;\"?)"
+            } else {
+                ""
+            };
+            return Err(compile_error(
+                format!("A {what} with return type must return a value{hint}"),
+                line,
+            ));
+        }
         Ok(())
     }
 }

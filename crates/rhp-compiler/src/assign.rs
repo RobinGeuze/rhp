@@ -64,6 +64,73 @@ pub(crate) fn check_globals_write(target: &Expression, line: u32) -> Result<(), 
     }
 }
 
+/// zend_verify_list_assign_target.
+fn verify_list_target(target: &Expression, list_style: bool, line: u32) -> Result<(), Thrown> {
+    match target {
+        Expression::LegacyArray(_) => Err(compile_error(
+            "Cannot assign to array(), use [] instead",
+            line,
+        )),
+        Expression::Array(_) if list_style => Err(compile_error("Cannot mix [] and list()", line)),
+        Expression::List(_) if !list_style => Err(compile_error("Cannot mix [] and list()", line)),
+        Expression::Array(_) | Expression::List(_) => Ok(()),
+        // `[&$x]`: by-reference elements are checked where they are compiled.
+        e if as_reference(e).is_some() => Ok(()),
+        e if !can_write_to_variable(e) => Err(compile_error(
+            "Assignments can only happen to writable values",
+            line,
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// zend_is_variable.
+pub(crate) fn is_variable(e: &Expression) -> bool {
+    matches!(
+        e,
+        Expression::Variable(_)
+            | Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(
+                Access::Property(_) | Access::NullSafeProperty(_) | Access::StaticProperty(_)
+            )
+    )
+}
+
+/// zend_is_call.
+pub(crate) fn is_call(e: &Expression) -> bool {
+    matches!(e, Expression::Call(_) | Expression::Pipe(_))
+}
+
+/// zend_ast_is_short_circuited: a nullsafe operator in the chain.
+pub(crate) fn is_short_circuited(e: &Expression) -> bool {
+    use crate::parse::cst::Call;
+    match e {
+        Expression::ArrayAccess(aa) => is_short_circuited(aa.array),
+        Expression::ArrayAppend(ap) => is_short_circuited(ap.array),
+        Expression::Access(Access::Property(pa)) => is_short_circuited(pa.object),
+        Expression::Access(Access::StaticProperty(sp)) => is_short_circuited(sp.class),
+        Expression::Access(Access::NullSafeProperty(_)) => true,
+        Expression::Call(Call::NullSafeMethod(_)) => true,
+        Expression::Call(Call::Method(mc)) => is_short_circuited(mc.object),
+        Expression::Call(Call::StaticMethod(sc)) => is_short_circuited(sc.class),
+        _ => false,
+    }
+}
+
+/// zend_can_write_to_variable.
+pub(crate) fn can_write_to_variable(mut e: &Expression) -> bool {
+    loop {
+        match e {
+            Expression::ArrayAccess(aa) => e = aa.array,
+            Expression::ArrayAppend(ap) => e = ap.array,
+            Expression::Access(Access::Property(pa)) => e = pa.object,
+            _ => break,
+        }
+    }
+    (is_variable(e) || is_call(e)) && !is_short_circuited(e)
+}
+
 /// If `e` is a `&$lvalue` reference-prefix expression, return the referenced
 /// operand (used for by-reference array elements `[k => &$v]`).
 pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
@@ -77,19 +144,50 @@ pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'
 }
 
 impl ProtoBuilder<'_> {
-    /// Assign the elements of `src` (an array value) to a destructuring pattern.
+    /// Assign the elements of `src` (an array value) to a destructuring
+    /// pattern, with zend_compile_list_assign's compile-time checks;
+    /// `list_style` is `list(...)` rather than `[...]`.
     pub(crate) fn destructure_into<'a>(
         &mut self,
-        elements: impl Iterator<Item = &'a ArrayElement<'a>>,
+        elements: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
         src: Reg,
+        list_style: bool,
     ) -> Result<(), Thrown> {
+        let line = self.cur_line;
+        let is_keyed = elements
+            .clone()
+            .find(|e| !matches!(e, ArrayElement::Missing(_)))
+            .is_some_and(|e| matches!(e, ArrayElement::KeyValue(_)));
+        let mixed = || {
+            compile_error(
+                "Cannot mix keyed and unkeyed array entries in assignments",
+                line,
+            )
+        };
+        let mut has_elems = false;
         let mut idx: i64 = 0;
         for el in elements {
             match el {
+                ArrayElement::Missing(_) if is_keyed => {
+                    return Err(compile_error(
+                        "Cannot use empty array entries in keyed array assignment",
+                        line,
+                    ))
+                }
                 ArrayElement::Missing(_) => idx += 1,
+                ArrayElement::Variadic(_) => {
+                    return Err(compile_error(
+                        "Spread operator is not supported in assignments",
+                        line,
+                    ))
+                }
+                ArrayElement::Value(_) if is_keyed => return Err(mixed()),
+                ArrayElement::KeyValue(_) if !is_keyed => return Err(mixed()),
                 ArrayElement::Value(v) => {
+                    has_elems = true;
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
+                    verify_list_target(v.value, list_style, line)?;
                     let val = self.alloc_temp();
                     self.emit(Instr::DimFetchList {
                         dst: val,
@@ -100,7 +198,9 @@ impl ProtoBuilder<'_> {
                     idx += 1;
                 }
                 ArrayElement::KeyValue(kv) => {
+                    has_elems = true;
                     let key = self.compile_expr(kv.key)?;
+                    verify_list_target(kv.value, list_style, line)?;
                     let val = self.alloc_temp();
                     self.emit(Instr::DimFetchList {
                         dst: val,
@@ -109,10 +209,10 @@ impl ProtoBuilder<'_> {
                     });
                     self.store_to_target(kv.value, val)?;
                 }
-                ArrayElement::Variadic(_) => {
-                    return Err(Thrown::unsupported("spread in destructuring", "deferred"))
-                }
             }
+        }
+        if !has_elems {
+            return Err(compile_error("Cannot use empty list", line));
         }
         Ok(())
     }
@@ -126,8 +226,8 @@ impl ProtoBuilder<'_> {
                 let cv = self.cv(strip_dollar(d.name));
                 self.emit(Instr::Assign { cv, src });
             }
-            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src)?,
-            Expression::List(lst) => self.destructure_into(lst.elements.iter(), src)?,
+            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src, false)?,
+            Expression::List(lst) => self.destructure_into(lst.elements.iter(), src, true)?,
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Variable(_)
@@ -280,12 +380,12 @@ impl ProtoBuilder<'_> {
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
                 let rhs = self.compile_expr(a.rhs)?;
-                self.destructure_into(arr.elements.iter(), rhs)?;
+                self.destructure_into(arr.elements.iter(), rhs, false)?;
                 return Ok(rhs);
             }
             if let Expression::List(lst) = a.lhs {
                 let rhs = self.compile_expr(a.rhs)?;
-                self.destructure_into(lst.elements.iter(), rhs)?;
+                self.destructure_into(lst.elements.iter(), rhs, true)?;
                 return Ok(rhs);
             }
         }

@@ -8,10 +8,10 @@ use rhp_bytecode::{CmpKind, Instr, Reg};
 use rhp_values::Thrown;
 
 use crate::assign::{check_globals_write, globals_index};
-use crate::builder::{LoopCtx, ProtoBuilder};
+use crate::builder::ProtoBuilder;
 use crate::hints::hint_class_names;
 use crate::oop::Sel;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 impl ProtoBuilder<'_> {
     /// Compile a single statement or a colon-delimited statement sequence.
@@ -95,10 +95,7 @@ impl ProtoBuilder<'_> {
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse cond -> end
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
@@ -119,10 +116,7 @@ impl ProtoBuilder<'_> {
         d: &crate::parse::cst::DoWhile,
     ) -> Result<(), Thrown> {
         let top = self.here();
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
@@ -154,10 +148,7 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::Nop); // JmpFalse last -> end
             Some((last.unwrap(), pos))
         };
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
@@ -214,10 +205,7 @@ impl ProtoBuilder<'_> {
         self.emit(Instr::Nop); // Jmp -> default body or end
 
         // Case bodies in source order (fall-through: no jumps between them).
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        }); // switch is one break/continue level
+        self.loops.push(self.loop_ctx(true)); // switch is one break/continue level
         self.enter_goto_scope(false);
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
@@ -260,6 +248,23 @@ impl ProtoBuilder<'_> {
             ForeachTarget::Value(t) => (None, t.value),
             ForeachTarget::KeyValue(t) => (Some(t.key), t.value),
         };
+        match key_expr {
+            Some(Expression::UnaryPrefix(u))
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                return Err(compile_error(
+                    "Key element cannot be a reference",
+                    self.cur_line,
+                ));
+            }
+            Some(Expression::Array(_) | Expression::List(_) | Expression::LegacyArray(_)) => {
+                return Err(compile_error(
+                    "Cannot use list as key element",
+                    self.cur_line,
+                ));
+            }
+            _ => {}
+        }
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
         let by_ref = matches!(
@@ -314,10 +319,7 @@ impl ProtoBuilder<'_> {
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
 
-            self.loops.push(LoopCtx {
-                finally_depth: self.finally_rets.len(),
-                ..LoopCtx::default()
-            });
+            self.loops.push(self.loop_ctx(false));
 
             self.enter_goto_scope(false);
             match &fe.body {
@@ -384,8 +386,12 @@ impl ProtoBuilder<'_> {
         // Destructure the fetched element into the pattern, if any.
         if let Some(pattern) = val_pattern {
             match pattern {
-                Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val_cv)?,
-                Expression::List(lst) => self.destructure_into(lst.elements.iter(), val_cv)?,
+                Expression::Array(arr) => {
+                    self.destructure_into(arr.elements.iter(), val_cv, false)?
+                }
+                Expression::List(lst) => {
+                    self.destructure_into(lst.elements.iter(), val_cv, true)?
+                }
                 other => self.store_to_target(other, val_cv)?,
             }
         }
@@ -393,10 +399,7 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::Assign { cv, src: fetch_key });
         }
 
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
 
         self.enter_goto_scope(false);
         match &fe.body {
@@ -493,6 +496,14 @@ impl ProtoBuilder<'_> {
     pub(crate) fn compile_try(&mut self, t: &crate::parse::cst::Try) -> Result<(), Thrown> {
         use rhp_bytecode::{CatchArm, ExRegion};
         let has_finally = t.finally_clause.is_some();
+        if !has_finally && t.catch_clauses.is_empty() {
+            use mago_span::HasSpan;
+            let line = self.cx.line_of(t.span().start.offset);
+            return Err(compile_error(
+                "Cannot use try without catch or finally",
+                line,
+            ));
+        }
         if has_finally {
             self.finally_rets.push(Vec::new());
         }
@@ -570,27 +581,75 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// zend_compile_break_continue: the level must be a positive integer
+    /// literal within the enclosing loops (compile errors otherwise).
     pub(crate) fn compile_break_continue(
         &mut self,
         level: Option<&Expression>,
         is_break: bool,
+        offset: u32,
     ) -> Result<(), Thrown> {
-        let n = match level {
-            None => 1usize,
-            Some(Expression::Literal(Literal::Integer(i))) => i.value.unwrap_or(1).max(1) as usize,
+        let kw = if is_break { "break" } else { "continue" };
+        let line = self.cx.line_of(offset);
+        let mut lit = level;
+        while let Some(Expression::Parenthesized(p)) = lit {
+            lit = Some(p.expression);
+        }
+        let n: u64 = match lit {
+            None => 1,
+            Some(Expression::Literal(Literal::Integer(i))) => match i.value {
+                Some(v) if v >= 1 && v <= i64::MAX as u64 => v,
+                _ => {
+                    return Err(compile_error(
+                        format!("'{kw}' operator accepts only positive integers"),
+                        line,
+                    ))
+                }
+            },
+            Some(Expression::Literal(_)) => {
+                return Err(compile_error(
+                    format!("'{kw}' operator accepts only positive integers"),
+                    line,
+                ))
+            }
             Some(_) => {
-                return Err(Thrown::error(
-                    "Error",
-                    "'break'/'continue' operator accepts only a constant integer level",
+                return Err(compile_error(
+                    format!("'{kw}' operator with non-integer operand is no longer supported"),
+                    line,
                 ))
             }
         };
-        let kw = if is_break { "break" } else { "continue" };
-        if n == 0 || self.loops.len() < n {
-            return Err(Thrown::error(
-                "Error",
-                format!("Cannot '{kw}' {n} level(s)"),
+        if self.loops.is_empty() {
+            return Err(compile_error(
+                format!("'{kw}' not in the 'loop' or 'switch' context"),
+                line,
             ));
+        }
+        if (self.loops.len() as u64) < n {
+            let s = if n == 1 { "" } else { "s" };
+            return Err(compile_error(format!("Cannot '{kw}' {n} level{s}"), line));
+        }
+        let n = n as usize;
+        let target = &self.loops[self.loops.len() - n];
+        if target.finally_bodies < self.finally_bodies() {
+            // pass_two's zend_check_finally_breakout.
+            return Err(compile_error(
+                "jump out of a finally block is disallowed",
+                line,
+            ));
+        }
+        if !is_break && target.is_switch {
+            let outer = self.loops.len() > n;
+            let msg = match (n, outer) {
+                (1, false) => "\"continue\" targeting switch is equivalent to \"break\"".to_string(),
+                (1, true) => "\"continue\" targeting switch is equivalent to \"break\". Did you mean to use \"continue 2\"?".to_string(),
+                (n, false) => format!("\"continue {n}\" targeting switch is equivalent to \"break {n}\""),
+                (n, true) => format!(
+                    "\"continue {n}\" targeting switch is equivalent to \"break {n}\". Did you mean to use \"continue {}\"?",
+                    n + 1
+                ),
+            };
+            self.cx.diag(rhp_values::E_WARNING, offset, msg);
         }
         let idx = self.loops.len() - n;
         let pos = self.code.len();

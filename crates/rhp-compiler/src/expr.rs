@@ -107,6 +107,10 @@ impl ProtoBuilder<'_> {
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),
+            Expression::List(_) => Err(compile_error(
+                "Cannot use list() as standalone expression",
+                self.cur_line,
+            )),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented",
@@ -511,10 +515,31 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
+    /// zend_try_ct_eval_array: "Cannot use empty array elements in arrays",
+    /// at the line of the last element before the gap.
+    pub(crate) fn check_no_empty_elements<'a>(
+        &self,
+        els: impl Iterator<Item = &'a ArrayElement<'a>>,
+    ) -> Result<(), Thrown> {
+        use mago_span::HasSpan;
+        let mut line = self.cur_line;
+        for el in els {
+            if let ArrayElement::Missing(_) = el {
+                return Err(compile_error(
+                    "Cannot use empty array elements in arrays",
+                    line,
+                ));
+            }
+            line = self.cx.line_of(el.span().start.offset);
+        }
+        Ok(())
+    }
+
     fn compile_array<'a>(
         &mut self,
         els: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
     ) -> Result<Reg, Thrown> {
+        self.check_no_empty_elements(els.clone())?;
         // An array of plain literals (CallMap-style data files) is one
         // constant: no per-element temporaries, no runtime building.
         if let Some(v) = literal_array(els.clone()) {
@@ -793,6 +818,7 @@ impl ProtoBuilder<'_> {
     /// value sent in via `Generator::send()` when execution resumes.
     fn compile_yield(&mut self, y: &crate::parse::cst::Yield) -> Result<Reg, Thrown> {
         use crate::parse::cst::Yield;
+        self.mark_generator()?;
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
@@ -836,6 +862,41 @@ impl ProtoBuilder<'_> {
         let dst = self.alloc_temp();
         self.emit(Instr::Yield { dst, key, value });
         Ok(dst)
+    }
+
+    /// zend_mark_function_as_generator: `yield` needs a function whose
+    /// return type admits a Generator.
+    fn mark_generator(&mut self) -> Result<(), Thrown> {
+        if self.scope_kind == ScopeKind::Main {
+            return Err(compile_error(
+                "The \"yield\" expression can only be used inside a function",
+                self.cur_line,
+            ));
+        }
+        if std::mem::replace(&mut self.yield_seen, true) {
+            return Ok(());
+        }
+        let Some(t) = &self.ret_type else {
+            return Ok(());
+        };
+        let (mask, _) = crate::checks::type_mask(t);
+        let named = t.kinds.iter().any(|k| match k {
+            rhp_bytecode::TypeKind::Named(n) => [&b"traversable"[..], b"iterator", b"generator"]
+                .iter()
+                .any(|g| n.as_bytes().eq_ignore_ascii_case(g)),
+            rhp_bytecode::TypeKind::Iterable => true,
+            _ => false,
+        });
+        if mask & crate::checks::OBJECT == 0 && !named {
+            return Err(compile_error(
+                format!(
+                    "Generator return type must be a supertype of Generator, {} given",
+                    crate::checks::type_string(t)
+                ),
+                self.cur_line,
+            ));
+        }
+        Ok(())
     }
 
     /// The value a by-reference generator yields: a reference to a variable

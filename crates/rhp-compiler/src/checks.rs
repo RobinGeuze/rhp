@@ -585,25 +585,25 @@ enum Magic {
 }
 
 /// php's MAY_BE_* bits for the magic method type checks.
-const NULL: u32 = 1 << 1;
+pub(crate) const NULL: u32 = 1 << 1;
 const FALSE: u32 = 1 << 2;
 const TRUE: u32 = 1 << 3;
 const LONG: u32 = 1 << 4;
 const DOUBLE: u32 = 1 << 5;
 const STRING: u32 = 1 << 6;
 const ARRAY: u32 = 1 << 7;
-const OBJECT: u32 = 1 << 8;
+pub(crate) const OBJECT: u32 = 1 << 8;
 const RESOURCE: u32 = 1 << 9;
 const CALLABLE: u32 = 1 << 17;
-const VOID: u32 = 1 << 18;
+pub(crate) const VOID: u32 = 1 << 18;
 const STATIC: u32 = 1 << 20;
-const NEVER: u32 = 1 << 21;
+pub(crate) const NEVER: u32 = 1 << 21;
 const BOOL: u32 = FALSE | TRUE;
 const ANY: u32 = NULL | BOOL | LONG | DOUBLE | STRING | ARRAY | OBJECT | RESOURCE;
 
 /// ZEND_TYPE_PURE_MASK of a declared type, and whether it names classes
 /// (ZEND_TYPE_IS_COMPLEX).
-fn type_mask(t: &TypeHint) -> (u32, bool) {
+pub(crate) fn type_mask(t: &TypeHint) -> (u32, bool) {
     let mut mask = if t.nullable { NULL } else { 0 };
     let mut complex = !t.groups.is_empty();
     for k in &t.kinds {

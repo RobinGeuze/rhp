@@ -248,10 +248,11 @@ impl ProtoBuilder<'_> {
                 && matches!(
                     p.value,
                     Expression::ArrayAccess(_)
+                        | Expression::ArrayAppend(_)
                         | Expression::Access(Access::Property(_))
                         | Expression::Access(Access::StaticProperty(_))
                 )
-                && variable_rooted_lvalue(p.value)
+                && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
             {
                 // SEND_FUNC_ARG for an element or property of a variable
                 let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
@@ -683,9 +684,10 @@ impl ProtoBuilder<'_> {
                     if matches!(
                         p.value,
                         Expression::ArrayAccess(_)
+                            | Expression::ArrayAppend(_)
                             | Expression::Access(Access::Property(_))
                             | Expression::Access(Access::StaticProperty(_))
-                    ) && variable_rooted_lvalue(p.value)
+                    ) && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
                     {
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
                         slots.push(Slot::Ref(r));
@@ -746,10 +748,17 @@ impl ProtoBuilder<'_> {
         let t = self.alloc_temp();
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse flag -> by_value
-        let mut steps = Vec::new();
-        let root = self.collect_lvalue_steps(e, &mut steps)?;
-        self.emit_cursor(root, &steps);
-        self.emit(Instr::MakeRefLval { dst: t });
+        if temp_rooted_lvalue(e) {
+            let k = self.intern_const(Value::str(
+                "Cannot use temporary expression in write context",
+            ));
+            self.emit(Instr::ThrowError { k });
+        } else {
+            let mut steps = Vec::new();
+            let root = self.collect_lvalue_steps(e, &mut steps)?;
+            self.emit_cursor(root, &steps);
+            self.emit(Instr::MakeRefLval { dst: t });
+        }
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp -> end
         let by_value = self.here();
@@ -757,8 +766,11 @@ impl ProtoBuilder<'_> {
             cond: flag,
             target: by_value,
         };
-        let v = self.compile_expr(e)?;
-        self.emit(Instr::Mov { dst: t, src: v });
+        // FETCH_DIM_FUNC_ARG reading: `[]` fails when the call runs.
+        let saved = std::mem::replace(&mut self.func_arg_read, true);
+        let v = self.compile_expr(e);
+        self.func_arg_read = saved;
+        self.emit(Instr::Mov { dst: t, src: v? });
         let end = self.here();
         self.code[jend] = Instr::Jmp { target: end };
         Ok(t)
@@ -1214,8 +1226,34 @@ fn variable_rooted_lvalue(e: &Expression) -> bool {
         Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
         Expression::Access(Access::StaticProperty(_)) => true,
         Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
+        Expression::ArrayAppend(a) => variable_rooted_lvalue(a.array),
         Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
         _ => false,
+    }
+}
+
+/// An element or property of a temporary (`[0, 1][0]`, `(new A)->p`): no
+/// container to reference.
+fn temp_rooted_lvalue(e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => temp_rooted_lvalue(p.expression),
+        Expression::ArrayAccess(a) => temp_root(a.array),
+        Expression::ArrayAppend(a) => temp_root(a.array),
+        Expression::Access(Access::Property(p)) => temp_root(p.object),
+        _ => false,
+    }
+}
+
+fn temp_root(e: &Expression) -> bool {
+    match e {
+        Expression::Variable(_) | Expression::Access(Access::StaticProperty(_)) => false,
+        Expression::Call(_) | Expression::Pipe(_) => false,
+        Expression::Access(Access::NullSafeProperty(_)) => false,
+        Expression::ArrayAccess(_)
+        | Expression::ArrayAppend(_)
+        | Expression::Access(Access::Property(_))
+        | Expression::Parenthesized(_) => temp_rooted_lvalue(e),
+        _ => true,
     }
 }
 

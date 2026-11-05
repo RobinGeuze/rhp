@@ -927,6 +927,18 @@ impl Vm {
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }
+                Instr::UnsetStaticProp { class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Attempt to unset static property {}::${}",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&pname)
+                        ),
+                    ));
+                }
                 Instr::FetchStaticPropDynIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = conv::to_string_bytes(&self.reg_get(top, name));

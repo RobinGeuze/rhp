@@ -494,10 +494,15 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_unset(&mut self, u: &crate::parse::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
+            self.ensure_writable(v, self.cur_line)?;
+            if matches!(v, Expression::ArrayAppend(ap) if crate::assign::is_globals_var(ap.array)) {
+                return Err(compile_error("Cannot use [] for unsetting", self.cur_line));
+            }
             check_globals_write(v, self.cur_line)?;
             if is_this(v) {
                 return Err(compile_error("Cannot unset $this", self.cur_line));
             }
+            self.check_write_chain(v, true, self.cur_line)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
@@ -526,6 +531,21 @@ impl ProtoBuilder<'_> {
                         Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
                         Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }
+                }
+                Expression::Access(Access::StaticProperty(spa)) => {
+                    let class = self.class_ref(spa.class)?;
+                    let name = match self.static_prop_sel(&spa.property)? {
+                        Sel::Dyn(r) => r,
+                        Sel::Static(n) => {
+                            let r = self.alloc_temp();
+                            let k = self.intern_const(rhp_values::Value::Str(
+                                self.names[n as usize].clone(),
+                            ));
+                            self.emit(Instr::LoadConst { dst: r, k });
+                            r
+                        }
+                    };
+                    self.emit(Instr::UnsetStaticProp { class, name });
                 }
                 _ => {
                     return Err(Thrown::unsupported(

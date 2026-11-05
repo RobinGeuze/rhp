@@ -858,6 +858,12 @@ pub enum Instr {
         class: ClassRef,
         name: Reg,
     },
+    /// `unset(C::$p)`: resolve the class (autoloading it), then throw
+    /// "Attempt to unset static property".
+    UnsetStaticProp {
+        class: ClassRef,
+        name: Reg,
+    },
     /// `FetchStaticPropIs` with a runtime name.
     FetchStaticPropDynIs {
         dst: Reg,

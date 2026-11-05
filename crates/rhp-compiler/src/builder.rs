@@ -83,6 +83,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) ret_type: Option<rhp_bytecode::TypeHint>,
     /// The op_array's static_variables: `static` names and closure bindings.
     pub(crate) static_vars: Vec<Vec<u8>>,
+    /// Compiling the by-value side of a SEND_FUNC_ARG argument: `[]` there
+    /// is a runtime Error, not a compile error.
+    pub(crate) func_arg_read: bool,
     /// CV 0 is `$this`, always set (instance methods and hooks).
     pub(crate) this_bound: bool,
     /// The body contains `yield`.
@@ -139,6 +142,7 @@ impl<'c> ProtoBuilder<'c> {
             hook: None,
             ret_type: None,
             this_bound: false,
+            func_arg_read: false,
             static_vars: Vec::new(),
             is_generator: false,
             yield_seen: false,

@@ -110,6 +110,14 @@ impl ProtoBuilder<'_> {
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),
+            Expression::ArrayAppend(_) if self.func_arg_read => {
+                let k = self.intern_const(Value::str("Cannot use [] for reading"));
+                self.emit(Instr::ThrowError { k });
+                Ok(self.alloc_temp())
+            }
+            Expression::ArrayAppend(_) => {
+                Err(compile_error("Cannot use [] for reading", self.cur_line))
+            }
             Expression::List(_) => Err(compile_error(
                 "Cannot use list() as standalone expression",
                 self.cur_line,
@@ -470,6 +478,7 @@ impl ProtoBuilder<'_> {
         delta: i8,
     ) -> Result<Reg, Thrown> {
         check_globals_write(target, self.cur_line)?;
+        self.check_write_target(target, self.cur_line)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));

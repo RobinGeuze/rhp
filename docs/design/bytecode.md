@@ -375,7 +375,11 @@ straight to `NativeFn`. `cache` reserved for monomorphic function-resolution ICs
 (Now: a builtin's arity and by-ref positions come from php's stubs
 (`rhp_bytecode::signatures`), and before the call `crates/rhp-vm/src/zpp.rs`
 parses its stub-typed scalar and array arguments as zpp does, in the caller's
-`strict_types` mode, so the body gets coerced values.)
+`strict_types` mode, so the body gets coerced values. `gen signatures` also
+reads each function's C body for the parameters php parses as any value, a
+resource or an open stream, so the VM checks those too and parses the
+scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
+before any of this, from the stub's `since` and `message`.)
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value

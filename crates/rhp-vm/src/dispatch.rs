@@ -2518,7 +2518,6 @@ impl Vm {
     }
 }
 
-/// Describe the unmatched subject for an UnhandledMatchError message.
 /// The int in `v`, also behind a reference (not while it is borrowed:
 /// the slow path then fails as it always did).
 #[inline(always)]
@@ -2578,6 +2577,7 @@ fn is_scalar(v: &Value) -> bool {
     )
 }
 
+/// Describe the unmatched subject for an UnhandledMatchError message.
 fn match_case_desc(v: &Value) -> String {
     match v {
         Value::Int(n) => n.to_string(),

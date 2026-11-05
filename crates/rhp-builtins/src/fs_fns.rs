@@ -370,6 +370,8 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 // --- glob (a port of php's bundled OpenBSD glob, main/php_glob.c) ------------
+// main/php_glob.c is BSD-3-Clause, Copyright (c) 1989, 1993 The Regents of
+// the University of California; see THIRD-PARTY-NOTICES, section 13.
 
 const GLOB_ERR: i64 = 0x0004;
 const GLOB_MARK: i64 = 0x0008;

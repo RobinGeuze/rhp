@@ -61,7 +61,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
 ];
 
 /// The loaded-extension list (php's module names), for phpinfo(INFO_MODULES).
-pub(crate) fn loaded_extension_names() -> &'static [&'static str] {
+pub fn loaded_extension_names() -> &'static [&'static str] {
     LOADED_EXTS
 }
 

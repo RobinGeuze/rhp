@@ -3,7 +3,8 @@
 //! Zones are loaded from the system TZif files (`/usr/share/zoneinfo`) and
 //! queried with timelib's semantics (ext/date/lib/parse_tz.c,
 //! parse_posix.c, tm2unixtime.c): explicit transitions first, then the POSIX
-//! TZ footer for instants after the last transition.
+//! TZ footer for instants after the last transition. The code translated from
+//! timelib is MIT-licensed; see THIRD-PARTY-NOTICES, section 17.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

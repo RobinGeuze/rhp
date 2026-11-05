@@ -2,7 +2,9 @@
 name = "rhp-semantics"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+# Our code: MIT OR Apache-2.0; compare() is ported from zend_compare (Zend/zend_operators.c) and keeps
+# the Zend Engine License 2.00 (THIRD-PARTY-NOTICES, section 4).
+license = "(MIT OR Apache-2.0) AND Zend-2.0"
 publish.workspace = true
 
 [dependencies]

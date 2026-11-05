@@ -22,6 +22,23 @@ not secrets: they make cookies, CSRF tokens and signed values reproducible
 between php and rhp. Never committed: `vendor/`, `var/`, `storage/` contents,
 `bootstrap/cache/*.php`, `node_modules/`, `public/build/` (see `.gitignore`).
 
+## Origin and licence
+
+Most committed app files come from upstream skeletons, which are under the
+MIT licence (its text is in the repository's LICENSE-MIT; only the copyright
+line differs):
+
+- `laravel-13`: the `laravel/laravel` 13 application skeleton (app code,
+  config, routes, views such as `welcome.blade.php`), MIT as its
+  `composer.json` and `README.md` state.
+- `symfony-7.4`: `symfony/skeleton` 7.4 plus the files its Symfony Flex
+  recipes add (`bin/console`, `config/`, `public/index.php`, ...), MIT,
+  "Copyright (c) Fabien Potencier". Its `composer.json` says `"MIT"` like
+  upstream's (Flex's create-project had set `"proprietary"`).
+
+The fixture routes, controllers and templates, and the request corpora, are
+rhp's own.
+
 ## Running
 
 ```sh

@@ -226,7 +226,9 @@ fn fn_substr_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 }
 
 // ---------------------------------------------------------------------------
-// strnatcmp / strnatcasecmp (Martin Pool natural-order algorithm, as php)
+// strnatcmp / strnatcasecmp: a Rust translation, modified for rhp, of php-src's
+// ext/standard/strnatcmp.c, Copyright (C) 2000 by Martin Pool (zlib licence;
+// see THIRD-PARTY-NOTICES, section 15).
 // ---------------------------------------------------------------------------
 
 #[inline]

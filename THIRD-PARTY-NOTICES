@@ -1,10 +1,17 @@
 THIRD-PARTY NOTICES
 ===================
 
-rhp is licensed under MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE). It
-links, or contains code derived from, the third-party software below, under
-the licences given here. Rust crates rhp depends on carry their own licences
-in their package metadata (see Cargo.lock) and are not repeated here.
+rhp's own code is licensed under MIT OR Apache-2.0 (LICENSE-MIT,
+LICENSE-APACHE). rhp links, or contains code derived from, the third-party
+software below. The parts of rhp derived from or containing that software
+also stay under the licences given here, whose conditions apply in addition
+to rhp's. Rust crates rhp depends on carry their own licences in their
+package metadata (see Cargo.lock) and are not repeated here.
+
+The repository distributes source only. Whoever distributes an rhp binary
+must include LICENSE-MIT, LICENSE-APACHE and this file, plus the licence
+notices of the Rust crates compiled into it (cargo-about, for example, can
+collect them).
 
 1. PCRE2           BSD-3-Clause WITH PCRE2-exception; JIT: BSD-2-Clause
 2. zlib            Zlib
@@ -18,6 +25,13 @@ in their package metadata (see Cargo.lock) and are not repeated here.
 10. GNU Bison      GPL-3.0-or-later WITH Bison-exception-2.2
 11. Charset maps   Unicode, Inc., Apple and Microsoft mapping tables
 12. libxml2        MIT; dict.c and list.c: ISC-style
+13. glob           BSD-3-Clause
+14. libc++ sort    NCSA OR MIT
+15. strnatcmp      Zlib
+16. Mt19937        BSD-3-Clause
+17. timelib        MIT
+18. Unicode data   Unicode-3.0
+19. Email regexes  keep-the-notice permission (Michael Rushton)
 
 
 ------------------------------------------------------------------------------
@@ -247,10 +261,23 @@ bzip2/libbzip2 version 1.0.8 of 13 July 2019
 4. PHP
 ------------------------------------------------------------------------------
 
-rhp reimplements php. Parts of it are ported from php-src (the php version
-in tests/phpt/php-src.ref): extension glue such as ext/pcre/php_pcre.c, and
-algorithms from main/, ext/ and Zend/. php-src is under the PHP License 3.01;
-its Zend/ directory is under the Zend Engine License 2.00. Both follow.
+rhp is not a clean-room implementation: it translates code from php-src (the
+php version in tests/phpt/php-src.ref) into Rust, from main/, ext/, sapi/ and
+Zend/ and from run-tests.php. For example: the extension glue of
+ext/pcre/php_pcre.c, main/output.c (rhp-vm), sapi/cgi/cgi_main.c and
+main/getopt.c (rhp-sapi), Zend/zend_language_scanner.l (the tokenizer),
+zend_compare() of Zend/zend_operators.c (rhp-semantics) and run-tests.php's
+$ini_overwrites (rhp-difftest). Each ported file names its source. php-src's
+Zend/ directory is mostly under the Zend Engine License 2.00; the rest of
+php-src, and some Zend/ files such as zend_virtual_cwd.c and zend_smart_str.c,
+are under the PHP License 3.01, as each file's header states. Both licences
+follow, and the translated code stays under them.
+
+Some php-src code that rhp ports carries its own licence, which applies to
+the port too: php_md5_crypt_r (section 8), main/php_glob.c (section 13),
+zend_sort() (section 14), ext/standard/strnatcmp.c (section 15), the Mt19937
+engine (section 16), timelib (section 17) and the email regexes of
+ext/filter/logical_filters.c (section 19).
 
 crates/rhp-csrc also compiles some php-src C files unmodified (its
 vendor/php-src). Their original authors' terms are in sections 5 to 7;
@@ -258,6 +285,12 @@ php-src's changes to them come under the PHP License.
 
 crates/rhp-builtins/src/signatures/table.rs is generated from php-src's
 *.stub.php files.
+
+Commits before the licence files were added (65f0b332, #19, 2026-11-03) contain
+the same php-src-derived code, including a verbatim excerpt of
+ext/standard/string.c (bin2hex) in the since-removed
+crates/phrust-zendshim/csrc/php_bin2hex.c; those parts remain under the PHP
+License 3.01 reproduced here.
 
 This product includes PHP software, freely available from
 <http://www.php.net/software/>.
@@ -618,8 +651,12 @@ for a particular purpose.
 12. libxml2
 ------------------------------------------------------------------------------
 
-The libxml2 php links: the macOS SDK's /usr/lib/libxml2.2.dylib, linked
+The libxml2 rhp links: the macOS SDK's /usr/lib/libxml2.2.dylib, linked
 dynamically; libxml2-dev's libxml2.a on Debian/Ubuntu, linked statically.
+rhp's own XML parser, tree, serializer, XPath and XML Schema code
+(crates/rhp-builtins/src/ext/libxml/) is modelled on libxml2 2.9 and
+reproduces its messages and serializer output; as far as it derives from
+libxml2, the terms below apply to it too.
 
 Except where otherwise noted in the source code (e.g. the files dict.c and
 list.c, which are covered by a similar licence but with different Copyright
@@ -664,3 +701,323 @@ both under:
  WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS AND
  CONTRIBUTORS ACCEPT NO RESPONSIBILITY IN ANY CONCEIVABLE MANNER.
+
+
+------------------------------------------------------------------------------
+13. glob
+------------------------------------------------------------------------------
+
+glob() in crates/rhp-builtins is a Rust port of php's bundled OpenBSD glob,
+php-src's main/php_glob.c. It ports the code below, not the file's
+ISC-licensed reallocarray. main/php_glob.c states:
+
+  Copyright (c) 1989, 1993
+        The Regents of the University of California.  All rights reserved.
+
+  This code is derived from software contributed to Berkeley by
+  Guido van Rossum.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  1. Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+  3. Neither the name of the University nor the names of its contributors
+     may be used to endorse or promote products derived from this software
+     without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+  OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+  SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+14. libc++ sort
+------------------------------------------------------------------------------
+
+zend_sort() in php-src's Zend/zend_sort.c, which crates/rhp-builtins ports to
+Rust for the array functions with a user comparator (array_udiff() and the
+like), is "Derived from LLVM's libc++ implementation of std::sort" and
+states:
+
+  ===========================================================================
+  libc++ License
+  ===========================================================================
+
+  The libc++ library is dual licensed under both the University of Illinois
+  "BSD-Like" license and the MIT license. As a user of this code you may
+  choose to use it under either license. As a contributor, you agree to allow
+  your code to be used under both.
+
+  Full text of the relevant licenses is included below.
+
+  ===========================================================================
+
+  University of Illinois/NCSA
+  Open Source License
+
+  Copyright (c) 2009-2012 by the contributors listed at
+  http://llvm.org/svn/llvm-project/libcxx/trunk/CREDITS.TXT
+
+  All rights reserved.
+
+  Developed by:
+
+      LLVM Team
+
+      University of Illinois at Urbana-Champaign
+
+      http://llvm.org
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal with the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+      * Redistributions of source code must retain the above copyright notice,
+        this list of conditions and the following disclaimers.
+
+      * Redistributions in binary form must reproduce the above copyright
+        notice, this list of conditions and the following disclaimers in the
+        documentation and/or other materials provided with the distribution.
+
+      * Neither the names of the LLVM Team, University of Illinois at
+        Urbana-Champaign, nor the names of its contributors may be used to
+        endorse or promote products derived from this Software without
+        specific prior written permission.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  WITH THE SOFTWARE.
+
+  ===========================================================================
+
+  Copyright (c) 2009-2012 by the contributors listed at
+  http://llvm.org/svn/llvm-project/libcxx/trunk/CREDITS.TXT
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.
+
+
+------------------------------------------------------------------------------
+15. strnatcmp
+------------------------------------------------------------------------------
+
+strnatcmp(), strnatcasecmp() and sorting with SORT_NATURAL in
+crates/rhp-builtins use a Rust translation, modified for rhp, of php-src's
+ext/standard/strnatcmp.c ("Modified for PHP by Andrei Zmievski"), which
+states:
+
+  strnatcmp.c -- Perform 'natural order' comparisons of strings in C.
+  Copyright (C) 2000 by Martin Pool <mbp@humbug.org.au>
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+
+------------------------------------------------------------------------------
+16. Mt19937
+------------------------------------------------------------------------------
+
+mt_srand(), mt_rand() and the functions built on them in crates/rhp-builtins
+port the Mt19937 engine of php-src's ext/random/engine_mt19937.c, which
+states:
+
+  The following mt19937 algorithms are based on a C++ class MTRand by
+  Richard J. Wagner. For more information see the web page at
+  http://www.math.sci.hiroshima-u.ac.jp/~m-mat/MT/VERSIONS/C-LANG/MersenneTwister.h
+
+  Mersenne Twister random number generator -- a C++ class MTRand
+  Based on code by Makoto Matsumoto, Takuji Nishimura, and Shawn Cokus
+  Richard J. Wagner  v1.0  15 May 2003  rjwagner@writeme.com
+
+  The Mersenne Twister is an algorithm for generating random numbers.  It
+  was designed with consideration of the flaws in various other generators.
+  The period, 2^19937-1, and the order of equidistribution, 623 dimensions,
+  are far greater.  The generator is also fast; it avoids multiplication and
+  division, and it benefits from caches and pipelines.  For more information
+  see the inventors' web page at http://www.math.sci.hiroshima-u.ac.jp/~m-mat/MT/emt.html
+
+  Reference
+  M. Matsumoto and T. Nishimura, "Mersenne Twister: A 623-Dimensionally
+  Equidistributed Uniform Pseudo-Random Number Generator", ACM Transactions on
+  Modeling and Computer Simulation, Vol. 8, No. 1, January 1998, pp 3-30.
+
+  Copyright (C) 1997 - 2002, Makoto Matsumoto and Takuji Nishimura,
+  Copyright (C) 2000 - 2003, Richard J. Wagner
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+
+  1. Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in the
+     documentation and/or other materials provided with the distribution.
+
+  3. The names of its contributors may not be used to endorse or promote
+     products derived from this software without specific prior written
+     permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+  A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+17. timelib
+------------------------------------------------------------------------------
+
+crates/rhp-builtins/src/tzdb.rs (time zone lookups for the date builtins)
+translates parts of timelib 2022.17, php-src's ext/date/lib: parse_tz.c,
+parse_posix.c (calc_transition) and tm2unixtime.c. Each states the MIT
+licence below with its own copyright lines: parse_tz.c "Copyright (c)
+2015-2019 Derick Rethans, Copyright (c) 2018 MongoDB, Inc.", parse_posix.c
+"Copyright (c) 2021 MongoDB, Inc." and tm2unixtime.c "Copyright (c)
+2015-2019 Derick Rethans". timelib's LICENSE.rst:
+
+  The MIT License (MIT)
+
+  Copyright (c) 2015-2021 Derick Rethans
+  Copyright (c) 2017-2019,2021 MongoDB, Inc.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+
+
+------------------------------------------------------------------------------
+18. Unicode data
+------------------------------------------------------------------------------
+
+crates/rhp-builtins/src/ext/intl/icu_tables.rs holds tables derived from the
+Unicode data of ICU 79.1 (Unicode 18.0), and
+crates/rhp-builtins/src/ext/mbstring/mb_tables.rs case-mapping and property
+tables derived from the Unicode Character Database as php-src's mbstring
+carries it (ext/mbstring/unicode_data.h), both under the Unicode License V3:
+
+  UNICODE LICENSE V3
+
+  COPYRIGHT AND PERMISSION NOTICE
+
+  Copyright © 1991-2026 Unicode, Inc.
+
+  NOTICE TO USER: Carefully read the following legal agreement. BY
+  DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+  SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+  TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+  DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of data files and any associated documentation (the "Data Files") or
+  software and any associated documentation (the "Software") to deal in the
+  Data Files or Software without restriction, including without limitation
+  the rights to use, copy, modify, merge, publish, distribute, and/or sell
+  copies of the Data Files or Software, and to permit persons to whom the
+  Data Files or Software are furnished to do so, provided that either (a)
+  this copyright and permission notice appear with all copies of the Data
+  Files or Software, or (b) this copyright and permission notice appear in
+  associated Documentation.
+
+  THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+  KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+  THIRD PARTY RIGHTS.
+
+  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+  BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+  OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+  WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+  ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+  FILES OR SOFTWARE.
+
+  Except as contained in this notice, the name of a copyright holder shall
+  not be used in advertising or otherwise to promote the sale, use or other
+  dealings in these Data Files or Software without prior written
+  authorization of the copyright holder.
+
+  SPDX-License-Identifier: Unicode-3.0
+
+
+------------------------------------------------------------------------------
+19. Email regexes
+------------------------------------------------------------------------------
+
+FILTER_VALIDATE_EMAIL in crates/rhp-builtins uses php's own regexes from
+php-src's ext/filter/logical_filters.c. php's comment says they are based on
+a regex by Michael Rushton (php changed it to accept only routable
+addresses), and keeps his notice, as rhp's source does too:
+
+  Copyright © Michael Rushton 2009-10
+  http://squiloople.com/
+  Feel free to use and redistribute this code. But please keep this copyright notice.

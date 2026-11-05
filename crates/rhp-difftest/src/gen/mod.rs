@@ -7,6 +7,7 @@ use std::process::ExitCode;
 pub mod dumps;
 pub mod html_tables;
 pub mod parser;
+pub mod readme;
 pub mod signatures;
 mod util;
 
@@ -14,6 +15,7 @@ const USAGE: &str = "usage: rhp-difftest gen <name> [options] [--check]\n\
 generators:\n  dumps        ini and constant tables from the reference php\n\
 \x20 html-tables  HTML entity tables from php-src's ext/standard/html_tables\n\
 \x20 parser       token ids and Bison tables from the php release tarball\n\
+\x20 readme       README.md's PHP test table from tests/phpt (--php-src: recount totals)\n\
 \x20 signatures   builtin signatures from php-src's *.stub.php\n";
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -21,6 +23,7 @@ pub fn main(args: &[String]) -> ExitCode {
         Some("dumps") => dumps::main(&args[1..]),
         Some("html-tables") => html_tables::main(&args[1..]),
         Some("parser") => parser::main(&args[1..]),
+        Some("readme") => readme::main(&args[1..]),
         Some("signatures") => signatures::main(&args[1..]),
         _ => {
             eprint!("{USAGE}");

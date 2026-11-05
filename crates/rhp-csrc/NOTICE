@@ -2,10 +2,13 @@ rhp-csrc
 ========
 
 This crate's own files (src/, shim/, glue/, build.rs, tools/) are licensed
-under MIT OR Apache-2.0, like the rest of rhp. The vendored files under
-vendor/ keep their own licence headers and are listed below. Everything here
-is compiled into static archives; rhp ships its source. The repository's
-THIRD-PARTY-NOTICES carries the same entries with the full notices.
+under MIT OR Apache-2.0, like the rest of rhp. shim/ re-declares the subset of
+php-src's Zend/ and main/ header API that the vendored C uses; those
+declarations follow php-src's (Zend Engine License 2.00 / PHP License 3.01).
+The vendored files under vendor/ keep their own licence headers and are
+listed below. Everything here is compiled into static archives; rhp ships its
+source. The repository's THIRD-PARTY-NOTICES carries the same entries with the
+full notices.
 
 
 vendor/php-src

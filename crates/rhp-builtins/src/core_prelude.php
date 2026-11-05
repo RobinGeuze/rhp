@@ -65,6 +65,9 @@ class Exception implements Throwable {
     final public function getTrace() { return $this->trace; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
     public function __toString() { return __throwable_string($this); }
+    // ErrorException's constructor sets the private `previous` (php writes
+    // it in Exception's scope).
+    protected function __setPrevious($p) { $this->previous = $p; }
 }
 class Error implements Throwable {
     protected $message = "";
@@ -99,7 +102,7 @@ class ErrorException extends Exception {
         if ($n >= 3) { $severity = __zpp_arg($f, 3, "severity", "int", $severity); }
         if ($n >= 4) { $filename = __zpp_arg($f, 4, "filename", "?string", $filename); }
         if ($n >= 5) { $line = __zpp_arg($f, 5, "line", "?int", $line); }
-        if ($n >= 6) { $p = __zpp_arg($f, 6, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+        if ($n >= 6) { $p = __zpp_arg($f, 6, "previous", "?Throwable", $previous); if ($p !== null) { $this->__setPrevious($p); } }
         $this->severity = $severity;
         if ($filename !== null) { $this->file = $filename; }
         if ($line !== null) { $this->line = $line; } elseif ($filename !== null) { $this->line = 0; }

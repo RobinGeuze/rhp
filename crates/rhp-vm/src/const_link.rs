@@ -43,7 +43,9 @@ impl Vm {
                 }
             }
         }
-        // Trait constants against the class's own (or inherited) ones.
+        // Trait constants against the class's own ones; a trait constant
+        // the class does not redeclare then counts as its own below.
+        let mut from_traits: Vec<(Vec<u8>, Option<TypeHint>)> = Vec::new();
         for (ti, tname) in proto.traits.iter().enumerate() {
             let Some(&tid) = self.class_ids.get(&lc(tname.as_bytes())) else {
                 continue;
@@ -54,15 +56,20 @@ impl Vm {
                 .map(|(k, c)| (k.clone(), c.ty.as_deref().cloned()))
                 .collect();
             for (k, tty) in consts {
-                let existing: Option<(PhpStr, Option<TypeHint>)> = match own(&k) {
-                    Some(c) => Some((cname.clone(), c.type_hint.clone())),
-                    None => parent.and_then(|p| {
-                        let c = self.classes[p as usize].constants.get(&k)?;
-                        let decl = self.classes[c.declaring_class as usize].name.clone();
-                        Some((decl, c.ty.as_deref().cloned()))
-                    }),
-                };
+                // php binds traits before inheriting: only the class's own
+                // constants (and earlier traits') can collide here.
+                // (a trait constant takes the composing class as its owner)
+                let existing = own(&k)
+                    .map(|c| c.type_hint.clone())
+                    .or_else(|| {
+                        from_traits
+                            .iter()
+                            .find(|(n, _)| *n == k)
+                            .map(|(_, t)| t.clone())
+                    })
+                    .map(|t| (cname.clone(), t));
                 let Some((owner, ety)) = existing else {
+                    from_traits.push((k.clone(), tty.clone()));
                     continue;
                 };
                 let ok = match (&ety, &tty) {
@@ -98,11 +105,14 @@ impl Vm {
             }
         }
         for (k, pdecl, pty) in inherited {
-            let Some(child) = own(&k) else {
-                continue;
+            let child: Option<TypeHint> = match own(&k) {
+                Some(c) => c.type_hint.clone(),
+                None => match from_traits.iter().find(|(n, _)| *n == k) {
+                    Some((_, t)) => t.clone(),
+                    None => continue,
+                },
             };
             let ok = child
-                .type_hint
                 .as_ref()
                 .is_some_and(|ct| self.type_subsumes(ct, &pty));
             if !ok {

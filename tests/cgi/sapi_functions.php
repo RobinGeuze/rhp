@@ -21,3 +21,5 @@ try {
     echo get_class($e), ': ', $e->getMessage(), "\n";
 }
 var_dump(in_array('pcntl_fork', get_extension_funcs('pcntl'), true));
+// A prelude function counts as its module's.
+var_dump(in_array('date_create', get_extension_funcs('date'), true));

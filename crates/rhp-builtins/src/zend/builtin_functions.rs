@@ -530,9 +530,10 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
 
 /// `get_extension_funcs($extension)`: the functions of a loaded module, in
 /// php's order ("zend" names Core). php's list for the module, as far as
-/// rhp has the functions under the running SAPI, with the SAPI's additional
-/// functions under `standard`; the SAPI's own module lists its functions.
-/// False for a module that is not loaded or has none.
+/// rhp has the functions (builtin or prelude) under the running SAPI, with
+/// the SAPI's additional functions under `standard`; the SAPI's own module
+/// lists its functions. An array, maybe empty, for a module php gives
+/// functions; false for one it gives none or that is not loaded.
 fn fn_get_extension_funcs(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_param(host, args, 0, "get_extension_funcs", "extension")?;
     let module = if name.eq_ignore_ascii_case(b"zend") {
@@ -546,21 +547,18 @@ fn fn_get_extension_funcs(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let sapi = crate::main::sapi::sapi_module();
     let mut names: Vec<&str> = match sapi.and_then(|d| d.module) {
         Some((m, fns)) if m == module => fns.iter().map(|(n, _)| *n).collect(),
-        _ => FUNC_MODULES
-            .iter()
-            .find(|(m, _)| *m == module)
-            .map_or(Vec::new(), |(_, fns)| fns.split(' ').collect()),
+        _ => match FUNC_MODULES.iter().find(|(m, _)| *m == module) {
+            Some((_, fns)) => fns.split(' ').collect(),
+            None => return Ok(Value::Bool(false)),
+        },
     };
-    names.retain(|n| crate::lookup(n).is_some());
+    names.retain(|n| host.internal_function_exists(n.as_bytes()));
     if module == "standard" {
         for (n, _) in sapi.map_or(&[][..], |d| d.functions) {
             if !names.contains(n) {
                 names.push(n);
             }
         }
-    }
-    if names.is_empty() {
-        return Ok(Value::Bool(false));
     }
     let mut a = PhpArray::new();
     for n in names {

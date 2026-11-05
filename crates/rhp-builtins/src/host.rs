@@ -367,6 +367,10 @@ pub trait Host {
     /// builtin.
     fn function_exists(&self, name: &[u8]) -> bool;
 
+    /// Whether `name` is an internal function under the running SAPI: a
+    /// builtin or a prelude function, not a user function.
+    fn internal_function_exists(&self, name: &[u8]) -> bool;
+
     /// `Closure::bind`/`bindTo`: return a copy of `closure` with its `$this`
     /// rebound to `new_this` (object or null) and its scope set from `scope` (a
     /// class name string, an object, or null = keep/derive).

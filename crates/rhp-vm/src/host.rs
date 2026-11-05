@@ -1835,6 +1835,14 @@ impl Host for Vm {
         self.fn_names.contains_key(&name.to_ascii_lowercase()) || user_visible_builtin(name)
     }
 
+    fn internal_function_exists(&self, name: &[u8]) -> bool {
+        user_visible_builtin(name)
+            || self
+                .fn_names
+                .get(&name.to_ascii_lowercase())
+                .is_some_and(|&i| self.functions[i].proto.is_internal())
+    }
+
     fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
         let cd = match deref(closure) {
             Value::Closure(cd) => cd,

@@ -242,6 +242,9 @@ impl Host for TestHost<'_> {
     fn function_exists(&self, name: &[u8]) -> bool {
         crate::lookup(&String::from_utf8_lossy(name)).is_some()
     }
+    fn internal_function_exists(&self, name: &[u8]) -> bool {
+        self.function_exists(name)
+    }
 
     // --- constants ---------------------------------------------------------
 

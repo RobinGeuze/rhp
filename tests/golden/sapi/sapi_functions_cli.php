@@ -29,3 +29,17 @@ try {
 } catch (ArgumentCountError $e) {
     echo $e->getMessage(), "\n";
 }
+
+// Functions rhp writes in its prelude count as the module's.
+foreach (['date', 'xml', 'xmlwriter'] as $m) {
+    echo $m, ': ', implode(' ', get_extension_funcs($m)), "\n";
+}
+foreach (['hash' => ['hash_init', 'hash_update', 'hash_final', 'hash_copy'],
+          'SPL' => ['iterator_apply', 'iterator_count', 'iterator_to_array'],
+          'standard' => ['utf8_encode', 'utf8_decode', 'strlen']] as $m => $fs) {
+    foreach ($fs as $f) {
+        echo $m, ' ', $f, ': ', var_export(in_array($f, get_extension_funcs($m), true), true), "\n";
+    }
+}
+// A module php registers no functions for.
+var_dump(get_extension_funcs('xmlreader'), get_extension_funcs('Phar'));

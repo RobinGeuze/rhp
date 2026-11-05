@@ -585,8 +585,7 @@ then switch the check on — but the metadata must be stored from step 1.)*
 3. **Flatten, parent-first** (traits → parent overlay → interface-set union):
    - `methods` = clone `parent.methods`; merge trait methods (adopting the using
      class as `defining_class`); insert own methods (lowercase key), **overriding**
-     inherited. Enforce `final` (override of a `final` method → fatal), check
-     abstract-implementation for a concrete class.
+     inherited (the override rules are step 4).
    - `props` = clone `parent.props`; for each own `PropProto`, replace **in place**
      if the name exists (new default/visibility/declaring_class), else append —
      reproducing the observed order.
@@ -596,6 +595,30 @@ then switch the check on — but the metadata must be stored from step 1.)*
      `Rc<RefCell<Value>>`.
    - `ancestors` = self ∪ parent's ancestors ∪ transitive interface closure.
    - cache `constructor` by resolving `__construct` in the flattened `methods`.
+4. **Inheritance checks** (`inherit.rs`, php's zend_inheritance.c), once the
+   entry is in the table: for each redeclared typed property, invariance
+   ("Type of B::$p must be T (as in class A)"); for each method overriding a
+   parent, trait-abstract or interface method, the final / static / abstract
+   / visibility rules and the signature check (zend_do_perform_implementation_check:
+   arity, by-ref, variadics, contravariant parameters, covariant returns,
+   `static`/`self`, `never`, `mixed`), with php's declaration text in the
+   message. Internal parent methods are checked against their stub
+   signature (`rhp_bytecode::signatures`); a tentative return type gives the
+   `#[\ReturnTypeWillChange]` deprecation, recorded and raised after linking
+   (php's record_errors). A constructor carries its abstract / interface
+   prototype (`ResolvedMethod::prototype`) so grandchildren are checked
+   against it.
+   - A check that names a class not declared yet is *unresolved*. When
+     hoisting (early binding) the class is then not hoisted and links when
+     its `DeclareClass` runs. At run time the missing classes are
+     autoloaded after linking (an exception there is fatal: "During
+     inheritance of B, while autoloading Y"), the check reruns, and a class
+     still missing gives "Could not check compatibility ...". A class
+     loading its dependencies is visible to those checks by its declared
+     names; if a check used it and its dependency then fails to load, that
+     is fatal ("During inheritance of B with variance dependencies").
+   - Anonymous classes with a parent, interfaces or traits link when `new
+     class` runs, as in php.
 
 Static-prop and class-const inheritance semantics (→ fixtures):
 

@@ -93,6 +93,9 @@ pub struct ResolvedMethod {
     pub is_static: bool,
     pub is_abstract: bool,
     pub is_final: bool,
+    /// php's `common.prototype` for a constructor: the class whose abstract
+    /// or interface constructor this one implements (see `inherit`).
+    pub prototype: Option<ClassId>,
 }
 
 #[derive(Clone)]
@@ -677,7 +680,7 @@ impl Vm {
             while i < pending.len() {
                 if self.deps_ready(pending[i]) {
                     let proto = pending.remove(i);
-                    self.link_class(proto, unit)?;
+                    self.link_class(proto, unit, false)?;
                     progressed = true;
                 } else {
                     i += 1;
@@ -769,17 +772,23 @@ impl Vm {
             if !early || self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
                 continue;
             }
-            self.link_slot(i, &proto)?;
-            self.decl_classes[i].done = true;
+            if self.link_slot_ex(i, &proto, proto.parent.is_some())? {
+                self.decl_classes[i].done = true;
+            }
         }
         // Anonymous classes (registered with the file's classes under their
-        // generated names) are linked up front, once their dependencies are.
+        // generated names) without a parent, interfaces or traits are linked
+        // up front; the others when `new class` runs (php links those at
+        // run time).
         loop {
             let mut progressed = false;
             for i in ranges.anon.clone() {
                 let proto = &self.decl_classes[i].proto;
                 if self.decl_classes[i].done
                     || !is_anon_name(proto.name.as_bytes())
+                    || proto.parent.is_some()
+                    || !proto.interfaces.is_empty()
+                    || !proto.traits.is_empty()
                     || self.class_ids.contains_key(&lc(proto.name.as_bytes()))
                     || !self.deps_ready(proto)
                 {
@@ -836,32 +845,43 @@ impl Vm {
         // into autoloading it again (it just is not usable yet).
         let self_key = lc(proto.name.as_bytes());
         let marked = self.in_autoload.insert(self_key.clone());
+        self.push_linking(&proto);
+        let mut failed = None;
         for (what, n) in deps.collect::<Vec<_>>() {
             let loaded = self.class_ids.contains_key(&lc(n.as_bytes()))
                 || match self.try_autoload(n.as_bytes()) {
                     Ok(b) => b,
                     Err(e) => {
-                        if marked {
-                            self.in_autoload.remove(&self_key);
-                        }
-                        return Err(e);
+                        failed = Some(e);
+                        break;
                     }
                 };
             if !loaded {
-                if marked {
-                    self.in_autoload.remove(&self_key);
-                }
-                return Err(Thrown::error(
+                failed = Some(Thrown::error(
                     "Error",
                     format!(
                         "{what} \"{}\" not found",
                         String::from_utf8_lossy(n.as_bytes())
                     ),
                 ));
+                break;
             }
         }
+        let used = self.pop_linking();
         if marked {
             self.in_autoload.remove(&self_key);
+        }
+        if let Some(e) = failed {
+            // check_unrecoverable_load_failure: a variance check already
+            // relied on this class, so it cannot just go away.
+            if used {
+                let prefix = format!(
+                    "During inheritance of {} with variance dependencies",
+                    String::from_utf8_lossy(proto.name.as_bytes())
+                );
+                return Err(self.uncaught_fatal(&prefix, e));
+            }
+            return Err(e);
         }
         self.link_slot(slot, &proto)?;
         self.decl_classes[slot].done = true;
@@ -872,12 +892,24 @@ impl Vm {
     /// Link the class compiled into `decl_classes` slot `slot`, recording
     /// that slot as its class-table position.
     pub(crate) fn link_slot(&mut self, slot: usize, proto: &Rc<ClassProto>) -> Result<(), Thrown> {
+        self.link_slot_ex(slot, proto, false).map(|_| ())
+    }
+
+    /// [`Self::link_slot`]; `early`: see [`Self::link_class`].
+    fn link_slot_ex(
+        &mut self,
+        slot: usize,
+        proto: &Rc<ClassProto>,
+        early: bool,
+    ) -> Result<bool, Thrown> {
         let id = self.classes.len();
-        self.link_class(proto, self.decl_classes[slot].unit)?;
+        if !self.link_class(proto, self.decl_classes[slot].unit, early)? {
+            return Ok(false);
+        }
         if let Some(o) = self.class_order.get_mut(id) {
             *o = slot;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn deps_ready(&self, p: &ClassProto) -> bool {
@@ -902,7 +934,15 @@ impl Vm {
             .or_else(|| p.traits.iter().find_map(missing))
     }
 
-    fn link_class(&mut self, proto: &Rc<ClassProto>, unit: UnitId) -> Result<(), Thrown> {
+    /// Link `proto` as the next class. `early`: hoisting (php's early
+    /// binding); returns `Ok(false)`, linking nothing, when an inheritance
+    /// check needs a class that is not declared yet.
+    fn link_class(
+        &mut self,
+        proto: &Rc<ClassProto>,
+        unit: UnitId,
+        early: bool,
+    ) -> Result<bool, Thrown> {
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -937,31 +977,14 @@ impl Vm {
                     k,
                     ResolvedMethod {
                         defining_class: id,
+                        prototype: None,
                         ..m
                     },
                 );
             }
         }
+        // Final, static, visibility and signature rules: `inherit`.
         for m in &proto.methods {
-            if let Some(existing) = methods.get(&lc(m.name.as_bytes())) {
-                // Private methods are not inherited (except constructors).
-                let private = existing.visibility == Visibility::Private
-                    && !m.name.as_bytes().eq_ignore_ascii_case(b"__construct");
-                if existing.is_final && existing.defining_class != id && !private {
-                    return Err(Thrown::error(
-                        "Error",
-                        format!(
-                            "Cannot override final method {}::{}()",
-                            String::from_utf8_lossy(
-                                self.classes[existing.defining_class as usize]
-                                    .name
-                                    .as_bytes()
-                            ),
-                            String::from_utf8_lossy(existing.proto.name.as_bytes())
-                        ),
-                    ));
-                }
-            }
             insert_method(
                 &mut methods,
                 lc(m.name.as_bytes()),
@@ -973,6 +996,7 @@ impl Vm {
                     is_static: m.is_static,
                     is_abstract: m.is_abstract,
                     is_final: m.is_final,
+                    prototype: None,
                 },
             );
         }
@@ -1367,7 +1391,16 @@ impl Vm {
                 self.classes[id as usize].enum_cases.push(obj);
             }
         }
-        Ok(())
+        if self.internal_classes > 0
+            && !proto.decl_file.is_empty()
+            && !self.inheritance_checks(id, early)?
+        {
+            self.classes.pop();
+            self.class_ids.remove(&lc(proto.name.as_bytes()));
+            self.class_order.pop();
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Build an enum case's singleton object: an instance of the enum class with

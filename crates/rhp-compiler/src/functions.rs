@@ -479,14 +479,8 @@ impl ProtoBuilder<'_> {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),
         };
-        let display = match &self.class_name {
-            Some(cn) => format!(
-                "{}::{}",
-                String::from_utf8_lossy(cn.as_bytes()),
-                String::from_utf8_lossy(c.name.as_bytes())
-            ),
-            None => String::from_utf8_lossy(c.name.as_bytes()).into_owned(),
-        };
+        // A closure has no scope while it is compiled: its name alone.
+        let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
         let cname = c.class_name.clone();
         let (params, nonconst_defaults, _) =
             c.lower_params(param_list, &display, true, cname.as_ref())?;
@@ -601,8 +595,14 @@ impl ProtoBuilder<'_> {
         let mut params = Vec::new();
         let mut nonconst = Vec::new();
         let mut types = Vec::new();
+        // The last parameter without a default (zend_compile_params).
+        let last_required = list
+            .parameters
+            .iter()
+            .rposition(|p| p.default_value.is_none() && p.ellipsis.is_none());
         for (idx, p) in list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
+            let mut forced_null = false;
             let pline = cx.line_of(p.span().start.offset);
             if var == b"this" {
                 return Err(compile_error("Cannot use $this as parameter", pline));
@@ -641,6 +641,7 @@ impl ProtoBuilder<'_> {
                 if let Some((t, forced)) = compile_type_ex(cx, h, closure, force_null) {
                     let pname = String::from_utf8_lossy(var);
                     if forced {
+                        forced_null = true;
                         cx.compile_diags.borrow_mut().push((
                             rhp_values::E_DEPRECATED,
                             format!(
@@ -672,6 +673,23 @@ impl ProtoBuilder<'_> {
                     type_hint = Some(t.hint);
                     php_type = Some(t.ty);
                 }
+            }
+            if let Some(lr) = last_required.filter(|lr| idx < *lr && folded.is_some()) {
+                // An optional parameter before a required one is required.
+                if !forced_null {
+                    let req =
+                        strip_dollar(list.parameters.iter().nth(lr).expect("index").variable.name);
+                    cx.compile_diags.borrow_mut().push((
+                        rhp_values::E_DEPRECATED,
+                        format!(
+                            "{display}(): Optional parameter ${} declared before required parameter ${} is implicitly treated as a required parameter",
+                            String::from_utf8_lossy(var),
+                            String::from_utf8_lossy(req)
+                        ),
+                        line,
+                    ));
+                }
+                folded = None;
             }
             let default = folded.map(|d| match d {
                 Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),

@@ -272,12 +272,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // php 8.5: NAN warns when coerced; array and object read the variable
     // again after the warning (a handler may have changed it).
     let is_nan = matches!(cur, Value::Float(f) if f.is_nan());
-    let nan_warn = |host: &mut dyn Host, to: &str| -> Result<(), Thrown> {
-        host.emit_diagnostic(
-            crate::E_WARNING,
-            format!("unexpected NAN value was coerced to {to}").as_bytes(),
-        )
-    };
+    let nan_warn = zend::operators::nan_coerced;
     let cur = match ty.as_slice() {
         b"array" | b"object" if is_nan => {
             nan_warn(host, std::str::from_utf8(&ty).unwrap_or(""))?;

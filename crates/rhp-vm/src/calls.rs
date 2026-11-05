@@ -1830,6 +1830,15 @@ impl Vm {
                 }
             })
             .collect();
+        // A moved-in object or array dies when the call returns: check for
+        // released destructible objects then, as a register overwrite would.
+        if !self.destructibles.is_empty()
+            && args
+                .iter()
+                .any(|a| matches!(a, Value::Object(_) | Value::Array(_)))
+        {
+            self.dtor_check = true;
+        }
         let strict = self.stack[top].proto.strict_types;
         self.run_builtin_sig(builtin, sig, args, frameless, icall, strict)
     }

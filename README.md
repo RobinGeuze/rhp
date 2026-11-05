@@ -95,7 +95,7 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 
 | application | version | what works |
 |---|---|---|
-| Composer | 2.11.1 (phar) | Runs from its phar. Of the 29 commands tried (`install`, `update`, `require`, `remove`, `show`, `validate`, `dump-autoload -o`, `audit`, `run-script`, `archive`, `init`, ...), 27 print php's output and exit code, and `composer.lock` and `vendor/` come out identical; `show --platform` and the suggestion count after `install` differ because rhp has fewer extensions. It installs `tests/apps/symfony-7.4`'s lock (35 packages) as php does, but refuses `laravel-13`'s (no ext-session, ext-fileinfo). Installed packages may still not run: monolog's `Logger` needs `Fiber`. |
+| Composer | 2.11.1 (phar) | Runs from its phar: 27 of the 29 commands tried match php, and `composer.lock` and `vendor/` come out identical; `show --platform` and the install suggestion count differ (fewer extensions). It installs symfony-7.4's lock and refuses laravel-13's (no ext-session, ext-fileinfo). Installed code may still fail: monolog's `Logger` needs `Fiber`. |
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | Compiles only: 1,749 of its 1,751 PHP files compile under rhp. It does not boot: every console command and request stops at `get_error_handler()`, a PHP 8.5 function rhp lacks. |
 | Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: loading `vendor/autoload.php` fails on a class declared inside an `if`, so every artisan command and request fails. |
 
@@ -107,6 +107,10 @@ cargo test --workspace           # unit tests, and the golden suite against reco
 target/release/rhp script.php
 ```
 
+With a php on PATH (or `RHP_PHP` naming one), `cargo test` also compares rhp
+against it live. Those comparisons expect php 8.5.12 and can fail on another
+version.
+
 The build links PCRE2 and libxml2 (macOS: Homebrew's pcre2 and the Command
 Line Tools; Debian/Ubuntu: `pkg-config libpcre2-dev libxml2-dev`). Design
 notes are in [docs/design/](docs/design/), starting with
@@ -115,8 +119,8 @@ notes are in [docs/design/](docs/design/), starting with
 
 ## Licence
 
-rhp's own code is licensed under MIT OR Apache-2.0, at your option (LICENSE-MIT, LICENSE-APACHE); all its Rust dependencies are permissively licensed.
-It is not clean-room: code translated from php-src also stays under the PHP License 3.01 (the Zend Engine License 2.00 for most of php-src's Zend/), some ported pieces keep their own permissive notices (BSD glob, libc++ sort, strnatcmp, Mt19937, timelib, md5crypt, ...), and php-src C compiled in unmodified (crates/rhp-csrc) and the linked PCRE2, zlib, bzip2 and libxml2 keep their licences; THIRD-PARTY-NOTICES has every text.
-This product includes PHP software, freely available from <http://www.php.net/software/>, and the Zend Engine, freely available at http://www.zend.com.
-rhp is not PHP and is not affiliated with or endorsed by The PHP Group or Zend Technologies: "PHP" names only what rhp is compatible with and where ported code comes from, and php's version and credit strings are printed only for compatibility.
-The repository distributes source only; whoever distributes an rhp binary must include LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES and the Rust dependencies' licence notices.
+- rhp's own code is MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
+- Translated php-src code is also PHP-3.01 or Zend-2.0; other third-party code keeps its licence ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)).
+- This product includes PHP software, freely available from <http://www.php.net/software/>, and the Zend Engine, freely available at http://www.zend.com.
+- rhp is not affiliated with or endorsed by The PHP Group or Zend; it prints php's version and credit strings only for compatibility.
+- Source only: anyone shipping an rhp binary must include LICENSE-*, THIRD-PARTY-NOTICES and the Rust crates' notices.

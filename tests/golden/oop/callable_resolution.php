@@ -2,6 +2,7 @@
 // Callable checks (zend_is_callable_ex) versus dynamic calls, method
 // lookup from a scope, and the by-reference warning of internal callers.
 
+ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 function show(callable $f) { try { $f(); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; } }
 function tryit(callable|Closure $f) {}
 

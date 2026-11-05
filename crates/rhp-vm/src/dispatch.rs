@@ -9,7 +9,7 @@ use rhp_builtins as builtins;
 use rhp_builtins::zend::object_handlers::{CastTarget, Op};
 use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
-use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
@@ -1499,17 +1499,11 @@ impl Vm {
                     argc,
                 } => {
                     let pname = proto.names[name as usize].clone();
-                    let args = crate::hooks::HookArgs::Window { base, argc };
-                    self.exec_parent_hook(top, dst, pname, kind, args)?;
-                }
-                Instr::CallParentHookV {
-                    dst,
-                    name,
-                    kind,
-                    args,
-                } => {
-                    let pname = proto.names[name as usize].clone();
-                    let args = crate::hooks::HookArgs::Array(args);
+                    let args = if argc == rhp_bytecode::PACKED_ARGS {
+                        crate::hooks::HookArgs::Array(base)
+                    } else {
+                        crate::hooks::HookArgs::Window { base, argc }
+                    };
                     self.exec_parent_hook(top, dst, pname, kind, args)?;
                 }
                 Instr::CallStaticDyn {
@@ -1599,44 +1593,7 @@ impl Vm {
                     let target = self.call_target(top, &proto, pc, name, fallback)?;
                     self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
-                Instr::NewV { dst, class, args } => {
-                    let cls = self.resolve_class_autoload(top, class)?;
-                    let entry = self.class(cls);
-                    if entry.kind != ClassKind::Class || entry.flags.is_abstract {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot instantiate {}",
-                                String::from_utf8_lossy(entry.name.as_bytes())
-                            ),
-                        ));
-                    }
-                    self.check_ctor_access(top, cls)?;
-                    self.update_class_constants(cls)?;
-                    let obj = self.new_object(cls);
-                    self.reg_set(top, dst, Value::Object(obj.clone()));
-                    if let Some(m) = self.lookup_method(cls, b"__construct") {
-                        let arr = self.reg_get(top, args);
-                        let (argv, named) = self.split_call_args(&arr)?;
-                        let argv =
-                            self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                        self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
-                    } else {
-                        // No constructor: php calls zend_pass_function,
-                        // which has no parameters.
-                        let arr = self.reg_get(top, args);
-                        let (_, named) = self.split_call_args(&arr)?;
-                        if let Some((name, _)) = named.first() {
-                            return Err(Thrown::error(
-                                "Error",
-                                format!(
-                                    "Unknown named parameter ${}",
-                                    String::from_utf8_lossy(name.as_bytes())
-                                ),
-                            ));
-                        }
-                    }
-                }
+                Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
                 Instr::CallMethodV {
                     dst,
                     obj,

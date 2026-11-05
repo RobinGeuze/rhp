@@ -233,7 +233,6 @@ impl<'c> ProtoBuilder<'c> {
                 | Instr::CallMethodDyn { .. }
                 | Instr::CallStatic { .. }
                 | Instr::CallParentHook { .. }
-                | Instr::CallParentHookV { .. }
                 | Instr::CallStaticV { .. }
                 | Instr::CallStaticDyn { .. }
                 | Instr::CallMethodDynV { .. }

@@ -755,9 +755,7 @@ impl ProtoBuilder<'_> {
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Access(Access::Property(_))
-            | Expression::Access(Access::StaticProperty(_))
-                if variable_rooted_lvalue(e) =>
-            {
+            | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(e, &mut steps)?;
                 self.emit_cursor(root, &steps);
@@ -1260,11 +1258,12 @@ impl ProtoBuilder<'_> {
         if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
             let args = self.build_args_array(Some(&smc.argument_list))?;
             let dst = self.alloc_temp();
-            self.emit(Instr::CallParentHookV {
+            self.emit(Instr::CallParentHook {
                 dst,
                 name,
                 kind,
-                args,
+                base: args,
+                argc: rhp_bytecode::PACKED_ARGS,
             });
             return Ok(Some(dst));
         }

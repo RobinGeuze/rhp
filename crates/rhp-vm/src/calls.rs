@@ -432,7 +432,15 @@ impl Vm {
         let o = self.reg_get(top, obj);
         let arr = self.reg_get(top, args);
         if let Value::Closure(_) = o {
-            let (mut argv, named) = self.split_call_args(&arr)?;
+            let (argv, named) = self.split_call_args(&arr)?;
+            // __invoke() takes the closure's own parameters; the variadic
+            // `$args` of call() collects unknown names for the closure.
+            let invoke = mname.eq_ignore_ascii_case(b"__invoke");
+            let (mut argv, named) = if named.is_empty() || invoke {
+                (argv, named)
+            } else {
+                self.place_method_named_args("Closure", &mname, argv, named)?
+            };
             let r = match mname.to_ascii_lowercase().as_slice() {
                 b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
                 b"call" if !named.is_empty() && !argv.is_empty() => {
@@ -463,7 +471,13 @@ impl Vm {
         };
         let gid = h.borrow().id;
         if self.generators.contains_key(&gid) {
-            let (argv, _named) = self.split_call_args(&arr)?;
+            let (argv, named) = self.split_call_args(&arr)?;
+            let argv = if named.is_empty() {
+                argv
+            } else {
+                self.place_method_named_args("Generator", &mname, argv, named)?
+                    .0
+            };
             if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &argv) {
                 let r = r?;
                 self.reg_set(top, dst, r);
@@ -638,17 +652,7 @@ impl Vm {
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
-                    frame.holes = holes;
-                    if !extra.is_empty() {
-                        if let Some(p) = proto.params.iter().find(|p| p.variadic) {
-                            if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
-                                for (k, v) in extra {
-                                    let v = if p.by_ref { v } else { deref(&v) };
-                                    a.insert(ArrayKey::Str(k), v);
-                                }
-                            }
-                        }
-                    }
+                    bind_named_extra(&proto, frame, holes, extra);
                 }
                 let scope = frame.defining_class;
                 match self.coerce_stringable_args(&proto, frame, caller, scope) {
@@ -1817,8 +1821,38 @@ impl Vm {
         args: Vec<Value>,
         named: NamedArgs,
     ) -> Result<(Vec<Value>, NamedArgs), Thrown> {
-        use rhp_bytecode::signatures::{Signature, U};
-        let params = sig.params;
+        use rhp_bytecode::signatures::Signature;
+        self.place_stub_named_args(sig.name, sig.params, sig.min_args(), args, named)
+    }
+
+    /// [`Vm::place_builtin_named_args`] for a native method's stub row.
+    fn place_method_named_args(
+        &mut self,
+        class: &str,
+        method: &[u8],
+        args: Vec<Value>,
+        named: NamedArgs,
+    ) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        use rhp_bytecode::signatures::Signature;
+        let Some(m) = rhp_bytecode::signatures::method(class.as_bytes(), method) else {
+            return Err(Thrown::unsupported(
+                "named arguments to a method without arginfo",
+                "deferred",
+            ));
+        };
+        let fname = format!("{class}::{}", m.name);
+        self.place_stub_named_args(&fname, m.params, m.min_args(), args, named)
+    }
+
+    fn place_stub_named_args(
+        &mut self,
+        fname: &str,
+        params: &'static [rhp_bytecode::signatures::Param],
+        required: usize,
+        args: Vec<Value>,
+        named: NamedArgs,
+    ) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        use rhp_bytecode::signatures::U;
         let variadic = params.last().is_some_and(|p| p.variadic());
         let mut slots: Vec<Option<Value>> = args.into_iter().map(Some).collect();
         let mut extra: NamedArgs = Vec::new();
@@ -1857,7 +1891,6 @@ impl Vm {
                 }
             }
         }
-        let required = sig.min_args();
         let mut out = Vec::with_capacity(slots.len());
         for (i, slot) in slots.into_iter().enumerate() {
             if let Some(v) = slot {
@@ -1868,7 +1901,7 @@ impl Vm {
             let fail = |what: &str| {
                 Thrown::error(
                     "ArgumentCountError",
-                    format!("{}(): Argument #{} (${}) {what}", sig.name, i + 1, p.name),
+                    format!("{fname}(): Argument #{} (${}) {what}", i + 1, p.name),
                 )
             };
             if i < required {
@@ -1942,6 +1975,59 @@ impl Vm {
         match self.resolve_callable(c).ok()? {
             Callee::Magic(m, this, called, name) => Some((m, this, called, name)),
             _ => None,
+        }
+    }
+
+    /// `NewV`: `new C(...)` with unpacked or named arguments.
+    #[inline(never)]
+    pub(crate) fn exec_new_v(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        class: ClassRef,
+        args: Reg,
+    ) -> Result<(), Thrown> {
+        let cls = self.resolve_class_autoload(top, class)?;
+        let entry = self.class(cls);
+        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot instantiate {}",
+                    String::from_utf8_lossy(entry.name.as_bytes())
+                ),
+            ));
+        }
+        self.check_ctor_access(top, cls)?;
+        self.update_class_constants(cls)?;
+        let obj = self.new_object(cls);
+        self.reg_set(top, dst, Value::Object(obj.clone()));
+        if let Some(m) = self.lookup_method(cls, b"__construct") {
+            let arr = self.reg_get(top, args);
+            let (argv, named) = self.split_call_args(&arr)?;
+            let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+            self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
+        } else {
+            self.new_without_ctor(top, args)?;
+        }
+        Ok(())
+    }
+
+    /// `new C(...)` of a class without a constructor: php calls
+    /// zend_pass_function, which has no parameters.
+    #[cold]
+    pub(crate) fn new_without_ctor(&mut self, top: usize, args: Reg) -> Result<(), Thrown> {
+        let arr = self.reg_get(top, args);
+        let (_, named) = self.split_call_args(&arr)?;
+        match named.first() {
+            Some((name, _)) => Err(Thrown::error(
+                "Error",
+                format!(
+                    "Unknown named parameter ${}",
+                    String::from_utf8_lossy(name.as_bytes())
+                ),
+            )),
+            None => Ok(()),
         }
     }
 
@@ -2341,6 +2427,22 @@ impl Vm {
             CallTarget::Missing => return Err(undefined_function(name)),
         }
         Ok(())
+    }
+}
+
+/// A named-argument call's skipped parameters (`holes`), and its unknown
+/// names, which a variadic parameter collects under their names.
+#[cold]
+fn bind_named_extra(proto: &FunctionProto, frame: &mut Frame, holes: u64, extra: NamedArgs) {
+    frame.holes = holes;
+    let Some(p) = proto.params.iter().find(|p| p.variadic) else {
+        return;
+    };
+    if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+        for (k, v) in extra {
+            let v = if p.by_ref { v } else { deref(&v) };
+            a.insert(ArrayKey::Str(k), v);
+        }
     }
 }
 

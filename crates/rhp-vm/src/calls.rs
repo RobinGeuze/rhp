@@ -34,6 +34,24 @@ pub(crate) enum Callee {
     EnumStatic(ClassId, Vec<u8>),
 }
 
+/// A call's arguments: a slice, or the caller's argument window (`argc`
+/// registers from `base` in frame `top`, read raw: by-reference arguments
+/// are `Value::Ref`s), bound without copying it first.
+#[derive(Clone, Copy)]
+pub(crate) enum Args<'a> {
+    Slice(&'a [Value]),
+    Window { top: usize, base: Reg, argc: u16 },
+}
+
+impl Args<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Args::Slice(s) => s.len(),
+            Args::Window { argc, .. } => *argc as usize,
+        }
+    }
+}
+
 /// What a call by name (`Call`, `CallV`) runs.
 #[derive(Clone, Copy)]
 pub(crate) enum CallTarget {
@@ -251,7 +269,7 @@ impl Vm {
         top: usize,
         h: ObjectHandle,
         cls: ClassId,
-        mname: Vec<u8>,
+        mname: &[u8],
         dst: Reg,
         base: Reg,
         argc: u16,
@@ -265,7 +283,7 @@ impl Vm {
                 return Ok(());
             }
         }
-        let found = self.lookup_method(cls, &mname);
+        let found = self.lookup_method(cls, mname);
         let accessible = found.as_ref().is_some_and(|m| {
             self.check_access(
                 self.stack[top].defining_class,
@@ -275,24 +293,24 @@ impl Vm {
         });
         if let (Some(m), true) = (&found, accessible) {
             let m = m.clone();
-            self.enter_method(top, &m, Some(h.clone()), cls, dst, base, argc)?;
+            self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
         } else if let Some(magic) = self.lookup_method(cls, b"__call") {
             let mut arr = rhp_values::PhpArray::new();
             for i in 0..argc {
                 arr.push(self.reg_get(top, base + i));
             }
-            let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+            let args = vec![Value::str(mname.to_vec()), Value::Array(arr)];
             let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
             self.reg_set(top, dst, r);
         } else if let Some(m) = found {
-            return Err(self.access_err("method", m.defining_class, &mname, m.visibility));
+            return Err(self.access_err("method", m.defining_class, mname, m.visibility));
         } else {
             return Err(Thrown::error(
                 "Error",
                 format!(
                     "Call to undefined method {}::{}()",
                     String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                    String::from_utf8_lossy(&mname)
+                    String::from_utf8_lossy(mname)
                 ),
             ));
         }
@@ -305,13 +323,13 @@ impl Vm {
         &mut self,
         top: usize,
         class: ClassRef,
-        mname: Vec<u8>,
+        mname: &[u8],
         dst: Reg,
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
-        let found = self.lookup_method(cls, &mname);
+        let found = self.lookup_method(cls, mname);
         // Enum built-in static methods (cases/from/tryFrom) when not overridden.
         if found.is_none() && self.class(cls).kind == ClassKind::Enum {
             let lc = mname.to_ascii_lowercase();
@@ -336,19 +354,19 @@ impl Vm {
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
                 }
-                let args = vec![Value::str(mname.clone()), Value::Array(arr)];
+                let args = vec![Value::str(mname.to_vec()), Value::Array(arr)];
                 let r = self.call_sync(&magic, None, cls, args)?;
                 self.reg_set(top, dst, r);
                 return Ok(());
             }
             return match found {
-                Some(m) => Err(self.access_err("method", m.defining_class, &mname, m.visibility)),
+                Some(m) => Err(self.access_err("method", m.defining_class, mname, m.visibility)),
                 None => Err(Thrown::error(
                     "Error",
                     format!(
                         "Call to undefined method {}::{}()",
                         String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                        String::from_utf8_lossy(&mname)
+                        String::from_utf8_lossy(mname)
                     ),
                 )),
             };
@@ -455,7 +473,7 @@ impl Vm {
             (Some(m), true) => {
                 let (argv, named) = self.split_call_args(&arr)?;
                 let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                self.push_method_frame(&m, Some(h.clone()), cls, argv, dst)
+                self.push_method_frame(&m, Some(h.clone()), cls, Args::Slice(&argv), dst)
             }
             (found, _) => {
                 if let Some(magic) = self.lookup_method(cls, b"__call") {
@@ -547,7 +565,7 @@ impl Vm {
         let this = self.static_call_this(top, &m, cls)?;
         let (argv, named) = self.split_call_args(&arr)?;
         let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-        self.push_method_frame(&m, this, called, argv, dst)
+        self.push_method_frame(&m, this, called, Args::Slice(&argv), dst)
     }
 
     /// The strict-types mode of the current caller (top of stack), for argument
@@ -566,17 +584,25 @@ impl Vm {
     pub(crate) fn bind_frame(
         &mut self,
         frame: &mut Frame,
-        args: &[Value],
+        args: Args<'_>,
         caller: Option<bool>,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
-        frame.argc = args.len();
+        let argc = args.len();
+        frame.argc = argc;
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
-        let count_error = self.internal_arg_count_error(&proto, frame, args.len());
-        let failed = match bind_params(&proto, args, frame) {
+        let count_error = self.internal_arg_count_error(&proto, frame, argc);
+        let slice = match args {
+            Args::Slice(s) => s,
+            Args::Window { top, base, argc } => {
+                &self.stack[top].regs[base as usize..base as usize + argc as usize]
+            }
+        };
+        let bound = bind_params(&proto, slice, frame);
+        let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, args.len()))),
+            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
                     frame.holes = holes;
@@ -834,7 +860,7 @@ impl Vm {
         }
         frame.defining_class = defining_class;
         frame.called_class = called_class;
-        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_frame(&mut frame, Args::Slice(&args), caller)?;
         self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
@@ -865,10 +891,10 @@ impl Vm {
 
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
     /// after) and drive it to completion (re-entrant; exceptions handled within).
-    fn run_closure_sync(
+    pub(crate) fn run_closure_sync(
         &mut self,
         cd: &rhp_values::ClosureData,
-        args: Vec<Value>,
+        args: Args<'_>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if self.stack.len() >= self.max_depth {
@@ -887,7 +913,7 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
-        self.bind_frame(&mut frame, &args, caller)?;
+        self.bind_frame(&mut frame, args, caller)?;
         self.bind_superglobals(&mut frame);
         if proto.is_generator {
             return Ok(self.make_generator(frame));
@@ -1338,7 +1364,7 @@ impl Vm {
             Err(_) => return Err(self.dynamic_call_error(&c)),
         };
         match callee {
-            Callee::Closure(cd) => self.run_closure_sync(&cd, args, caller),
+            Callee::Closure(cd) => self.run_closure_sync(&cd, Args::Slice(&args), caller),
             Callee::Function(f) => self.run_proto_sync(f, None, None, None, args, caller),
             Callee::Builtin(name) => self.invoke_builtin(&name, args, caller == Some(true)),
             Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
@@ -1509,27 +1535,19 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        // Raw (non-deref) copy: by-ref args arrive as `Value::Ref` and must be
-        // kept as references; by-value binding derefs in `bind_params`.
-        let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-            .collect();
-        self.push_user_frame(callee, args, dst)
+        // Raw window: by-ref args arrive as `Value::Ref` and must be kept as
+        // references; by-value binding derefs in `bind_params`.
+        self.push_user_frame(callee, Args::Window { top, base, argc }, dst)
     }
 
-    /// Push a frame for a user function with pre-collected args.
-    fn push_user_frame(
-        &mut self,
-        callee: UnitFn,
-        args: Vec<Value>,
-        dst: Reg,
-    ) -> Result<(), Thrown> {
+    /// Push a frame for a user function.
+    fn push_user_frame(&mut self, callee: UnitFn, args: Args<'_>, dst: Reg) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let is_generator = callee.proto.is_generator;
         let mut frame = Frame::new(callee.proto, callee.unit, dst);
-        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
+        self.bind_frame(&mut frame, args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
         if is_generator {
             let gen = self.make_generator(frame);
@@ -1932,7 +1950,7 @@ impl Vm {
             CallTarget::User(i) => {
                 let callee = self.functions[i].clone();
                 let argv = self.place_named_args(&callee.proto, None, argv, named)?;
-                self.push_user_frame(callee, argv, dst)?;
+                self.push_user_frame(callee, Args::Slice(&argv), dst)?;
             }
             _ if !named.is_empty() => {
                 // `call_user_func($f, ...named)` forwards them.

@@ -20,6 +20,7 @@ use rhp_values::{
 
 use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
 
+use crate::calls::Args;
 use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
 
 /// A linked class: all tables flattened from the inheritance chain.
@@ -38,7 +39,7 @@ pub struct ClassEntry {
     pub traits: Vec<ClassId>,
     /// Flattened vtable, keyed by lowercase method name, in php's member
     /// order (see [`php_member_order`]).
-    pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
+    pub methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
     /// Flattened instance-property slots in php's object layout order, keyed
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
@@ -499,6 +500,23 @@ fn lc(bytes: &[u8]) -> Vec<u8> {
     bytes.to_ascii_lowercase()
 }
 
+/// `f` of `name` lowercased, without allocating when `name` is lowercase
+/// already or short (the run-time lookups by name).
+pub(crate) fn with_lc<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    if !name.iter().any(u8::is_ascii_uppercase) {
+        return f(name);
+    }
+    let mut buf = [0u8; 64];
+    match buf.get_mut(..name.len()) {
+        Some(b) => {
+            b.copy_from_slice(name);
+            b.make_ascii_lowercase();
+            f(b)
+        }
+        None => f(&name.to_ascii_lowercase()),
+    }
+}
+
 fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
     UnitFn {
         proto: proto.clone(),
@@ -511,11 +529,11 @@ fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
 /// parent's table, itself already in this order, followed by interface
 /// members). Only the order changes — which member won is decided by the
 /// caller. This is what reflection and `get_class_*` enumerate.
-fn php_member_order<V>(
-    mut map: IndexMap<Vec<u8>, V>,
+fn php_member_order<V, S: std::hash::BuildHasher + Default>(
+    mut map: IndexMap<Vec<u8>, V, S>,
     first: impl IntoIterator<Item = Vec<u8>>,
-) -> IndexMap<Vec<u8>, V> {
-    let mut out = IndexMap::with_capacity(map.len());
+) -> IndexMap<Vec<u8>, V, S> {
+    let mut out = IndexMap::with_capacity_and_hasher(map.len(), S::default());
     for k in first {
         if let Some(v) = map.shift_remove(&k) {
             out.insert(k, v);
@@ -541,7 +559,7 @@ struct LinkedPrelude {
     /// per thread, so every program compiled on the thread shares them.
     protos: Vec<Rc<ClassProto>>,
     classes: Vec<ClassEntry>,
-    class_ids: std::collections::HashMap<Vec<u8>, ClassId>,
+    class_ids: FxHashMap<Vec<u8>, ClassId>,
     class_order: Vec<usize>,
     /// The capacities linking left `classes` and `class_order` with: the
     /// copies keep them, so the request's memory accounting is the same.
@@ -895,20 +913,21 @@ impl Vm {
         // An *abstract* method is only a requirement: it must never clobber an
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
-        let mut methods: IndexMap<Vec<u8>, ResolvedMethod> = parent
+        let mut methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].methods.clone())
             .unwrap_or_default();
-        let insert_method =
-            |methods: &mut IndexMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
-                if m.is_abstract {
-                    if let Some(existing) = methods.get(&k) {
-                        if !existing.is_abstract {
-                            return; // keep the concrete method
-                        }
+        let insert_method = |methods: &mut IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
+                             k: Vec<u8>,
+                             m: ResolvedMethod| {
+            if m.is_abstract {
+                if let Some(existing) = methods.get(&k) {
+                    if !existing.is_abstract {
+                        return; // keep the concrete method
                     }
                 }
-                methods.insert(k, m);
-            };
+            }
+            methods.insert(k, m);
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {
@@ -1482,7 +1501,7 @@ impl Vm {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        self.class_ids.get(&lc(n)).copied().ok_or_else(|| {
+        with_lc(n, |k| self.class_ids.get(k).copied()).ok_or_else(|| {
             Thrown::error(
                 "Error",
                 format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
@@ -1603,10 +1622,8 @@ impl Vm {
 
     /// Look up a method (flattened table) by name on `class_id`.
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
-        self.classes[class_id as usize]
-            .methods
-            .get(&lc(name))
-            .cloned()
+        let methods = &self.classes[class_id as usize].methods;
+        with_lc(name, |k| methods.get(k).cloned())
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.
@@ -1624,19 +1641,17 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-            .collect();
+        let args = Args::Window { top, base, argc };
         self.push_method_frame(method, this, called_class, args, dst)
     }
 
-    /// Push a method frame with pre-collected args (for spread / magic dispatch).
+    /// Push a method frame.
     pub(crate) fn push_method_frame(
         &mut self,
         method: &ResolvedMethod,
         this: Option<ObjectHandle>,
         called_class: ClassId,
-        args: Vec<Value>,
+        args: Args<'_>,
         dst: Reg,
     ) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
@@ -1649,7 +1664,7 @@ impl Vm {
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
-        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
+        self.bind_frame(&mut frame, args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
         if callee.is_generator {
             let gen = self.make_generator(frame);

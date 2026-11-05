@@ -14,6 +14,10 @@ use crate::classes::PropRes;
 use crate::types::{type_lc, value_name_lc};
 use crate::{classes, deref, Vm};
 
+/// The open cursor's steps: inline for the usual few, so an element
+/// write allocates nothing for its path.
+pub(crate) type CursorSteps = smallvec::SmallVec<[CursorStep; 4]>;
+
 /// A pending lvalue step (an evaluated key, an append, or an object property).
 #[derive(Clone)]
 pub(crate) enum CursorStep {
@@ -722,7 +726,7 @@ impl Vm {
                     let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                     let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
                     self.cursor_root = CursorRoot::Cell(cell);
-                    self.cursor_steps = steps[i + 1..].to_vec();
+                    self.cursor_steps = CursorSteps::from(&steps[i + 1..]);
                 }
                 _ => {
                     self.cursor_steps = steps;
@@ -1000,8 +1004,9 @@ impl Vm {
         let f = &self.stack[top];
         if f.global_scope {
             if let Some(n) = f.proto.cv_var_names.get(cv as usize) {
-                let n = n.as_bytes().to_vec();
-                self.ref_globals.insert(n);
+                if !self.ref_globals.contains(n.as_bytes()) {
+                    self.ref_globals.insert(n.as_bytes().to_vec());
+                }
             }
         }
         let slot = &mut self.stack[top].regs[cv as usize];

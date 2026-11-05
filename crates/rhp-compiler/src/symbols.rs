@@ -31,6 +31,9 @@ struct State {
     top_functions: HashMap<Vec<u8>, u32>,
     /// `__halt_compiler();` was reached: php compiles nothing after it.
     halted: bool,
+    /// The declare statement that is the file's first statement, if any
+    /// (where strict_types may be set).
+    first_declare: usize,
 }
 
 fn s(b: &[u8]) -> String {
@@ -73,6 +76,20 @@ pub(crate) fn check_file(cx: &FileCtx, program: &Program) {
         return;
     }
     let mut st = State::default();
+    for stmt in program.statements.iter() {
+        match stmt {
+            Statement::OpeningTag(_) | Statement::ClosingTag(_) => {}
+            Statement::Inline(i)
+                if cx
+                    .strip_close_tag_newline(i.span().start.offset, i.value)
+                    .is_empty() => {}
+            Statement::Declare(d) => {
+                st.first_declare = d as *const _ as usize;
+                break;
+            }
+            _ => break,
+        }
+    }
     if top_stmts(cx, program, &program.statements, &mut st).is_none() {
         return;
     }
@@ -317,6 +334,33 @@ fn declarations(cx: &FileCtx, node: Node, st: &mut State, top: bool) -> Option<(
                     }
                 }
                 *st.seen.entry(name).or_default() |= CONST;
+            }
+            return Some(());
+        }
+        Node::Declare(d) => {
+            // zend_compile_declare's strict_types placement rules.
+            let strict = d
+                .items
+                .iter()
+                .any(|i| i.name.value.eq_ignore_ascii_case(b"strict_types"));
+            if strict {
+                let msg = if d as *const _ as usize != st.first_declare {
+                    Some("strict_types declaration must be the very first statement in the script")
+                } else if !matches!(
+                    &d.body,
+                    crate::parse::cst::DeclareBody::Statement(Statement::Noop(_))
+                ) {
+                    Some("strict_types declaration must not use block mode")
+                } else {
+                    None
+                };
+                if let Some(msg) = msg {
+                    cx.fatal(d.span().start.offset, msg.into());
+                    return None;
+                }
+            }
+            for child in node.children() {
+                declarations(cx, child, st, false)?;
             }
             return Some(());
         }

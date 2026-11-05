@@ -722,6 +722,18 @@ impl ProtoBuilder<'_> {
     fn compile_constant(&mut self, id: &Identifier) -> Result<Reg, Thrown> {
         let name = identifier_name(id);
         let dst = self.alloc_temp();
+        // zend_get_halt_offset_constant: the file's own halt offset.
+        if let Some(n) = self.cx.halt_offset {
+            let halt = match id {
+                Identifier::Local(l) => l.value == b"__COMPILER_HALT_OFFSET__",
+                Identifier::FullyQualified(f) => f.value == b"\\__COMPILER_HALT_OFFSET__",
+                Identifier::Qualified(_) => false,
+            };
+            if halt {
+                self.emit(Instr::LoadInt { dst, n });
+                return Ok(dst);
+            }
+        }
         match name {
             b"true" | b"TRUE" | b"True" => self.emit(Instr::LoadBool { dst, b: true }),
             b"false" | b"FALSE" | b"False" => self.emit(Instr::LoadBool { dst, b: false }),

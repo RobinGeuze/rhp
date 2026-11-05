@@ -43,6 +43,9 @@ pub(crate) struct FileCtx<'s> {
     /// The end offset of each function in `sigs`: php knows a function
     /// at compile time only after its declaration was compiled.
     pub(crate) sig_ends: HashMap<Vec<u8>, u32>,
+    /// The byte offset after `__halt_compiler();`: this file's
+    /// `__COMPILER_HALT_OFFSET__`.
+    pub(crate) halt_offset: Option<i64>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -114,6 +117,7 @@ impl<'s> FileCtx<'s> {
             strict_types: false,
             sigs: HashMap::new(),
             sig_ends: HashMap::new(),
+            halt_offset: None,
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -158,6 +162,13 @@ impl<'s> FileCtx<'s> {
             }
         }
         cx.method_ref = collect_method_refs(flat);
+        cx.halt_offset = flat.iter().find_map(|(_, st)| match st {
+            Statement::HaltCompiler(h) => {
+                use mago_span::HasSpan;
+                Some(h.span().end.offset as i64)
+            }
+            _ => None,
+        });
         cx.num_top_classes = flat.iter().filter(|(_, st)| is_class_like(st)).count() as u32;
         cx
     }
@@ -317,10 +328,18 @@ fn is_class_like(st: &Statement) -> bool {
 
 /// Whether the program's leading statement is `declare(strict_types=1)`.
 fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
+    use mago_span::HasSpan;
     for stmt in program.statements.iter() {
         match stmt {
             // skip the opening `<?php` / inline-html prelude
-            Statement::OpeningTag(_) | Statement::Inline(_) | Statement::Noop(_) => continue,
+            Statement::OpeningTag(_) | Statement::ClosingTag(_) => continue,
+            Statement::Inline(i)
+                if cx
+                    .strip_close_tag_newline(i.span().start.offset, i.value)
+                    .is_empty() =>
+            {
+                continue
+            }
             Statement::Declare(d) => {
                 for item in d.items.iter() {
                     if item.name.value.eq_ignore_ascii_case(b"strict_types") {

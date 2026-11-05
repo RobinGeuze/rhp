@@ -325,8 +325,8 @@ pub type ClassId = u32;
 pub struct ObjectData {
     /// Which class this is an instance of.
     pub class: ClassId,
-    /// Process-unique object id (spl_object_id), assigned monotonically at
-    /// instantiation. Used for `===` identity and hashing.
+    /// The object handle (spl_object_id, `#N`): php's object store, reused
+    /// once the object is freed (rhp_values::handles).
     pub id: u32,
     /// Declared + dynamic properties, in declaration/insertion order.
     /// Values may themselves be `Value::Ref` for `&`-bound properties.

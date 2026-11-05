@@ -1,0 +1,22 @@
+enum(E::A)
+enum(E::B)
+enum(E::B)
+enum(E::B)
+handler: 8192: Implicit conversion from float 1.5 to int loses precision
+enum(E::A)
+handler: 8192: E::from(): Passing null to parameter #1 ($value) of type string|int is deprecated
+ValueError: 0 is not a valid backing value for enum E
+TypeError: E::from(): Argument #1 ($value) must be of type int, array given
+TypeError: E::from(): Argument #1 ($value) must be of type int, string given
+ValueError: 3 is not a valid backing value for enum E
+handler: 8192: Implicit conversion from float 1.5 to int loses precision
+enum(S::A)
+enum(S::A)
+enum(S::A)
+enum(S::A)
+NULL
+TypeError: S::from(): Argument #1 ($value) must be of type string|int, stdClass given
+TypeError: S::from(): Argument #1 ($value) must be of type string|int, array given
+handler: 8192: S::from(): Passing null to parameter #1 ($value) of type string|int is deprecated
+ValueError: "0" is not a valid backing value for enum S
+ValueError: "7" is not a valid backing value for enum S

@@ -45,6 +45,30 @@ pub fn push_diag(level: i64, docref: bool, msg: impl Into<String>) {
     HAS_DIAGS.with(|f| f.set(true));
 }
 
+/// php_stdiop_read's notice for a failed `read(2)` of `count` bytes.
+pub fn read_failed(count: usize, err: i32) {
+    push_diag(
+        crate::E_NOTICE,
+        true,
+        format!(
+            "Read of {count} bytes failed with errno={err} {}",
+            super::strerror(err)
+        ),
+    );
+}
+
+/// php_stdiop_write's notice for a failed `write(2)` of `count` bytes.
+pub fn write_failed(count: usize, err: i32) {
+    push_diag(
+        crate::E_NOTICE,
+        true,
+        format!(
+            "Write of {count} bytes failed with errno={err} {}",
+            super::strerror(err)
+        ),
+    );
+}
+
 /// A new request: drop what an earlier one queued and never reported
 /// (a stream closed while its engine was dropped).
 pub(crate) fn reset_state() {
@@ -388,6 +412,7 @@ impl FdStream {
             if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
                 return Fill::Nothing;
             }
+            read_failed(buf.len(), err);
             if err != libc::EBADF {
                 self.eof = true;
             }
@@ -514,6 +539,13 @@ impl FdStream {
         let n = n.min(self.rbuf.len());
         self.position += n as i64;
         self.rbuf.drain(..n).collect()
+    }
+
+    /// Put bytes just read back in front of the read buffer (what php's
+    /// `php_stream_get_record` leaves buffered when it returns nothing).
+    pub fn push_back(&mut self, data: &[u8]) {
+        self.rbuf.splice(0..0, data.iter().copied());
+        self.position -= data.len() as i64;
     }
 
     /// `fread($h, $len)`: buffered bytes first, then reads of one chunk — a
@@ -1038,6 +1070,45 @@ pub fn set_fd_blocking(raw: RawFd, blocking: bool) -> bool {
         };
         nf == flags || libc::fcntl(raw, libc::F_SETFL, nf) == 0
     }
+}
+
+/// `php://fd/<n>`: a dup() of descriptor `n` (`spec` is what follows
+/// `fd/`), or `None` with the wrapper's error noted.
+pub fn open_php_fd(spec: &[u8]) -> Option<OwnedFd> {
+    // ZEND_STRTOL: leading space, a sign, digits, and nothing after
+    let t = spec.iter().take_while(|c| c.is_ascii_whitespace()).count();
+    let mut i = t;
+    if matches!(spec.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits = spec[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || i + digits != spec.len() {
+        super::note_wrapper_error(
+            "php://fd/ stream must be specified in the form php://fd/<orig fd>",
+        );
+        return None;
+    }
+    let n: i64 = std::str::from_utf8(&spec[t..])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(if spec[t] == b'-' { i64::MIN } else { i64::MAX });
+    let dtablesize = unsafe { libc::getdtablesize() };
+    if n < 0 || n >= i64::from(dtablesize) {
+        super::note_wrapper_error(format!(
+            "The file descriptors must be non-negative numbers smaller than {dtablesize}"
+        ));
+        return None;
+    }
+    let fd = unsafe { libc::dup(n as RawFd) };
+    if fd < 0 {
+        let e = super::errno();
+        super::note_wrapper_error(format!(
+            "Error duping file descriptor {n}; possibly it doesn't exist: [{e}]: {}",
+            super::strerror(e)
+        ));
+        return None;
+    }
+    Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
 }
 
 /// A `dup(2)` of a raw fd (e.g. the process's own 0/1/2) as an owned fd.

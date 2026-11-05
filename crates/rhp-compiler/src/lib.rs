@@ -26,6 +26,7 @@ use crate::shrink::shrink_program;
 mod assign;
 mod builder;
 mod calls;
+mod checks;
 mod control;
 mod cvs;
 mod decl;
@@ -34,6 +35,7 @@ mod file;
 mod fold;
 mod functions;
 mod hints;
+mod hooks;
 mod hrh;
 mod names;
 mod oop;
@@ -47,6 +49,15 @@ thread_local! {
     /// See [`compile_error_line`]: the result channel of a failed compile,
     /// not per-file state.
     static COMPILE_ERROR_LINE: Cell<u32> = const { Cell::new(0) };
+    /// See [`take_compile_error_diags`].
+    static COMPILE_ERROR_DIAGS: std::cell::RefCell<Vec<(i64, String, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The diagnostics (level, message, line) the compiler raised before the
+/// compile error behind [`compile_error_line`]: php displays them first.
+pub fn take_compile_error_diags() -> Vec<(i64, String, u32)> {
+    COMPILE_ERROR_DIAGS.with(|d| d.take())
 }
 
 /// The line of the compile error (E_COMPILE_ERROR) behind the last
@@ -54,6 +65,10 @@ thread_local! {
 /// thread returned. The SAPI reports it as a fatal error at that line.
 pub fn compile_error_line() -> u32 {
     COMPILE_ERROR_LINE.with(Cell::get)
+}
+
+pub(crate) fn set_compile_error_line(line: u32) {
+    COMPILE_ERROR_LINE.with(|l| l.set(line));
 }
 
 /// What a file is compiled for.
@@ -116,16 +131,44 @@ fn compile_program(
         &mut flat,
     );
     let cx = FileCtx::new(builtins, file, source, program, &flat);
+    checks::check_uses(&cx, &program.statements);
     let r = compile_file(&cx, &flat, with_prelude);
     // A recorded compile error came first in source order (compilation stops
-    // at the first one in php), so it wins over a later refusal too.
-    match cx.take_fatal() {
-        Some((line, message)) => {
-            COMPILE_ERROR_LINE.with(|l| l.set(line));
+    // at the first one in php), so it wins over a later refusal too, and over
+    // a compile error that unwound the compile from a later line.
+    let unwound = match &r {
+        Err(Thrown::Error {
+            class: "CompileError",
+            ..
+        }) => Some(compile_error_line()),
+        _ => None,
+    };
+    let (r, mut diags) = match r {
+        Ok(p) => {
+            let d = p.compile_diags.clone();
+            (Ok(p), d)
+        }
+        Err(e) => (Err(e), cx.compile_diags.take()),
+    };
+    let r = match cx.take_fatal() {
+        Some((line, message)) if unwound.is_none_or(|l| line <= l) => {
+            set_compile_error_line(line);
             Err(Thrown::error("CompileError", message))
         }
-        None => r,
+        _ => r,
+    };
+    if let Err(Thrown::Error {
+        class: "CompileError",
+        ..
+    }) = &r
+    {
+        // The diagnostics raised before the error, for the SAPI to show.
+        let line = compile_error_line();
+        diags.retain(|d| d.2 <= line);
+        diags.sort_by_key(|d| d.2);
+        COMPILE_ERROR_DIAGS.with(|d| *d.borrow_mut() = diags);
     }
+    r
 }
 
 fn compile_file(

@@ -54,15 +54,16 @@ priority order rather than rediscovered one framework crash at a time.
 | 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
 | 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
-| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `builtins/core_prelude.php` | rebinding via instance form; scoped invoke | med | high |
-| 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
+| 30 | ~~`Closure::bindTo`/`Closure::call` instance methods missing~~ **done** (`vm/closures.rs`, with php's binding checks) | — | — | — | — |
+| 31 | ~~var_dump object ids — monotonic, no handle recycling~~ **mostly done** (§9.1): handles reused; frees php's cycle collector or an earlier destructor would make still come later | `rhp-values/src/handles.rs` | `#N` after cyclic garbage or destructed temporaries | low | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
 | 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
-| 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
+| 35 | ~~Arithmetic on a leading-numeric string — no "A non-numeric value encountered" warning~~ — RESOLVED (§7.2) | VM arithmetic | — | — | — |
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
 | 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
+| 39 | Typed class constant compatibility — no autoload, types only for traits (§8.5) | `vm/const_link.rs` | a redeclaration whose check needs a class an autoloader would load | low | low |
 
 ---
 
@@ -275,6 +276,16 @@ The original notes:
   `fread`, `fgets($h, $len)`. `fseek`/`ftell`/`rewind`/`ftruncate`/`fstat`/
   `flock` work on it; `php://memory` seeks/truncates in its buffer. Non-local
   wrappers (`phar://`) still use the buffered `Mem`/`FileWrite` states.
+- Opens go through a port of `php_stream_locate_url_wrapper`
+  (`streams::locate_url_wrapper`): schemes match as written then
+  lowercased, an unknown scheme warns and opens the plain file, `file://host/`
+  is refused. Plain files open their `expand_filepath()` path. Failed
+  `read(2)`/`write(2)` raise php's "Read/Write of N bytes failed with
+  errno=..." notices. Still missing: open_basedir, stream filters on plain
+  files, `php://fd` outside the CLI check.
+- `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
+  php uses `mblen()` there, which is the same in the "C" locale rhp always
+  runs in (see 1.8).
 
 ### 2.2 `stream_set_blocking` / `_timeout` / write-buffer knobs
 - **Now:** no-ops (`stream_fns.rs:124-127`), explicitly labelled "accepted so
@@ -525,17 +536,14 @@ The module is deliberately "READ-ONLY, native format only"
 - **Effort/priority:** high / med. Co-dependent with #1.2–#1.4. Not required for
   composer (which runs clean), but a prerequisite for faithful framework dev-mode.
 
-### 7.2 Arithmetic on leading-numeric strings — no warning
-- **Now:** `"1abc" + 5` and `"8k" % 3` give php's values (6, 2) but no
-  `Warning: A non-numeric value encountered`, which php 8.5 emits for an
-  operand with trailing data. Found folding tests/corpus into goldens
-  (2026-11).
-- **Workaround:** `tests/golden/corpus/typejuggle.php` silences that line
-  with `@`; drop the `@` when this is fixed.
-- **Full impl:** warn where the arithmetic operators convert a string
-  operand, as php's `_zendi_try_convert_scalar_to_number` and
-  `zendi_try_get_long` (for `%`, `<<`, `>>`, `|`, `&`, `^`) do in
-  `Zend/zend_operators.c`.
+### 7.2 Arithmetic on leading-numeric strings — RESOLVED
+- Operands that are not both numbers take the zend_operators slow path in
+  the VM (`vm/compare.rs`: `bin_slow`, `long_op`): the warning, the
+  operand-type TypeError naming both original operands, bytewise string
+  `| & ^ ~`, shift-count and `%` errors, and php 8.5's float/NAN
+  diagnostics. `rhp_values::ops` stays engine-free and refuses whatever
+  php would diagnose, so constant folding leaves it to run time.
+  `tests/golden/lang/operator_diagnostics.php` pins the cases.
 
 ---
 
@@ -635,34 +643,34 @@ The module is deliberately "READ-ONLY, native format only"
   generated signatures already hold parameter names) and fill skipped
   optional parameters with their defaults.
 
+### 8.5 Typed class constant compatibility — no autoload
+- **Now:** linking checks a redeclared typed constant (and a trait's
+  against the composing class's) with a port of
+  zend_perform_covariant_type_check in `vm/const_link.rs` (success, error
+  or unresolved). A class whose check is unresolved is not early-bound; at
+  run time an unresolved check is an error, as php's obligation is when
+  nothing loads the class. The trait check compares types only, not
+  visibility, finality or values.
+- **Full impl:** autoload the classes an unresolved check needs, and share
+  the check with the method LSP check once it exists.
+
 ---
 
 ## 9. VM / object model
 
-### 9.1 var_dump object ids — monotonic counter, no handle recycling
-- **Now:** object ids come from a monotonically increasing `next_object_id`
-  (`vm/classes.rs:321-322`, `:481-482`; `vm/lib.rs:51`, `:589`, `:1795`, `:2377`)
-  and are printed by `var_dump` as `object(Class)#N` (`rhp-builtins/src/dump.rs:69`).
-  php instead *recycles* freed object handles, so a short-lived object's id is
-  reused by the next allocation. Also, closures always dump as `object(Closure)#0`
-  with a hardcoded `#0` (`dump.rs:88`).
-- **OK because:** the difftest suite deliberately never `var_dump`s objects for id
-  comparison (`rhp-difftest/src/sweeps.rs:143`, `:163` note this explicitly for
-  gmp), so the divergence is unobserved in CI.
-- **Breaks:** any `var_dump`/`var_export`/`print_r`-of-object output compared to
-  php byte-for-byte once more than one object is alive, and `spl_object_id`/
-  `spl_object_hash` parity. php's recycling means its ids are smaller and reused;
-  rhp's only grow.
-- **Full impl:** reproduce php's handle allocator — a free-list of released object
-  handle slots that new objects reuse, so ids match php's recycling order. This is
-  invasive (object lifetime → handle release must be tracked, which `Rc` drop
-  timing does not naturally mirror php's refcount-exact frees) and may never be
-  perfectly byte-identical without matching php's exact alloc/free ordering. Treat
-  as "parity only where object lifetimes are simple"; keep object ids out of the
-  byte-exact contract otherwise. Fix the closure `#0` to use a real id as a cheap
-  first step.
-- **Effort/priority:** high / low. High cost, low payoff (tests already avoid it);
-  do the closure-`#0` tidy-up opportunistically, defer the recycling allocator.
+### 9.1 var_dump object ids — handle reuse
+- **Now:** object handles come from `rhp_values::handles`, php's object store:
+  freed handles are reused most recently freed first, none after shutdown
+  destructors start. Objects, closures, generators and enum cases take them.
+  Argument temporaries move into calls and a method call on a temporary releases
+  its object, so most objects are freed when php frees them.
+- **Breaks:** objects php's cycle collector frees (rhp's `Rc` cycles leak, so
+  their handles never come back); destructible objects, which rhp destructs and
+  frees at its next release check rather than at the exact refcount drop; other
+  temporaries that stay in a register until it is overwritten. `#N` then differs
+  from php.
+- **Full impl:** free every dead temporary (php's FREE opcodes / liveness), run
+  destructors at the refcount drop, a cycle collector.
 
 ### 9.2 STDIN/STDOUT/STDERR constants — stale placeholder ints, shadowed at runtime
 - **Now:** `builtins/lib.rs:436-441` defines `STDIN`/`STDOUT`/`STDERR` as

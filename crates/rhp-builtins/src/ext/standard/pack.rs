@@ -341,7 +341,10 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             count
         };
         for _ in 0..reps {
-            let v = vals.get(vi).map(|x| conv::to_int(&deref(x))).unwrap_or(0) as u64;
+            let v = match vals.get(vi) {
+                Some(x) => crate::zend::zpp::zval_get_long(host, x)?,
+                None => 0,
+            } as u64;
             vi += 1;
             push_int(&mut out, v, size, be);
         }

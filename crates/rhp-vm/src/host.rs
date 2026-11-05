@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::{self as builtins, Host};
-use rhp_values::{
-    conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
-};
+use rhp_values::{ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, user_visible_builtin};
 use crate::classes::PropRes;
@@ -162,6 +160,24 @@ impl Host for Vm {
         class_id: u32,
     ) -> Option<&'static builtins::zend::object_handlers::ObjectHandlers> {
         self.classes.get(class_id as usize)?.handlers
+    }
+
+    fn hooked_properties_for(
+        &mut self,
+        obj: &ObjectHandle,
+        purpose: builtins::zend::object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        use builtins::zend::object_handlers::PropPurpose as P;
+        let cls = obj.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return Ok(None);
+        }
+        let scope = match purpose {
+            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
+            P::Json | P::VarExport => None,
+            _ => return Ok(None),
+        };
+        self.hooked_props_table(obj, scope).map(Some)
     }
 
     fn std_cast_object(
@@ -499,6 +515,17 @@ impl Host for Vm {
                 // A temp stream wraps an inner memory stream, allocated right
                 // after it (a second resource id).
                 self.next_resource_id += 1;
+            }
+            return Some(v);
+        } else if path.len() >= 9 && path[..9].eq_ignore_ascii_case(b"php://fd/") {
+            // php_stream_url_wrap_php's fd/: a dup() of the descriptor
+            let fd = builtins::main::streams::plain_wrapper::open_php_fd(&path[9..])?;
+            let v = self.make_stream(
+                StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new(fd)),
+                "stream",
+            );
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.fd_name = Some((path.to_vec(), mode.to_vec()));
             }
             return Some(v);
         } else if path.starts_with(b"php://") {
@@ -868,6 +895,23 @@ impl Host for Vm {
         Some(self.make_stream(st, "stream"))
     }
 
+    fn stream_push_back(&mut self, res: &Value, data: &[u8]) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.push_back(data),
+            Some(StreamState::File(f)) => f.push_back(data),
+            Some(StreamState::Mem { pos, .. }) if *pos >= data.len() => *pos -= data.len(),
+            _ => return false,
+        }
+        true
+    }
+
+    fn stream_set_mode(&mut self, res: &Value, mode: &[u8]) {
+        if let Some(s) = res_id(res).and_then(|id| self.streams.record_mut(id)) {
+            s.mode = Some(mode.to_vec());
+        }
+    }
+
     fn stream_from_socket(
         &mut self,
         fd: std::os::fd::OwnedFd,
@@ -1187,22 +1231,37 @@ impl Host for Vm {
                 Some(f) => f.seek(offset, whence),
                 None => false,
             },
+            // php_plain_files_dirstream_rewind: any seek rewinds
+            Some(StreamState::Dir { pos, .. }) => {
+                *pos = 0;
+                true
+            }
             Some(StreamState::Mem {
                 buf,
                 pos,
                 skew,
                 eof,
+                temp,
                 ..
             }) => {
                 // _php_stream_seek + php_stream_memory_seek: a negative
                 // SEEK_SET fails without touching the stream; SEEK_CUR is
-                // resolved against php's position; any other failure resets
-                // the buffer offset to 0 and php's position to -1. Seeking
+                // turned into a SEEK_SET past that check, so a negative
+                // target reaches the memory stream, which resets its offset
+                // to 0 and php's position to -1 (as any other failure does).
+                // A temp stream (php://temp, data:) seeks its inner memory
+                // stream with SEEK_SET, so there it fails untouched. Seeking
                 // past the end is allowed (the next write zero-fills).
                 let target = match whence {
                     0 if offset < 0 => return false,
                     0 => offset,
-                    1 => (*pos as i64 + *skew).saturating_add(offset),
+                    1 => {
+                        let t = (*pos as i64 + *skew).saturating_add(offset);
+                        if t < 0 && temp.is_some() {
+                            return false;
+                        }
+                        t
+                    }
                     2 => (buf.len() as i64).saturating_add(offset),
                     _ => {
                         *skew = 0;
@@ -1422,7 +1481,7 @@ impl Host for Vm {
                             stream_type: "STDIO",
                             mode: mode.clone(),
                             uri: uri.clone(),
-                            unread_bytes: 0,
+                            unread_bytes: f.unread() as i64,
                             seekable: f.is_seekable(),
                             eof: f.eof(),
                             blocked: true,
@@ -1432,19 +1491,22 @@ impl Host for Vm {
                             rfc2397: None,
                         },
                         // A pipe (proc_open, popen): no wrapper, no uri; the mode is
-                        // the descriptor's direction.
+                        // popen's, else the descriptor's direction.
                         None => M {
                             wrapper_type: "",
                             stream_type: "STDIO",
-                            mode: match f
-                                .raw_fd()
-                                .map(builtins::main::streams::plain_wrapper::fd_access_mode)
-                            {
-                                Some(Some(true)) => b"w".to_vec(),
-                                _ => b"r".to_vec(),
+                            mode: match self.streams.record(id).and_then(|s| s.mode.clone()) {
+                                Some(m) => m,
+                                None => match f
+                                    .raw_fd()
+                                    .map(builtins::main::streams::plain_wrapper::fd_access_mode)
+                                {
+                                    Some(Some(true)) => b"w".to_vec(),
+                                    _ => b"r".to_vec(),
+                                },
                             },
                             uri: Vec::new(),
-                            unread_bytes: 0,
+                            unread_bytes: f.unread() as i64,
                             seekable: f.is_seekable(),
                             eof: f.eof(),
                             blocked: true,
@@ -1710,7 +1772,8 @@ impl Host for Vm {
         let mut out = Vec::new();
         let mut before = 0usize;
         for (key, pe) in &entry.props {
-            if self.internal_slot(o.class, key) {
+            // A virtual property has no slot to dump.
+            if self.internal_slot(o.class, key) || pe.virt {
                 continue;
             }
             if o.properties.contains_key(key) {
@@ -1788,6 +1851,19 @@ impl Host for Vm {
         }
     }
 
+    fn closure_debug_info(&self, closure: &Value) -> Option<PhpArray> {
+        match deref(closure) {
+            Value::Closure(cd) => Some(Vm::closure_debug_info(self, &cd)),
+            _ => None,
+        }
+    }
+
+    fn current_closure(&self) -> Option<Value> {
+        let f = self.stack.iter().rev().find(|f| !f.proto.is_internal())?;
+        let cd = f.closure.as_ref()?;
+        Some(Value::Closure(cd.clone()))
+    }
+
     fn run_released_destructors(&mut self) -> Result<(), Thrown> {
         self.collect_released_now()
     }
@@ -1836,54 +1912,48 @@ impl Host for Vm {
                 .is_some_and(|&i| self.functions[i].proto.is_internal())
     }
 
-    fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
-        let cd = match deref(closure) {
-            Value::Closure(cd) => cd,
-            _ => return None,
-        };
-        let new_this_h = match deref(new_this) {
-            Value::Object(h) => Some(h),
-            _ => None,
-        };
-        // php's do_closure_bind: an object's class, `"static"` = keep the
-        // closure's scope, a class name, or null = no scope. The called scope
-        // (`static::`) is the new `$this`'s class, else the new scope.
-        let scope_class = match deref(scope) {
-            Value::Null => None,
-            Value::Object(h) => Some(h.borrow().class),
-            v => {
-                let name = conv::to_string_bytes(&v);
-                if name == b"static" {
-                    cd.bound_class
-                } else {
-                    self.resolve_class_by_name(&name).ok().or(cd.bound_class)
-                }
-            }
-        };
-        let called = new_this_h
-            .as_ref()
-            .map(|h| h.borrow().class)
-            .or(scope_class);
-        Some(Value::Closure(Rc::new(rhp_values::ClosureData {
-            fnidx: cd.fnidx,
-            captures: cd.captures.clone(),
-            bound_this: new_this_h,
-            bound_class: scope_class,
-            bound_static: called,
-            wrapped: cd.wrapped.clone(),
-        })))
+    fn closure_bind(
+        &mut self,
+        closure: &Value,
+        new_this: &Value,
+        scope: Option<&Value>,
+    ) -> Result<Value, Thrown> {
+        let scope = scope.cloned().unwrap_or_else(|| Value::str("static"));
+        self.bind_closure(
+            "Closure::bind",
+            2,
+            closure,
+            new_this,
+            Some(&scope),
+            crate::closures::BindMode::Bind,
+        )
     }
 
-    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool {
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> Result<bool, Thrown> {
         let key = alias
             .strip_prefix(b"\\")
             .unwrap_or(alias)
             .to_ascii_lowercase();
+        // zend_assert_valid_class_name(lcname, "a class alias")
+        let tail = key.rsplit(|&b| b == b'\\').next().unwrap_or(&key);
+        if crate::link_checks::is_reserved_class_name(tail) {
+            let msg = format!(
+                "Cannot use \"{}\" as a class alias as it is reserved",
+                String::from_utf8_lossy(&key)
+            );
+            return Err(self.fatal_compile_error(msg.as_bytes()));
+        }
+        if key == b"_" {
+            self.raise_error(
+                rhp_values::E_DEPRECATED,
+                "Using \"_\" as a class alias is deprecated since 8.4",
+            );
+        }
         if self.class_ids.contains_key(&key) {
-            return false;
+            return Ok(false);
         }
         self.class_ids.insert(key, class_id);
-        true
+        Ok(true)
     }
 
     fn class_relations(&self, class_id: u32) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
@@ -2043,6 +2113,36 @@ impl Host for Vm {
         true
     }
 
+    fn unserialize_virtual_prop(&self, obj: &Value, key: &[u8]) -> Option<Vec<u8>> {
+        let Value::Object(h) = deref(obj) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        let entry = &self.classes[cls as usize];
+        if !entry.hooked {
+            return None;
+        }
+        let name: &[u8] = if key.first() == Some(&0) {
+            let end = key[1..].iter().position(|&b| b == 0)?;
+            let (owner, name) = (&key[1..end + 1], &key[end + 2..]);
+            if !(owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes())) {
+                return None;
+            }
+            name
+        } else {
+            key
+        };
+        let k = entry.prop_visible.get(&PhpStr::from_bytes(name.to_vec()))?;
+        let pe = entry.props.get(k).filter(|pe| pe.virt)?;
+        let mut out = self.classes[pe.declaring_class as usize]
+            .name
+            .as_bytes()
+            .to_vec();
+        out.extend_from_slice(b"::$");
+        out.extend_from_slice(key);
+        Some(out)
+    }
+
     fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {
         let h = match deref(obj) {
             Value::Object(h) => h,
@@ -2143,6 +2243,8 @@ impl Host for Vm {
             bound_class: scope,
             bound_static: called,
             wrapped: Some(Box::new(callable)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
         }))
     }
 }

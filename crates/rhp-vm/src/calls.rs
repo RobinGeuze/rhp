@@ -3,7 +3,7 @@
 
 use std::rc::{Rc, Weak};
 
-use rhp_builtins::{self as builtins, Host};
+use rhp_builtins::{self as builtins};
 use rhp_bytecode::{ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -335,9 +335,10 @@ impl Vm {
         // Enum built-in static methods (cases/from/tryFrom) when not overridden.
         if found.is_none() && self.class(cls).kind == ClassKind::Enum {
             let lc = mname.to_ascii_lowercase();
-            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+            if self.is_enum_builtin(cls, &lc) {
                 let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                let r = self.enum_builtin_static(cls, &lc, args)?;
+                let strict = self.stack[top].proto.strict_types;
+                let r = self.enum_builtin_static(cls, &lc, args, strict)?;
                 self.reg_set(top, dst, r);
                 return Ok(());
             }
@@ -433,10 +434,14 @@ impl Vm {
                 b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
                 b"call" if !named.is_empty() && !argv.is_empty() => {
                     let new_this = argv.remove(0);
-                    let bound = self
-                        .closure_bind(&o, &new_this, &new_this)
-                        .unwrap_or(Value::Null);
-                    self.call_named(&bound, argv, named, None)?
+                    let bound = self.closure_call_target(&o, &new_this)?;
+                    if matches!(bound, Value::Null) {
+                        Value::Null
+                    } else {
+                        let r = self.call_named(&bound, argv, named, None);
+                        self.closure_call_done(&o, &bound);
+                        r?
+                    }
                 }
                 _ => self.closure_method(&o, &mname, argv)?,
             };
@@ -519,9 +524,10 @@ impl Vm {
         let found = self.lookup_method(cls, &mname);
         if found.is_none() && self.class(cls).kind == ClassKind::Enum {
             let lc = mname.to_ascii_lowercase();
-            if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+            if self.is_enum_builtin(cls, &lc) {
                 let (argv, _named) = self.split_call_args(&arr)?;
-                let r = self.enum_builtin_static(cls, &lc, argv)?;
+                let strict = self.stack[top].proto.strict_types;
+                let r = self.enum_builtin_static(cls, &lc, argv, strict)?;
                 self.reg_set(top, dst, r);
                 return Ok(());
             }
@@ -595,13 +601,35 @@ impl Vm {
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
         let count_error = self.internal_arg_count_error(&proto, frame, argc);
-        let slice = match args {
-            Args::Slice(s) => s,
+        let bound = match args {
+            Args::Slice(s) => bind_params(
+                &proto,
+                s.len(),
+                |i, by_ref| if by_ref { s[i].clone() } else { deref(&s[i]) },
+                frame,
+            ),
             Args::Window { top, base, argc } => {
-                &self.stack[top].regs[base as usize..base as usize + argc as usize]
+                // The window's temporaries move into the callee (php moves
+                // arguments into the callee's frame, so they die with it).
+                let f = &mut self.stack[top];
+                let movable = base as usize >= f.proto.num_cvs as usize;
+                let w = &mut f.regs[base as usize..base as usize + argc as usize];
+                bind_params(
+                    &proto,
+                    argc as usize,
+                    |i, by_ref| {
+                        if !movable {
+                            return if by_ref { w[i].clone() } else { deref(&w[i]) };
+                        }
+                        match std::mem::replace(&mut w[i], Value::Null) {
+                            Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                            v => v,
+                        }
+                    },
+                    frame,
+                )
             }
         };
-        let bound = bind_params(&proto, slice, frame);
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
@@ -773,7 +801,11 @@ impl Vm {
 
     /// The `$this` of the current frame, if it is bound to an object.
     pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
-        let cv = self.stack[top].proto.this_cv?;
+        let Some(cv) = self.stack[top].proto.this_cv else {
+            // A closure whose body has no `$this` slot still has the bound
+            // object (traces show `A->{closure}`).
+            return self.stack[top].closure.as_ref()?.bound_this.clone();
+        };
         match &self.stack[top].regs[cv as usize] {
             Value::Object(h) => Some(h.clone()),
             // Passed to a by-reference-capable argument slot, the register
@@ -801,7 +833,7 @@ impl Vm {
 
     /// [`Self::call_sync`] with the caller's `strict_types` mode for the
     /// argument checks (an internal caller is always coercive).
-    fn call_sync_mode(
+    pub(crate) fn call_sync_mode(
         &mut self,
         method: &classes::ResolvedMethod,
         this: Option<ObjectHandle>,
@@ -895,7 +927,7 @@ impl Vm {
     /// after) and drive it to completion (re-entrant; exceptions handled within).
     pub(crate) fn run_closure_sync(
         &mut self,
-        cd: &rhp_values::ClosureData,
+        cd: &Rc<rhp_values::ClosureData>,
         args: Args<'_>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
@@ -915,6 +947,7 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
+        frame.closure = Some(cd.clone());
         self.bind_frame(&mut frame, args, caller)?;
         self.bind_superglobals(&mut frame);
         if proto.is_generator {
@@ -944,13 +977,59 @@ impl Vm {
         }
     }
 
-    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`.
+    /// `lc` names a built-in static method of enum `cls`: `cases()`, and
+    /// `from()`/`tryFrom()` of a backed enum.
+    fn is_enum_builtin(&self, cls: ClassId, lc: &[u8]) -> bool {
+        match lc {
+            b"cases" => true,
+            b"from" | b"tryfrom" => self.class(cls).enum_backing.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Built-in enum static methods: `cases()`, `from()`, `tryFrom()`,
+    /// called from code in strict mode when `strict`.
     fn enum_builtin_static(
         &mut self,
         cls: ClassId,
         method_lc: &[u8],
         args: Vec<Value>,
+        strict: bool,
     ) -> Result<Value, Thrown> {
+        let want = usize::from(method_lc != b"cases");
+        if args.len() != want {
+            let name = String::from_utf8_lossy(self.class(cls).name.as_bytes()).into_owned();
+            let m = match method_lc {
+                b"from" => "from",
+                b"tryfrom" => "tryFrom",
+                _ => "cases",
+            };
+            return Err(
+                zpp_count_error(&format!("{name}::{m}"), want, Some(want), args.len())
+                    .expect("count mismatch"),
+            );
+        }
+        // zend_enum_from_base parses its argument (int for an int-backed
+        // enum, else string, or int|string in coercive mode) before it
+        // loads the class.
+        let mut args = args;
+        if let (b"from" | b"tryfrom", Some(backing)) = (method_lc, self.class(cls).enum_backing) {
+            let fname = format!(
+                "{}::{}",
+                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                if method_lc == b"from" {
+                    "from"
+                } else {
+                    "tryFrom"
+                }
+            );
+            let v = args.first().map(deref).unwrap_or(Value::Null);
+            let int = backing == rhp_bytecode::EnumBacking::Int;
+            let parsed = self.zpp_enum_value(&fname, int, &v, strict)?;
+            if let Some(a) = args.first_mut() {
+                *a = parsed;
+            }
+        }
         // Case values may be pending constant expressions: cases() evaluates
         // just the pending case constants (php's zend_enum_cases_func), while
         // from()/tryFrom() load the whole class (building the value table).
@@ -1056,17 +1135,25 @@ impl Vm {
             b"bindto" => {
                 let new_this = args.first().cloned().unwrap_or(Value::Null);
                 let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
-                Ok(self
-                    .closure_bind(closure, &new_this, &scope)
-                    .unwrap_or(Value::Null))
+                self.bind_closure(
+                    "Closure::bindTo",
+                    1,
+                    closure,
+                    &new_this,
+                    Some(&scope),
+                    crate::closures::BindMode::Bind,
+                )
             }
             b"call" => {
                 // Temporarily binds `$this` AND the scope to the new object.
                 let new_this = args.remove(0);
-                let bound = self
-                    .closure_bind(closure, &new_this, &new_this)
-                    .unwrap_or(Value::Null);
-                self.call_callable_value(&bound, args)
+                let bound = self.closure_call_target(closure, &new_this)?;
+                if matches!(bound, Value::Null) {
+                    return Ok(Value::Null);
+                }
+                let r = self.call_callable_value(&bound, args);
+                self.closure_call_done(closure, &bound);
+                r
             }
             b"__invoke" => self.call_callable_value(closure, args),
             _ => Err(Thrown::error(
@@ -1167,7 +1254,7 @@ impl Vm {
         let Some(m) = self.lookup_method(cls, mname) else {
             if self.class(cls).kind == ClassKind::Enum {
                 let lc = mname.to_ascii_lowercase();
-                if matches!(lc.as_slice(), b"cases" | b"from" | b"tryfrom") {
+                if self.is_enum_builtin(cls, &lc) {
                     return Ok(Callee::EnumStatic(cls, lc));
                 }
             }
@@ -1260,6 +1347,21 @@ impl Vm {
                     return Err(b"array callback must have exactly two members".to_vec());
                 };
                 let (cls, called, obj) = match item0 {
+                    // zend_closure_get_method: a Closure's `__invoke`.
+                    Value::Closure(cd) => {
+                        return match &item1 {
+                            Value::Str(m) if m.as_bytes().eq_ignore_ascii_case(b"__invoke") => {
+                                Ok(Callee::Closure(cd))
+                            }
+                            Value::Str(m) => Err([
+                                &b"class Closure does not have a method \""[..],
+                                m.as_bytes(),
+                                b"\"",
+                            ]
+                            .concat()),
+                            _ => Err(b"second array member is not a valid method".to_vec()),
+                        };
+                    }
                     Value::Object(h) => {
                         let c = h.borrow().class;
                         (c, c, Some(h))
@@ -1341,6 +1443,11 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         let c = deref(callable);
+        // `[$closure, '__invoke']`: Closure::__invoke is internal, so the
+        // closure runs as called from internal code.
+        if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+            return self.call_callable_value_mode(&cl, args, None);
+        }
         // First-class callable: forward to the wrapped callable.
         if let Value::Closure(cd) = &c {
             if let Some(w) = &cd.wrapped {
@@ -1383,7 +1490,9 @@ impl Vm {
                     caller,
                 )
             }
-            Callee::EnumStatic(cls, lc) => self.enum_builtin_static(cls, &lc, args),
+            Callee::EnumStatic(cls, lc) => {
+                self.enum_builtin_static(cls, &lc, args, caller == Some(true))
+            }
         }
     }
 
@@ -1755,15 +1864,35 @@ impl Vm {
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
         use rhp_bytecode::signatures::Signature;
+        // Arguments in temporaries move to the call (php frees them when the
+        // call returns, so their object handles come back then).
+        let ncv = self.stack[top].proto.num_cvs as usize;
         let args: Vec<Value> = (0..argc)
             .map(|i| {
-                if sig.is_some_and(|s| s.by_ref(i as usize)) {
-                    self.stack[top].regs[(base + i) as usize].clone()
+                let r = (base + i) as usize;
+                let by_ref = sig.is_some_and(|s| s.by_ref(i as usize));
+                if r >= ncv {
+                    let v = std::mem::replace(&mut self.stack[top].regs[r], Value::Null);
+                    match v {
+                        Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                        v => v,
+                    }
+                } else if by_ref {
+                    self.stack[top].regs[r].clone()
                 } else {
                     self.reg_get(top, base + i)
                 }
             })
             .collect();
+        // A moved-in object or array dies when the call returns: check for
+        // released destructible objects then, as a register overwrite would.
+        if !self.destructibles.is_empty()
+            && args
+                .iter()
+                .any(|a| matches!(a, Value::Object(_) | Value::Array(_)))
+        {
+            self.dtor_check = true;
+        }
         let strict = self.stack[top].proto.strict_types;
         self.run_builtin_sig(builtin, sig, args, frameless, icall, strict)
     }
@@ -1849,6 +1978,22 @@ impl Vm {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
+            // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
+            let r = match r {
+                Err(Thrown::Error {
+                    class: "TypeError",
+                    message,
+                }) if frameless
+                    && message
+                        == "array_key_exists(): Argument #1 ($key) must be a valid array offset type" =>
+                {
+                    Err(Thrown::type_error(format!(
+                        "Cannot access offset of type {} on array",
+                        builtins::zval_type_name(self, &args[0])
+                    )))
+                }
+                r => r,
+            };
             self.flush_stream_diags(builtin.name);
             // (php's opcodes for these have no interrupt check: an
             // out-of-memory error waits for the next one.)
@@ -1917,6 +2062,13 @@ impl Vm {
                     what,
                     String::from_utf8_lossy(entry.name.as_bytes())
                 ),
+            ));
+        }
+        if entry.name.as_bytes() == b"Closure" {
+            // zend_closure_new
+            return Err(Thrown::error(
+                "Error",
+                "Instantiation of class Closure is not allowed",
             ));
         }
         if self.is_directory_class(cls) {
@@ -2142,27 +2294,26 @@ pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
 /// Bind positional `args` to a callee's parameter CV registers (by value), with
 /// constant defaults and variadic collection; surplus args (non-variadic callee)
 /// are kept in `extra_args`. `Err(i)`: required parameter `i` was not passed.
-fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Result<(), usize> {
+fn bind_params(
+    proto: &FunctionProto,
+    n: usize,
+    mut arg: impl FnMut(usize, bool) -> Value,
+    frame: &mut Frame,
+) -> Result<(), usize> {
+    // `arg(i, by_ref)`: argument `i`, a by-reference one as passed (the
+    // incoming Ref aliasing the caller's variable), else its value.
     let regs = &mut frame.regs;
     for (i, p) in proto.params.iter().enumerate() {
         if p.variadic {
             // Collect the remaining args into an array (by value).
             let mut arr = PhpArray::new();
-            if i < args.len() {
-                for a in &args[i..] {
-                    arr.push(deref(a));
-                }
+            for j in i..n {
+                arr.push(arg(j, false));
             }
             regs[p.cv as usize] = Value::Array(arr);
             return Ok(()); // variadic is always the last parameter
-        } else if i < args.len() {
-            // By-ref params keep the incoming Ref (aliasing the caller's var);
-            // by-value params receive a dereferenced copy.
-            regs[p.cv as usize] = if p.by_ref {
-                args[i].clone()
-            } else {
-                deref(&args[i])
-            };
+        } else if i < n {
+            regs[p.cv as usize] = arg(i, p.by_ref);
         } else if let Some(def) = &p.default {
             match def {
                 ParamDefault::Const(k) => regs[p.cv as usize] = proto.consts[*k as usize].clone(),
@@ -2172,8 +2323,8 @@ fn bind_params(proto: &FunctionProto, args: &[Value], frame: &mut Frame) -> Resu
             return Err(i);
         }
     }
-    if args.len() > proto.params.len() {
-        frame.extra_args = args[proto.params.len()..].iter().map(deref).collect();
+    if n > proto.params.len() {
+        frame.extra_args = (proto.params.len()..n).map(|j| arg(j, false)).collect();
     }
     Ok(())
 }

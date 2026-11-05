@@ -85,6 +85,10 @@ pub(crate) fn zval_get_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>,
             "Error",
             "Object of class Closure could not be converted to string",
         )),
+        Value::Float(f) if f.is_nan() => {
+            crate::zend::operators::nan_coerced(host, "string")?;
+            Ok(b"NAN".to_vec())
+        }
         other => Ok(conv::to_string_bytes(&other)),
     }
 }

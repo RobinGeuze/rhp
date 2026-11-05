@@ -174,8 +174,12 @@ impl Vm {
                 self.report_parse_error(class, &message, &file, line);
                 return false;
             }
-            Err(IncludeError::Compile { message, line }) => {
-                self.compile_error(&message, file.as_bytes(), line);
+            Err(IncludeError::Compile {
+                message,
+                line,
+                diags,
+            }) => {
+                self.compile_failed(&message, file.as_bytes(), line, &diags, false);
                 return false;
             }
             Err(IncludeError::Thrown(_)) => return false,

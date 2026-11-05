@@ -231,13 +231,26 @@ impl Host for TestHost<'_> {
             bound_class: None,
             bound_static: None,
             wrapped: Some(Box::new(callable)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
         }))
     }
     fn closure_name(&self, _closure: &Value) -> Option<Vec<u8>> {
         None
     }
-    fn closure_bind(&self, _closure: &Value, _new_this: &Value, _scope: &Value) -> Option<Value> {
+    fn closure_debug_info(&self, _closure: &Value) -> Option<rhp_values::PhpArray> {
         None
+    }
+    fn current_closure(&self) -> Option<Value> {
+        None
+    }
+    fn closure_bind(
+        &mut self,
+        _closure: &Value,
+        _new_this: &Value,
+        _scope: Option<&Value>,
+    ) -> Result<Value, Thrown> {
+        Ok(Value::Null)
     }
     fn function_exists(&self, name: &[u8]) -> bool {
         crate::lookup(&String::from_utf8_lossy(name)).is_some()
@@ -303,8 +316,8 @@ impl Host for TestHost<'_> {
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
         Ok(self.resolve_class(name))
     }
-    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> bool {
-        false
+    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> Result<bool, Thrown> {
+        Ok(false)
     }
     fn register_autoloader(&mut self, _callback: Value, _prepend: bool) {}
     fn autoload_functions(&self) -> Vec<Value> {

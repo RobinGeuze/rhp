@@ -1,7 +1,7 @@
 //! The interpreter surface builtins call back into: the [`Host`] trait,
 //! which the VM implements, and the types its methods take.
 
-use rhp_values::{PhpArray, Value};
+use rhp_values::{ObjectHandle, PhpArray, Value};
 
 use crate::main::streams::{ops, plain_wrapper};
 use crate::main::{ini, rfc1867, sapi};
@@ -227,6 +227,18 @@ pub trait Host {
     /// ([`object_handlers::registered`]) or an ancestor's.
     fn object_handlers(&self, class_id: u32) -> Option<&'static object_handlers::ObjectHandlers>;
 
+    /// php's zend_hooked_object_build_properties: the table a class with
+    /// property hooks shows for `purpose` (`get_object_vars`, `json_encode`,
+    /// `var_export`), its hooked properties read through their get hooks;
+    /// `None` for other classes and purposes.
+    fn hooked_properties_for(
+        &mut self,
+        _obj: &ObjectHandle,
+        _purpose: object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        Ok(None)
+    }
+
     /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
     /// string, true for bool, FAILURE (`Ok(None)`) otherwise; what a
     /// `cast_object` handler defers to.
@@ -311,8 +323,9 @@ pub trait Host {
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown>;
 
     /// `class_alias`: register `alias` as another name for class `class_id`.
-    /// Returns false if the alias name is already taken.
-    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool;
+    /// Returns false if the alias name is already taken; a reserved name is
+    /// a fatal error (zend_register_class_alias_ex).
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> Result<bool, Thrown>;
 
     /// A class's relations for `class_parents` / `class_implements` /
     /// `class_uses`: (parent chain nearest-first, interfaces in php order,
@@ -371,10 +384,15 @@ pub trait Host {
     /// builtin or a prelude function, not a user function.
     fn internal_function_exists(&self, name: &[u8]) -> bool;
 
-    /// `Closure::bind`/`bindTo`: return a copy of `closure` with its `$this`
-    /// rebound to `new_this` (object or null) and its scope set from `scope` (a
-    /// class name string, an object, or null = keep/derive).
-    fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value>;
+    /// `Closure::bind($closure, $newThis, $newScope)`: a new Closure with
+    /// `$this` and the scope rebound, or null (with php's warning) for a
+    /// binding php refuses.
+    fn closure_bind(
+        &mut self,
+        closure: &Value,
+        new_this: &Value,
+        scope: Option<&Value>,
+    ) -> Result<Value, Thrown>;
 
     /// Register an `spl_autoload_register` callable (optionally prepending).
     fn register_autoloader(&mut self, callback: Value, prepend: bool);
@@ -412,6 +430,13 @@ pub trait Host {
     /// malformed mangled name (a leading NUL without a second one).
     fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool;
 
+    /// php's object_set_property check: the declared property `key` names
+    /// (resolved as [`Host::unserialize_set_prop`] does) is virtual; returns
+    /// `Class::$name` for the warning.
+    fn unserialize_virtual_prop(&self, _obj: &Value, _key: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
     /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
     /// of the properties accessible there, in slot order). `None` = the host has
     /// no scope information; the builtin then returns every property.
@@ -424,6 +449,15 @@ pub trait Host {
     /// A closure's function name (`{closure:scope:line}`), for
     /// `is_callable`'s `$callable_name`.
     fn closure_name(&self, closure: &Value) -> Option<Vec<u8>>;
+
+    /// What `var_dump`/`print_r` show for a Closure
+    /// (zend_closure_get_debug_info): name/file/line/static/this/parameter,
+    /// or function/this/parameter for a first-class callable.
+    fn closure_debug_info(&self, closure: &Value) -> Option<rhp_values::PhpArray>;
+
+    /// The Closure the innermost user frame runs (`Closure::getCurrent()`),
+    /// if that frame is a closure's.
+    fn current_closure(&self) -> Option<Value>;
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins).
@@ -585,6 +619,14 @@ pub trait Host {
     /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
     /// resource.
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value>;
+    /// Record the mode a stream was opened with (`stream_get_meta_data`'s
+    /// `mode`), for streams opened without a path (`popen`).
+    fn stream_set_mode(&mut self, _res: &Value, _mode: &[u8]) {}
+    /// Return bytes just read from `res` to the front of its read buffer
+    /// (php leaves them buffered); false when the stream cannot.
+    fn stream_push_back(&mut self, _res: &Value, _data: &[u8]) -> bool {
+        false
+    }
     /// A `dup(2)` of the OS fd behind a stream resource, for handing to a child
     /// process (`proc_open` descriptor given as a resource). `Err` carries
     /// php's stream-type name when the stream has no fd (e.g. `MEMORY`).

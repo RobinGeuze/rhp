@@ -1,5 +1,5 @@
 //! ext/standard/pageinfo.c: `getmypid`, `getmyuid`, `getmygid` and
-//! `getmyinode`.
+//! `getmyinode`, `getlastmod`.
 
 use rhp_values::Value;
 
@@ -27,6 +27,13 @@ fn fn_getmyinode(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
         .unwrap_or(Value::Bool(false)))
 }
 
+/// `getlastmod()`: the main script's mtime.
+fn fn_getlastmod(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(script_stat(host)
+        .map(|m| Value::Int(std::os::unix::fs::MetadataExt::mtime(&m)))
+        .unwrap_or(Value::Bool(false)))
+}
+
 /// Stat of the main script (php's `sapi_get_stat`).
 pub(crate) fn script_stat(host: &dyn Host) -> Option<std::fs::Metadata> {
     let p = host.running_main_path()?;
@@ -41,6 +48,7 @@ pub fn register(m: &mut crate::Registry) {
             ("getmyuid", fn_getmyuid),
             ("getmygid", fn_getmygid),
             ("getmyinode", fn_getmyinode),
+            ("getlastmod", fn_getlastmod),
         ],
     );
 }

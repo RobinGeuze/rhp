@@ -80,8 +80,10 @@ fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             Value::Array(a) if a.len() == 2 => {
                 let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
                 return Ok(Value::Bool(
-                    matches!(parts[0], Value::Str(_) | Value::Object(_))
-                        && matches!(parts[1], Value::Str(_)),
+                    matches!(
+                        parts[0],
+                        Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                    ) && matches!(parts[1], Value::Str(_)),
                 ));
             }
             Value::Object(_) => {}
@@ -107,6 +109,7 @@ fn callable_name(host: &dyn Host, v: &Value) -> Vec<u8> {
             let class = match &parts[0] {
                 Value::Str(c) => c.as_bytes().to_vec(),
                 Value::Object(h) => class_of(h),
+                Value::Closure(_) => b"Closure".to_vec(),
                 _ => return b"Array".to_vec(),
             };
             [&class[..], b"::", &method[..]].concat()
@@ -140,10 +143,10 @@ fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
-        return Ok(Value::Int(conv::to_int(&v)));
+        return Ok(Value::Int(zend::operators::zval_get_long(host, &v)?));
     }
     let Value::Str(s) = &v else {
-        return Ok(Value::Int(conv::to_int(&v)));
+        return Ok(Value::Int(zend::operators::zval_get_long(host, &v)?));
     };
     Ok(Value::Int(intval_base(s.as_bytes(), base)))
 }
@@ -269,10 +272,35 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         Ok(())
     };
+    // php 8.5: NAN warns when coerced; array and object read the variable
+    // again after the warning (a handler may have changed it).
+    let is_nan = matches!(cur, Value::Float(f) if f.is_nan());
+    let nan_warn = zend::operators::nan_coerced;
+    let cur = match ty.as_slice() {
+        b"array" | b"object" if is_nan => {
+            nan_warn(host, std::str::from_utf8(&ty).unwrap_or(""))?;
+            deref(&args[0])
+        }
+        b"bool" | b"boolean" | b"string" | b"null" if is_nan => {
+            let to = match ty.as_slice() {
+                b"boolean" => "bool",
+                t => std::str::from_utf8(t).unwrap_or(""),
+            };
+            nan_warn(host, to)?;
+            cur.clone()
+        }
+        _ => cur.clone(),
+    };
     let new = match ty.as_slice() {
         b"integer" | b"int" => {
             object_warn(host, "int")?;
-            Value::Int(conv::to_int(&cur))
+            match cur {
+                Value::Float(f) => {
+                    let n = crate::zend::operators::dval_to_lval(host, f)?;
+                    Value::Int(n)
+                }
+                _ => Value::Int(conv::to_int(&cur)),
+            }
         }
         b"float" | b"double" => {
             object_warn(host, "float")?;
@@ -289,19 +317,28 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 match crate::zend::object_handlers::to_string(host, &cur)? {
                     Some(s) => Value::str(s),
                     None => {
+                        // convert_to_string leaves an empty string behind.
+                        if let Value::Ref(rc) = &args[0] {
+                            *rc.borrow_mut() = Value::str("");
+                        }
                         return Err(Thrown::error(
                             "Error",
                             format!(
                                 "Object of class {} could not be converted to string",
                                 zval_value_name(host, &cur)
                             ),
-                        ))
+                        ));
                     }
                 }
             }
             _ => Value::str(conv::to_string_bytes(&cur)),
         },
         b"array" => match &cur {
+            _ if is_nan => {
+                let mut a = PhpArray::new();
+                a.push(cur.clone());
+                Value::Array(a)
+            }
             Value::Array(_) => cur.clone(),
             Value::Null => Value::Array(PhpArray::new()),
             Value::Object(h) => Value::Array(host.object_props_mangled(h)),
@@ -312,6 +349,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         },
         b"object" => match &cur {
+            _ if is_nan => host.make_object(vec![(b"scalar".to_vec(), cur.clone())]),
             Value::Object(_) | Value::Closure(_) => cur.clone(),
             Value::Array(a) => {
                 let props = a
@@ -329,7 +367,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Value::Null => host.make_object(Vec::new()),
             other => host.make_object(vec![(b"scalar".to_vec(), other.clone())]),
         },
-        b"bool" | b"boolean" => Value::Bool(conv::to_bool(&cur)),
+        b"bool" | b"boolean" => Value::Bool(is_nan || conv::to_bool(&cur)),
         b"null" => Value::Null,
         b"resource" => {
             return Err(Thrown::error(

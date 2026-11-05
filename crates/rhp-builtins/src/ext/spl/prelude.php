@@ -5,7 +5,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     const ARRAY_AS_PROPS = 2;
     private $__s; private $__f = 0; private $__k; private $__p = 0;
     public function __construct($array = [], int $flags = 0) { $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
-    public function current(): mixed { return $this->__s[$this->__k[$this->__p] ?? null] ?? null; }
+    public function current(): mixed { $k = $this->__k[$this->__p] ?? null; return $k === null ? null : ($this->__s[$k] ?? null); }
     public function key(): mixed { return $this->__k[$this->__p] ?? null; }
     public function next(): void { $this->__p++; }
     public function rewind(): void { $this->__k = array_keys($this->__s); $this->__p = 0; }
@@ -45,7 +45,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
             $k = (string)$k;
             if ($k !== '' && $k[0] === "\0") {
                 $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
             } else { $this->$k = $v; }
         }
     }
@@ -82,7 +82,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
             $k = (string)$k;
             if ($k !== '' && $k[0] === "\0") {
                 $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
+                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
             } else { $this->$k = $v; }
         }
         if (isset($data[3])) { $this->__i = $data[3]; }
@@ -197,8 +197,7 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
         if (is_bool($i)) { return (int) $i; }
         if (is_float($i)) {
             if (!is_finite($i) || $i >= 9.2233720368547758E+18 || $i < -9.2233720368547758E+18) {
-                __stdext_warning('The float ' . var_export($i, true) . ' is not representable as an int, cast occurred');
-                return is_finite($i) ? (int) $i : 0;
+                return (int) $i; // the cast raises php's out-of-range warning
             }
             if ($i != (int) $i) {
                 __stdext_deprecated('Implicit conversion from float ' . var_export($i, true) . ' to int loses precision');

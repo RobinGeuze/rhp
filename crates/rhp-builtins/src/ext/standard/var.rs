@@ -116,9 +116,65 @@ fn resolve_in(
                 resolve_in(host, c, purpose, seen_arrays, seen_objects)?;
             }
         }
+        Value::Closure(c) if purpose == PropPurpose::Debug => {
+            if seen_objects.contains(&c.id) {
+                return Ok(());
+            }
+            seen_objects.push(c.id);
+            if let Some(view) = host.closure_debug_info(&Value::Closure(c.clone())) {
+                let vals: Vec<Value> = view.iter().map(|(_, v)| v.clone()).collect();
+                VIEWS.with(|m| m.borrow_mut().insert(c.id, view));
+                for v in &vals {
+                    resolve_in(host, v, purpose, seen_arrays, seen_objects)?;
+                }
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// A Closure's debug view (zend_closure_get_debug_info), resolved up front
+/// or built now.
+fn closure_view(host: &dyn crate::Host, v: &Value) -> Vec<(ArrayKey, Value)> {
+    let Value::Closure(c) = v else {
+        return Vec::new();
+    };
+    view_of(c.id).unwrap_or_else(|| {
+        host.closure_debug_info(v)
+            .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
+    })
+}
+
+/// `var_dump` of a Closure: `object(Closure)#N (n) {` and its debug view.
+fn var_dump_closure(
+    host: &dyn crate::Host,
+    out: &mut Vec<u8>,
+    v: &Value,
+    amp: &str,
+    indent: usize,
+    seen: &mut Seen,
+) {
+    let Value::Closure(c) = v else { return };
+    if seen.objects.contains(&c.id) {
+        out.extend_from_slice(b"*RECURSION*\n");
+        return;
+    }
+    let entries = closure_view(host, v);
+    out.extend_from_slice(
+        format!("{amp}object(Closure)#{} ({}) {{\n", c.id, entries.len()).as_bytes(),
+    );
+    seen.objects.push(c.id);
+    for (k, val) in &entries {
+        sp(indent + 2, out);
+        dump_key(out, k);
+        out.extend_from_slice(b"=>\n");
+        var_dump_value(host, out, val, false, indent + 2, seen);
+    }
+    seen.objects.pop();
+    sp(indent, out);
+    out.extend_from_slice(b"}\n");
 }
 
 /// zend_std_get_debug_info: the object's `__debugInfo()` result.
@@ -367,11 +423,7 @@ fn var_dump_value(
                 seen.objects.pop();
             }
         }
-        Value::Closure(_) => {
-            out.extend_from_slice(format!("{amp}object(Closure)#0 (0) {{\n").as_bytes());
-            sp(indent, out);
-            out.extend_from_slice(b"}\n");
-        }
+        Value::Closure(_) => var_dump_closure(host, out, &v, amp, indent, seen),
         Value::Resource(r) => {
             let ty = if host.resource_closed(&v) {
                 "Unknown"
@@ -472,6 +524,20 @@ fn print_r_value(
             print_r_block(host, out, &entries, indent, printing);
             printing.objects.pop();
         }
+        Value::Closure(c) => {
+            out.extend_from_slice(b"Closure Object\n");
+            if printing.objects.contains(&c.id) {
+                out.extend_from_slice(b" *RECURSION*");
+                return;
+            }
+            let entries: Vec<(Vec<u8>, Value)> = closure_view(host, &v)
+                .into_iter()
+                .map(|(k, v)| (key_bytes(&k), v))
+                .collect();
+            printing.objects.push(c.id);
+            print_r_block(host, out, &entries, indent, printing);
+            printing.objects.pop();
+        }
         scalar => out.extend_from_slice(&conv::to_string_bytes(scalar)),
     }
 }
@@ -491,7 +557,10 @@ fn print_r_block(
         out.push(b'[');
         out.extend_from_slice(k);
         out.extend_from_slice(b"] => ");
-        if matches!(deref(val), Value::Array(_) | Value::Object(_)) {
+        if matches!(
+            deref(val),
+            Value::Array(_) | Value::Object(_) | Value::Closure(_)
+        ) {
             print_r_value(host, out, val, indent + 8, printing);
         } else {
             out.extend_from_slice(&conv::to_string_bytes(val));
@@ -1377,6 +1446,18 @@ impl<'a> Parser<'a, '_> {
                 Value::Str(s) => s.as_bytes().to_vec(),
                 _ => return malformed(),
             };
+            if let Some(shown) = self.host.unserialize_virtual_prop(&obj, &key) {
+                crate::warn(
+                    self.host,
+                    "unserialize",
+                    &format!(
+                        "Cannot unserialize value for virtual property {}",
+                        String::from_utf8_lossy(&shown)
+                    ),
+                )
+                .map_err(Fail::Thrown)?;
+                return self.fail_at(self.pos);
+            }
             let val = self.parse_slot()?;
             if !self.host.unserialize_set_prop(&obj, &key, val) {
                 return malformed();

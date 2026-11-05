@@ -1,0 +1,6 @@
+TypeError: E::from(): Argument #1 ($value) must be of type int, string given
+TypeError: E::tryFrom(): Argument #1 ($value) must be of type int, float given
+TypeError: S::from(): Argument #1 ($value) must be of type string, int given
+TypeError: S::tryFrom(): Argument #1 ($value) must be of type string, null given
+enum(E::A)
+enum(S::A)

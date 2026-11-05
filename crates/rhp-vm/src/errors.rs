@@ -39,7 +39,8 @@ pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
-    /// php 8.5's backtrace, then the request bails out (exit status 255).
+    /// php 8.5's backtrace (when `fatal_error_backtraces` is on), then the
+    /// request bails out (exit status 255).
     pub(crate) fn fatal_compile_error(&mut self, msg: &[u8]) -> Thrown {
         let (file, line) = match (0..self.stack.len())
             .rev()
@@ -48,12 +49,73 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
-        self.last_error = Some((64, msg.to_vec(), file.clone(), line));
+        self.fatal_compile_error_at(msg, file, line)
+    }
+
+    /// The backtrace a fatal error shows (`fatal_error_backtraces`).
+    fn fatal_trace(&self) -> Vec<u8> {
+        if !ini_bool(&self.ini_get(b"fatal_error_backtraces").unwrap_or_default()) {
+            return Vec::new();
+        }
         let trace = Value::Array(self.build_trace_ex(false, false));
-        let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
-        self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
-        self.destructed_below = self.next_object_id;
+        builtins::zend::exceptions::trace_to_string(self, &trace)
+    }
+
+    /// [`Vm::fatal_compile_error`] reported at `file`:`line` (php's
+    /// zend_error_at for errors found while linking a class).
+    pub(crate) fn fatal_compile_error_at(
+        &mut self,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
+        self.fatal_error_at(64, msg, file, line)
+    }
+
+    /// A fatal error of type `ty` (E_COMPILE_ERROR or E_ERROR) raised while
+    /// executing, reported at `file`:`line`.
+    pub(crate) fn fatal_error_at(
+        &mut self,
+        ty: i64,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
+        self.last_error = Some((ty, msg.to_vec(), file.clone(), line));
+        let trace = self.fatal_trace();
+        self.display_error_trace(ty, "Fatal error", msg, &file, line, &trace);
+        self.mark_objects_destructed();
         Thrown::Exit(255)
+    }
+
+    /// A fatal error of type `ty` at the innermost user frame, with the
+    /// backtrace; the request bails out.
+    pub(crate) fn fatal_error_here(&mut self, ty: i64, msg: &[u8]) -> Thrown {
+        let (file, line) = match (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.stack[i].proto.is_internal())
+        {
+            None => (Vec::new(), 0),
+            Some(i) => (self.current_file(i), self.current_line(i) as i64),
+        };
+        self.fatal_error_at(ty, msg, file, line)
+    }
+
+    /// A throwable as `zval_get_string` makes it (its `__toString()`).
+    pub(crate) fn throwable_string(&mut self, thrown: Thrown) -> Vec<u8> {
+        let thrown = self.materialize(thrown, None);
+        let Thrown::Object(h) = thrown else {
+            return Vec::new();
+        };
+        let cls = h.borrow().class;
+        let obj = Value::Object(h.clone());
+        match self.lookup_method(cls, b"__tostring") {
+            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
+                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+                _ => builtins::zend::exceptions::throwable_to_string(self, &obj),
+            },
+            None => builtins::zend::exceptions::throwable_to_string(self, &obj),
+        }
     }
 
     /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for
@@ -82,6 +144,19 @@ impl Vm {
 
     /// [`Vm::raise_error`] reported at `file`:`line`.
     pub(crate) fn raise_error_at(&mut self, level: i64, msg: &[u8], file: Vec<u8>, line: i64) {
+        self.raise_error_at_ex(level, msg, file, line, true);
+    }
+
+    /// [`Vm::raise_error_at`]; without `user_handler` the user error
+    /// handler is skipped (php_error_cb only).
+    pub(crate) fn raise_error_at_ex(
+        &mut self,
+        level: i64,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+        user_handler: bool,
+    ) {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -95,8 +170,17 @@ impl Vm {
                     .and_then(|i| self.stack.get(i))
                     .is_some_and(|f| f.proto.is_internal())
             });
+        // zend_error: these may not be handled in user space.
+        let unsafe_level = level
+            & (builtins::E_ERROR
+                | builtins::E_PARSE
+                | builtins::E_CORE_ERROR
+                | builtins::E_CORE_WARNING
+                | builtins::E_COMPILE_ERROR
+                | builtins::E_COMPILE_WARNING)
+            != 0;
         let handler = match self.error_handlers.last() {
-            _ if prelude_silenced => None,
+            _ if prelude_silenced || unsafe_level || !user_handler => None,
             Some((h, mask)) if !matches!(h, Value::Null | Value::Bool(false)) => {
                 (mask & level != 0).then(|| h.clone())
             }
@@ -136,7 +220,7 @@ impl Vm {
             let trace = Value::Array(self.build_trace_ex(false, false));
             let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
             self.display_error_trace(level, "Fatal error", msg, &file, line, &trace);
-            self.destructed_below = self.next_object_id;
+            self.mark_objects_destructed();
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }

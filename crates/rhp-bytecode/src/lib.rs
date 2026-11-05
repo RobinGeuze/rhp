@@ -73,6 +73,13 @@ pub enum Instr {
         dst: Reg,
         src: Reg,
     },
+    /// `Mov` out of a temporary that is dead afterwards (an argument moved
+    /// into the call window): `src` becomes null, so a freed argument gives
+    /// its object handle back when the call returns, as in php.
+    MovTake {
+        dst: Reg,
+        src: Reg,
+    },
     LoadConst {
         dst: Reg,
         k: CIdx,
@@ -239,6 +246,11 @@ pub enum Instr {
         index: u16,
         target: Pc,
     },
+    /// After a non-constant default was stored into parameter `index`:
+    /// check it against the parameter's type (php's RECV_INIT).
+    RecvInitCheck {
+        index: u16,
+    },
     JmpTrue {
         cond: Reg,
         target: Pc,
@@ -306,6 +318,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// An element on the way to an `unset($a[$k]->p)` (FETCH_DIM_UNSET):
+    /// a missing key is silent, a string offset or a scalar container an
+    /// Error.
+    DimFetchUnset {
+        dst: Reg,
+        arr: Reg,
+        key: Reg,
+    },
     /// `DimFetch` in isset/`??` context (`BP_VAR_IS`): no diagnostics, and an
     /// absent string offset reads as Null.
     DimFetchIs {
@@ -333,10 +353,14 @@ pub enum Instr {
     FetchLvalRw {
         dst: Reg,
     }, // read the current cursor location (null if absent), keep cursor open
+    /// Write `src` at the cursor location (COW-bubbling), close the cursor.
+    /// The assignment's value goes to `dst` when that is another register:
+    /// `src`, or for a string offset the byte written (null if none was).
     AssignLval {
         src: Reg,
-    }, // write `src` at the cursor location (COW-bubbling), close cursor
-    UnsetLval,  // remove the cursor's leaf key, close cursor
+        dst: Reg,
+    },
+    UnsetLval, // remove the cursor's leaf key, close cursor
     /// `++`/`--` on the cursor location (ref-correct inc_dec); dst = new/old. Closes cursor.
     IncDecLval {
         dst: Reg,
@@ -664,6 +688,17 @@ pub enum Instr {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
+        base: Reg,
+        argc: u16,
+    },
+    /// `parent::$prop::get()` / `parent::$prop::set($v)` inside a hook of
+    /// `$prop` (php's INIT_PARENT_PROPERTY_HOOK_CALL): the parent class's
+    /// hook, or a plain read / write of the backing value when it has none.
+    CallParentHook {
+        dst: Reg,
+        /// The property name.
+        name: NIdx,
+        kind: HookKind,
         base: Reg,
         argc: u16,
     },
@@ -1028,6 +1063,10 @@ pub struct TypeHint {
     /// DNF intersection groups of a union (`(A&B)|C|null`): each inner list is
     /// one parenthesized intersection; `kinds` holds the union's other members.
     pub groups: Vec<Vec<PhpStr>>,
+    /// Where each group sits among the union's class members (the count of
+    /// class members declared before it), for php's declaration-order type
+    /// strings. Missing entries mean "first".
+    pub group_pos: Vec<u16>,
     /// `null` was spelled as a union member (`int|null`), not `?int`; only
     /// matters for how Reflection prints a multi-member union.
     pub explicit_null: bool,
@@ -1110,6 +1149,12 @@ impl ProtoFlags {
     /// holds the globals while shutdown callbacks run. php runs them with
     /// no frame at all, so this one, too, is no user frame.
     pub const SHUTDOWN_SCOPE: ProtoFlags = ProtoFlags(2);
+    /// A property hook, named `$prop::get` / `$prop::set` (php's
+    /// `func->common.prop_info`).
+    pub const HOOK: ProtoFlags = ProtoFlags(4);
+    /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
+    /// refuses to unbind it.
+    pub const USES_THIS: ProtoFlags = ProtoFlags(8);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0
@@ -1183,6 +1228,15 @@ impl FunctionProto {
     /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
     pub fn is_internal(&self) -> bool {
         self.flags.contains(ProtoFlags::INTERNAL)
+    }
+
+    /// For a property hook (`$prop::get`), the property's name.
+    pub fn hook_prop(&self) -> Option<&[u8]> {
+        if !self.flags.contains(ProtoFlags::HOOK) {
+            return None;
+        }
+        let n = self.name.as_bytes();
+        n.get(1..n.len().checked_sub(5)?)
     }
 
     /// An empty proto (builder starting point).
@@ -1330,6 +1384,30 @@ pub struct MethodProto {
     pub is_final: bool,
 }
 
+/// Which property hook.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HookKind {
+    Get = 0,
+    Set = 1,
+}
+
+impl HookKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            HookKind::Get => "get",
+            HookKind::Set => "set",
+        }
+    }
+}
+
+/// One compiled property hook: a method named `$prop::get` / `$prop::set`.
+#[derive(Clone)]
+pub struct HookProto {
+    pub proto: Rc<FunctionProto>,
+    pub is_final: bool,
+    pub is_abstract: bool,
+}
+
 #[derive(Clone)]
 pub struct PropProto {
     pub name: PhpStr,
@@ -1345,6 +1423,19 @@ pub struct PropProto {
     pub meta: DeclMeta,
     /// Declared by constructor promotion.
     pub promoted: bool,
+    /// The `get` and `set` hooks (index: [`HookKind`]).
+    pub hooks: [Option<HookProto>; 2],
+    /// A hooked property no hook body of which uses `$this->prop`
+    /// (zend_property_is_virtual): it has no backing value.
+    pub is_virtual: bool,
+    pub is_abstract: bool,
+    pub is_final: bool,
+}
+
+impl PropProto {
+    pub fn has_hooks(&self) -> bool {
+        self.hooks.iter().any(Option::is_some)
+    }
 }
 
 #[derive(Clone)]

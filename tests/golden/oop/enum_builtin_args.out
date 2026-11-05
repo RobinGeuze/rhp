@@ -1,0 +1,12 @@
+Error: Call to undefined method P::from()
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class P does not have a method "tryFrom"
+ArgumentCountError: S::from() expects exactly 1 argument, 0 given
+ArgumentCountError: S::tryFrom() expects exactly 1 argument, 2 given
+ArgumentCountError: S::cases() expects exactly 0 arguments, 1 given
+TypeError: S::from(): Argument #1 ($value) must be of type string, int given
+array(2) {
+  [0]=>
+  enum(S::A)
+  [1]=>
+  NULL
+}

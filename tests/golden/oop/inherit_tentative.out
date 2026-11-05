@@ -1,0 +1,12 @@
+start
+handler(8192, line 14): Return type of It::current() should either be compatible with Iterator::current(): mixed, or the #[\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice
+0 => 0
+1 => 1
+handler(8192, line 30): Return type of Arr::offsetSet($o, $v) should either be compatible with ArrayAccess::offsetSet(mixed $offset, mixed $value): void, or the #[\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice
+handler(8192, line 32): Return type of Arr::count() should either be compatible with Countable::count(): int, or the #[\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice
+3 x [1]
+7
+before anon
+handler(8192, line 52): Return type of ArrayIterator@anonymous::count() should either be compatible with ArrayIterator::count(): int, or the #[\ReturnTypeWillChange] attribute should be used to temporarily suppress the notice
+ArrayIterator
+end

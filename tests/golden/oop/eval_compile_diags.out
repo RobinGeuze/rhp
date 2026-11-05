@@ -1,0 +1,4 @@
+handler: 2: The magic method A::__call() must have public visibility
+compiled
+handler: 2: The magic method B::__get() must have public visibility
+last: 64: Method B::__set() must take exactly 2 arguments (eval_compile_diags.php(15) : eval()'d code:1)

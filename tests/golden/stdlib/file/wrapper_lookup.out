@@ -1,0 +1,31 @@
+string(4) "data"
+string(4) "data"
+string(4) "data"
+[2] file_get_contents(): Remote host file access not supported, file://wrapper_lookup.tmp
+[2] file_get_contents(file://wrapper_lookup.tmp): Failed to open stream: no suitable wrapper could be found
+bool(false)
+[2] fopen(): Remote host file access not supported, file://somehost/x
+[2] fopen(file://somehost/x): Failed to open stream: no suitable wrapper could be found
+bool(false)
+[2] file_get_contents(): Unable to find the wrapper "nosuch" - did you forget to enable it when you configured PHP?
+[2] file_get_contents(nosuch://x/../wrapper_lookup.tmp): Failed to open stream: No such file or directory
+bool(false)
+[2] file_exists(): Unable to find the wrapper "nosuch" - did you forget to enable it when you configured PHP?
+[2] is_file(): Unable to find the wrapper "nosuch" - did you forget to enable it when you configured PHP?
+bool(false)
+bool(false)
+[2] file_get_contents(): Unable to find the wrapper "nosuch" - did you forget to enable it when you configured PHP?
+[2] file_get_contents(nosuch://x/../missing.tmp): Failed to open stream: No such file or directory
+bool(false)
+string(6) "stream"
+bool(true)
+bool(false)
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+}
+bool(true)
+bool(true)
+bool(true)

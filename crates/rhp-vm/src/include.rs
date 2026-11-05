@@ -36,7 +36,13 @@ pub enum IncludeError {
     },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
-    Compile { message: String, line: u32 },
+    /// `diags` are the diagnostics the compiler raised before it (level,
+    /// message, line).
+    Compile {
+        message: String,
+        line: u32,
+        diags: Vec<(i64, String, u32)>,
+    },
     /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
@@ -97,7 +103,10 @@ impl Vm {
             .ok_or_else(|| Thrown::error("Error", "eval is not available"))?;
         let compiled = cb(&file, &source);
         self.includer = Some(cb);
-        let prog = Rc::new(self.included_program(compiled, &file)?);
+        // compile_string records no errors: the user handler sees the
+        // diagnostics even when the compile then fails.
+        let compiled = compiled.map_err(|e| self.include_error(e, &file, true));
+        let prog = Rc::new(compiled?);
         self.emit_compile_diags(&prog);
 
         // eval()'d declarations are preloaded too (recorded without a file).
@@ -105,22 +114,18 @@ impl Vm {
         self.run_included(main, unit, top, "eval")
     }
 
-    /// The includer's result: a syntax error becomes a ParseError object
-    /// located in the included file (or eval()'d code) at the error's line.
-    fn included_program(
-        &mut self,
-        compiled: Result<Program, IncludeError>,
-        file: &str,
-    ) -> Result<Program, Thrown> {
-        compiled.map_err(|e| self.include_error(e, file))
-    }
-
-    /// What an includer's failure throws.
-    fn include_error(&mut self, e: IncludeError, file: &str) -> Thrown {
+    /// What an includer's failure throws: a syntax error becomes a
+    /// ParseError object located in the included file (or eval()'d code) at
+    /// the error's line. `eval` is set for eval()'d code.
+    fn include_error(&mut self, e: IncludeError, file: &str, eval: bool) -> Thrown {
         match e {
             IncludeError::Thrown(t) => t,
-            IncludeError::Compile { message, line } => {
-                self.compile_error(&message, file.as_bytes(), line);
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failed(&message, file.as_bytes(), line, &diags, eval);
                 Thrown::Exit(255)
             }
             // raised outside the file: where the include/eval runs
@@ -138,6 +143,30 @@ impl Vm {
                 Some((file.as_bytes().to_vec(), line)),
             ),
         }
+    }
+
+    /// A file failed to compile: the diagnostics raised before the error,
+    /// then the error itself ([`Vm::compile_error`]). php's compile_file
+    /// records the diagnostics, so they skip the user error handler when it
+    /// bails out; eval()'d code (`user_handler`) is not recorded.
+    pub fn compile_failed(
+        &mut self,
+        message: &str,
+        file: &[u8],
+        line: u32,
+        diags: &[(i64, String, u32)],
+        user_handler: bool,
+    ) {
+        for (level, msg, l) in diags {
+            self.raise_error_at_ex(
+                *level,
+                msg.as_bytes(),
+                file.to_vec(),
+                *l as i64,
+                user_handler,
+            );
+        }
+        self.compile_error(message, file, line);
     }
 
     /// php_error_cb for an E_COMPILE_ERROR at `file:line`: recorded for
@@ -307,7 +336,7 @@ impl Vm {
         if opened.get() {
             self.next_resource_id += 1;
         }
-        compiled.map_err(|e| self.include_error(e, &rp_str))
+        compiled.map_err(|e| self.include_error(e, &rp_str, false))
     }
 
     /// Compile a request's main script (`path` resolved, `given` as named,

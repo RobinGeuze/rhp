@@ -1366,18 +1366,14 @@ fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 crate::zend::zpp::zval_value_name(host, &args[1])
             )));
         };
-        let table: Vec<(Vec<u8>, Vec<u8>)> = pairs
-            .iter()
-            .filter_map(|(k, v)| {
-                let kb = key_bytes(k);
-                // php ignores empty-string keys (and emits a warning to stderr).
-                if kb.is_empty() {
-                    None
-                } else {
-                    Some((kb, conv::to_string_bytes(v)))
-                }
-            })
-            .collect();
+        let mut table: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs.iter() {
+            let kb = key_bytes(k);
+            // php ignores empty-string keys (and emits a warning to stderr).
+            if !kb.is_empty() {
+                table.push((kb, zval_get_string(host, v)?));
+            }
+        }
         let maxlen = table.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         if maxlen == 0 {
             return Ok(Value::str(s));
@@ -1444,7 +1440,7 @@ fn substr_replace_one(subject: &[u8], start: i64, length: Option<i64>, replace: 
     out
 }
 
-fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let subject = deref(&args[0]);
     let replace = deref(&args[1]);
     let start_arg = deref(&args[2]);
@@ -1453,32 +1449,31 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
         for (i, (k, v)) in subj.iter().enumerate() {
-            let sbytes = conv::to_string_bytes(v);
+            let sbytes = zval_get_string(host, v)?;
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
-                Value::Array(ra) => ra
-                    .get_index(i)
-                    .map(|(_, rv)| conv::to_string_bytes(rv))
-                    .unwrap_or_default(),
+                Value::Array(ra) => match ra.get_index(i) {
+                    Some((_, rv)) => zval_get_string(host, rv)?,
+                    None => Vec::new(),
+                },
                 other => conv::to_string_bytes(other),
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
             let st = match &start_arg {
-                Value::Array(sa) => sa
-                    .get_index(i)
-                    .map(|(_, sv)| conv::to_int(&deref(sv)))
-                    .unwrap_or(0),
+                Value::Array(sa) => match sa.get_index(i) {
+                    Some((_, sv)) => crate::zend::zpp::zval_get_long(host, sv)?,
+                    None => 0,
+                },
                 other => conv::to_int(other),
             };
             // length: omitted -> to end; array -> nth element (else full string);
             // scalar -> per-subject.
             let ln = match &length_arg {
                 None => None,
-                Some(Value::Array(la)) => Some(
-                    la.get_index(i)
-                        .map(|(_, lv)| conv::to_int(&deref(lv)))
-                        .unwrap_or(sbytes.len() as i64),
-                ),
+                Some(Value::Array(la)) => Some(match la.get_index(i) {
+                    Some((_, lv)) => crate::zend::zpp::zval_get_long(host, lv)?,
+                    None => sbytes.len() as i64,
+                }),
                 Some(other) => Some(conv::to_int(other)),
             };
             out.insert(
@@ -1501,11 +1496,10 @@ fn fn_substr_replace(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
         let sbytes = conv::to_string_bytes(&subject);
         let rep = match &replace {
-            Value::Array(ra) => ra
-                .iter()
-                .next()
-                .map(|(_, rv)| conv::to_string_bytes(rv))
-                .unwrap_or_default(),
+            Value::Array(ra) => match ra.iter().next() {
+                Some((_, rv)) => zval_get_string(host, rv)?,
+                None => Vec::new(),
+            },
             other => conv::to_string_bytes(other),
         };
         let st = conv::to_int(&start_arg);
@@ -1956,16 +1950,6 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
     out
 }
 
-fn first_byte(v: Option<&Value>, default: u8) -> u8 {
-    match v {
-        None => default,
-        Some(v) => conv::to_string_bytes(&deref(v))
-            .first()
-            .copied()
-            .unwrap_or(default),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // str_getcsv
 // ---------------------------------------------------------------------------
@@ -1974,100 +1958,11 @@ fn first_byte(v: Option<&Value>, default: u8) -> u8 {
 /// Parses a single CSV record into an array of fields. An empty input yields
 /// `[null]`, matching php.
 fn fn_str_getcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    if args.len() < 4 {
-        crate::deprecated(
-            host,
-            "str_getcsv",
-            "the $escape parameter must be provided as its default value will change",
-        )?;
-    }
     let s = conv::to_string_bytes(&deref(&args[0]));
-    let sep = first_byte(args.get(1), b',');
-    let enc = first_byte(args.get(2), b'"');
-    // The escape may be disabled by passing "" in php; default is backslash.
-    let esc: Option<u8> = match args.get(3) {
-        Some(v) => conv::to_string_bytes(&deref(v)).first().copied(),
-        None => Some(b'\\'),
-    };
-
-    Ok(Value::Array(parse_csv(&s, sep, enc, esc)))
-}
-
-/// One CSV record into its fields (`str_getcsv` / `fgetcsv`); an empty
-/// record is `[null]`.
-pub(crate) fn parse_csv(s: &[u8], sep: u8, enc: u8, esc: Option<u8>) -> PhpArray {
-    let mut out = PhpArray::new();
-    if s.is_empty() {
-        out.push(Value::Null);
-        return out;
-    }
-
-    let bytes = s;
-    let mut i = 0usize;
-    loop {
-        let mut field = Vec::new();
-        if bytes.get(i) == Some(&enc) {
-            // Quoted field.
-            i += 1;
-            loop {
-                match bytes.get(i) {
-                    None => break,
-                    Some(&c) if Some(c) == esc && i + 1 < bytes.len() => {
-                        // php keeps BOTH the escape char and the escaped char.
-                        field.push(c);
-                        field.push(bytes[i + 1]);
-                        i += 2;
-                    }
-                    Some(&c) if c == enc => {
-                        if bytes.get(i + 1) == Some(&enc) {
-                            // Doubled enclosure -> one literal enclosure.
-                            field.push(enc);
-                            i += 2;
-                        } else {
-                            i += 1; // closing enclosure
-                            break;
-                        }
-                    }
-                    Some(&c) => {
-                        field.push(c);
-                        i += 1;
-                    }
-                }
-            }
-            // Trailing content after the closing quote, up to the separator, is
-            // appended to the field (php behaviour).
-            while let Some(&c) = bytes.get(i) {
-                if c == sep {
-                    break;
-                }
-                field.push(c);
-                i += 1;
-            }
-        } else {
-            // Unquoted field: read until the separator.
-            while let Some(&c) = bytes.get(i) {
-                if c == sep {
-                    break;
-                }
-                field.push(c);
-                i += 1;
-            }
-        }
-        out.push(Value::str(field));
-        match bytes.get(i) {
-            None => break,
-            Some(&c) if c == sep => {
-                i += 1;
-                if i == bytes.len() {
-                    // Trailing separator -> one final empty field.
-                    out.push(Value::str(Vec::new()));
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    out
+    let (sep, enc, esc) = crate::ext::standard::file::csv_args(host, args, "str_getcsv", 1)?;
+    Ok(crate::ext::standard::file::csv_record(
+        crate::ext::standard::file::php_fgetcsv(s, sep, enc, esc, None),
+    ))
 }
 
 fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2090,7 +1985,7 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s.repeat(n)))
 }
 
-fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_implode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
         (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
@@ -2106,13 +2001,17 @@ fn fn_implode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             ))
         }
     };
-    let parts: Vec<std::borrow::Cow<[u8]>> = arr
-        .iter()
-        .map(|(_, v)| match v {
+    // php_implode: arrays warn, objects use their string cast (or throw).
+    let mut parts: Vec<std::borrow::Cow<[u8]>> = Vec::with_capacity(arr.len());
+    for (_, v) in arr.iter() {
+        parts.push(match v {
             Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
-            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
-        })
-        .collect();
+            Value::Int(_) | Value::Bool(_) | Value::Null => {
+                std::borrow::Cow::Owned(conv::to_string_bytes(v))
+            }
+            v => std::borrow::Cow::Owned(zval_get_string(host, v)?),
+        });
+    }
     let len: usize = parts.iter().map(|p| p.len()).sum();
     // zend_string_safe_falloc(n - 1, glue_len, len): the glue repeated per
     // element can dwarf the input, so php checks the limit first.

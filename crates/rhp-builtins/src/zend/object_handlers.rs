@@ -373,7 +373,7 @@ pub fn properties_for(
         .and_then(|t| t.get_properties_for)
     {
         Some(f) => f(host, h, purpose),
-        None => Ok(None),
+        None => host.hooked_properties_for(h, purpose),
     }
 }
 

@@ -50,9 +50,16 @@ pub(crate) struct FileCtx<'s> {
     /// A trait body is being compiled: `__CLASS__` there names the *using*
     /// class, so it is lowered to a runtime `self::class`.
     pub(crate) in_trait: Cell<bool>,
-    /// An interface body is being compiled (its property declarations,
-    /// hooked or not, contribute no runtime members).
+    /// An interface body is being compiled.
     pub(crate) in_interface: Cell<bool>,
+    /// The class-like whose body is being compiled (php's
+    /// `CG(active_class_entry)`), for `self`/`parent`/`static` in types.
+    pub(crate) class_scope: RefCell<Option<Rc<ClassScope>>>,
+    /// A `readonly class` body is being compiled.
+    pub(crate) in_readonly_class: Cell<bool>,
+    /// The property whose declaration is being compiled (`__PROPERTY__` in
+    /// its default value and attributes).
+    pub(crate) cur_property: RefCell<Option<Vec<u8>>>,
     /// Closure and arrow-function protos, and functions declared in control
     /// flow, from anywhere in the file: `Program::closures`. A closure's
     /// `fnidx` is its position here.
@@ -74,7 +81,25 @@ pub(crate) struct FileCtx<'s> {
     pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
 }
 
+/// The class-like a declaration sits in, as type compilation needs it.
+pub(crate) struct ClassScope {
+    /// Resolved class name.
+    pub(crate) name: Vec<u8>,
+    /// Resolved parent name (`extends` of a class; none for interfaces).
+    pub(crate) parent: Option<Vec<u8>>,
+    pub(crate) is_trait: bool,
+    pub(crate) is_anon: bool,
+}
+
 impl<'s> FileCtx<'s> {
+    /// Run `f` with `scope` as the active class-like.
+    pub(crate) fn with_class_scope<R>(&self, scope: ClassScope, f: impl FnOnce() -> R) -> R {
+        let saved = self.class_scope.replace(Some(Rc::new(scope)));
+        let r = f();
+        *self.class_scope.borrow_mut() = saved;
+        r
+    }
+
     fn empty(builtins: &'s Builtins, file: PhpStr, src: &'s [u8]) -> Self {
         FileCtx {
             builtins,
@@ -89,6 +114,9 @@ impl<'s> FileCtx<'s> {
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
             in_interface: Cell::new(false),
+            class_scope: RefCell::new(None),
+            in_readonly_class: Cell::new(false),
+            cur_property: RefCell::new(None),
             closures: RefCell::new(Vec::new()),
             anon_classes: RefCell::new(Vec::new()),
             cond_classes: RefCell::new(Vec::new()),
@@ -149,6 +177,33 @@ impl<'s> FileCtx<'s> {
         if f.as_ref().is_none_or(|(o, _, _)| offset < *o) {
             *f = Some((offset, line, message));
         }
+    }
+
+    /// Run `f` with the compile errors and diagnostics it records dropped
+    /// (a check that only needs a value, such as a lowered type).
+    pub(crate) fn quietly<T>(&self, f: impl FnOnce() -> T) -> T {
+        let fatal = self.fatal.borrow().clone();
+        let ndiags = self.compile_diags.borrow().len();
+        let r = f();
+        *self.fatal.borrow_mut() = fatal;
+        self.compile_diags.borrow_mut().truncate(ndiags);
+        r
+    }
+
+    /// [`FileCtx::fatal`] reported at `line`, ordered as if found at source
+    /// `order` (php raises some errors at a declaration's first line only
+    /// after compiling its body).
+    pub(crate) fn fatal_line(&self, order: u32, line: u32, message: String) {
+        let mut f = self.fatal.borrow_mut();
+        if f.as_ref().is_none_or(|(o, _, _)| order < *o) {
+            *f = Some((order, line, message));
+        }
+    }
+
+    /// Record a diagnostic php raises while compiling, at the line of `offset`.
+    pub(crate) fn diag(&self, level: i64, offset: u32, message: String) {
+        let line = self.line_of(offset);
+        self.compile_diags.borrow_mut().push((level, message, line));
     }
 
     /// The earliest recorded compile error: `(line, message)`.

@@ -1,0 +1,56 @@
+["18446744073709551611"]
+["18446744073709551615"]
+[9223372036854775807]
+[-9223372036854775808]
+[31,15,19]
+[49]
+[0]
+[0,"xg"]
+[12]
+[1.5]
+["abc"]
+[100000,2,"e",3,"e+",0.5,null]
+[123,45,678]
+["hello",5,"w",7]
+["b","c","a"]
+[null,"x"]
+["abc]","def"]
+["zyx","-","ab"]
+[3]
+null
+null
+null
+["ab"]
+[9223372036854775807]
+int(-1)
+NULL
+int(2)
+int(7)
+int(8)
+int(1)
+int(7)
+int(8)
+int(2)
+int(2)
+int(1)
+"%": "Bad scan conversion character \""
+"%h": "Bad scan conversion character \""
+"%q": "Bad scan conversion character \"q\""
+"%[": "Unmatched [ in format string"
+"%[^": "Unmatched [ in format string"
+"%[]": "Unmatched [ in format string"
+"%1$s %s": "cannot mix \"%\" and \"%n$\" conversion specifiers"
+"%s %1$s": "cannot mix \"%\" and \"%n$\" conversion specifiers"
+"%0$s": "\"%n$\" argument index out of range"
+"%256$s": "\"%n$\" argument index out of range"
+"%1$s%1$s": "Variable is assigned by multiple \"%n$\" conversion specifiers"
+Variable is not assigned by any conversion specifiers
+Different numbers of variable names and field specifiers
+"%n$" argument index out of range
+[10,"apples"]
+[20,"pears"]
+[null,null]
+int(2)
+int(10)
+string(6) "apples"
+fscanf(): supplied resource is not a valid File-Handle resource

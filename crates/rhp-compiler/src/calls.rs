@@ -78,6 +78,14 @@ impl ProtoBuilder<'_> {
             return Ok(dst);
         }
 
+        if fallback.is_none() && name_bytes.eq_ignore_ascii_case(b"sprintf") {
+            if let Some(r) =
+                self.sprintf_rope(&fc.argument_list.arguments.iter().collect::<Vec<_>>())?
+            {
+                return Ok(r);
+            }
+        }
+
         // Per-parameter by-ref flags of the (statically-known) callee: a user
         // function's recorded signature (tried under the namespaced name, then the
         // global fallback), or a known by-ref builtin (always global).
@@ -262,6 +270,11 @@ impl ProtoBuilder<'_> {
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
+                // A temporary holding the argument is dead once it is in
+                // the window.
+                ArgSlot::Value(r) if r as usize >= self.cv_map.len() => {
+                    self.emit(Instr::MovTake { dst, src: r })
+                }
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
                 ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
@@ -290,6 +303,114 @@ impl ProtoBuilder<'_> {
             flags,
         });
         Ok(dst)
+    }
+
+    /// zend_compile_func_sprintf: `sprintf` with a constant format of only
+    /// `%s`, `%d` and `%%` (shorter than 256 bytes) and one argument per
+    /// placeholder compiles to string concatenation (php's rope): the
+    /// values are evaluated first, `%d` casts to int. `None` when the call
+    /// doesn't have that shape.
+    fn sprintf_rope(&mut self, args: &[&Argument]) -> Result<Option<Reg>, Thrown> {
+        let Some(Argument::Positional(first)) = args.first().copied() else {
+            return Ok(None);
+        };
+        let Ok(Value::Str(fmt)) = crate::fold::fold_const(self.cx, first.value) else {
+            return Ok(None);
+        };
+        let fmt = fmt.as_bytes().to_vec();
+        if fmt.len() >= 256 {
+            return Ok(None);
+        }
+        // Literal runs and placeholders ('s' / 'd').
+        enum Part {
+            Lit(Vec<u8>),
+            Val(u8),
+        }
+        let mut parts = Vec::new();
+        let mut lit = Vec::new();
+        let mut i = 0;
+        while i < fmt.len() {
+            if fmt[i] != b'%' {
+                lit.push(fmt[i]);
+                i += 1;
+                continue;
+            }
+            match fmt.get(i + 1) {
+                Some(b'%') => lit.push(b'%'),
+                Some(&c @ (b's' | b'd')) => {
+                    if !lit.is_empty() {
+                        parts.push(Part::Lit(std::mem::take(&mut lit)));
+                    }
+                    parts.push(Part::Val(c));
+                }
+                _ => return Ok(None),
+            }
+            i += 2;
+        }
+        if !lit.is_empty() {
+            parts.push(Part::Lit(lit));
+        }
+        let placeholders = parts.iter().filter(|p| matches!(p, Part::Val(_))).count();
+        if placeholders != args.len() - 1 {
+            return Ok(None);
+        }
+        let mut values = Vec::new();
+        for a in &args[1..] {
+            let Argument::Positional(p) = *a else {
+                return Ok(None);
+            };
+            values.push(p.value);
+        }
+        let mut regs = Vec::new();
+        for v in values {
+            regs.push(self.compile_expr(v)?);
+        }
+        let mut regs = regs.into_iter();
+        let mut acc: Option<Reg> = None;
+        let single = parts.len() == 1;
+        for part in parts {
+            let r = match part {
+                Part::Lit(b) => {
+                    let dst = self.alloc_temp();
+                    let k = self.intern_const(Value::str(b));
+                    self.emit(Instr::LoadConst { dst, k });
+                    dst
+                }
+                Part::Val(c) => {
+                    let mut r = regs.next().expect("one value per placeholder");
+                    if c == b'd' {
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CastInt { dst, a: r });
+                        r = dst;
+                    }
+                    // A one-element rope is a string cast.
+                    if single {
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::CastString { dst, a: r });
+                        r = dst;
+                    }
+                    r
+                }
+            };
+            acc = Some(match acc {
+                None => r,
+                Some(a) => {
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::Concat { dst, a, b: r });
+                    dst
+                }
+            });
+        }
+        let dst = match acc {
+            Some(r) => r,
+            None => {
+                let dst = self.alloc_temp();
+                let k = self.intern_const(Value::str(""));
+                self.emit(Instr::LoadConst { dst, k });
+                dst
+            }
+        };
+        Ok(Some(dst))
     }
 
     /// zend_compile_func_in_array: a compile-time-resolved `in_array` call
@@ -430,6 +551,14 @@ impl ProtoBuilder<'_> {
                 let obj = self.compile_expr(m.object)?;
                 let name = self.selector_string(&m.method)?;
                 self.build_pair(obj, &name)
+            }
+            Pa::StaticMethod(s) if is_parent_hook_call(s.class, &s.method) => {
+                use mago_span::HasSpan;
+                self.cx.fatal(
+                    s.span().start.offset,
+                    "Cannot create Closure for parent property hook call".into(),
+                );
+                self.alloc_temp()
             }
             Pa::StaticMethod(s) => {
                 let class = match s.class {
@@ -573,6 +702,11 @@ impl ProtoBuilder<'_> {
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
+                // A temporary holding the argument is dead once it is in
+                // the window.
+                Slot::Value(r) if r as usize >= self.cv_map.len() => {
+                    self.emit(Instr::MovTake { dst, src: r })
+                }
                 Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
             }
@@ -799,6 +933,9 @@ impl ProtoBuilder<'_> {
         &mut self,
         smc: &crate::parse::cst::StaticMethodCall,
     ) -> Result<Reg, Thrown> {
+        if let Some(r) = self.compile_parent_hook_call(smc)? {
+            return Ok(r);
+        }
         let class = self.class_ref(smc.class)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
@@ -856,6 +993,105 @@ impl ProtoBuilder<'_> {
             }
         }
     }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_parent_property_hook_call: `parent::$prop::get()` /
+    /// `parent::$prop::set($v)`, only in that same hook of `$prop`.
+    fn compile_parent_hook_call(
+        &mut self,
+        smc: &crate::parse::cst::StaticMethodCall,
+    ) -> Result<Option<Reg>, Thrown> {
+        use crate::parse::cst::{Access, ClassLikeMemberSelector, Variable};
+        let Expression::Access(Access::StaticProperty(spa)) = smc.class else {
+            return Ok(None);
+        };
+        let pname: Vec<u8> = match (spa.class, &spa.property) {
+            (Expression::Parent(_), Variable::Direct(prop)) => {
+                crate::util::strip_dollar(prop.name).to_vec()
+            }
+            // `parent::${0}`: a constant name.
+            (Expression::Parent(_), Variable::Indirect(iv)) => match iv.expression {
+                Expression::Literal(crate::parse::cst::Literal::String(s)) => match s.value {
+                    Some(v) => v.to_vec(),
+                    None => return Ok(None),
+                },
+                Expression::Literal(crate::parse::cst::Literal::Integer(i)) => match i.value {
+                    Some(v) => v.to_string().into_bytes(),
+                    None => return Ok(None),
+                },
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let ClassLikeMemberSelector::Identifier(m) = &smc.method else {
+            return Ok(None);
+        };
+        let kind = if m.value.eq_ignore_ascii_case(b"get") {
+            rhp_bytecode::HookKind::Get
+        } else if m.value.eq_ignore_ascii_case(b"set") {
+            rhp_bytecode::HookKind::Set
+        } else {
+            return Ok(None);
+        };
+        let at = {
+            use mago_span::HasSpan;
+            smc.span().start.offset
+        };
+        let shown = String::from_utf8_lossy(&pname).into_owned();
+        let hname = String::from_utf8_lossy(m.value).into_owned();
+        if self.class_name.is_none() {
+            self.cx.fatal(
+                at,
+                "Cannot use \"parent\" when no class scope is active".into(),
+            );
+            return Ok(Some(self.alloc_temp()));
+        }
+        match self.hook.clone() {
+            None => self.cx.fatal(
+                at,
+                format!("Must not use parent::${shown}::{hname}() outside a property hook"),
+            ),
+            Some((hp, _)) if hp != pname => self.cx.fatal(
+                at,
+                format!(
+                    "Must not use parent::${shown}::{hname}() in a different property (${})",
+                    String::from_utf8_lossy(&hp)
+                ),
+            ),
+            Some((_, hk)) if hk != kind => self.cx.fatal(
+                at,
+                format!(
+                    "Must not use parent::${shown}::{hname}() in a different property hook ({})",
+                    hk.name()
+                ),
+            ),
+            Some(_) => {}
+        }
+        let name = self.intern_name(&pname);
+        let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
+        let dst = self.alloc_temp();
+        self.emit(Instr::CallParentHook {
+            dst,
+            name,
+            kind,
+            base,
+            argc,
+        });
+        Ok(Some(dst))
+    }
+}
+
+/// `parent::$prop::get` / `::set` (unparenthesized).
+fn is_parent_hook_call(
+    class: &Expression,
+    method: &crate::parse::cst::ClassLikeMemberSelector,
+) -> bool {
+    use crate::parse::cst::{Access, ClassLikeMemberSelector, Variable};
+    matches!(class, Expression::Access(Access::StaticProperty(spa))
+        if matches!((spa.class, &spa.property), (Expression::Parent(_), Variable::Direct(_))))
+        && matches!(method, ClassLikeMemberSelector::Identifier(m)
+            if m.value.eq_ignore_ascii_case(b"get") || m.value.eq_ignore_ascii_case(b"set"))
 }
 
 fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {

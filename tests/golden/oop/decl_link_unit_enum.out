@@ -1,0 +1,2 @@
+start
+last: 1: Non-enum class C cannot implement interface UnitEnum (decl_link_unit_enum.php:10)

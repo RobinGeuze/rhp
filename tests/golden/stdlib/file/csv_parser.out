@@ -1,0 +1,23 @@
+["a","b \"c\"","d"]
+["x ","y"]
+["xz","y"]
+["a\\\"b","c"]
+["a\\b\"","c"]
+["unterminated,x"]
+["ends with quote"]
+["a","b"]
+["a","b\r\n"]
+[null]
+[null]
+["a","b|c"]
+str_getcsv(): Argument #2 ($separator) must be a single character
+str_getcsv(): Argument #2 ($separator) must be a single character
+str_getcsv(): Argument #3 ($enclosure) must be a single character
+str_getcsv(): Argument #4 ($escape) must be empty or a single character
+["1","multi\nline\r\nfield","3"]
+["open\nnever closed\n"]
+["1","multi\nline\r\nfield","3"]
+["open\nnever closed\n"]
+fgetcsv(): Argument #2 ($length) must be between 0 and 9223372036854775806
+fgetcsv(): Argument #3 ($separator) must be a single character
+fputcsv(): Argument #4 ($enclosure) must be a single character

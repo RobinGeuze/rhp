@@ -1,4 +1,5 @@
 <?php
+ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 var_dump(0 == "a");
 var_dump("1" == "01");
 var_dump("10" == "1e1");
@@ -8,9 +9,8 @@ var_dump(null == false);
 var_dump([] == false);
 var_dump("0" == false);
 var_dump(0.0 == "0");
-// rhp does not warn "A non-numeric value encountered" yet: silenced.
-var_dump(@("1abc" + 5));
-var_dump(@("3.14 is pi" + 0));
+var_dump("1abc" + 5);
+var_dump("3.14 is pi" + 0);
 var_dump(true + true);
 var_dump("5 apples" . 3);
 var_dump((int)"0x1A");

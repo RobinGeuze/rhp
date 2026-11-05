@@ -1,0 +1,4 @@
+2
+C
+ok
+64: Declaration of R::__construct(string $a) must be compatible with P::__construct(int $a) (inherit_overrides.php:28)

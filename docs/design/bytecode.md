@@ -124,8 +124,8 @@ each other — only `rhp-cli` knits them.
 // rhp_values::ops  (was rhp-semantics::ops; first moved from rhp-runtime/src/ops.rs)
 pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
 pub fn negate(a: &Value) -> Result<Value, Thrown>;
-pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
-pub fn bitwise_not(a: &Value) -> Value;
+pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Result<Value, Thrown>; // BitOp::{And,Or,Xor,Shl,Shr,Mod}
+pub fn bitwise_not(a: &Value) -> Result<Value, Thrown>;
 pub fn concat(a: &Value, b: &Value) -> Value;
 pub fn loose_compare(a: &Value, b: &Value) -> std::cmp::Ordering;
 pub fn loose_eq(a: &Value, b: &Value) -> bool;
@@ -239,6 +239,14 @@ read) is applied on-use wherever a *value* is required:
 
 ### 2.3 Delegation rule (load-bearing)
 
+> **Today.** Only two numbers (ints for `% << >> | & ^`) take the `ops::`
+> function directly. Everything else goes through the VM's slow path
+> (`vm/compare.rs`: `bin_slow`, `long_op`, `bitwise_not_slow`), a port of
+> `zend_operators.c` that raises php's diagnostics (they can run a user
+> error handler). The engine-free `ops::` functions return an error for
+> any operand php would diagnose; constant folding then leaves the
+> expression to run time.
+
 Arithmetic / compare / concat / bitwise / unary opcodes are **thin wrappers that
 call the matching `ops::` function**; echo/print and all builtins go through
 `Host`/`registry()`. The VM contributes only operand fetch, `?`-propagation of
@@ -263,6 +271,7 @@ from isa.md are the disassembly spelling of the same variants.
 ```
 Nop
 Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
+MovTake    { dst, src }           dst = deref(src); src = Null             (a dead temporary into a call window)
 LoadConst  { dst, k }             dst = consts[k].clone()
 LoadNull   { dst }                dst = Null
 LoadBool   { dst, b: bool }       dst = Bool(b)
@@ -332,11 +341,13 @@ ArrSet     { arr, key, val }          arr[ArrayKey::from_value(key)] = deref(val
 ArrSpread  { arr, src }               merge: int keys renumber (push), string keys overwrite
 DimFetchR  { dst, arr, key }          dst = deref(arr)[norm(key)] or Null (+undef-key warning); no autovivify ?
 DimFetchIs { dst, arr, key }          like R but NO warning, Null if arr not array   (for ?? / nested isset)
+DimFetchUnset { dst, arr, key }       element below `unset($a[$k]->p)`: missing key silent; string offset / scalar container Err ?
 -- lvalue cursor (nested `$a[$i][$j]=v` without dangling COW borrows) --
 LvalCv     { cv }                     push a cursor rooted at CV cv (autovivify Null→[] on descent)
 LvalDim    { key }                    descend top cursor into norm(key) (create Null if missing; Err if scalar) ?
 LvalAppend {}                         descend into a freshly appended element
-AssignLval { src }                    commit deref(src) into cursor slot, bubbling make_mut up the path; pop. ref-aware at leaf
+AssignLval { src, dst }               commit deref(src) into cursor slot, bubbling make_mut up the path; pop. ref-aware at leaf.
+                                      dst (when not src) gets the assignment's value: src, or the byte a string offset got (null if none)
 FetchLvalRw{ dst }                    read current cursor value into dst AND keep cursor open (compound/inc-dec on `$a[$i]`)
 -- isset / empty / unset --
 IssetCv    { dst, cv }                Bool(!is_null(deref(cv)))           (unset≡null to isset)
@@ -387,6 +398,9 @@ CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err i
 CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
 Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
 RetNull     {}                                    return Null
+-- argument temporaries move into the callee as they are bound (and a builtin
+   takes them), so an object passed as a temporary is freed when the call
+   returns and its handle comes back as in php (oop-model.md, "Fresh id")
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)
@@ -395,6 +409,10 @@ SpreadArgs { src }                    dynamic argc: switch to the *_V path (Call
 Param binding in `CallUser` is driven by `ParamInfo` (by-value clone / by-ref
 bind to the passed `Ref` / variadic collects window tail into a `PhpArray` /
 default `Const` copy or `Init` block; missing+no-default ⇒ `ArgumentCountError`).
+An `Init` block is guarded by `JmpIfArg { index, target }`; for a typed
+parameter it ends in `RecvInitCheck { index }`, php's RECV_INIT check of the
+evaluated default (a constant default was checked, and an int one widened
+for a float type, at compile time).
 Named args against a statically-known callee are resolved to positions at compile
 time; dynamic callee reorders at the call site via `proto.params`. The fixed-arity
 register-window path is the fast path; spread uses the `_V` path.

@@ -45,7 +45,7 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
                 (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
                 (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
-                (Op::BitwiseNot(_), v) => rhp_values::ops::bitwise_not(&v),
+                (Op::BitwiseNot(_), v) => rhp_values::ops::bitwise_not(&v)?,
                 (Op::Not(_), v) => Value::Bool(!rhp_values::conv::to_bool(&v)),
                 _ => return Err(non_const_err()),
             }
@@ -62,12 +62,18 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 Bop::Division(_) => ops::div(&l, &r)?,
                 Bop::Modulo(_) => ops::modulo(&l, &r)?,
                 Bop::Exponentiation(_) => ops::pow(&l, &r)?,
-                Bop::StringConcat(_) => ops::concat(&l, &r),
-                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And),
-                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or),
-                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor),
-                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl),
-                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr),
+                Bop::StringConcat(_) => {
+                    // Arrays warn (Array to string conversion): left to run time.
+                    if matches!(l, Value::Array(_)) || matches!(r, Value::Array(_)) {
+                        return Err(non_const_err());
+                    }
+                    ops::concat(&l, &r)
+                }
+                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And)?,
+                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or)?,
+                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor)?,
+                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl)?,
+                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr)?,
                 Bop::Equal(_) => Value::Bool(ops::loose_eq(&l, &r)),
                 Bop::NotEqual(_) | Bop::AngledNotEqual(_) => Value::Bool(!ops::loose_eq(&l, &r)),
                 Bop::Identical(_) => Value::Bool(ops::strict_eq(&l, &r)),
@@ -108,8 +114,21 @@ fn fold_const_array<'a>(
             ArrayElement::KeyValue(kv) => {
                 let k = fold_const(cx, kv.key)?;
                 let v = fold_const(cx, kv.value)?;
-                let key = ArrayKey::from_value(&k)
-                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                // Keys php converts with a diagnostic (null, a float that
+                // isn't a whole int, a resource) or rejects: left to run time.
+                let key = match &k {
+                    Value::Int(n) => ArrayKey::Int(*n),
+                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    Value::Bool(b) => ArrayKey::Int(*b as i64),
+                    Value::Float(f)
+                        if f.fract() == 0.0
+                            && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0)
+                                .contains(f) =>
+                    {
+                        ArrayKey::Int(*f as i64)
+                    }
+                    _ => return Err(non_const_err()),
+                };
                 a.insert(key, v);
             }
             ArrayElement::Value(v) => a.push(fold_const(cx, v.value)?),
@@ -243,15 +262,9 @@ pub(crate) fn literal_value(lit: &Literal) -> Value {
     match lit {
         Literal::Integer(i) => match i.value {
             Some(u) if u <= i64::MAX as u64 => Value::Int(u as i64),
-            Some(u) => Value::Float(u as f64),
-            None => {
-                let cleaned: Vec<u8> = i.raw.iter().copied().filter(|&b| b != b'_').collect();
-                std::str::from_utf8(&cleaned)
-                    .ok()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(Value::Float)
-                    .unwrap_or(Value::Int(0))
-            }
+            // The parser's value saturates: php reads the digits as a double
+            // (zend_strtod, or zend_hex/oct/bin_strtod).
+            _ => Value::Float(big_int_literal(i.raw)),
         },
         Literal::Float(f) => Value::Float(f.value.0),
         Literal::String(s) => Value::str(s.value.unwrap_or(s.raw).to_vec()),
@@ -259,6 +272,31 @@ pub(crate) fn literal_value(lit: &Literal) -> Value {
         Literal::False(_) => Value::Bool(false),
         Literal::Null(_) => Value::Null,
     }
+}
+
+/// An integer literal too big for an int, as php's scanner makes it a float.
+fn big_int_literal(raw: &[u8]) -> f64 {
+    let digits: Vec<u8> = raw.iter().copied().filter(|&b| b != b'_').collect();
+    let (base, body) = match digits.as_slice() {
+        [b'0', b'x' | b'X', rest @ ..] => (16, rest),
+        [b'0', b'b' | b'B', rest @ ..] => (2, rest),
+        [b'0', b'o' | b'O', rest @ ..] => (8, rest),
+        [b'0', rest @ ..] if !rest.is_empty() => (8, rest),
+        d => {
+            return std::str::from_utf8(d)
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        }
+    };
+    body.iter().fold(0.0, |acc, &c| {
+        if base == 16 {
+            acc * 16.0 + (c as char).to_digit(16).unwrap_or(0) as f64
+        } else {
+            // zend_oct/bin_strtod: `value * base + c - '0'`, two roundings.
+            acc * base as f64 + c as f64 - b'0' as f64
+        }
+    })
 }
 
 /// Structural equality for constant-pool deduplication.

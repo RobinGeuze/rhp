@@ -43,6 +43,11 @@ impl Vm {
                 let mut absent_slot = None;
                 let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     PropRes::Slot(k) => {
+                        if self.classes[cls as usize].hooked {
+                            if let Some(r) = self.hooked_read(&h, cls, &k) {
+                                return r.map(|v| deref(&v));
+                            }
+                        }
                         if let Some(v) = h.borrow().properties.get(&k) {
                             return Ok(deref(v));
                         }
@@ -128,6 +133,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return Ok(!matches!(deref(&r?), Value::Null)),
+                    None if self.uninit_typed(&h, &k) => return Ok(false),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             // Skip __isset() for an uninitialized typed property.
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(false),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
@@ -163,6 +177,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return Ok(!self.truthy(&deref(&r?))?),
+                    None if self.uninit_typed(&h, &k) => return Ok(true),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(true),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
@@ -205,6 +228,15 @@ impl Vm {
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
         let present = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+            PropRes::Slot(k)
+                if self.classes[cls as usize].hooked && self.hooked_entry(cls, &k).is_some() =>
+            {
+                match self.hooked_read(&h, cls, &k) {
+                    Some(r) => return r.map(|v| deref(&v)),
+                    None if self.uninit_typed(&h, &k) => return Ok(Value::Null),
+                    None => h.borrow().properties.get(&k).cloned(),
+                }
+            }
             PropRes::Slot(k) if self.uninit_typed(&h, &k) => return Ok(Value::Null),
             PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
@@ -245,6 +277,11 @@ impl Vm {
         }
         let scope = self.stack[top].defining_class;
         let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        if let PropRes::Slot(k) = &res {
+            if let Some(pe) = self.hooked_entry(cls, k) {
+                return Err(self.hooked_unset_err(cls, pe));
+            }
+        }
         let key = match &res {
             PropRes::Slot(k) => Some(k.clone()),
             PropRes::Dynamic => Some(pname.clone()),
@@ -460,6 +497,15 @@ impl Vm {
                 ));
             }
             let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+            let val = match &res {
+                PropRes::Slot(k) if self.classes[cls as usize].hooked => {
+                    match self.hooked_store(&h, cls, k, scope, called, val)? {
+                        Some(v) => v,
+                        None => return Ok(()),
+                    }
+                }
+                _ => val,
+            };
             let is_dyn = matches!(res, PropRes::Dynamic);
             let (key, denied) = match res {
                 PropRes::Slot(k) => (k, None),
@@ -530,6 +576,9 @@ impl Vm {
                 other => *other = val,
             }
             return Ok(());
+        }
+        if let Value::Closure(_) = o {
+            return Err(closure_prop_error(pname.as_bytes()));
         }
         Err(Thrown::error(
             "Error",
@@ -696,18 +745,7 @@ impl Vm {
         match self.check_one(&val, &ty, strict, Some(decl)) {
             Ok(None) => Ok(val),
             Ok(Some(c)) => {
-                if let (Value::Float(f), Value::Int(_)) = (deref(&val), &c) {
-                    if f.fract() != 0.0 {
-                        let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
-                            .into_owned();
-                        self.diag(
-                            builtins::E_DEPRECATED,
-                            &format!(
-                                "Implicit conversion from float {shown} to int loses precision"
-                            ),
-                        )?;
-                    }
-                }
+                self.coercion_diag(&val, &c)?;
                 Ok(c)
             }
             Err(()) => Err(Thrown::type_error(format!(
@@ -772,10 +810,13 @@ impl Vm {
                         })
                         .unwrap_or(false)
             });
-            if in_clone
-                && (scope == Some(decl) || parent_scope_ok)
-                && self.readonly_reinit.insert((oid, key.clone()))
-            {
+            if in_clone && (scope == Some(decl) || parent_scope_ok) && {
+                let done = self.readonly_reinit.entry(oid).or_default();
+                !done.contains(key) && {
+                    done.push(key.clone());
+                    true
+                }
+            } {
                 return Ok(());
             }
             return Err(Thrown::error(
@@ -843,6 +884,8 @@ impl Vm {
                 bound_class: cd.bound_class,
                 bound_static: cd.bound_static,
                 wrapped: cd.wrapped.clone(),
+                id: rhp_values::alloc_object_id(),
+                statics: cd.statics_copy(),
             };
             self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
             return Ok(());
@@ -880,8 +923,7 @@ impl Vm {
                 ),
             ));
         }
-        let id = self.next_object_id;
-        self.next_object_id += 1;
+        let id = self.alloc_object_id();
         // The clone keeps the property slots' unset flags.
         if let Some(ks) = self.unset_typed_props.get(&h.borrow().id).cloned() {
             self.unset_typed_props.insert(id, ks);
@@ -909,4 +951,16 @@ fn pe_public_implicit_set(vm: &Vm, cls: ClassId, key: &PhpStr) -> bool {
             && pe.visibility == rhp_values::Visibility::Public
             && pe.set_visibility.is_none()
     })
+}
+
+/// A Closure has no properties: writing one fails as a forbidden dynamic
+/// property.
+pub(crate) fn closure_prop_error(name: &[u8]) -> Thrown {
+    Thrown::error(
+        "Error",
+        format!(
+            "Cannot create dynamic property Closure::${}",
+            String::from_utf8_lossy(name)
+        ),
+    )
 }

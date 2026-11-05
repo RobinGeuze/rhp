@@ -449,7 +449,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_unset(&mut self, u: &crate::parse::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
-            check_globals_write(v)?;
+            check_globals_write(v, self.cur_line)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to

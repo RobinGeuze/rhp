@@ -7,7 +7,7 @@ use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
 use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::file::FileCtx;
-use crate::fold::{const_eq, fold_const};
+use crate::fold::const_eq;
 use crate::names::NameKind;
 use crate::util::{compile_error, is_superglobal};
 
@@ -46,6 +46,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) num_cvs: u16,
     pub(crate) next_temp: Reg,
     pub(crate) high_water: Reg,
+    /// The assignment being compiled is a statement of its own: its value
+    /// is not used.
+    pub(crate) result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
     pub(crate) temp_floor: Reg,
@@ -62,6 +65,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// Set once the CV pre-pass is done: every `$var` of the body must already
     /// have its slot (a later slot would alias a temporary).
     pub(crate) cvs_frozen: bool,
+    /// The body refers to `$this` (php's ZEND_ACC_USES_THIS).
+    pub(crate) uses_this: bool,
     /// The enclosing loop/switch and finally-body scopes (unique ids; finally
     /// bodies have the high bit set), for checking `goto` jumps.
     pub(crate) goto_scope: Vec<u32>,
@@ -70,6 +75,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
     /// Pending `goto`s: placeholder position, label, scope path, line.
     pub(crate) gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
+    /// In a property hook: the property's name and the hook (php's
+    /// `active_property_info_name` / `active_property_hook_kind`).
+    pub(crate) hook: Option<(Vec<u8>, rhp_bytecode::HookKind)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -101,16 +109,19 @@ impl<'c> ProtoBuilder<'c> {
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
+            result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
             cur_line: 0,
             lines: Vec::new(),
             call_lines: Vec::new(),
             cvs_frozen: false,
+            uses_this: false,
             goto_scope: Vec::new(),
             goto_serial: 0,
             labels: HashMap::new(),
             gotos: Vec::new(),
+            hook: None,
         }
     }
 
@@ -194,6 +205,9 @@ impl<'c> ProtoBuilder<'c> {
         if self.cx.is_prelude {
             proto.flags.insert(ProtoFlags::INTERNAL);
         }
+        if self.uses_this {
+            proto.flags.insert(ProtoFlags::USES_THIS);
+        }
         // The VM keeps the proto as it is for as long as the program lives
         // (with opcache, across requests): drop the growth slack.
         proto.code.shrink_to_fit();
@@ -218,6 +232,7 @@ impl<'c> ProtoBuilder<'c> {
                 | Instr::CallMethodV { .. }
                 | Instr::CallMethodDyn { .. }
                 | Instr::CallStatic { .. }
+                | Instr::CallParentHook { .. }
                 | Instr::CallStaticV { .. }
                 | Instr::CallStaticDyn { .. }
                 | Instr::CallMethodDynV { .. }
@@ -266,6 +281,9 @@ impl<'c> ProtoBuilder<'c> {
     }
 
     pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {
+        if self.cvs_frozen && var_name == b"this" {
+            self.uses_this = true;
+        }
         if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
             return i as Reg;
         }
@@ -337,30 +355,26 @@ impl<'c> ProtoBuilder<'c> {
         }
     }
 
-    /// Evaluate a parameter default to a constant and intern it. Only
-    /// compile-time constants are supported (literals, `[]`, true/false/null,
-    /// negated numeric literals); other expressions are deferred.
-    pub(crate) fn const_default(
-        &mut self,
-        e: &Expression,
-    ) -> Result<rhp_bytecode::ParamDefault, Thrown> {
-        let v = self.const_value(e)?;
-        Ok(rhp_bytecode::ParamDefault::Const(self.intern_const(v)))
-    }
-
     /// Emit prologue code for non-constant parameter defaults (e.g.
     /// `$v = self::CONST`): for each, `JmpIfArg index -> after` skips the init when
     /// the argument was passed, else the default expression is evaluated into the
     /// param's CV (in the callee's scope, so `self::`/`static::` resolve).
+    /// A typed parameter's default is then checked against its type
+    /// (php's RECV_INIT), at the parameter's line.
     pub(crate) fn emit_param_defaults(
         &mut self,
-        defs: &[(u16, Reg, &Expression)],
+        defs: &[(u16, Reg, &Expression, Option<u32>)],
     ) -> Result<(), Thrown> {
-        for &(index, cv, expr) in defs {
+        for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
             let t = self.compile_expr(expr)?;
             self.emit(Instr::Mov { dst: cv, src: t });
+            if let Some(line) = check_line {
+                let saved = std::mem::replace(&mut self.cur_line, line);
+                self.emit(Instr::RecvInitCheck { index });
+                self.cur_line = saved;
+            }
             let after = self.here();
             self.code[jpos] = Instr::JmpIfArg {
                 index,
@@ -369,11 +383,6 @@ impl<'c> ProtoBuilder<'c> {
             self.reset_temps();
         }
         Ok(())
-    }
-
-    fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
-        // Parameter defaults fold with the same rules as class consts / props.
-        fold_const(self.cx, e)
     }
 
     pub(crate) fn intern_const(&mut self, v: Value) -> CIdx {

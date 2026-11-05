@@ -172,14 +172,11 @@ pub struct Vm {
     // ... existing: out, stack, functions, fn_names, constants, max_depth, cursor_* ...
     classes: Vec<ClassEntry>,
     class_ids: HashMap<Vec<u8>, ClassId>,   // lowercased name -> id (names case-insensitive)
-    next_object_id: u32,                    // monotonic spl_object_id source
 }
 ```
 
-*Divergence from PHP, noted:* `next_object_id` is monotonic; Zend reuses freed
-ids. Under `Rc` + deferred GC we never free mid-request, so exact
-`spl_object_id`/`spl_object_hash` values are **not** byte-golden-able — only
-identity *relations* (`$a === $b`, array-of-objects dedup) are preserved.
+Object handles come from `rhp_values::handles`, php's object store: freed
+handles are reused most recently freed first (see oop-model.md, "Fresh id").
 
 ### 1.5 Inheritance strategy: **flatten at registration** (the one choice)
 
@@ -581,12 +578,18 @@ then switch the check on — but the metadata must be stored from step 1.)*
 1. **Topological order** by dependency (`parent`, each interface, each used trait
    must link first). A dependency cycle (`class A extends A`, mutual `extends`) →
    fatal `Error`. A missing name → `Error "Class \"X\" not found"`.
-2. **Assign `ClassId`** = index in `Vm.classes`; record `class_ids[lc(name)] = id`.
-3. **Flatten, parent-first** (traits → parent overlay → interface-set union):
+2. **Declaration errors** (`link_checks.rs`, zend_do_link_class's order):
+   extending an enum / final class / interface / trait, readonly mismatches,
+   UnitEnum/BackedEnum on a non-enum, trait constants against enum cases,
+   enum properties and magic methods. Each is a fatal error at the class
+   declaration's line. The checks php makes while compiling a declaration
+   (reserved names, member redeclaration, magic method signatures, promotion,
+   interface and readonly rules) live in the compiler's `checks.rs`.
+3. **Assign `ClassId`** = index in `Vm.classes`; record `class_ids[lc(name)] = id`.
+4. **Flatten, parent-first** (traits → parent overlay → interface-set union):
    - `methods` = clone `parent.methods`; merge trait methods (adopting the using
      class as `defining_class`); insert own methods (lowercase key), **overriding**
-     inherited. Enforce `final` (override of a `final` method → fatal), check
-     abstract-implementation for a concrete class.
+     inherited (the override rules are step 4).
    - `props` = clone `parent.props`; for each own `PropProto`, replace **in place**
      if the name exists (new default/visibility/declaring_class), else append —
      reproducing the observed order.
@@ -596,6 +599,30 @@ then switch the check on — but the metadata must be stored from step 1.)*
      `Rc<RefCell<Value>>`.
    - `ancestors` = self ∪ parent's ancestors ∪ transitive interface closure.
    - cache `constructor` by resolving `__construct` in the flattened `methods`.
+4. **Inheritance checks** (`inherit.rs`, php's zend_inheritance.c), once the
+   entry is in the table: for each redeclared typed property, invariance
+   ("Type of B::$p must be T (as in class A)"); for each method overriding a
+   parent, trait-abstract or interface method, the final / static / abstract
+   / visibility rules and the signature check (zend_do_perform_implementation_check:
+   arity, by-ref, variadics, contravariant parameters, covariant returns,
+   `static`/`self`, `never`, `mixed`), with php's declaration text in the
+   message. Internal parent methods are checked against their stub
+   signature (`rhp_bytecode::signatures`); a tentative return type gives the
+   `#[\ReturnTypeWillChange]` deprecation, recorded and raised after linking
+   (php's record_errors). A constructor carries its abstract / interface
+   prototype (`ResolvedMethod::prototype`) so grandchildren are checked
+   against it.
+   - A check that names a class not declared yet is *unresolved*. When
+     hoisting (early binding) the class is then not hoisted and links when
+     its `DeclareClass` runs. At run time the missing classes are
+     autoloaded after linking (an exception there is fatal: "During
+     inheritance of B, while autoloading Y"), the check reruns, and a class
+     still missing gives "Could not check compatibility ...". A class
+     loading its dependencies is visible to those checks by its declared
+     names; if a check used it and its dependency then fails to load, that
+     is fatal ("During inheritance of B with variance dependencies").
+   - Anonymous classes with a parent, interfaces or traits link when `new
+     class` runs, as in php.
 
 Static-prop and class-const inheritance semantics (→ fixtures):
 
@@ -708,10 +735,9 @@ implemented.
    lowercased name but keeps its own `defining_class`; a redeclared property
    replaces the entry **in place** (preserving position + updating default). Verify
    `var_dump` order and `parent::` resolution after override.
-7. **Object id monotonic, advances on every `New` and `Clone`.** `===` is
-   `Rc::ptr_eq` (a fresh `Rc` per object is identity); `id` is for
-   `spl_object_id`/hashing. Does not match PHP's exact (reused) numbers — only
-   relations are golden.
+7. **Object ids are php's handles**, taken on every `New`, `Clone`, closure
+   and generator and reused once freed. `===` is `Rc::ptr_eq` (a fresh `Rc`
+   per object is identity); `id` is for `spl_object_id`/hashing.
 8. **Magic methods go through the normal call path.** `__construct`/`__get`/
    `__call`/`__callStatic`/`__clone` push ordinary frames with `$this` + LSB set —
    no special re-entrancy; a throw inside unwinds like any call.

@@ -33,6 +33,7 @@ impl Drop for RequestStateReset {
 /// (docs/design/request-state.md).
 fn reset_request_state() {
     builtins::reset_request_state();
+    rhp_values::handles::reset_object_ids();
     crate::lvalue::reset_path_diags();
 }
 
@@ -55,6 +56,10 @@ impl Vm {
         // module-provided wrapper (`phar://`, …).
         let mut wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>> = HashMap::new();
         wrappers.insert(b"file".to_vec(), builtins::main::streams::file_wrapper());
+        wrappers.insert(
+            b"glob".to_vec(),
+            builtins::main::streams::glob_wrapper::glob_wrapper(),
+        );
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
@@ -85,7 +90,6 @@ impl Vm {
             cursor_global: None,
             classes: Vec::new(),
             class_ids: Default::default(),
-            next_object_id: 1,
             globals: indexmap::IndexMap::new(),
             jit_globals: HashMap::new(),
             unset_typed_props: HashMap::new(),
@@ -101,12 +105,14 @@ impl Vm {
             internal_classes: 0,
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
+            inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
             wrappers,
             main_script_path: None,
             streams: StreamTable::default(),
             readonly_reinit: Default::default(),
+            hook_bypass: false,
             last_dir: None,
             default_context: None,
             next_resource_id: 1,
@@ -121,12 +127,12 @@ impl Vm {
             native_resources: HashMap::new(),
             stdin_reader: None,
             destructibles: Vec::new(),
+            marked_destructed: Vec::new(),
             dtor_check: false,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
             finished_main: None,
             in_shutdown_scope: false,
-            destructed_below: 0,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
             opcache: None,
@@ -349,6 +355,14 @@ impl Vm {
         self.main_script_path = Some(path.into());
     }
 
+    /// A fatal error bailed out (php_error_cb's
+    /// zend_objects_store_mark_destructed): no object alive now runs its
+    /// destructor. Objects created later (by shutdown functions) still do.
+    pub(crate) fn mark_objects_destructed(&mut self) {
+        let marked = std::mem::take(&mut self.destructibles);
+        self.marked_destructed.extend(marked);
+    }
+
     /// Remember a new object whose class defines `__destruct` or has a
     /// native `dtor_obj` / `free_obj_host`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
@@ -367,9 +381,6 @@ impl Vm {
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
-        if h.borrow().id < self.destructed_below {
-            return Ok(()); // marked destructed by a fatal error's bailout
-        }
         let cls = h.borrow().class;
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
@@ -456,7 +467,9 @@ impl Vm {
                 }
             }
         }
-        self.shutdown_functions.clear();
+        // php_free_shutdown_functions is step 7: the callbacks (and their
+        // object handles) live until after the destructors.
+        let _registered = std::mem::take(&mut self.shutdown_functions);
         // 2. destructors
         self.enter_shutdown_scope();
         if let Err(t) = self
@@ -469,6 +482,7 @@ impl Vm {
             }
         }
         self.destructibles.clear();
+        self.marked_destructed.clear();
         // 3. php_output_end_all: finalize each buffer into the one below it
         // (an exception from a handler is fatal here).
         self.enter_shutdown_scope();
@@ -480,6 +494,7 @@ impl Vm {
             }
             self.output_end_all();
         }
+        self.shutdown_functions.clear();
         self.stack.clear();
         Ok(status)
     }
@@ -585,7 +600,9 @@ impl Vm {
             }
         }
         // Then every object still alive, in creation order (objects created
-        // by destructors included).
+        // by destructors included). From here on freed handles are not
+        // reused (zend_objects_store_call_destructors).
+        rhp_values::handles::stop_object_id_reuse();
         while !self.destructibles.is_empty() {
             let batch = std::mem::take(&mut self.destructibles);
             let mut it = batch.into_iter();

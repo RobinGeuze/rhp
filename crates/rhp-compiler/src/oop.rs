@@ -276,7 +276,7 @@ impl ProtoBuilder<'_> {
                 let arr = self.compile_unset_object(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::DimFetch { dst, arr, key });
+                self.emit(Instr::DimFetchUnset { dst, arr, key });
                 Ok(dst)
             }
             Expression::Access(Access::Property(pa)) => {

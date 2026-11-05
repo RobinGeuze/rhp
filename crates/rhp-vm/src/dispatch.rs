@@ -15,7 +15,7 @@ use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, Call
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
-    aa_key, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
+    aa_key, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
@@ -186,7 +186,14 @@ impl Vm {
                     // request like any other exit.
                     let thrown = if thrown.is_catchable() {
                         match self.unwind(thrown, 0) {
-                            Ok(UnwindResult::Caught) => continue, // handler installed; re-enter
+                            Ok(UnwindResult::Caught) => {
+                                // Unwinding may have released objects (a builtin's
+                                // temporaries): their destructors run before the handler.
+                                if !self.destructibles.is_empty() {
+                                    self.dtor_check = true;
+                                }
+                                continue; // handler installed; re-enter
+                            }
                             Ok(UnwindResult::Escaped(t)) => return Err(t), // uncaught
                             Err(t) if t.is_catchable() => return Err(t),
                             Err(t) => t,
@@ -267,6 +274,10 @@ impl Vm {
                     let v = self.reg_get_fast(top, src);
                     self.reg_set_fast(top, dst, v);
                 }
+                Instr::MovTake { dst, src } => {
+                    let v = self.take_temp(top, src);
+                    self.reg_set_fast(top, dst, v);
+                }
                 Instr::LoadConst { dst, k } => {
                     let v = proto.consts[k as usize].clone();
                     self.reg_set_fast(top, dst, v);
@@ -311,29 +322,28 @@ impl Vm {
                     }
                 }
                 Instr::Div { dst, a, b } => self.bin(top, dst, a, b, Op::Div, ops::div)?,
-                Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, Op::Mod, ops::modulo)?,
+                Instr::Mod { dst, a, b } => {
+                    let m = |x: i64, y: i64| (y != 0 && y != -1).then(|| Value::Int(x % y));
+                    if !self.int_binop(top, dst, a, b, m) {
+                        self.bin_inf(top, dst, a, b, Op::Mod)?
+                    }
+                }
                 Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
                 // Int operands (shift counts 0..63): what ops::bitwise
                 // returns for them.
                 Instr::BitAnd { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x & y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitAnd, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::And)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitAnd)?
                     }
                 }
                 Instr::BitOr { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x | y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitOr, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Or)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitOr)?
                     }
                 }
                 Instr::BitXor { dst, a, b } => {
                     if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x ^ y))) {
-                        self.bin_inf(top, dst, a, b, Op::BitXor, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Xor)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::BitXor)?
                     }
                 }
                 Instr::Shl { dst, a, b } => {
@@ -343,17 +353,13 @@ impl Vm {
                             .then(|| Value::Int(x.wrapping_shl(y as u32)))
                     };
                     if !self.int_binop(top, dst, a, b, shl) {
-                        self.bin_inf(top, dst, a, b, Op::Shl, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Shl)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::Shl)?
                     }
                 }
                 Instr::Shr { dst, a, b } => {
                     let shr = |x: i64, y: i64| (0..64).contains(&y).then(|| Value::Int(x >> y));
                     if !self.int_binop(top, dst, a, b, shr) {
-                        self.bin_inf(top, dst, a, b, Op::Shr, |x, y| {
-                            ops::bitwise(x, y, ops::BitOp::Shr)
-                        })?
+                        self.bin_inf(top, dst, a, b, Op::Shr)?
                     }
                 }
                 Instr::Concat { dst, a, b } => {
@@ -361,9 +367,12 @@ impl Vm {
                         continue;
                     }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    let v = if matches!(x, Value::Object(_) | Value::Array(_))
-                        || matches!(y, Value::Object(_) | Value::Array(_))
-                    {
+                    let slow = |v: &Value| match v {
+                        Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
+                        Value::Float(f) => f.is_nan(),
+                        _ => false,
+                    };
+                    let v = if slow(&x) || slow(&y) {
                         self.concat_object(&x, &y)?
                     } else {
                         ops::concat(&x, &y)
@@ -373,31 +382,21 @@ impl Vm {
 
                 Instr::Neg { dst, a } => {
                     let v = self.reg_get(top, a);
-                    let r = if let Value::Object(_) | Value::Closure(_) = v {
+                    let r = match v {
+                        Value::Int(n) if n != i64::MIN => Value::Int(-n),
+                        Value::Float(f) => Value::Float(-f),
                         // php compiles `-$x` to `$x * -1`.
-                        self.arith_object(Op::Mul, ops::mul, &v, &Value::Int(-1))?
-                    } else {
-                        ops::negate(&v)?
+                        _ => self.bin_slow(Op::Mul, ops::mul, &v, &Value::Int(-1))?,
                     };
                     self.reg_set(top, dst, r);
                 }
                 Instr::BitNot { dst, a } => {
                     let v = self.reg_get(top, a);
-                    if let Value::Object(h) = &v {
-                        if let Some(f) = self.handlers_of(h).and_then(|t| t.do_operation) {
-                            if let Some(r) = f(self, Op::BitNot, &v, None)? {
-                                self.reg_set(top, dst, r);
-                                continue;
-                            }
-                        }
-                    }
-                    if let Value::Object(_) | Value::Closure(_) = v {
-                        return Err(Thrown::type_error(format!(
-                            "Cannot perform bitwise not on {}",
-                            rhp_builtins::zval_value_name(self, &v)
-                        )));
-                    }
-                    self.reg_set(top, dst, ops::bitwise_not(&v));
+                    let r = match v {
+                        Value::Int(n) => Value::Int(!n),
+                        _ => self.bitwise_not_slow(&v)?,
+                    };
+                    self.reg_set(top, dst, r);
                 }
                 Instr::Not { dst, a } => {
                     let v = self.reg_get(top, a);
@@ -439,6 +438,7 @@ impl Vm {
                                 None => conv::to_int(&v),
                             }
                         }
+                        Value::Float(f) => self.dval_to_lval(f)?,
                         _ => conv::to_int(&v),
                     };
                     self.reg_set(top, dst, Value::Int(n));
@@ -483,12 +483,21 @@ impl Vm {
                                 None => self.object_to_array_mangled(h),
                             }
                         }
+                        Value::Float(f) if f.is_nan() => {
+                            self.nan_warning("array")?;
+                            cast_to_array(v)
+                        }
                         _ => cast_to_array(v),
                     };
                     self.reg_set(top, dst, out);
                 }
                 Instr::CastObject { dst, a } => {
                     let v = self.reg_get(top, a);
+                    if let Value::Float(f) = v {
+                        if f.is_nan() {
+                            self.nan_warning("object")?;
+                        }
+                    }
                     let obj = self.cast_to_object(v);
                     self.reg_set(top, dst, obj);
                 }
@@ -547,6 +556,7 @@ impl Vm {
                         self.stack[top].pc = target as usize;
                     }
                 }
+                Instr::RecvInitCheck { index } => self.recv_init_check(top, index)?,
                 Instr::JmpTrue { cond, target } => {
                     let f = &mut self.stack[top];
                     if let Value::Bool(b) = f.regs[cond as usize] {
@@ -588,16 +598,15 @@ impl Vm {
                     self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
                 }
                 Instr::ArrPush { arr, val } => {
-                    let v = self.reg_get(top, val);
+                    let v = self.elem_operand(top, &proto, val);
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.push(v);
                     }
                 }
                 Instr::ArrSet { arr, key, val } => {
                     let k = self.reg_get(top, key);
-                    let v = self.reg_get(top, val);
-                    let key = ArrayKey::from_value(&k)
-                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                    let v = self.elem_operand(top, &proto, val);
+                    let key = self.init_array_key(&k)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.insert(key, v);
                     }
@@ -611,8 +620,7 @@ impl Vm {
                 Instr::ArrSetRef { arr, key, val } => {
                     let k = self.reg_get(top, key);
                     let v = self.stack[top].regs[val as usize].clone();
-                    let key = ArrayKey::from_value(&k)
-                        .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                    let key = self.init_array_key(&k)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.insert(key, v);
                     }
@@ -691,25 +699,7 @@ impl Vm {
                     base,
                     ncaptures,
                 } => {
-                    // Raw (non-deref) read: a by-reference capture arrives as a
-                    // `Value::Ref` (from MakeRef) and must stay a Ref so writes
-                    // inside the closure reach the outer variable; by-value
-                    // captures were already deref'd into the window by Mov.
-                    let captures: Vec<Value> = (0..ncaptures)
-                        .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-                        .collect();
-                    // Bind the defining/static class scope so the closure body can
-                    // reach private members and resolve `self::`/`static::`.
-                    let cd = Rc::new(rhp_values::ClosureData {
-                        // `fnidx` is file-local; resolve into the flat table.
-                        fnidx: self.unit_base(top).closures + fnidx,
-                        captures,
-                        bound_this: None,
-                        bound_class: self.stack[top].defining_class,
-                        bound_static: self.stack[top].called_class,
-                        wrapped: None,
-                    });
-                    self.reg_set(top, dst, Value::Closure(cd));
+                    self.make_closure(top, dst, fnidx, base, ncaptures)?;
                 }
                 Instr::BindGlobal { cv, name } => {
                     let gname = proto.names[name as usize].clone();
@@ -724,26 +714,15 @@ impl Vm {
                     self.var_var_bind(top, &gname, cell);
                 }
                 Instr::BindStatic { cv, name, init } => {
-                    let sname = proto.names[name as usize].as_bytes().to_vec();
-                    let key = self.static_key(top, &proto, sname);
-                    let statics = self.static_table(top);
-                    let cell = match statics.get(&key) {
-                        Some(c) => c.clone(),
-                        None => {
-                            let initv = if init == u32::MAX {
-                                Value::Null
-                            } else {
-                                proto.consts[init as usize].clone()
-                            };
-                            let c = Rc::new(RefCell::new(initv));
-                            statics.insert(key, c.clone());
-                            c
-                        }
-                    };
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
-                    self.sync_global_cv(top, cv);
+                    self.bind_static(top, &proto, cv, name, init);
                 }
                 Instr::BindStaticOrJmp { cv, name, target } => {
+                    if self.stack[top].closure.is_some() {
+                        if self.bind_closure_static(top, cv, &proto.names[name as usize], None) {
+                            self.stack[top].pc = target as usize;
+                        }
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.static_table(top).get(&key) {
@@ -754,9 +733,13 @@ impl Vm {
                     }
                 }
                 Instr::BindStaticInit { cv, name, src } => {
+                    let v = self.reg_get(top, src);
+                    if self.stack[top].closure.is_some() {
+                        self.bind_closure_static(top, cv, &proto.names[name as usize], Some(v));
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
-                    let v = self.reg_get(top, src);
                     let cell = self
                         .static_table(top)
                         .entry(key)
@@ -782,21 +765,7 @@ impl Vm {
                     callee,
                     ns_name,
                 } => {
-                    let mut c = self.reg_get(top, callee);
-                    if let Value::Str(name) = &c {
-                        if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
-                            c = Value::Str(n);
-                        }
-                    }
-                    let cd = Rc::new(rhp_values::ClosureData {
-                        fnidx: u32::MAX,
-                        captures: Vec::new(),
-                        bound_this: None,
-                        bound_class: self.stack[top].defining_class,
-                        bound_static: self.stack[top].called_class,
-                        wrapped: Some(Box::new(c)),
-                    });
-                    self.reg_set(top, dst, Value::Closure(cd));
+                    self.make_fcc(top, &proto, dst, callee, ns_name)?;
                 }
                 Instr::CallDyn {
                     dst,
@@ -804,24 +773,7 @@ impl Vm {
                     base,
                     argc,
                 } => {
-                    let c = self.reg_get(top, callee);
-                    let strict = self.caller_strict();
-                    // A user closure binds by-reference parameters to the
-                    // variables passed (the window holds them as `Ref`s), as
-                    // call_callable_value_mode would run it; anything else
-                    // gets plain values.
-                    if let Value::Closure(cd) = &c {
-                        if cd.wrapped.is_none() {
-                            self.fcc_scope.set(None);
-                            let args = Args::Window { top, base, argc };
-                            let out = self.run_closure_sync(cd, args, Some(strict))?;
-                            self.reg_set(top, dst, out);
-                            continue;
-                        }
-                    }
-                    let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                    let out = self.call_callable_value_mode(&c, args, Some(strict))?;
-                    self.reg_set(top, dst, out);
+                    self.call_dyn(top, dst, callee, base, argc)?;
                 }
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_get(top, callee);
@@ -851,7 +803,36 @@ impl Vm {
                             let v = cell.borrow().clone();
                             v
                         }
+                        // The object of a property write (FETCH_DIM_W then
+                        // ASSIGN_OBJ & co.): zend_wrong_string_offset_error.
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
                         _ => self.dim_read(&a, &k, DimMode::Read)?,
+                    };
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimFetchUnset { dst, arr, key } => {
+                    let a = self.reg_get(top, arr);
+                    let k = self.reg_get(top, key);
+                    let r = match deref(&a) {
+                        Value::Array(_) => self.dim_read(&a, &k, DimMode::Is)?,
+                        Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
+                        Value::Null => Value::Null,
+                        Value::Bool(false) => {
+                            self.diag(
+                                builtins::E_DEPRECATED,
+                                "Automatic conversion of false to array is deprecated",
+                            )?;
+                            Value::Null
+                        }
+                        Value::Object(_) | Value::Closure(_) => {
+                            self.dim_read(&a, &k, DimMode::Read)?
+                        }
+                        _ => {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot unset offset in a non-array variable",
+                            ))
+                        }
                     };
                     self.reg_set(top, dst, r);
                 }
@@ -995,10 +976,18 @@ impl Vm {
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
-                Instr::AssignLval { src } => {
+                Instr::AssignLval { src, dst } => {
                     let v = self.reg_get(top, src);
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    let r = self.cursor_write(top, &steps, v);
+                    let r = if dst == src {
+                        self.cursor_write(top, &steps, v)
+                    } else {
+                        crate::lvalue::take_string_offset_result();
+                        let r = self.cursor_write(top, &steps, v.clone());
+                        let res = crate::lvalue::take_string_offset_result().unwrap_or(v);
+                        self.reg_set(top, dst, res);
+                        r
+                    };
                     self.cursor_release();
                     r?;
                 }
@@ -1317,7 +1306,8 @@ impl Vm {
                             ),
                         ));
                     }
-                    self.reg_set(top, dst, Value::Bool(isset_dim(&a, &k)));
+                    let r = self.isset_isempty_dim(&a, &k, false)?;
+                    self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyDim { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
@@ -1334,7 +1324,11 @@ impl Vm {
                                 Value::Null
                             }
                         }
-                        _ => self.dim_read(&a, &k, DimMode::Is)?,
+                        _ => {
+                            let r = self.isset_isempty_dim(&a, &k, true)?;
+                            self.reg_set(top, dst, Value::Bool(r));
+                            continue;
+                        }
                     };
                     let b = self.truthy(&v)?;
                     self.reg_set(top, dst, Value::Bool(!b));
@@ -1400,13 +1394,16 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let o = self.reg_get(top, obj);
+                    // An object in a temporary (`(new A)->m()`) is released
+                    // by the call (php frees it when the call returns).
+                    let o = if obj >= proto.num_cvs && !self.holds_destructible(top, obj) {
+                        self.take_temp(top, obj)
+                    } else {
+                        self.reg_get(top, obj)
+                    };
                     let mname = proto.names[name as usize].as_bytes();
                     if let Value::Closure(_) = o {
-                        let args: Vec<Value> =
-                            (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                        let r = self.closure_method(&o, mname, args)?;
-                        self.reg_set(top, dst, r);
+                        self.call_closure_method(top, &o, mname, dst, base, argc)?;
                         continue;
                     }
                     let Value::Object(h) = o else {
@@ -1493,6 +1490,16 @@ impl Vm {
                 } => {
                     let mname = proto.names[name as usize].as_bytes();
                     self.do_call_static(top, class, mname, dst, base, argc)?;
+                }
+                Instr::CallParentHook {
+                    dst,
+                    name,
+                    kind,
+                    base,
+                    argc,
+                } => {
+                    let pname = proto.names[name as usize].clone();
+                    self.exec_parent_hook(top, dst, pname, kind, base, argc)?;
                 }
                 Instr::CallStaticDyn {
                     dst,
@@ -1797,11 +1804,13 @@ impl Vm {
                 )?;
                 Ok(Value::str(perl_increment(b)))
             }
-            arr @ Value::Array(_) => Err(Thrown::type_error(format!(
-                "Cannot {} {}",
-                what.to_ascii_lowercase(),
-                rhp_builtins::zval_value_name(self, &arr)
-            ))),
+            arr @ (Value::Array(_) | Value::Resource(_) | Value::Closure(_)) => {
+                Err(Thrown::type_error(format!(
+                    "Cannot {} {}",
+                    what.to_ascii_lowercase(),
+                    rhp_builtins::zval_value_name(self, &arr)
+                )))
+            }
             // increment_function: `do_operation(ADD, 1)`, else the object
             // as a number (`cast_object(_IS_NUMBER)`), else a TypeError.
             obj @ Value::Object(_) => {
@@ -1924,8 +1933,8 @@ impl Vm {
         Ok(out)
     }
 
-    /// Binary op that may throw (arithmetic). An object operand goes
-    /// through [`Vm::bin_object`]; plain values take the operator directly.
+    /// Binary op that may throw (arithmetic). Two numbers take the operator
+    /// directly; anything else goes through [`Vm::bin_slow`].
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn bin(
@@ -1938,62 +1947,25 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
-            || matches!(y, Value::Object(_) | Value::Closure(_))
+        let v = if matches!(x, Value::Int(_) | Value::Float(_))
+            && matches!(y, Value::Int(_) | Value::Float(_))
         {
-            self.bin_object(op, f, x, y)?
-        } else {
             f(&x, &y)?
-        };
-        self.reg_set(top, dst, v);
-        Ok(())
-    }
-
-    /// An operator with an object operand: php's order of `do_operation`
-    /// and operand conversion (see `compare.rs`).
-    #[inline(never)]
-    fn bin_object(
-        &mut self,
-        op: Op,
-        f: fn(&Value, &Value) -> Result<Value, Thrown>,
-        x: Value,
-        y: Value,
-    ) -> Result<Value, Thrown> {
-        match op {
-            Op::Mod => self.long_op_object(op, &x, &y),
-            _ => self.arith_object(op, f, &x, &y),
-        }
-    }
-
-    /// Bitwise binary op. An object operand goes through
-    /// [`Vm::bin_inf_object`].
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
-    fn bin_inf(
-        &mut self,
-        top: usize,
-        dst: Reg,
-        a: Reg,
-        b: Reg,
-        op: Op,
-        f: fn(&Value, &Value) -> Value,
-    ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-        let v = if matches!(x, Value::Object(_) | Value::Closure(_))
-            || matches!(y, Value::Object(_) | Value::Closure(_))
-        {
-            self.bin_inf_object(op, x, y)?
         } else {
-            f(&x, &y)
+            self.bin_slow(op, f, &x, &y)?
         };
         self.reg_set(top, dst, v);
         Ok(())
     }
 
-    /// A bitwise operator with an object operand (`convert_op1_op2_long`).
+    /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
-    fn bin_inf_object(&mut self, op: Op, x: Value, y: Value) -> Result<Value, Thrown> {
-        self.long_op_object(op, &x, &y)
+    fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
+        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let v = self.long_op(op, &x, &y)?;
+        self.reg_set(top, dst, v);
+        Ok(())
     }
 
     /// `echo` / `print` / inline HTML: write through the output layer; an
@@ -2065,6 +2037,11 @@ impl Vm {
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
+                } else if self.classes[ocls as usize].hooked {
+                    let scope = self.stack[top].defining_class;
+                    let st = self.hooked_iter_state(&obj, scope);
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, st);
                 } else {
                     let arr = self.object_prop_array(&obj, top);
                     if arr.is_empty() {
@@ -2112,6 +2089,20 @@ impl Vm {
                         self.cv_assign(top, key_cv, k);
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
+                }
+                return Ok(());
+            }
+            // A hooked plain object (see FeReset).
+            if let st @ Value::Array(_) = self.reg_get(top, pos_reg) {
+                match self.hooked_iter_next(&h, &st, false)? {
+                    Some((st, k, v)) => {
+                        self.cv_assign(top, val_cv, v);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
+                        }
+                        self.reg_set(top, pos_reg, st);
+                    }
+                    None => self.stack[top].pc = end as usize,
                 }
                 return Ok(());
             }
@@ -2245,6 +2236,14 @@ impl Vm {
             Value::Object(_) => true,
             _ => false,
         };
+        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            if self.classes[h.borrow().class as usize].hooked {
+                let scope = self.stack[top].defining_class;
+                let st = self.hooked_iter_state(&h, scope);
+                self.reg_set(top, pos_reg, st);
+                return Ok(());
+            }
+        }
         if nonempty {
             self.reg_set(top, pos_reg, Value::Int(0));
         } else {
@@ -2268,6 +2267,24 @@ impl Vm {
         // top of each iteration but the first, then alias the loop
         // variable to the yielded reference.
         if let Value::Array(st) = self.reg_get(top, pos_reg) {
+            // A hooked plain object: `[position, plan]` (see FeResetRef).
+            if let Some(Value::Int(_)) = st.get_index(0).map(|e| e.1.clone()) {
+                let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) else {
+                    self.stack[top].pc = end as usize;
+                    return Ok(());
+                };
+                match self.hooked_iter_next(&h, &Value::Array(st), true)? {
+                    Some((st, k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
+                        }
+                        self.reg_set(top, pos_reg, st);
+                    }
+                    _ => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
             // ArrayObject / ArrayIterator storage (see FeResetRef).
             if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
                 st.get_index(0).map(|e| e.1.clone()),
@@ -2622,4 +2639,295 @@ fn perl_increment(s: &[u8]) -> Vec<u8> {
         v.insert(0, if last == b'0' { b'1' } else { last });
     }
     v
+}
+
+impl Vm {
+    /// `MakeClosure`: a new Closure object over the captured window.
+    #[inline(never)]
+    fn make_closure(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        fnidx: u32,
+        base: Reg,
+        ncaptures: u16,
+    ) -> Result<(), Thrown> {
+        // Raw (non-deref) read: a by-reference capture arrives as a
+        // `Value::Ref` (from MakeRef) and must stay a Ref so writes
+        // inside the closure reach the outer variable; by-value
+        // captures were already deref'd into the window by Mov.
+        let captures: Vec<Value> = (0..ncaptures)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
+        // Bind the defining/static class scope so the closure body can
+        // reach private members and resolve `self::`/`static::`.
+        // `fnidx` is file-local; resolve into the flat table.
+        let fnidx = self.unit_base(top).closures + fnidx;
+        // A non-static closure binds the creating frame's `$this`
+        // (zend_create_closure), whether or not it uses it.
+        let bound_this = if self.closures[fnidx as usize].proto.is_static {
+            None
+        } else {
+            self.current_this(top)
+        };
+        let cd = Rc::new(rhp_values::ClosureData {
+            fnidx,
+            captures,
+            bound_this,
+            bound_class: self.stack[top].defining_class,
+            bound_static: self.stack[top].called_class,
+            wrapped: None,
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
+        });
+        self.reg_set(top, dst, Value::Closure(cd));
+        Ok(())
+    }
+
+    /// `MakeFcc`: a first-class callable Closure over `callee`.
+    #[inline(never)]
+    fn make_fcc(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        dst: Reg,
+        callee: Reg,
+        ns_name: NIdx,
+    ) -> Result<(), Thrown> {
+        // A callee built in a temporary (`[$o, 'm']`) is dead
+        // after this: the closure owns it.
+        let mut c = if callee >= proto.num_cvs {
+            match std::mem::replace(&mut self.stack[top].regs[callee as usize], Value::Null) {
+                Value::Ref(rc) => rc.borrow().clone(),
+                v => v,
+            }
+        } else {
+            self.reg_get(top, callee)
+        };
+        // `$closure->__invoke(...)` is that Closure.
+        if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+            self.reg_set(top, dst, cl);
+            return Ok(());
+        }
+        if let Value::Str(name) = &c {
+            if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
+                c = Value::Str(n);
+            }
+        }
+        let cd = Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: None,
+            bound_class: self.stack[top].defining_class,
+            bound_static: self.stack[top].called_class,
+            wrapped: Some(Box::new(c)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
+        });
+        self.reg_set(top, dst, Value::Closure(cd));
+        Ok(())
+    }
+
+    /// `CallDyn`: `$f(...)` with the arguments in a window.
+    #[inline(never)]
+    fn call_dyn(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        callee: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let c = self.reg_get(top, callee);
+        let strict = self.caller_strict();
+        // A user closure binds by-reference parameters to the
+        // variables passed (the window holds them as `Ref`s), as
+        // call_callable_value_mode would run it; anything else
+        // gets plain values.
+        if let Value::Closure(cd) = &c {
+            if cd.wrapped.is_none() {
+                self.fcc_scope.set(None);
+                let args = Args::Window { top, base, argc };
+                let out = self.run_closure_sync(cd, args, Some(strict))?;
+                self.reg_set(top, dst, out);
+                return Ok(());
+            }
+            // A user function's first-class callable: a direct
+            // call (by-reference parameters and return).
+            if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
+                let n = n.as_bytes();
+                let n = n.strip_prefix(b"\\").unwrap_or(n);
+                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                    let callee = self.functions[i].clone();
+                    if !callee.proto.is_internal() {
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        // An invokable object: a call of its __invoke method, with
+        // by-reference parameters and return.
+        if let Value::Object(h) = &c {
+            let cls = h.borrow().class;
+            if self
+                .lookup_method(cls, b"__invoke")
+                .is_some_and(|m| !m.is_static && m.visibility == rhp_values::Visibility::Public)
+            {
+                self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
+                return Ok(());
+            }
+        }
+        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        let out = self.call_callable_value_mode(&c, args, Some(strict))?;
+        self.reg_set(top, dst, out);
+        Ok(())
+    }
+}
+
+impl Vm {
+    /// `BindStatic`: bind CV `cv` to static variable `name` (the running
+    /// closure's own, else the function's), created with constant `init`.
+    #[inline(never)]
+    fn bind_static(
+        &mut self,
+        top: usize,
+        proto: &Rc<FunctionProto>,
+        cv: Reg,
+        name: NIdx,
+        init: u32,
+    ) {
+        if self.stack[top].closure.is_some() {
+            let initv = if init == u32::MAX {
+                Value::Null
+            } else {
+                proto.consts[init as usize].clone()
+            };
+            let n = &proto.names[name as usize];
+            self.bind_closure_static(top, cv, n, Some(initv));
+            return;
+        }
+        let sname = proto.names[name as usize].as_bytes().to_vec();
+        let key = self.static_key(top, proto, sname);
+        let statics = self.static_table(top);
+        let cell = match statics.get(&key) {
+            Some(c) => c.clone(),
+            None => {
+                let initv = if init == u32::MAX {
+                    Value::Null
+                } else {
+                    proto.consts[init as usize].clone()
+                };
+                let c = Rc::new(RefCell::new(initv));
+                statics.insert(key, c.clone());
+                c
+            }
+        };
+        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        self.sync_global_cv(top, cv);
+    }
+}
+
+impl Vm {
+    /// An array literal's element: an object in a temporary moves into the
+    /// array (the temporary is dead, and php frees it there).
+    #[inline]
+    fn elem_operand(&mut self, top: usize, proto: &FunctionProto, r: Reg) -> Value {
+        if r >= proto.num_cvs
+            && matches!(
+                self.stack[top].regs[r as usize],
+                Value::Object(_) | Value::Closure(_)
+            )
+        {
+            return std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null);
+        }
+        self.reg_get(top, r)
+    }
+}
+
+impl Vm {
+    /// Whether register `r` holds an object with a destructor. Such a
+    /// temporary stays until overwritten: rhp destructs released objects in
+    /// creation order, so freeing it with the callee's frame would destruct
+    /// it before the callee's locals (php: locals first, then `$this`).
+    #[inline(never)]
+    fn holds_destructible(&self, top: usize, r: Reg) -> bool {
+        match &self.stack[top].regs[r as usize] {
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.class(cls)
+                    .handlers
+                    .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some())
+                    || self.lookup_method(cls, b"__destruct").is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// Move a temporary's value out (dereferenced), leaving null.
+    #[inline(never)]
+    fn take_temp(&mut self, top: usize, r: Reg) -> Value {
+        match std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null) {
+            Value::Ref(rc) => rc.borrow().clone(),
+            v => v,
+        }
+    }
+
+    /// `$closure->m(...)`: `__invoke` runs the closure (by-reference
+    /// parameters; Closure::__invoke is internal, so it runs as called from
+    /// internal code), anything else is one of Closure's methods.
+    #[inline(never)]
+    fn call_closure_method(
+        &mut self,
+        top: usize,
+        o: &Value,
+        mname: &[u8],
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        if let Value::Closure(cd) = o {
+            if cd.wrapped.is_none() && mname.eq_ignore_ascii_case(b"__invoke") {
+                self.fcc_scope.set(None);
+                let args = Args::Window { top, base, argc };
+                let out = self.run_closure_sync(cd, args, None)?;
+                self.reg_set(top, dst, out);
+                return Ok(());
+            }
+        }
+        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        let r = self.closure_method(o, mname, args)?;
+        self.reg_set(top, dst, r);
+        Ok(())
+    }
+}
+
+impl Vm {
+    /// Bind CV `cv` to the running closure's own static variable `name`,
+    /// creating it with `init` (`None`: only if it exists). Whether it is
+    /// bound.
+    #[inline(never)]
+    fn bind_closure_static(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        name: &PhpStr,
+        init: Option<Value>,
+    ) -> bool {
+        let Some(cd) = self.stack[top].closure.clone() else {
+            return false;
+        };
+        let mut st = cd.statics.borrow_mut();
+        let cell = match st.iter().find(|(k, _)| k == name) {
+            Some((_, c)) => c.clone(),
+            None => {
+                let Some(v) = init else { return false };
+                let c = Rc::new(RefCell::new(v));
+                st.push((name.clone(), c.clone()));
+                c
+            }
+        };
+        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        true
+    }
 }

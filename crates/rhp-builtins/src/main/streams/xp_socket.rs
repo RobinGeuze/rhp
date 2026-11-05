@@ -307,13 +307,21 @@ pub(crate) fn xport_client(
     };
     let tv = Some(timeout);
     if !(connect || asynchronous) {
-        // A client that neither connects nor binds: php keeps an unopened
-        // socket stream; nothing useful can be done with it.
-        return Ok(Opened::Fail {
-            code: 0,
-            text: None,
-            allocated: true,
-        });
+        // A client that neither connects nor binds: php returns the socket
+        // stream unopened (no address is even parsed).
+        let family = if matches!(proto, Proto::Unix | Proto::Udg) {
+            libc::AF_UNIX
+        } else {
+            libc::AF_INET
+        };
+        let Some(fd) = new_socket(family, proto.socktype()) else {
+            return Ok(Opened::Fail {
+                code: 0,
+                text: None,
+                allocated: true,
+            });
+        };
+        return client_stream(host, fname, fd, proto, tls, name, timeout, ctx);
     }
     let fail = |code: i32, text: Option<String>| Opened::Fail {
         code,

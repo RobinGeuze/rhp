@@ -15,7 +15,9 @@ impl Vm {
                 Ok(cid) => self.classes[h.borrow().class as usize]
                     .ancestors
                     .contains(&cid),
-                Err(_) => true,
+                // No object is an instance of a class that is not loaded
+                // (type checks do not autoload).
+                Err(_) => false,
             },
             Value::Closure(_) => name.eq_ignore_ascii_case(b"Closure"),
             _ => false,
@@ -208,7 +210,16 @@ impl Vm {
             let cur = frame.regs[p.cv as usize].clone();
             match self.check_one(&cur, ty, strict, ctx) {
                 Ok(None) => {}
-                Ok(Some(coerced)) => frame.regs[p.cv as usize] = coerced,
+                Ok(Some(coerced)) => {
+                    let at = || {
+                        (!proto.is_internal())
+                            .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64))
+                    };
+                    if let Err(t) = self.coercion_diag_at(&cur, &coerced, at) {
+                        return Err((i, t));
+                    }
+                    frame.regs[p.cv as usize] = coerced
+                }
                 // A prelude (built-in) function takes null for a scalar
                 // parameter like an internal one in coercive mode: deprecated,
                 // then coerced (zend_null_arg_deprecated).
@@ -271,6 +282,49 @@ impl Vm {
         Ok(())
     }
 
+    /// php's RECV_INIT type check of a non-constant default just stored
+    /// into parameter `index` (coerced under the caller's strict_types).
+    pub(crate) fn recv_init_check(&mut self, top: usize, index: u16) -> Result<(), Thrown> {
+        let proto = self.stack[top].proto.clone();
+        let p = &proto.params[index as usize];
+        let Some(ty) = &p.type_hint else {
+            return Ok(());
+        };
+        let from_user = top > 0 && !self.stack[top].capture;
+        let strict = from_user && self.stack[top - 1].proto.strict_types;
+        let ctx = self.stack[top].defining_class;
+        let cur = self.stack[top].regs[p.cv as usize].clone();
+        match self.check_one(&cur, ty, strict, ctx) {
+            Ok(None) => Ok(()),
+            Ok(Some(v)) => {
+                self.stack[top].regs[p.cv as usize] = v;
+                Ok(())
+            }
+            Err(()) => {
+                let fname = self.func_display_name(&proto, ctx);
+                let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes());
+                let site = if from_user && !self.is_internal_frame(top - 1) {
+                    format!(
+                        ", called in {} on line {}",
+                        String::from_utf8_lossy(&self.current_file(top - 1)),
+                        self.current_line(top - 1)
+                    )
+                } else {
+                    String::new()
+                };
+                Err(Thrown::error(
+                    "TypeError",
+                    format!(
+                        "{fname}(): Argument #{} (${pname}) must be of type {}, {} given{site}",
+                        index + 1,
+                        self.type_string_resolved(ty, ctx, self.stack[top].called_class),
+                        rhp_builtins::zval_value_name(self, &deref(&cur)),
+                    ),
+                ))
+            }
+        }
+    }
+
     /// Enforce a function's declared return type on `v`, coercing in coercive
     /// mode. `void`/`never`/`mixed` and unknowable types are not checked.
     /// Falling off the end of (or a bare `return;` in) a function with a
@@ -302,7 +356,7 @@ impl Vm {
     }
 
     pub(crate) fn check_return_type(
-        &self,
+        &mut self,
         proto: &FunctionProto,
         top: usize,
         v: Value,
@@ -323,7 +377,10 @@ impl Vm {
         let strict = proto.strict_types;
         match self.check_one(&v, ty, strict, ctx) {
             Ok(None) => Ok(v),
-            Ok(Some(coerced)) => Ok(coerced),
+            Ok(Some(coerced)) => {
+                self.coercion_diag(&v, &coerced)?;
+                Ok(coerced)
+            }
             Err(()) => {
                 let fname = self.func_display_name(proto, ctx);
                 let called = self.stack[top].called_class;
@@ -357,7 +414,7 @@ impl Vm {
         if has(&K::Mixed) {
             return "mixed".into();
         }
-        let mut parts: Vec<String> = dnf_group_strings(ty);
+        let mut parts: Vec<String> = Vec::new();
         for k in &ty.kinds {
             match k {
                 K::Named(n) => parts.push(String::from_utf8_lossy(n.as_bytes()).into_owned()),
@@ -372,6 +429,7 @@ impl Vm {
                 _ => {}
             }
         }
+        interleave_groups(&mut parts, dnf_group_strings(ty), &ty.group_pos);
         if has(&K::StaticType) {
             let name = match (scope, called) {
                 (Some(_), Some(c)) => cname(c),
@@ -481,8 +539,16 @@ impl Vm {
                 ),
             ));
         }
-        if let Value::Array(_) = d {
-            self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
+        match d {
+            Value::Array(_) => self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?,
+            Value::Float(f) if f.is_nan() => self.nan_warning("string")?,
+            _ => {}
+        }
+        if let Value::Closure(_) = d {
+            return Err(Thrown::error(
+                "Error",
+                "Object of class Closure could not be converted to string",
+            ));
         }
         Ok(conv::to_string_bytes(&d))
     }
@@ -493,8 +559,74 @@ impl Vm {
     pub(crate) fn truthy(&mut self, v: &Value) -> Result<bool, Thrown> {
         match v {
             Value::Object(_) => self.truthy_object(v),
+            Value::Float(f) if f.is_nan() => {
+                self.nan_warning("bool")?;
+                Ok(true)
+            }
             _ => Ok(conv::to_bool(v)),
         }
+    }
+
+    /// The diagnostic of a weak scalar coercion `check_one` did, raised
+    /// at `at` (a user function's parameter) or the current line.
+    pub(crate) fn coercion_diag_at(
+        &mut self,
+        orig: &Value,
+        coerced: &Value,
+        at: impl FnOnce() -> Option<(Vec<u8>, i64)>,
+    ) -> Result<(), Thrown> {
+        let Some((level, msg)) = coercion_message(orig, coerced) else {
+            return Ok(());
+        };
+        match at() {
+            Some((file, line)) => {
+                self.raise_error_at(level, &msg, file, line);
+                match self.pending_throw.take() {
+                    Some(t) => Err(t),
+                    None => Ok(()),
+                }
+            }
+            None => self.diag(level, &msg),
+        }
+    }
+
+    pub(crate) fn coercion_diag(&mut self, orig: &Value, coerced: &Value) -> Result<(), Thrown> {
+        self.coercion_diag_at(orig, coerced, || None)
+    }
+
+    /// php 8.5's `zend_nan_coerced_to_type_warning`.
+    #[cold]
+    pub(crate) fn nan_warning(&mut self, ty: &str) -> Result<(), Thrown> {
+        self.diag(
+            rhp_builtins::E_WARNING,
+            &format!("unexpected NAN value was coerced to {ty}"),
+        )
+    }
+
+    /// `zend_dval_to_lval`: php 8.5 warns when the float is out of range
+    /// (then wraps modulo 2^64) or not finite (then 0).
+    pub(crate) fn dval_to_lval(&mut self, d: f64) -> Result<i64, Thrown> {
+        if !d.is_finite()
+            || !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&d)
+        {
+            self.oob_float(d)?;
+        }
+        Ok(rhp_values::float_to_int(d))
+    }
+
+    /// `zend_oob_double_to_long_error`.
+    #[cold]
+    pub(crate) fn oob_float(&mut self, d: f64) -> Result<(), Thrown> {
+        let shown = rhp_values::fmt::float_serialize(d);
+        self.diag(
+            rhp_builtins::E_WARNING,
+            &[
+                b"The float ".as_slice(),
+                &shown,
+                b" is not representable as an int, cast occurred",
+            ]
+            .concat(),
+        )
     }
 
     #[inline(never)]
@@ -503,6 +635,43 @@ impl Vm {
             Some(b) => conv::to_bool(&b),
             None => true,
         })
+    }
+}
+
+/// The diagnostic of a weak scalar coercion: zend_parse_arg_long_weak's
+/// lost-fraction deprecation, the NAN warning of the string and bool
+/// coercions.
+fn coercion_message(orig: &Value, coerced: &Value) -> Option<(i64, Vec<u8>)> {
+    let lost = |what: &[u8], shown: &[u8]| {
+        [
+            b"Implicit conversion from ".as_slice(),
+            what,
+            shown,
+            b" to int loses precision",
+        ]
+        .concat()
+    };
+    match (deref(orig), coerced) {
+        (Value::Float(f), Value::Int(n)) if *n as f64 != f => Some((
+            rhp_builtins::E_DEPRECATED,
+            lost(b"float ", &rhp_values::fmt::float_serialize(f)),
+        )),
+        (Value::Str(s), Value::Int(n)) => match conv::numeric_string(s.as_bytes()) {
+            Some(rhp_values::conv::Num::Float(f)) if *n as f64 != f => Some((
+                rhp_builtins::E_DEPRECATED,
+                lost(b"float-string ", &[b"\"", s.as_bytes(), b"\""].concat()),
+            )),
+            _ => None,
+        },
+        (Value::Float(f), Value::Str(_)) if f.is_nan() => Some((
+            rhp_builtins::E_WARNING,
+            b"unexpected NAN value was coerced to string".to_vec(),
+        )),
+        (Value::Float(f), Value::Bool(_)) if f.is_nan() => Some((
+            rhp_builtins::E_WARNING,
+            b"unexpected NAN value was coerced to bool".to_vec(),
+        )),
+        _ => None,
     }
 }
 
@@ -588,6 +757,15 @@ fn dnf_group_strings(ty: &rhp_bytecode::TypeHint) -> Vec<String> {
             format!("({})", names.join("&"))
         })
         .collect()
+}
+
+/// Put a DNF type's `(A&B)` groups among its class members (`classes`)
+/// at their declared positions.
+pub(crate) fn interleave_groups<T>(classes: &mut Vec<T>, groups: Vec<T>, pos: &[u16]) {
+    for (i, g) in groups.into_iter().enumerate() {
+        let at = pos.get(i).map_or(i, |&p| p as usize + i);
+        classes.insert(at.min(classes.len()), g);
+    }
 }
 
 /// The type name and zero value a null argument coerces to for a scalar

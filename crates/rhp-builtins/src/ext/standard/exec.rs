@@ -286,8 +286,16 @@ fn fn_proc_nice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     unsafe {
         *libc_errno() = 0;
         libc::nice(pri as i32);
-        Ok(Value::Bool(*libc_errno() == 0))
+        if *libc_errno() == 0 {
+            return Ok(Value::Bool(true));
+        }
     }
+    crate::warn(
+        host,
+        "proc_nice",
+        "Only a super user may attempt to increase the priority of a process",
+    )?;
+    Ok(Value::Bool(false))
 }
 
 #[cfg(target_os = "macos")]

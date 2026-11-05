@@ -341,7 +341,9 @@ fn first_declares(program: &AstProgram) -> Vec<(u32, bool)> {
     let mut nop = false;
     for stmt in program.statements.iter() {
         match stmt {
+            // The scanner skips a leading `#!` line.
             Statement::OpeningTag(_) => {}
+            Statement::Inline(i) if matches!(i.kind, crate::parse::cst::InlineKind::Shebang) => {}
             Statement::Noop(_) | Statement::ClosingTag(_) => nop = true,
             Statement::Declare(d) => out.push((d.declare.span.start.offset, nop)),
             _ => break,

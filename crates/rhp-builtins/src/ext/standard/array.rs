@@ -544,6 +544,7 @@ fn count_recursive(
     a: &rhp_values::PhpArray,
     seen: &mut Vec<usize>,
 ) -> Result<i64, Thrown> {
+    crate::zend::call_stack::check()?;
     if seen.contains(&a.data_ptr()) {
         host.emit_diagnostic(
             E_WARNING,
@@ -2134,12 +2135,13 @@ fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value
 // ---------------------------------------------------------------------------
 
 /// Fold `src` into `dest` per php's `php_array_replace_recursive`.
-fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
+fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) -> Result<(), Thrown> {
+    crate::zend::call_stack::check()?;
     for (k, v) in src.iter() {
         let recurse = match (dest.get(k), deref(v)) {
             (Some(Value::Array(cur)), Value::Array(src_arr)) => {
                 let mut merged = cur.clone();
-                replace_recursive_into(&mut merged, &src_arr);
+                replace_recursive_into(&mut merged, &src_arr)?;
                 Some(merged)
             }
             _ => None,
@@ -2153,13 +2155,14 @@ fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
             }
         }
     }
+    Ok(())
 }
 
 fn fn_array_replace_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = array_param(host, args, 0, "array_replace_recursive")?;
     for i in 1..args.len() {
         let a = array_param(host, args, i, "array_replace_recursive")?;
-        replace_recursive_into(&mut out, &a);
+        replace_recursive_into(&mut out, &a)?;
     }
     Ok(Value::Array(out))
 }
@@ -2549,6 +2552,7 @@ fn walk_rec_pairs(
     extra: &Value,
     pairs: Vec<(rhp_values::ArrayKey, Value)>,
 ) -> Result<PhpArray, Thrown> {
+    crate::zend::call_stack::check()?;
     let mut out = PhpArray::new();
     for (k, v) in pairs {
         match deref(&v) {

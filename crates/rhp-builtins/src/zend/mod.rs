@@ -5,6 +5,7 @@
 
 pub mod bison;
 pub mod builtin_functions;
+pub mod call_stack;
 pub mod closures;
 pub(crate) mod constants;
 pub mod exceptions;

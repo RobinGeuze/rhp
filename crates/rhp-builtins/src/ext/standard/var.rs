@@ -71,6 +71,10 @@ fn resolve_in(
     seen_arrays: &mut Vec<usize>,
     seen_objects: &mut Vec<u32>,
 ) -> Result<(), Thrown> {
+    // Past the stack limit the dump itself stops ("nesting level too deep").
+    if crate::zend::call_stack::overflowed() {
+        return Ok(());
+    }
     match deref(v) {
         Value::Array(a) => {
             if seen_arrays.contains(&a.data_ptr()) {
@@ -300,6 +304,10 @@ fn var_dump_value(
             out.extend_from_slice(format!("{amp}array({}) {{\n", a.len()).as_bytes());
             for (k, val) in a.iter() {
                 sp(indent + 2, out);
+                if crate::zend::call_stack::overflowed() {
+                    out.extend_from_slice(b"nesting level too deep");
+                    continue;
+                }
                 dump_key(out, k);
                 out.extend_from_slice(b"=>\n");
                 let shared = is_shared_ref(host, val);
@@ -392,6 +400,10 @@ fn var_dump_value(
                 for (i, (k, val)) in props.iter().enumerate() {
                     dump_uninit(out, i, &mut next_uninit);
                     sp(indent + 2, out);
+                    if crate::zend::call_stack::overflowed() {
+                        out.extend_from_slice(b"nesting level too deep");
+                        continue;
+                    }
                     let k = match k {
                         ArrayKey::Int(n) => {
                             out.extend_from_slice(format!("[{n}]=>\n").as_bytes());
@@ -835,6 +847,7 @@ impl Serializer {
     }
 
     fn value(&mut self, host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
+        crate::zend::call_stack::check()?;
         match self.add_var_hash(v) {
             0 => {}
             -1 => {

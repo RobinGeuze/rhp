@@ -49,6 +49,17 @@ struct Enc<'a> {
     out: Vec<u8>,
     sep: &'a [u8],
     raw: bool,
+    /// The arrays (data pointer) and objects (id) being encoded: php's
+    /// recursion protection.
+    open: Vec<usize>,
+}
+
+/// What identifies a nested array or object for recursion protection.
+fn identity(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => a.data_ptr(),
+        _ => rhp_values::object_id(v).map_or(0, |id| id as usize) | (1 << 63),
+    }
 }
 
 /// Is this value an enum case object?
@@ -67,11 +78,10 @@ fn encode_hash(
     entries: Vec<(ArrayKey, Value)>,
     num_prefix: Option<&[u8]>,
     key_prefix: Option<&[u8]>,
-    depth: usize,
 ) -> Result<(), Thrown> {
-    if depth > 256 {
-        // php guards self-recursive arrays (GC_IS_RECURSIVE); stop descending.
-        return Ok(());
+    // Very deep data could overflow the stack, even without recursion.
+    if crate::zend::call_stack::overflowed() {
+        return Err(Thrown::error("Error", "Maximum call stack size reached."));
     }
     for (key, v) in entries {
         let v = deref(&v);
@@ -99,8 +109,17 @@ fn encode_hash(
                     }
                 }
             };
+            // GC_IS_RECURSIVE: an array or object already being encoded
+            // is skipped.
+            let id = identity(&v);
+            if e.open.contains(&id) {
+                continue;
+            }
             let sub = entries_of(host, &v);
-            encode_hash(host, e, sub, None, Some(&new_prefix), depth + 1)?;
+            e.open.push(id);
+            let r = encode_hash(host, e, sub, None, Some(&new_prefix));
+            e.open.pop();
+            r?;
             continue;
         }
         if matches!(v, Value::Null | Value::Resource(_)) {
@@ -199,10 +218,11 @@ fn fn_http_build_query(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         out: Vec::new(),
         sep: &sep,
         raw: enc == PHP_QUERY_RFC3986,
+        open: vec![identity(&data)],
     };
     let entries = entries_of(host, &data);
     let np = (!prefix.is_empty()).then_some(&prefix[..]);
-    encode_hash(host, &mut e, entries, np, None, 0)?;
+    encode_hash(host, &mut e, entries, np, None)?;
     Ok(Value::str(e.out))
 }
 

@@ -79,6 +79,7 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        builtins::zend::call_stack::init();
         // opcache's own log (its ini handlers' warnings at module startup).
         let (lines, dest) = builtins::take_accel_log();
         for line in lines {

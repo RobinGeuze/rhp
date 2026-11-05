@@ -228,7 +228,9 @@ const RHP_INI: &[&str] = &[
     "serialize_precision",
     "variables_order",
     "zend.detect_unicode",
+    "zend.max_allowed_stack_size",
     "zend.multibyte",
+    "zend.reserved_stack_size",
     "zend.script_encoding",
     // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
     // rhp both ignore them.

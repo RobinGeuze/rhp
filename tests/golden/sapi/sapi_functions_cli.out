@@ -1,0 +1,60 @@
+cli_set_process_title: true true true true
+cli_get_process_title: true true true true
+getallheaders: false false false false
+apache_request_headers: false false false false
+apache_response_headers: false false false false
+apache_child_terminate: false false false false
+bool(false)
+bool(false)
+bool(false)
+string(8) "standard"
+Error: Call to undefined function getallheaders()
+array(5) {
+  [0]=>
+  string(11) "json_encode"
+  [1]=>
+  string(11) "json_decode"
+  [2]=>
+  string(13) "json_validate"
+  [3]=>
+  string(15) "json_last_error"
+  [4]=>
+  string(19) "json_last_error_msg"
+}
+bool(true)
+array(11) {
+  [0]=>
+  string(11) "ctype_alnum"
+  [1]=>
+  string(11) "ctype_alpha"
+  [2]=>
+  string(11) "ctype_cntrl"
+  [3]=>
+  string(11) "ctype_digit"
+  [4]=>
+  string(11) "ctype_lower"
+  [5]=>
+  string(11) "ctype_graph"
+  [6]=>
+  string(11) "ctype_print"
+  [7]=>
+  string(11) "ctype_punct"
+  [8]=>
+  string(11) "ctype_space"
+  [9]=>
+  string(11) "ctype_upper"
+  [10]=>
+  string(12) "ctype_xdigit"
+}
+array(2) {
+  [0]=>
+  string(13) "token_get_all"
+  [1]=>
+  string(10) "token_name"
+}
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+get_extension_funcs() expects exactly 1 argument, 0 given

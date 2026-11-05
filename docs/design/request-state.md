@@ -8,10 +8,10 @@ This is every one of them, what it holds and how a request gets a clean
 copy. Every module (`ModuleDef`, `module.rs`) states its reset hook,
 `no_state` when it has none, so a module cannot forget one: a new
 `thread_local!` must go into this table and, when it holds request state,
-into its module's `reset`. `rhp_builtins::reset_request_state`
-(`registry.rs`) runs every module's reset in module order, then
-`rhp_values::reset_dropped_streams`; no reset may depend on another
-module's. rhp-vm's `lifecycle::reset_request_state` runs it, with the VM's
+into its module's `reset` (a SAPI's state into its `SapiDef`'s).
+`rhp_builtins::reset_request_state` (`registry.rs`) runs every module's
+reset in module order, then every SAPI module's, then
+`rhp_values::reset_dropped_streams`; no reset may depend on another's. rhp-vm's `lifecycle::reset_request_state` runs it, with the VM's
 own resets, first thing in `Vm::new` and again when the `Vm` drops (after
 its values), so an idle thread holds nothing of its last request.
 
@@ -46,9 +46,9 @@ Kinds:
 | `ext/pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `php_pcre::reset_state` |
 | `ext/standard/string.rs` | `STRTOK` | request | `string::reset_state` |
 | `ext/random/mod.rs` | `MT` (mt_rand state) | request | `random::reset_state` |
-| `sapi/cli.rs` | `TITLE` (`cli_set_process_title`) | request | `cli::reset_state` |
+| `sapi/cli.rs` | `TITLE` (`cli_set_process_title`) | request | `cli::reset_state` (php-cli's `SapiDef` reset, run whatever the SAPI) |
 | `ext/standard/basic_functions.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `basic_functions::reset_state` |
-| `main/sapi.rs` | `SAPI_NAME`, `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
+| `main/sapi.rs` | `SAPI_NAME`, `SAPI_DEF` (its `SapiDef` and bit), `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
 | `ext/bcmath` | `DEFAULT_SCALE` | request | `bcmath::reset_state` |
 | `ext/bz2` | `BZ_ERRORS` | request | `bz2::reset_state` |
 | `ext/curl/mod.rs` | `EASY`, `MULTI`, `SHARE` (handle tables) | request | `curl::reset_state` |
@@ -105,10 +105,10 @@ Not per thread, so shared by every engine in the process:
 
 - pcntl's signal queue and flags (`ext/pcntl`, atomics written from the
   signal handler). Signal handlers belong to the process; pcntl exists
-  only under the CLI and CGI (`sapi::has_pcntl`).
+  only under the CLI and CGI (`main::sapi::is_command_line`).
 - `OnceLock`s and `Once`s that compute something once: the module list,
   the builtin registry, signatures, the process's umask (`virtual_cwd`),
-  libxml2's process
-  init and default entity loader, curl's and OpenSSL's global init.
+  libxml2's process init and default entity loader, curl's and OpenSSL's
+  global init.
 - C libraries' own globals, set once to dispatchers that read the calling
   thread's state (see [`libraries.md`](./libraries.md), *Threading*).

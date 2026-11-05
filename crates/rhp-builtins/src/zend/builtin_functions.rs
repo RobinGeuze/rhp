@@ -8,6 +8,7 @@ use rhp_values::{conv, ArrayKey, ClassKind, PhpArray, Value};
 
 use crate::const_modules::CONST_MODULES;
 use crate::ext::standard::string::find_subslice;
+use crate::func_modules::FUNC_MODULES;
 use crate::zend::exceptions::trace_to_string;
 use crate::zend::zpp::{arg_bytes, bool_param, str_param, zval_get_string, zval_value_name};
 use crate::{ext, zend, Host, Thrown, E_DEPRECATED, E_WARNING};
@@ -476,13 +477,22 @@ pub(crate) fn loaded_extension_names() -> Vec<&'static str> {
     sapi_exts().collect()
 }
 
+/// The running SAPI's own module (php-cgi's `cgi-fcgi`), which
+/// `get_loaded_extensions()` lists last.
+fn sapi_ext() -> Option<&'static str> {
+    crate::main::sapi::sapi_module()
+        .and_then(|d| d.module)
+        .map(|(name, _)| name)
+}
+
 /// The loaded extension matching `name` case-insensitively (php's module
 /// lookup lowercases), if any.
 pub(crate) fn loaded_ext(name: &[u8]) -> Option<&'static str> {
-    if name.eq_ignore_ascii_case(b"cgi-fcgi") {
-        return crate::main::sapi::is_cgi().then_some("cgi-fcgi");
+    let named = |e: &&str| e.as_bytes().eq_ignore_ascii_case(name);
+    match LOADED_EXTS.iter().copied().find(named) {
+        Some(e) => crate::registry::module_loaded(e).then_some(e),
+        None => sapi_ext().filter(named),
     }
-    sapi_exts().find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// `phpversion($ext)`: most bundled extensions report PHP_VERSION.
@@ -509,14 +519,52 @@ fn fn_get_loaded_extensions(host: &mut dyn Host, args: &[Value]) -> Result<Value
     )?;
     let mut a = PhpArray::new();
     if !zend {
-        for e in sapi_exts() {
+        for e in sapi_exts().chain(sapi_ext()) {
             a.push(Value::str(e));
-        }
-        if crate::main::sapi::is_cgi() {
-            a.push(Value::str("cgi-fcgi"));
         }
     } else {
         a.push(Value::str("Zend OPcache"));
+    }
+    Ok(Value::Array(a))
+}
+
+/// `get_extension_funcs($extension)`: the functions of a loaded module, in
+/// php's order ("zend" names Core). php's list for the module, as far as
+/// rhp has the functions under the running SAPI, with the SAPI's additional
+/// functions under `standard`; the SAPI's own module lists its functions.
+/// False for a module that is not loaded or has none.
+fn fn_get_extension_funcs(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = str_param(host, args, 0, "get_extension_funcs", "extension")?;
+    let module = if name.eq_ignore_ascii_case(b"zend") {
+        Some("Core")
+    } else {
+        loaded_ext(&name)
+    };
+    let Some(module) = module else {
+        return Ok(Value::Bool(false));
+    };
+    let sapi = crate::main::sapi::sapi_module();
+    let mut names: Vec<&str> = match sapi.and_then(|d| d.module) {
+        Some((m, fns)) if m == module => fns.iter().map(|(n, _)| *n).collect(),
+        _ => FUNC_MODULES
+            .iter()
+            .find(|(m, _)| *m == module)
+            .map_or(Vec::new(), |(_, fns)| fns.split(' ').collect()),
+    };
+    names.retain(|n| crate::lookup(n).is_some());
+    if module == "standard" {
+        for (n, _) in sapi.map_or(&[][..], |d| d.functions) {
+            if !names.contains(n) {
+                names.push(n);
+            }
+        }
+    }
+    if names.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let mut a = PhpArray::new();
+    for n in names {
+        a.push(Value::str(n));
     }
     Ok(Value::Array(a))
 }
@@ -1011,6 +1059,7 @@ pub fn register(m: &mut crate::Registry) {
             ("enum_exists", fn_enum_exists),
             ("extension_loaded", fn_extension_loaded),
             ("get_loaded_extensions", fn_get_loaded_extensions),
+            ("get_extension_funcs", fn_get_extension_funcs),
             ("function_exists", fn_function_exists),
             ("func_num_args", fn_func_num_args),
             ("func_get_args", fn_func_get_args),

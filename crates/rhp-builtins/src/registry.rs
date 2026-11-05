@@ -61,7 +61,7 @@ fn core() -> ModuleDef {
 /// Whether module `md` is loaded under the running SAPI (a `cli_only` one
 /// only under php-cli and php-cgi).
 fn loaded(md: &ModuleDef) -> bool {
-    !md.cli_only || main::sapi::has_pcntl()
+    !md.cli_only || main::sapi::is_command_line()
 }
 
 /// Whether the module php calls `name` is loaded under the running SAPI.
@@ -123,6 +123,9 @@ pub struct Builtin {
     pub min_args: usize,
     /// `None` = variadic (no upper bound).
     pub max_args: Option<usize>,
+    /// The SAPIs that supply the function, one bit per position in
+    /// `sapi::SAPIS`; 0 for a function every SAPI has.
+    pub sapis: u8,
 }
 
 /// The builtin table under construction, keyed by lowercase name.
@@ -143,6 +146,7 @@ pub(crate) fn register_helpers(
                 func,
                 min_args,
                 max_args,
+                sapis: 0,
             },
         );
     }
@@ -165,28 +169,77 @@ const BODY_MIN: &[(&str, usize)] = &[
     ("openssl_cms_verify", 2),
 ];
 
-/// Reset every module's per-request state (its `reset` hook), then the
-/// engine's list of dropped streams, which the modules' resets may add to.
-/// Engines call this on construction and when they drop, so state never
-/// leaks from one script run to the next on the same thread.
+/// Reset every module's per-request state (its `reset` hook) and every
+/// SAPI module's, then the engine's list of dropped streams, which the
+/// resets may add to. Engines call this on construction and when they
+/// drop, so state never leaks from one script run to the next on the same
+/// thread.
 pub fn reset_request_state() {
     for md in modules() {
         (md.reset)();
     }
+    for sapi in &crate::sapi::SAPIS {
+        (sapi.reset)();
+    }
     rhp_values::reset_dropped_streams();
 }
 
-/// The builtin function table, keyed by lowercase name (PHP function names are
-/// case-insensitive).
+/// Every builtin function, keyed by lowercase name (PHP function names are
+/// case-insensitive): every module's but the `cli_only` ones, for every
+/// SAPI; then each SAPI's own functions and, for a command-line SAPI, the
+/// `cli_only` modules', marked with the SAPIs that have them
+/// ([`Builtin::sapis`]). [`lookup_lc`] finds only the running SAPI's.
 pub fn registry() -> &'static HashMap<&'static str, Builtin> {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
         let mut m = Registry::new();
-        for md in modules() {
+        for md in modules().iter().filter(|md| !md.cli_only) {
             (md.functions)(&mut m);
+        }
+        for (i, sapi) in crate::sapi::SAPIS.iter().enumerate() {
+            let bit = 1 << i;
+            let mut own = Registry::new();
+            register(&mut own, sapi.functions);
+            if let Some((_, fns)) = sapi.module {
+                register(&mut own, fns);
+            }
+            if sapi.command_line {
+                for md in modules().iter().filter(|md| md.cli_only) {
+                    (md.functions)(&mut own);
+                }
+            }
+            for (name, b) in own {
+                m.entry(name)
+                    .and_modify(|e| e.sapis |= bit)
+                    .or_insert(Builtin { sapis: bit, ..b });
+            }
         }
         m
     })
+}
+
+/// Whether the running SAPI has builtin `b`.
+fn available(b: &Builtin) -> bool {
+    b.sapis == 0 || b.sapis & main::sapi::sapi_bit() != 0
+}
+
+/// Every builtin function of the running SAPI.
+pub fn functions() -> impl Iterator<Item = &'static Builtin> {
+    registry().values().filter(|b| available(b))
+}
+
+/// The running SAPI's own module, when `name_lc` is one of its functions
+/// (`getallheaders` is php-cgi's `cgi-fcgi`'s): the stubs file those under
+/// `standard`.
+pub fn sapi_function_module(name_lc: &str) -> Option<&'static str> {
+    let (module, fns) = main::sapi::sapi_module()?.module?;
+    fns.iter().any(|(n, _)| *n == name_lc).then_some(module)
+}
+
+/// Whether some SAPI has a builtin `name_lc` (lowercase): what the compiler
+/// asks, so that compiling does not depend on the SAPI.
+pub fn native_function(name_lc: &str) -> bool {
+    registry().contains_key(name_lc)
 }
 
 /// Case-insensitive builtin lookup.
@@ -195,15 +248,10 @@ pub fn lookup(name: &str) -> Option<&'static Builtin> {
     lookup_lc(&lower)
 }
 
-/// [`lookup`] for a name that is already lowercase (no allocation).
+/// [`lookup`] for a name that is already lowercase (no allocation), among
+/// the running SAPI's functions.
 pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
-    let b = registry().get(name_lc)?;
-    if matches!(name_lc.as_bytes().first(), Some(b'a' | b'c' | b'g' | b'p'))
-        && main::sapi::builtin_hidden(name_lc)
-    {
-        return None;
-    }
-    Some(b)
+    registry().get(name_lc).filter(|b| available(b))
 }
 
 /// The constants of every module loaded under the running SAPI.
@@ -271,6 +319,7 @@ pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
                 func,
                 min_args,
                 max_args,
+                sapis: 0,
             },
         );
     }

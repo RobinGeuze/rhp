@@ -14,9 +14,10 @@ pub struct ModuleDef {
     /// `extension_loaded()` know it.
     pub name: &'static str,
     /// PHP_NEW_EXTENSION's `cli` SAPI class: php builds the module into the
-    /// command-line SAPIs only, and rhp loads it only under php-cli and
-    /// php-cgi (pcntl: signal handlers and fork belong to the whole
-    /// process, so a server that embeds rhp never gets them).
+    /// command-line SAPIs (and embed) only, and rhp loads it only under
+    /// php-cli and php-cgi (pcntl: signal handlers and fork belong to the
+    /// whole process, so a server that embeds rhp never gets them). The
+    /// SAPI module supplies its functions (sapi/).
     pub cli_only: bool,
     /// Insert the module's native functions into the registry.
     pub functions: fn(&mut crate::Registry),

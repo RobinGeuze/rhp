@@ -367,12 +367,13 @@ fn pcntl_is_only_in_cli_and_cgi() {
     let code = "echo var_export(function_exists('pcntl_signal'), true), ' ', \
                 var_export(extension_loaded('pcntl'), true), ' ', \
                 var_export(defined('SIGTERM'), true), ' ', \
-                var_export(in_array('pcntl', get_loaded_extensions()), true);";
+                var_export(in_array('pcntl', get_loaded_extensions()), true), ' ', \
+                var_export(get_extension_funcs('pcntl') !== false, true);";
     let (c, _) = run(code, RequestInfo::default());
-    assert_eq!(body(&c), "false false false false");
+    assert_eq!(body(&c), "false false false false false");
     let script = Script::Code(code.to_string());
     let (_, out) = CaptureSapi::cli().run(Request::new(script));
-    assert_eq!(out.stdout, b"true true true true");
+    assert_eq!(out.stdout, b"true true true true true");
     let (_, out) = CaptureSapi::web("cgi-fcgi").run(Request::new(Script::Code(
         "echo var_export(function_exists('pcntl_fork'), true);".to_string(),
     )));

@@ -6,12 +6,22 @@ use super::*;
 fn no_duplicate_builtins() {
     let mut owner: HashMap<&'static str, &'static str> = HashMap::new();
     let mut dups = Vec::new();
-    for md in modules() {
+    let sapis = crate::sapi::SAPIS.iter().map(|sapi| {
+        let mut fns = sapi.functions.to_vec();
+        fns.extend(sapi.module.map_or(&[][..], |(_, f)| f));
+        (sapi.name, fns)
+    });
+    let modules = modules().iter().map(|md| {
         let mut m = HashMap::new();
         (md.functions)(&mut m);
-        for name in m.keys() {
-            if let Some(prev) = owner.insert(name, md.name) {
-                dups.push(format!("{name}: {prev} and {}", md.name));
+        let fns: Vec<(&'static str, NativeFn)> =
+            m.into_values().map(|b| (b.name, b.func)).collect();
+        (md.name, fns)
+    });
+    for (owner_name, fns) in modules.chain(sapis) {
+        for (name, _) in fns {
+            if let Some(prev) = owner.insert(name, owner_name) {
+                dups.push(format!("{name}: {prev} and {owner_name}"));
             }
         }
     }

@@ -15,9 +15,10 @@
 //
 //     php -n tools/capture-ref-build.php tables
 //
-// prints the reference build's ini directives and constant modules instead
-// (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php -- tables`), which
-// `rhp-difftest gen dumps` turns into main/ini_table.rs and const_modules.rs.
+// prints the reference build's ini directives, constant modules and function
+// modules instead (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php --
+// tables`), which `rhp-difftest gen dumps` turns into main/ini_table.rs,
+// const_modules.rs and func_modules.rs.
 
 function row(string $key, mixed $value): void
 {
@@ -78,6 +79,10 @@ if (($argv[1] ?? '') === 'tables') {
     echo "# constants\n";
     foreach (get_defined_constants(true) as $module => $constants) {
         echo $module, "\t", implode(' ', array_keys($constants)), "\n";
+    }
+    echo "# functions\n";
+    foreach (get_loaded_extensions() as $module) {
+        echo $module, "\t", implode(' ', get_extension_funcs($module) ?: []), "\n";
     }
     echo "# paths\n";
     row('PHP_EXTENSION_DIR', PHP_EXTENSION_DIR);

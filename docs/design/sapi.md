@@ -291,12 +291,22 @@ threads, never from sharing an engine:
   libraries, a child's directory) are joined to the name it had, until
   `getcwd()` or `chdir()` notices the new one. `realpath('.')` in a
   removed directory is false; php's is `'.'`.
-- **pcntl only under the CLI and CGI.** rhp hides pcntl's functions,
-  constants and extension entry under any other SAPI name
-  (`sapi::has_pcntl`), so an embedding server never gets process-wide
-  signal handlers or `fork` from a script. This is a deliberate
-  difference: php links pcntl, when built, into every SAPI binary,
-  php-fpm and the embed library included.
+- **SAPI functions.** Each SAPI supplies its own functions, as php's
+  `sapi_module.additional_functions` and a SAPI's own module do: php-cli
+  has `cli_set_process_title` / `cli_get_process_title`, php-cgi its
+  `cgi-fcgi` module's `getallheaders` and `apache_*` functions
+  (rhp-builtins `sapi/`, a `SapiDef` per SAPI name). An embedding SAPI
+  has none of them. `function_exists()`, `get_extension_funcs()`,
+  `get_defined_functions()` and Reflection see the running SAPI's set.
+  php-cli and php-cgi also have `dl()`; rhp does not, as it cannot load
+  php's C extensions.
+- **pcntl only under the CLI and CGI.** pcntl is a `cli_only` module
+  (PHP_NEW_EXTENSION's `cli` class): its functions, constants and
+  extension entry exist only under the command-line SAPIs
+  (`main::sapi::is_command_line`), so an embedding server never gets
+  process-wide signal handlers or `fork` from a script. This differs
+  from php only for embed: php's static build adds a `cli`-class
+  extension to the cli, cgi, phpdbg and embed SAPIs (not php-fpm).
 - **Process-wide state.** `putenv()` changes stay in the request (an
   overlay its child processes get); the process's environment never
   changes. What belongs to the OS process: signal handlers (`pcntl`, CLI

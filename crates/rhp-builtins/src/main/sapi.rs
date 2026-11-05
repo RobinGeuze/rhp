@@ -18,12 +18,13 @@
 //! The SAPI name and its ini defaults are per thread (one engine per thread
 //! at a time, see [`set_sapi`]); everything else lives in the engine.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use rhp_values::ops::deref;
 use rhp_values::{Thrown, Value};
 
+use crate::sapi::{sapi_def, SapiDef};
 use crate::Host;
 
 pub use crate::main::php_variables::{post_form_vars, treat_data, url_decode, TreatData};
@@ -293,6 +294,8 @@ pub struct RequestInfo {
 thread_local! {
     /// The running engine's SAPI name (`php_sapi_name()`).
     static SAPI_NAME: RefCell<String> = RefCell::new(String::from("cli"));
+    /// The SAPI module of that name and its bit, if rhp has one.
+    static SAPI_DEF: Cell<Option<(u8, &'static SapiDef)>> = Cell::new(sapi_def("cli"));
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`), by directive.
     static SAPI_INI: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
 }
@@ -302,6 +305,7 @@ thread_local! {
 /// to php-cli's.
 pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
     SAPI_NAME.with(|n| *n.borrow_mut() = name.to_string());
+    SAPI_DEF.with(|d| d.set(sapi_def(name)));
     SAPI_INI.with(|m| {
         let mut m = m.borrow_mut();
         m.clear();
@@ -330,29 +334,22 @@ pub(crate) fn reset_state() {
     set_sapi("cli", &[]);
 }
 
-/// Whether the running SAPI has pcntl: only the CLI and CGI. Signal
-/// handlers and fork belong to the whole process, so a server that embeds
-/// rhp never gets them. This is rhp's choice: php links pcntl into every
-/// SAPI binary built with it (php-fpm and embed included).
-pub fn has_pcntl() -> bool {
-    SAPI_NAME.with(|n| matches!(n.borrow().as_str(), "cli" | "cgi-fcgi"))
+/// The running SAPI's module (sapi/), if rhp has one for it.
+pub(crate) fn sapi_module() -> Option<&'static SapiDef> {
+    SAPI_DEF.with(|d| d.get().map(|(_, def)| def))
 }
 
-/// Builtins that exist only under some SAPIs (php registers them as SAPI
-/// `additional_functions`; pcntl's, see [`has_pcntl`]): hidden from lookup
-/// elsewhere.
-pub fn builtin_hidden(name_lc: &str) -> bool {
-    match name_lc {
-        "getallheaders"
-        | "apache_request_headers"
-        | "apache_response_headers"
-        | "apache_child_terminate" => !is_cgi(),
-        "cli_set_process_title" | "cli_get_process_title" => {
-            SAPI_NAME.with(|n| n.borrow().as_str() != "cli")
-        }
-        n if n.starts_with("pcntl_") => !has_pcntl(),
-        _ => false,
-    }
+/// The running SAPI's bit in `Builtin::sapis` (0 for a SAPI rhp has no
+/// module for).
+pub(crate) fn sapi_bit() -> u8 {
+    SAPI_DEF.with(|d| d.get().map_or(0, |(bit, _)| bit))
+}
+
+/// Whether the running SAPI is a command-line one (php-cli, php-cgi), which
+/// loads the `cli_only` modules: pcntl. Signal handlers and fork belong to
+/// the whole process, so a server that embeds rhp never gets them.
+pub fn is_command_line() -> bool {
+    sapi_module().is_some_and(|d| d.command_line)
 }
 
 /// main.c's `escape_html` for `html_errors`: htmlspecialchars with

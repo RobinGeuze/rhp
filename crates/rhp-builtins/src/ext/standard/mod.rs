@@ -50,8 +50,8 @@ pub mod versioning;
 
 /// The standard module. Its functions include the ones of main/ that php
 /// declares in basic_functions.stub.php (output control, `header`,
-/// `set_time_limit`), and php registers a SAPI's additional functions
-/// under it too.
+/// `set_time_limit`). php registers a SAPI's additional functions under it
+/// too; rhp keeps those with the SAPI (sapi/).
 pub(crate) fn module() -> ModuleDef {
     ModuleDef {
         name: "standard",
@@ -106,8 +106,6 @@ fn register(m: &mut crate::Registry) {
     crate::main::output::register(m);
     crate::main::register(m);
     crate::main::sapi::register(m);
-    crate::sapi::cli::register(m);
-    crate::sapi::cgi::register(m);
 }
 
 fn constants() -> Vec<(&'static str, Value)> {
@@ -142,5 +140,4 @@ fn reset_state() {
     array::reset_state();
     string::reset_state();
     basic_functions::reset_state();
-    crate::sapi::cli::reset_state();
 }

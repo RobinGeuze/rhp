@@ -254,9 +254,6 @@ pub(crate) fn reset_state() {
 
 /// Is a directive's owning module loaded in this engine?
 pub(crate) fn module_loaded(module: &str) -> bool {
-    if module == "cgi-fcgi" {
-        return crate::main::sapi::is_cgi();
-    }
     crate::zend::builtin_functions::loaded_ext(module.as_bytes()).is_some()
 }
 

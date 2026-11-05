@@ -103,7 +103,7 @@ impl ProtoBuilder<'_> {
     }
 
     /// zend_is_scope_known: whether `self`/`parent` are known at compile time.
-    fn scope_known(&self) -> bool {
+    pub(crate) fn scope_known(&self) -> bool {
         if self.scope_kind == ScopeKind::Closure {
             return false;
         }
@@ -210,6 +210,12 @@ impl ProtoBuilder<'_> {
                 match arg {
                     PartialArgument::Positional(p) if p.ellipsis.is_none() => {
                         regs.push(self.compile_expr(p.value)?)
+                    }
+                    PartialArgument::VariadicPlaceholder(_) => {
+                        return Err(compile_error(
+                            "Cannot create Closure for new expression",
+                            self.cur_line,
+                        ))
                     }
                     _ => {
                         return Err(Thrown::unsupported(

@@ -27,6 +27,7 @@ mod assign;
 mod builder;
 mod calls;
 mod checks;
+mod constexpr;
 mod control;
 mod cvs;
 mod decl;

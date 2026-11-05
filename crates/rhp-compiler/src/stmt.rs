@@ -122,6 +122,14 @@ impl ProtoBuilder<'_> {
                         );
                         self.cx.fatal(stmt.span().start.offset, msg);
                     }
+                    if !crate::constexpr::check_const_expr(
+                        self.cx,
+                        item.value,
+                        true,
+                        self.scope_known(),
+                    ) {
+                        continue;
+                    }
                     self.in_const_decl = true;
                     let src = self.compile_expr(item.value);
                     self.in_const_decl = false;

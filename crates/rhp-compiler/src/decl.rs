@@ -155,11 +155,28 @@ pub(crate) fn compile_attributes(
                 Some(al) => {
                     // (name, expr) pairs; positional args have no name.
                     let mut items: Vec<(Option<&[u8]>, &Expression)> = Vec::new();
+                    if al
+                        .arguments
+                        .iter()
+                        .any(|a| matches!(a, PA::VariadicPlaceholder(_)))
+                    {
+                        use mago_span::HasSpan;
+                        cx.fatal(
+                            a.span().start.offset,
+                            "Cannot create Closure as attribute argument".into(),
+                        );
+                    }
                     for arg in al.arguments.iter() {
                         match arg {
                             PA::Positional(p) => items.push((None, p.value)),
                             PA::Named(n) => items.push((Some(n.name.value), n.value)),
                             _ => {}
+                        }
+                    }
+                    let known = member_scope_known(cx);
+                    for (_, e) in &items {
+                        if !crate::constexpr::check_const_expr(cx, e, true, known) {
+                            break;
                         }
                     }
                     let folded: Result<Vec<Value>, Thrown> =
@@ -587,12 +604,21 @@ fn compile_const_thunk(
     Ok(Rc::new(c.finish()?))
 }
 
+/// zend_is_scope_known while compiling a class member.
+fn member_scope_known(cx: &FileCtx) -> bool {
+    cx.class_scope
+        .borrow()
+        .as_ref()
+        .is_some_and(|cs| !cs.is_trait)
+}
+
 /// Fold an initializer to a constant, or fall back to a runtime thunk.
 fn const_init_or_thunk(
     cx: &FileCtx,
     expr: &Expression,
     class_name: Option<&PhpStr>,
 ) -> Result<ConstInitProto, Thrown> {
+    crate::constexpr::check_const_expr(cx, expr, false, member_scope_known(cx));
     match fold_const(cx, expr) {
         Ok(v) => Ok(ConstInitProto::Const(v)),
         Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(
@@ -606,6 +632,7 @@ fn prop_default_or_thunk(
     expr: &Expression,
     class_name: Option<&PhpStr>,
 ) -> Result<PropDefaultProto, Thrown> {
+    crate::constexpr::check_const_expr(cx, expr, false, member_scope_known(cx));
     match fold_const(cx, expr) {
         Ok(v) => Ok(PropDefaultProto::Const(v)),
         Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(

@@ -10,7 +10,7 @@ use crate::file::FileCtx;
 use crate::names::NameKind;
 use crate::oop::Sel;
 use crate::prelude::prelude_classes;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_call(&mut self, call: &crate::parse::cst::Call) -> Result<Reg, Thrown> {
@@ -564,6 +564,12 @@ impl ProtoBuilder<'_> {
                 other => self.compile_expr(other)?,
             },
             Pa::Method(m) => {
+                if crate::assign::is_short_circuited(m.object) {
+                    return Err(compile_error(
+                        "Cannot combine nullsafe operator with Closure creation",
+                        self.cur_line,
+                    ));
+                }
                 let obj = self.compile_expr(m.object)?;
                 let name = self.selector_string(&m.method)?;
                 self.build_pair(obj, &name)

@@ -676,6 +676,7 @@ impl ProtoBuilder<'_> {
             let default = folded.map(|d| match d {
                 Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),
                 Err(e) => {
+                    crate::constexpr::check_const_expr(cx, e, true, self.scope_known());
                     nonconst.push((idx as u16, cv, e, type_hint.is_some().then_some(line)));
                     rhp_bytecode::ParamDefault::Init
                 }

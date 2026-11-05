@@ -157,7 +157,13 @@ pub fn div(a: &Value, b: &Value) -> Result<Value, Thrown> {
         return Err(Thrown::error("DivisionByZeroError", "Division by zero"));
     }
     match (x, y) {
-        (Num::Int(p), Num::Int(q)) if q != 0 && p % q == 0 => Ok(Value::Int(p / q)),
+        // i64::MIN / -1 overflows: a float, as php's div_function_base.
+        (Num::Int(p), Num::Int(q)) if q != 0 && p.checked_rem(q) == Some(0) => {
+            Ok(match p.checked_div(q) {
+                Some(n) => Value::Int(n),
+                None => Value::Float(p as f64 / q as f64),
+            })
+        }
         _ => Ok(Value::Float(x.as_f64() / y.as_f64())),
     }
 }

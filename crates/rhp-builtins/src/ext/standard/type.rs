@@ -140,10 +140,10 @@ fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     // `base` applies only to a string argument; base 10 is plain integer conversion.
     if base == 10 {
-        return Ok(Value::Int(conv::to_int(&v)));
+        return Ok(Value::Int(zend::operators::zval_get_long(host, &v)?));
     }
     let Value::Str(s) = &v else {
-        return Ok(Value::Int(conv::to_int(&v)));
+        return Ok(Value::Int(zend::operators::zval_get_long(host, &v)?));
     };
     Ok(Value::Int(intval_base(s.as_bytes(), base)))
 }

@@ -129,6 +129,12 @@ fn parse_format(fmt: &[u8]) -> Result<Vec<Piece>, Thrown> {
                     .unwrap()
                     .parse()
                     .unwrap_or(0);
+                if n == 0 || n >= i32::MAX as usize {
+                    return Err(Thrown::error(
+                        "ValueError",
+                        "Argument number specifier must be greater than zero and less than 2147483647",
+                    ));
+                }
                 arg = Some(n);
                 i = j + 1;
             }

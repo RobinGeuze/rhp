@@ -2105,7 +2105,7 @@ fn fn_implode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     for (_, v) in arr.iter() {
         parts.push(match v {
             Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {
+            Value::Int(_) | Value::Bool(_) | Value::Null => {
                 std::borrow::Cow::Owned(conv::to_string_bytes(v))
             }
             v => std::borrow::Cow::Owned(zval_get_string(host, v)?),

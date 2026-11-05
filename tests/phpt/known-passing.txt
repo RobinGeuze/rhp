@@ -9712,6 +9712,7 @@ tests/lang/operators/bitwiseShiftRight_variationStr2.phpt
 tests/lang/operators/bitwiseXor_basiclong_64bit.phpt
 tests/lang/operators/bitwiseXor_variationStr.phpt
 tests/lang/operators/coalesce.phpt
+tests/lang/operators/divide_basiclong_64bit.phpt
 tests/lang/operators/divide_variationStr.phpt
 tests/lang/operators/modulus_basiclong_64bit.phpt
 tests/lang/operators/modulus_variationStr.phpt

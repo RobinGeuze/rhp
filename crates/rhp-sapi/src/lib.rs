@@ -433,6 +433,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     let mut argv = vec![argv0.into_bytes()];
     argv.extend(req.args);
     vm.set_argv(argv);
+    if let Script::Code(_) = req.script {
+        vm.disable_auto_prepend();
+    }
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {
         Ok(code) => code,

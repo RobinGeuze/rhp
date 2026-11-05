@@ -187,6 +187,9 @@ pub struct Vm {
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
+    /// Whether auto_prepend_file runs before the main script (not for
+    /// `-r` code, which php evaluates without php_execute_script).
+    auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
     /// Readonly properties already reinitialized inside a `__clone`

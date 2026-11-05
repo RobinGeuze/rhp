@@ -112,6 +112,7 @@ impl Vm {
             cuf_caller: None,
             wrappers,
             main_script_path: None,
+            auto_prepend: true,
             streams: StreamTable::default(),
             readonly_reinit: Default::default(),
             hook_bypass: false,
@@ -371,6 +372,11 @@ impl Vm {
     /// Record the top-level script's filesystem path (for `Phar::mapPhar`).
     pub fn set_main_script_path(&mut self, path: impl Into<Vec<u8>>) {
         self.main_script_path = Some(path.into());
+    }
+
+    /// Skip auto_prepend_file (`-r` code).
+    pub fn disable_auto_prepend(&mut self) {
+        self.auto_prepend = false;
     }
 
     /// A fatal error bailed out (php_error_cb's
@@ -712,16 +718,9 @@ impl Vm {
         // (php_execute_script's zend_execute_scripts).
         let prepend = builtins::ini_value(b"auto_prepend_file")
             .flatten()
-            .filter(|p| !p.is_empty());
+            .filter(|p| !p.is_empty() && self.auto_prepend);
         let prepended = match prepend {
-            Some(path) => {
-                let depth = self.stack.len();
-                let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
-                if r.is_err() {
-                    self.stack.truncate(depth - 1);
-                }
-                r.map(|_| ())
-            }
+            Some(path) => self.run_auto_prepend(path),
             None => Ok(()),
         };
         // zend_execute_script raises an out-of-memory error still pending
@@ -751,6 +750,39 @@ impl Vm {
     /// handler or is reported, then the shutdown functions run (a fatal or
     /// `exit` in one stops the rest), then every output buffer is flushed.
     /// Returns the exit status; `Err` only for an engine refusal.
+    /// auto_prepend_file, required with no script running: a file that
+    /// won't open is reported "in Unknown on line 0", and the failed
+    /// require is an E_ERROR (zend_throw_error outside execution).
+    fn run_auto_prepend(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
+        let depth = self.stack.len();
+        let path_str = String::from_utf8_lossy(&path).into_owned();
+        builtins::main::streams::clear_errno();
+        if !builtins::main::streams::is_data_url(&path)
+            && self.resolve_include_file(depth - 1, &path_str).is_none()
+        {
+            let errno = builtins::main::streams::last_errno().unwrap_or(2);
+            let reason = builtins::main::streams::strerror(errno);
+            let warning = format!("Unknown: Failed to open stream: {reason}");
+            self.raise_error_at(
+                builtins::E_WARNING,
+                warning.as_bytes(),
+                b"Unknown".to_vec(),
+                0,
+            );
+            let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
+            let msg = format!(
+                "Failed opening required '{path_str}' (include_path='{}')",
+                String::from_utf8_lossy(&ip)
+            );
+            return Err(self.fatal_error_at(1, msg.as_bytes(), b"Unknown".to_vec(), 0));
+        }
+        let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+        if r.is_err() {
+            self.stack.truncate(depth - 1);
+        }
+        r.map(|_| ())
+    }
+
     pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
         let status = match self.run(prog) {
             Ok(c) => c,

@@ -2,7 +2,11 @@
 // zpp errors are raised in the builtin's frame, so the trace lists the
 // call. Its arguments show the conversions zpp makes in place (to a string,
 // a number, a class name) but not those into an int, float or bool, and
-// none for a frameless call.
+// none for a frameless call. (The handler keeps the checkout's path out.)
+set_error_handler(function ($no, $msg) {
+    echo $no === E_DEPRECATED ? "Deprecated" : "Warning", ": $msg\n";
+    return true;
+});
 class S { function __toString(): string { return "s"; } }
 function t(callable $c) {
     try {

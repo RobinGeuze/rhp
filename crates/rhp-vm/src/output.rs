@@ -272,6 +272,7 @@ impl Vm {
     pub(crate) fn ob_diag(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
         let mut m = self.docref_prefix().into_bytes();
         m.extend_from_slice(msg.as_ref());
+        let m = self.docref_html(&m).into_owned();
         if self.no_code_running() || self.output.starting {
             self.raise_error_at(level, &m, b"Unknown".to_vec(), 0);
         } else {

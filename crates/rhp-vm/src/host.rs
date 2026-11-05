@@ -16,19 +16,20 @@ use crate::{classes, deref, Vm};
 
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
-        // A builtin's `php_error_docref` ("func(): …"): HTML-escaped when
-        // html_errors is on (engine and sapi errors are not, nor are the
-        // E_USER_* messages trigger_error passes through as given).
+        // A builtin's `php_error_docref` ("func(): …") goes through
+        // php_verror; engine and sapi errors do not, nor do the E_USER_*
+        // messages trigger_error passes through as given.
         use builtins::{E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING};
         let user = E_USER_ERROR | E_USER_WARNING | E_USER_NOTICE | E_USER_DEPRECATED;
-        self.sapi.docref_msg = level & user == 0 && is_docref_message(msg);
+        if level & user != 0 || !is_docref_message(msg) {
+            return self.raise_error(level, msg);
+        }
         // php_verror: none while an out-of-memory error is pending.
-        if self.sapi.docref_msg && self.mem.attention() {
-            self.sapi.docref_msg = false;
+        if self.mem.attention() {
             return;
         }
-        self.raise_error(level, msg);
-        self.sapi.docref_msg = false;
+        let msg = self.docref_html(msg);
+        self.raise_error(level, &msg);
     }
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {

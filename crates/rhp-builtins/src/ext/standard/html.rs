@@ -567,6 +567,7 @@ fn find_entity_for_char(
 }
 
 /// `php_escape_html_entities_ex`.
+#[allow(clippy::too_many_arguments)]
 fn escape(
     host: &mut dyn Host,
     fname: &str,
@@ -575,8 +576,9 @@ fn escape(
     flags: i64,
     hint: Option<&[u8]>,
     double_encode: bool,
+    quiet: bool,
 ) -> Result<Vec<u8>, Thrown> {
-    let cs = determine_charset(host, fname, hint, false)?;
+    let cs = determine_charset(host, fname, hint, quiet)?;
     let doctype = flags & ENT_HTML_DOC_TYPE_MASK;
     let mut all = all;
     if all {
@@ -835,7 +837,24 @@ fn html_entities(host: &mut dyn Host, args: &[Value], all: bool, f: &str) -> Res
         flags,
         hint.as_deref(),
         double_encode,
+        false,
     )?))
+}
+
+/// main.c's `escape_html`, for `html_errors`: htmlspecialchars with
+/// ENT_COMPAT in the default charset, quietly; a message that is not valid
+/// in that charset is escaped again with its invalid sequences substituted.
+pub(crate) fn escape_html(host: &mut dyn Host, s: &[u8]) -> Vec<u8> {
+    let flags = ENT_HTML_QUOTE_DOUBLE;
+    let run = |host: &mut dyn Host, flags| {
+        escape(host, "", s, false, flags, None, true, true).unwrap_or_default()
+    };
+    let out = run(host, flags);
+    if out.is_empty() {
+        run(host, flags | ENT_HTML_SUBSTITUTE_ERRORS)
+    } else {
+        out
+    }
 }
 
 fn fn_htmlspecialchars_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

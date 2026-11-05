@@ -82,7 +82,6 @@ impl Vm {
 
     /// [`Vm::raise_error`] reported at `file`:`line`.
     pub(crate) fn raise_error_at(&mut self, level: i64, msg: &[u8], file: Vec<u8>, line: i64) {
-        let docref = std::mem::take(&mut self.sapi.docref_msg);
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -153,9 +152,7 @@ impl Vm {
             E_RECOVERABLE_ERROR => "Recoverable fatal error",
             _ => "Unknown error",
         };
-        self.sapi.docref_msg = docref;
         self.display_error(level, label, msg, &file, line);
-        self.sapi.docref_msg = false;
     }
 
     /// Source line of the instruction currently executing in frame `top`.
@@ -539,7 +536,6 @@ impl Vm {
         line: i64,
         trace: &[u8],
     ) {
-        let docref = std::mem::take(&mut self.sapi.docref_msg);
         use builtins::{E_COMPILE_ERROR, E_CORE_ERROR, E_ERROR, E_PARSE, E_RECOVERABLE_ERROR};
         let fatal = E_ERROR
             | E_PARSE
@@ -603,13 +599,12 @@ impl Vm {
         if html && !matches!(mode, DisplayErrors::Off) {
             // php_error_cb's html branch: E_ERROR / E_PARSE escape the
             // message and drop the trace; others show it as given (a
-            // builtin's docref message was escaped when it was built).
+            // docref message was escaped when it was made, `docref_html`).
             let fatal = ty == builtins::E_ERROR || ty == builtins::E_PARSE;
             let mut m = ini(self, b"error_prepend_string");
             m.extend_from_slice(format!("<br />\n<b>{label}</b>:  ").as_bytes());
-            if fatal || docref {
-                let charset = ini(self, b"default_charset");
-                m.extend_from_slice(&builtins::main::sapi::escape_html(message, &charset));
+            if fatal {
+                m.extend_from_slice(&builtins::main::sapi::escape_html(self, message));
             } else {
                 m.extend_from_slice(message);
             }
@@ -952,6 +947,20 @@ impl Vm {
                 Ok(Value::Object(obj))
             }
             _ => Err(thrown.clone()),
+        }
+    }
+
+    /// php_verror's html_errors step: a `php_error_docref` message is
+    /// escaped as it is made, so the user error handler and
+    /// `error_get_last()` see it escaped too.
+    pub(crate) fn docref_html<'a>(&mut self, msg: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        // ASCII without `&<>"` escapes to itself in every charset html.c
+        // knows, so most messages need no ini lookup.
+        let plain = |b: &u8| b.is_ascii() && !matches!(b, b'&' | b'<' | b'>' | b'"');
+        if !msg.iter().all(plain) && ini_bool(&self.ini_get(b"html_errors").unwrap_or_default()) {
+            std::borrow::Cow::Owned(builtins::main::sapi::escape_html(self, msg))
+        } else {
+            std::borrow::Cow::Borrowed(msg)
         }
     }
 

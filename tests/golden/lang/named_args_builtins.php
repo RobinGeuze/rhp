@@ -103,3 +103,15 @@ function refs(&$a, &$b = 1) { echo "$a $b\n"; }
 function &byref($x) { return $x; }
 refs(byref("A"), byref("B"));
 refs(byref("A"), b: byref("B"));
+
+// a variable named for a callee known only at run time is sent before a
+// later argument changes it
+class N { function m($a, $b) { var_dump($a, $b); } }
+$n = new N;
+$nx = 1;
+$n->m(a: $nx, b: $nx++);
+$nx = 1;
+$n->m(b: $nx, a: ++$nx);
+$nf = function ($a, $b) { var_dump($a, $b); };
+$nx = 1;
+$nf(a: $nx, b: $nx = 5);

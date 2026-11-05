@@ -654,7 +654,10 @@ impl ProtoBuilder<'_> {
         if let Some(list) = args {
             let mut names: Vec<&[u8]> = Vec::new();
             let (mut pos, mut unpacked) = (0usize, false);
-            for arg in list.arguments.iter() {
+            for (ai, arg) in list.arguments.iter().enumerate() {
+                // An unknown callee gets a variable by value when a later
+                // argument may change it (php sends it before that runs).
+                let late = known.is_none() && later_arg_may_write(list, ai);
                 match arg {
                     // A repeated name: zend_handle_named_arg finds the slot
                     // taken when the second one is sent.
@@ -669,7 +672,7 @@ impl ProtoBuilder<'_> {
                     Argument::Positional(p) if p.ellipsis.is_none() && !unpacked => {
                         let idx = known.and_then(|k| k.param(Some(pos), None));
                         pos += 1;
-                        match self.compile_known_ref_arg(p.value, known, idx)? {
+                        match self.compile_known_ref_arg(p.value, known, idx, late)? {
                             Some(r) => self.emit(Instr::ArrPushRef { arr: dst, val: r }),
                             None => {
                                 let r = self.compile_expr(p.value)?;
@@ -693,7 +696,7 @@ impl ProtoBuilder<'_> {
                         // After an unpack php no longer knows the callee.
                         let known = known.filter(|_| !unpacked);
                         let idx = known.and_then(|k| k.param(None, Some(n.name.value)));
-                        let by_ref = self.compile_known_ref_arg(n.value, known, idx)?;
+                        let by_ref = self.compile_known_ref_arg(n.value, known, idx, late)?;
                         let r = match by_ref {
                             Some(r) => r,
                             None => self.compile_expr(n.value)?,
@@ -742,12 +745,13 @@ impl ProtoBuilder<'_> {
         e: &Expression,
         known: Option<&KnownParams>,
         idx: Option<usize>,
+        later_write: bool,
     ) -> Result<Option<Reg>, Thrown> {
         let Some(k) = known else {
             // A callee only known at run time: as in a method's argument
             // window, a plain variable travels as a reference and a
             // by-value parameter dereferences it.
-            let Some(var) = send_var_ex_name(e) else {
+            let Some(var) = send_var_ex_name(e).filter(|_| !later_write) else {
                 return Ok(None);
             };
             let cv = self.cv(var);
@@ -1451,15 +1455,18 @@ fn send_var_ex_name<'a>(e: &Expression<'a>) -> Option<&'a [u8]> {
 }
 
 /// Whether an argument after the `i`th may write a variable (anything but
-/// a literal or a plain variable).
+/// a literal, a constant or a plain variable).
 fn later_arg_may_write(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
     list.arguments.iter().skip(i + 1).any(|a| {
+        let value = match a {
+            Argument::Positional(q) => q.value,
+            Argument::Named(n) => n.value,
+        };
         !matches!(
-            a,
-            Argument::Positional(q) if matches!(
-                q.value,
-                Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
-            )
+            value,
+            Expression::Literal(_)
+                | Expression::ConstantAccess(_)
+                | Expression::Variable(Variable::Direct(_))
         )
     })
 }

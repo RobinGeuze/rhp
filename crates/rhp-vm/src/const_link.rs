@@ -1,12 +1,12 @@
 //! Typed class constants at link time: php's do_inherit_constant_check and
 //! do_trait_constant_check type rules (zend_inheritance.c).
 //!
-//! The covariance test here is a small one for constant types (no
-//! `static`, `callable`, `void` or `never` can occur); the method LSP check
-//! should take it over once it exists.
+//! The covariance test ports zend_perform_covariant_type_check with its
+//! three outcomes; the method LSP check should share it once it exists.
+//! Class lookups do not autoload, so an unresolved check is an error.
 
 use rhp_bytecode::{ClassProto, TypeHint, TypeKind as K};
-use rhp_values::{ClassId, PhpStr, Thrown};
+use rhp_values::{ClassId, Thrown};
 
 use crate::Vm;
 
@@ -24,6 +24,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let own = |name: &[u8]| proto.constants.iter().find(|c| c.name.as_bytes() == name);
         let cname = proto.name.clone();
+        let cx = Cx::new(proto, parent);
         // Inherited from the parent class and interfaces.
         let mut sources: Vec<ClassId> = parent.into_iter().collect();
         for i in &proto.interfaces {
@@ -74,7 +75,12 @@ impl Vm {
                 };
                 let ok = match (&ety, &tty) {
                     (None, None) => true,
-                    (Some(e), Some(t)) => self.type_subsumes(e, t) && self.type_subsumes(t, e),
+                    (Some(e), Some(t)) => {
+                        let tscope = self.classes[tid as usize].name.clone();
+                        let (cs, ts) = (cname.as_bytes(), tscope.as_bytes());
+                        self.const_type_status(&cx, e, cs, t, ts) != St::Err
+                            && self.const_type_status(&cx, t, ts, e, cs) != St::Err
+                    }
                     _ => false,
                 };
                 if !ok {
@@ -112,9 +118,10 @@ impl Vm {
                     None => continue,
                 },
             };
-            let ok = child
-                .as_ref()
-                .is_some_and(|ct| self.type_subsumes(ct, &pty));
+            let pscope = self.classes[pdecl as usize].name.clone();
+            let ok = child.as_ref().is_some_and(|ct| {
+                self.const_type_status(&cx, ct, cname.as_bytes(), &pty, pscope.as_bytes()) == St::Ok
+            });
             if !ok {
                 let msg = format!(
                     "Type of {}::{} must be compatible with {}::{} of type {}",
@@ -139,131 +146,398 @@ impl Vm {
         )
     }
 
-    /// Can php early-bind `proto` as far as its typed constants go? Not
-    /// while a class their compatibility depends on is not loaded (php
-    /// then declares the class when its declaration runs).
+    /// Can php early-bind `proto` as far as its typed constants go
+    /// (zend_can_early_bind)? Not while a check needs a class that is not
+    /// loaded; php then declares the class when its declaration runs.
     pub(crate) fn const_types_resolvable(&self, proto: &ClassProto) -> bool {
-        let Some(parent) = proto
+        let Some(&parent) = proto
             .parent
             .as_ref()
             .and_then(|p| self.class_ids.get(&lc(p.as_bytes())))
         else {
             return true;
         };
-        let loaded = |t: &TypeHint| {
-            t.kinds
-                .iter()
-                .filter_map(named)
-                .chain(t.groups.iter().flatten().cloned())
-                .all(|n| self.class_ids.contains_key(&lc(n.as_bytes())))
-        };
+        let cx = Cx::new(proto, Some(parent));
         proto.constants.iter().all(|c| {
-            let Some(pc) = self.classes[*parent as usize]
+            let Some(pc) = self.classes[parent as usize]
                 .constants
                 .get(c.name.as_bytes())
             else {
                 return true;
             };
-            pc.ty.as_deref().is_none_or(loaded) && c.type_hint.as_ref().is_none_or(loaded)
-        })
-    }
-
-    /// Is every value of type `child` a value of type `parent`?
-    fn type_subsumes(&self, child: &TypeHint, parent: &TypeHint) -> bool {
-        let phas = |k: &K| parent.kinds.contains(k);
-        if phas(&K::Mixed) {
-            return true;
-        }
-        if child.kinds.contains(&K::Mixed) {
-            return false;
-        }
-        if child.nullable && !parent.nullable {
-            return false;
-        }
-        if child.intersection {
-            let names: Vec<PhpStr> = child.kinds.iter().filter_map(named).collect();
-            return self.group_subsumed(&names, parent);
-        }
-        if !child.groups.iter().all(|g| self.group_subsumed(g, parent)) {
-            return false;
-        }
-        child.kinds.iter().all(|k| match k {
-            K::Int | K::Float | K::String | K::Object | K::Callable | K::Void | K::Never => phas(k),
-            K::Array => phas(&K::Array) || phas(&K::Iterable),
-            K::Bool => phas(&K::Bool) || (phas(&K::True) && phas(&K::False)),
-            K::True | K::False => phas(k) || phas(&K::Bool),
-            K::Null => parent.nullable,
-            K::Iterable => {
-                phas(&K::Iterable)
-                    || ((phas(&K::Array)) && self.class_subsumed(b"Traversable", parent))
+            if pc.visibility == rhp_values::Visibility::Private {
+                return true;
             }
-            K::StaticType => phas(&K::StaticType) || phas(&K::Object),
-            K::Named(n) => self.class_subsumed(n.as_bytes(), parent),
-            K::Mixed | K::SelfType | K::Parent => false,
+            match (&c.type_hint, pc.ty.as_deref()) {
+                (Some(ct), Some(pt)) => {
+                    let child = self.norm(ct, &cx, cx.name);
+                    let par = self.norm(
+                        pt,
+                        &cx,
+                        self.classes[pc.declaring_class as usize].name.as_bytes(),
+                    );
+                    self.covariant(&cx, &child, &par) != St::Unresolved
+                }
+                _ => true,
+            }
         })
     }
 
-    /// Is the class `name` a subtype of `parent`?
-    fn class_subsumed(&self, name: &[u8], parent: &TypeHint) -> bool {
-        if parent.kinds.contains(&K::Object) {
-            return true;
-        }
-        if parent.intersection {
-            return parent
-                .kinds
-                .iter()
-                .filter_map(named)
-                .all(|p| self.class_is_a(name, p.as_bytes()));
-        }
-        if parent.kinds.contains(&K::Iterable) && self.class_is_a(name, b"Traversable") {
-            return true;
-        }
-        parent
-            .kinds
-            .iter()
-            .filter_map(named)
-            .any(|p| self.class_is_a(name, p.as_bytes()))
-            || parent
-                .groups
-                .iter()
-                .any(|g| g.iter().all(|p| self.class_is_a(name, p.as_bytes())))
+    /// Does every value of `child` (declared in `cscope`) belong to
+    /// `parent` (declared in `pscope`)? For `proto` being linked.
+    fn const_type_status(
+        &self,
+        cx: &Cx,
+        child: &TypeHint,
+        cscope: &[u8],
+        parent: &TypeHint,
+        pscope: &[u8],
+    ) -> St {
+        let c = self.norm(child, cx, cscope);
+        let p = self.norm(parent, cx, pscope);
+        self.covariant(cx, &c, &p)
     }
 
-    /// Is an intersection of `names` a subtype of `parent`?
-    fn group_subsumed(&self, names: &[PhpStr], parent: &TypeHint) -> bool {
-        if parent.kinds.contains(&K::Object) {
-            return true;
-        }
-        let one_is = |p: &PhpStr| {
-            names
-                .iter()
-                .any(|n| self.class_is_a(n.as_bytes(), p.as_bytes()))
+    /// A type as php's zend_type: builtin bits plus class members, with
+    /// self/parent resolved against `scope`.
+    fn norm(&self, t: &TypeHint, cx: &Cx, scope: &[u8]) -> Ty {
+        let mut ty = Ty {
+            mask: if t.nullable { M_NULL } else { 0 },
+            members: Vec::new(),
+            intersection: t.intersection,
         };
-        if parent.intersection {
-            return parent.kinds.iter().filter_map(named).all(|p| one_is(&p));
+        let parent_of = |scope: &[u8]| -> Vec<u8> {
+            if scope.eq_ignore_ascii_case(cx.name) {
+                return cx
+                    .proto
+                    .parent
+                    .as_ref()
+                    .map_or(b"parent".to_vec(), |p| p.as_bytes().to_vec());
+            }
+            self.class_ids
+                .get(&lc(scope))
+                .and_then(|&id| self.classes[id as usize].parent)
+                .map_or(b"parent".to_vec(), |p| {
+                    self.classes[p as usize].name.as_bytes().to_vec()
+                })
+        };
+        for k in &t.kinds {
+            match k {
+                K::Mixed => ty.mask |= M_ANY,
+                K::Null => ty.mask |= M_NULL,
+                K::Int => ty.mask |= M_INT,
+                K::Float => ty.mask |= M_FLOAT,
+                K::String => ty.mask |= M_STRING,
+                K::Bool => ty.mask |= M_TRUE | M_FALSE,
+                K::True => ty.mask |= M_TRUE,
+                K::False => ty.mask |= M_FALSE,
+                K::Array => ty.mask |= M_ARRAY,
+                K::Object => ty.mask |= M_OBJECT,
+                K::Callable => ty.mask |= M_CALLABLE,
+                K::Void => ty.mask |= M_VOID,
+                K::Never => ty.mask |= M_NEVER,
+                K::StaticType => ty.mask |= M_STATIC,
+                K::Iterable => {
+                    ty.mask |= M_ARRAY;
+                    ty.members.push(Member::Class(b"Traversable".to_vec()));
+                }
+                K::SelfType => ty.members.push(Member::Class(scope.to_vec())),
+                K::Parent => ty.members.push(Member::Class(parent_of(scope))),
+                K::Named(n) => ty.members.push(Member::Class(n.as_bytes().to_vec())),
+            }
         }
-        parent.kinds.iter().filter_map(named).any(|p| one_is(&p))
-            || parent.groups.iter().any(|g| g.iter().all(one_is))
+        for g in &t.groups {
+            ty.members.push(Member::Group(
+                g.iter().map(|n| n.as_bytes().to_vec()).collect(),
+            ));
+        }
+        ty
     }
 
-    /// `name` is `other` or a (loaded) descendant of it.
-    fn class_is_a(&self, name: &[u8], other: &[u8]) -> bool {
-        if name.eq_ignore_ascii_case(other) {
-            return true;
+    /// lookup_class: a loaded class, or the class being linked.
+    fn lookup(&self, cx: &Cx, name: &[u8]) -> Option<Cls> {
+        let n = name.strip_prefix(b"\\").unwrap_or(name);
+        if let Some(&id) = self.class_ids.get(&lc(n)) {
+            return Some(Cls::Loaded(id));
         }
-        match (
-            self.resolve_class_by_name(name),
-            self.resolve_class_by_name(other),
-        ) {
-            (Ok(a), Ok(b)) => self.classes[a as usize].ancestors.contains(&b),
-            _ => false,
+        n.eq_ignore_ascii_case(cx.name).then_some(Cls::Linking)
+    }
+
+    /// unlinked_instanceof
+    fn cls_is_a(&self, cx: &Cx, a: Cls, b: Cls) -> bool {
+        let anc = |a: ClassId, b: ClassId| self.classes[a as usize].ancestors.contains(&b);
+        match (a, b) {
+            (Cls::Loaded(a), Cls::Loaded(b)) => a == b || anc(a, b),
+            (Cls::Linking, Cls::Loaded(b)) => {
+                cx.parent.is_some_and(|p| anc(p, b))
+                    || cx.proto.interfaces.iter().any(|i| {
+                        self.class_ids
+                            .get(&lc(i.as_bytes()))
+                            .is_some_and(|&i| anc(i, b))
+                    })
+            }
+            (Cls::Linking, Cls::Linking) => true,
+            (Cls::Loaded(_), Cls::Linking) => false,
+        }
+    }
+
+    /// zend_type_permits_self
+    fn permits_self(&self, cx: &Cx, t: &Ty) -> bool {
+        t.mask & M_OBJECT != 0
+            || t.members.iter().any(|m| match m {
+                Member::Class(n) => self
+                    .lookup(cx, n)
+                    .is_some_and(|c| self.cls_is_a(cx, Cls::Linking, c)),
+                Member::Group(_) => false,
+            })
+    }
+
+    /// zend_perform_covariant_type_check
+    fn covariant(&self, cx: &Cx, fe: &Ty, proto: &Ty) -> St {
+        if proto.mask & M_ANY == M_ANY && fe.mask & M_VOID == 0 {
+            return St::Ok;
+        }
+        let mut added = fe.mask & !proto.mask;
+        if added & M_STATIC != 0 && self.permits_self(cx, proto) {
+            added &= !M_STATIC;
+        }
+        if added == M_NEVER {
+            return St::Ok;
+        }
+        if added != 0 {
+            return St::Err;
+        }
+        if fe.intersection {
+            return self.inter_subtype(cx, &fe.class_names(), proto);
+        }
+        let mut unresolved = false;
+        for m in &fe.members {
+            let st = match m {
+                Member::Group(g) => {
+                    let names: Vec<&[u8]> = g.iter().map(|n| n.as_slice()).collect();
+                    self.inter_subtype(cx, &names, proto)
+                }
+                Member::Class(n) => self.class_subtype(cx, n, proto),
+            };
+            if st == St::Err {
+                return St::Err;
+            }
+            unresolved |= st == St::Unresolved;
+        }
+        if unresolved {
+            St::Unresolved
+        } else {
+            St::Ok
+        }
+    }
+
+    /// zend_is_class_subtype_of_type
+    fn class_subtype(&self, cx: &Cx, fe_name: &[u8], proto: &Ty) -> St {
+        let mut unresolved = false;
+        let fe = self.lookup(cx, fe_name);
+        if proto.mask & M_OBJECT != 0 {
+            if fe.is_some() {
+                return St::Ok;
+            }
+            unresolved = true;
+        }
+        if proto.mask & M_CALLABLE != 0 {
+            match fe {
+                None => unresolved = true,
+                Some(Cls::Loaded(id))
+                    if self.classes[id as usize]
+                        .name
+                        .as_bytes()
+                        .eq_ignore_ascii_case(b"Closure") =>
+                {
+                    return St::Ok
+                }
+                _ => {}
+            }
+        }
+        // a final class may replace `static` with itself
+        if proto.mask & M_STATIC != 0 && cx.proto.flags.is_final {
+            match fe {
+                None => unresolved = true,
+                Some(Cls::Linking) => return St::Ok,
+                _ => {}
+            }
+        }
+        let inter = proto.intersection;
+        for m in &proto.members {
+            let pname = match m {
+                Member::Group(g) => {
+                    let sub = Ty {
+                        mask: 0,
+                        members: g.iter().map(|n| Member::Class(n.clone())).collect(),
+                        intersection: true,
+                    };
+                    match self.class_subtype(cx, fe_name, &sub) {
+                        St::Err if inter => return St::Err,
+                        St::Unresolved => unresolved = true,
+                        St::Ok if !inter => return St::Ok,
+                        _ => {}
+                    }
+                    continue;
+                }
+                Member::Class(n) => n,
+            };
+            if fe_name.eq_ignore_ascii_case(pname) {
+                if !inter {
+                    return St::Ok;
+                }
+                continue;
+            }
+            let (Some(a), Some(b)) = (fe, self.lookup(cx, pname)) else {
+                unresolved = true;
+                continue;
+            };
+            if self.cls_is_a(cx, a, b) {
+                if !inter {
+                    return St::Ok;
+                }
+            } else if inter {
+                return St::Err;
+            }
+        }
+        if unresolved {
+            St::Unresolved
+        } else if inter {
+            St::Ok
+        } else {
+            St::Err
+        }
+    }
+
+    /// zend_is_intersection_subtype_of_type
+    fn inter_subtype(&self, cx: &Cx, fe: &[&[u8]], proto: &Ty) -> St {
+        let mut unresolved = false;
+        if proto.mask & M_OBJECT != 0 {
+            for n in fe {
+                if self.lookup(cx, n).is_some() {
+                    return St::Ok;
+                }
+                unresolved = true;
+            }
+        }
+        let early = if proto.intersection { St::Err } else { St::Ok };
+        for m in &proto.members {
+            let st = match m {
+                Member::Group(g) => {
+                    let sub = Ty {
+                        mask: 0,
+                        members: g.iter().map(|n| Member::Class(n.clone())).collect(),
+                        intersection: true,
+                    };
+                    self.inter_subtype(cx, fe, &sub)
+                }
+                Member::Class(p) => self.inter_subtype_of_class(cx, fe, p),
+            };
+            if st == early {
+                return st;
+            }
+            unresolved |= st == St::Unresolved;
+        }
+        if unresolved {
+            St::Unresolved
+        } else if early == St::Err {
+            St::Ok
+        } else {
+            St::Err
+        }
+    }
+
+    /// zend_is_intersection_subtype_of_class
+    fn inter_subtype_of_class(&self, cx: &Cx, fe: &[&[u8]], pname: &[u8]) -> St {
+        let mut unresolved = false;
+        let p = self.lookup(cx, pname);
+        for n in fe {
+            if n.eq_ignore_ascii_case(pname) {
+                return St::Ok;
+            }
+            let (Some(a), Some(b)) = (self.lookup(cx, n), p) else {
+                unresolved = true;
+                continue;
+            };
+            if self.cls_is_a(cx, a, b) {
+                return St::Ok;
+            }
+        }
+        if unresolved {
+            St::Unresolved
+        } else {
+            St::Err
         }
     }
 }
 
-fn named(k: &K) -> Option<PhpStr> {
-    match k {
-        K::Named(n) => Some(n.clone()),
-        _ => None,
+/// inheritance_status
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum St {
+    Ok,
+    Err,
+    Unresolved,
+}
+
+/// A class found by a lookup: loaded, or the one being linked.
+#[derive(Clone, Copy)]
+enum Cls {
+    Loaded(ClassId),
+    Linking,
+}
+
+/// The class being linked.
+struct Cx<'a> {
+    proto: &'a ClassProto,
+    name: &'a [u8],
+    parent: Option<ClassId>,
+}
+
+impl<'a> Cx<'a> {
+    fn new(proto: &'a ClassProto, parent: Option<ClassId>) -> Self {
+        Cx {
+            proto,
+            name: proto.name.as_bytes(),
+            parent,
+        }
     }
 }
+
+enum Member {
+    Class(Vec<u8>),
+    Group(Vec<Vec<u8>>),
+}
+
+struct Ty {
+    mask: u32,
+    members: Vec<Member>,
+    intersection: bool,
+}
+
+impl Ty {
+    fn class_names(&self) -> Vec<&[u8]> {
+        self.members
+            .iter()
+            .filter_map(|m| match m {
+                Member::Class(n) => Some(n.as_slice()),
+                Member::Group(_) => None,
+            })
+            .collect()
+    }
+}
+
+const M_NULL: u32 = 1 << 1;
+const M_FALSE: u32 = 1 << 2;
+const M_TRUE: u32 = 1 << 3;
+const M_INT: u32 = 1 << 4;
+const M_FLOAT: u32 = 1 << 5;
+const M_STRING: u32 = 1 << 6;
+const M_ARRAY: u32 = 1 << 7;
+const M_OBJECT: u32 = 1 << 8;
+const M_RESOURCE: u32 = 1 << 9;
+const M_CALLABLE: u32 = 1 << 12;
+const M_VOID: u32 = 1 << 14;
+const M_STATIC: u32 = 1 << 15;
+const M_NEVER: u32 = 1 << 17;
+const M_ANY: u32 =
+    M_NULL | M_FALSE | M_TRUE | M_INT | M_FLOAT | M_STRING | M_ARRAY | M_OBJECT | M_RESOURCE;

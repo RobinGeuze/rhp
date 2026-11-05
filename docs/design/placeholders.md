@@ -63,7 +63,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
 | 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
-| 39 | Typed class constant compatibility — own small covariance test (§8.5) | `vm/const_link.rs` | exotic constant types (self, static) on redeclaration | low | low |
+| 39 | Typed class constant compatibility — no autoload, types only for traits (§8.5) | `vm/const_link.rs` | a redeclaration whose check needs a class an autoloader would load | low | low |
 
 ---
 
@@ -636,16 +636,16 @@ The module is deliberately "READ-ONLY, native format only"
   generated signatures already hold parameter names) and fill skipped
   optional parameters with their defaults.
 
-### 8.5 Typed class constant compatibility — own covariance test
+### 8.5 Typed class constant compatibility — no autoload
 - **Now:** linking checks a redeclared typed constant (and a trait's
-  against the composing class's) with a small covariance test in
-  `vm/const_link.rs`: builtin kinds, class names by loaded ancestry, DNF
-  groups. A class whose check needs an unloaded class is not early-bound;
-  at run time an unloaded class never matches (php's unresolved
-  obligation fails the same way when nothing loads it). The trait check
-  compares types only, not visibility, finality or values.
-- **Full impl:** use the method LSP check's zend_perform_covariant_type_check
-  once it exists, with autoloading of the classes it needs.
+  against the composing class's) with a port of
+  zend_perform_covariant_type_check in `vm/const_link.rs` (success, error
+  or unresolved). A class whose check is unresolved is not early-bound; at
+  run time an unresolved check is an error, as php's obligation is when
+  nothing loads the class. The trait check compares types only, not
+  visibility, finality or values.
+- **Full impl:** autoload the classes an unresolved check needs, and share
+  the check with the method LSP check once it exists.
 
 ---
 

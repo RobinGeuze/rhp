@@ -1357,7 +1357,7 @@ fn show_error(
         ));
     }
     match error_message(err, out_charset, in_charset) {
-        Some((level, msg)) => host.emit_diagnostic(level, &format!("{fname}(): {msg}")),
+        Some((level, msg)) => host.emit_diagnostic(level, format!("{fname}(): {msg}").as_bytes()),
         None => Ok(()),
     }
 }

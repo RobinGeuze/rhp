@@ -103,7 +103,7 @@ fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
         host.emit_diagnostic(
             E_WARNING,
-            "define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
+            b"define(): Argument #3 ($case_insensitive) is ignored since declaration of case-insensitive constants is no longer supported",
         )?;
     }
     if host.define_const(&name, value) {
@@ -130,13 +130,15 @@ pub fn const_key(name: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
 /// zend_register_constant's warning for a name that is taken: the table
 /// key, printed as a C string.
-pub fn const_redefined_message(name: &[u8]) -> String {
+pub fn const_redefined_message(name: &[u8]) -> Vec<u8> {
     let key = const_key(name);
     let shown = &key[..key.iter().position(|&b| b == 0).unwrap_or(key.len())];
-    format!(
-        "Constant {} already defined, this will be an error in PHP 9",
-        String::from_utf8_lossy(shown)
-    )
+    [
+        b"Constant ".as_slice(),
+        shown,
+        b" already defined, this will be an error in PHP 9",
+    ]
+    .concat()
 }
 
 /// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
@@ -175,7 +177,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         };
         host.emit_diagnostic(
             E_DEPRECATED,
-            "Calling get_class() without arguments is deprecated",
+            b"Calling get_class() without arguments is deprecated",
         )?;
         return Ok(Value::str(name));
     };
@@ -271,7 +273,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
         None => {
             host.emit_diagnostic(
                 E_DEPRECATED,
-                "Calling get_parent_class() without arguments is deprecated",
+                b"Calling get_parent_class() without arguments is deprecated",
             )?;
             Ok(host
                 .caller_scope()
@@ -714,7 +716,7 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         256 => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                "Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
+                b"Passing E_USER_ERROR to trigger_error() is deprecated since 8.4, throw an exception or call exit with a string message instead",
             )?;
         }
         512 | 1024 | 16384 => {}
@@ -725,7 +727,7 @@ fn fn_trigger_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             ))
         }
     }
-    host.emit_diagnostic(level, &String::from_utf8_lossy(&msg))?;
+    host.emit_diagnostic(level, &msg)?;
     Ok(Value::Bool(true))
 }
 

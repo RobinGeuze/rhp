@@ -967,7 +967,7 @@ fn fn_mb_substitute_character(host: &mut dyn Host, args: &[Value]) -> Result<Val
             if x.is_nan() {
                 host.emit_diagnostic(
                     crate::E_WARNING,
-                    "unexpected NAN value was coerced to string",
+                    b"unexpected NAN value was coerced to string",
                 )?;
             }
             return Err(mode_error());

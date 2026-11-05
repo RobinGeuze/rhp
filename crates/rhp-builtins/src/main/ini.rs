@@ -556,7 +556,7 @@ pub(crate) fn alter_ini_entry(
     mark_changed(&String::from_utf8_lossy(name));
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
-        host.emit_diagnostic(crate::E_WARNING, w)?;
+        host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
     }
     let Some(newv) = stored else {
         return Ok(None);
@@ -567,7 +567,7 @@ pub(crate) fn alter_ini_entry(
     crate::ext::iconv::ini_runtime_update(host, name, func)?;
     if name == b"date.timezone" && !tz_valid(&newv) {
         let func = format!("{func}()");
-        host.emit_diagnostic(crate::E_WARNING, &invalid_timezone(&newv, &func))?;
+        host.emit_diagnostic(crate::E_WARNING, invalid_timezone(&newv, &func).as_bytes())?;
         return Ok(None);
     }
     if ini_validate(name, &newv).is_err() {

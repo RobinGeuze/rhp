@@ -100,7 +100,7 @@ fn current_time_with_fraction() -> (i64, i64) {
 fn wakeup_deprecated(host: &mut dyn Host, class: &str) -> Result<(), Thrown> {
     host.emit_diagnostic(
         crate::E_DEPRECATED,
-        &format!("Method {class}::__wakeup() is deprecated since 8.5, this method is obsolete, as serialization hooks are provided by __unserialize() and __serialize()"),
+        format!("Method {class}::__wakeup() is deprecated since 8.5, this method is obsolete, as serialization hooks are provided by __unserialize() and __serialize()").as_bytes(),
     )
 }
 
@@ -375,11 +375,12 @@ fn update_property(
         if !host.class_has_property(id, key) {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "Creation of dynamic property {}::${} is deprecated",
                     s(c_str(&class)),
                     s(key)
-                ),
+                )
+                .as_bytes(),
             )?;
         }
         (class.clone(), key)
@@ -1620,7 +1621,8 @@ fn quiet_long(
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    &format!("Implicit conversion from float {shown} to int loses precision"),
+                    format!("Implicit conversion from float {shown} to int loses precision")
+                        .as_bytes(),
                 )?;
             }
             Some(*f as i64)
@@ -1631,10 +1633,11 @@ fn quiet_long(
                 if f.fract() != 0.0 {
                     host.emit_diagnostic(
                         crate::E_DEPRECATED,
-                        &format!(
+                        format!(
                             "Implicit conversion from float-string \"{}\" to int loses precision",
                             String::from_utf8_lossy(st.as_bytes())
-                        ),
+                        )
+                        .as_bytes(),
                     )?;
                 }
                 Some(f as i64)
@@ -1644,7 +1647,7 @@ fn quiet_long(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!("DatePeriod::__construct(): Passing null to parameter #{n} (${pname}) of type int is deprecated"),
+                format!("DatePeriod::__construct(): Passing null to parameter #{n} (${pname}) of type int is deprecated").as_bytes(),
             )?;
             Some(0)
         }
@@ -1921,7 +1924,7 @@ fn period_args(host: &mut dyn Host, a: &[Value]) -> Result<Option<PeriodArgs>, T
             Value::Null => {
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    "DatePeriod::__construct(): Passing null to parameter #1 ($start) of type string is deprecated",
+                    b"DatePeriod::__construct(): Passing null to parameter #1 ($start) of type string is deprecated",
                 )?;
                 Some(Vec::new())
             }
@@ -1956,7 +1959,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
                 PeriodArgs::Iso { isostr, options } => {
                     host.emit_diagnostic(
                         crate::E_DEPRECATED,
-                        "Calling DatePeriod::__construct(string $isostr, int $options = 0) is deprecated, use DatePeriod::createFromISO8601String() instead",
+                        b"Calling DatePeriod::__construct(string $isostr, int $options = 0) is deprecated, use DatePeriod::createFromISO8601String() instead",
                     )?;
                     let r = period_init_iso8601(&mut st, b"DateTime", &isostr, fname);
                     match r {

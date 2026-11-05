@@ -258,7 +258,7 @@ fn parse_options(host: &mut dyn Host, opts: &PhpArray) -> Result<BodyOptions, Th
             Value::Int(i) => *i,
             Value::Str(s) => {
                 if let Some(err) = quantity_error(s.as_bytes()) {
-                    host.emit_diagnostic(crate::E_WARNING, &err)?;
+                    host.emit_diagnostic(crate::E_WARNING, err.as_bytes())?;
                 }
                 crate::ini_parse_quantity(s.as_bytes())
             }
@@ -393,7 +393,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
                         }
                     }
                     Diag::Notice(m) => crate::notice(host, "request_parse_body", &m)?,
-                    Diag::Sapi(m) => host.emit_diagnostic(crate::E_WARNING, &m)?,
+                    Diag::Sapi(m) => host.emit_diagnostic(crate::E_WARNING, m.as_bytes())?,
                 }
             }
             if let Some(t) = thrown {

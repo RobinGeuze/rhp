@@ -2340,14 +2340,14 @@ pub const PRELUDE_PHP: &str = include_str!("string/prelude.php");
 /// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
 fn fn_stdext_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let msg = conv::to_string_bytes(&deref(&args[0]));
-    host.emit_diagnostic(crate::E_DEPRECATED, &String::from_utf8_lossy(&msg))?;
+    host.emit_diagnostic(crate::E_DEPRECATED, &msg)?;
     Ok(Value::Null)
 }
 
 /// `__stdext_warning($message)`: E_WARNING from a prelude function.
 fn fn_stdext_warning(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let msg = conv::to_string_bytes(&deref(&args[0]));
-    host.emit_diagnostic(crate::E_WARNING, &String::from_utf8_lossy(&msg))?;
+    host.emit_diagnostic(crate::E_WARNING, &msg)?;
     Ok(Value::Null)
 }
 

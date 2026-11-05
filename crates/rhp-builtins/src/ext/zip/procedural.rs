@@ -60,7 +60,7 @@ fn deprecated(host: &mut dyn Host, fname: &str, msg: Option<&str>) -> Result<(),
         Some(m) => format!("Function {fname}() is deprecated since 8.0, {m}"),
         None => format!("Function {fname}() is deprecated since 8.0"),
     };
-    host.emit_diagnostic(E_DEPRECATED, &m)
+    host.emit_diagnostic(E_DEPRECATED, m.as_bytes())
 }
 
 /// zpp `r`.

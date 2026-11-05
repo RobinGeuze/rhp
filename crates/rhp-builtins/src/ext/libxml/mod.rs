@@ -289,7 +289,10 @@ fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &str, line: c
             String::from_utf8_lossy(unsafe { sys::cstr(file) }).into_owned()
         };
         ffi::call_host(|h| {
-            h.emit_diagnostic(level, &format!("{fname}(): {msg} in {src}, line: {line}"))
+            h.emit_diagnostic(
+                level,
+                format!("{fname}(): {msg} in {src}, line: {line}").as_bytes(),
+            )
         });
     } else {
         ffi::call_host(|h| crate::warn(h, fname, msg));

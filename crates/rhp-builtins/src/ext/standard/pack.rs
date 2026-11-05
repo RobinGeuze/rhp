@@ -128,9 +128,9 @@ fn fn_unpack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if pos + size > data.len() {
                     host.emit_diagnostic(
                         crate::E_WARNING,
-                        &format!(
+                        format!(
                             "unpack(): Type {code}: not enough input values, need {size} values but only {rest} were provided"
-                        ),
+                        ).as_bytes(),
                     )?;
                     return Ok(Value::Bool(false));
                 }
@@ -303,7 +303,7 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if n > s.len() {
                     host.emit_diagnostic(
                         crate::E_WARNING,
-                        &format!("pack(): Type {code}: not enough characters in string"),
+                        format!("pack(): Type {code}: not enough characters in string").as_bytes(),
                     )?;
                     n = s.len();
                 }
@@ -315,10 +315,10 @@ fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         b'A'..=b'F' => c - b'A' + 10,
                         b'a'..=b'f' => c - b'a' + 10,
                         _ => {
-                            host.emit_diagnostic(
-                                crate::E_WARNING,
-                                &format!("pack(): Type {code}: illegal hex digit {}", c as char),
-                            )?;
+                            let mut m =
+                                format!("pack(): Type {code}: illegal hex digit ").into_bytes();
+                            m.push(c);
+                            host.emit_diagnostic(crate::E_WARNING, &m)?;
                             0
                         }
                     };

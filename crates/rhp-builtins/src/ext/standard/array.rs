@@ -545,7 +545,10 @@ fn count_recursive(
     seen: &mut Vec<usize>,
 ) -> Result<i64, Thrown> {
     if seen.contains(&a.data_ptr()) {
-        host.emit_diagnostic(E_WARNING, &format!("{fname}(): Recursion detected"))?;
+        host.emit_diagnostic(
+            E_WARNING,
+            format!("{fname}(): Recursion detected").as_bytes(),
+        )?;
         return Ok(0);
     }
     seen.push(a.data_ptr());
@@ -779,7 +782,7 @@ fn array_binop(
                 }
                 Some(_) => {
                     if conv::numeric_string(s.as_bytes()).is_none() {
-                        host.emit_diagnostic(E_WARNING, "A non-numeric value encountered")?;
+                        host.emit_diagnostic(E_WARNING, b"A non-numeric value encountered")?;
                     }
                     Some(v.clone())
                 }
@@ -1026,7 +1029,7 @@ fn range_input(
     };
     if s.is_empty() {
         let msg = format!("Argument #{n} (${name}) must not be empty, casted to 0");
-        host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+        host.emit_diagnostic(E_WARNING, format!("range(): {msg}").as_bytes())?;
         return Ok((RangeIn::Long, 0, 0.0));
     }
     match conv::numeric_string(s) {
@@ -1038,7 +1041,7 @@ fn range_input(
                 let msg = format!(
                     "Argument #{n} (${name}) must be a single byte, subsequent bytes are ignored"
                 );
-                host.emit_diagnostic(E_WARNING, &format!("range(): {msg}"))?;
+                host.emit_diagnostic(E_WARNING, format!("range(): {msg}").as_bytes())?;
             }
             Ok((RangeIn::Char, 0, 0.0))
         }
@@ -1150,7 +1153,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if end_type != RangeIn::Digit {
                     host.emit_diagnostic(
                         E_WARNING,
-                        "range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
+                        b"range(): Argument #1 ($start) must be a single byte string if argument #2 ($end) is a single byte string, argument #2 ($end) converted to 0",
                     )?;
                 }
                 end_type = RangeIn::Long;
@@ -1158,7 +1161,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 if start_type != RangeIn::Digit {
                     host.emit_diagnostic(
                         E_WARNING,
-                        "range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
+                        b"range(): Argument #2 ($end) must be a single byte string if argument #1 ($start) is a single byte string, argument #1 ($start) converted to 0",
                     )?;
                 }
                 start_type = RangeIn::Long;
@@ -1167,7 +1170,7 @@ fn fn_range(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if start_type == RangeIn::Char || end_type == RangeIn::Char {
                 host.emit_diagnostic(
                     E_WARNING,
-                    "range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
+                    b"range(): Argument #3 ($step) must be of type int when generating an array of characters, inputs converted to 0",
                 )?;
             }
             start_type = RangeIn::Long;

@@ -577,7 +577,7 @@ pub(super) fn arg(args: &[Value], i: usize) -> Value {
 pub(super) fn try_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
     match deref(v) {
         Value::Array(_) => {
-            host.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            host.emit_diagnostic(crate::E_WARNING, b"Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
         Value::Object(_) => {
@@ -626,10 +626,10 @@ pub(super) fn obj_or_str(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{fname}(): Passing null to parameter #{} (${pname}) of type {ty} is deprecated",
                     i + 1
-                ),
+                ).as_bytes(),
             )?;
             Ok(ObjOrStr::Str(Vec::new()))
         }

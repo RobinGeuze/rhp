@@ -15,7 +15,7 @@ use crate::streams::{res_id, MemMode, StreamState};
 use crate::{classes, deref, Vm};
 
 impl Host for Vm {
-    fn raise_diagnostic(&mut self, level: i64, msg: &str) {
+    fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
         // A builtin's `php_error_docref` ("func(): …"): HTML-escaped when
         // html_errors is on (engine and sapi errors are not, nor are the
         // E_USER_* messages trigger_error passes through as given).
@@ -35,7 +35,7 @@ impl Host for Vm {
         self.pending_throw.take()
     }
 
-    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown> {
+    fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
         self.ob_diag(level, msg);
         match self.pending_throw.take() {
             Some(t) => Err(t),

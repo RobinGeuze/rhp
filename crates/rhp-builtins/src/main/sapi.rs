@@ -454,7 +454,7 @@ pub enum HeaderOp<'a> {
 /// A warning raised through `sapi_error` (`zend_error`: no `func(): `
 /// prefix, never HTML-escaped).
 fn sapi_error(host: &mut dyn Host, msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(crate::E_WARNING, msg)
+    host.emit_diagnostic(crate::E_WARNING, msg.as_bytes())
 }
 
 /// "(output started at FILE:LINE)" for the headers-already-sent warnings.

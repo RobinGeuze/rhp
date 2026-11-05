@@ -63,11 +63,15 @@ fn stat_failed(
         crate::warn(
             host,
             fname,
-            &format!(
-                "{}stat failed for {}",
-                if link { "L" } else { "" },
-                String::from_utf8_lossy(&p)
-            ),
+            &[
+                if link {
+                    b"Lstat failed for ".as_slice()
+                } else {
+                    b"stat failed for "
+                },
+                &p,
+            ]
+            .concat(),
         )?;
     }
     Ok(Value::Bool(false))
@@ -256,10 +260,11 @@ fn do_chown(
                     crate::warn(
                         host,
                         fname,
-                        &format!(
-                            "Unable to find {what} ID for {}",
-                            String::from_utf8_lossy(s.as_bytes())
-                        ),
+                        &[
+                            format!("Unable to find {what} ID for ").as_bytes(),
+                            s.as_bytes(),
+                        ]
+                        .concat(),
                     )?;
                     return Ok(Value::Bool(false));
                 }

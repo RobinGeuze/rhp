@@ -269,8 +269,9 @@ impl Vm {
     }
 
     /// `php_error_docref(NULL, level, msg)` named after the active function.
-    pub(crate) fn ob_diag(&mut self, level: i64, msg: &str) {
-        let m = format!("{}{}", self.docref_prefix(), msg);
+    pub(crate) fn ob_diag(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let mut m = self.docref_prefix().into_bytes();
+        m.extend_from_slice(msg.as_ref());
         if self.no_code_running() || self.output.starting {
             self.raise_error_at(level, &m, b"Unknown".to_vec(), 0);
         } else {

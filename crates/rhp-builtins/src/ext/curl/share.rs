@@ -106,10 +106,11 @@ fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
             } else {
                 host.emit_diagnostic(
                     crate::E_WARNING,
-                    &format!(
+                    format!(
                         "The float {} is not representable as an int, cast occurred",
                         shown(f)
-                    ),
+                    )
+                    .as_bytes(),
                 )?;
                 if f.is_finite() {
                     conv::to_int(v)
@@ -120,10 +121,11 @@ fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
             if l as f64 != f && fits(f) {
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    &format!(
+                    format!(
                         "Implicit conversion from float {} to int loses precision",
                         shown(f)
-                    ),
+                    )
+                    .as_bytes(),
                 )?;
             }
             l
@@ -137,7 +139,7 @@ fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
                 .iter()
                 .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
             {
-                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
+                host.emit_diagnostic(crate::E_WARNING, b"A non-numeric value encountered")?;
             }
             match num {
                 conv::Num::Int(n) => n,
@@ -155,10 +157,10 @@ fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
                     if l as f64 != f {
                         host.emit_diagnostic(
                             crate::E_DEPRECATED,
-                            &format!(
+                            format!(
                                 "Implicit conversion from float-string \"{}\" to int loses precision",
                                 String::from_utf8_lossy(b)
-                            ),
+                            ).as_bytes(),
                         )?;
                     }
                     l

@@ -114,10 +114,12 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     host,
                     "fopen",
                     &path,
-                    &format!(
-                        "Failed to open stream: `{}' is not a valid mode for fopen",
-                        String::from_utf8_lossy(&mode)
-                    ),
+                    &[
+                        b"Failed to open stream: `".as_slice(),
+                        &mode,
+                        b"' is not a valid mode for fopen",
+                    ]
+                    .concat(),
                 )?;
             } else {
                 crate::open_failed(host, "fopen", &path)?;

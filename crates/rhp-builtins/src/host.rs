@@ -121,11 +121,12 @@ pub trait Host {
     /// current line: php's `zend_error` — the user error handler
     /// (`set_error_handler`) first, else `error_get_last` + display per
     /// `error_reporting` / `@` / `display_errors` / `log_errors`. `msg` already
-    /// carries any `func(): ` prefix. An exception thrown by a user handler is
-    /// held by the host and surfaces when the running builtin returns (php's
-    /// `EG(exception)`); see [`Host::emit_diagnostic`] to receive it at the
-    /// call site instead.
-    fn raise_diagnostic(&mut self, level: i64, msg: &str);
+    /// carries any `func(): ` prefix. It is bytes, as php's messages are: a
+    /// file name or argument in it may be any bytes. An exception thrown by a
+    /// user handler is held by the host and surfaces when the running builtin
+    /// returns (php's `EG(exception)`); see [`Host::emit_diagnostic`] to
+    /// receive it at the call site instead.
+    fn raise_diagnostic(&mut self, level: i64, msg: &[u8]);
 
     /// Take the exception a user error handler threw during the last
     /// [`Host::raise_diagnostic`], if any.
@@ -690,7 +691,7 @@ pub trait Host {
     /// [`Host::raise_diagnostic`], returning the exception a user error
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
     /// stop right there with `?`.
-    fn emit_diagnostic(&mut self, level: i64, message: &str) -> Result<(), Thrown> {
+    fn emit_diagnostic(&mut self, level: i64, message: &[u8]) -> Result<(), Thrown> {
         self.raise_diagnostic(level, message);
         match self.take_pending_throw() {
             Some(t) => Err(t),
@@ -701,5 +702,5 @@ pub trait Host {
     /// own (an object or resource freed): prefixed with php's active
     /// function (the running builtin, else the innermost user function,
     /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
-    fn docref_diagnostic(&mut self, level: i64, msg: &str) -> Result<(), Thrown>;
+    fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown>;
 }

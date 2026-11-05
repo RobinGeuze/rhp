@@ -803,7 +803,7 @@ impl Vm {
                     old.decl_line
                 )
             };
-            return Err(self.fatal_compile_error(&msg));
+            return Err(self.fatal_compile_error(msg.as_bytes()));
         }
         let deps = proto
             .parent

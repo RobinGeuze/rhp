@@ -451,10 +451,11 @@ pub fn object_to_number(
     };
     host.emit_diagnostic(
         crate::E_WARNING,
-        &format!(
+        format!(
             "Object of class {} could not be converted to {ty}",
             String::from_utf8_lossy(&class)
-        ),
+        )
+        .as_bytes(),
     )?;
     Ok(Some(one))
 }

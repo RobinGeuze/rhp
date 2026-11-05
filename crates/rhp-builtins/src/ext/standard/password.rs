@@ -90,7 +90,7 @@ fn algo_find_zval(
                     "Implicit conversion from float {} to int loses precision",
                     String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
                 );
-                host.emit_diagnostic(E_DEPRECATED, &msg)?;
+                host.emit_diagnostic(E_DEPRECATED, msg.as_bytes())?;
             }
             f as i64
         }

@@ -94,7 +94,7 @@ fn api_allowed(host: &mut dyn Host) -> Result<bool, Thrown> {
     }
     host.emit_diagnostic(
         crate::E_WARNING,
-        "Zend OPcache API is restricted by \"restrict_api\" configuration directive",
+        b"Zend OPcache API is restricted by \"restrict_api\" configuration directive",
     )?;
     Ok(false)
 }
@@ -160,7 +160,7 @@ fn fn_opcache_compile_file(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     }
     host.emit_diagnostic(
         crate::E_NOTICE,
-        "Zend OPcache has not been properly started, can't compile file",
+        b"Zend OPcache has not been properly started, can't compile file",
     )?;
     Ok(Value::Bool(false))
 }
@@ -386,21 +386,21 @@ pub(crate) fn on_modify(host: &mut dyn Host, name: &[u8], v: &[u8]) -> Result<bo
             }
             host.emit_diagnostic(
                 crate::E_WARNING,
-                "Zend OPcache can't be temporarily enabled (it may be only disabled until the end of request)",
+                b"Zend OPcache can't be temporarily enabled (it may be only disabled until the end of request)",
             )?;
             Ok(false)
         }
         b"opcache.jit" if !jit_enabled() => {
             host.emit_diagnostic(
                 crate::E_WARNING,
-                "Cannot change opcache.jit setting at run-time (JIT is disabled)",
+                b"Cannot change opcache.jit setting at run-time (JIT is disabled)",
             )?;
             Ok(false)
         }
         b"opcache.jit" if !jit_mode_valid(v) => {
             host.emit_diagnostic(
                 crate::E_WARNING,
-                "Invalid \"opcache.jit\" setting. Should be \"disable\", \"on\", \"off\", \"tracing\", \"function\" or 4-digit number",
+                b"Invalid \"opcache.jit\" setting. Should be \"disable\", \"on\", \"off\", \"tracing\", \"function\" or 4-digit number",
             )?;
             Ok(false)
         }

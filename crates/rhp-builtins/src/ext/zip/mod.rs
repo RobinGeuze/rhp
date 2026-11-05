@@ -131,7 +131,7 @@ pub(crate) fn release(
         let msg = format!("Cannot destroy the zip context: {msg}");
         match fname {
             Some(f) => crate::warn(host, f, &msg)?,
-            None => host.docref_diagnostic(crate::E_WARNING, &msg)?,
+            None => host.docref_diagnostic(crate::E_WARNING, msg.as_bytes())?,
         }
     }
     drop(a);

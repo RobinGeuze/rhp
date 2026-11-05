@@ -113,7 +113,7 @@ thread_local! {
     /// Diagnostics raised inside the pure cursor-path walkers
     /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
     /// the VM right after the walk ([`Vm::flush_path_diags`]).
-    static PATH_DIAGS: RefCell<Vec<(i64, String)>> = const { RefCell::new(Vec::new()) };
+    static PATH_DIAGS: RefCell<Vec<(i64, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A new engine: nothing a walk of an earlier one left behind.
@@ -1113,10 +1113,8 @@ impl Vm {
                                 if trailing && !quiet {
                                     self.diag(
                                         builtins::E_WARNING,
-                                        &format!(
-                                            "Illegal string offset \"{}\"",
-                                            String::from_utf8_lossy(kb)
-                                        ),
+                                        &[b"Illegal string offset \"".as_slice(), kb, b"\""]
+                                            .concat(),
                                     )?;
                                 }
                                 n
@@ -1284,7 +1282,7 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
         Value::Bool(false) => {
             path_diag(
                 builtins::E_DEPRECATED,
-                "Automatic conversion of false to array is deprecated".into(),
+                "Automatic conversion of false to array is deprecated",
             );
             *slot = Value::Array(PhpArray::new());
             Ok(())
@@ -1312,8 +1310,8 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
     }
 }
 
-fn path_diag(level: i64, msg: String) {
-    PATH_DIAGS.with(|d| d.borrow_mut().push((level, msg)));
+fn path_diag(level: i64, msg: impl Into<Vec<u8>>) {
+    PATH_DIAGS.with(|d| d.borrow_mut().push((level, msg.into())));
 }
 
 /// The array key for a write / fetch-for-write with `k`: php's null-offset
@@ -1322,7 +1320,7 @@ fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
     match deref(k) {
         Value::Null => path_diag(
             builtins::E_DEPRECATED,
-            "Using null as an array offset is deprecated, use an empty string instead".into(),
+            "Using null as an array offset is deprecated, use an empty string instead",
         ),
         Value::Float(f) if f.is_finite() && f.fract() != 0.0 => path_diag(
             builtins::E_DEPRECATED,
@@ -1358,7 +1356,7 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
                     if trailing && !unset {
                         path_diag(
                             builtins::E_WARNING,
-                            format!("Illegal string offset \"{}\"", String::from_utf8_lossy(kb)),
+                            [b"Illegal string offset \"".as_slice(), kb, b"\""].concat(),
                         );
                     }
                     Ok(n)
@@ -1367,10 +1365,7 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
             }
         }
         v @ (Value::Float(_) | Value::Null | Value::Bool(_)) => {
-            path_diag(
-                rhp_builtins::E_WARNING,
-                "String offset cast occurred".into(),
-            );
+            path_diag(rhp_builtins::E_WARNING, "String offset cast occurred");
             Ok(conv::to_int(&v))
         }
         Value::Object(h) => Err(illegal(
@@ -1420,7 +1415,7 @@ fn assign_string_offset(
     let at = if offset < 0 { offset + len } else { offset } as usize;
     let bytes = match deref(value) {
         Value::Array(_) => {
-            path_diag(rhp_builtins::E_WARNING, "Array to string conversion".into());
+            path_diag(rhp_builtins::E_WARNING, "Array to string conversion");
             b"Array".to_vec()
         }
         Value::Object(_) | Value::Closure(_) => {
@@ -1440,7 +1435,7 @@ fn assign_string_offset(
     if bytes.len() != 1 {
         path_diag(
             builtins::E_WARNING,
-            "Only the first byte will be assigned to the string offset".into(),
+            "Only the first byte will be assigned to the string offset",
         );
     }
     if at >= s.len() {
@@ -1649,7 +1644,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 Value::Bool(false) if rest.is_empty() => {
                     path_diag(
                         builtins::E_DEPRECATED,
-                        "Automatic conversion of false to array is deprecated".into(),
+                        "Automatic conversion of false to array is deprecated",
                     );
                     return Ok(());
                 }

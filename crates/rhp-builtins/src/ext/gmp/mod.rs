@@ -183,7 +183,7 @@ fn float_precision_deprecation(host: &mut dyn Host, f: f64) -> Result<(), Thrown
     let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f)).into_owned();
     host.emit_diagnostic(
         crate::E_DEPRECATED,
-        &format!("Implicit conversion from float {shown} to int loses precision"),
+        format!("Implicit conversion from float {shown} to int loses precision").as_bytes(),
     )
 }
 
@@ -209,10 +209,11 @@ fn long_weak(
             if let Some(at) = at {
                 host.emit_diagnostic(
                     crate::E_DEPRECATED,
-                    &format!(
+                    format!(
                         "{}(): Passing null to parameter #{} (${}) of type {ty} is deprecated",
                         at.func, at.num, at.name
-                    ),
+                    )
+                    .as_bytes(),
                 )?;
             }
             Some(0)
@@ -375,10 +376,10 @@ fn str_arg(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{func}(): Passing null to parameter #{} (${name}) of type string is deprecated",
                     i + 1
-                ),
+                ).as_bytes(),
             )?;
             Ok(Vec::new())
         }
@@ -416,10 +417,11 @@ fn bool_arg(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "{func}(): Passing null to parameter #{} (${name}) of type bool is deprecated",
                     i + 1
-                ),
+                )
+                .as_bytes(),
             )?;
             Ok(false)
         }
@@ -1421,10 +1423,11 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
         if !h.borrow().properties.contains_key(&key) {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!(
+                format!(
                     "Creation of dynamic property GMP::${} is deprecated",
                     String::from_utf8_lossy(&name)
-                ),
+                )
+                .as_bytes(),
             )?;
         }
         h.borrow_mut().properties.insert(key, v.clone());

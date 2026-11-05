@@ -1420,7 +1420,14 @@ impl Vm {
                 }
                 Instr::FetchClassConst {
                     dst, class, name, ..
-                } => self.fetch_class_const(top, &proto, dst, class, name)?,
+                } => {
+                    let n = Value::Str(proto.names[name as usize].clone());
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
+                Instr::FetchClassConstDyn { dst, class, name } => {
+                    let n = self.reg_get(top, name);
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
                 Instr::FetchClassName {
                     dst,
                     class,
@@ -2523,10 +2530,26 @@ impl Vm {
         proto: &FunctionProto,
         dst: Reg,
         class: ClassRef,
-        name: NIdx,
+        name: Value,
     ) -> Result<(), Thrown> {
-        let name_b = proto.names[name as usize].as_bytes().to_vec();
         let cls = self.resolve_class_autoload(top, class)?;
+        let name_b = match name {
+            Value::Str(s) => s.as_bytes().to_vec(),
+            // zend_invalid_class_constant_type_error.
+            other => {
+                return Err(Thrown::type_error(format!(
+                    "Cannot use value of type {} as class constant name",
+                    match other {
+                        Value::Null => "null",
+                        Value::Bool(_) => "bool",
+                        Value::Int(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::Array(_) => "array",
+                        _ => "object",
+                    }
+                )))
+            }
+        };
         if name_b == b"class" {
             let v = Value::str(self.class(cls).name.as_bytes().to_vec());
             self.reg_set(top, dst, v);

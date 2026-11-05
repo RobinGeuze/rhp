@@ -645,6 +645,13 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
+    /// `C::{expr}`: `FetchClassConst` with a runtime name, which must be a
+    /// string.
+    FetchClassConstDyn {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
     /// SEND_FUNC_ARG's question for a call resolved at run time: whether
     /// parameter `idx` of method `name` on the object in `obj` is by
     /// reference (false for a non-object / unknown / magic method).

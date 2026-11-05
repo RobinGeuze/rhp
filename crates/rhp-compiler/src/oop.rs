@@ -444,6 +444,12 @@ impl ProtoBuilder<'_> {
                     crate::parse::cst::ClassLikeConstantSelector::Identifier(li) => {
                         self.intern_name(li.value)
                     }
+                    crate::parse::cst::ClassLikeConstantSelector::Expression(e) => {
+                        let name = self.compile_expr(e.expression)?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::FetchClassConstDyn { dst, class, name });
+                        return Ok(dst);
+                    }
                     _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),
                 };
                 let dst = self.alloc_temp();

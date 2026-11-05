@@ -20,6 +20,7 @@ use rhp_values::{
 
 use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
 
+use crate::calls::Args;
 use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
 
 /// A linked class: all tables flattened from the inheritance chain.
@@ -497,6 +498,23 @@ fn kind_word(k: ClassKind) -> &'static str {
 
 fn lc(bytes: &[u8]) -> Vec<u8> {
     bytes.to_ascii_lowercase()
+}
+
+/// `f` of `name` lowercased, without allocating when `name` is lowercase
+/// already or short (the run-time lookups by name).
+pub(crate) fn with_lc<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    if !name.iter().any(u8::is_ascii_uppercase) {
+        return f(name);
+    }
+    let mut buf = [0u8; 64];
+    match buf.get_mut(..name.len()) {
+        Some(b) => {
+            b.copy_from_slice(name);
+            b.make_ascii_lowercase();
+            f(b)
+        }
+        None => f(&name.to_ascii_lowercase()),
+    }
 }
 
 fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
@@ -1482,7 +1500,7 @@ impl Vm {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        self.class_ids.get(&lc(n)).copied().ok_or_else(|| {
+        with_lc(n, |k| self.class_ids.get(k).copied()).ok_or_else(|| {
             Thrown::error(
                 "Error",
                 format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
@@ -1603,10 +1621,8 @@ impl Vm {
 
     /// Look up a method (flattened table) by name on `class_id`.
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
-        self.classes[class_id as usize]
-            .methods
-            .get(&lc(name))
-            .cloned()
+        let methods = &self.classes[class_id as usize].methods;
+        with_lc(name, |k| methods.get(k).cloned())
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.
@@ -1624,19 +1640,17 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-            .collect();
+        let args = Args::Window { top, base, argc };
         self.push_method_frame(method, this, called_class, args, dst)
     }
 
-    /// Push a method frame with pre-collected args (for spread / magic dispatch).
+    /// Push a method frame.
     pub(crate) fn push_method_frame(
         &mut self,
         method: &ResolvedMethod,
         this: Option<ObjectHandle>,
         called_class: ClassId,
-        args: Vec<Value>,
+        args: Args<'_>,
         dst: Reg,
     ) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
@@ -1649,7 +1663,7 @@ impl Vm {
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
-        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
+        self.bind_frame(&mut frame, args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
         if callee.is_generator {
             let gen = self.make_generator(frame);

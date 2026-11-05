@@ -1000,8 +1000,9 @@ impl Vm {
         let f = &self.stack[top];
         if f.global_scope {
             if let Some(n) = f.proto.cv_var_names.get(cv as usize) {
-                let n = n.as_bytes().to_vec();
-                self.ref_globals.insert(n);
+                if !self.ref_globals.contains(n.as_bytes()) {
+                    self.ref_globals.insert(n.as_bytes().to_vec());
+                }
             }
         }
         let slot = &mut self.stack[top].regs[cv as usize];

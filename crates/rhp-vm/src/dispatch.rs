@@ -11,7 +11,7 @@ use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc,
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
 use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
-use crate::calls::{dyn_method_name, param_is_ref, undefined_function, CallTarget};
+use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::{
@@ -638,20 +638,21 @@ impl Vm {
                     argc,
                 } => {
                     let c = self.reg_get(top, callee);
-                    // A user closure binds by-reference parameters to the
-                    // variables passed (the window holds them as `Ref`s);
-                    // anything else gets plain values.
-                    let raw = matches!(&c, Value::Closure(cd) if cd.wrapped.is_none());
-                    let args: Vec<Value> = (0..argc)
-                        .map(|i| {
-                            if raw {
-                                self.stack[top].regs[(base + i) as usize].clone()
-                            } else {
-                                self.reg_get(top, base + i)
-                            }
-                        })
-                        .collect();
                     let strict = self.caller_strict();
+                    // A user closure binds by-reference parameters to the
+                    // variables passed (the window holds them as `Ref`s), as
+                    // call_callable_value_mode would run it; anything else
+                    // gets plain values.
+                    if let Value::Closure(cd) = &c {
+                        if cd.wrapped.is_none() {
+                            self.fcc_scope.set(None);
+                            let args = Args::Window { top, base, argc };
+                            let out = self.run_closure_sync(cd, args, Some(strict))?;
+                            self.reg_set(top, dst, out);
+                            continue;
+                        }
+                    }
+                    let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
                     let out = self.call_callable_value_mode(&c, args, Some(strict))?;
                     self.reg_set(top, dst, out);
                 }
@@ -1112,7 +1113,7 @@ impl Vm {
                         ));
                     };
                     let cls = h.borrow().class;
-                    self.invoke_method(top, h, cls, mname, dst, base, argc)?;
+                    self.invoke_method(top, h, cls, &mname, dst, base, argc)?;
                 }
                 Instr::StoreProp { obj, name, src } => {
                     let o = self.reg_get(top, obj);
@@ -1233,11 +1234,11 @@ impl Vm {
                     ..
                 } => {
                     let o = self.reg_get(top, obj);
-                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let mname = proto.names[name as usize].as_bytes();
                     if let Value::Closure(_) = o {
                         let args: Vec<Value> =
                             (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-                        let r = self.closure_method(&o, &mname, args)?;
+                        let r = self.closure_method(&o, mname, args)?;
                         self.reg_set(top, dst, r);
                         continue;
                     }
@@ -1246,7 +1247,7 @@ impl Vm {
                             "Error",
                             format!(
                                 "Call to a member function {}() on {}",
-                                String::from_utf8_lossy(&mname),
+                                String::from_utf8_lossy(mname),
                                 value_name_lc(&o)
                             ),
                         ));
@@ -1323,7 +1324,7 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let mname = proto.names[name as usize].as_bytes().to_vec();
+                    let mname = proto.names[name as usize].as_bytes();
                     self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
                 Instr::CallStaticDyn {
@@ -1334,7 +1335,7 @@ impl Vm {
                     argc,
                 } => {
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
-                    self.do_call_static(top, class, mname, dst, base, argc)?;
+                    self.do_call_static(top, class, &mname, dst, base, argc)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_get(top, val);
@@ -1434,7 +1435,7 @@ impl Vm {
                         let (argv, named) = self.split_call_args(&arr)?;
                         let argv =
                             self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                        self.push_method_frame(&m, Some(obj), cls, argv, Reg::MAX)?;
+                        self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
                     }
                 }
                 Instr::CallMethodV {

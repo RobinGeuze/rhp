@@ -1817,19 +1817,32 @@ impl Vm {
             ClassRef::Name(nidx) => {
                 self.resolve_class_by_name(self.stack[top].proto.names[nidx as usize].as_bytes())
             }
-            ClassRef::SelfClass => self.stack[top]
-                .defining_class
-                .ok_or_else(|| Thrown::error("Error", "Cannot use \"self\" outside class context")),
+            // zend_fetch_class's messages.
+            ClassRef::SelfClass => self.stack[top].defining_class.ok_or_else(|| {
+                Thrown::error(
+                    "Error",
+                    "Cannot access \"self\" when no class scope is active",
+                )
+            }),
             ClassRef::ParentClass => {
-                let d = self.stack[top]
-                    .defining_class
-                    .ok_or_else(|| Thrown::error("Error", "Cannot use \"parent\" outside class"))?;
-                self.classes[d as usize]
-                    .parent
-                    .ok_or_else(|| Thrown::error("Error", "Cannot use \"parent\" when no parent"))
+                let d = self.stack[top].defining_class.ok_or_else(|| {
+                    Thrown::error(
+                        "Error",
+                        "Cannot access \"parent\" when no class scope is active",
+                    )
+                })?;
+                self.classes[d as usize].parent.ok_or_else(|| {
+                    Thrown::error(
+                        "Error",
+                        "Cannot access \"parent\" when current class scope has no parent",
+                    )
+                })
             }
             ClassRef::StaticClass => self.stack[top].called_class.ok_or_else(|| {
-                Thrown::error("Error", "Cannot use \"static\" outside class context")
+                Thrown::error(
+                    "Error",
+                    "Cannot access \"static\" when no class scope is active",
+                )
             }),
             ClassRef::Dynamic(reg) => {
                 let v = self.reg_get(top, reg);

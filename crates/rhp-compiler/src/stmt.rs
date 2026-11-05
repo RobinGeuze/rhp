@@ -122,7 +122,10 @@ impl ProtoBuilder<'_> {
                         );
                         self.cx.fatal(stmt.span().start.offset, msg);
                     }
-                    let src = self.compile_expr(item.value)?;
+                    self.in_const_decl = true;
+                    let src = self.compile_expr(item.value);
+                    self.in_const_decl = false;
+                    let src = src?;
                     let name = self.intern_name(&join_ns(&self.cx.cur_ns(), item.name.value));
                     self.emit(Instr::DeclareConst { name, src });
                 }

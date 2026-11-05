@@ -92,6 +92,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// ...and the pending `JmpNull` guards of the open chain, jumping to
     /// where its outermost link's result is set to null.
     pub(crate) sc_jumps: Vec<(usize, Reg)>,
+    /// Compiling a `const` declaration's value (a constant expression).
+    pub(crate) in_const_decl: bool,
     /// CV 0 is `$this`, always set (instance methods and hooks).
     pub(crate) this_bound: bool,
     /// The body contains `yield`.
@@ -148,6 +150,7 @@ impl<'c> ProtoBuilder<'c> {
             hook: None,
             ret_type: None,
             this_bound: false,
+            in_const_decl: false,
             sc_inner: 0,
             sc_jumps: Vec::new(),
             func_arg_read: false,

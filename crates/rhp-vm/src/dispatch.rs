@@ -1421,6 +1421,14 @@ impl Vm {
                 Instr::FetchClassConst {
                     dst, class, name, ..
                 } => self.fetch_class_const(top, &proto, dst, class, name)?,
+                Instr::FetchClassName {
+                    dst,
+                    class,
+                    const_expr,
+                } => {
+                    let name = self.fetch_class_name(top, class, const_expr)?;
+                    self.reg_set(top, dst, Value::Str(name));
+                }
                 Instr::CallMethod {
                     dst,
                     obj,
@@ -2457,6 +2465,58 @@ impl Vm {
     }
 
     /// `FetchClassConst`: `Class::NAME` (and `Class::class`) into `dst`.
+    /// ZEND_FETCH_CLASS_NAME / ZEND_AST_CLASS_NAME.
+    fn fetch_class_name(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        const_expr: bool,
+    ) -> Result<PhpStr, Thrown> {
+        let scope = self.stack[top].defining_class;
+        let kind = match class {
+            ClassRef::Dynamic(reg) => {
+                let v = self.reg_get(top, reg);
+                return match v {
+                    Value::Object(h) => {
+                        let cls = h.borrow().class;
+                        Ok(self.class(cls).name.clone())
+                    }
+                    other => Err(Thrown::type_error(format!(
+                        "Cannot use \"::class\" on {}",
+                        rhp_builtins::zval_value_name(self, &other)
+                    ))),
+                };
+            }
+            ClassRef::Name(n) => {
+                return Ok(self.stack[top].proto.names[n as usize].clone());
+            }
+            ClassRef::SelfClass => "self",
+            ClassRef::ParentClass => "parent",
+            ClassRef::StaticClass => "static",
+        };
+        let Some(scope) = scope else {
+            return Err(Thrown::error(
+                "Error",
+                if const_expr {
+                    "Cannot use \"self\" when no class scope is active".to_string()
+                } else {
+                    format!("Cannot use \"{kind}\" in the global scope")
+                },
+            ));
+        };
+        let cls = match class {
+            ClassRef::SelfClass => scope,
+            ClassRef::ParentClass => self.class(scope).parent.ok_or_else(|| {
+                Thrown::error(
+                    "Error",
+                    "Cannot use \"parent\" when current class scope has no parent",
+                )
+            })?,
+            _ => self.stack[top].called_class.unwrap_or(scope),
+        };
+        Ok(self.class(cls).name.clone())
+    }
+
     fn fetch_class_const(
         &mut self,
         top: usize,

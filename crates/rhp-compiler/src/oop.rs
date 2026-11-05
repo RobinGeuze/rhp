@@ -6,9 +6,25 @@ use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
 use crate::builder::ProtoBuilder;
+use crate::builder::ScopeKind;
 use crate::calls::{has_named, has_spread, ArgRefTarget};
 use crate::decl::compile_anon_class;
-use crate::util::strip_dollar;
+use crate::fold::fold_const;
+use crate::util::{compile_error, strip_dollar};
+
+/// zend_zval_value_name of a compile-time constant.
+pub(crate) fn value_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        _ => "object",
+    }
+}
 
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
@@ -25,11 +41,91 @@ impl ProtoBuilder<'_> {
             Expression::Identifier(id) => Ok(ClassRef::Name(
                 self.intern_name(&self.cx.resolve_class_name(id)),
             )),
-            Expression::Self_(_) => Ok(ClassRef::SelfClass),
-            Expression::Static(_) => Ok(ClassRef::StaticClass),
-            Expression::Parent(_) => Ok(ClassRef::ParentClass),
-            other => Ok(ClassRef::Dynamic(self.compile_expr(other)?)),
+            Expression::Self_(_) => {
+                self.ensure_valid_class_fetch("self")?;
+                Ok(ClassRef::SelfClass)
+            }
+            Expression::Static(_) => {
+                self.ensure_valid_class_fetch("static")?;
+                Ok(ClassRef::StaticClass)
+            }
+            Expression::Parent(_) => {
+                self.ensure_valid_class_fetch("parent")?;
+                Ok(ClassRef::ParentClass)
+            }
+            other => {
+                // zend_compile_class_ref: a constant that is no string.
+                if fold_const(self.cx, other).is_ok_and(|v| !matches!(v, Value::Str(_))) {
+                    return Err(compile_error("Illegal class name", self.cur_line));
+                }
+                Ok(ClassRef::Dynamic(self.compile_expr(other)?))
+            }
         }
+    }
+
+    /// `X::class` (zend_compile_class_name).
+    fn compile_class_name(&mut self, class: &Expression) -> Result<Reg, Thrown> {
+        let mut e = class;
+        while let Expression::Parenthesized(p) = e {
+            e = p.expression;
+        }
+        let class = match e {
+            Expression::Identifier(id) => {
+                let k = self.intern_const(Value::str(self.cx.resolve_class_name(id)));
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadConst { dst, k });
+                return Ok(dst);
+            }
+            Expression::Self_(_) | Expression::Static(_) | Expression::Parent(_) => {
+                self.class_ref(e)?
+            }
+            Expression::Literal(_) => {
+                return Err(compile_error("Illegal class name", self.cur_line))
+            }
+            other => {
+                if let Ok(v) = fold_const(self.cx, other) {
+                    return Err(compile_error(
+                        format!("Cannot use \"::class\" on {}", value_name(&v)),
+                        self.cur_line,
+                    ));
+                }
+                ClassRef::Dynamic(self.compile_expr(other)?)
+            }
+        };
+        let dst = self.alloc_temp();
+        let const_expr = self.scope_kind == ScopeKind::Init || self.in_const_decl;
+        self.emit(Instr::FetchClassName {
+            dst,
+            class,
+            const_expr,
+        });
+        Ok(dst)
+    }
+
+    /// zend_is_scope_known: whether `self`/`parent` are known at compile time.
+    fn scope_known(&self) -> bool {
+        if self.scope_kind == ScopeKind::Closure {
+            return false;
+        }
+        match self.cx.class_scope.borrow().as_ref() {
+            Some(cs) => !cs.is_trait,
+            None => matches!(self.scope_kind, ScopeKind::Function | ScopeKind::Method),
+        }
+    }
+
+    /// zend_ensure_valid_class_fetch_type.
+    pub(crate) fn ensure_valid_class_fetch(&self, kind: &str) -> Result<(), Thrown> {
+        if !self.scope_known() {
+            return Ok(());
+        }
+        let msg = match self.cx.class_scope.borrow().as_ref() {
+            None => format!("Cannot use \"{kind}\" when no class scope is active"),
+            Some(cs) if kind == "parent" && cs.parent.is_none() => {
+                "Cannot use \"parent\" when current class scope has no parent".to_string()
+            }
+            Some(_) => return Ok(()),
+        };
+        Err(compile_error(msg, self.cur_line))
     }
 
     fn selector_name(
@@ -334,12 +430,7 @@ impl ProtoBuilder<'_> {
                 if let crate::parse::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
                 {
                     if li.value.eq_ignore_ascii_case(b"class") {
-                        if let Expression::Identifier(id) = cca.class {
-                            let k = self.intern_const(Value::str(self.cx.resolve_class_name(id)));
-                            let dst = self.alloc_temp();
-                            self.emit(Instr::LoadConst { dst, k });
-                            return Ok(dst);
-                        }
+                        return self.compile_class_name(cca.class);
                     }
                 }
                 let class = self.class_ref(cca.class)?;

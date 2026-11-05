@@ -631,6 +631,14 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
+    /// `self::class` / `parent::class` / `static::class` / `$obj::class`
+    /// (ZEND_FETCH_CLASS_NAME; with `const_expr`, zend_ast_evaluate's
+    /// ZEND_AST_CLASS_NAME).
+    FetchClassName {
+        dst: Reg,
+        class: ClassRef,
+        const_expr: bool,
+    },
     /// `C::K` / `C::class`.
     FetchClassConst {
         dst: Reg,

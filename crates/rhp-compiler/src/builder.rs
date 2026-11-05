@@ -89,6 +89,10 @@ pub(crate) struct LoopCtx {
     pub(crate) finally_depth: usize,
     pub(crate) break_jumps: Vec<usize>,
     pub(crate) continue_jumps: Vec<usize>,
+    /// A temp the loop frees when it ends (FE_FREE of a by-reference
+    /// foreach over `$a['k']` / `$o->p`): a `break N` / `continue N`
+    /// leaving it frees it too.
+    pub(crate) free: Option<Reg>,
 }
 
 impl<'c> ProtoBuilder<'c> {

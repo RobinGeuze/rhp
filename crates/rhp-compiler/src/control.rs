@@ -323,6 +323,7 @@ impl ProtoBuilder<'_> {
 
             self.loops.push(LoopCtx {
                 finally_depth: self.finally_rets.len(),
+                free: lval_source.then_some(arr_cv),
                 ..LoopCtx::default()
             });
 
@@ -608,6 +609,14 @@ impl ProtoBuilder<'_> {
             ));
         }
         let idx = self.loops.len() - n;
+        // The inner loops this leaves free their temps (FE_FREE).
+        let frees: Vec<Reg> = self.loops[idx + 1..]
+            .iter()
+            .filter_map(|l| l.free)
+            .collect();
+        for r in frees.into_iter().rev() {
+            self.emit(Instr::ClearTemps { from: r, to: r + 1 });
+        }
         let pos = self.code.len();
         if self.finally_rets.len() > self.loops[idx].finally_depth {
             self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close

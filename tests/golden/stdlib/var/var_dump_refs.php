@@ -77,3 +77,13 @@ $po = new stdClass;
 $po->r = &$shared;
 $po->v = 2;
 var_dump((array) $po);
+
+// break 2 out of nested by-reference foreach loops frees both temporaries
+$nested = ['a' => [1, 2]];
+foreach ($nested['a'] as &$e1) {
+    foreach ($nested['a'] as &$e2) {
+        break 2;
+    }
+}
+unset($e1, $e2);
+var_dump($nested);

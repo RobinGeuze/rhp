@@ -265,12 +265,13 @@ rhp is not a clean-room implementation: it translates code from php-src (the
 php version in tests/phpt/php-src.ref) into Rust, from main/, ext/, sapi/ and
 Zend/ and from run-tests.php. For example: the extension glue of
 ext/pcre/php_pcre.c, main/output.c (rhp-vm), sapi/cgi/cgi_main.c and
-main/getopt.c (rhp-sapi), Zend/zend_language_scanner.l (the tokenizer) and
-run-tests.php's $ini_overwrites (rhp-difftest). Each ported file names its
-source. php-src's Zend/ directory is mostly under the Zend Engine License
-2.00; the rest of php-src, and some Zend/ files such as zend_virtual_cwd.c and
-zend_smart_str.c, are under the PHP License 3.01, as each file's header
-states. Both licences follow, and the translated code stays under them.
+main/getopt.c (rhp-sapi), Zend/zend_language_scanner.l (the tokenizer),
+zend_compare() of Zend/zend_operators.c (rhp-semantics) and run-tests.php's
+$ini_overwrites (rhp-difftest). Each ported file names its source. php-src's
+Zend/ directory is mostly under the Zend Engine License 2.00; the rest of
+php-src, and some Zend/ files such as zend_virtual_cwd.c and zend_smart_str.c,
+are under the PHP License 3.01, as each file's header states. Both licences
+follow, and the translated code stays under them.
 
 Some php-src code that rhp ports carries its own licence, which applies to
 the port too: php_md5_crypt_r (section 8), main/php_glob.c (section 13),
@@ -650,8 +651,12 @@ for a particular purpose.
 12. libxml2
 ------------------------------------------------------------------------------
 
-The libxml2 php links: the macOS SDK's /usr/lib/libxml2.2.dylib, linked
+The libxml2 rhp links: the macOS SDK's /usr/lib/libxml2.2.dylib, linked
 dynamically; libxml2-dev's libxml2.a on Debian/Ubuntu, linked statically.
+rhp's own XML parser, tree, serializer, XPath and XML Schema code
+(crates/rhp-builtins/src/ext/libxml/) is modelled on libxml2 2.9 and
+reproduces its messages and serializer output; as far as it derives from
+libxml2, the terms below apply to it too.
 
 Except where otherwise noted in the source code (e.g. the files dict.c and
 list.c, which are covered by a similar licence but with different Copyright
@@ -956,7 +961,10 @@ licence below with its own copyright lines: parse_tz.c "Copyright (c)
 ------------------------------------------------------------------------------
 
 crates/rhp-builtins/src/ext/intl/icu_tables.rs holds tables derived from the
-Unicode data of ICU 79.1 (Unicode 18.0), under the Unicode License V3:
+Unicode data of ICU 79.1 (Unicode 18.0), and
+crates/rhp-builtins/src/ext/mbstring/mb_tables.rs case-mapping and property
+tables derived from the Unicode Character Database as php-src's mbstring
+carries it (ext/mbstring/unicode_data.h), both under the Unicode License V3:
 
   UNICODE LICENSE V3
 

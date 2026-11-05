@@ -1,7 +1,7 @@
 //! S/MIME: openssl_pkcs7_* and openssl_cms_* (php-src openssl.c and
 //! openssl_backend_v3.c).
 
-use std::ffi::{c_int, c_long, c_uint, c_void};
+use std::ffi::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 
 use rhp_values::{ArrayKey, PhpArray, Value};
@@ -48,7 +48,7 @@ pub(super) fn register(m: &mut crate::Registry) {
 }
 
 extern "C" {
-    fn PKCS7_new_ex(libctx: *mut sys::OSSL_LIB_CTX, propq: *const i8) -> *mut sys::PKCS7;
+    fn PKCS7_new_ex(libctx: *mut sys::OSSL_LIB_CTX, propq: *const c_char) -> *mut sys::PKCS7;
     fn PEM_read_bio_PKCS7(
         bp: *mut sys::BIO,
         x: *mut *mut sys::PKCS7,
@@ -59,7 +59,7 @@ extern "C" {
     fn PEM_write_bio_X509_CRL(bp: *mut sys::BIO, x: *const sys::X509_CRL) -> c_int;
     fn CMS_ContentInfo_new_ex(
         libctx: *mut sys::OSSL_LIB_CTX,
-        propq: *const i8,
+        propq: *const c_char,
     ) -> *mut sys::CMS_ContentInfo;
     fn PEM_read_bio_CMS(
         bp: *mut sys::BIO,

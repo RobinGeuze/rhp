@@ -101,6 +101,7 @@ impl Vm {
             internal_classes: 0,
             autoloaders: Vec::new(),
             in_autoload: Default::default(),
+            inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
             wrappers,

@@ -18,6 +18,7 @@ mod errors;
 mod generators;
 mod host;
 mod include;
+mod inherit;
 mod lifecycle;
 mod lvalue;
 mod memory;
@@ -162,6 +163,8 @@ pub struct Vm {
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
     in_autoload: std::collections::HashSet<Vec<u8>>,
+    /// Inheritance-check state while classes link (see `inherit`).
+    inherit: inherit::LinkState,
     /// Named-argument binding for the frame about to be pushed: the skipped
     /// parameter mask and the extra named arguments collected by a variadic
     /// parameter. Set by a call instruction right before the push.

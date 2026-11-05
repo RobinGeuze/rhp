@@ -452,9 +452,10 @@ impl Zpp {
 }
 
 /// Parameters whose zpp is looser than their stub type: fputcsv's `$eol` is
-/// `Z_PARAM_STR_OR_NULL`. (Typed parameters php parses as any value, such
+/// `Z_PARAM_STR_OR_NULL` and pcntl_signal's `$restart_syscalls`
+/// `Z_PARAM_BOOL_OR_NULL`. (Typed parameters php parses as any value, such
 /// as hash_equals' and ini_set's, carry [`ZV`].)
-const ZPP_OWN: &[(&str, &str)] = &[("fputcsv", "eol")];
+const ZPP_OWN: &[(&str, &str)] = &[("fputcsv", "eol"), ("pcntl_signal", "restart_syscalls")];
 
 /// Parameters whose zpp differs from what their stub type maps to:
 /// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`

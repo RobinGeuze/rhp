@@ -591,6 +591,12 @@ The module is deliberately "READ-ONLY, native format only"
   the resources and streams and parses the scalars after all three
   (`fwrite($fp, null)` under `strict_types` is php's TypeError). Goldens
   `lang/zpp_resource_params` and its strict twin.
+- A typed parameter whose C parse takes null though its stub does not
+  (`*_OR_NULL`, `!`) is listed in `signatures::ZPP_OWN` and left to the
+  body: fputcsv's `$eol`, pcntl_signal's `$restart_syscalls`. A strict
+  `pcntl_signal(…, 1)` is accepted where php throws. **Follow-up:** have
+  `gen signatures` record that null as `NUL` so the VM parses these with
+  `?type`.
 - A zpp error carries the builtin's frame, with the arguments as php's
   frame has them then (`lang/zpp_error_traces`). A scalar zpp would turn
   into a string in place reaches the builtin unconverted (a string per

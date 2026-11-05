@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering}
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::zend::zpp::zpp_long;
+use crate::zend::zpp::{zpp_long, zval_value_name};
 use crate::{Host, Thrown};
 
 #[derive(Default)]
@@ -392,9 +392,16 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let handler = deref(&args[1]);
-    // `$restart_syscalls` (default true, except false for SIGALRM).
+    // `$restart_syscalls`: Z_PARAM_BOOL_OR_NULL (default true, except
+    // false for SIGALRM).
     let restart = match args.get(2).map(deref) {
         None | Some(Value::Null) => signo != libc::SIGALRM as i64,
+        Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_) | Value::Closure(_))) => {
+            return Err(Thrown::type_error(format!(
+                "pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, {} given",
+                zval_value_name(host, &v)
+            )));
+        }
         Some(v) => conv::to_bool(&v),
     };
     if let Value::Int(h) = handler {

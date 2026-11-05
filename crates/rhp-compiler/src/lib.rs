@@ -43,6 +43,7 @@ pub mod parse;
 mod prelude;
 mod shrink;
 mod stmt;
+mod symbols;
 mod util;
 
 thread_local! {
@@ -131,7 +132,7 @@ fn compile_program(
         &mut flat,
     );
     let cx = FileCtx::new(builtins, file, source, program, &flat);
-    checks::check_uses(&cx, &program.statements);
+    symbols::check_file(&cx, program);
     let r = compile_file(&cx, &flat, with_prelude);
     // A recorded compile error came first in source order (compilation stops
     // at the first one in php), so it wins over a later refusal too, and over

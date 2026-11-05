@@ -104,11 +104,12 @@ fn included_file_refusal_names_included_file() {
 }
 
 #[test]
-fn property_default_refusal_names_expression_line() {
+fn method_refusal_names_expression_line() {
+    // (A property default with backticks is php's constant-expression error.)
     let c = Case::new("member");
     let main = c.file(
         "main.php",
-        "<?php\nclass C {\n    public $x = 1;\n\n    public $y = [1,\n        `ls`];\n}\n",
+        "<?php\nclass C {\n    public $x = 1;\n\n    public function y() { return [1,\n        `ls`]; }\n}\n",
     );
     let err = run(&main).1;
     assert_eq!(

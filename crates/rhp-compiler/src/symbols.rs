@@ -90,9 +90,8 @@ pub(crate) fn check_file(cx: &FileCtx, program: &Program) {
             _ => break,
         }
     }
-    if top_stmts(cx, program, &program.statements, &mut st).is_none() {
-        return;
-    }
+    // Stops at the first error.
+    let _ = top_stmts(cx, program, &program.statements, &mut st);
 }
 
 /// zend_compile_top_stmt over `stmts`; `None` once an error is recorded

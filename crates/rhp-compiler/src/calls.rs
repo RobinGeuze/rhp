@@ -883,7 +883,7 @@ impl ProtoBuilder<'_> {
                         base,
                         argc,
                     });
-                    return Ok(dst);
+                    Ok(dst)
                 }
                 Sel::Dyn(name) => {
                     if has_spread(args) || has_named(args) {
@@ -906,7 +906,7 @@ impl ProtoBuilder<'_> {
                         base,
                         argc,
                     });
-                    return Ok(dst);
+                    Ok(dst)
                 }
             }
         }

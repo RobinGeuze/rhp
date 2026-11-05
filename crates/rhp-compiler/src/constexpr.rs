@@ -30,7 +30,7 @@ pub(crate) fn check_const_expr(
     if cx.is_prelude {
         return true;
     }
-    let r = eval_pass(cx, e, scope_known).and_then(|()| compile_pass(e, allow_dynamic));
+    let r = eval_pass(cx, e, scope_known).and_then(|()| compile_pass(cx, e, allow_dynamic));
     match r {
         Ok(()) => true,
         Err((at, msg)) => {
@@ -121,7 +121,7 @@ fn invalid<T>(e: &Expression) -> Result<T, Fail> {
 }
 
 /// zend_compile_const_expr (the node, then its children).
-fn compile_pass(e: &Expression, allow_dynamic: bool) -> Result<(), Fail> {
+fn compile_pass(cx: &FileCtx, e: &Expression, allow_dynamic: bool) -> Result<(), Fail> {
     use UnaryPrefixOperator as Op;
     match e {
         Expression::Literal(_)
@@ -180,6 +180,12 @@ fn compile_pass(e: &Expression, allow_dynamic: bool) -> Result<(), Fail> {
                     Expression::Identifier(_) | Expression::Self_(_) | Expression::Parent(_) => {}
                     Expression::Static(_) => {
                         return fail(e, "\"static::\" is not allowed in compile-time constants")
+                    }
+                    // A constant class operand: zend_compile_const_expr_class_const.
+                    c if crate::fold::fold_const(cx, c).is_ok() => {
+                        if !matches!(crate::fold::fold_const(cx, c), Ok(rhp_values::Value::Str(_))) {
+                            return fail(e, "Class name must be a valid object or a string");
+                        }
                     }
                     _ => {
                         return fail(
@@ -253,7 +259,7 @@ fn compile_pass(e: &Expression, allow_dynamic: bool) -> Result<(), Fail> {
         _ => return invalid(e),
     }
     for c in children(e) {
-        compile_pass(c, allow_dynamic)?;
+        compile_pass(cx, c, allow_dynamic)?;
     }
     Ok(())
 }

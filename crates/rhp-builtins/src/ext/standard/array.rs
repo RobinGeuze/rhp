@@ -3199,9 +3199,24 @@ fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(Value::Null))
 }
 
-/// `array_change_key_case`'s `CASE_*` constants.
-pub fn case_constants() -> Vec<(&'static str, Value)> {
-    vec![("CASE_LOWER", Value::Int(0)), ("CASE_UPPER", Value::Int(1))]
+/// array.c's constants: `COUNT_*`, `SORT_*`, `CASE_*`, `ARRAY_FILTER_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("COUNT_NORMAL", Value::Int(0)),
+        ("COUNT_RECURSIVE", Value::Int(1)),
+        ("SORT_REGULAR", Value::Int(0)),
+        ("SORT_NUMERIC", Value::Int(SORT_NUMERIC)),
+        ("SORT_STRING", Value::Int(SORT_STRING)),
+        ("SORT_DESC", Value::Int(SORT_DESC)),
+        ("SORT_ASC", Value::Int(SORT_ASC)),
+        ("SORT_LOCALE_STRING", Value::Int(5)),
+        ("SORT_NATURAL", Value::Int(SORT_NATURAL)),
+        ("SORT_FLAG_CASE", Value::Int(SORT_FLAG_CASE)),
+        ("CASE_LOWER", Value::Int(0)),
+        ("CASE_UPPER", Value::Int(1)),
+        ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
+        ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
+    ]
 }
 
 pub fn register(m: &mut crate::Registry) {

@@ -148,6 +148,14 @@ fn fn_directory_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 
 pub const PRELUDE_PHP: &str = include_str!("dir/prelude.php");
 
+/// dir.c's `DIRECTORY_SEPARATOR` and `PATH_SEPARATOR`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("DIRECTORY_SEPARATOR", Value::str("/")),
+        ("PATH_SEPARATOR", Value::str(":")),
+    ]
+}
+
 fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "scandir", "directory")?;
     if path.is_empty() {

@@ -2337,6 +2337,27 @@ fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 /// `utf8_encode` / `utf8_decode`.
 pub const PRELUDE_PHP: &str = include_str!("string/prelude.php");
 
+/// string.c's constants: `STR_PAD_*`, `PATHINFO_*`, `LC_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("STR_PAD_RIGHT", Value::Int(1)),
+        ("STR_PAD_LEFT", Value::Int(0)),
+        ("STR_PAD_BOTH", Value::Int(2)),
+        ("PATHINFO_DIRNAME", Value::Int(1)),
+        ("PATHINFO_BASENAME", Value::Int(2)),
+        ("PATHINFO_EXTENSION", Value::Int(4)),
+        ("PATHINFO_FILENAME", Value::Int(8)),
+        ("PATHINFO_ALL", Value::Int(15)),
+        ("LC_CTYPE", Value::Int(0)),
+        ("LC_NUMERIC", Value::Int(1)),
+        ("LC_TIME", Value::Int(2)),
+        ("LC_COLLATE", Value::Int(3)),
+        ("LC_MONETARY", Value::Int(4)),
+        ("LC_MESSAGES", Value::Int(5)),
+        ("LC_ALL", Value::Int(6)),
+    ]
+}
+
 /// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
 fn fn_stdext_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let msg = conv::to_string_bytes(&deref(&args[0]));

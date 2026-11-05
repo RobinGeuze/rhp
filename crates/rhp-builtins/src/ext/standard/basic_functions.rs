@@ -100,6 +100,18 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// basic_functions.c's `INI_SCANNER_*` and `CONNECTION_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("INI_SCANNER_NORMAL", Value::Int(MODE_NORMAL)),
+        ("INI_SCANNER_RAW", Value::Int(MODE_RAW)),
+        ("INI_SCANNER_TYPED", Value::Int(MODE_TYPED)),
+        ("CONNECTION_ABORTED", Value::Int(1)),
+        ("CONNECTION_NORMAL", Value::Int(0)),
+        ("CONNECTION_TIMEOUT", Value::Int(2)),
+    ]
+}
+
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
 }

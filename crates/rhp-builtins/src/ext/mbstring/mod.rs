@@ -2408,6 +2408,25 @@ fn fn_mb_decode_numericentity(host: &mut dyn Host, args: &[Value]) -> Result<Val
 // ---------------------------------------------------------------------------
 
 /// Register the mbstring builtins.
+/// mbstring's constants: the `MB_CASE_*` modes and the Oniguruma version.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    let mode = |m: i32| Value::Int(m as i64);
+    vec![
+        (
+            "MB_ONIGURUMA_VERSION",
+            Value::str(crate::version::ONIGURUMA_VERSION),
+        ),
+        ("MB_CASE_UPPER", mode(case_mode::UPPER)),
+        ("MB_CASE_LOWER", mode(case_mode::LOWER)),
+        ("MB_CASE_TITLE", mode(case_mode::TITLE)),
+        ("MB_CASE_FOLD", mode(case_mode::FOLD)),
+        ("MB_CASE_UPPER_SIMPLE", mode(case_mode::UPPER_SIMPLE)),
+        ("MB_CASE_LOWER_SIMPLE", mode(case_mode::LOWER_SIMPLE)),
+        ("MB_CASE_TITLE_SIMPLE", mode(case_mode::TITLE_SIMPLE)),
+        ("MB_CASE_FOLD_SIMPLE", mode(case_mode::FOLD_SIMPLE)),
+    ]
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

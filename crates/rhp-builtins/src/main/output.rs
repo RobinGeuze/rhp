@@ -94,3 +94,23 @@ pub fn register(m: &mut crate::Registry) {
         ],
     );
 }
+
+/// main/php_output.h's `PHP_OUTPUT_HANDLER_*` flags.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("PHP_OUTPUT_HANDLER_START", Value::Int(0x01)),
+        ("PHP_OUTPUT_HANDLER_WRITE", Value::Int(0x00)),
+        ("PHP_OUTPUT_HANDLER_FLUSH", Value::Int(0x04)),
+        ("PHP_OUTPUT_HANDLER_CLEAN", Value::Int(0x02)),
+        ("PHP_OUTPUT_HANDLER_FINAL", Value::Int(0x08)),
+        ("PHP_OUTPUT_HANDLER_CONT", Value::Int(0x00)),
+        ("PHP_OUTPUT_HANDLER_END", Value::Int(0x08)),
+        ("PHP_OUTPUT_HANDLER_CLEANABLE", Value::Int(0x10)),
+        ("PHP_OUTPUT_HANDLER_FLUSHABLE", Value::Int(0x20)),
+        ("PHP_OUTPUT_HANDLER_REMOVABLE", Value::Int(0x40)),
+        ("PHP_OUTPUT_HANDLER_STDFLAGS", Value::Int(0x70)),
+        ("PHP_OUTPUT_HANDLER_STARTED", Value::Int(0x1000)),
+        ("PHP_OUTPUT_HANDLER_DISABLED", Value::Int(0x2000)),
+        ("PHP_OUTPUT_HANDLER_PROCESSED", Value::Int(0x4000)),
+    ]
+}

@@ -24,6 +24,30 @@ const DEFAULT_FLAGS: i64 = 3 | 8;
 /// The longest entity name, without `&` and `;`.
 const LONGEST_ENTITY_LENGTH: usize = 31;
 
+/// html.c's `ENT_*` flags and `get_html_translation_table`'s tables.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "ENT_QUOTES",
+            Value::Int(ENT_HTML_QUOTE_SINGLE | ENT_HTML_QUOTE_DOUBLE),
+        ),
+        ("ENT_COMPAT", Value::Int(ENT_HTML_QUOTE_DOUBLE)),
+        ("ENT_NOQUOTES", Value::Int(0)),
+        ("ENT_HTML401", Value::Int(ENT_HTML_DOC_HTML401)),
+        ("ENT_HTML5", Value::Int(ENT_HTML_DOC_HTML5)),
+        ("ENT_XML1", Value::Int(ENT_HTML_DOC_XML1)),
+        ("ENT_XHTML", Value::Int(ENT_HTML_DOC_XHTML)),
+        ("ENT_IGNORE", Value::Int(ENT_HTML_IGNORE_ERRORS)),
+        ("ENT_SUBSTITUTE", Value::Int(ENT_HTML_SUBSTITUTE_ERRORS)),
+        (
+            "ENT_DISALLOWED",
+            Value::Int(ENT_HTML_SUBSTITUTE_DISALLOWED_CHARS),
+        ),
+        ("HTML_SPECIALCHARS", Value::Int(0)),
+        ("HTML_ENTITIES", Value::Int(1)),
+    ]
+}
+
 /// `enum entity_charset`, in php's order (the comparisons below rely on it).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Cs {

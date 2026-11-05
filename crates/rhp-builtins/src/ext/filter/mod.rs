@@ -879,6 +879,61 @@ fn sanitize_special_chars(value: &Value) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Register the filter builtins into the shared table.
+/// filter's constants: the filter ids and flags.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("FILTER_DEFAULT", Value::Int(FILTER_DEFAULT)),
+        ("FILTER_UNSAFE_RAW", Value::Int(FILTER_DEFAULT)),
+        ("FILTER_VALIDATE_INT", Value::Int(FILTER_VALIDATE_INT)),
+        (
+            "FILTER_VALIDATE_BOOLEAN",
+            Value::Int(FILTER_VALIDATE_BOOLEAN),
+        ),
+        ("FILTER_VALIDATE_BOOL", Value::Int(FILTER_VALIDATE_BOOLEAN)),
+        ("FILTER_VALIDATE_FLOAT", Value::Int(FILTER_VALIDATE_FLOAT)),
+        ("FILTER_VALIDATE_REGEXP", Value::Int(272)),
+        ("FILTER_VALIDATE_DOMAIN", Value::Int(FILTER_VALIDATE_DOMAIN)),
+        ("FILTER_VALIDATE_URL", Value::Int(FILTER_VALIDATE_URL)),
+        ("FILTER_VALIDATE_EMAIL", Value::Int(FILTER_VALIDATE_EMAIL)),
+        ("FILTER_VALIDATE_IP", Value::Int(FILTER_VALIDATE_IP)),
+        ("FILTER_VALIDATE_MAC", Value::Int(FILTER_VALIDATE_MAC)),
+        ("FILTER_SANITIZE_ENCODED", Value::Int(514)),
+        (
+            "FILTER_SANITIZE_SPECIAL_CHARS",
+            Value::Int(FILTER_SANITIZE_SPECIAL_CHARS),
+        ),
+        ("FILTER_SANITIZE_EMAIL", Value::Int(FILTER_SANITIZE_EMAIL)),
+        ("FILTER_SANITIZE_URL", Value::Int(FILTER_SANITIZE_URL)),
+        (
+            "FILTER_SANITIZE_NUMBER_INT",
+            Value::Int(FILTER_SANITIZE_NUMBER_INT),
+        ),
+        ("FILTER_SANITIZE_NUMBER_FLOAT", Value::Int(520)),
+        ("FILTER_SANITIZE_FULL_SPECIAL_CHARS", Value::Int(522)),
+        ("FILTER_SANITIZE_ADD_SLASHES", Value::Int(523)),
+        ("FILTER_FLAG_NONE", Value::Int(0)),
+        ("FILTER_NULL_ON_FAILURE", Value::Int(FLAG_NULL_ON_FAILURE)),
+        ("FILTER_FLAG_ALLOW_OCTAL", Value::Int(FLAG_ALLOW_OCTAL)),
+        ("FILTER_FLAG_ALLOW_HEX", Value::Int(FLAG_ALLOW_HEX)),
+        (
+            "FILTER_FLAG_ALLOW_THOUSAND",
+            Value::Int(FLAG_ALLOW_THOUSAND),
+        ),
+        ("FILTER_FLAG_ALLOW_SCIENTIFIC", Value::Int(16384)),
+        ("FILTER_FLAG_IPV4", Value::Int(FLAG_IPV4)),
+        ("FILTER_FLAG_IPV6", Value::Int(FLAG_IPV6)),
+        ("FILTER_FLAG_NO_PRIV_RANGE", Value::Int(8388608)),
+        ("FILTER_FLAG_NO_RES_RANGE", Value::Int(4194304)),
+        ("FILTER_FLAG_PATH_REQUIRED", Value::Int(FLAG_PATH_REQUIRED)),
+        (
+            "FILTER_FLAG_QUERY_REQUIRED",
+            Value::Int(FLAG_QUERY_REQUIRED),
+        ),
+        ("FILTER_FLAG_HOSTNAME", Value::Int(FLAG_HOSTNAME)),
+        ("FILTER_FLAG_EMAIL_UNICODE", Value::Int(FLAG_EMAIL_UNICODE)),
+    ]
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(m, &[("filter_var", fn_filter_var)]);
 }

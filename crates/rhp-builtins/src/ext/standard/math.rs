@@ -747,3 +747,18 @@ pub(crate) fn fn_number_format(_: &mut dyn Host, args: &[Value]) -> Result<Value
     }
     Ok(Value::str(out))
 }
+
+/// math.c's constants: `M_*`, `NAN`, `INF`, `PHP_ROUND_HALF_*`.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("M_PI", Value::Float(std::f64::consts::PI)),
+        ("M_E", Value::Float(std::f64::consts::E)),
+        ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
+        ("NAN", Value::Float(f64::NAN)),
+        ("INF", Value::Float(f64::INFINITY)),
+        ("PHP_ROUND_HALF_UP", Value::Int(PHP_ROUND_HALF_UP)),
+        ("PHP_ROUND_HALF_DOWN", Value::Int(PHP_ROUND_HALF_DOWN)),
+        ("PHP_ROUND_HALF_EVEN", Value::Int(PHP_ROUND_HALF_EVEN)),
+        ("PHP_ROUND_HALF_ODD", Value::Int(PHP_ROUND_HALF_ODD)),
+    ]
+}

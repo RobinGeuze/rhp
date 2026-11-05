@@ -38,11 +38,28 @@ pub fn actual_length_exceeds(post_max_size: i64) -> String {
 }
 
 /// `UPLOAD_ERR_*`.
+const UPLOAD_ERR_OK: i64 = 0;
 const UPLOAD_ERR_INI_SIZE: i64 = 1;
 const UPLOAD_ERR_FORM_SIZE: i64 = 2;
 const UPLOAD_ERR_PARTIAL: i64 = 3;
 const UPLOAD_ERR_NO_FILE: i64 = 4;
+const UPLOAD_ERR_NO_TMP_DIR: i64 = 6;
 const UPLOAD_ERR_CANT_WRITE: i64 = 7;
+const UPLOAD_ERR_EXTENSION: i64 = 8;
+
+/// php_rfc1867_register_constants.
+pub(crate) fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("UPLOAD_ERR_OK", Value::Int(UPLOAD_ERR_OK)),
+        ("UPLOAD_ERR_INI_SIZE", Value::Int(UPLOAD_ERR_INI_SIZE)),
+        ("UPLOAD_ERR_FORM_SIZE", Value::Int(UPLOAD_ERR_FORM_SIZE)),
+        ("UPLOAD_ERR_PARTIAL", Value::Int(UPLOAD_ERR_PARTIAL)),
+        ("UPLOAD_ERR_NO_FILE", Value::Int(UPLOAD_ERR_NO_FILE)),
+        ("UPLOAD_ERR_NO_TMP_DIR", Value::Int(UPLOAD_ERR_NO_TMP_DIR)),
+        ("UPLOAD_ERR_CANT_WRITE", Value::Int(UPLOAD_ERR_CANT_WRITE)),
+        ("UPLOAD_ERR_EXTENSION", Value::Int(UPLOAD_ERR_EXTENSION)),
+    ]
+}
 
 /// The request body's input state (php's `SG(read_post_bytes)`,
 /// `SG(request_info).request_body` and `SG(rfc1867_uploaded_files)`).

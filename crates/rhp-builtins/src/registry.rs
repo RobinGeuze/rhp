@@ -8,12 +8,7 @@ use std::sync::OnceLock;
 
 use rhp_values::Value;
 
-use crate::{
-    ext, main, sapi, version, zend, Host, Thrown, WrapperReg, E_ALL, E_COMPILE_ERROR,
-    E_COMPILE_WARNING, E_CORE_ERROR, E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE,
-    E_RECOVERABLE_ERROR, E_STRICT, E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING,
-    E_WARNING,
-};
+use crate::{ext, main, sapi, zend, Host, Thrown, WrapperReg};
 
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
@@ -257,298 +252,45 @@ pub fn lookup_lc(name_lc: &str) -> Option<&'static Builtin> {
     Some(b)
 }
 
-/// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.
-fn php_os() -> (&'static str, &'static str) {
-    if cfg!(target_os = "macos") {
-        ("Darwin", "Darwin")
-    } else if cfg!(target_os = "linux") {
-        ("Linux", "Linux")
-    } else if cfg!(target_os = "windows") {
-        ("WINNT", "Windows")
-    } else if cfg!(target_os = "freebsd") {
-        ("FreeBSD", "BSD")
-    } else if cfg!(target_os = "openbsd") {
-        ("OpenBSD", "BSD")
-    } else if cfg!(target_os = "netbsd") {
-        ("NetBSD", "BSD")
-    } else if cfg!(target_os = "solaris") {
-        ("SunOS", "Solaris")
-    } else {
-        ("Unknown", "Unknown")
-    }
-}
-
-/// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …).
+/// Engine constants (`PHP_EOL`, `PHP_INT_MAX`, …), each from the module
+/// that owns it.
 pub fn constants() -> Vec<(&'static str, Value)> {
-    vec![
-        ("PHP_EOL", Value::str("\n")),
-        ("PHP_INT_MAX", Value::Int(i64::MAX)),
-        ("PHP_INT_MIN", Value::Int(i64::MIN)),
-        ("PHP_INT_SIZE", Value::Int(8)),
-        ("PHP_FLOAT_EPSILON", Value::Float(f64::EPSILON)),
-        ("PHP_FLOAT_MAX", Value::Float(f64::MAX)),
-        ("PHP_FLOAT_MIN", Value::Float(f64::MIN_POSITIVE)),
-        ("PHP_VERSION", Value::str(version::PHP_VERSION)),
-        ("PHP_MAJOR_VERSION", Value::Int(version::PHP_MAJOR_VERSION)),
-        ("PHP_MINOR_VERSION", Value::Int(version::PHP_MINOR_VERSION)),
-        (
-            "PHP_RELEASE_VERSION",
-            Value::Int(version::PHP_RELEASE_VERSION),
-        ),
-        ("PHP_EXTRA_VERSION", Value::str(version::PHP_EXTRA_VERSION)),
-        ("PHP_VERSION_ID", Value::Int(version::PHP_VERSION_ID)),
-        ("PHP_SAPI", Value::str("cli")),
-        // php reports its own executable; so do we (composer spawns PHP_BINARY).
-        (
-            "PHP_BINARY",
-            Value::str(
-                std::env::current_exe()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            ),
-        ),
-        // php bakes in its build host's OS (uname -s) and family.
-        ("PHP_OS", Value::str(php_os().0)),
-        ("PHP_OS_FAMILY", Value::str(php_os().1)),
-        ("ZEND_THREAD_SAFE", Value::Bool(false)),
-        ("ZEND_DEBUG_BUILD", Value::Bool(false)),
-        ("ZEND_VM_KIND", Value::str(version::ZEND_VM_KIND)),
-        ("TRUE", Value::Bool(true)),
-        ("FALSE", Value::Bool(false)),
-        ("NULL", Value::Null),
-        ("PHP_FD_SETSIZE", Value::Int(1024)),
-        ("UPLOAD_ERR_OK", Value::Int(0)),
-        ("UPLOAD_ERR_INI_SIZE", Value::Int(1)),
-        ("UPLOAD_ERR_FORM_SIZE", Value::Int(2)),
-        ("UPLOAD_ERR_PARTIAL", Value::Int(3)),
-        ("UPLOAD_ERR_NO_FILE", Value::Int(4)),
-        ("UPLOAD_ERR_NO_TMP_DIR", Value::Int(6)),
-        ("UPLOAD_ERR_CANT_WRITE", Value::Int(7)),
-        ("UPLOAD_ERR_EXTENSION", Value::Int(8)),
-        // php-cli only (the VM drops it under other SAPIs, like STDIN).
-        ("PHP_CLI_PROCESS_TITLE", Value::Bool(true)),
-        ("PHP_DEBUG", Value::Bool(false)),
-        ("PHP_ZTS", Value::Bool(false)),
-        // LIBXML_* live with the libxml module (ext/libxml).
-        ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
-        ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
-        ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
-        ("FILE_APPEND", Value::Int(8)),
-        ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
-        ("FILE_TEXT", Value::Int(0)),
-        ("FILE_BINARY", Value::Int(0)),
-        // SEEK_* come from ext::standard::file::constants().
-        ("LOCK_SH", Value::Int(1)),
-        ("LOCK_EX", Value::Int(2)),
-        ("LOCK_UN", Value::Int(3)),
-        ("LOCK_NB", Value::Int(4)),
+    let own: Vec<Vec<(&'static str, Value)>> = vec![
+        zend::constants::constants(),
+        main::constants(),
+        main::output::constants(),
+        main::rfc1867::constants(),
+        ext::standard::basic_functions::constants(),
+        ext::standard::array::constants(),
+        ext::standard::string::constants(),
+        ext::standard::math::constants(),
+        ext::standard::file::constants(),
+        ext::standard::file::fnmatch_constants(),
+        ext::standard::dir::constants(),
+        ext::standard::url::constants(),
+        ext::standard::http::constants(),
+        ext::standard::html::constants(),
+        ext::standard::info::constants(),
+        ext::standard::crypt::constants(),
+        ext::standard::streamsfuncs::constants(),
+        ext::pcre::php_pcre::preg_constants(),
+        ext::json::json_constants(),
+        ext::random::mt_rand_constants(),
+        ext::filter::constants(),
         #[cfg(feature = "mbstring-libmbfl")]
-        (
-            "MB_ONIGURUMA_VERSION",
-            Value::str(version::ONIGURUMA_VERSION),
-        ),
-        ("DIRECTORY_SEPARATOR", Value::str("/")),
-        ("PATH_SEPARATOR", Value::str(":")),
-        ("PHP_MAXPATHLEN", Value::Int(libc::PATH_MAX as i64)), // MAXPATHLEN: 1024 on macOS, 4096 on Linux
-        ("PHP_BINDIR", Value::str(version::BINDIR)),
-        ("PHP_PREFIX", Value::str(version::PREFIX)),
-        ("PHP_EXTENSION_DIR", Value::str(version::EXTENSION_DIR)),
-        ("DEFAULT_INCLUDE_PATH", Value::str(version::INCLUDE_PATH)),
-        ("PHP_BUILD_DATE", Value::str(version::BUILD_DATE)),
-        ("PHP_BUILD_PROVIDER", Value::str(version::BUILD_PROVIDER)),
-        ("PEAR_INSTALL_DIR", Value::str(version::PEAR_INSTALL_DIR)),
-        (
-            "PEAR_EXTENSION_DIR",
-            Value::str(version::PEAR_EXTENSION_DIR),
-        ),
-        ("PHP_SBINDIR", Value::str(version::SBINDIR)),
-        ("PHP_MANDIR", Value::str(version::MANDIR)),
-        ("PHP_LIBDIR", Value::str(version::LIBDIR)),
-        ("PHP_DATADIR", Value::str(version::DATADIR)),
-        ("PHP_SYSCONFDIR", Value::str(version::SYSCONFDIR)),
-        ("PHP_LOCALSTATEDIR", Value::str(version::LOCALSTATEDIR)),
-        (
-            "PHP_CONFIG_FILE_PATH",
-            Value::str(version::CONFIG_FILE_PATH),
-        ),
-        (
-            "PHP_CONFIG_FILE_SCAN_DIR",
-            Value::str(version::CONFIG_FILE_SCAN_DIR),
-        ),
-        ("PHP_SHLIB_SUFFIX", Value::str(version::SHLIB_SUFFIX)),
-        ("LC_CTYPE", Value::Int(0)),
-        ("LC_NUMERIC", Value::Int(1)),
-        ("LC_TIME", Value::Int(2)),
-        ("LC_COLLATE", Value::Int(3)),
-        ("LC_MONETARY", Value::Int(4)),
-        ("LC_MESSAGES", Value::Int(5)),
-        ("LC_ALL", Value::Int(6)),
-        ("INI_SCANNER_NORMAL", Value::Int(0)),
-        ("INI_SCANNER_RAW", Value::Int(1)),
-        ("INI_SCANNER_TYPED", Value::Int(2)),
-        ("PHP_QUERY_RFC1738", Value::Int(1)),
-        ("PHP_QUERY_RFC3986", Value::Int(2)),
-        ("PHP_URL_SCHEME", Value::Int(0)),
-        ("PHP_URL_HOST", Value::Int(1)),
-        ("PHP_URL_PORT", Value::Int(2)),
-        ("PHP_URL_USER", Value::Int(3)),
-        ("PHP_URL_PASS", Value::Int(4)),
-        ("PHP_URL_PATH", Value::Int(5)),
-        ("PHP_URL_QUERY", Value::Int(6)),
-        ("PHP_URL_FRAGMENT", Value::Int(7)),
-        ("PATHINFO_DIRNAME", Value::Int(1)),
-        ("PATHINFO_BASENAME", Value::Int(2)),
-        ("PATHINFO_EXTENSION", Value::Int(4)),
-        ("PATHINFO_FILENAME", Value::Int(8)),
-        ("PATHINFO_ALL", Value::Int(15)),
-        ("DEBUG_BACKTRACE_PROVIDE_OBJECT", Value::Int(1)),
-        ("DEBUG_BACKTRACE_IGNORE_ARGS", Value::Int(2)),
-        ("E_ERROR", Value::Int(E_ERROR)),
-        ("E_PARSE", Value::Int(E_PARSE)),
-        ("E_CORE_ERROR", Value::Int(E_CORE_ERROR)),
-        ("E_CORE_WARNING", Value::Int(E_CORE_WARNING)),
-        ("E_COMPILE_ERROR", Value::Int(E_COMPILE_ERROR)),
-        ("E_COMPILE_WARNING", Value::Int(E_COMPILE_WARNING)),
-        ("E_USER_ERROR", Value::Int(E_USER_ERROR)),
-        ("E_USER_WARNING", Value::Int(E_USER_WARNING)),
-        ("E_USER_NOTICE", Value::Int(E_USER_NOTICE)),
-        ("E_STRICT", Value::Int(E_STRICT)),
-        ("E_RECOVERABLE_ERROR", Value::Int(E_RECOVERABLE_ERROR)),
-        ("E_DEPRECATED", Value::Int(E_DEPRECATED)),
-        ("E_USER_DEPRECATED", Value::Int(E_USER_DEPRECATED)),
-        ("NAN", Value::Float(f64::NAN)),
-        ("INF", Value::Float(f64::INFINITY)),
-        ("E_ALL", Value::Int(E_ALL)),
-        ("E_WARNING", Value::Int(E_WARNING)),
-        ("E_NOTICE", Value::Int(E_NOTICE)),
-        ("COUNT_NORMAL", Value::Int(0)),
-        ("COUNT_RECURSIVE", Value::Int(1)),
-        // Placeholders: the VM binds the stream resources when a request
-        // starts (php-cli), or removes them (other SAPIs).
-        ("STDIN", Value::Int(0)),
-        ("STDOUT", Value::Int(1)),
-        ("STDERR", Value::Int(2)),
-        ("CONNECTION_ABORTED", Value::Int(1)),
-        ("CONNECTION_NORMAL", Value::Int(0)),
-        ("CONNECTION_TIMEOUT", Value::Int(2)),
-        ("STR_PAD_RIGHT", Value::Int(1)),
-        ("STR_PAD_LEFT", Value::Int(0)),
-        ("STR_PAD_BOTH", Value::Int(2)),
-        ("SORT_REGULAR", Value::Int(0)),
-        ("SORT_NUMERIC", Value::Int(1)),
-        ("SORT_STRING", Value::Int(2)),
-        ("SORT_DESC", Value::Int(3)),
-        ("SORT_ASC", Value::Int(4)),
-        ("SORT_LOCALE_STRING", Value::Int(5)),
-        ("SORT_NATURAL", Value::Int(6)),
-        ("SORT_FLAG_CASE", Value::Int(8)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_UPPER", Value::Int(0)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_LOWER", Value::Int(1)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_TITLE", Value::Int(2)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_FOLD", Value::Int(3)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_UPPER_SIMPLE", Value::Int(4)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_LOWER_SIMPLE", Value::Int(5)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_TITLE_SIMPLE", Value::Int(6)),
-        #[cfg(feature = "mbstring-libmbfl")]
-        ("MB_CASE_FOLD_SIMPLE", Value::Int(7)),
-        ("FILTER_DEFAULT", Value::Int(516)),
-        ("FILTER_UNSAFE_RAW", Value::Int(516)),
-        ("FILTER_VALIDATE_INT", Value::Int(257)),
-        ("FILTER_VALIDATE_BOOLEAN", Value::Int(258)),
-        ("FILTER_VALIDATE_BOOL", Value::Int(258)),
-        ("FILTER_VALIDATE_FLOAT", Value::Int(259)),
-        ("FILTER_VALIDATE_REGEXP", Value::Int(272)),
-        ("FILTER_VALIDATE_DOMAIN", Value::Int(277)),
-        ("FILTER_VALIDATE_URL", Value::Int(273)),
-        ("FILTER_VALIDATE_EMAIL", Value::Int(274)),
-        ("FILTER_VALIDATE_IP", Value::Int(275)),
-        ("FILTER_VALIDATE_MAC", Value::Int(276)),
-        ("FILTER_SANITIZE_ENCODED", Value::Int(514)),
-        ("FILTER_SANITIZE_SPECIAL_CHARS", Value::Int(515)),
-        ("FILTER_SANITIZE_EMAIL", Value::Int(517)),
-        ("FILTER_SANITIZE_URL", Value::Int(518)),
-        ("FILTER_SANITIZE_NUMBER_INT", Value::Int(519)),
-        ("FILTER_SANITIZE_NUMBER_FLOAT", Value::Int(520)),
-        ("FILTER_SANITIZE_FULL_SPECIAL_CHARS", Value::Int(522)),
-        ("FILTER_SANITIZE_ADD_SLASHES", Value::Int(523)),
-        ("FILTER_FLAG_NONE", Value::Int(0)),
-        ("FILTER_NULL_ON_FAILURE", Value::Int(134217728)),
-        ("FILTER_FLAG_ALLOW_OCTAL", Value::Int(1)),
-        ("FILTER_FLAG_ALLOW_HEX", Value::Int(2)),
-        ("FILTER_FLAG_ALLOW_THOUSAND", Value::Int(8192)),
-        ("FILTER_FLAG_ALLOW_SCIENTIFIC", Value::Int(16384)),
-        ("FILTER_FLAG_IPV4", Value::Int(1048576)),
-        ("FILTER_FLAG_IPV6", Value::Int(2097152)),
-        ("FILTER_FLAG_NO_PRIV_RANGE", Value::Int(8388608)),
-        ("FILTER_FLAG_NO_RES_RANGE", Value::Int(4194304)),
-        ("FILTER_FLAG_PATH_REQUIRED", Value::Int(262144)),
-        ("FILTER_FLAG_QUERY_REQUIRED", Value::Int(524288)),
-        ("FILTER_FLAG_HOSTNAME", Value::Int(1048576)),
-        ("FILTER_FLAG_EMAIL_UNICODE", Value::Int(1048576)),
-        ("ENT_QUOTES", Value::Int(3)),
-        ("ENT_COMPAT", Value::Int(2)),
-        ("ENT_NOQUOTES", Value::Int(0)),
-        ("ENT_HTML401", Value::Int(0)),
-        ("ENT_HTML5", Value::Int(48)),
-        ("ENT_XML1", Value::Int(16)),
-        ("ENT_XHTML", Value::Int(32)),
-        ("ENT_IGNORE", Value::Int(4)),
-        ("ENT_SUBSTITUTE", Value::Int(8)),
-        ("ENT_DISALLOWED", Value::Int(128)),
-        ("HTML_SPECIALCHARS", Value::Int(0)),
-        ("HTML_ENTITIES", Value::Int(1)),
-        ("PHP_ROUND_HALF_UP", Value::Int(1)),
-        ("PHP_ROUND_HALF_DOWN", Value::Int(2)),
-        ("PHP_ROUND_HALF_EVEN", Value::Int(3)),
-        ("PHP_ROUND_HALF_ODD", Value::Int(4)),
-        ("ARRAY_FILTER_USE_KEY", Value::Int(2)),
-        ("ARRAY_FILTER_USE_BOTH", Value::Int(1)),
-        ("M_PI", Value::Float(std::f64::consts::PI)),
-        ("M_E", Value::Float(std::f64::consts::E)),
-        ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
-        ("PHP_FLOAT_DIG", Value::Int(15)),
-        // main/php_output.h
-        ("PHP_OUTPUT_HANDLER_START", Value::Int(0x01)),
-        ("PHP_OUTPUT_HANDLER_WRITE", Value::Int(0x00)),
-        ("PHP_OUTPUT_HANDLER_FLUSH", Value::Int(0x04)),
-        ("PHP_OUTPUT_HANDLER_CLEAN", Value::Int(0x02)),
-        ("PHP_OUTPUT_HANDLER_FINAL", Value::Int(0x08)),
-        ("PHP_OUTPUT_HANDLER_CONT", Value::Int(0x00)),
-        ("PHP_OUTPUT_HANDLER_END", Value::Int(0x08)),
-        ("PHP_OUTPUT_HANDLER_CLEANABLE", Value::Int(0x10)),
-        ("PHP_OUTPUT_HANDLER_FLUSHABLE", Value::Int(0x20)),
-        ("PHP_OUTPUT_HANDLER_REMOVABLE", Value::Int(0x40)),
-        ("PHP_OUTPUT_HANDLER_STDFLAGS", Value::Int(0x70)),
-        ("PHP_OUTPUT_HANDLER_STARTED", Value::Int(0x1000)),
-        ("PHP_OUTPUT_HANDLER_DISABLED", Value::Int(0x2000)),
-        ("PHP_OUTPUT_HANDLER_PROCESSED", Value::Int(0x4000)),
-    ]
-    .into_iter()
-    .chain(ext::pcre::php_pcre::preg_constants())
-    .chain(ext::json::json_constants())
-    .chain(ext::standard::info::constants())
-    .chain(ext::standard::file::constants())
-    .chain(ext::standard::file::fnmatch_constants())
-    .chain(ext::standard::array::case_constants())
-    .chain(ext::random::mt_rand_constants())
-    .chain(ext::standard::crypt::constants())
-    .chain(ext::standard::streamsfuncs::constants())
-    // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with their
-    // module; pcntl's only under the SAPIs that have it.
-    .chain(
-        ext::modules()
-            .into_iter()
-            .filter(|md| md.name != "pcntl" || main::sapi::has_pcntl())
-            .flat_map(|md| (md.constants)()),
-    )
-    .collect()
+        ext::mbstring::constants(),
+    ];
+    own.into_iter()
+        .flatten()
+        // Per-extension constants (GMP_*, PASSWORD_*, ZLIB_*, …) live with
+        // their module; pcntl's only under the SAPIs that have it.
+        .chain(
+            ext::modules()
+                .into_iter()
+                .filter(|md| md.name != "pcntl" || main::sapi::has_pcntl())
+                .flat_map(|md| (md.constants)()),
+        )
+        .collect()
 }
 
 /// The PHP prelude the compiler compiles into every program: the engine's

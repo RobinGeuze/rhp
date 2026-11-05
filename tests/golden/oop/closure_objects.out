@@ -77,4 +77,6 @@ Warning: Cannot unbind $this of method, this will be an error in PHP 9
 NULL
 Object of class Closure could not be converted to string
 Cannot create dynamic property Closure::$p
+Cannot create dynamic property Closure::$q
+Cannot create dynamic property Closure::$r
 Instantiation of class Closure is not allowed

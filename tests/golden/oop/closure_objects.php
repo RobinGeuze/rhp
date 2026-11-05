@@ -47,4 +47,6 @@ var_dump(Closure::bind(strlen(...), null, 'K'));
 var_dump(Closure::bind((new K)->get(...), null));
 try { echo $f; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { $f->p = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+try { $f->q[] = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
+try { $f->r .= 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { new Closure; } catch (Error $e) { echo $e->getMessage(), "\n"; }

@@ -1495,6 +1495,7 @@ fn assign_path(
         // Descend into an object property (handle semantics: no COW).
         let handle = match slot {
             Value::Object(h) => h.clone(),
+            Value::Closure(_) => return Err(crate::props::closure_prop_error(name.as_bytes())),
             // zend_throw_non_object_error: the property itself is assigned;
             // a write further down the path modifies it.
             other => {

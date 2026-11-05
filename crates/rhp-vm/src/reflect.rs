@@ -252,14 +252,26 @@ impl Vm {
             }
             b"declared" => {
                 let want = arg_bytes(args, 0);
-                // Built-in classes first, then class-table (compile) order.
-                let mut ids: Vec<usize> = (0..self.classes.len()).collect();
-                ids.sort_by_key(|&id| {
-                    let user = id >= self.internal_classes;
-                    (user, if user { self.class_order[id] } else { 0 }, id)
-                });
+                // Built-in classes first, then class-table (compile) order;
+                // a class_alias() entry lists under its lowercased key, at
+                // the point it was added.
+                let mut ids: Vec<(bool, usize, usize, Option<usize>)> = (0..self.classes.len())
+                    .map(|id| {
+                        let user = id >= self.internal_classes;
+                        let order = if user {
+                            2 * self.class_order[id] + 1
+                        } else {
+                            0
+                        };
+                        (user, order, id, None)
+                    })
+                    .collect();
+                for (i, (_, cid, at)) in self.class_aliases.iter().enumerate() {
+                    ids.push((true, 2 * at, *cid as usize, Some(i)));
+                }
+                ids.sort();
                 let mut out = PhpArray::new();
-                for id in ids {
+                for (_, _, id, alias) in ids {
                     let e = &self.classes[id];
                     let ok = match want.as_slice() {
                         b"interface" => e.kind == ClassKind::Interface,
@@ -267,7 +279,10 @@ impl Vm {
                         _ => matches!(e.kind, ClassKind::Class | ClassKind::Enum),
                     };
                     if ok {
-                        out.push(Value::Str(e.name.clone()));
+                        out.push(match alias {
+                            Some(i) => Value::str(self.class_aliases[i].0.clone()),
+                            None => Value::Str(e.name.clone()),
+                        });
                     }
                 }
                 Ok(Value::Array(out))

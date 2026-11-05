@@ -255,7 +255,7 @@ impl Encoder {
             (b.class, b.id)
         };
         let cname = host.class_name(class_id).unwrap_or_default();
-        if !host.is_enum_class(class_id) && host.reflect_is_a(&cname, b"JsonSerializable") {
+        if host.reflect_is_a(&cname, b"JsonSerializable") {
             if self.objects.contains(&id) {
                 return Ok(self.fail(JSON_ERROR_RECURSION, out, b"null"));
             }

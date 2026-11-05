@@ -1986,19 +1986,28 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_implode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    implode(host, args, "implode")
+}
+
+/// `join`: implode under its own name.
+fn fn_join(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    implode(host, args, "join")
+}
+
+fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
     // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
         (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
         (Value::Array(_), Some(_)) => {
-            return Err(Thrown::type_error(
-                "implode(): Argument #1 ($separator) must be of type string, array given",
-            ))
+            return Err(Thrown::type_error(format!(
+                "{func}(): Argument #1 ($separator) must be of type string, array given"
+            )))
         }
         (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
         _ => {
-            return Err(Thrown::type_error(
-                "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
-            ))
+            return Err(Thrown::type_error(format!(
+                "{func}(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given"
+            )))
         }
     };
     // php_implode: arrays warn, objects use their string cast (or throw).
@@ -2249,14 +2258,92 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_EXTENSION", Value::Int(4)),
         ("PATHINFO_FILENAME", Value::Int(8)),
         ("PATHINFO_ALL", Value::Int(15)),
-        ("LC_CTYPE", Value::Int(0)),
-        ("LC_NUMERIC", Value::Int(1)),
-        ("LC_TIME", Value::Int(2)),
-        ("LC_COLLATE", Value::Int(3)),
-        ("LC_MONETARY", Value::Int(4)),
-        ("LC_MESSAGES", Value::Int(5)),
-        ("LC_ALL", Value::Int(6)),
+        ("LC_CTYPE", Value::Int(libc::LC_CTYPE as i64)),
+        ("LC_NUMERIC", Value::Int(libc::LC_NUMERIC as i64)),
+        ("LC_TIME", Value::Int(libc::LC_TIME as i64)),
+        ("LC_COLLATE", Value::Int(libc::LC_COLLATE as i64)),
+        ("LC_MONETARY", Value::Int(libc::LC_MONETARY as i64)),
+        ("LC_MESSAGES", Value::Int(libc::LC_MESSAGES as i64)),
+        ("LC_ALL", Value::Int(libc::LC_ALL as i64)),
     ]
+    .into_iter()
+    .chain(langinfo_constants())
+    .collect()
+}
+
+/// The nl_langinfo() items (basic_functions.stub.php): the C library's
+/// values, which differ per platform.
+fn langinfo_constants() -> Vec<(&'static str, Value)> {
+    use libc as l;
+    #[cfg(target_os = "linux")]
+    let (yesstr, nostr) = (0x50002, 0x50003);
+    #[cfg(not(target_os = "linux"))]
+    let (yesstr, nostr) = (l::YESSTR, l::NOSTR);
+    let items: [(&'static str, l::nl_item); 56] = [
+        ("ABDAY_1", l::ABDAY_1),
+        ("ABDAY_2", l::ABDAY_2),
+        ("ABDAY_3", l::ABDAY_3),
+        ("ABDAY_4", l::ABDAY_4),
+        ("ABDAY_5", l::ABDAY_5),
+        ("ABDAY_6", l::ABDAY_6),
+        ("ABDAY_7", l::ABDAY_7),
+        ("DAY_1", l::DAY_1),
+        ("DAY_2", l::DAY_2),
+        ("DAY_3", l::DAY_3),
+        ("DAY_4", l::DAY_4),
+        ("DAY_5", l::DAY_5),
+        ("DAY_6", l::DAY_6),
+        ("DAY_7", l::DAY_7),
+        ("ABMON_1", l::ABMON_1),
+        ("ABMON_2", l::ABMON_2),
+        ("ABMON_3", l::ABMON_3),
+        ("ABMON_4", l::ABMON_4),
+        ("ABMON_5", l::ABMON_5),
+        ("ABMON_6", l::ABMON_6),
+        ("ABMON_7", l::ABMON_7),
+        ("ABMON_8", l::ABMON_8),
+        ("ABMON_9", l::ABMON_9),
+        ("ABMON_10", l::ABMON_10),
+        ("ABMON_11", l::ABMON_11),
+        ("ABMON_12", l::ABMON_12),
+        ("MON_1", l::MON_1),
+        ("MON_2", l::MON_2),
+        ("MON_3", l::MON_3),
+        ("MON_4", l::MON_4),
+        ("MON_5", l::MON_5),
+        ("MON_6", l::MON_6),
+        ("MON_7", l::MON_7),
+        ("MON_8", l::MON_8),
+        ("MON_9", l::MON_9),
+        ("MON_10", l::MON_10),
+        ("MON_11", l::MON_11),
+        ("MON_12", l::MON_12),
+        ("AM_STR", l::AM_STR),
+        ("PM_STR", l::PM_STR),
+        ("D_T_FMT", l::D_T_FMT),
+        ("D_FMT", l::D_FMT),
+        ("T_FMT", l::T_FMT),
+        ("T_FMT_AMPM", l::T_FMT_AMPM),
+        ("ERA", l::ERA),
+        ("ERA_D_T_FMT", l::ERA_D_T_FMT),
+        ("ERA_D_FMT", l::ERA_D_FMT),
+        ("ERA_T_FMT", l::ERA_T_FMT),
+        ("ALT_DIGITS", l::ALT_DIGITS),
+        ("CRNCYSTR", l::CRNCYSTR),
+        ("RADIXCHAR", l::RADIXCHAR),
+        ("THOUSEP", l::THOUSEP),
+        ("YESEXPR", l::YESEXPR),
+        ("NOEXPR", l::NOEXPR),
+        ("YESSTR", yesstr),
+        ("NOSTR", nostr),
+    ];
+    let mut v: Vec<(&'static str, Value)> = items
+        .into_iter()
+        .map(|(n, i)| (n, Value::Int(i as i64)))
+        .collect();
+    v.push(("CODESET", Value::Int(l::CODESET as i64)));
+    v.push(("CHAR_MAX", Value::Int(libc::c_char::MAX as i64)));
+    v
 }
 
 /// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
@@ -2560,7 +2647,7 @@ pub fn register(m: &mut crate::Registry) {
             ("str_getcsv", fn_str_getcsv),
             ("str_repeat", fn_str_repeat),
             ("implode", fn_implode),
-            ("join", fn_implode),
+            ("join", fn_join),
             ("explode", fn_explode),
             ("strtoupper", fn_strtoupper),
             ("strtolower", fn_strtolower),

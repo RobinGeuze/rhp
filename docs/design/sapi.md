@@ -298,8 +298,9 @@ threads, never from sharing an engine:
   (rhp-builtins `sapi/`, a `SapiDef` per SAPI name). An embedding SAPI
   has none of them. `function_exists()`, `get_extension_funcs()`,
   `get_defined_functions()` and Reflection see the running SAPI's set.
-  php-cli and php-cgi also have `dl()`; rhp does not, as it cannot load
-  php's C extensions.
+  php-cli and php-cgi also have `dl()`, with php's checks and warnings;
+  rhp cannot load php's C extensions, so a library that does load is
+  refused as unsupported.
 - **pcntl only under the CLI and CGI.** pcntl is a `cli_only` module
   (PHP_NEW_EXTENSION's `cli` class): its functions, constants and
   extension entry exist only under the command-line SAPIs

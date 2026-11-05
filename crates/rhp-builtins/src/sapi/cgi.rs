@@ -8,11 +8,10 @@ use crate::module::no_state;
 use crate::sapi::SapiDef;
 use crate::{Host, NativeFn};
 
-/// php-cgi: no additional functions of its own (php's `dl` aside: rhp cannot
-/// load php's C extensions), and the `cgi-fcgi` module.
+/// php-cgi: its additional function (`dl`), and the `cgi-fcgi` module.
 pub(crate) static SAPI: SapiDef = SapiDef {
     name: "cgi-fcgi",
-    functions: &[],
+    functions: &[("dl", crate::ext::standard::dl::fn_dl)],
     module: Some(("cgi-fcgi", MODULE_FUNCTIONS)),
     command_line: true,
     reset: no_state,

@@ -3236,6 +3236,14 @@ fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// array.c's constants: `COUNT_*`, `SORT_*`, `CASE_*`, `ARRAY_FILTER_*`.
 pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
+        ("EXTR_OVERWRITE", Value::Int(0)),
+        ("EXTR_SKIP", Value::Int(1)),
+        ("EXTR_PREFIX_SAME", Value::Int(2)),
+        ("EXTR_PREFIX_ALL", Value::Int(3)),
+        ("EXTR_PREFIX_INVALID", Value::Int(4)),
+        ("EXTR_PREFIX_IF_EXISTS", Value::Int(5)),
+        ("EXTR_IF_EXISTS", Value::Int(6)),
+        ("EXTR_REFS", Value::Int(0x100)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
         ("SORT_REGULAR", Value::Int(0)),

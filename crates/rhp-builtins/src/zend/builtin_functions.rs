@@ -98,9 +98,54 @@ fn fn_get_included_files(host: &mut dyn Host, _args: &[Value]) -> Result<Value, 
     host.reflect_op(b"included", &[])
 }
 
+/// copy_constant_array: an array without references, or None when it
+/// contains itself (validate_constant_array_argument).
+fn constant_array(a: &PhpArray, seen: &mut Vec<*const ()>) -> Option<PhpArray> {
+    let mut out = PhpArray::new();
+    for (k, v) in a.iter() {
+        let v = match v {
+            Value::Ref(r) => {
+                let p = std::rc::Rc::as_ptr(r) as *const ();
+                if seen.contains(&p) {
+                    return None;
+                }
+                seen.push(p);
+                let inner = r.borrow().clone();
+                let v = match &inner {
+                    Value::Array(a) => Value::Array(constant_array(a, seen)?),
+                    other => other.clone(),
+                };
+                seen.pop();
+                v
+            }
+            Value::Array(a) => Value::Array(constant_array(a, seen)?),
+            other => other.clone(),
+        };
+        out.insert(k.clone(), v);
+    }
+    Some(out)
+}
+
 fn fn_define(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    let value = deref(&args[1]).clone();
+    if find_subslice(&name, b"::").is_some() {
+        return Err(Thrown::error(
+            "ValueError",
+            "define(): Argument #1 ($constant_name) cannot be a class constant",
+        ));
+    }
+    let mut value = deref(&args[1]).clone();
+    if let Value::Array(a) = &value {
+        match constant_array(a, &mut Vec::new()) {
+            Some(a) => value = Value::Array(a),
+            None => {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "define(): Argument #2 ($value) cannot be a recursive array",
+                ))
+            }
+        }
+    }
     if args.get(2).is_some_and(|v| conv::to_bool(&deref(v))) {
         host.emit_diagnostic(
             E_WARNING,
@@ -142,21 +187,37 @@ pub fn const_redefined_message(name: &[u8]) -> Vec<u8> {
     .concat()
 }
 
-/// Resolve a constant by name: a class constant `Class::CONST` (incl. enum cases)
-/// or a global constant. A leading `\` is skipped, as zend_get_constant_ex
-/// does.
-pub(crate) fn resolve_const(host: &mut dyn Host, name: &[u8]) -> Result<Option<Value>, Thrown> {
+/// zend_get_constant_ex: a class constant `Class::CONST` (incl. enum
+/// cases; `self`/`parent`/`static` are the caller's) or a global constant.
+/// A leading `\` is skipped. With `silent` (defined()), a missing or
+/// inaccessible constant is `None`; otherwise php's Error.
+pub(crate) fn resolve_const(
+    host: &mut dyn Host,
+    name: &[u8],
+    silent: bool,
+) -> Result<Option<Value>, Thrown> {
     let name = name.strip_prefix(b"\\").unwrap_or(name);
-    if let Some(pos) = find_subslice(name, b"::") {
-        host.class_constant_eval(&name[..pos], &name[pos + 2..])
-    } else {
-        Ok(host.get_const(name))
+    // The last "::" (php's memrchr for ':' preceded by ':').
+    let colon = name
+        .iter()
+        .rposition(|&b| b == b':')
+        .filter(|&i| i > 0 && name[i - 1] == b':');
+    if let Some(i) = colon {
+        return host.class_constant_eval(&name[..i - 1], &name[i + 1..], silent);
+    }
+    match host.get_const(name) {
+        Some(v) => Ok(Some(v)),
+        None if silent => Ok(None),
+        None => Err(Thrown::error(
+            "Error",
+            format!("Undefined constant \"{}\"", String::from_utf8_lossy(name)),
+        )),
     }
 }
 
 fn fn_defined(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    Ok(Value::Bool(resolve_const(host, &name)?.is_some()))
+    Ok(Value::Bool(resolve_const(host, &name, true)?.is_some()))
 }
 
 fn fn_strlen(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -318,9 +379,12 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         return Err(e);
     }
     let method = conv::to_string_bytes(&deref(&args[1]));
+    // On a class name, a parent's private method does not count.
+    let by_name = !matches!(deref(&args[0]), Value::Object(_));
     let found = class_id_of(host, &args[0])?
         .map(|cid| {
-            host.class_has_method(cid, &method)
+            (host.class_has_method(cid, &method)
+                && !(by_name && host.class_method_private_inherited(cid, &method)))
                 // zend_closure_get_method: Closure's __invoke; the
                 // instance methods the engine implements.
                 || ([&b"__invoke"[..], b"bindto", b"call"]
@@ -615,12 +679,24 @@ fn fn_function_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 }
 
 fn fn_func_num_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(host.current_arg_count()))
+    match host.current_arg_count() {
+        Some(n) => Ok(Value::Int(n)),
+        None => Err(Thrown::error(
+            "Error",
+            "func_num_args() must be called from a function context",
+        )),
+    }
 }
 
 fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let Some(args) = host.current_args() else {
+        return Err(Thrown::error(
+            "Error",
+            "func_get_args() cannot be called from the global scope",
+        ));
+    };
     let mut a = PhpArray::new();
-    for v in host.current_args() {
+    for v in args {
         a.push(v);
     }
     Ok(Value::Array(a))
@@ -628,11 +704,38 @@ fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Throw
 
 fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let i = conv::to_int(&deref(&args[0]));
+    if i < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "func_get_arg(): Argument #1 ($position) must be greater than or equal to 0",
+        ));
+    }
+    let Some(n) = host.current_arg_count() else {
+        return Err(Thrown::error(
+            "Error",
+            "func_get_arg() cannot be called from the global scope",
+        ));
+    };
+    if i >= n {
+        return Err(Thrown::error("ValueError", 
+            "func_get_arg(): Argument #1 ($position) must be less than the number of the arguments passed to the currently executed function",
+        ));
+    }
     Ok(host
         .current_args()
-        .into_iter()
-        .nth(i.max(0) as usize)
-        .unwrap_or(Value::Bool(false)))
+        .and_then(|a| a.into_iter().nth(i as usize))
+        .unwrap_or(Value::Null))
+}
+
+/// `get_called_class()`: the late-static-binding class of the caller.
+fn fn_get_called_class(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    match host.caller_called_scope().and_then(|c| host.class_name(c)) {
+        Some(n) => Ok(Value::str(n)),
+        None => Err(Thrown::error(
+            "Error",
+            "get_called_class() must be called from within a class",
+        )),
+    }
 }
 
 /// `debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0)`.
@@ -1068,6 +1171,73 @@ fn fn_get_resource_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     }
 }
 
+/// `get_resource_id($resource)`: the id `(int)` casts to, closed or not.
+fn fn_get_resource_id(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match deref(&args[0]) {
+        Value::Resource(r) => Ok(Value::Int(r.id as i64)),
+        other => Err(Thrown::type_error(format!(
+            "get_resource_id(): Argument #1 ($resource) must be of type resource, {} given",
+            crate::zend::zpp::zval_value_name(host, &other)
+        ))),
+    }
+}
+
+/// The resource type names php registers (zend_fetch_list_dtor_id).
+const RESOURCE_TYPES: &[&str] = &[
+    "stream",
+    "persistent stream",
+    "stream-context",
+    "stream filter",
+    "stream bucket",
+    "process",
+    "Zip Directory",
+    "Zip Entry",
+];
+
+/// `get_resources(?string $type = null)`: live resources keyed by id; with
+/// a type, those of that type ("Unknown": the closed ones).
+fn fn_get_resources(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let ty = match args.first().map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(conv::to_string_bytes(&v)),
+    };
+    if let Some(t) = &ty {
+        if t.as_slice() != b"Unknown" && !RESOURCE_TYPES.iter().any(|n| n.as_bytes() == t) {
+            return Err(Thrown::error(
+                "ValueError",
+                "get_resources(): Argument #1 ($type) must be a valid resource type",
+            ));
+        }
+    }
+    let mut a = PhpArray::new();
+    for r in host.live_resources() {
+        let Value::Resource(h) = &r else { continue };
+        let keep = match &ty {
+            None => true,
+            Some(t) if t.as_slice() == b"Unknown" => host.resource_closed(&r),
+            Some(t) => !host.resource_closed(&r) && h.type_name.as_bytes() == t.as_slice(),
+        };
+        if keep {
+            a.insert(rhp_values::ArrayKey::Int(h.id as i64), r.clone());
+        }
+    }
+    Ok(Value::Array(a))
+}
+
+/// `get_error_handler()`: the current handler (EG(user_error_handler)).
+fn fn_get_error_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let h = host.set_error_handler(Value::Null, crate::E_ALL);
+    host.restore_error_handler();
+    Ok(h)
+}
+
+/// `get_exception_handler()`: the current handler.
+fn fn_get_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let h = host.set_exception_handler(Value::Null);
+    host.restore_exception_handler();
+    Ok(h)
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
@@ -1102,6 +1272,11 @@ pub fn register(m: &mut crate::Registry) {
             ("func_num_args", fn_func_num_args),
             ("func_get_args", fn_func_get_args),
             ("func_get_arg", fn_func_get_arg),
+            ("get_called_class", fn_get_called_class),
+            ("get_resource_id", fn_get_resource_id),
+            ("get_resources", fn_get_resources),
+            ("get_error_handler", fn_get_error_handler),
+            ("get_exception_handler", fn_get_exception_handler),
             ("debug_backtrace", fn_debug_backtrace),
             ("debug_print_backtrace", fn_debug_print_backtrace),
             ("set_error_handler", fn_set_handler),

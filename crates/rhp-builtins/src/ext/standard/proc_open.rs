@@ -596,7 +596,15 @@ fn fn_proc_terminate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 }
 
 /// Open a `['file', $path, $mode]` descriptor target with fopen-mode flags.
-fn open_for_mode(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
+/// Open a `file` descriptor's path, or the reason for the "Failed to open
+/// stream" warning.
+fn open_for_mode(path: &[u8], mode: &[u8]) -> Result<OwnedFd, String> {
+    let bad_mode = || {
+        format!(
+            "`{}' is not a valid mode for fopen",
+            String::from_utf8_lossy(mode)
+        )
+    };
     let plus = mode.contains(&b'+');
     let acc = if plus {
         libc::O_RDWR
@@ -605,16 +613,17 @@ fn open_for_mode(path: &[u8], mode: &[u8]) -> Option<OwnedFd> {
     } else {
         libc::O_WRONLY
     };
-    let extra = match mode.first()? {
+    let extra = match mode.first().ok_or_else(bad_mode)? {
         b'r' => 0,
         b'w' => libc::O_CREAT | libc::O_TRUNC,
         b'a' => libc::O_CREAT | libc::O_APPEND,
         b'x' => libc::O_CREAT | libc::O_EXCL,
         b'c' => libc::O_CREAT,
-        _ => return None,
+        _ => return Err(bad_mode()),
     };
     let p = cstr(path.strip_prefix(b"file://").unwrap_or(path));
-    crate::zend::virtual_cwd::open(p.as_bytes(), acc | extra, 0o666).ok()
+    crate::zend::virtual_cwd::open(p.as_bytes(), acc | extra, 0o666)
+        .map_err(|e| crate::main::streams::strerror(e.raw_os_error().unwrap_or(0)))
 }
 
 /// Element `i` of a descriptor array as a string, or the php ValueError.
@@ -775,8 +784,16 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     b"file" => {
                         let path = desc_string(ht, 1, "file name parameter for 'file'")?;
                         let mode = desc_string(ht, 2, "mode parameter for 'file'")?;
-                        let Some(fd) = open_for_mode(&path, &mode) else {
-                            return Ok(Value::Bool(false));
+                        let fd = match open_for_mode(&path, &mode) {
+                            Ok(fd) => fd,
+                            Err(why) => {
+                                let msg = format!(
+                                    "proc_open({}): Failed to open stream: {why}",
+                                    String::from_utf8_lossy(&path)
+                                );
+                                host.emit_diagnostic(crate::E_WARNING, msg.as_bytes())?;
+                                return Ok(Value::Bool(false));
+                            }
                         };
                         // php opens this through a (transient) stream resource,
                         // which consumes a resource id.
@@ -809,8 +826,14 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         let from = match from {
                             Some(f) => f,
                             None if (0..=2).contains(&target) => target,
-                            // php: "Redirection target %d not found"
-                            None => return Ok(Value::Bool(false)),
+                            None => {
+                                crate::warn(
+                                    host,
+                                    "proc_open",
+                                    &format!("Redirection target {target} not found"),
+                                )?;
+                                return Ok(Value::Bool(false));
+                            }
                         };
                         let Some(fd) = dup_fd(from) else {
                             return Ok(Value::Bool(false));
@@ -825,9 +848,17 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         }
                         (unsafe { OwnedFd::from_raw_fd(fd) }, None, DescKind::Std)
                     }
-                    // `pty` (openpty) is not supported here; anything else is
-                    // "… is not a valid descriptor spec/mode".
-                    _ => return Ok(Value::Bool(false)),
+                    b"pty" => {
+                        return Err(Thrown::unsupported(
+                            "proc_open",
+                            "pty descriptors are not supported",
+                        ))
+                    }
+                    _ => {
+                        let msg = [ty.as_slice(), b" is not a valid descriptor spec/mode"].concat();
+                        crate::warn(host, "proc_open", &msg)?;
+                        return Ok(Value::Bool(false));
+                    }
                 }
             }
             _ => return Err(Thrown::error(

@@ -444,16 +444,20 @@ pub fn header_op(host: &mut dyn Host, op: HeaderOp<'_>) -> Result<bool, Thrown> 
         }
         return Ok(true);
     }
-    if line.iter().any(|&b| b == b'\n' || b == b'\r') {
-        sapi_error(
-            host,
-            "Header may not contain more than a single header, new line detected",
-        )?;
-        return Ok(false);
-    }
-    if line.contains(&0) {
-        sapi_error(host, "Header may not contain NUL bytes")?;
-        return Ok(false);
+    // The first newline or NUL byte decides the complaint.
+    match line.iter().find(|&&b| matches!(b, b'\n' | b'\r' | 0)) {
+        Some(0) => {
+            sapi_error(host, "Header may not contain NUL bytes")?;
+            return Ok(false);
+        }
+        Some(_) => {
+            sapi_error(
+                host,
+                "Header may not contain more than a single header, new line detected",
+            )?;
+            return Ok(false);
+        }
+        None => {}
     }
     let charset = host.ini_get(b"default_charset").unwrap_or_default();
     let Some(r) = host.response() else {

@@ -203,6 +203,7 @@ const RHP_INI: &[&str] = &[
     "default_charset",
     "default_socket_timeout",
     "display_errors",
+    "enable_dl",
     "error_reporting",
     "html_errors",
     "iconv.input_encoding",

@@ -1,0 +1,59 @@
+string(10) "self::PRIV"
+bool(true)
+string(6) "a-priv"
+string(12) "static::PRIV"
+bool(true)
+string(6) "a-priv"
+string(12) "static::PROT"
+bool(true)
+string(6) "a-prot"
+static::OWN: Undefined constant static::OWN
+parent::X: Cannot access "parent" when current class scope has no parent
+string(10) "self::PRIV"
+bool(true)
+string(6) "a-priv"
+static::PRIV: Undefined constant static::PRIV
+string(12) "static::PROT"
+bool(true)
+string(6) "a-prot"
+string(11) "static::OWN"
+bool(true)
+string(5) "b-own"
+parent::X: Cannot access "parent" when current class scope has no parent
+bool(true)
+string(6) "a-prot"
+bool(false)
+Cannot access private constant A::PRIV
+Undefined constant B::PRIV
+array(3) {
+  [0]=>
+  string(3) "OWN"
+  [1]=>
+  string(3) "PUB"
+  [2]=>
+  string(4) "PROT"
+}
+A::PROT: Cannot access protected constant A::PROT
+self::X: Cannot access "self" when no class scope is active
+Missing::X: Class "Missing" not found
+string(7) "\A::PUB"
+bool(true)
+string(5) "a-pub"
+A::NOPE: Undefined constant A::NOPE
+Cannot access trait constant T::TC directly
+bool(false)
+enum(Suit::Hearts)
+bool(true)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  array(2) {
+    [0]=>
+    int(2)
+    [1]=>
+    int(3)
+  }
+}
+define(): Argument #2 ($value) cannot be a recursive array
+define(): Argument #1 ($constant_name) cannot be a class constant

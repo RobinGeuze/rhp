@@ -1,0 +1,96 @@
+int(1)
+float(1.5)
+bool(true)
+NULL
+string(0) "" interned
+string(1) "x" interned
+string(7) "literal" interned
+array(0) interned {
+}
+array(2) packed refcount(2){
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(1) refcount(2){
+  ["k"]=>
+  string(1) "v" interned
+}
+array(1) packed refcount(2){
+  [5]=>
+  string(1) "a" interned
+}
+array(1) refcount(2){
+  [100]=>
+  string(1) "a" interned
+}
+string(6) "ababab" refcount(2)
+string(6) "ababab" refcount(3)
+object(stdClass)#1 (2) refcount(3){
+  ["self"]=>
+  *RECURSION*
+  ["list"]=>
+  array(2) packed refcount(1){
+    [0]=>
+    int(1)
+    [1]=>
+    string(6) "ababab" refcount(3)
+  }
+}
+object(stdClass)#1 (2) refcount(4){
+  ["self"]=>
+  *RECURSION*
+  ["list"]=>
+  array(2) packed refcount(1){
+    [0]=>
+    int(1)
+    [1]=>
+    string(6) "ababab" refcount(3)
+  }
+}
+array(2) packed refcount(2){
+  [0]=>
+  reference refcount(3) {
+    int(1)
+  }
+  [1]=>
+  reference refcount(3) {
+    int(1)
+  }
+}
+array(1) packed refcount(2){
+  [0]=>
+  reference refcount(3) {
+    int(1)
+  }
+}
+array(1) packed refcount(2){
+  [0]=>
+  reference refcount(2) {
+    int(1)
+  }
+}
+array(1) packed refcount(2){
+  [0]=>
+  reference refcount(1) {
+    int(1)
+  }
+}
+object(E)#2 (1) refcount(2){
+  ["name"]=>
+  string(1) "A" interned
+}
+resource(1) of type (stream) refcount(2)
+object(Dbg)#3 (1) refcount(1){
+  ["shown"]=>
+  int(1)
+}
+object(Plain)#4 (2) refcount(1){
+  ["typed"]=>
+  uninitialized(int)
+  ["prot":protected]=>
+  int(1)
+  ["priv":"Plain":private]=>
+  int(2)
+}

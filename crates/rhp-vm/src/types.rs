@@ -209,8 +209,10 @@ impl Vm {
             match self.check_one(&cur, ty, strict, ctx) {
                 Ok(None) => {}
                 Ok(Some(coerced)) => {
-                    let at = (!proto.is_internal())
-                        .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64));
+                    let at = || {
+                        (!proto.is_internal())
+                            .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64))
+                    };
                     if let Err(t) = self.coercion_diag_at(&cur, &coerced, at) {
                         return Err((i, t));
                     }
@@ -519,12 +521,12 @@ impl Vm {
         &mut self,
         orig: &Value,
         coerced: &Value,
-        at: Option<(Vec<u8>, i64)>,
+        at: impl FnOnce() -> Option<(Vec<u8>, i64)>,
     ) -> Result<(), Thrown> {
         let Some((level, msg)) = coercion_message(orig, coerced) else {
             return Ok(());
         };
-        match at {
+        match at() {
             Some((file, line)) => {
                 self.raise_error_at(level, &msg, file, line);
                 match self.pending_throw.take() {
@@ -537,7 +539,7 @@ impl Vm {
     }
 
     pub(crate) fn coercion_diag(&mut self, orig: &Value, coerced: &Value) -> Result<(), Thrown> {
-        self.coercion_diag_at(orig, coerced, None)
+        self.coercion_diag_at(orig, coerced, || None)
     }
 
     /// php 8.5's `zend_nan_coerced_to_type_warning`.

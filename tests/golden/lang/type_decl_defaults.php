@@ -29,9 +29,13 @@ try {
 interface I {}
 interface J {}
 class IJ implements I, J {}
-function implicit(I&J $x = null, Foo $f = null, int|string $u = null, ?int $n = null) {
-    var_dump($x === null ? null : get_class($x), $f, $u, $n);
-}
+// Compile-time deprecations name the file: include it under a handler.
+set_error_handler(function ($no, $msg, $file, $line) {
+    echo "Deprecated: $msg in ", basename($file), " on line $line\n";
+    return true;
+});
+require __DIR__ . '/type_decl_defaults_implicit.inc';
+restore_error_handler();
 implicit();
 implicit(new IJ);
 foreach ((new ReflectionFunction('implicit'))->getParameters() as $p) {

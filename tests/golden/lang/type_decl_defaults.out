@@ -1,9 +1,3 @@
-
-Deprecated: implicit(): Implicitly marking parameter $x as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
-
-Deprecated: implicit(): Implicitly marking parameter $f as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
-
-Deprecated: implicit(): Implicitly marking parameter $u as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
 int(5)
 float(2)
 float(3)
@@ -13,6 +7,9 @@ float(1)
 float(7)
 float(8)
 TypeError: K::m(): Argument #1 ($s) must be of type string, array given, called in X
+Deprecated: implicit(): Implicitly marking parameter $x as nullable is deprecated, the explicit nullable type must be used instead in type_decl_defaults_implicit.inc on line 2
+Deprecated: implicit(): Implicitly marking parameter $f as nullable is deprecated, the explicit nullable type must be used instead in type_decl_defaults_implicit.inc on line 2
+Deprecated: implicit(): Implicitly marking parameter $u as nullable is deprecated, the explicit nullable type must be used instead in type_decl_defaults_implicit.inc on line 2
 NULL
 NULL
 NULL

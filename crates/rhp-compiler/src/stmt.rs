@@ -286,11 +286,7 @@ impl ProtoBuilder<'_> {
             let name = item.name.value;
             let shown = String::from_utf8_lossy(name);
             let off = item.span().start.offset;
-            let literal = matches!(
-                item.value,
-                Expression::Literal(_) | Expression::MagicConstant(_)
-            );
-            if !literal {
+            if !declare_literal(item.value) {
                 cx.fatal(off, format!("declare({shown}) value must be a literal"));
                 return;
             }
@@ -335,6 +331,25 @@ impl ProtoBuilder<'_> {
                 );
             }
         }
+    }
+}
+
+/// Whether php's parser leaves a declare value as a ZEND_AST_ZVAL: a
+/// number, plain string or heredoc, parenthesised or concatenated
+/// (zend_ast_create_concat_op folds those). `true`, `-1` and magic
+/// constants are not.
+fn declare_literal(e: &Expression) -> bool {
+    use crate::parse::cst::{BinaryOperator, CompositeString, Literal, StringPart};
+    match e {
+        Expression::Literal(Literal::String(_) | Literal::Integer(_) | Literal::Float(_)) => true,
+        Expression::CompositeString(CompositeString::Document(d)) => {
+            d.parts.iter().all(|p| matches!(p, StringPart::Literal(_)))
+        }
+        Expression::Parenthesized(p) => declare_literal(p.expression),
+        Expression::Binary(b) if matches!(b.operator, BinaryOperator::StringConcat(_)) => {
+            declare_literal(b.lhs) && declare_literal(b.rhs)
+        }
+        _ => false,
     }
 }
 

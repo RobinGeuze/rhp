@@ -20,10 +20,18 @@ impl Vm {
     /// `mixed` / array argument (`implode`, `sprintf`, …) get those
     /// converted too. `user`: called from user code (engine-internal prelude
     /// calls only get the object conversions). Past the first parameter
-    /// whose checks are the body's (a resource, a callable, …), only the
+    /// whose checks are the body's (a callable, an object, …), only the
     /// object, array and null checks run here, so that parameter's error
     /// still comes first. `frameless`: php runs the call's
     /// ZEND_FRAMELESS_FUNCTION variant, whose zpp may differ.
+    ///
+    /// On an error `args` hold what php's frame would: the number and
+    /// class-name conversions zpp makes in place, but not those into a C
+    /// variable (an int, float or bool parameter), and none for a
+    /// frameless call, which parses into temporaries. A scalar zpp would
+    /// turn into a string in place is left for the builtin to convert:
+    /// the returned mask (with the error too) has its bit set, so a trace
+    /// shows the string.
     pub(crate) fn coerce_builtin_args(
         &mut self,
         name: &str,
@@ -32,6 +40,41 @@ impl Vm {
         user: bool,
         strict: bool,
         frameless: bool,
+    ) -> Result<u64, (Thrown, u64)> {
+        let mut undo = Vec::new();
+        let mut shown_str = 0;
+        let r = self.coerce_args(
+            name,
+            sig,
+            args,
+            user,
+            strict,
+            frameless,
+            &mut undo,
+            &mut shown_str,
+        );
+        match r {
+            Ok(()) => Ok(shown_str),
+            Err(e) => {
+                for (i, v) in undo.into_iter().rev() {
+                    args[i] = v;
+                }
+                Err((e, shown_str))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn coerce_args(
+        &mut self,
+        name: &str,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
+        args: &mut [Value],
+        user: bool,
+        strict: bool,
+        frameless: bool,
+        undo: &mut Vec<(usize, Value)>,
+        shown_str: &mut u64,
     ) -> Result<(), Thrown> {
         let sps =
             sig.and_then(|f| rhp_bytecode::signatures::scalar_params_for(f, args.len(), frameless));
@@ -69,7 +112,24 @@ impl Vm {
                 };
                 match got {
                     Got::Keep => {}
-                    Got::Set(v) => args[i] = v,
+                    Got::KeepStr => {
+                        if !frameless && i < 64 {
+                            *shown_str |= 1 << i;
+                        }
+                    }
+                    Got::Set(v) => {
+                        use Zpp::*;
+                        let in_place = !frameless
+                            && match sp.kind {
+                                Str | ArrayOrStr | Number | NumberOrStr | Class => true,
+                                StrOrLong => matches!(v, Value::Str(_)),
+                                _ => false,
+                            };
+                        let old = std::mem::replace(&mut args[i], v);
+                        if !in_place {
+                            undo.push((i, old));
+                        }
+                    }
                     Got::Fail => {
                         let given = rhp_builtins::zval_value_name(self, &deref(&args[i]));
                         let ty = sp.kind.expected(sp.nullable).unwrap_or(sp.ty);
@@ -143,8 +203,10 @@ impl Vm {
         strict: bool,
     ) -> Result<Got, Thrown> {
         use Zpp::*;
-        if sp.kind == Class {
-            return self.zpp_class(name, sp, i, v);
+        match sp.kind {
+            Class => return self.zpp_class(name, sp, i, v),
+            Resource | Stream => return self.zpp_resource(name, sp, i, v),
+            _ => {}
         }
         if let Value::Null = v {
             if sp.nullable {
@@ -164,7 +226,7 @@ impl Vm {
                 Long | Number | StrOrLong | NumberOrStr | ArrayOrLong => Got::Set(Value::Int(0)),
                 Double => Got::Set(Value::Float(0.0)),
                 Bool => Got::Set(Value::Bool(false)),
-                Str | ArrayOrStr | Array | Class | Other => Got::Keep,
+                Str | ArrayOrStr | Array | Class | Resource | Stream | Other => Got::Keep,
             });
         }
         let ok = match (sp.kind, v) {
@@ -188,9 +250,9 @@ impl Vm {
             Str | ArrayOrStr => match v {
                 Value::Float(f) => {
                     self.nan_coerced(*f, "string")?;
-                    Got::Keep
+                    Got::KeepStr
                 }
-                Value::Int(_) | Value::Bool(_) => Got::Keep,
+                Value::Int(_) | Value::Bool(_) => Got::KeepStr,
                 _ => self.zpp_str_object(v)?,
             },
             Long | ArrayOrLong => self.zpp_long(v)?,
@@ -236,7 +298,33 @@ impl Vm {
                 Value::Bool(b) => Got::Set(Value::Int(*b as i64)),
                 _ => self.zpp_str_object(v)?,
             },
-            Array | Class | Other => Got::Fail,
+            Array | Class | Resource | Stream | Other => Got::Fail,
+        })
+    }
+
+    /// Z_PARAM_RESOURCE, or PHP_Z_PARAM_STREAM, which also wants the
+    /// resource to be an open stream (in either mode; null only where the
+    /// parse allows it).
+    fn zpp_resource(
+        &mut self,
+        name: &str,
+        sp: &ScalarParam,
+        i: usize,
+        v: &Value,
+    ) -> Result<Got, Thrown> {
+        Ok(match v {
+            Value::Resource(_) => {
+                if sp.kind == Zpp::Stream && builtins::Host::stream_kind(self, v).is_none() {
+                    return Err(Thrown::type_error(format!(
+                        "{name}(): Argument #{}{} must be an open stream resource",
+                        i + 1,
+                        arg_label(sp)
+                    )));
+                }
+                Got::Keep
+            }
+            Value::Null if sp.nullable => Got::Keep,
+            _ => Got::Fail,
         })
     }
 
@@ -392,6 +480,7 @@ impl Vm {
     /// otherwise; an array where none is accepted is a TypeError.
     fn zpp_object_arg(&mut self, sp: &ScalarParam, v: &Value, arrays: bool) -> Result<Got, Thrown> {
         Ok(match v {
+            _ if matches!(sp.kind, Zpp::Resource | Zpp::Stream) => Got::Keep,
             Value::Object(_) if sp.has_str => self.zpp_str_object(v)?,
             Value::Object(_) | Value::Closure(_) => Got::Fail,
             Value::Array(_) if arrays && !sp.has_arr => Got::Fail,
@@ -403,6 +492,9 @@ impl Vm {
 /// What zpp made of one argument.
 enum Got {
     Keep,
+    /// A scalar zpp converts to a string in place: the builtin converts
+    /// it (cheaper than a string per call), a trace shows the string.
+    KeepStr,
     Set(Value),
     Fail,
 }

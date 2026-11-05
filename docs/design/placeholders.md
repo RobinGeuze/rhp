@@ -584,17 +584,39 @@ The module is deliberately "READ-ONLY, native format only"
   (`signatures::scalar_params_for`); `in_array()` with a constant
   haystack and a literal flag is folded as php's compiler folds it, so
   the flag is never type-checked.
-- **Left:** past the first parameter whose checks are a builtin body's (a
-  resource, a callable, a class), the VM only does the object, array and
-  null checks, so php's order of errors holds; the body coerces the rest
-  itself, as before. So there a null argument still gets the weak-mode
-  deprecation under `strict_types` (`fwrite($fp, null)`: php throws the
-  TypeError), and a scalar is not coerced or checked strictly. Recording
-  the stubs' `@param resource` (and the stream check `PHP_Z_PARAM_STREAM`
-  does inside zpp) in `gen signatures` would let the VM check resource
-  parameters and extend the prefix. Bodies that still differ from php for
-  values zpp accepts: `number_format()` of NAN, INF and huge floats, and
-  `iterator_to_array()` of a scalar (the golden skips those).
+- Parameters php's C body parses as any value (`Z_PARAM_ZVAL`, `z`), a
+  resource (`Z_PARAM_RESOURCE`, `r`) or an open stream
+  (`PHP_Z_PARAM_STREAM`) are read from php-src by `gen signatures`
+  (`gen/signatures/zpp.rs`, flags `ZV`, `RS`, `ST`, `NUL`); the VM checks
+  the resources and streams and parses the scalars after all three
+  (`fwrite($fp, null)` under `strict_types` is php's TypeError). Goldens
+  `lang/zpp_resource_params` and its strict twin.
+- A zpp error carries the builtin's frame, with the arguments as php's
+  frame has them then (`lang/zpp_error_traces`). A scalar zpp would turn
+  into a string in place reaches the builtin unconverted (a string per
+  call costs too much); a trace taken during the call shows the string.
+- **Left:** past the first parameter whose checks are still a builtin
+  body's (a callable, an object or class type, an iterable, a function
+  whose parse is in a helper or follows code that may raise), the VM only
+  does the object, array and null checks, so php's order of errors holds;
+  the body coerces the rest itself. There a null argument still gets the
+  weak-mode deprecation under `strict_types` (`array_filter($a, null,
+  null)`, `preg_replace_callback(…, null)`; php throws the TypeError), and
+  a scalar is not coerced or checked strictly. Modelling `Z_PARAM_FUNC`
+  and the object parses in the VM would lift most of it. Bodies that
+  still differ from php for values zpp accepts: `number_format()` of NAN,
+  INF and huge floats, and `iterator_to_array()` of a scalar (the golden
+  skips those).
+- **Follow-up:** the builtins' own scalar TypeError branches (the
+  `zend::zpp` helpers, `ext/standard/file.rs`'s and the extensions' own
+  `*_arg` helpers) still run after the VM's pass. They serve prelude
+  callers and the parameters past the prefix; once those are covered
+  they can become plain extractors.
+- `#[\Deprecated]` builtins: the VM raises the deprecation before the
+  arguments are counted or parsed (`gen signatures` keeps each one's
+  `since` and `message`). Functions the prelude wraps (`utf8_encode`,
+  `xml_parser_free`, …) raise it in the body, so a prelude parameter's
+  TypeError still comes first there (`utf8_encode([])`).
 
 ### 8.4 Named arguments to builtins — refused
 - **Now:** a call with named arguments to a builtin function stops with

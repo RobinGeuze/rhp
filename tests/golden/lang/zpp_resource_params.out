@@ -1,0 +1,46 @@
+Deprecated: fwrite(): Passing null to parameter #2 ($data) of type string is deprecated
+0
+1
+TypeError: fwrite(): Argument #2 ($data) must be of type string, array given
+1
+TypeError: fwrite(): Argument #1 ($stream) must be an open stream resource
+TypeError: fwrite(): Argument #1 ($stream) must be an open stream resource
+TypeError: fwrite(): Argument #1 ($stream) must be of type resource, int given
+TypeError: fwrite(): Argument #1 ($stream) must be of type resource, null given
+TypeError: fread(): Argument #2 ($length) must be of type int, string given
+''
+Deprecated: fread(): Passing null to parameter #2 ($length) of type int is deprecated
+ValueError: fread(): Argument #2 ($length) must be greater than 0
+Deprecated: Implicit conversion from float 1.5 to int loses precision
+''
+''
+TypeError: fseek(): Argument #2 ($offset) must be of type int, string given
+Deprecated: fseek(): Passing null to parameter #3 ($whence) of type int is deprecated
+0
+true
+Deprecated: stream_get_contents(): Passing null to parameter #3 ($offset) of type int is deprecated
+'5x'
+TypeError: stream_get_contents(): Argument #2 ($length) must be of type ?int, string given
+TypeError: fgets(): Argument #2 ($length) must be of type ?int, string given
+true
+TypeError: file_get_contents(): Argument #3 ($context) must be of type resource or null, int given
+TypeError: file_get_contents(): Argument #4 ($offset) must be of type int, string given
+'<'
+TypeError: proc_close(): Argument #1 ($process) must be of type resource, int given
+TypeError: proc_close(): Argument #1 ($process) must be of type resource, null given
+TypeError: proc_terminate(): Argument #2 ($signal) must be of type int, string given
+TypeError: proc_terminate(): Argument #2 ($signal) must be of type int, string given
+TypeError: get_resource_type(): Argument #1 ($resource) must be of type resource, int given
+TypeError: closedir(): Argument #1 ($dir_handle) must be of type resource or null, int given
+Deprecated: count(): Passing null to parameter #2 ($mode) of type int is deprecated
+2
+TypeError: count(): Argument #2 ($mode) must be of type int, string given
+TypeError: count(): Argument #2 ($mode) must be of type int, string given
+TypeError: ob_start(): Argument #2 ($chunk_size) must be of type int, string given
+Deprecated: ob_start(): Passing null to parameter #2 ($chunk_size) of type int is deprecated
+true
+TypeError: hash_equals(): Argument #1 ($known_string) must be of type string, int given
+TypeError: hash_equals(): Argument #2 ($user_string) must be of type string, null given
+true
+ArgumentCountError: array_key_exists() expects exactly 2 arguments, 3 given
+TypeError: array_key_exists(): Argument #2 ($array) must be of type array, string given

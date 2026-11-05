@@ -6,9 +6,32 @@ use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
-/// One trace argument as `zend_exceptions.c::_build_trace_args` renders it
-/// (scalars via `smart_str_append_scalar` with a 15-byte string cap).
+/// One trace argument as `zend_exceptions.c::_build_trace_args` renders it.
 fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
+    if append_zval(host, v, out) {
+        return;
+    }
+    match deref(v) {
+        Value::Array(_) => out.extend_from_slice(b"Array"),
+        Value::Resource(r) => {
+            out.extend_from_slice(b"Resource id #");
+            out.extend_from_slice(r.id.to_string().as_bytes());
+        }
+        Value::Closure(_) => out.extend_from_slice(b"Object(Closure)"),
+        o @ Value::Object(_) => {
+            let name = host.object_class_name(&o).unwrap_or_default();
+            out.extend_from_slice(b"Object(");
+            out.extend_from_slice(&crate::ext::standard::var::c_str(name));
+            out.push(b')');
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// `smart_str_append_zval` with the default
+/// `zend.exception_string_param_max_len` of 15: a scalar (a string quoted,
+/// escaped and cut) or an enum case. `false` for anything else.
+pub fn append_zval(host: &dyn Host, v: &Value, out: &mut Vec<u8>) -> bool {
     match deref(v) {
         Value::Null => out.extend_from_slice(b"NULL"),
         Value::Bool(b) => out.extend_from_slice(if b { b"true" } else { b"false" }),
@@ -30,31 +53,19 @@ fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
             }
             out.push(b'\'');
         }
-        Value::Array(_) => out.extend_from_slice(b"Array"),
-        Value::Resource(r) => {
-            out.extend_from_slice(b"Resource id #");
-            out.extend_from_slice(r.id.to_string().as_bytes());
-        }
-        Value::Closure(_) => out.extend_from_slice(b"Object(Closure)"),
         o @ Value::Object(_) => {
-            let name = host.object_class_name(&o).unwrap_or_default();
-            let cid = match &o {
-                Value::Object(h) => h.borrow().class,
-                _ => unreachable!(),
-            };
-            if host.is_enum_class(cid) {
-                out.extend_from_slice(&name);
-                out.extend_from_slice(b"::");
-                let case = host.object_prop(&o, b"name").unwrap_or(Value::Null);
-                out.extend_from_slice(&conv::to_string_bytes(&case));
-            } else {
-                out.extend_from_slice(b"Object(");
-                out.extend_from_slice(&crate::ext::standard::var::c_str(name));
-                out.push(b')');
+            let Value::Object(h) = &o else { unreachable!() };
+            if !host.is_enum_class(h.borrow().class) {
+                return false;
             }
+            out.extend_from_slice(&host.object_class_name(&o).unwrap_or_default());
+            out.extend_from_slice(b"::");
+            let case = host.object_prop(&o, b"name").unwrap_or(Value::Null);
+            out.extend_from_slice(&conv::to_string_bytes(&case));
         }
-        Value::Ref(_) => unreachable!(),
+        _ => return false,
     }
+    true
 }
 
 /// `smart_str_append_escaped`: C-style escapes for control / non-ASCII bytes.

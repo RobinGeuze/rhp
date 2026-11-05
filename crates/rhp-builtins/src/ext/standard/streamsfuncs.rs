@@ -783,13 +783,6 @@ fn fn_stream_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
 }
 
 fn fn_socket_set_timeout(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // #[\Deprecated(since: '8.5')], raised before the arguments are parsed.
-    crate::deprecated_fn(
-        host,
-        "socket_set_timeout",
-        "8.5",
-        "use stream_set_timeout() instead",
-    )?;
     set_timeout_impl(host, args, "socket_set_timeout")
 }
 

@@ -516,14 +516,6 @@ fn fn_getdate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 // --- strftime() / gmstrftime() ----------------------------------------------------
 
-/// The E_DEPRECATED of a `#[\Deprecated]` function, raised when it is called.
-fn deprecated_fn(host: &mut dyn Host, fname: &str, since: &str, msg: &str) -> Result<(), Thrown> {
-    host.emit_diagnostic(
-        crate::E_DEPRECATED,
-        format!("Function {fname}() is deprecated since {since}, {msg}").as_bytes(),
-    )
-}
-
 /// `php_strftime`: the C library's strftime in the process locale (rhp's
 /// locale is always "C").
 fn php_strftime(
@@ -532,12 +524,6 @@ fn php_strftime(
     fname: &str,
     gmt: bool,
 ) -> Result<Value, Thrown> {
-    deprecated_fn(
-        host,
-        fname,
-        "8.1",
-        "use IntlDateFormatter::format() instead",
-    )?;
     let format = str_param(host, args, 0, fname, "format")?;
     let ts = zpp::opt_long_arg(host, args, 1, fname, "timestamp")?.unwrap_or_else(php_time);
     if format.is_empty() {
@@ -701,7 +687,6 @@ fn php_sunrise_sunset(
     fname: &str,
     calc_sunset: bool,
 ) -> Result<Value, Thrown> {
-    deprecated_fn(host, fname, "8.1", "use date_sun_info() instead")?;
     let time = zpp::long_arg(host, args, 0, fname, "timestamp")?;
     let retformat = long_or(host, args, 1, fname, "returnFormat", SUNFUNCS_RET_STRING)?;
     let latitude = match double_arg(host, args, 2, fname, "latitude", true)? {

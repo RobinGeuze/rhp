@@ -12,30 +12,51 @@ use crate::{Host, Thrown};
 /// messages use: the class for an object (cut at a NUL, as `%s` prints an
 /// anonymous class), `true`/`false` for a bool, else the type.
 pub fn zval_value_name(host: &dyn Host, v: &Value) -> String {
+    zval_value_name_by(v, |o| host.object_class_name(o))
+}
+
+/// [`zval_value_name`] where an object's class name comes from
+/// `class_name` (for callers without a [`Host`]).
+pub fn zval_value_name_by(v: &Value, class_name: impl FnOnce(&Value) -> Option<Vec<u8>>) -> String {
     match deref(v) {
         Value::Bool(true) => "true".into(),
         Value::Bool(false) => "false".into(),
-        other => zval_type_name(host, &other),
+        other => zval_type_name_by(&other, class_name),
     }
 }
 
 /// php's `zend_zval_type_name`: [`zval_value_name`], but `bool` for both
-/// bools (operator errors, typed properties, a few extension messages).
+/// bools (operator errors, typed properties, illegal offsets, a few
+/// extension messages).
 pub fn zval_type_name(host: &dyn Host, v: &Value) -> String {
+    zval_type_name_by(v, |o| host.object_class_name(o))
+}
+
+/// [`zval_type_name`] where an object's class name comes from
+/// `class_name` (for callers without a [`Host`]).
+pub fn zval_type_name_by(v: &Value, class_name: impl FnOnce(&Value) -> Option<Vec<u8>>) -> String {
     match deref(v) {
-        Value::Null => "null".into(),
-        Value::Bool(_) => "bool".into(),
-        Value::Int(_) => "int".into(),
-        Value::Float(_) => "float".into(),
-        Value::Str(_) => "string".into(),
-        Value::Array(_) => "array".into(),
         Value::Closure(_) => "Closure".into(),
-        Value::Resource(_) => "resource".into(),
-        o @ Value::Object(_) => host
-            .object_class_name(&o)
+        o @ Value::Object(_) => class_name(&o)
             .map(|n| String::from_utf8_lossy(&crate::ext::standard::var::c_str(n)).into_owned())
             .unwrap_or_else(|| "object".into()),
-        Value::Ref(_) => unreachable!(),
+        other => type_by_const(&other).into(),
+    }
+}
+
+/// php's `zend_get_type_by_const` for a value's type: `object` for any
+/// object.
+fn type_by_const(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) | Value::Closure(_) => "object",
+        Value::Resource(_) => "resource",
+        Value::Ref(r) => type_by_const(&r.borrow()),
     }
 }
 

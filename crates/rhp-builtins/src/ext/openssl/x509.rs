@@ -363,12 +363,6 @@ fn fn_read(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "openssl_x509_free";
-    crate::deprecated_fn(
-        host,
-        f,
-        "8.0",
-        "as OpenSSLCertificate objects are freed automatically",
-    )?;
     let v = arg(args, 0);
     if super::cert_of(&v).is_none() {
         return Err(type_error(host, f, 0, &v));

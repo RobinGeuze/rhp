@@ -965,9 +965,22 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-fn fn_hash_equals(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let known = conv::to_string_bytes(&args[0]);
-    let user = conv::to_string_bytes(&args[1]);
+fn fn_hash_equals(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    // zpp takes any value ("zz"); only strings compare.
+    let mut strs = [Vec::new(), Vec::new()];
+    for (i, name) in ["known_string", "user_string"].into_iter().enumerate() {
+        match deref(&args[i]) {
+            Value::Str(s) => strs[i] = s.as_bytes().to_vec(),
+            other => {
+                return Err(Thrown::type_error(format!(
+                    "hash_equals(): Argument #{} (${name}) must be of type string, {} given",
+                    i + 1,
+                    crate::zend::zpp::zval_value_name(host, &other)
+                )))
+            }
+        }
+    }
+    let [known, user] = strs;
     // constant-time compare (length first, then byte diff accumulation)
     let eq = known.len() == user.len()
         && known

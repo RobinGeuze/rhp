@@ -57,7 +57,6 @@ pub(super) fn fn_curl_share_init(host: &mut dyn Host, _args: &[Value]) -> Result
 
 pub(super) fn fn_curl_share_close(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "curl_share_close";
-    crate::deprecated_fn(host, f, "8.5", "as it has no effect since PHP 8.0")?;
     share_arg(host, args, f)?;
     Ok(Value::Null)
 }

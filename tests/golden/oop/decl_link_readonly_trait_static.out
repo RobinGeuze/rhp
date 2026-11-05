@@ -1,0 +1,1 @@
+last: 64: Readonly class C cannot use trait with a non-readonly property T::$s (decl_link_readonly_trait_static.php:9)

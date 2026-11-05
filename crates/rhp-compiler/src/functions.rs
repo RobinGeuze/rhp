@@ -415,6 +415,7 @@ impl ProtoBuilder<'_> {
         returns_ref: bool,
         meta: rhp_bytecode::DeclMeta,
     ) -> Result<Reg, Thrown> {
+        crate::checks::check_function_params(self.cx, param_list);
         let nc = captures.len() as u16;
 
         // PHP 8.5 names a closure `{closure:<enclosing scope>:<line>}`, computed

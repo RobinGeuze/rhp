@@ -118,7 +118,20 @@ impl Vm {
                     .props
                     .values()
                     .find(|p| !p.readonly && !proto.props.iter().any(|pp| pp.name == p.name))
-                    .map(|p| String::from_utf8_lossy(p.name.as_bytes()).into_owned());
+                    .map(|p| String::from_utf8_lossy(p.name.as_bytes()).into_owned())
+                    .or_else(|| {
+                        // A static property is never readonly.
+                        self.classes[tid]
+                            .static_props
+                            .keys()
+                            .find(|k| {
+                                !proto
+                                    .static_props
+                                    .iter()
+                                    .any(|sp| sp.name.as_bytes() == k.as_slice())
+                            })
+                            .map(|k| String::from_utf8_lossy(k).into_owned())
+                    });
                 if let Some(p) = bad {
                     let msg = format!(
                         "Readonly class {name} cannot use trait with a non-readonly property {tname}::${p}"

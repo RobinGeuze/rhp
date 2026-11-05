@@ -27,3 +27,7 @@ try { base_convert(str_repeat("z", 300), 36, 10); } catch (ValueError $e) { echo
 // intval with a base is C strtol (plus 0b for base 0 and 2)
 var_dump(intval("0x1A", 16), intval("0x1A", 0), intval("012", 0), intval("0o17", 8), intval("  -0b101", 0));
 var_dump(intval("99999999999999999999", 16), intval("-99999999999999999999", 36), intval("12", 1), intval("\v\f42", 8));
+// round()'s RoundingMode|int parameter.
+foreach ([new stdClass, "abc", "2", [], null] as $m) {
+    try { var_dump(round(1.5, 0, $m)); } catch (TypeError|ValueError $e) { echo $e->getMessage(), "\n"; }
+}

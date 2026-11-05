@@ -43,15 +43,29 @@ fn fn_ceil(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
 /// math.c's `RoundingMode` enum.
 pub const PRELUDE_PHP: &str = include_str!("math/prelude.php");
 
-/// `php_math_round_mode_from_enum`, or the int mode.
-pub(crate) fn rounding_mode(host: &mut dyn Host, v: &Value) -> i64 {
-    match deref(v) {
-        o @ Value::Object(_) => {
+/// round()'s `RoundingMode|int $mode` (`Z_PARAM_OBJ_OF_CLASS_OR_LONG`):
+/// `php_math_round_mode_from_enum` for the enum, else a weak int.
+pub(crate) fn rounding_mode(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+    let v = deref(v);
+    let type_error = |host: &mut dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "round(): Argument #3 ($mode) must be of type RoundingMode|int, {} given",
+            crate::zend::zpp::zval_value_name(host, v)
+        ))
+    };
+    match &v {
+        Value::Object(_) => {
+            let is_mode = host
+                .object_class_name(&v)
+                .is_some_and(|c| c.eq_ignore_ascii_case(b"RoundingMode"));
+            if !is_mode {
+                return Err(type_error(host, &v));
+            }
             let name = host
-                .object_prop(&o, b"name")
+                .object_prop(&v, b"name")
                 .map(|n| conv::to_string_bytes(&n))
                 .unwrap_or_default();
-            match name.as_slice() {
+            Ok(match name.as_slice() {
                 b"HalfAwayFromZero" => PHP_ROUND_HALF_UP,
                 b"HalfTowardsZero" => PHP_ROUND_HALF_DOWN,
                 b"HalfEven" => PHP_ROUND_HALF_EVEN,
@@ -60,9 +74,19 @@ pub(crate) fn rounding_mode(host: &mut dyn Host, v: &Value) -> i64 {
                 b"AwayFromZero" => PHP_ROUND_AWAY_FROM_ZERO,
                 b"NegativeInfinity" => PHP_ROUND_FLOOR,
                 _ => PHP_ROUND_CEILING,
-            }
+            })
         }
-        v => conv::to_int(&v),
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"round(): Passing null to parameter #3 ($mode) of type RoundingMode|int is deprecated",
+            )?;
+            Ok(0)
+        }
+        _ => match crate::zend::zpp::zpp_long(host, std::slice::from_ref(&v), 0, "round", "mode") {
+            Ok(n) => Ok(n),
+            Err(_) => Err(type_error(host, &v)),
+        },
     }
 }
 
@@ -74,7 +98,7 @@ fn fn_round(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown>
         .unwrap_or(0)
         .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     let mode = match args.get(2) {
-        Some(v) => rounding_mode(host, v),
+        Some(v) => rounding_mode(host, v)?,
         None => PHP_ROUND_HALF_UP,
     };
     if !(1..=8).contains(&mode) {

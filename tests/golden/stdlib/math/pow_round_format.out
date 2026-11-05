@@ -63,3 +63,9 @@ int(9223372036854775807)
 int(-9223372036854775808)
 int(0)
 int(34)
+round(): Argument #3 ($mode) must be of type RoundingMode|int, stdClass given
+round(): Argument #3 ($mode) must be of type RoundingMode|int, string given
+float(1)
+round(): Argument #3 ($mode) must be of type RoundingMode|int, array given
+[8192] round(): Passing null to parameter #3 ($mode) of type RoundingMode|int is deprecated
+round(): Argument #3 ($mode) must be a valid rounding mode (RoundingMode::*)

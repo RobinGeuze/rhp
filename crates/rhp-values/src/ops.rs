@@ -635,8 +635,9 @@ fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
     }
 }
 
-/// `is_numeric_string_ex`'s `oflow`: 1 or -1 when `s` is an integer string
-/// that overflowed to the float `n`, else 0.
+/// `is_numeric_string_ex`'s `oflow`: 1 or -1 when `s` (parsed as the float
+/// `n`) has 20 or more integer digits after leading zeros, or is an integer
+/// string past the int range; else 0.
 fn int_overflow(s: &[u8], n: Num) -> i8 {
     let Num::Float(f) = n else { return 0 };
     let ws = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c');
@@ -644,24 +645,27 @@ fn int_overflow(s: &[u8], n: Num) -> i8 {
     if matches!(it.peek(), Some(b'-' | b'+')) {
         it.next();
     }
+    while it.peek() == Some(&&b'0') {
+        it.next();
+    }
+    let sign = if f < 0.0 { -1 } else { 1 };
     let mut digits = 0;
-    for c in it.by_ref() {
-        if c.is_ascii_digit() {
-            digits += 1;
-        } else if ws(c) {
+    while let Some(c) = it.peek() {
+        if !c.is_ascii_digit() {
             break;
-        } else {
-            return 0;
+        }
+        it.next();
+        digits += 1;
+        // MAX_LENGTH_OF_LONG digits: php stops and parses a double.
+        if digits >= 20 {
+            return sign;
         }
     }
+    // Fewer digits followed by '.' or 'e' is a plain double.
     if digits == 0 || !it.all(ws) {
         return 0;
     }
-    if f < 0.0 {
-        -1
-    } else {
-        1
-    }
+    sign
 }
 
 /// `zend_hash_compare(.., ordered=0)` over two arrays.

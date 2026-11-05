@@ -2720,10 +2720,17 @@ impl Vm {
                 c = Value::Str(n);
             }
         }
+        // ZEND_CALLABLE_CONVERT keeps the call's object.
+        let this = match self.resolve_callable(&c) {
+            Ok(
+                crate::calls::Callee::Method(_, this, _) | crate::calls::Callee::Magic(_, this, ..),
+            ) => this,
+            _ => None,
+        };
         let cd = Rc::new(rhp_values::ClosureData {
             fnidx: u32::MAX,
             captures: Vec::new(),
-            bound_this: None,
+            bound_this: this,
             bound_class: self.stack[top].defining_class,
             bound_static: self.stack[top].called_class,
             wrapped: Some(Box::new(c)),

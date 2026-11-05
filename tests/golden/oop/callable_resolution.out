@@ -78,5 +78,7 @@ down: S
 TypeError
 string(4) "Base"
 bool(false)
+FcP::m FcA
+FcA::m
 end
 down: S

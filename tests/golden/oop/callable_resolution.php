@@ -94,4 +94,7 @@ class Kid extends Base { function test() { try { tryit('parent::who'); } catch (
 var_dump((new Kid)->test());
 $o = new stdClass;
 var_dump($o instanceof NotLoaded);
+class FcP { function m() { echo "FcP::m ", get_class($this), "\n"; } }
+class FcA extends FcP { function m() { echo "FcA::m\n"; } function f() { return [parent::m(...), self::m(...)]; } }
+foreach ((new FcA)->f() as $fc) { $fc(); }
 echo "end\n";

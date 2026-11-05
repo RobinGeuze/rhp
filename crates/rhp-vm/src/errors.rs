@@ -48,9 +48,24 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
+        self.fatal_compile_error_at(msg, file, line)
+    }
+
+    /// [`Vm::fatal_compile_error`] at a given place.
+    pub(crate) fn fatal_compile_error_at(
+        &mut self,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
         self.last_error = Some((64, msg.to_vec(), file.clone(), line));
-        let trace = Value::Array(self.build_trace_ex(false, false));
-        let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
+        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
+        let trace = if crate::ini_bool(&backtraces) {
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            builtins::zend::exceptions::trace_to_string(self, &trace)
+        } else {
+            Vec::new()
+        };
         self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)

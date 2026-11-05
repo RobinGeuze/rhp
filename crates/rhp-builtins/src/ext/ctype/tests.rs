@@ -4,10 +4,10 @@ use super::*;
 
 #[test]
 fn ctype_non_string_non_int() {
-    assert!(!ctype_check(&Value::Bool(true), is_digit));
-    assert!(!ctype_check(&Value::Float(1.5), is_digit));
-    assert!(!ctype_check(&Value::Float(48.0), is_digit));
-    assert!(!ctype_check(&Value::Null, is_digit));
+    assert!(!fallback(&Value::Bool(true), is_digit, true, false));
+    assert!(!fallback(&Value::Float(1.5), is_digit, true, false));
+    assert!(!fallback(&Value::Float(48.0), is_digit, true, false));
+    assert!(!fallback(&Value::Null, is_digit, true, false));
 }
 
 #[test]

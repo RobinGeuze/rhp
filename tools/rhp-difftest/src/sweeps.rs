@@ -141,11 +141,12 @@ pub fn ctype_snippet() -> String {
         s.push_str(&format!("\"{f}\","));
     }
     s.push_str("];\n");
-    // single bytes, integer args (the -128..=256 char-code quirk), strings
+    // single bytes, integer args (the -128..=256 char-code quirk; deprecated,
+    // and php's side runs with error_reporting=0), strings
     s.push_str(
         "foreach ($fns as $f) {\n\
            for ($i = 0; $i < 256; $i++) echo (int)$f(chr($i));\n\
-           for ($n = -130; $n <= 260; $n++) echo (int)$f($n);\n\
+           for ($n = -130; $n <= 260; $n++) echo (int)@$f($n);\n\
            foreach ([\"\", \"abc\", \"ABC123\", \"  \\t\", \"a1!\", \"\\xe9\\xff\"] as $str) echo (int)$f($str);\n\
            echo \"\\n\";\n\
          }\n",

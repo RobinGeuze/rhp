@@ -4,16 +4,16 @@
 //! (`tools/rhp-difftest` sweep `ctype`).
 //!
 //! ## Quirks (matched to php)
-//! - An `int` in `-128..=255` is interpreted as a single ASCII byte
-//!   (`ctype_digit(48)` tests `'0'` → true, `ctype_digit(1)` tests SOH → false).
-//! - An `int` outside that range is rendered as its decimal string and tested
-//!   whole (`ctype_digit(256)` tests `"256"` → true, `ctype_digit(-99999)`
-//!   tests `"-99999"` → false because of the `-`).
 //! - A `string` yields false when empty, otherwise true iff *every* byte is in
 //!   the class.
-//! - Any other type (bool/float/null/array/object) yields false. (php emits a
-//!   deprecation notice to stderr for these and for the int-as-string path; we
-//!   don't, which is fine — notices go to stderr.)
+//! - Any other type raises php 8.1's "Argument of type T will be interpreted
+//!   as string in the future" deprecation first.
+//! - An `int` in `-128..=255` is interpreted as a single ASCII byte
+//!   (`ctype_digit(48)` tests `'0'` → true, `ctype_digit(1)` tests SOH → false).
+//! - An `int` outside that range is answered as its decimal string would be
+//!   (`ctype_digit(256)` → true, `ctype_digit(-99999)` → false because of the
+//!   `-`).
+//! - Any other type (bool/float/null/array/object) yields false.
 //! - High bytes (128..=255) follow the host libc's `C.UTF-8` locale, exactly as
 //!   php does: php's ctype calls libc's `is*()`, and at startup php pins
 //!   `LC_CTYPE` to `C.UTF-8` (falling back to `C`) regardless of the environment
@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 use rhp_values::ops::deref;
 use rhp_values::Value;
 
+use crate::zend::zpp::zval_type_name;
 use crate::{Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -146,43 +147,65 @@ fn is_xdigit(b: u8) -> bool {
     has(b, XDIGIT)
 }
 
-/// Run a ctype class test with php's int/string argument quirks.
-fn ctype_check(v: &Value, class: fn(u8) -> bool) -> bool {
-    match deref(v) {
-        Value::Int(n) => {
-            if (-128..=255).contains(&n) {
-                class(n as u8)
-            } else {
-                let s = n.to_string();
-                !s.is_empty() && s.bytes().all(class)
-            }
-        }
-        Value::Str(s) => {
-            let b = s.as_bytes();
-            !b.is_empty() && b.iter().all(|&c| class(c))
-        }
-        _ => false,
+/// `ctype_fallback`'s answer for a non-string argument: an int in
+/// -128..=255 is a byte (a negative one plus 256); a larger int passes when
+/// the class allows digits, a smaller one when it also allows `-`; any
+/// other type fails.
+fn fallback(v: &Value, class: fn(u8) -> bool, allow_digits: bool, allow_minus: bool) -> bool {
+    let Value::Int(n) = *v else {
+        return false;
+    };
+    match n {
+        0..=255 => class(n as u8),
+        -128..=-1 => class((n + 256) as u8),
+        256.. => allow_digits,
+        _ => allow_minus,
     }
 }
 
+/// php's `ctype_impl`: a string passes when it is non-empty and every byte
+/// is in the class; any other argument takes `ctype_fallback`, which first
+/// raises its deprecation.
+fn ctype_impl(
+    host: &mut dyn Host,
+    fname: &str,
+    arg: &Value,
+    class: fn(u8) -> bool,
+    allow_digits: bool,
+    allow_minus: bool,
+) -> Result<Value, Thrown> {
+    let v = deref(arg);
+    if let Value::Str(s) = &v {
+        let b = s.as_bytes();
+        return Ok(Value::Bool(!b.is_empty() && b.iter().all(|&c| class(c))));
+    }
+    let msg = format!(
+        "Argument of type {} will be interpreted as string in the future",
+        zval_type_name(host, &v)
+    );
+    crate::deprecated(host, fname, &msg)?;
+    Ok(Value::Bool(fallback(&v, class, allow_digits, allow_minus)))
+}
+
 macro_rules! ctype_fn {
-    ($name:ident, $class:path) => {
-        fn $name(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-            Ok(Value::Bool(ctype_check(&args[0], $class)))
+    ($name:ident, $php:literal, $class:path, $digits:literal, $minus:literal) => {
+        fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+            ctype_impl(host, $php, &args[0], $class, $digits, $minus)
         }
     };
 }
-ctype_fn!(fn_ctype_digit, is_digit);
-ctype_fn!(fn_ctype_alpha, is_alpha);
-ctype_fn!(fn_ctype_alnum, is_alnum);
-ctype_fn!(fn_ctype_space, is_space);
-ctype_fn!(fn_ctype_upper, is_upper);
-ctype_fn!(fn_ctype_lower, is_lower);
-ctype_fn!(fn_ctype_punct, is_punct);
-ctype_fn!(fn_ctype_xdigit, is_xdigit);
-ctype_fn!(fn_ctype_cntrl, is_cntrl);
-ctype_fn!(fn_ctype_graph, is_graph);
-ctype_fn!(fn_ctype_print, is_print);
+// php's ctype_impl(iswhat, allow_digits, allow_minus) for each function.
+ctype_fn!(fn_ctype_digit, "ctype_digit", is_digit, true, false);
+ctype_fn!(fn_ctype_alpha, "ctype_alpha", is_alpha, false, false);
+ctype_fn!(fn_ctype_alnum, "ctype_alnum", is_alnum, true, false);
+ctype_fn!(fn_ctype_space, "ctype_space", is_space, false, false);
+ctype_fn!(fn_ctype_upper, "ctype_upper", is_upper, false, false);
+ctype_fn!(fn_ctype_lower, "ctype_lower", is_lower, false, false);
+ctype_fn!(fn_ctype_punct, "ctype_punct", is_punct, false, false);
+ctype_fn!(fn_ctype_xdigit, "ctype_xdigit", is_xdigit, true, false);
+ctype_fn!(fn_ctype_cntrl, "ctype_cntrl", is_cntrl, false, false);
+ctype_fn!(fn_ctype_graph, "ctype_graph", is_graph, true, true);
+ctype_fn!(fn_ctype_print, "ctype_print", is_print, true, true);
 
 // ---------------------------------------------------------------------------
 // registration

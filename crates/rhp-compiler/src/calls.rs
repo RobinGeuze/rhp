@@ -521,7 +521,12 @@ impl ProtoBuilder<'_> {
         // The callee is only known at run time, so (as for method calls) a
         // simple-variable argument travels as a reference; a by-value
         // parameter dereferences it.
-        let (base, argc) = self.compile_arg_window_ex(Some(&fc.argument_list), &[], true)?;
+        let (base, argc) = self.compile_arg_window_t(
+            Some(&fc.argument_list),
+            &[],
+            true,
+            Some(ArgRefTarget::Value(callee)),
+        )?;
         let dst = self.alloc_temp();
         self.emit(Instr::CallDyn {
             dst,
@@ -763,6 +768,11 @@ impl ProtoBuilder<'_> {
             ArgRefTarget::Func(func) => self.emit(Instr::FuncArgIsRef {
                 dst: flag,
                 func,
+                idx,
+            }),
+            ArgRefTarget::Value(callee) => self.emit(Instr::ValueArgIsRef {
+                dst: flag,
+                callee,
                 idx,
             }),
         }
@@ -1164,6 +1174,8 @@ pub(crate) enum ArgRefTarget {
     Static(ClassRef, NIdx),
     /// The function [`Instr::ResolveFunc`] put in the register.
     Func(Reg),
+    /// A callable value (`$f(...)`).
+    Value(Reg),
 }
 
 /// The variable name (without `$`) of a plain-variable argument php sends

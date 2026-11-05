@@ -1,0 +1,26 @@
+array(1) {
+  ["x"]=>
+  int(5)
+}
+object(stdClass)#2 (1) {
+  ["p"]=>
+  int(5)
+}
+int(5)
+array(1) {
+  ["n"]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(1)
+  }
+}
+Cannot use temporary expression in write context
+array(2) {
+  ["x"]=>
+  int(5)
+  [0]=>
+  int(5)
+}
+Cannot use [] for reading

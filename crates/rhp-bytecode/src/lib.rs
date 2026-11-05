@@ -660,6 +660,13 @@ pub enum Instr {
         class: ClassRef,
         name: Reg,
     },
+    /// SEND_FUNC_ARG's question for a call of a callable value (`$f(...)`):
+    /// whether parameter `idx` of what `callee` calls is by reference.
+    ValueArgIsRef {
+        dst: Reg,
+        callee: Reg,
+        idx: u16,
+    },
     /// SEND_FUNC_ARG's question for a call resolved at run time: whether
     /// parameter `idx` of method `name` on the object in `obj` is by
     /// reference (false for a non-object / unknown / magic method).

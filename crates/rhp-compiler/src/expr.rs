@@ -558,6 +558,7 @@ impl ProtoBuilder<'_> {
             }
             Expression::Parenthesized(p) => self.compile_inc_dec(p.expression, pre, delta),
             Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
             | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {

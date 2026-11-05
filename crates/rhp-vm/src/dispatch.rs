@@ -1519,6 +1519,13 @@ impl Vm {
                         .map_or(-1, |&i| i as i64);
                     self.reg_set(top, dst, Value::Int(f));
                 }
+                Instr::ValueArgIsRef { dst, callee, idx } => {
+                    let c = self.reg_get(top, callee);
+                    let r = self
+                        .callable_proto(&c)
+                        .is_some_and(|(p, _)| crate::calls::param_is_ref(&p, idx));
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
                 Instr::FuncArgIsRef { dst, func, idx } => {
                     let r = self.resolved_param_is_ref(top, func, idx);
                     self.reg_set(top, dst, Value::Bool(r));

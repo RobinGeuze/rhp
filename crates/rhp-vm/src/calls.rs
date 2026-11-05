@@ -1824,7 +1824,7 @@ impl Vm {
 
     /// The user-code proto a callable value would run (for named-argument
     /// placement before a dynamic call), with its scope class.
-    fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
+    pub(crate) fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
         if let Value::Closure(cd) = deref(c) {
             return match &cd.wrapped {
                 Some(w) => {

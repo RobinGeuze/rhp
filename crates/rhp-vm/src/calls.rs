@@ -1978,6 +1978,22 @@ impl Vm {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
+            // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
+            let r = match r {
+                Err(Thrown::Error {
+                    class: "TypeError",
+                    message,
+                }) if frameless
+                    && message
+                        == "array_key_exists(): Argument #1 ($key) must be a valid array offset type" =>
+                {
+                    Err(Thrown::type_error(format!(
+                        "Cannot access offset of type {} on array",
+                        builtins::zval_type_name(self, &args[0])
+                    )))
+                }
+                r => r,
+            };
             self.flush_stream_diags(builtin.name);
             // (php's opcodes for these have no interrupt check: an
             // out-of-memory error waits for the next one.)

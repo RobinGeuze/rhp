@@ -678,21 +678,7 @@ impl Vm {
                             .then(|| self.caller_strict());
                         let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
-                        let out = match out {
-                            // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
-                            Err(Thrown::Error { class: "TypeError", message })
-                                if inline
-                                    && message
-                                        == "array_key_exists(): Argument #1 ($key) must be a valid array offset type" =>
-                            {
-                                let k = self.reg_get(top, base);
-                                return Err(Thrown::type_error(format!(
-                                    "Cannot access offset of type {} on array",
-                                    rhp_builtins::zval_type_name(self, &k)
-                                )));
-                            }
-                            o => o?,
-                        };
+                        let out = out?;
                         self.reg_set(top, dst, out);
                     }
                     CallTarget::Missing => {

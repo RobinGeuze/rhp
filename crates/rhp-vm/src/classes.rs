@@ -319,6 +319,11 @@ fn inherit_prop(
     inh: &PropEntry,
     pe: &mut PropEntry,
 ) -> Result<(), String> {
+    // A second trait declaring the same property on the class being linked
+    // (not linked yet): trait composition, not inheritance.
+    if inh.declaring_class as usize >= classes.len() {
+        return Ok(());
+    }
     let from_interface = classes
         .get(inh.declaring_class as usize)
         .is_some_and(|c| c.kind == ClassKind::Interface);

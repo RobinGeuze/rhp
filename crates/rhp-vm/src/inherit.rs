@@ -242,6 +242,32 @@ struct PInfo {
     class: ClassId,
     name: PhpStr,
     ty: Option<ZType>,
+    /// prop_get_variance of this (parent) property.
+    variance: PropVariance,
+}
+
+/// php's prop_variance: a virtual property with only a get hook may narrow
+/// its type, one with only a set hook may widen it.
+#[derive(Clone, Copy, PartialEq)]
+enum PropVariance {
+    Invariant,
+    Covariant,
+    Contravariant,
+}
+
+fn prop_variance(pe: &crate::classes::PropEntry) -> PropVariance {
+    match &pe.hooks {
+        Some(h) if pe.virt => {
+            if h[rhp_bytecode::HookKind::Set as usize].is_none() {
+                PropVariance::Covariant
+            } else if h[rhp_bytecode::HookKind::Get as usize].is_none() {
+                PropVariance::Contravariant
+            } else {
+                PropVariance::Invariant
+            }
+        }
+        _ => PropVariance::Invariant,
+    }
 }
 
 enum Obligation {
@@ -1279,8 +1305,16 @@ impl Vm {
         {
             return Status::Success;
         }
-        let s1 = self.covariant_type_check(child.class, &ct, parent.class, &pt);
-        let s2 = self.covariant_type_check(parent.class, &pt, child.class, &ct);
+        let s1 = if parent.variance == PropVariance::Contravariant {
+            Status::Success
+        } else {
+            self.covariant_type_check(child.class, &ct, parent.class, &pt)
+        };
+        let s2 = if parent.variance == PropVariance::Covariant {
+            Status::Success
+        } else {
+            self.covariant_type_check(parent.class, &pt, child.class, &ct)
+        };
         if s1 == Status::Success && s2 == Status::Success {
             Status::Success
         } else if s1 == Status::Error || s2 == Status::Error {
@@ -1296,8 +1330,13 @@ impl Vm {
             .as_ref()
             .map(|t| self.ztype_string(t, parent.class))
             .unwrap_or_default();
+        let rel = match parent.variance {
+            PropVariance::Invariant => "",
+            PropVariance::Covariant => "subtype of ",
+            PropVariance::Contravariant => "supertype of ",
+        };
         let msg = format!(
-            "Type of {}::${} must be {ty} (as in class {})",
+            "Type of {}::${} must be {rel}{ty} (as in class {})",
             lossy(cut_nul(self.class(child.class).name.as_bytes())),
             lossy(child.name.as_bytes()),
             lossy(cut_nul(self.class(parent.class).name.as_bytes())),
@@ -1368,11 +1407,13 @@ impl Vm {
                     class: ce,
                     name: cp.name.clone(),
                     ty: ty(&cp.ty),
+                    variance: PropVariance::Invariant,
                 },
                 PInfo {
                     class: pp.declaring_class,
                     name: pp.name.clone(),
                     ty: ty(&pp.ty),
+                    variance: prop_variance(pp),
                 },
             ));
         }
@@ -1388,11 +1429,13 @@ impl Vm {
                     class: ce,
                     name: PhpStr::from(k.as_slice()),
                     ty: ty(&cs.ty),
+                    variance: PropVariance::Invariant,
                 },
                 PInfo {
                     class: ps.declaring_class,
                     name: PhpStr::from(k.as_slice()),
                     ty: ty(&ps.ty),
+                    variance: PropVariance::Invariant,
                 },
             ));
         }

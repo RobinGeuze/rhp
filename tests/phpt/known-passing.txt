@@ -1438,9 +1438,11 @@ Zend/tests/inheritance/bug63468.phpt
 Zend/tests/inheritance/bug63816.phpt
 Zend/tests/inheritance/bug66286.phpt
 Zend/tests/inheritance/bug70873.phpt
+Zend/tests/inheritance/bug70957.phpt
 Zend/tests/inheritance/bug71248.phpt
 Zend/tests/inheritance/bug71414.phpt
 Zend/tests/inheritance/bug71428.1.phpt
+Zend/tests/inheritance/bug71428.3.phpt
 Zend/tests/inheritance/bug72119.phpt
 Zend/tests/inheritance/bug72496.phpt
 Zend/tests/inheritance/bug73987.phpt
@@ -2046,6 +2048,7 @@ Zend/tests/property_hooks/abstract_prop_without_hooks.phpt
 Zend/tests/property_hooks/array_access.phpt
 Zend/tests/property_hooks/backed_implicit_get.phpt
 Zend/tests/property_hooks/backed_implicit_set.phpt
+Zend/tests/property_hooks/backed_invariant.phpt
 Zend/tests/property_hooks/backing_value_simple.phpt
 Zend/tests/property_hooks/bug001.phpt
 Zend/tests/property_hooks/bug002.phpt

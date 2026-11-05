@@ -60,7 +60,19 @@ impl Vm {
         file: Vec<u8>,
         line: i64,
     ) -> Thrown {
-        self.last_error = Some((64, msg.to_vec(), file.clone(), line));
+        self.fatal_error_at(64, msg, file, line)
+    }
+
+    /// A fatal error of type `ty` (E_COMPILE_ERROR or E_ERROR) raised while
+    /// executing, reported at `file`:`line`.
+    pub(crate) fn fatal_error_at(
+        &mut self,
+        ty: i64,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
+        self.last_error = Some((ty, msg.to_vec(), file.clone(), line));
         let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
         let trace = if ini_bool(&backtraces) {
             let trace = Value::Array(self.build_trace_ex(false, false));
@@ -68,7 +80,7 @@ impl Vm {
         } else {
             Vec::new()
         };
-        self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
+        self.display_error_trace(ty, "Fatal error", msg, &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)
     }
@@ -99,6 +111,19 @@ impl Vm {
 
     /// [`Vm::raise_error`] reported at `file`:`line`.
     pub(crate) fn raise_error_at(&mut self, level: i64, msg: &[u8], file: Vec<u8>, line: i64) {
+        self.raise_error_at_ex(level, msg, file, line, true);
+    }
+
+    /// [`Vm::raise_error_at`]; without `user_handler` the user error
+    /// handler is skipped (php_error_cb only).
+    pub(crate) fn raise_error_at_ex(
+        &mut self,
+        level: i64,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+        user_handler: bool,
+    ) {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
@@ -112,8 +137,17 @@ impl Vm {
                     .and_then(|i| self.stack.get(i))
                     .is_some_and(|f| f.proto.is_internal())
             });
+        // zend_error: these may not be handled in user space.
+        let unsafe_level = level
+            & (builtins::E_ERROR
+                | builtins::E_PARSE
+                | builtins::E_CORE_ERROR
+                | builtins::E_CORE_WARNING
+                | builtins::E_COMPILE_ERROR
+                | builtins::E_COMPILE_WARNING)
+            != 0;
         let handler = match self.error_handlers.last() {
-            _ if prelude_silenced => None,
+            _ if prelude_silenced || unsafe_level || !user_handler => None,
             Some((h, mask)) if !matches!(h, Value::Null | Value::Bool(false)) => {
                 (mask & level != 0).then(|| h.clone())
             }

@@ -1,0 +1,2 @@
+start
+last: 64: R::__isset(): Parameter #1 ($name) must be of type string when declared (decl_diags_before_fatal.inc:5)

@@ -13,6 +13,7 @@ use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
+use crate::checks::{check_decl, Decl, DeclKind};
 use crate::file::FileCtx;
 use crate::fold::fold_const;
 use crate::functions::compile_method;
@@ -299,6 +300,22 @@ pub(crate) fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
 
 pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), class.name.value));
+    check_decl(
+        cx,
+        &Decl {
+            kind: DeclKind::Class,
+            name: &name,
+            short: Some(class.name.value),
+            at: class.class.span.start.offset,
+            extends: class.extends.as_ref(),
+            implements: class.implements.as_ref(),
+            attributes: &class.attribute_lists,
+            is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
+            is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+            backing: None,
+            members: &class.members,
+        },
+    );
     let flags = ClassFlags {
         is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
         is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
@@ -387,6 +404,22 @@ pub(crate) fn compile_anon_class(
     let n = cx.anon_classes.borrow().len();
     name.extend_from_slice(format!(":{}${:x}", cx.line_of(ac.span().start.offset), n).as_bytes());
     let name = PhpStr::from_bytes(name);
+    check_decl(
+        cx,
+        &Decl {
+            kind: DeclKind::Anon,
+            name: &name,
+            short: None,
+            at: ac.class.span.start.offset,
+            extends: ac.extends.as_ref(),
+            implements: ac.implements.as_ref(),
+            attributes: &ac.attribute_lists,
+            is_abstract: false,
+            is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+            backing: None,
+            members: &ac.members,
+        },
+    );
     let flags = ClassFlags {
         is_abstract: false,
         is_final: true,
@@ -437,20 +470,28 @@ pub(crate) fn compile_enum(
 ) -> Result<ClassProto, Thrown> {
     use rhp_bytecode::EnumBacking;
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), en.name.value));
-
-    let backing = match &en.backing_type_hint {
-        None => None,
-        Some(h) => match &h.hint {
-            Hint::Integer(_) => Some(EnumBacking::Int),
-            Hint::String(_) => Some(EnumBacking::Str),
-            _ => {
-                return Err(Thrown::unsupported(
-                    "enum backing type",
-                    "only int and string backings are valid",
-                ))
-            }
+    check_decl(
+        cx,
+        &Decl {
+            kind: DeclKind::Enum,
+            name: &name,
+            short: Some(en.name.value),
+            at: en.r#enum.span.start.offset,
+            extends: None,
+            implements: en.implements.as_ref(),
+            attributes: &en.attribute_lists,
+            is_abstract: false,
+            is_readonly: false,
+            backing: en.backing_type_hint.as_ref().map(|h| &h.hint),
+            members: &en.members,
         },
-    };
+    );
+
+    // An invalid backing type is a compile error (check_decl).
+    let backing = en.backing_type_hint.as_ref().map(|h| match &h.hint {
+        Hint::String(_) => EnumBacking::Str,
+        _ => EnumBacking::Int,
+    });
 
     let mut interfaces: Vec<PhpStr> = en
         .implements
@@ -745,6 +786,22 @@ pub(crate) fn compile_trait(
     t: &crate::parse::cst::Trait,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), t.name.value));
+    check_decl(
+        cx,
+        &Decl {
+            kind: DeclKind::Trait,
+            name: &name,
+            short: Some(t.name.value),
+            at: t.r#trait.span.start.offset,
+            extends: None,
+            implements: None,
+            attributes: &t.attribute_lists,
+            is_abstract: false,
+            is_readonly: false,
+            backing: None,
+            members: &t.members,
+        },
+    );
     let saved = cx.in_trait.replace(true);
     let m = compile_members(cx, &t.members, &name);
     cx.in_trait.set(saved);
@@ -781,6 +838,22 @@ pub(crate) fn compile_interface(
     iface: &crate::parse::cst::Interface,
 ) -> Result<ClassProto, Thrown> {
     let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), iface.name.value));
+    check_decl(
+        cx,
+        &Decl {
+            kind: DeclKind::Interface,
+            name: &name,
+            short: Some(iface.name.value),
+            at: iface.interface.span.start.offset,
+            extends: iface.extends.as_ref(),
+            implements: None,
+            attributes: &iface.attribute_lists,
+            is_abstract: false,
+            is_readonly: false,
+            backing: None,
+            members: &iface.members,
+        },
+    );
     let interfaces: Vec<PhpStr> = iface
         .extends
         .as_ref()

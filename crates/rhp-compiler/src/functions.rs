@@ -50,7 +50,7 @@ pub(crate) fn compile_method(
 
     // Constructor property promotion: a param with a modifier declares a property.
     let mut promoted: Vec<PropProto> = Vec::new();
-    let mut promo_stores: Vec<(NIdx, Reg)> = Vec::new(); // (prop name, param cv)
+    let mut promo_stores: Vec<(NIdx, Reg, bool)> = Vec::new(); // (prop name, param cv, by ref)
 
     let mut params = Vec::new();
     let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
@@ -89,7 +89,7 @@ pub(crate) fn compile_method(
                 },
                 promoted: true,
             });
-            promo_stores.push((c.intern_name(var), cv));
+            promo_stores.push((c.intern_name(var), cv, p.ampersand.is_some()));
         }
         let dmeta = param_default_meta(cx, p, Some(class_name));
         params.push(rhp_bytecode::ParamInfo {
@@ -129,10 +129,22 @@ pub(crate) fn compile_method(
     c.emit_param_defaults(&nonconst_defaults)?;
 
     // Emit `$this->name = $name` for each promoted param, before the body.
-    for (prop_name, param_cv) in &promo_stores {
-        c.emit(Instr::LvalCv { cv: 0 });
-        c.emit(Instr::LvalProp { name: *prop_name });
-        c.emit(Instr::AssignLval { src: *param_cv });
+    // (`$this->name = &$name` for a by-reference parameter.)
+    for &(prop_name, param_cv, by_ref) in &promo_stores {
+        if by_ref {
+            let r = c.alloc_temp();
+            c.emit(Instr::MakeRef {
+                dst: r,
+                cv: param_cv,
+            });
+            c.emit(Instr::LvalCv { cv: 0 });
+            c.emit(Instr::LvalProp { name: prop_name });
+            c.emit(Instr::AssignLvalRef { src: r });
+        } else {
+            c.emit(Instr::LvalCv { cv: 0 });
+            c.emit(Instr::LvalProp { name: prop_name });
+            c.emit(Instr::AssignLval { src: param_cv });
+        }
     }
 
     for s in body_stmts {
@@ -173,6 +185,7 @@ pub(crate) fn compile_function(
     cx: &FileCtx,
     func: &crate::parse::cst::Function,
 ) -> Result<FunctionProto, Thrown> {
+    crate::checks::check_function_params(cx, &func.parameter_list);
     let fname = join_ns(&cx.cur_ns(), func.name.value);
     let mut c = ProtoBuilder::new(cx, PhpStr::from_bytes(fname));
     c.returns_ref = func.ampersand.is_some();

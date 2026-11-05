@@ -36,7 +36,13 @@ pub enum IncludeError {
     },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
-    Compile { message: String, line: u32 },
+    /// `diags` are the diagnostics the compiler raised before it (level,
+    /// message, line).
+    Compile {
+        message: String,
+        line: u32,
+        diags: Vec<(i64, String, u32)>,
+    },
     /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
@@ -119,8 +125,12 @@ impl Vm {
     fn include_error(&mut self, e: IncludeError, file: &str) -> Thrown {
         match e {
             IncludeError::Thrown(t) => t,
-            IncludeError::Compile { message, line } => {
-                self.compile_error(&message, file.as_bytes(), line);
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failed(&message, file.as_bytes(), line, &diags);
                 Thrown::Exit(255)
             }
             // raised outside the file: where the include/eval runs
@@ -144,6 +154,23 @@ impl Vm {
     /// error_get_last(), displayed with php 8.5's backtrace (the frames
     /// running the include/eval, `#0 {main}` for the main script), and
     /// objects are no longer destructed. The caller bails out (exit 255).
+    /// A file failed to compile: the diagnostics raised before the error,
+    /// then the error itself ([`Vm::compile_error`]).
+    pub fn compile_failed(
+        &mut self,
+        message: &str,
+        file: &[u8],
+        line: u32,
+        diags: &[(i64, String, u32)],
+    ) {
+        // Recorded while compiling; php emits them without the user error
+        // handler when the compile bails out.
+        for (level, msg, l) in diags {
+            self.raise_error_at_ex(*level, msg.as_bytes(), file.to_vec(), *l as i64, false);
+        }
+        self.compile_error(message, file, line);
+    }
+
     pub fn compile_error(&mut self, message: &str, file: &[u8], line: u32) {
         let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
         let trace = if ini_bool(&backtraces) {

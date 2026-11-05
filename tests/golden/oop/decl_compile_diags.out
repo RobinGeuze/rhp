@@ -1,0 +1,5 @@
+start
+handler: 8192: Using "_" as a class name is deprecated since 8.4 (decl_compile_diags.inc:2)
+handler: 2: The magic method Q::__get() must have public visibility (decl_compile_diags.inc:4)
+included
+last: 128: Private methods cannot be final as they are never overridden by other classes (decl_compile_diags.inc:3)

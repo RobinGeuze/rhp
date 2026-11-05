@@ -469,6 +469,9 @@ impl ProtoBuilder<'_> {
         c.returns_ref = returns_ref;
         for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
+            if name != b"this" {
+                c.static_vars.push(name.clone());
+            }
         }
         let return_type = ret_hint.and_then(|h| compile_type(self.cx, h, true).map(|t| t.hint));
         c.ret_type = return_type.clone();
@@ -600,10 +603,26 @@ impl ProtoBuilder<'_> {
         let mut types = Vec::new();
         for (idx, p) in list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
+            let pline = cx.line_of(p.span().start.offset);
             if var == b"this" {
+                return Err(compile_error("Cannot use $this as parameter", pline));
+            }
+            if idx > 0
+                && list
+                    .parameters
+                    .iter()
+                    .nth(idx - 1)
+                    .is_some_and(|q| q.ellipsis.is_some())
+            {
                 return Err(compile_error(
-                    "Cannot use $this as parameter",
-                    cx.line_of(p.span().start.offset),
+                    "Only the last parameter can be variadic",
+                    pline,
+                ));
+            }
+            if p.ellipsis.is_some() && p.default_value.is_some() {
+                return Err(compile_error(
+                    "Variadic parameter cannot have a default value",
+                    pline,
                 ));
             }
             let cv = self.cv(var); // params get CVs in order

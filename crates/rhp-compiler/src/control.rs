@@ -181,6 +181,33 @@ impl ProtoBuilder<'_> {
             SwitchBody::ColonDelimited(b) => b.cases.iter().collect(),
         };
 
+        // zend_compile_switch's per-case checks.
+        let mut has_default = false;
+        for case in &cases {
+            use crate::parse::cst::SwitchCaseSeparator;
+            use mago_span::HasSpan;
+            let (sep, is_default) = match case {
+                SwitchCase::Expression(c) => (&c.separator, false),
+                SwitchCase::Default(c) => (&c.separator, true),
+            };
+            let at = case.span().start.offset;
+            if matches!(sep, SwitchCaseSeparator::SemiColon(_)) {
+                self.cx.diag(
+                    rhp_values::E_DEPRECATED,
+                    at,
+                    "Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead".into(),
+                );
+            }
+            if is_default {
+                if has_default {
+                    return Err(compile_error(
+                        "Switch statements may only contain one default clause",
+                        self.cx.line_of(at),
+                    ));
+                }
+                has_default = true;
+            }
+        }
         // Dispatch: compare the subject against each case (loose ==), in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new(); // (case idx, jmp pos, cond reg)
         for (idx, case) in cases.iter().enumerate() {
@@ -275,6 +302,10 @@ impl ProtoBuilder<'_> {
         };
         if is_this(inner_val) || key_expr.is_some_and(is_this) {
             return Err(reassign_this(self.cur_line));
+        }
+        check_globals_write(inner_val, self.cur_line)?;
+        if let Some(k) = key_expr {
+            check_globals_write(k, self.cur_line)?;
         }
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
@@ -698,6 +729,19 @@ impl ProtoBuilder<'_> {
         let subject = self.compile_expr(m.expression)?;
         let dst = self.alloc_temp();
         let arms: Vec<&MatchArm> = m.arms.iter().collect();
+        let mut has_default = false;
+        for arm in &arms {
+            if let MatchArm::Default(d) = arm {
+                if has_default {
+                    use mago_span::HasSpan;
+                    return Err(compile_error(
+                        "Match expressions may only contain one default arm",
+                        self.cx.line_of(d.span().start.offset),
+                    ));
+                }
+                has_default = true;
+            }
+        }
 
         // Dispatch: strict === against each arm condition, in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new();

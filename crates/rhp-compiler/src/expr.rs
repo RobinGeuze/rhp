@@ -386,7 +386,30 @@ impl ProtoBuilder<'_> {
         match &u.operator {
             Op::PreIncrement(_) => return self.compile_inc_dec(u.operand, true, 1),
             Op::PreDecrement(_) => return self.compile_inc_dec(u.operand, true, -1),
-            Op::UnsetCast(..) | Op::VoidCast(..) | Op::RealCast(..) => {
+            Op::UnsetCast(..) => {
+                return Err(compile_error(
+                    "The (unset) cast is no longer supported",
+                    self.cur_line,
+                ))
+            }
+            Op::BinaryCast(..) | Op::BooleanCast(..) | Op::DoubleCast(..) | Op::IntegerCast(..) => {
+                // The scanner's 8.5 deprecation of the long cast spellings.
+                use mago_span::HasSpan;
+                let (from, to) = match &u.operator {
+                    Op::BinaryCast(..) => ("binary", "string"),
+                    Op::BooleanCast(..) => ("boolean", "bool"),
+                    Op::DoubleCast(..) => ("double", "float"),
+                    _ => ("integer", "int"),
+                };
+                self.cx.diag(
+                    rhp_values::E_DEPRECATED,
+                    u.operator.span().start.offset,
+                    format!(
+                        "Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"
+                    ),
+                );
+            }
+            Op::VoidCast(..) | Op::RealCast(..) => {
                 return Err(Thrown::unsupported(
                     "(unset)/(void)/(real) cast",
                     "removed/refused in PHP 8",
@@ -490,6 +513,18 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_conditional(&mut self, c: &crate::parse::cst::Conditional) -> Result<Reg, Thrown> {
+        // zend_compile_conditional: nested unparenthesized ternaries.
+        if let Expression::Conditional(inner) = c.condition {
+            let msg = match (inner.then.is_some(), c.then.is_some()) {
+                (true, true) => Some("Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`"),
+                (true, false) => Some("Unparenthesized `a ? b : c ?: d` is not supported. Use either `(a ? b : c) ?: d` or `a ? b : (c ?: d)`"),
+                (false, true) => Some("Unparenthesized `a ?: b ? c : d` is not supported. Use either `(a ?: b) ? c : d` or `a ?: (b ? c : d)`"),
+                (false, false) => None,
+            };
+            if let Some(msg) = msg {
+                return Err(compile_error(msg, self.cur_line));
+            }
+        }
         let dst = self.alloc_temp();
         let cond = self.compile_expr(c.condition)?;
         let jf = self.code.len();
@@ -692,6 +727,18 @@ impl ProtoBuilder<'_> {
             Construct::RequireOnce(i) => self.compile_include(i.value, IncludeKind::RequireOnce),
             Construct::Isset(i) => {
                 // AND over each operand: true iff every value is non-null.
+                for v in i.values.iter() {
+                    let mut e: &Expression = v;
+                    while let Expression::Parenthesized(p) = e {
+                        e = p.expression;
+                    }
+                    if !crate::assign::is_variable(e) {
+                        return Err(compile_error(
+                            "Cannot use isset() on the result of an expression (you can use \"null !== expression\" instead)",
+                            self.cur_line,
+                        ));
+                    }
+                }
                 let dst = self.alloc_temp();
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {

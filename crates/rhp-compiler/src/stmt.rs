@@ -160,12 +160,23 @@ impl ProtoBuilder<'_> {
                         StaticItem::Abstract(a) => &a.variable,
                         StaticItem::Concrete(c) => &c.variable,
                     };
-                    if strip_dollar(var.name) == b"this" {
+                    let vname = strip_dollar(var.name);
+                    if vname == b"this" {
                         return Err(compile_error(
                             "Cannot use $this as static variable",
                             self.cur_line,
                         ));
                     }
+                    if self.static_vars.iter().any(|n| n == vname) {
+                        return Err(compile_error(
+                            format!(
+                                "Duplicate declaration of static variable ${}",
+                                String::from_utf8_lossy(vname)
+                            ),
+                            self.cur_line,
+                        ));
+                    }
+                    self.static_vars.push(vname.to_vec());
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
                         StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {

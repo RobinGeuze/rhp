@@ -2,6 +2,8 @@
 
 use std::rc::Rc;
 
+use mago_span::HasSpan;
+
 use crate::parse::cst::{
     Access, Class, ClassLikeMember, Expression, Hint, Modifier, Node, Property, PropertyItem,
 };
@@ -156,8 +158,24 @@ pub(crate) fn compile_attributes(
                     // (name, expr) pairs; positional args have no name.
                     let mut items: Vec<(Option<&[u8]>, &Expression)> = Vec::new();
                     for arg in al.arguments.iter() {
+                        let at = arg.span().start.offset;
                         match arg {
+                            PA::Positional(_) if items.iter().any(|(n, _)| n.is_some()) => {
+                                cx.fatal(
+                                    at,
+                                    "Cannot use positional argument after named argument".into(),
+                                );
+                            }
                             PA::Positional(p) => items.push((None, p.value)),
+                            PA::Named(n) if items.iter().any(|(k, _)| *k == Some(n.name.value)) => {
+                                cx.fatal(
+                                    at,
+                                    format!(
+                                        "Duplicate named parameter ${}",
+                                        String::from_utf8_lossy(n.name.value)
+                                    ),
+                                );
+                            }
                             PA::Named(n) => items.push((Some(n.name.value), n.value)),
                             _ => {}
                         }

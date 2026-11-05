@@ -420,7 +420,19 @@ impl Host for Vm {
         let n = (f.argc).min(f.proto.params.len());
         let mut out = Vec::new();
         for p in f.proto.params.iter().take(n) {
-            out.push(deref(&f.regs[p.cv as usize]).clone());
+            if !p.variadic {
+                out.push(deref(&f.regs[p.cv as usize]).clone());
+                continue;
+            }
+            // The variadic's positional arguments; extra named ones are
+            // not counted.
+            if let Value::Array(a) = deref(&f.regs[p.cv as usize]) {
+                for (k, v) in a.iter() {
+                    if let ArrayKey::Int(_) = k {
+                        out.push(deref(v));
+                    }
+                }
+            }
         }
         out.extend(f.extra_args.iter().cloned());
         out

@@ -1499,7 +1499,18 @@ impl Vm {
                     argc,
                 } => {
                     let pname = proto.names[name as usize].clone();
-                    self.exec_parent_hook(top, dst, pname, kind, base, argc)?;
+                    let args = crate::hooks::HookArgs::Window { base, argc };
+                    self.exec_parent_hook(top, dst, pname, kind, args)?;
+                }
+                Instr::CallParentHookV {
+                    dst,
+                    name,
+                    kind,
+                    args,
+                } => {
+                    let pname = proto.names[name as usize].clone();
+                    let args = crate::hooks::HookArgs::Array(args);
+                    self.exec_parent_hook(top, dst, pname, kind, args)?;
                 }
                 Instr::CallStaticDyn {
                     dst,
@@ -1610,6 +1621,20 @@ impl Vm {
                         let argv =
                             self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                         self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
+                    } else {
+                        // No constructor: php calls zend_pass_function,
+                        // which has no parameters.
+                        let arr = self.reg_get(top, args);
+                        let (_, named) = self.split_call_args(&arr)?;
+                        if let Some((name, _)) = named.first() {
+                            return Err(Thrown::error(
+                                "Error",
+                                format!(
+                                    "Unknown named parameter ${}",
+                                    String::from_utf8_lossy(name.as_bytes())
+                                ),
+                            ));
+                        }
                     }
                 }
                 Instr::CallMethodV {

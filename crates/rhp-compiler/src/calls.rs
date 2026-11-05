@@ -1,6 +1,7 @@
 //! Calls: function, method and static calls, argument passing and by-reference parameters.
 
 use crate::parse::cst::{Access, Argument, Expression, Identifier, Variable};
+use mago_span::HasSpan;
 use rhp_bytecode::{CallFlags, ClassRef, Instr, NIdx, Reg};
 use rhp_values::{Thrown, Value};
 
@@ -65,7 +66,8 @@ impl ProtoBuilder<'_> {
         // php special-compiles none of these (zend_try_compile_special_func
         // gives up on unpacking and named arguments), so no CallFlags.
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
-            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let known = self.known_params(&name_bytes, &fallback);
+            let args = self.build_args_array_known(Some(&fc.argument_list), known.as_ref())?;
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
@@ -596,12 +598,83 @@ impl ProtoBuilder<'_> {
         &mut self,
         args: Option<&crate::parse::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
+        self.build_args_array_known(args, None)
+    }
+
+    /// The parameters of a function the compiler knows by name (a function
+    /// of this file, or a builtin), for by-reference named arguments.
+    fn known_params(&self, name: &[u8], fallback: &Option<Vec<u8>>) -> Option<KnownParams> {
+        let name_lc = name.to_ascii_lowercase();
+        let global_lc = fallback.as_ref().map(|f| f.to_ascii_lowercase());
+        for key in std::iter::once(&name_lc).chain(global_lc.as_ref()) {
+            if let (Some(by_ref), Some((names, variadic))) =
+                (self.cx.sigs.get(key), self.cx.sig_names.get(key))
+            {
+                return Some(KnownParams {
+                    fname: String::from_utf8_lossy(name).into_owned(),
+                    names: names.clone(),
+                    by_ref: by_ref.clone(),
+                    prefer_ref: vec![false; by_ref.len()],
+                    variadic: *variadic,
+                });
+            }
+        }
+        let f = builtin_sig(self.cx, global_lc.as_deref().unwrap_or(&name_lc))?;
+        Some(KnownParams {
+            fname: f.name.to_string(),
+            names: f
+                .params
+                .iter()
+                .map(|p| p.name.as_bytes().to_vec())
+                .collect(),
+            by_ref: f.params.iter().map(|p| p.by_ref()).collect(),
+            prefer_ref: f.params.iter().map(|p| p.prefer_ref()).collect(),
+            variadic: f.params.last().is_some_and(|p| p.variadic()),
+        })
+    }
+
+    /// [`ProtoBuilder::build_args_array`] for a call to a known function:
+    /// an argument for a by-reference parameter (found by position, or by
+    /// name for a named one) travels as a reference.
+    fn build_args_array_known(
+        &mut self,
+        args: Option<&crate::parse::cst::ArgumentList>,
+        known: Option<&KnownParams>,
+    ) -> Result<Reg, Thrown> {
+        if let Some(list) = args {
+            self.check_arg_order(list);
+        }
         let dst = self.alloc_temp();
         self.emit(Instr::NewArray { dst, cap: 0 });
         if let Some(list) = args {
+            let mut names: Vec<&[u8]> = Vec::new();
+            let (mut pos, mut unpacked) = (0usize, false);
+            let known = known.filter(|k| k.by_ref.iter().any(|&r| r));
             for arg in list.arguments.iter() {
                 match arg {
+                    // A repeated name: zend_handle_named_arg finds the slot
+                    // taken when the second one is sent.
+                    Argument::Named(n) if names.contains(&n.name.value) => {
+                        self.compile_expr(n.value)?;
+                        let msg = format!(
+                            "Named parameter ${} overwrites previous argument",
+                            String::from_utf8_lossy(n.name.value)
+                        );
+                        self.emit_throw_error(&msg);
+                    }
+                    Argument::Positional(p) if p.ellipsis.is_none() && !unpacked => {
+                        let idx = known.and_then(|k| k.param(Some(pos), None));
+                        pos += 1;
+                        match self.compile_known_ref_arg(p.value, known, idx)? {
+                            Some(r) => self.emit(Instr::ArrPushRef { arr: dst, val: r }),
+                            None => {
+                                let r = self.compile_expr(p.value)?;
+                                self.emit(Instr::ArrPush { arr: dst, val: r });
+                            }
+                        }
+                    }
                     Argument::Positional(p) => {
+                        unpacked |= p.ellipsis.is_some();
                         let r = self.compile_expr(p.value)?;
                         if p.ellipsis.is_some() {
                             self.emit(Instr::ArgSpread { arr: dst, src: r });
@@ -612,20 +685,135 @@ impl ProtoBuilder<'_> {
                     // A named argument travels under its name (the callee's
                     // parameter list places it at run time).
                     Argument::Named(n) => {
-                        let r = self.compile_expr(n.value)?;
+                        names.push(n.name.value);
+                        // After an unpack php no longer knows the callee.
+                        let known = known.filter(|_| !unpacked);
+                        let idx = known.and_then(|k| k.param(None, Some(n.name.value)));
+                        let by_ref = self.compile_known_ref_arg(n.value, known, idx)?;
+                        let r = match by_ref {
+                            Some(r) => r,
+                            None => self.compile_expr(n.value)?,
+                        };
                         let k = self.intern_const(Value::str(n.name.value.to_vec()));
                         let key = self.alloc_temp();
                         self.emit(Instr::LoadConst { dst: key, k });
-                        self.emit(Instr::ArrSet {
-                            arr: dst,
-                            key,
-                            val: r,
-                        });
+                        if unpacked {
+                            // The unpack may have passed this name: add it
+                            // as an unpack of its own, which checks that.
+                            let one = self.alloc_temp();
+                            self.emit(Instr::NewArray { dst: one, cap: 1 });
+                            self.emit(Instr::ArrSet {
+                                arr: one,
+                                key,
+                                val: r,
+                            });
+                            self.emit(Instr::ArgSpread { arr: dst, src: one });
+                        } else if by_ref.is_some() {
+                            self.emit(Instr::ArrSetRef {
+                                arr: dst,
+                                key,
+                                val: r,
+                            });
+                        } else {
+                            self.emit(Instr::ArrSet {
+                                arr: dst,
+                                key,
+                                val: r,
+                            });
+                        }
                     }
                 }
             }
         }
         Ok(dst)
+    }
+
+    /// An argument for by-reference parameter `idx` of a known callee, as
+    /// a register holding a reference; `None` when it goes by value.
+    /// php's SEND_REF for a variable; SEND_VAR_NO_REF for a call result
+    /// (by value, with a notice); SEND_VAL for a temporary, which throws.
+    fn compile_known_ref_arg(
+        &mut self,
+        e: &Expression,
+        known: Option<&KnownParams>,
+        idx: Option<usize>,
+    ) -> Result<Option<Reg>, Thrown> {
+        let (Some(k), Some(i)) = (known, idx) else {
+            return Ok(None);
+        };
+        if !k.by_ref[i] {
+            return Ok(None);
+        }
+        let dst = self.alloc_temp();
+        match e {
+            Expression::Variable(Variable::Direct(d))
+                if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this") =>
+            {
+                let cv = self.cv(strip_dollar(d.name));
+                self.emit(Instr::MakeRef { dst, cv });
+            }
+            Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(Access::Property(_))
+            | Expression::Access(Access::StaticProperty(_))
+                if variable_rooted_lvalue(e) =>
+            {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(e, &mut steps)?;
+                self.emit_cursor(root, &steps);
+                self.emit(Instr::MakeRefLval { dst });
+            }
+            _ if k.prefer_ref[i] => return Ok(None),
+            Expression::Call(_) => {
+                let src = self.compile_expr(e)?;
+                self.emit(Instr::SendNoRef { dst, src });
+            }
+            _ => {
+                self.compile_expr(e)?;
+                let named = if k.variadic && i + 1 == k.names.len() {
+                    String::new()
+                } else {
+                    format!(" (${})", String::from_utf8_lossy(&k.names[i]))
+                };
+                let msg = format!(
+                    "{}(): Argument #{}{named} could not be passed by reference",
+                    k.fname,
+                    i + 1
+                );
+                self.emit_throw_error(&msg);
+            }
+        }
+        Ok(Some(dst))
+    }
+
+    /// zend_compile_args' compile-time order checks: no positional argument
+    /// after a named one or an unpack, no unpack after a named argument.
+    pub(crate) fn check_arg_order(&self, list: &crate::parse::cst::ArgumentList) {
+        let (mut named, mut unpack) = (false, false);
+        for arg in list.arguments.iter() {
+            let msg = match arg {
+                Argument::Named(_) => {
+                    named = true;
+                    continue;
+                }
+                Argument::Positional(p) if p.ellipsis.is_some() => {
+                    if !named {
+                        unpack = true;
+                        continue;
+                    }
+                    "Cannot use argument unpacking after named arguments"
+                }
+                Argument::Positional(_) if unpack => {
+                    "Cannot use positional argument after argument unpacking"
+                }
+                Argument::Positional(_) if named => {
+                    "Cannot use positional argument after named argument"
+                }
+                Argument::Positional(_) => continue,
+            };
+            self.cx.fatal(arg.span().start.offset, msg.to_string());
+            return;
+        }
     }
 
     /// Marshal positional args into a contiguous register window.
@@ -1069,6 +1257,17 @@ impl ProtoBuilder<'_> {
             Some(_) => {}
         }
         let name = self.intern_name(&pname);
+        if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
+            let args = self.build_args_array(Some(&smc.argument_list))?;
+            let dst = self.alloc_temp();
+            self.emit(Instr::CallParentHookV {
+                dst,
+                name,
+                kind,
+                args,
+            });
+            return Ok(Some(dst));
+        }
         let (base, argc) = self.compile_arg_window_ex(Some(&smc.argument_list), &[], true)?;
         let dst = self.alloc_temp();
         self.emit(Instr::CallParentHook {
@@ -1165,6 +1364,30 @@ pub(crate) fn has_spread(list: &crate::parse::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
         .any(|a| matches!(a, Argument::Positional(p) if p.ellipsis.is_some()))
+}
+
+/// A known callee's parameters (see `ProtoBuilder::known_params`).
+pub(crate) struct KnownParams {
+    fname: String,
+    names: Vec<Vec<u8>>,
+    by_ref: Vec<bool>,
+    prefer_ref: Vec<bool>,
+    variadic: bool,
+}
+
+impl KnownParams {
+    /// The parameter a positional argument `pos` or a named one binds to
+    /// (a variadic parameter takes the rest and unknown names).
+    fn param(&self, pos: Option<usize>, name: Option<&[u8]>) -> Option<usize> {
+        let n = self.names.len();
+        let fixed = n - usize::from(self.variadic);
+        let i = match (pos, name) {
+            (Some(i), _) if i < fixed => return Some(i),
+            (_, Some(name)) => self.names[..fixed].iter().position(|p| p == name),
+            _ => None,
+        };
+        i.or((self.variadic).then(|| n - 1))
+    }
 }
 
 /// The callee a SEND_FUNC_ARG check asks: a method on the object in a

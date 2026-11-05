@@ -702,6 +702,13 @@ pub enum Instr {
         base: Reg,
         argc: u16,
     },
+    /// `CallParentHook` with named arguments: the packed arguments array.
+    CallParentHookV {
+        dst: Reg,
+        name: NIdx,
+        kind: HookKind,
+        args: Reg,
+    },
     /// `C::$m(args)` / `$class::$m(args)`: static call whose method name is a
     /// runtime string in register `name`.
     CallStaticDyn {

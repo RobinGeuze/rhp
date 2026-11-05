@@ -40,6 +40,9 @@ pub(crate) struct FileCtx<'s> {
     /// Function name (fully qualified, lowercase) -> per-parameter by-ref
     /// flags, so a call site can pass by reference to a function it names.
     pub(crate) sigs: HashMap<Vec<u8>, Vec<bool>>,
+    /// The parameter names of the same functions, and whether the last one
+    /// is variadic (for placing named arguments at compile time).
+    pub(crate) sig_names: HashMap<Vec<u8>, (Vec<Vec<u8>>, bool)>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -110,6 +113,7 @@ impl<'s> FileCtx<'s> {
             is_prelude: false,
             strict_types: false,
             sigs: HashMap::new(),
+            sig_names: HashMap::new(),
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -148,6 +152,13 @@ impl<'s> FileCtx<'s> {
                     .iter()
                     .map(|p| p.ampersand.is_some())
                     .collect();
+                let params = &func.parameter_list.parameters;
+                let names = params
+                    .iter()
+                    .map(|p| crate::util::strip_dollar(p.variable.name).to_vec())
+                    .collect();
+                let variadic = params.iter().last().is_some_and(|p| p.ellipsis.is_some());
+                cx.sig_names.insert(fqn.clone(), (names, variadic));
                 cx.sigs.insert(fqn, flags);
             }
         }

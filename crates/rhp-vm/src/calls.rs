@@ -95,6 +95,9 @@ pub(crate) struct NativeCall {
     /// php 8.4 runs the call without a frame of its own
     /// (ZEND_FRAMELESS_ICALL), though traces still list it.
     pub(crate) frameless_icall: bool,
+    /// Unknown named arguments a variadic builtin was passed (zpp refuses
+    /// them; a trace shows them), borrowed like `args`.
+    pub(crate) named: *const [(PhpStr, Value)],
 }
 
 impl Vm {
@@ -640,7 +643,8 @@ impl Vm {
                         if let Some(p) = proto.params.iter().find(|p| p.variadic) {
                             if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
                                 for (k, v) in extra {
-                                    a.insert(ArrayKey::Str(k), deref(&v));
+                                    let v = if p.by_ref { v } else { deref(&v) };
+                                    a.insert(ArrayKey::Str(k), v);
                                 }
                             }
                         }
@@ -1801,6 +1805,146 @@ impl Vm {
         Ok(out)
     }
 
+    /// [`Vm::place_named_args`] for a builtin, from its stub arginfo
+    /// (zend_handle_named_arg, then zend_handle_undef_args for an internal
+    /// function): a skipped optional parameter takes its stub default, and
+    /// unknown names go to a variadic builtin's extra named arguments (which
+    /// zpp then refuses). Parameters after the last one passed stay
+    /// unpassed.
+    pub(crate) fn place_builtin_named_args(
+        &mut self,
+        sig: &'static rhp_bytecode::signatures::Func,
+        args: Vec<Value>,
+        named: NamedArgs,
+    ) -> Result<(Vec<Value>, NamedArgs), Thrown> {
+        use rhp_bytecode::signatures::{Signature, U};
+        let params = sig.params;
+        let variadic = params.last().is_some_and(|p| p.variadic());
+        let mut slots: Vec<Option<Value>> = args.into_iter().map(Some).collect();
+        let mut extra: NamedArgs = Vec::new();
+        for (name, v) in named {
+            let lossy = || String::from_utf8_lossy(name.as_bytes()).into_owned();
+            let idx = params
+                .iter()
+                .position(|p| !p.variadic() && p.name.as_bytes() == name.as_bytes());
+            match idx {
+                Some(i) if i < slots.len() && slots[i].is_some() => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!("Named parameter ${} overwrites previous argument", lossy()),
+                    ));
+                }
+                Some(i) => {
+                    if slots.len() <= i {
+                        slots.resize(i + 1, None);
+                    }
+                    slots[i] = Some(v);
+                }
+                None if variadic => {
+                    if extra.iter().any(|(k, _)| k.as_bytes() == name.as_bytes()) {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!("Named parameter ${} overwrites previous argument", lossy()),
+                        ));
+                    }
+                    extra.push((name, v));
+                }
+                None => {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!("Unknown named parameter ${}", lossy()),
+                    ))
+                }
+            }
+        }
+        let required = sig.min_args();
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            if let Some(v) = slot {
+                out.push(v);
+                continue;
+            }
+            let p = &params[i];
+            let fail = |what: &str| {
+                Thrown::error(
+                    "ArgumentCountError",
+                    format!("{}(): Argument #{} (${}) {what}", sig.name, i + 1, p.name),
+                )
+            };
+            if i < required {
+                return Err(fail("not passed"));
+            }
+            let text = match p.default() {
+                Some(t) if p.flags & U == 0 => t,
+                _ => {
+                    return Err(fail(
+                        "must be passed explicitly, because the default value is not known",
+                    ))
+                }
+            };
+            let v = self.stub_default(text)?;
+            out.push(if p.by_ref() {
+                Value::Ref(Rc::new(std::cell::RefCell::new(v)))
+            } else {
+                v
+            });
+        }
+        Ok((out, extra))
+    }
+
+    /// The builtin a callable value names, with its stub signature.
+    fn callable_builtin(
+        &self,
+        c: &Value,
+    ) -> Option<(
+        &'static builtins::Builtin,
+        &'static rhp_bytecode::signatures::Func,
+    )> {
+        if let Value::Closure(cd) = deref(c) {
+            let w = cd.wrapped.as_ref()?;
+            let saved = self
+                .fcc_scope
+                .replace(Some((cd.bound_class, cd.bound_static)));
+            let r = self.callable_builtin(w);
+            self.fcc_scope.set(saved);
+            return r;
+        }
+        match self.resolve_callable(c).ok()? {
+            Callee::Builtin(name) => {
+                let b = builtins::lookup(&name)?;
+                Some((b, rhp_bytecode::signatures::function(b.name.as_bytes())?))
+            }
+            _ => None,
+        }
+    }
+
+    /// The `__call` / `__callStatic` a callable value reaches for a method
+    /// it does not have.
+    #[allow(clippy::type_complexity)]
+    fn callable_magic(
+        &self,
+        c: &Value,
+    ) -> Option<(
+        classes::ResolvedMethod,
+        Option<ObjectHandle>,
+        ClassId,
+        Vec<u8>,
+    )> {
+        if let Value::Closure(cd) = deref(c) {
+            let w = cd.wrapped.as_ref()?;
+            let saved = self
+                .fcc_scope
+                .replace(Some((cd.bound_class, cd.bound_static)));
+            let r = self.callable_magic(w);
+            self.fcc_scope.set(saved);
+            return r;
+        }
+        match self.resolve_callable(c).ok()? {
+            Callee::Magic(m, this, called, name) => Some((m, this, called, name)),
+            _ => None,
+        }
+    }
+
     /// Call a callable value with positional and named arguments.
     pub(crate) fn call_named(
         &mut self,
@@ -1811,13 +1955,49 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         if !named.is_empty() {
             self.autoload_callable_class(c)?;
-            let Some((p, cls)) = self.callable_proto(c) else {
-                return Err(Thrown::unsupported(
-                    "named arguments to a builtin function",
-                    "deferred",
-                ));
-            };
-            args = self.place_named_args(&p, cls, args, named)?;
+            match self.callable_proto(c) {
+                Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,
+                None => match self.callable_builtin(c) {
+                    Some((b, sig)) => {
+                        let (args, extra) = self.place_builtin_named_args(sig, args, named)?;
+                        // Z_PARAM_VARIADIC_WITH_NAMED: forwarded.
+                        if b.name == "call_user_func" && !args.is_empty() {
+                            return self.call_named(&args[0], args[1..].to_vec(), extra, None);
+                        }
+                        let strict = caller == Some(true);
+                        return self.run_builtin_sig(
+                            b,
+                            Some(sig),
+                            args,
+                            &extra,
+                            false,
+                            false,
+                            strict,
+                        );
+                    }
+                    None => match self.callable_magic(c) {
+                        // A trampoline: __call gets the named arguments
+                        // under their names in its $args array.
+                        Some((m, this, called, name)) => {
+                            let mut arr = PhpArray::new();
+                            for a in args {
+                                arr.push(a);
+                            }
+                            for (k, v) in named {
+                                arr.insert(ArrayKey::Str(k), deref(&v));
+                            }
+                            let argv = vec![Value::str(name), Value::Array(arr)];
+                            return self.call_sync_mode(&m, this, called, argv, caller);
+                        }
+                        None => {
+                            return Err(Thrown::unsupported(
+                                "named arguments to this callable",
+                                "deferred",
+                            ))
+                        }
+                    },
+                },
+            }
         }
         self.call_callable_value_mode(c, args, caller)
     }
@@ -1894,7 +2074,7 @@ impl Vm {
             self.dtor_check = true;
         }
         let strict = self.stack[top].proto.strict_types;
-        self.run_builtin_sig(builtin, sig, args, frameless, icall, strict)
+        self.run_builtin_sig(builtin, sig, args, &[], frameless, icall, strict)
     }
 
     /// Call a builtin by name with a pre-collected argument vector, its
@@ -1937,15 +2117,18 @@ impl Vm {
         strict: bool,
     ) -> Result<Value, Thrown> {
         let sig = rhp_bytecode::signatures::function(builtin.name.as_bytes());
-        self.run_builtin_sig(builtin, sig, args, frameless, false, strict)
+        self.run_builtin_sig(builtin, sig, args, &[], frameless, false, strict)
     }
 
-    /// [`Vm::run_builtin`] with the builtin's stub signature.
+    /// [`Vm::run_builtin`] with the builtin's stub signature, and the
+    /// unknown named arguments a call to a variadic builtin collected.
+    #[allow(clippy::too_many_arguments)]
     fn run_builtin_sig(
         &mut self,
         builtin: &'static builtins::Builtin,
         sig: Option<&'static rhp_bytecode::signatures::Func>,
         mut args: Vec<Value>,
+        extra: &[(PhpStr, Value)],
         frameless: bool,
         icall: bool,
         strict: bool,
@@ -1966,6 +2149,17 @@ impl Vm {
             Some(e) => (Some(e), 0),
             None => {
                 match self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall) {
+                    // ZPP_ERROR_UNEXPECTED_EXTRA_NAMED, at the variadic.
+                    Ok(shown) if !extra.is_empty() => (
+                        Some(Thrown::error(
+                            "ArgumentCountError",
+                            format!(
+                                "{}() does not accept unknown named parameters",
+                                builtin.name
+                            ),
+                        )),
+                        shown,
+                    ),
                     Ok(shown) => (None, shown),
                     Err((e, shown)) => (Some(e), shown),
                 }
@@ -2008,6 +2202,7 @@ impl Vm {
             shown_str,
             caller,
             frameless_icall: icall,
+            named: extra as *const [(PhpStr, Value)],
         });
         let r = match zpp_error {
             Some(e) => Err(e),
@@ -2118,22 +2313,29 @@ impl Vm {
                 let argv = self.place_named_args(&callee.proto, None, argv, named)?;
                 self.push_user_frame(callee, Args::Slice(&argv), dst)?;
             }
-            _ if !named.is_empty() => {
-                // `call_user_func($f, ...named)` forwards them.
-                let cuf = matches!(target, CallTarget::Builtin(b, _) if b.name == "call_user_func");
-                if cuf && !argv.is_empty() {
-                    let out = self.call_named(&argv[0], argv[1..].to_vec(), named, None)?;
-                    self.reg_set(top, dst, out);
-                } else {
-                    return Err(Thrown::unsupported(
-                        "named arguments to a builtin function",
-                        "deferred",
-                    ));
-                }
+            CallTarget::Builtin(builtin, _)
+                if !named.is_empty() && builtin.name == "call_user_func" && !argv.is_empty() =>
+            {
+                // Z_PARAM_VARIADIC_WITH_NAMED: forwarded to the callback.
+                let out = self.call_named(&argv[0], argv[1..].to_vec(), named, None)?;
+                self.reg_set(top, dst, out);
             }
             CallTarget::Builtin(builtin, sig) => {
+                let (argv, extra) = if named.is_empty() {
+                    (argv, Vec::new())
+                } else {
+                    let Some(s) =
+                        sig.or_else(|| rhp_bytecode::signatures::function(builtin.name.as_bytes()))
+                    else {
+                        return Err(Thrown::unsupported(
+                            "named arguments to a builtin function without arginfo",
+                            "deferred",
+                        ));
+                    };
+                    self.place_builtin_named_args(s, argv, named)?
+                };
                 let strict = self.caller_strict();
-                let out = self.run_builtin_sig(builtin, sig, argv, false, false, strict)?;
+                let out = self.run_builtin_sig(builtin, sig, argv, &extra, false, false, strict)?;
                 self.reg_set(top, dst, out);
             }
             CallTarget::Missing => return Err(undefined_function(name)),

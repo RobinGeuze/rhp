@@ -84,61 +84,110 @@ fn verify_list_target(target: &Expression, list_style: bool, line: u32) -> Resul
     }
 }
 
-/// zend_try_compile_special_func: calls php compiles to an opcode with a
-/// temporary result (no writable container).
-const SPECIAL_FUNCS: &[&[u8]] = &[
-    b"strlen",
-    b"is_null",
-    b"is_bool",
-    b"is_long",
-    b"is_int",
-    b"is_integer",
-    b"is_float",
-    b"is_double",
-    b"is_string",
-    b"is_array",
-    b"is_object",
-    b"is_resource",
-    b"is_scalar",
-    b"boolval",
-    b"intval",
-    b"floatval",
-    b"doubleval",
-    b"strval",
-    b"defined",
-    b"chr",
-    b"ord",
-    b"call_user_func_array",
-    b"call_user_func",
-    b"in_array",
-    b"sizeof",
-    b"get_class",
-    b"get_called_class",
-    b"gettype",
-    b"func_num_args",
-    b"func_get_args",
-    b"array_slice",
-    b"array_key_exists",
-    b"sprintf",
-];
+impl ProtoBuilder<'_> {
+    /// A call php compiles to an opcode with a temporary result in a write
+    /// context (zend_try_compile_special_func with BP_VAR_W): no container
+    /// to write to. Each builtin has its own shape; any other call returns
+    /// a VAR that php separates.
+    pub(crate) fn is_builtin_call(&self, e: &Expression) -> bool {
+        use crate::parse::cst::{Argument, Call, Identifier, Literal};
+        let Expression::Call(Call::Function(fc)) = e else {
+            return false;
+        };
+        let name: &[u8] = match fc.function {
+            Expression::Identifier(Identifier::FullyQualified(f)) => &f.value[1..],
+            Expression::Identifier(Identifier::Local(l)) if self.cx.cur_ns().is_empty() => l.value,
+            _ => return false,
+        };
+        let mut args = Vec::new();
+        for a in fc.argument_list.arguments.iter() {
+            match a {
+                Argument::Positional(p) if p.ellipsis.is_none() => args.push(p.value),
+                _ => return false,
+            }
+        }
+        let n = args.len();
+        let in_function = self.scope_kind != crate::builder::ScopeKind::Main;
+        let lit = |e: &Expression| matches!(e, Expression::Literal(_));
+        match name.to_ascii_lowercase().as_slice() {
+            b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+            | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+            | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval"
+            | b"doubleval" | b"strval" | b"count" | b"sizeof" | b"gettype" => n == 1,
+            b"defined" => {
+                n == 1
+                    && match args[0] {
+                        Expression::Literal(Literal::String(s)) => !s
+                            .value
+                            .unwrap_or(s.raw)
+                            .iter()
+                            .any(|&b| b == b'\\' || b == b':'),
+                        other => lit(other),
+                    }
+            }
+            b"get_class" => n <= 1,
+            b"get_called_class" => n == 0,
+            b"func_num_args" | b"func_get_args" => n == 0 && in_function,
+            b"array_key_exists" => n == 2,
+            b"array_slice" => {
+                in_function
+                    && n == 2
+                    && matches!(args[1], Expression::Literal(Literal::Integer(_)))
+                    && matches!(args[0], Expression::Call(Call::Function(inner))
+                        if inner.argument_list.arguments.is_empty()
+                            && matches!(inner.function, Expression::Identifier(id)
+                                if { let n = crate::names::identifier_name(id);
+                                    n.strip_prefix(b"\\").unwrap_or(n)
+                                        .eq_ignore_ascii_case(b"func_get_args") }))
+            }
+            b"in_array" => {
+                let strict = match n {
+                    2 => false,
+                    3 => match args[2] {
+                        Expression::Literal(l) => {
+                            rhp_values::conv::to_bool(&crate::fold::literal_value(l))
+                        }
+                        Expression::ConstantAccess(ca) => match self.ct_constant(&ca.name) {
+                            Some(v) => rhp_values::conv::to_bool(&v),
+                            None => return false,
+                        },
+                        _ => return false,
+                    },
+                    _ => return false,
+                };
+                self.in_array_haystack_ok(args[1], strict)
+            }
+            b"sprintf" => n >= 1 && sprintf_is_rope(self.cx, args[0], n - 1),
+            _ => false,
+        }
+    }
+}
 
-/// A call php compiles as a built-in (a TMP result).
-pub(crate) fn is_builtin_call(cx: &crate::file::FileCtx, e: &Expression) -> bool {
-    use crate::parse::cst::{Argument, Call, Identifier};
-    let Expression::Call(Call::Function(fc)) = e else {
+/// zend_compile_func_sprintf's shape: a constant format under 256 bytes of
+/// only `%s`, `%d` and `%%`, with one value per placeholder.
+fn sprintf_is_rope(cx: &crate::file::FileCtx, format: &Expression, values: usize) -> bool {
+    let Ok(rhp_values::Value::Str(f)) = crate::fold::fold_const(cx, format) else {
         return false;
     };
-    let name: &[u8] = match fc.function {
-        Expression::Identifier(Identifier::FullyQualified(f)) => &f.value[1..],
-        Expression::Identifier(Identifier::Local(l)) if cx.cur_ns().is_empty() => l.value,
-        _ => return false,
-    };
-    let lc = name.to_ascii_lowercase();
-    SPECIAL_FUNCS.contains(&lc.as_slice())
-        && !fc.argument_list.arguments.iter().any(|a| {
-            matches!(a, Argument::Named(_))
-                || matches!(a, Argument::Positional(p) if p.ellipsis.is_some())
-        })
+    let f = f.as_bytes();
+    if f.len() >= 256 {
+        return false;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i < f.len() {
+        if f[i] == b'%' {
+            match f.get(i + 1) {
+                Some(b's' | b'd') => count += 1,
+                Some(b'%') => {}
+                _ => return false,
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    count == values
 }
 
 /// zend_is_variable.
@@ -260,7 +309,7 @@ impl ProtoBuilder<'_> {
             | Expression::Access(Access::Property(_)) => self.check_write_chain(b, unset, line),
             // Reported by ensure_writable on the whole target.
             Expression::Access(Access::NullSafeProperty(_)) => Ok(()),
-            e if is_builtin_call(self.cx, e) => Err(compile_error(
+            e if self.is_builtin_call(e) => Err(compile_error(
                 "Cannot use result of built-in function in write context",
                 line,
             )),
@@ -483,7 +532,7 @@ impl ProtoBuilder<'_> {
                 ));
             }
             self.check_write_chain(src, false, self.cur_line)?;
-        } else if is_builtin_call(self.cx, src) {
+        } else if self.is_builtin_call(src) {
             return Err(compile_error(
                 "Cannot use result of built-in function in write context",
                 self.cur_line,

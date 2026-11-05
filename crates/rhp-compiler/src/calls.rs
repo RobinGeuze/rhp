@@ -463,25 +463,28 @@ impl ProtoBuilder<'_> {
             ));
         }
         let strict = rhp_values::conv::to_bool(&flag);
-        let haystack = arg(1)?;
+        self.in_array_haystack_ok(arg(1)?, strict).then_some(strict)
+    }
+
+    /// zend_compile_func_in_array's haystack: a constant array of only
+    /// strings and ints (strict) or only non-numeric strings.
+    pub(crate) fn in_array_haystack_ok(&self, haystack: &Expression, strict: bool) -> bool {
         if !matches!(haystack, Expression::Array(_) | Expression::LegacyArray(_)) {
-            return None;
+            return false;
         }
         let Ok(Value::Array(a)) = crate::fold::fold_const(self.cx, haystack) else {
-            return None;
+            return false;
         };
-        a.iter()
-            .all(|(_, v)| match v {
-                Value::Int(_) => strict,
-                Value::Str(s) => strict || rhp_values::conv::numeric_string(s.as_bytes()).is_none(),
-                _ => false,
-            })
-            .then_some(strict)
+        a.iter().all(|(_, v)| match v {
+            Value::Int(_) => strict,
+            Value::Str(s) => strict || rhp_values::conv::numeric_string(s.as_bytes()).is_none(),
+            _ => false,
+        })
     }
 
     /// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
     /// global builtin constant that is not deprecated.
-    fn ct_constant(&self, id: &Identifier) -> Option<Value> {
+    pub(crate) fn ct_constant(&self, id: &Identifier) -> Option<Value> {
         let namespaced_fq =
             matches!(id, Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
         if !namespaced_fq {

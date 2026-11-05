@@ -1,0 +1,11 @@
+int(1)
+int(1)
+int(1)
+string(1) "1"
+4: Error: Cannot use a scalar value as an array
+string(1) "1"
+string(1) "1"
+7: Error: Cannot use a scalar value as an array
+8: Error: Cannot use a scalar value as an array
+9: ArgumentCountError: strlen() expects exactly 1 argument, 2 given
+string(1) "g"

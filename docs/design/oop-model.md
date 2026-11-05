@@ -678,7 +678,9 @@ zend_object_handlers.c (vm/src/lazy.rs).
   initialized proxy shows its instance.
 - **Not done.** Typed reference sources (php's "Cannot assign string to
   reference held by property") and "Lazy object was released during
-  initialization" (needs refcounts php's way).
+  initialization" (needs refcounts php's way). php's "Can not reset an
+  object during property iteration" check is missing, and
+  reset/next/current do not initialize a lazy object.
 
 ---
 

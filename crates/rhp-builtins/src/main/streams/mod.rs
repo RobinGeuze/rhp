@@ -486,7 +486,8 @@ pub struct LocalFile {
     rpos: usize,
     pos: i64,
     eof: bool,
-    readable: bool,
+    /// The last read failed (php's read op returned -1).
+    failed: bool,
     writable: bool,
     /// The mode string as passed to `fopen` (for `stream_get_meta_data`).
     pub mode: Vec<u8>,
@@ -528,7 +529,7 @@ pub fn parse_fopen_mode(mode: &[u8]) -> Option<(libc::c_int, bool, bool)> {
 impl LocalFile {
     /// `open(2)` a local path with php's fopen-mode rules (perms 0666 & ~umask).
     pub fn open(path: &[u8], mode: &[u8]) -> Option<LocalFile> {
-        let (flags, readable, writable) = parse_fopen_mode(mode)?;
+        let (flags, _, writable) = parse_fopen_mode(mode)?;
         if path.contains(&0) {
             return None;
         }
@@ -545,7 +546,7 @@ impl LocalFile {
             rpos: 0,
             pos: 0,
             eof: false,
-            readable,
+            failed: false,
             writable,
             mode: mode.to_vec(),
             uri: path.to_vec(),
@@ -577,8 +578,17 @@ impl LocalFile {
                     return n;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    self.eof = true;
+                Err(e) => {
+                    let err = e.raw_os_error().unwrap_or(0);
+                    if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
+                        return 0;
+                    }
+                    // php_stdiop_read's notice; EBADF leaves eof unset
+                    plain_wrapper::read_failed(CHUNK, err);
+                    self.failed = true;
+                    if err != libc::EBADF {
+                        self.eof = true;
+                    }
                     return 0;
                 }
             }
@@ -596,9 +606,7 @@ impl LocalFile {
     /// `fread`: greedy (plain files keep reading until `len` bytes or eof).
     /// `None` when the stream is not readable.
     pub fn read(&mut self, len: usize) -> Option<Vec<u8>> {
-        if !self.readable {
-            return None;
-        }
+        self.failed = false;
         let mut out = Vec::new();
         while out.len() < len {
             if self.rpos >= self.rbuf.len() && self.fill() == 0 {
@@ -607,20 +615,20 @@ impl LocalFile {
             let more = self.take(len - out.len());
             out.extend_from_slice(&more);
         }
+        if out.is_empty() && self.failed {
+            return None;
+        }
         Some(out)
     }
 
     /// Read to eof (`stream_get_contents` with no limit).
     pub fn read_all(&mut self) -> Option<Vec<u8>> {
-        self.read(usize::MAX)
+        Some(self.read(usize::MAX).unwrap_or_default())
     }
 
     /// `fgets`: up to and including the next "\n", at most `max` bytes (when
     /// given); `None` at eof with nothing read.
     pub fn gets(&mut self, max: Option<usize>) -> Option<Vec<u8>> {
-        if !self.readable {
-            return None;
-        }
         let mut out = Vec::new();
         loop {
             if let Some(m) = max {
@@ -667,9 +675,6 @@ impl LocalFile {
     /// `fwrite`: `None` when not writable / the write fails.
     pub fn write(&mut self, data: &[u8]) -> Option<usize> {
         use std::io::Write;
-        if !self.writable {
-            return None;
-        }
         self.sync();
         if data.is_empty() {
             return Some(0);
@@ -679,7 +684,14 @@ impl LocalFile {
                 self.pos += data.len() as i64;
                 Some(data.len())
             }
-            Err(_) => None,
+            Err(e) => {
+                // php_stdiop_write's notice
+                let err = e.raw_os_error().unwrap_or(0);
+                if err != libc::EAGAIN && err != libc::EWOULDBLOCK {
+                    plain_wrapper::write_failed(data.len(), err);
+                }
+                None
+            }
         }
     }
 

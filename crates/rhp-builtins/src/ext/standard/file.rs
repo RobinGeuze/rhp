@@ -104,7 +104,13 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     crate::main::streams::clear_errno();
     let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
-    match host.stream_open_ctx(&path, &mode, &ctx) {
+    let use_path = args.get(2).is_some_and(|v| conv::to_bool(&deref(v)));
+    let opened = if use_path && split_scheme(&path).0 == b"file" {
+        open_with_path(host, &path, &mode, &ctx)
+    } else {
+        host.stream_open_ctx(&path, &mode, &ctx)
+    };
+    match opened {
         Some(v) => Ok(v),
         None => {
             if crate::main::streams::split_scheme(&path).0 == b"file"
@@ -127,6 +133,50 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// A plain-file open with USE_PATH: the resolved path, else each
+/// `_php_stream_fopen_with_path` candidate in turn.
+pub(crate) fn open_with_path(
+    host: &mut dyn Host,
+    path: &[u8],
+    mode: &[u8],
+    ctx: &Value,
+) -> Option<Value> {
+    if let Some(r) = resolve_include_path(host, path) {
+        return host.stream_open_ctx(&r, mode, ctx);
+    }
+    for c in include_path_candidates(host, path) {
+        crate::main::streams::clear_errno();
+        if let Some(v) = host.stream_open_ctx(&c, mode, ctx) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+// --- fscanf() ------------------------------------------------------------------
+
+/// `fscanf`: one line read like `php_stream_get_line`, then the sscanf
+/// engine.
+fn fn_fscanf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = args.first().map(deref).unwrap_or(Value::Null);
+    if !matches!(v, Value::Resource(_)) {
+        return Err(Thrown::type_error(format!(
+            "fscanf(): Argument #1 ($stream) must be of type resource, {} given",
+            crate::zend::zpp::zval_value_name(host, &v)
+        )));
+    }
+    if host.stream_kind(&v).is_none() {
+        return Err(Thrown::type_error(
+            "fscanf(): supplied resource is not a valid File-Handle resource",
+        ));
+    }
+    let format = str_arg(args, 1);
+    let Some(line) = host.stream_gets(&v) else {
+        return Ok(Value::Bool(false));
+    };
+    crate::ext::standard::scanf::php_sscanf_internal(&line, &format, &args[2.min(args.len())..])
 }
 
 // --- file() --------------------------------------------------------------------
@@ -170,10 +220,8 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             None => return Ok(Value::Bool(false)),
         }
     } else if flags & USE_INCLUDE_PATH != 0 {
-        match resolve_include_path(&path) {
-            Some(p) => host.stream_get_contents(&p),
-            None => host.stream_get_contents(&path),
-        }
+        let p = include_path_target(host, &path);
+        host.stream_get_contents(&p)
     } else {
         host.stream_get_contents(&path)
     };
@@ -772,10 +820,8 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     crate::main::streams::clear_errno();
     let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
-        match resolve_include_path(&path) {
-            Some(p) => host.stream_get_contents(&p),
-            None => host.stream_get_contents(&path),
-        }
+        let p = include_path_target(host, &path);
+        host.stream_get_contents(&p)
     } else {
         host.stream_get_contents(&path)
     };
@@ -956,40 +1002,136 @@ fn fn_tmpfile(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 /// `fpassthru($stream)`: output the rest of the stream; bytes written.
 fn fn_fpassthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "fpassthru", "stream")?;
-    let data = host.stream_read(&h, -1).unwrap_or_default();
-    host.write_out(&data);
-    Ok(Value::Int(data.len() as i64))
+    // _php_stream_passthru: 8K reads; a failed first read is -1
+    let mut count = 0i64;
+    loop {
+        match host.stream_read(&h, 8192) {
+            Some(d) if !d.is_empty() => {
+                host.write_out(&d);
+                count += d.len() as i64;
+            }
+            Some(_) => break,
+            None if count == 0 => return Ok(Value::Int(-1)),
+            None => break,
+        }
+    }
+    Ok(Value::Int(count))
 }
 
-/// php_resolve_path() against the default include_path (".").
-pub(crate) fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
-    if name.contains(&0) {
+/// The length of a leading `scheme` followed by `://` (php's protocol
+/// test: alphanumerics, `+`, `-`, `.`, at least two of them).
+fn protocol_len(s: &[u8]) -> Option<usize> {
+    let p = s
+        .iter()
+        .position(|&c| !(c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.')))
+        .unwrap_or(s.len());
+    (p > 1 && s[p..].starts_with(b"://")).then_some(p)
+}
+
+/// The directory of the executing script, for php's include_path fallback
+/// (`None` when the file name has no slash).
+fn exec_dir(host: &dyn Host) -> Option<Vec<u8>> {
+    let f = host.executing_file()?;
+    let i = f.iter().rposition(|&c| c == b'/')?;
+    (i > 0).then(|| f[..i].to_vec())
+}
+
+/// `php_resolve_path(filename, PG(include_path))`: the real path of the
+/// first include_path entry (then the executing script's directory) that
+/// holds `name`.
+pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u8>> {
+    if name.is_empty() || name.contains(&0) {
         return None;
     }
     // Paths with a protocol: only file:// resolves.
-    let mut p = 0;
-    while p < name.len()
-        && (name[p].is_ascii_alphanumeric() || matches!(name[p], b'+' | b'-' | b'.'))
-    {
-        p += 1;
-    }
-    if p > 1
-        && name.get(p) == Some(&b':')
-        && name.get(p + 1) == Some(&b'/')
-        && name.get(p + 2) == Some(&b'/')
-    {
+    if protocol_len(name).is_some() {
         let (scheme, _) = split_scheme(name);
         if scheme.eq_ignore_ascii_case(b"file") {
             return realpath_bytes(crate::main::streams::file_path(name));
         }
         return None;
     }
-    if name.starts_with(b"./") || name.starts_with(b"../") || name.starts_with(b"/") {
+    let path = host.ini_get(b"include_path").unwrap_or_default();
+    if name.starts_with(b"./")
+        || name.starts_with(b"../")
+        || name.starts_with(b"/")
+        || path.is_empty()
+    {
         return realpath_bytes(name);
     }
-    let mut t = b"./".to_vec();
-    t.extend_from_slice(name);
-    realpath_bytes(&t)
+    // A candidate: a wrapper entry is stat'ed through its wrapper, a plain
+    // one resolved with realpath.
+    let try_path = |trypath: &[u8], wrapper: bool| -> Option<Vec<u8>> {
+        if wrapper {
+            let (scheme, _) = split_scheme(trypath);
+            if scheme.eq_ignore_ascii_case(b"file") {
+                return realpath_bytes(crate::main::streams::file_path(trypath));
+            }
+            return host.stream_stat(trypath).map(|_| trypath.to_vec());
+        }
+        realpath_bytes(trypath)
+    };
+    let mut rest: &[u8] = &path;
+    while !rest.is_empty() {
+        // `.://` and `..://` are not wrappers
+        let mut skip = 0;
+        let mut wrapper = false;
+        if let Some(p) = protocol_len(rest) {
+            if !(p == 2 && &rest[..2] == b"..") {
+                skip = p + 3;
+                wrapper = true;
+            }
+        }
+        let (entry, next) = match rest[skip..].iter().position(|&c| c == b':') {
+            Some(i) => (&rest[..skip + i], &rest[skip + i + 1..]),
+            None => (rest, &[][..]),
+        };
+        rest = next;
+        let mut trypath = entry.to_vec();
+        trypath.push(b'/');
+        trypath.extend_from_slice(name);
+        if let Some(r) = try_path(&trypath, wrapper) {
+            return Some(r);
+        }
+    }
+    let mut trypath = exec_dir(host)?;
+    trypath.push(b'/');
+    trypath.extend_from_slice(name);
+    let wrapper = protocol_len(&trypath).is_some();
+    try_path(&trypath, wrapper)
+}
+
+/// The paths `_php_stream_fopen_with_path` tries, in order, for a plain
+/// file opened with `use_include_path` that did not resolve (a new file
+/// is created in the first directory that allows it).
+pub(crate) fn include_path_candidates(host: &dyn Host, name: &[u8]) -> Vec<Vec<u8>> {
+    let relative = name.first() == Some(&b'.') && {
+        let dots = name.iter().take_while(|&&c| c == b'.').count();
+        name.get(dots) == Some(&b'/') && (dots == 1 || name.get(1) == Some(&b'.'))
+    };
+    let path = host.ini_get(b"include_path").unwrap_or_default();
+    if relative || name.starts_with(b"/") || path.is_empty() {
+        return vec![name.to_vec()];
+    }
+    let mut pathbuf = path;
+    if let Some(dir) = exec_dir(host) {
+        pathbuf.push(b':');
+        pathbuf.extend_from_slice(&dir);
+    }
+    pathbuf
+        .split(|&c| c == b':')
+        .filter(|d| !d.is_empty())
+        .map(|d| [d, b"/", name].concat())
+        .collect()
+}
+
+/// Where a plain-file read with `use_include_path` opens: the resolved
+/// path, else the name as given.
+pub(crate) fn include_path_target(host: &dyn Host, name: &[u8]) -> Vec<u8> {
+    if split_scheme(name).0 != b"file" {
+        return name.to_vec();
+    }
+    resolve_include_path(host, name).unwrap_or_else(|| name.to_vec())
 }
 
 /// `file_put_contents`'s flag to append.
@@ -1082,7 +1224,12 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
     }
     let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
-    if !use_include_path {
+    let url = if use_include_path {
+        include_path_target(host, &url)
+    } else {
+        url
+    };
+    {
         if !reserve_file_read(&url, offset, maxlen) {
             host.consume_resource_ids(1);
             return Ok(Value::str(""));
@@ -1616,6 +1763,7 @@ pub fn register(m: &mut crate::Registry) {
             ("popen", fn_popen),
             ("pclose", fn_pclose),
             ("fnmatch", fn_fnmatch),
+            ("fscanf", fn_fscanf),
         ],
     );
 }

@@ -45,6 +45,30 @@ pub fn push_diag(level: i64, docref: bool, msg: impl Into<String>) {
     HAS_DIAGS.with(|f| f.set(true));
 }
 
+/// php_stdiop_read's notice for a failed `read(2)` of `count` bytes.
+pub fn read_failed(count: usize, err: i32) {
+    push_diag(
+        crate::E_NOTICE,
+        true,
+        format!(
+            "Read of {count} bytes failed with errno={err} {}",
+            super::strerror(err)
+        ),
+    );
+}
+
+/// php_stdiop_write's notice for a failed `write(2)` of `count` bytes.
+pub fn write_failed(count: usize, err: i32) {
+    push_diag(
+        crate::E_NOTICE,
+        true,
+        format!(
+            "Write of {count} bytes failed with errno={err} {}",
+            super::strerror(err)
+        ),
+    );
+}
+
 /// A new request: drop what an earlier one queued and never reported
 /// (a stream closed while its engine was dropped).
 pub(crate) fn reset_state() {
@@ -388,6 +412,7 @@ impl FdStream {
             if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
                 return Fill::Nothing;
             }
+            read_failed(buf.len(), err);
             if err != libc::EBADF {
                 self.eof = true;
             }

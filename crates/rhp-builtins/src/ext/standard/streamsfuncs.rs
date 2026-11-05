@@ -1315,9 +1315,9 @@ fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Bool(!(is_url || is_data)))
 }
 
-fn fn_stream_resolve_include_path(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_stream_resolve_include_path(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = path_param(args, 0, "stream_resolve_include_path", "filename")?;
-    Ok(resolve_include_path(&name)
+    Ok(resolve_include_path(host, &name)
         .map(Value::str)
         .unwrap_or(Value::Bool(false)))
 }

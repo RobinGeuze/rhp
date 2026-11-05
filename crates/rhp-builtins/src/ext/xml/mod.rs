@@ -11,15 +11,15 @@
 mod compat;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::c_int;
 use std::rc::{Rc, Weak};
 
-use rhp_values::{conv, ArrayKey, ObjectData, ObjectHandle, PhpArray, PhpRef, PhpStr, Value};
+use rhp_values::{conv, ArrayKey, ObjectData, PhpArray, PhpRef, PhpStr, Value};
 
 use crate::ext::libxml::{ffi, sys};
-use crate::ext::zpp::{deref, given_type, long_arg};
-use crate::{Builtin, Host, Thrown};
+use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
+use crate::zend::zpp::{deref, long_arg};
+use crate::{Host, Thrown};
 
 const XML_MAXLEVEL: i32 = 255;
 
@@ -114,51 +114,49 @@ impl Drop for Parser {
 
 type ParserRef = Rc<RefCell<Parser>>;
 
+/// `XMLParser`'s handlers: no clone, not comparable. The parser is the
+/// object's payload.
+pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "XMLParser",
+    handlers: &ObjectHandlers::OPAQUE,
+    create_object: true,
+}];
+
 thread_local! {
-    static PARSERS: RefCell<HashMap<u32, ParserRef>> = RefCell::new(HashMap::new());
+    /// The parsers created on this thread. A parser holds PHP values (the
+    /// `xml_set_object` target, handlers) that often hold the parser's own
+    /// object; php's cycle collector, or its end-of-request free of every
+    /// object, breaks that cycle. rhp has neither, so a new request drops
+    /// what the old request's parsers still hold.
+    static LIVE: RefCell<Vec<Weak<RefCell<Parser>>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A new request: object ids restart.
+/// A new request: release the PHP values earlier requests' parsers hold.
 pub(crate) fn reset_state() {
-    let old = PARSERS.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
-    drop(old);
-}
-
-/// `free_obj` for an XMLParser.
-pub(crate) fn object_freed(id: u32) {
-    let p = PARSERS
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
-        .ok()
-        .flatten();
-    drop(p);
-}
-
-/// Whether `h` is an XMLParser (php: not comparable).
-pub(crate) fn is_parser_object(h: &ObjectHandle) -> bool {
-    let id = h.borrow().id;
-    PARSERS.with(|m| {
-        m.borrow().get(&id).is_some_and(|p| {
-            p.borrow()
-                .index
-                .upgrade()
-                .is_some_and(|o| Rc::ptr_eq(&o, h))
-        })
-    })
+    let live = LIVE.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    for p in live.iter().filter_map(Weak::upgrade) {
+        let held = p.try_borrow_mut().ok().map(|mut p| {
+            (
+                p.object.take(),
+                std::mem::take(&mut p.h),
+                p.data.take(),
+                p.info.take(),
+            )
+        });
+        drop(held);
+    }
 }
 
 /// The XMLParser argument `i` of builtin `fname`, else php's TypeError.
 fn parser_arg(host: &dyn Host, args: &[Value], i: usize, fname: &str) -> Result<ParserRef, Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Value::Object(h) = &v {
-        let id = h.borrow().id;
-        if let Some(p) = PARSERS.with(|m| m.borrow().get(&id).cloned()) {
-            return Ok(p);
-        }
+    if let Some(p) = crate::zend::object_handlers::payload::<RefCell<Parser>>(&v) {
+        return Ok(p);
     }
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($parser) must be of type XMLParser, {} given",
         i + 1,
-        given_type(host, &v)
+        crate::zend::zpp::zval_value_name(host, &v)
     )))
 }
 
@@ -672,7 +670,7 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
                 match xml_get_encoding(&e) {
                     Some(e) => e,
                     None => {
-                        return Err(crate::ext::zpp::value_error(
+                        return Err(crate::zend::zpp::value_error(
                             fname,
                             1,
                             "encoding",
@@ -693,7 +691,6 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
     let Value::Object(h) = &obj else {
         return Err(Thrown::error("Error", "XMLParser is not available"));
     };
-    let id = h.borrow().id;
     let parser = Rc::new(RefCell::new(Parser {
         ctxt: std::ptr::null_mut(),
         use_namespace: false,
@@ -717,9 +714,12 @@ fn create(host: &mut dyn Host, args: &[Value], ns_support: bool) -> Result<Value
         case_folding: true,
     }));
     compat::parser_create(&parser, separator);
-    PARSERS.with(|m| m.borrow_mut().insert(id, parser));
-    // XMLParser uses zend_objects_not_comparable.
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
+    LIVE.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|p| p.strong_count() > 0);
+        l.push(Rc::downgrade(&parser));
+    });
+    crate::zend::object_handlers::set_payload(h, parser);
     Ok(obj)
 }
 
@@ -745,7 +745,7 @@ fn check_string_method_arg(
         return Ok(None);
     }
     let Some(object) = object else {
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             arg_num,
             pname,
@@ -754,7 +754,7 @@ fn check_string_method_arg(
     };
     if !object_has_method(host, object, method) {
         let class = host.object_class_name(object).unwrap_or_default();
-        return Err(crate::ext::zpp::value_error(
+        return Err(crate::zend::zpp::value_error(
             fname,
             arg_num,
             pname,
@@ -810,27 +810,11 @@ fn parse_string(
         Value::Null => {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
-                &format!("{fname}(): Passing null to parameter #{n} (${pname}) of type string is deprecated"),
+                format!("{fname}(): Passing null to parameter #{n} (${pname}) of type string is deprecated").as_bytes(),
             )?;
             Some(Vec::new())
         }
-        Value::Object(_) => {
-            let cls = host.object_class_name(v).unwrap_or_default();
-            let has = host
-                .resolve_class(&cls)
-                .is_some_and(|id| host.class_has_method(id, b"__tostring"));
-            if has {
-                Some(crate::ext::zpp::str_arg(
-                    host,
-                    std::slice::from_ref(v),
-                    0,
-                    fname,
-                    pname,
-                )?)
-            } else {
-                None
-            }
-        }
+        Value::Object(_) => crate::zend::object_handlers::to_string(host, v)?,
         _ => None,
     })
 }
@@ -995,18 +979,14 @@ setter!(
 /// xml_set_object, with PHP_XML_CHECK_NEW_THIS_METHODS.
 fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_set_object";
-    crate::deprecated_fn(
-        host,
-        F,
-        "8.4",
-        "provide a proper method callable to xml_set_*_handler() functions",
-    )?;
+    // Reached through the prelude's wrapper, not the VM's builtin call.
+    crate::deprecated_function(host, F)?;
     let p = parser_arg(host, args, 0, F)?;
     let new_this = arg(args, 1);
     if !matches!(new_this, Value::Object(_)) {
         return Err(Thrown::type_error(format!(
             "{F}(): Argument #2 ($object) must be of type object, {} given",
-            given_type(host, &new_this)
+            crate::zend::zpp::zval_value_name(host, &new_this)
         )));
     }
     const SET_VIA: [&str; 10] = [
@@ -1039,7 +1019,7 @@ fn fn_set_object(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 // zend_fcc_dtor ran before the check: the slot stays empty.
                 p.borrow_mut().h[slot] = None;
                 let class = host.object_class_name(&new_this).unwrap_or_default();
-                return Err(crate::ext::zpp::value_error(
+                return Err(crate::zend::zpp::value_error(
                     F,
                     2,
                     "object",
@@ -1184,32 +1164,13 @@ fn fn_get_current_byte_index(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 
 fn fn_parser_free(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const F: &str = "xml_parser_free";
-    crate::deprecated_fn(host, F, "8.5", "as it has no effect since PHP 8.0")?;
+    crate::deprecated_function(host, F)?;
     let p = parser_arg(host, args, 0, F)?;
     if p.borrow().isparsing {
         crate::warn(host, F, "Parser cannot be freed while it is parsing")?;
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
-}
-
-/// zval_get_long, with the warning for an object.
-fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
-    match v {
-        Value::Object(_) => {
-            let class = host.object_class_name(v).unwrap_or_default();
-            host.emit_diagnostic(
-                crate::E_WARNING,
-                &format!(
-                    "Object of class {} could not be converted to int",
-                    String::from_utf8_lossy(&class)
-                ),
-            )?;
-            Ok(1)
-        }
-        Value::Array(a) => Ok(!a.is_empty() as i64),
-        other => Ok(conv::to_int(other)),
-    }
 }
 
 fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1220,7 +1181,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if !matches!(value, Value::Bool(_) | Value::Int(_) | Value::Str(_)) {
         let msg = format!(
             "Argument #3 ($value) must be of type string|int|bool, {} given",
-            given_type(host, &value)
+            crate::zend::zpp::zval_type_name(host, &value)
         );
         crate::warn(host, F, &msg)?;
     }
@@ -1237,7 +1198,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             p.borrow_mut().parsehuge = conv::to_bool(&value);
         }
         OPT_SKIP_TAGSTART => {
-            let v = zval_get_long(host, &value)?;
+            let v = crate::zend::zpp::zval_get_long(host, &value)?;
             if !(0..=i32::MAX as i64).contains(&v) {
                 crate::warn(
                     host,
@@ -1256,7 +1217,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             match xml_get_encoding(&s) {
                 Some(e) => p.borrow_mut().target_encoding = e,
                 None => {
-                    return Err(crate::ext::zpp::value_error(
+                    return Err(crate::zend::zpp::value_error(
                         F,
                         3,
                         "value",
@@ -1266,7 +1227,7 @@ fn fn_parser_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             }
         }
         _ => {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 F,
                 2,
                 "option",
@@ -1289,7 +1250,7 @@ fn fn_parser_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         OPT_PARSE_HUGE => Value::Bool(s.parsehuge),
         OPT_TARGET_ENCODING => Value::str(s.target_encoding),
         _ => {
-            return Err(crate::ext::zpp::value_error(
+            return Err(crate::zend::zpp::value_error(
                 F,
                 2,
                 "option",
@@ -1365,25 +1326,9 @@ fn fn_dispatch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     f(host, &args[1..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__xml_fn",
-        Builtin {
-            name: "__xml_fn",
-            func: fn_dispatch,
-            min_args: 1,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "xml_parse_into_struct",
-        Builtin {
-            name: "xml_parse_into_struct",
-            func: fn_parse_into_struct,
-            min_args: 3,
-            max_args: Some(4),
-        },
-    );
+pub fn register(m: &mut crate::Registry) {
+    crate::register(m, &[("xml_parse_into_struct", fn_parse_into_struct)]);
+    crate::register_helpers(m, &[("__xml_fn", fn_dispatch, 1, None)]);
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

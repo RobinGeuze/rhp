@@ -2,7 +2,8 @@
 
 A PHP 8.5 engine in Rust. The reference is php 8.5.12: rhp must print what it
 prints, byte for byte. Start with README.md, then docs/design/ (bytecode.md
-first); tests/phpt/README.md and tests/apps/README.md describe the harnesses.
+first); docs/testing.md says which kind of test to write, and
+tests/phpt/README.md and tests/apps/README.md describe the harnesses.
 
 ## Keep the README's tables current
 
@@ -18,7 +19,8 @@ describes updates it in the same PR.
   `cargo run -p rhp-difftest -- gen readme --php-src <php-src at that commit>`
   (all of its tests; it also rewrites totals.txt). Only the notes column is
   written by hand: update a note when what it says changes. `cargo test`
-  (crates/rhp-difftest/tests/generated.rs) and CI's phpt job check the table.
+  (tools/rhp-difftest/tests/generated.rs) and CI's `generated tables` job
+  check the table.
 - **Application support**: whenever a change makes an app work better or
   worse. Re-measure, and write down only what was checked:
   - Composer: `python3 tests/apps/composer_diff.py` (needs network access).
@@ -32,8 +34,9 @@ describes updates it in the same PR.
 ## Licences
 
 Whenever third-party code is vendored, ported or linked, update
-THIRD-PARTY-NOTICES and the crate's NOTICE file (crates/rhp-csrc/NOTICE) in
-the same change. The policy is in docs/design/libraries.md ("Licences").
+THIRD-PARTY-NOTICES and the crate's NOTICE file (crates/rhp-csrc/NOTICE,
+crates/rhp-mbfl-sys/NOTICE) in the same change. The policy is in
+docs/design/libraries.md ("Licences").
 
 ## Checks
 

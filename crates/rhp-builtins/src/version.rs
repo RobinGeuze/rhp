@@ -5,15 +5,16 @@
 //! is printed by `tools/capture-ref-build.php`; `crates/rhp-cli/tests/ref_build.rs`
 //! runs that script under both php and rhp and requires identical output.
 //!
-//! Libraries rhp links report their own versions (PCRE2: `crate::pcre`); the
-//! ones still listed here are for code that does not link its library yet.
+//! Libraries rhp links report their own versions (PCRE2: `crate::ext::pcre`,
+//! libcurl: `curl_version()`); the ones still listed here are for code that
+//! does not link its library yet.
 //!
 //! Built for another platform (Linux), rhp keeps the reference's release,
 //! [`BUILD_DATE`] and the library versions below: they describe behaviour rhp
-//! implements the same way everywhere (ICU, libcurl, ...). Only the
+//! implements the same way everywhere. Only the
 //! values that describe the platform follow the Ubuntu php CI runs against
 //! (setup-php's build): the install paths, [`BUILD_PROVIDER`],
-//! [`BUILD_SYSTEM`], [`ZEND_VM_KIND`] and libcurl's host triple. There
+//! [`BUILD_SYSTEM`] and [`ZEND_VM_KIND`]. There
 //! ref_build compares the release section only.
 //!
 //! Bumping to a new patch release (e.g. 8.5.13):
@@ -67,15 +68,6 @@ macro_rules! php_api {
         "20250925"
     };
 }
-
-/// libzip's version (`ZipArchive::LIBZIP_VERSION`), as a literal: the zip
-/// prelude splices it into PHP source.
-macro_rules! libzip {
-    () => {
-        "1.12.1"
-    };
-}
-pub(crate) use libzip;
 
 // --- php / Zend identity ---------------------------------------------------
 
@@ -217,83 +209,19 @@ pub const EXT_DOM: &str = "20031129";
 
 // --- linked libraries --------------------------------------------------------
 
-// PCRE_VERSION and friends come from the linked PCRE2 (crate::pcre), the
-// LIBXML_* versions from the linked libxml2 (crate::ext::libxml).
-/// `OPENSSL_VERSION_TEXT` / `OPENSSL_VERSION_NUMBER` (the headers php was
-/// compiled against; curl reports its own runtime OpenSSL below).
-pub const OPENSSL_VERSION_TEXT: &str = "OpenSSL 4.0.3 29 Sep 2026";
-pub const OPENSSL_VERSION_NUMBER: i64 = 0x4000_0030;
-/// `INTL_ICU_VERSION`, `INTL_ICU_DATA_VERSION`.
-pub const ICU_VERSION: &str = "79.1";
-pub const ICU_DATA_VERSION: &str = "79.1";
-/// `ZipArchive::LIBZIP_VERSION`.
-pub const LIBZIP_VERSION: &str = libzip!();
-/// `ICONV_VERSION`.
-pub const ICONV_VERSION: &str = "1.11";
+// PCRE_VERSION and friends come from the linked PCRE2 (crate::ext::pcre), the
+// LIBXML_* versions from the linked libxml2 (crate::ext::libxml), the
+// INTL_ICU_* versions from the linked ICU (crate::ext::intl), the OPENSSL_*
+// ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
+// linked libcurl (crate::ext::curl), ICONV_* from the system iconv
+// (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp),
+// ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip).
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
-/// `GMP_VERSION`.
-pub const GMP_VERSION: &str = "6.3.0";
 
 /// `ZLIB_VERSION`, `ZLIB_VERNUM` (the zlib headers php was compiled against).
 pub const ZLIB_VERSION: &str = "1.2.12";
 pub const ZLIB_VERNUM: i64 = 0x12c0;
 
-/// `curl_version()`: the libcurl the reference php links at run time.
-pub mod curl {
-    pub const VERSION: &str = "8.23.0";
-    pub const VERSION_NUMBER: i64 = 0x08_17_00;
-    pub const AGE: i64 = 11;
-    /// The `CURL_VERSION_*` feature bits (no TLS-SRP: OpenSSL 4 dropped SRP).
-    pub const FEATURES: i64 = 1472137101;
-    /// The triple libcurl was configured for: the reference's on macOS, the
-    /// target's GNU triple elsewhere, as Ubuntu's libcurl reports it
-    /// (x86_64's for any architecture but aarch64).
-    #[cfg(target_os = "macos")]
-    pub const HOST: &str = "aarch64-apple-darwin27.0.0";
-    #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
-    pub const HOST: &str = "aarch64-unknown-linux-gnu";
-    #[cfg(all(not(target_os = "macos"), not(target_arch = "aarch64")))]
-    pub const HOST: &str = "x86_64-pc-linux-gnu";
-    pub const SSL_VERSION: &str = "OpenSSL/4.1.0";
-    /// The libz libcurl links at run time (not [`super::ZLIB_VERSION`],
-    /// php's compile-time zlib, although on the reference they agree).
-    pub const LIBZ_VERSION: &str = "1.2.12";
-    pub const LIBSSH_VERSION: &str = "libssh2/1.11.1";
-    pub const BROTLI_VERSION: &str = "brotli/1.2.1";
-    pub const BROTLI_VER_NUM: i64 = 16785409;
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn derived_values() {
-        assert_eq!(
-            PHP_VERSION_ID,
-            80500 + PHP_RELEASE_VERSION,
-            "PHP_VERSION_ID follows release!()"
-        );
-        assert_eq!(parse_int("12"), 12);
-        assert_eq!(parse_int("0"), 0);
-        assert_eq!(
-            PHP_VERSION,
-            format!(
-                "{PHP_MAJOR_VERSION}.{PHP_MINOR_VERSION}.{PHP_RELEASE_VERSION}{PHP_EXTRA_VERSION}"
-            )
-        );
-        assert_eq!(ZEND_VERSION, format!("4.5.{PHP_RELEASE_VERSION}"));
-        assert!(EXTENSION_DIR.ends_with(PHP_API));
-        // ZLIB_VERNUM packs the dotted version one hex digit per component.
-        let z: Vec<i64> = ZLIB_VERSION
-            .split('.')
-            .map(|p| p.parse().unwrap())
-            .collect();
-        let at = |i: usize| z.get(i).copied().unwrap_or(0) & 0xF;
-        assert_eq!(
-            ZLIB_VERNUM,
-            (at(0) << 12) | (at(1) << 8) | (at(2) << 4) | at(3)
-        );
-    }
-}
+mod tests;

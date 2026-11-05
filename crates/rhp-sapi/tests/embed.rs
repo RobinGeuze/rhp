@@ -6,6 +6,10 @@ use std::rc::Rc;
 
 use rhp_sapi::{run_request, Outcome, Request, RequestInfo, Response, Sapi, Script};
 
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+
 /// Records every call the engine makes, in order.
 #[derive(Clone, Default)]
 struct Recorder {
@@ -50,6 +54,7 @@ fn run(code: &str, ini: &[(&str, &str)], info: RequestInfo) -> (Vec<String>, Out
             args: Vec::new(),
             info: Some(info),
             php_binary: None,
+            cwd: None,
         },
     );
     let events = rec.events.borrow().clone();

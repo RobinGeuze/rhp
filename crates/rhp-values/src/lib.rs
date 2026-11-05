@@ -1,7 +1,7 @@
 //! rhp runtime value model — the zval analogue.
 //!
-//! Pure storage + PHP key/number normalization rules. No AST, no operator
-//! semantics (those live in `rhp-semantics`). Everything here is owned and
+//! Storage, PHP key/number normalization rules and the operators on values
+//! ([`ops`]). No AST. Everything here is owned and
 //! `'static`: the arena holds the AST, the runtime holds owned copies.
 //!
 //! See `docs/design/value-model.md` for the full rationale.
@@ -15,9 +15,30 @@ use rustc_hash::FxBuildHasher;
 
 pub mod conv;
 pub mod fmt;
+pub mod mem;
+pub mod ops;
 pub mod thrown;
 
 pub use thrown::Thrown;
+
+// php's error levels (Zend/zend_errors.h).
+pub const E_ERROR: i64 = 1;
+pub const E_WARNING: i64 = 2;
+pub const E_PARSE: i64 = 4;
+pub const E_NOTICE: i64 = 8;
+pub const E_CORE_ERROR: i64 = 16;
+pub const E_CORE_WARNING: i64 = 32;
+pub const E_COMPILE_ERROR: i64 = 64;
+pub const E_COMPILE_WARNING: i64 = 128;
+pub const E_USER_ERROR: i64 = 256;
+pub const E_USER_WARNING: i64 = 512;
+pub const E_USER_NOTICE: i64 = 1024;
+pub const E_STRICT: i64 = 2048;
+pub const E_RECOVERABLE_ERROR: i64 = 4096;
+pub const E_DEPRECATED: i64 = 8192;
+pub const E_USER_DEPRECATED: i64 = 16384;
+/// Every level but E_STRICT (php 8.4+).
+pub const E_ALL: i64 = 30719;
 
 /// The runtime value. Owned, cheaply cloneable, `'static`.
 ///
@@ -135,12 +156,83 @@ pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    /// Native state (see [`Payload`]). Boxed so that objects without one
+    /// pay a pointer.
+    native: Option<Box<Payload>>,
+}
+
+/// The native state an internal class keeps with each of its objects: what
+/// php's extensions keep in the struct around `zend_object` (a libxml node,
+/// a socket, a curl handle). Set by the builtin that creates the object,
+/// read by builtins and object handlers with [`ObjectData::payload`], and
+/// dropped with the object's storage, which makes the payload's `Drop`
+/// php's `free_obj`: it runs once, when the last reference goes, with no
+/// host, so it must not call into PHP (work that may, such as flushing to a
+/// user stream, belongs in the class's `dtor_obj` handler).
+///
+/// Contract:
+/// - The payload is the only owner of per-object native state: no table
+///   keyed by object id or address. State that lives in the object moves
+///   with it. (ext/xml also keeps weak references to its parsers, only to
+///   break their cycles at the next request; see `ext/xml`.)
+/// - Read it as an `Rc<T>` clone and release the object borrow before
+///   calling into PHP or the host; mutate through a `Cell`/`RefCell` inside
+///   `T`. A payload never holds a strong reference to its own object.
+/// - `Rc<dyn Any>` because objects are `Rc` and stay on their VM's thread
+///   (docs/design/libraries.md, Threading). Today's payloads are `!Send`
+///   (`Cell`, `RefCell`, raw library pointers). If objects ever move
+///   between threads, the alias becomes `Arc<dyn Any + Send + Sync>` and
+///   every payload type changes with it: `Mutex` or atomics instead of
+///   `Cell`/`RefCell`, and a `Send` wrapper for each library handle whose
+///   library allows that.
+pub type Payload = Rc<dyn std::any::Any>;
+
+impl ObjectData {
+    pub fn new(
+        class: ClassId,
+        id: u32,
+        properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    ) -> Self {
+        ObjectData {
+            class,
+            id,
+            properties,
+            native: None,
+        }
+    }
+
+    /// The object's native state, when it is a `T`.
+    pub fn payload<T: std::any::Any>(&self) -> Option<Rc<T>> {
+        self.native.as_deref()?.clone().downcast::<T>().ok()
+    }
+
+    /// Whether the object carries native state.
+    pub fn has_payload(&self) -> bool {
+        self.native.is_some()
+    }
+
+    /// Attach native state, returning the previous one. Drop that after the
+    /// object borrow is released: its `Drop` may touch other objects.
+    pub fn set_payload(&mut self, state: Payload) -> Option<Payload> {
+        match &mut self.native {
+            Some(slot) => Some(std::mem::replace(&mut **slot, state)),
+            None => {
+                self.native = Some(Box::new(state));
+                None
+            }
+        }
+    }
+
+    /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
+    pub fn take_payload(&mut self) -> Option<Payload> {
+        self.native.take().map(|b| *b)
+    }
 }
 
 thread_local! {
-    /// Called with an object's id when its storage is freed (the engine's
-    /// `free_obj` hook: lets native extensions release per-object state, e.g.
-    /// libzip writing an unclosed `ZipArchive`).
+    /// Called with an object's id when its storage is freed, for engine
+    /// state still kept by object id (the internal array pointer of
+    /// objects, archives not on the payload yet).
     static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
 }
 
@@ -151,6 +243,8 @@ pub fn set_object_free_hook(f: fn(u32)) {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
+        // php's free_obj: the native state goes first, then the properties.
+        drop(self.native.take());
         // `try_with`: thread-local teardown may already have run.
         if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
             f(self.id);
@@ -175,14 +269,26 @@ pub enum Visibility {
     Private,
 }
 
-/// Class-level modifier flags.
+/// Class-level flags (php's `ce_flags`).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ClassFlags {
     pub is_abstract: bool,
     pub is_final: bool,
     pub is_readonly: bool,
     /// `#[\AllowDynamicProperties]` (php's ZEND_ACC_ALLOW_DYNAMIC_PROPERTIES).
+    /// Inherited.
     pub allow_dynamic: bool,
+    /// ZEND_ACC_NO_DYNAMIC_PROPERTIES: an internal class's `@strict-properties`
+    /// (enums and readonly classes are checked by kind). Not inherited.
+    pub no_dynamic: bool,
+    /// ZEND_ACC_NOT_SERIALIZABLE (`@not-serializable`): serialize() and
+    /// unserialize() throw. Inherited.
+    pub not_serializable: bool,
+    /// The objects have no `clone_obj` handler: `clone` throws "Trying to
+    /// clone an uncloneable object of class X". php keeps this in the
+    /// handler table, which subclasses inherit with `create_object`; set at
+    /// link time from the class's handlers. Inherited.
+    pub not_cloneable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +319,11 @@ impl PhpStr {
     /// COW mutable access: clones the buffer iff it is currently shared.
     pub fn make_mut(&mut self) -> &mut BString {
         Rc::make_mut(&mut self.0)
+    }
+
+    /// Mutable access when this is the only handle to the buffer.
+    pub fn get_mut(&mut self) -> Option<&mut BString> {
+        Rc::get_mut(&mut self.0)
     }
 }
 
@@ -269,6 +380,15 @@ impl ArrayKey {
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
             Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
         })
+    }
+
+    /// The key as a value (`array_keys`, `foreach`'s key, …).
+    #[inline]
+    pub fn to_value(&self) -> Value {
+        match self {
+            ArrayKey::Int(n) => Value::Int(*n),
+            ArrayKey::Str(s) => Value::Str(s.clone()),
+        }
     }
 
     /// Apply the canonical-integer-string rule to raw bytes.
@@ -559,96 +679,4 @@ impl Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(s: &str) -> ArrayKey {
-        ArrayKey::from_bytes(s.as_bytes())
-    }
-
-    #[test]
-    fn canonical_int_string_rules() {
-        assert_eq!(key("0"), ArrayKey::Int(0));
-        assert_eq!(key("8"), ArrayKey::Int(8));
-        assert_eq!(key("-5"), ArrayKey::Int(-5));
-        assert_eq!(key("9223372036854775807"), ArrayKey::Int(i64::MAX));
-        // stay strings:
-        for s in [
-            "08",
-            "00",
-            "01",
-            "+1",
-            " 1",
-            "1.5",
-            "-0",
-            "9223372036854775808",
-            "",
-        ] {
-            assert!(
-                matches!(key(s), ArrayKey::Str(_)),
-                "{s:?} should be a string key"
-            );
-        }
-    }
-
-    #[test]
-    fn key_from_scalars() {
-        assert_eq!(
-            ArrayKey::from_value(&Value::Bool(true)),
-            Some(ArrayKey::Int(1))
-        );
-        assert_eq!(
-            ArrayKey::from_value(&Value::Bool(false)),
-            Some(ArrayKey::Int(0))
-        );
-        assert_eq!(
-            ArrayKey::from_value(&Value::Float(2.9)),
-            Some(ArrayKey::Int(2))
-        );
-        assert_eq!(
-            ArrayKey::from_value(&Value::Float(-2.9)),
-            Some(ArrayKey::Int(-2))
-        );
-        assert_eq!(
-            ArrayKey::from_value(&Value::Null),
-            Some(ArrayKey::Str(PhpStr::from_bytes(Vec::new())))
-        );
-        assert_eq!(ArrayKey::from_value(&Value::Array(PhpArray::new())), None);
-    }
-
-    #[test]
-    fn float_to_int_cases() {
-        assert_eq!(float_to_int(2.9), 2);
-        assert_eq!(float_to_int(-2.9), -2);
-        assert_eq!(float_to_int(f64::NAN), 0);
-        assert_eq!(float_to_int(f64::INFINITY), 0);
-        assert_eq!(float_to_int(0.0), 0);
-    }
-
-    #[test]
-    fn next_int_high_water() {
-        // [10=>x][] -> keys 10,11
-        let mut a = PhpArray::new();
-        a.insert(ArrayKey::Int(10), Value::str("x"));
-        a.push(Value::str("y"));
-        let keys: Vec<_> = a.iter().map(|(k, _)| k.clone()).collect();
-        assert_eq!(keys, vec![ArrayKey::Int(10), ArrayKey::Int(11)]);
-
-        // negative first key: [-5=>a][] -> keys -5,-4
-        let mut b = PhpArray::new();
-        b.insert(ArrayKey::Int(-5), Value::str("a"));
-        b.push(Value::str("b"));
-        let keys: Vec<_> = b.iter().map(|(k, _)| k.clone()).collect();
-        assert_eq!(keys, vec![ArrayKey::Int(-5), ArrayKey::Int(-4)]);
-    }
-
-    #[test]
-    fn cow_isolation() {
-        let mut a = PhpArray::new();
-        a.push(Value::Int(1));
-        let b = a.clone();
-        a.push(Value::Int(2));
-        assert_eq!(a.len(), 2);
-        assert_eq!(b.len(), 1); // b unaffected — COW
-    }
-}
+mod tests;

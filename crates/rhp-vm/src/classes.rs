@@ -3,7 +3,7 @@
 //! look up methods/static props. See `docs/design/oop.md`.
 //!
 //! Inheritance is flattened at link time (parent merged first, own members
-//! override) for O(1), inline-cacheable dispatch.
+//! override) for O(1) dispatch.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,7 +18,10 @@ use rhp_values::{
     ClassFlags, ClassId, ClassKind, ObjectData, ObjectHandle, PhpStr, Thrown, Value, Visibility,
 };
 
-use crate::{Frame, Vm};
+use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
+
+use crate::calls::Args;
+use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
 
 /// A linked class: all tables flattened from the inheritance chain.
 pub struct ClassEntry {
@@ -36,7 +39,7 @@ pub struct ClassEntry {
     pub traits: Vec<ClassId>,
     /// Flattened vtable, keyed by lowercase method name, in php's member
     /// order (see [`php_member_order`]).
-    pub methods: IndexMap<Vec<u8>, ResolvedMethod>,
+    pub methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
     /// Flattened instance-property slots in php's object layout order, keyed
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
@@ -64,17 +67,27 @@ pub struct ClassEntry {
     /// The declaration this entry was linked from (Reflection metadata:
     /// attributes, doc comments, lines, declared member order).
     pub proto: Rc<ClassProto>,
+    /// The unit `proto` was installed with.
+    pub unit: UnitId,
     /// Declaring file and line (empty file: a built-in class).
     pub decl_file: PhpStr,
     pub decl_line: u32,
-    /// The class or a parent is a built-in class with a native `dtor_obj`
-    /// ([`rhp_builtins::object_dtor`]).
-    pub native_dtor: bool,
+    /// The object handlers: the built-in class's own registration
+    /// ([`rhp_builtins::zend::object_handlers::registered`]), else the parent's (php's
+    /// inherited `create_object`). `None` for plain classes, so the engine
+    /// pays a field test only.
+    pub handlers: Option<&'static ObjectHandlers>,
+    /// php's `ce->create_object` is set (see
+    /// [`rhp_builtins::zend::object_handlers::ClassHandlers::create_object`]).
+    pub create_object: bool,
 }
 
 #[derive(Clone)]
 pub struct ResolvedMethod {
     pub proto: Rc<FunctionProto>,
+    /// The unit `proto` was installed with (a trait method keeps the
+    /// trait's).
+    pub unit: UnitId,
     pub defining_class: ClassId,
     pub visibility: Visibility,
     pub is_static: bool,
@@ -89,7 +102,7 @@ pub struct PropEntry {
     pub default: Value,
     /// A not-yet-evaluated non-constant default (evaluated in the declaring
     /// class's scope by [`Vm::update_class_constants`]).
-    pub init: Option<Rc<FunctionProto>>,
+    pub init: Option<UnitFn>,
     pub visibility: Visibility,
     /// Asymmetric write visibility (`private(set)` / `protected(set)`).
     pub set_visibility: Option<Visibility>,
@@ -121,7 +134,7 @@ pub struct StaticProp {
     /// like `cell` by inheriting classes; what Reflection reports.
     pub default: Rc<RefCell<Value>>,
     /// A not-yet-evaluated non-constant initializer for `cell`.
-    pub init: Option<Rc<FunctionProto>>,
+    pub init: Option<UnitFn>,
     pub visibility: Visibility,
     pub declaring_class: ClassId,
     /// The root declaration's class of a redeclared public/protected static
@@ -150,10 +163,38 @@ pub struct ClassConst {
 #[derive(Clone)]
 pub enum ConstInit {
     /// `const X = <expr>;` — the thunk yields the constant's value.
-    Expr(Rc<FunctionProto>),
+    Expr(UnitFn),
     /// `case C = <expr>;` of a backed enum — the constant's value is already
     /// the case object; the thunk yields its backing `value` property.
-    EnumCase(Rc<FunctionProto>),
+    EnumCase(UnitFn),
+}
+
+/// A linked class's flags: the declaration's, the ones an internal class's
+/// stub gives it (gen_stub's `ce_flags`), the inherited ones
+/// (zend_do_inheritance), and `not_cloneable` from the handlers.
+fn link_flags(
+    proto: &ClassProto,
+    parent: Option<ClassFlags>,
+    handlers: Option<&'static ObjectHandlers>,
+    internal: bool,
+) -> ClassFlags {
+    use rhp_bytecode::signatures as sigs;
+    let mut f = proto.flags;
+    let stub = if internal {
+        sigs::class(proto.name.as_bytes()).map_or(0, |c| c.flags)
+    } else {
+        0
+    };
+    f.allow_dynamic |= stub & sigs::CLASS_ALLOW_DYNAMIC_PROPERTIES != 0;
+    f.no_dynamic |= stub & sigs::CLASS_NO_DYNAMIC_PROPERTIES != 0;
+    f.not_serializable |= stub & sigs::CLASS_NOT_SERIALIZABLE != 0;
+    if let Some(p) = parent {
+        f.allow_dynamic |= p.allow_dynamic;
+        f.not_serializable |= p.not_serializable;
+    }
+    f.not_cloneable = proto.kind == ClassKind::Enum
+        || handlers.is_some_and(|h| matches!(h.clone_obj, CloneObj::None));
+    f
 }
 
 /// The key a declared instance property is stored under in
@@ -202,7 +243,9 @@ pub(crate) enum Deny {
 /// parent method sees the parent's private slot even when a child redeclares
 /// the name); otherwise the most-derived declaration applies, where a parent's
 /// private is invisible (treated as dynamic) and an own private / protected is
-/// an access error.
+/// an access error. Inlined into the property paths, so that its map lookups
+/// stay inlined whichever codegen unit this module lands in.
+#[inline]
 pub(crate) fn resolve_prop(
     classes: &[ClassEntry],
     cls: ClassId,
@@ -421,8 +464,26 @@ pub(crate) fn mangled_prop_key(entry: &ClassEntry, key: &PhpStr) -> PhpStr {
     }
 }
 
+/// Where a program's class declarations go in the declaration table.
+pub(crate) struct DeclRanges {
+    pub(crate) top: std::ops::Range<usize>,
+    pub(crate) anon: std::ops::Range<usize>,
+}
+
+/// A program's user class declarations: (top-level, nested, anonymous).
+/// The compiler appends the anonymous ones after the top-level ones.
+pub(crate) fn decl_layout(prog: &rhp_bytecode::Program) -> (usize, usize, usize) {
+    let user = &prog.classes[prog.num_prelude_classes..];
+    let anon = user
+        .iter()
+        .rev()
+        .take_while(|c| is_anon_name(c.name.as_bytes()))
+        .count();
+    (user.len() - anon, prog.cond_classes.len(), anon)
+}
+
 /// A generated anonymous-class name (`Prefix@anonymous\0file:line$n`).
-fn is_anon_name(name: &[u8]) -> bool {
+pub(crate) fn is_anon_name(name: &[u8]) -> bool {
     name.windows(10).any(|w| w == b"@anonymous")
 }
 
@@ -439,16 +500,40 @@ fn lc(bytes: &[u8]) -> Vec<u8> {
     bytes.to_ascii_lowercase()
 }
 
+/// `f` of `name` lowercased, without allocating when `name` is lowercase
+/// already or short (the run-time lookups by name).
+pub(crate) fn with_lc<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    if !name.iter().any(u8::is_ascii_uppercase) {
+        return f(name);
+    }
+    let mut buf = [0u8; 64];
+    match buf.get_mut(..name.len()) {
+        Some(b) => {
+            b.copy_from_slice(name);
+            b.make_ascii_lowercase();
+            f(b)
+        }
+        None => f(&name.to_ascii_lowercase()),
+    }
+}
+
+fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
+    UnitFn {
+        proto: proto.clone(),
+        unit,
+    }
+}
+
 /// Reorder a resolved member table into php's order: the class's own members
 /// in declaration order, then trait members, then everything inherited (the
 /// parent's table, itself already in this order, followed by interface
 /// members). Only the order changes — which member won is decided by the
 /// caller. This is what reflection and `get_class_*` enumerate.
-fn php_member_order<V>(
-    mut map: IndexMap<Vec<u8>, V>,
+fn php_member_order<V, S: std::hash::BuildHasher + Default>(
+    mut map: IndexMap<Vec<u8>, V, S>,
     first: impl IntoIterator<Item = Vec<u8>>,
-) -> IndexMap<Vec<u8>, V> {
-    let mut out = IndexMap::with_capacity(map.len());
+) -> IndexMap<Vec<u8>, V, S> {
+    let mut out = IndexMap::with_capacity_and_hasher(map.len(), S::default());
     for k in first {
         if let Some(v) = map.shift_remove(&k) {
             out.insert(k, v);
@@ -458,11 +543,126 @@ fn php_member_order<V>(
     out
 }
 
+thread_local! {
+    /// The prelude's classes as linked on this thread (php links its
+    /// internal classes once, at startup): requests start from a copy
+    /// ([`Vm::install_prelude`]). Taken at the thread's second link, so a
+    /// thread that runs one request (the CLI) doesn't pay for it.
+    static LINKED_PRELUDE: RefCell<Option<Rc<LinkedPrelude>>> = const { RefCell::new(None) };
+    /// Whether this thread has linked the prelude before.
+    static PRELUDE_LINKED_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A linked prelude, as no request has used it yet.
+struct LinkedPrelude {
+    /// The declarations it was linked from. The compiler caches the prelude
+    /// per thread, so every program compiled on the thread shares them.
+    protos: Vec<Rc<ClassProto>>,
+    classes: Vec<ClassEntry>,
+    class_ids: FxHashMap<Vec<u8>, ClassId>,
+    class_order: Vec<usize>,
+    /// The capacities linking left `classes` and `class_order` with: the
+    /// copies keep them, so the request's memory accounting is the same.
+    capacity: (usize, usize),
+}
+
+/// A request's own copy of linked classes: the tables are shared values
+/// (their strings and arrays are copy-on-write, their protos immutable),
+/// and each static property gets a fresh cell, aliased between classes as
+/// in `classes`. Enum case objects are not copied: the caller makes sure
+/// there are none.
+fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
+    let mut cells: FxHashMap<usize, Rc<RefCell<Value>>> = FxHashMap::default();
+    let mut fresh = |c: &Rc<RefCell<Value>>| {
+        cells
+            .entry(Rc::as_ptr(c) as usize)
+            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().clone())))
+            .clone()
+    };
+    let mut out = Vec::with_capacity(capacity.max(classes.len()));
+    for e in classes {
+        debug_assert!(e.enum_cases.is_empty());
+        let mut static_props = IndexMap::with_capacity(e.static_props.len());
+        for (k, sp) in &e.static_props {
+            let sp = StaticProp {
+                cell: fresh(&sp.cell),
+                default: fresh(&sp.default),
+                ..sp.clone()
+            };
+            static_props.insert(k.clone(), sp);
+        }
+        out.push(ClassEntry {
+            name: e.name.clone(),
+            kind: e.kind,
+            flags: e.flags,
+            parent: e.parent,
+            ancestors: e.ancestors.clone(),
+            interfaces: e.interfaces.clone(),
+            traits: e.traits.clone(),
+            methods: e.methods.clone(),
+            props: e.props.clone(),
+            prop_visible: e.prop_visible.clone(),
+            own_private: e.own_private.clone(),
+            constants: e.constants.clone(),
+            static_props,
+            enum_cases: Vec::new(),
+            enum_backing: e.enum_backing,
+            updated: e.updated,
+            proto: e.proto.clone(),
+            unit: e.unit,
+            decl_file: e.decl_file.clone(),
+            decl_line: e.decl_line,
+            handlers: e.handlers,
+            create_object: e.create_object,
+        });
+    }
+    out
+}
+
 impl Vm {
-    /// Link every `ClassProto` into the class table, in dependency order so that
-    /// `extends`/`implements`/`use` (which may be forward references) resolve.
-    pub(crate) fn install_classes(&mut self, protos: &[ClassProto]) -> Result<(), Thrown> {
-        let mut pending: Vec<&ClassProto> = protos.iter().collect();
+    /// Link the prelude's classes (the main script's unit 0) into the empty
+    /// class table, or copy them from this thread's earlier link when the
+    /// program carries the same prelude. A prelude with enum cases (it has
+    /// none: the compiler takes only its classes and interfaces) is linked
+    /// every time, since each request needs its own case objects.
+    pub(crate) fn install_prelude(&mut self, protos: &[Rc<ClassProto>]) -> Result<(), Thrown> {
+        debug_assert!(self.classes.is_empty() && self.class_ids.is_empty());
+        let linked = LINKED_PRELUDE.with(|c| c.borrow().clone()).filter(|p| {
+            p.protos.len() == protos.len()
+                && p.protos.iter().zip(protos).all(|(a, b)| Rc::ptr_eq(a, b))
+        });
+        if let Some(p) = linked {
+            self.classes = copy_classes(&p.classes, p.capacity.0);
+            self.class_ids = p.class_ids.clone();
+            self.class_order = Vec::with_capacity(p.capacity.1);
+            self.class_order.extend_from_slice(&p.class_order);
+            return Ok(());
+        }
+        self.install_classes(protos, 0)?;
+        if PRELUDE_LINKED_ONCE.with(|l| l.replace(true))
+            && self.classes.iter().all(|e| e.enum_cases.is_empty())
+        {
+            let p = LinkedPrelude {
+                protos: protos.to_vec(),
+                classes: copy_classes(&self.classes, 0),
+                class_ids: self.class_ids.clone(),
+                class_order: self.class_order.clone(),
+                capacity: (self.classes.capacity(), self.class_order.capacity()),
+            };
+            LINKED_PRELUDE.with(|c| *c.borrow_mut() = Some(Rc::new(p)));
+        }
+        Ok(())
+    }
+
+    /// Link every `ClassProto` of `unit` into the class table, in dependency
+    /// order so that `extends`/`implements`/`use` (which may be forward
+    /// references) resolve.
+    pub(crate) fn install_classes(
+        &mut self,
+        protos: &[Rc<ClassProto>],
+        unit: UnitId,
+    ) -> Result<(), Thrown> {
+        let mut pending: Vec<&Rc<ClassProto>> = protos.iter().collect();
         loop {
             if pending.is_empty() {
                 // All classes linked. Deferred initializers (non-constant
@@ -477,7 +677,7 @@ impl Vm {
             while i < pending.len() {
                 if self.deps_ready(pending[i]) {
                     let proto = pending.remove(i);
-                    self.link_class(proto)?;
+                    self.link_class(proto, unit)?;
                     progressed = true;
                 } else {
                     i += 1;
@@ -507,22 +707,36 @@ impl Vm {
         }
     }
 
-    /// Append a program's user class declarations (top-level, then nested)
-    /// to the flat declaration table, stamped with the file's bases.
-    /// Returns the table range of the top-level ones.
+    /// Append the user class declarations of `unit`'s program to the flat
+    /// declaration table, at the unit's base: the top-level ones, the
+    /// nested ones, then the anonymous ones (`DeclareClass` numbers the
+    /// first two in that order; anonymous classes are found by name).
+    /// Returns the table ranges of the top-level and the anonymous ones.
     pub(crate) fn register_decl_classes(
         &mut self,
         prog: &rhp_bytecode::Program,
-        base: u32,
-    ) -> std::ops::Range<usize> {
-        let cbase = self.decl_classes.len() as u32;
-        let user = prog.classes.iter().skip(prog.num_prelude_classes);
-        for c in user.chain(prog.cond_classes.iter()) {
-            let c = crate::rebase_class(c, base, cbase);
-            self.decl_classes.push((c, false));
+        unit: UnitId,
+    ) -> DeclRanges {
+        let start = self.decl_classes.len();
+        debug_assert_eq!(start, self.units[unit as usize].classes as usize);
+        let (top, nested, anon) = decl_layout(prog);
+        let user = &prog.classes[prog.num_prelude_classes..];
+        let ordered = user[..top]
+            .iter()
+            .chain(prog.cond_classes.iter())
+            .chain(user[top..].iter());
+        for c in ordered {
+            self.decl_classes.push(DeclSlot {
+                proto: c.clone(),
+                unit,
+                done: false,
+            });
         }
-        let start = cbase as usize;
-        start..start + prog.classes.len() - prog.num_prelude_classes
+        let anon_start = start + top + nested;
+        DeclRanges {
+            top: start..start + top,
+            anon: anon_start..anon_start + anon,
+        }
     }
 
     /// Hoist (early-bind) the top-level classes in `range`, in declaration
@@ -531,15 +745,12 @@ impl Vm {
     /// counts, as do an enum's and an interface's `extends` list) and no
     /// traits, whose parent — if any — is already declared. The others stay
     /// undeclared until their `DeclareClass` runs.
-    pub(crate) fn hoist_decl_classes(
-        &mut self,
-        range: std::ops::Range<usize>,
-    ) -> Result<(), Thrown> {
-        for i in range.clone() {
-            if self.decl_classes[i].1 {
+    pub(crate) fn hoist_decl_classes(&mut self, ranges: DeclRanges) -> Result<(), Thrown> {
+        for i in ranges.top.clone() {
+            if self.decl_classes[i].done {
                 continue;
             }
-            let proto = self.decl_classes[i].0.clone();
+            let proto = self.decl_classes[i].proto.clone();
             if is_anon_name(proto.name.as_bytes()) {
                 continue;
             }
@@ -559,15 +770,15 @@ impl Vm {
                 continue;
             }
             self.link_slot(i, &proto)?;
-            self.decl_classes[i].1 = true;
+            self.decl_classes[i].done = true;
         }
         // Anonymous classes (registered with the file's classes under their
         // generated names) are linked up front, once their dependencies are.
         loop {
             let mut progressed = false;
-            for i in range.clone() {
-                let proto = &self.decl_classes[i].0;
-                if self.decl_classes[i].1
+            for i in ranges.anon.clone() {
+                let proto = &self.decl_classes[i].proto;
+                if self.decl_classes[i].done
                     || !is_anon_name(proto.name.as_bytes())
                     || self.class_ids.contains_key(&lc(proto.name.as_bytes()))
                     || !self.deps_ready(proto)
@@ -576,7 +787,7 @@ impl Vm {
                 }
                 let proto = proto.clone();
                 self.link_slot(i, &proto)?;
-                self.decl_classes[i].1 = true;
+                self.decl_classes[i].done = true;
                 progressed = true;
             }
             if !progressed {
@@ -591,13 +802,13 @@ impl Vm {
     /// an executed declaration again (a nested class in a function called
     /// twice, a loop) is php's redeclaration error.
     pub(crate) fn declare_class_at(&mut self, slot: usize) -> Result<(), Thrown> {
-        let Some((proto, done)) = self.decl_classes.get(slot) else {
+        let Some(decl) = self.decl_classes.get(slot) else {
             return Ok(());
         };
-        if *done && !self.decl_runtime.contains(&slot) {
+        if decl.done && !self.decl_runtime.contains(&slot) {
             return Ok(());
         }
-        let proto = proto.clone();
+        let proto = decl.proto.clone();
         if let Some(&old) = self.class_ids.get(&lc(proto.name.as_bytes())) {
             // zend_class_redeclaration_error: a fatal compile error.
             let old = &self.classes[old as usize];
@@ -612,7 +823,7 @@ impl Vm {
                     old.decl_line
                 )
             };
-            return Err(self.fatal_compile_error(&msg));
+            return Err(self.fatal_compile_error(msg.as_bytes()));
         }
         let deps = proto
             .parent
@@ -653,23 +864,23 @@ impl Vm {
             self.in_autoload.remove(&self_key);
         }
         self.link_slot(slot, &proto)?;
-        self.decl_classes[slot].1 = true;
+        self.decl_classes[slot].done = true;
         self.decl_runtime.insert(slot);
         Ok(())
     }
 
     /// Link the class compiled into `decl_classes` slot `slot`, recording
     /// that slot as its class-table position.
-    fn link_slot(&mut self, slot: usize, proto: &ClassProto) -> Result<(), Thrown> {
+    pub(crate) fn link_slot(&mut self, slot: usize, proto: &Rc<ClassProto>) -> Result<(), Thrown> {
         let id = self.classes.len();
-        self.link_class(proto)?;
+        self.link_class(proto, self.decl_classes[slot].unit)?;
         if let Some(o) = self.class_order.get_mut(id) {
             *o = slot;
         }
         Ok(())
     }
 
-    fn deps_ready(&self, p: &ClassProto) -> bool {
+    pub(crate) fn deps_ready(&self, p: &ClassProto) -> bool {
         let known = |n: &PhpStr| self.class_ids.contains_key(&lc(n.as_bytes()));
         p.parent.as_ref().is_none_or(known)
             && p.interfaces.iter().all(known)
@@ -691,7 +902,7 @@ impl Vm {
             .or_else(|| p.traits.iter().find_map(missing))
     }
 
-    fn link_class(&mut self, proto: &ClassProto) -> Result<(), Thrown> {
+    fn link_class(&mut self, proto: &Rc<ClassProto>, unit: UnitId) -> Result<(), Thrown> {
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -702,20 +913,21 @@ impl Vm {
         // An *abstract* method is only a requirement: it must never clobber an
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
-        let mut methods: IndexMap<Vec<u8>, ResolvedMethod> = parent
+        let mut methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].methods.clone())
             .unwrap_or_default();
-        let insert_method =
-            |methods: &mut IndexMap<Vec<u8>, ResolvedMethod>, k: Vec<u8>, m: ResolvedMethod| {
-                if m.is_abstract {
-                    if let Some(existing) = methods.get(&k) {
-                        if !existing.is_abstract {
-                            return; // keep the concrete method
-                        }
+        let insert_method = |methods: &mut IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
+                             k: Vec<u8>,
+                             m: ResolvedMethod| {
+            if m.is_abstract {
+                if let Some(existing) = methods.get(&k) {
+                    if !existing.is_abstract {
+                        return; // keep the concrete method
                     }
                 }
-                methods.insert(k, m);
-            };
+            }
+            methods.insert(k, m);
+        };
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {
@@ -755,6 +967,7 @@ impl Vm {
                 lc(m.name.as_bytes()),
                 ResolvedMethod {
                     proto: m.proto.clone(),
+                    unit,
                     defining_class: id,
                     visibility: m.visibility,
                     is_static: m.is_static,
@@ -827,7 +1040,7 @@ impl Vm {
                 PropDefaultProto::Const(v) => (v.clone(), None),
                 PropDefaultProto::None => (Value::Null, None),
                 // Placeholder until update_class_constants evaluates it.
-                PropDefaultProto::Init(thunk) => (Value::Null, Some(thunk.clone())),
+                PropDefaultProto::Init(thunk) => (Value::Null, Some(unit_fn(thunk, unit))),
             };
             declare(
                 &mut props,
@@ -904,7 +1117,7 @@ impl Vm {
                     *cell.borrow_mut() = v.clone();
                     None
                 }
-                ConstInitProto::Thunk(thunk) => Some(thunk.clone()),
+                ConstInitProto::Thunk(thunk) => Some(unit_fn(thunk, unit)),
             };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
             let default = cell.borrow().clone();
@@ -951,7 +1164,9 @@ impl Vm {
             let (v, init) = match &c.value {
                 ConstInitProto::Const(v) => (v.clone(), None),
                 // Placeholder until first access evaluates it.
-                ConstInitProto::Thunk(thunk) => (Value::Null, Some(ConstInit::Expr(thunk.clone()))),
+                ConstInitProto::Thunk(thunk) => {
+                    (Value::Null, Some(ConstInit::Expr(unit_fn(thunk, unit))))
+                }
             };
             constants.insert(
                 c.name.as_bytes().to_vec(),
@@ -1082,8 +1297,19 @@ impl Vm {
             .map(|t| self.class_ids[&lc(t.as_bytes())])
             .collect();
 
-        let native_dtor = parent.is_some_and(|p| self.classes[p as usize].native_dtor)
-            || (proto.decl_file.is_empty() && rhp_builtins::has_native_dtor(proto.name.as_bytes()));
+        let parent_entry = parent.map(|p| &self.classes[p as usize]);
+        let internal = proto.decl_file.is_empty();
+        let reg = internal
+            .then(|| rhp_builtins::zend::object_handlers::registered(proto.name.as_bytes()))
+            .flatten();
+        let handlers = reg
+            .map(|r| r.handlers)
+            .or_else(|| parent_entry.and_then(|p| p.handlers));
+        let create_object = reg.map_or_else(
+            || parent_entry.is_some_and(|p| p.create_object),
+            |r| r.create_object,
+        );
+        let flags = link_flags(proto, parent_entry.map(|p| p.flags), handlers, internal);
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
@@ -1091,7 +1317,7 @@ impl Vm {
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
             kind: proto.kind,
-            flags: proto.flags,
+            flags,
             parent,
             ancestors,
             interfaces,
@@ -1105,10 +1331,12 @@ impl Vm {
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
             updated: false,
-            proto: Rc::new(proto.clone()),
+            proto: proto.clone(),
+            unit,
             decl_file: proto.decl_file.clone(),
             decl_line: proto.decl_line,
-            native_dtor,
+            handlers,
+            create_object,
         });
 
         // Enum cases: materialize one singleton object per case and expose it as
@@ -1119,9 +1347,10 @@ impl Vm {
                     None => (None, None),
                     Some(ConstInitProto::Const(v)) => (Some(v.clone()), None),
                     // The backing value is filled in on first access.
-                    Some(ConstInitProto::Thunk(t)) => {
-                        (Some(Value::Null), Some(ConstInit::EnumCase(t.clone())))
-                    }
+                    Some(ConstInitProto::Thunk(t)) => (
+                        Some(Value::Null),
+                        Some(ConstInit::EnumCase(unit_fn(t, unit))),
+                    ),
                 };
                 let obj = self.new_enum_case(id, &case.name, value);
                 self.classes[id as usize].constants.insert(
@@ -1157,19 +1386,14 @@ impl Vm {
         if let Some(v) = value {
             properties.insert(PhpStr::from("value"), v);
         }
-        Rc::new(RefCell::new(ObjectData {
-            class: class_id,
-            id: oid,
-            properties,
-        }))
+        Rc::new(RefCell::new(ObjectData::new(class_id, oid, properties)))
     }
 
     /// Resolve a `ClassRef` (in the context of frame `top`) to a `ClassId`.
     pub(crate) fn resolve_class(&self, top: usize, class: ClassRef) -> Result<ClassId, Thrown> {
         match class {
             ClassRef::Name(nidx) => {
-                let proto = self.stack[top].proto.clone();
-                self.resolve_class_by_name(proto.names[nidx as usize].as_bytes())
+                self.resolve_class_by_name(self.stack[top].proto.names[nidx as usize].as_bytes())
             }
             ClassRef::SelfClass => self.stack[top]
                 .defining_class
@@ -1196,7 +1420,7 @@ impl Vm {
         }
     }
 
-    /// Like [`resolve_class`], but on a miss for a by-name reference it runs the
+    /// Like [`Self::resolve_class`], but on a miss for a by-name reference it runs the
     /// registered autoloaders and retries (php's autoloading). `self`/`parent`/
     /// `static` and object refs never autoload.
     pub(crate) fn resolve_class_autoload(
@@ -1225,7 +1449,7 @@ impl Vm {
                     let slot = self
                         .decl_classes
                         .iter()
-                        .position(|(p, done)| !done && p.name.as_bytes() == &n[..]);
+                        .position(|d| !d.done && d.proto.name.as_bytes() == &n[..]);
                     if let Some(slot) = slot {
                         self.declare_class_at(slot)?;
                         return self.resolve_class_by_name(n);
@@ -1277,7 +1501,7 @@ impl Vm {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        self.class_ids.get(&lc(n)).copied().ok_or_else(|| {
+        with_lc(n, |k| self.class_ids.get(k).copied()).ok_or_else(|| {
             Thrown::error(
                 "Error",
                 format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
@@ -1386,11 +1610,7 @@ impl Vm {
             }
             properties.insert(name.clone(), pe.default.clone());
         }
-        let obj = Rc::new(RefCell::new(ObjectData {
-            class: class_id,
-            id,
-            properties,
-        }));
+        let obj = Rc::new(RefCell::new(ObjectData::new(class_id, id, properties)));
         // Throwables record their creation site (file/line/trace) at creation,
         // before any constructor runs (zend_default_exception_new).
         if self.class_implements(class_id, b"Throwable") {
@@ -1402,10 +1622,8 @@ impl Vm {
 
     /// Look up a method (flattened table) by name on `class_id`.
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
-        self.classes[class_id as usize]
-            .methods
-            .get(&lc(name))
-            .cloned()
+        let methods = &self.classes[class_id as usize].methods;
+        with_lc(name, |k| methods.get(k).cloned())
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.
@@ -1423,32 +1641,30 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
-            .collect();
+        let args = Args::Window { top, base, argc };
         self.push_method_frame(method, this, called_class, args, dst)
     }
 
-    /// Push a method frame with pre-collected args (for spread / magic dispatch).
+    /// Push a method frame.
     pub(crate) fn push_method_frame(
         &mut self,
         method: &ResolvedMethod,
         this: Option<ObjectHandle>,
         called_class: ClassId,
-        args: Vec<Value>,
+        args: Args<'_>,
         dst: Reg,
     ) -> Result<(), Thrown> {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
         let callee = method.proto.clone();
-        let mut frame = Frame::new(callee.clone(), dst);
+        let mut frame = Frame::new(callee.clone(), method.unit, dst);
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
-        self.bind_frame(&mut frame, &args, Some(self.caller_strict()))?;
+        self.bind_frame(&mut frame, args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
         if callee.is_generator {
             let gen = self.make_generator(frame);
@@ -1463,11 +1679,7 @@ impl Vm {
     }
 
     /// Run a deferred-initializer thunk in `class_id`'s scope.
-    fn run_init_thunk(
-        &mut self,
-        thunk: &Rc<FunctionProto>,
-        class_id: ClassId,
-    ) -> Result<Value, Thrown> {
+    fn run_init_thunk(&mut self, thunk: &UnitFn, class_id: ClassId) -> Result<Value, Thrown> {
         self.run_proto_sync(
             thunk.clone(),
             None,
@@ -1492,10 +1704,10 @@ impl Vm {
             Ok(Some(c)) => Ok(c),
             Err(()) => Err(Thrown::type_error(format!(
                 "Cannot assign {} to property {}::${} of type {}",
-                self.zval_value_name(&v),
+                rhp_builtins::zval_value_name(self, &v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
-                crate::type_string(ty),
+                self.type_string_resolved(ty, Some(decl), None),
             ))),
         }
     }
@@ -1512,28 +1724,15 @@ impl Vm {
             Ok(None) => Ok(v),
             Ok(Some(c)) => Ok(c),
             Err(()) => {
-                // zend_zval_type_name: like the value name, but bools are "bool".
-                let tn = match &v {
-                    Value::Bool(_) => "bool".to_string(),
-                    other => self.zval_value_name(other),
-                };
+                let tn = rhp_builtins::zval_type_name(self, &v);
                 Err(Thrown::type_error(format!(
                     "Cannot assign {} to class constant {}::{} of type {}",
                     tn,
                     String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                     String::from_utf8_lossy(name),
-                    crate::type_string(ty),
+                    self.type_string_resolved(ty, Some(decl), None),
                 )))
             }
-        }
-    }
-
-    /// php's `zend_zval_value_name`.
-    pub(crate) fn zval_value_name(&self, v: &Value) -> String {
-        match v {
-            Value::Bool(true) => "true".into(),
-            Value::Bool(false) => "false".into(),
-            other => self.value_debug_type(other),
         }
     }
 

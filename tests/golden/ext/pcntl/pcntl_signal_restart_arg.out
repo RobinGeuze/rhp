@@ -1,0 +1,8 @@
+bool(true)
+pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, array given
+pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, stdClass given
+pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, resource given
+pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, Closure given
+bool(true)
+bool(true)
+bool(true)

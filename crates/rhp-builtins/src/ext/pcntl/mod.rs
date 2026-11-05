@@ -15,32 +15,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 
+use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
-use crate::proc_fns::zpp_long;
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
-
-fn value_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(true) => "true",
-        Value::Bool(false) => "false",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) | Value::Closure(_) => "object",
-        Value::Resource(_) => "resource",
-        Value::Ref(r) => value_name(&r.borrow()),
-    }
-}
+use crate::zend::zpp::{zpp_long, zval_value_name};
+use crate::{Host, Thrown};
 
 #[derive(Default)]
 struct PcntlState {
@@ -413,9 +392,16 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     }
     let handler = deref(&args[1]);
-    // `$restart_syscalls` (default true, except false for SIGALRM).
+    // `$restart_syscalls`: Z_PARAM_BOOL_OR_NULL (default true, except
+    // false for SIGALRM).
     let restart = match args.get(2).map(deref) {
         None | Some(Value::Null) => signo != libc::SIGALRM as i64,
+        Some(v @ (Value::Array(_) | Value::Object(_) | Value::Resource(_) | Value::Closure(_))) => {
+            return Err(Thrown::type_error(format!(
+                "pcntl_signal(): Argument #3 ($restart_syscalls) must be of type ?bool, {} given",
+                zval_value_name(host, &v)
+            )));
+        }
         Some(v) => conv::to_bool(&v),
     };
     if let Value::Int(h) = handler {
@@ -444,7 +430,7 @@ fn fn_signal(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         return Err(Thrown::type_error(format!(
             "pcntl_signal(): Argument #2 ($handler) must be of type callable|int, {} given",
-            value_name(&handler)
+            crate::zend::zpp::zval_value_name(host, &handler)
         )));
     }
     let queue_handler = signal_handler
@@ -619,74 +605,6 @@ fn fn_wait(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(wait_common(host, -1, args.first(), options, args.get(2)))
 }
 
-/// php's `zval_try_get_long` (`zendi_try_get_long`): `None` when the value
-/// cannot be an int (non-numeric string, array, …). A fractional float
-/// raises the "loses precision" deprecation, a leading-numeric string the
-/// "non-numeric value" warning.
-fn try_get_long(host: &mut dyn Host, v: &Value) -> Result<Option<i64>, Thrown> {
-    // ZEND_DOUBLE_FITS_LONG
-    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-    let fits = |f: f64| f.is_finite() && (-TWO_63..TWO_63).contains(&f);
-    Ok(Some(match v {
-        Value::Null | Value::Bool(false) => 0,
-        Value::Bool(true) => 1,
-        Value::Int(n) => *n,
-        Value::Float(f) => {
-            if !fits(*f) {
-                0
-            } else {
-                if f.fract() != 0.0 {
-                    let shown =
-                        String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
-                    host.emit_diagnostic(
-                        crate::E_DEPRECATED,
-                        &format!("Implicit conversion from float {shown} to int loses precision"),
-                    )?;
-                }
-                *f as i64
-            }
-        }
-        Value::Str(s) => {
-            let b = s.as_bytes();
-            let Some((num, end)) = conv::scan_number(b) else {
-                return Ok(None);
-            };
-            if !b[end..]
-                .iter()
-                .all(|&c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
-            {
-                host.emit_diagnostic(crate::E_WARNING, "A non-numeric value encountered")?;
-            }
-            match num {
-                conv::Num::Int(n) => n,
-                conv::Num::Float(f) => {
-                    // zend_dval_to_lval_cap: saturate (NaN is 0).
-                    let l = if f.is_nan() {
-                        0
-                    } else if fits(f) {
-                        f as i64
-                    } else if f > 0.0 {
-                        i64::MAX
-                    } else {
-                        i64::MIN
-                    };
-                    if !fits(f) || f.fract() != 0.0 {
-                        host.emit_diagnostic(
-                            crate::E_DEPRECATED,
-                            &format!(
-                                "Implicit conversion from float-string \"{}\" to int loses precision",
-                                String::from_utf8_lossy(b)
-                            ),
-                        )?;
-                    }
-                    l
-                }
-            }
-        }
-        _ => return Ok(None),
-    }))
-}
-
 /// `pcntl_sigprocmask($mode, $signals, &$old_signals)`.
 fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let how = zpp_long(host, args, 0, "pcntl_sigprocmask", "mode")?;
@@ -699,15 +617,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "pcntl_sigprocmask(): Argument #1 ($mode) must be one of SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK",
         ));
     }
-    let sigs = match deref(&args[1]) {
-        Value::Array(a) => a,
-        other => {
-            return Err(Thrown::type_error(format!(
-                "pcntl_sigprocmask(): Argument #2 ($signals) must be of type array, {} given",
-                value_name(&other)
-            )))
-        }
-    };
+    let sigs = crate::zend::zpp::array_param(host, args, 1, "pcntl_sigprocmask")?;
     if sigs.is_empty() && how != libc::SIG_SETMASK as i64 {
         return Err(Thrown::error(
             "ValueError",
@@ -722,10 +632,10 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     for (_, v) in sigs.iter() {
         let v = deref(v);
-        let Some(n) = try_get_long(host, &v)? else {
+        let Some(n) = crate::zend::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(
                 "pcntl_sigprocmask(): Argument #2 ($signals) signals must be of type int, {} given",
-                value_name(&v)
+                crate::zend::zpp::zval_value_name(host, &v)
             )));
         };
         if !(1..NUM_SIGNALS).contains(&n) {
@@ -742,7 +652,11 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if unsafe { libc::sigprocmask(how as i32, &set, &mut old) } != 0 {
         let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         set_last_error(host, e);
-        crate::warn(host, "pcntl_sigprocmask", &crate::streams::strerror(e))?;
+        crate::warn(
+            host,
+            "pcntl_sigprocmask",
+            &crate::main::streams::strerror(e),
+        )?;
         return Ok(Value::Bool(false));
     }
     if args.get(2).is_some() {
@@ -870,47 +784,29 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     v
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(m, "pcntl_async_signals", fn_async_signals, 0, Some(1));
-    put(m, "pcntl_signal", fn_signal, 2, Some(3));
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "pcntl_signal_get_handler",
-        fn_signal_get_handler,
-        1,
-        Some(1),
+        &[
+            ("pcntl_async_signals", fn_async_signals),
+            ("pcntl_signal", fn_signal),
+            ("pcntl_signal_get_handler", fn_signal_get_handler),
+            ("pcntl_signal_dispatch", fn_signal_dispatch),
+            ("pcntl_alarm", fn_alarm),
+            ("pcntl_get_last_error", fn_get_last_error),
+            ("pcntl_errno", fn_get_last_error),
+            ("pcntl_strerror", fn_strerror),
+            ("pcntl_fork", fn_fork),
+            ("pcntl_waitpid", fn_waitpid),
+            ("pcntl_wait", fn_wait),
+            ("pcntl_sigprocmask", fn_sigprocmask),
+            ("pcntl_wifexited", fn_wifexited),
+            ("pcntl_wifstopped", fn_wifstopped),
+            ("pcntl_wifsignaled", fn_wifsignaled),
+            ("pcntl_wifcontinued", fn_wifcontinued),
+            ("pcntl_wexitstatus", fn_wexitstatus),
+            ("pcntl_wtermsig", fn_wtermsig),
+            ("pcntl_wstopsig", fn_wstopsig),
+        ],
     );
-    put(m, "pcntl_signal_dispatch", fn_signal_dispatch, 0, Some(0));
-    put(m, "pcntl_alarm", fn_alarm, 1, Some(1));
-    put(m, "pcntl_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_errno", fn_get_last_error, 0, Some(0));
-    put(m, "pcntl_strerror", fn_strerror, 1, Some(1));
-    put(m, "pcntl_fork", fn_fork, 0, Some(0));
-    put(m, "pcntl_waitpid", fn_waitpid, 2, Some(4));
-    put(m, "pcntl_wait", fn_wait, 1, Some(3));
-    put(m, "pcntl_sigprocmask", fn_sigprocmask, 2, Some(3));
-    put(m, "pcntl_wifexited", fn_wifexited, 1, Some(1));
-    put(m, "pcntl_wifstopped", fn_wifstopped, 1, Some(1));
-    put(m, "pcntl_wifsignaled", fn_wifsignaled, 1, Some(1));
-    put(m, "pcntl_wifcontinued", fn_wifcontinued, 1, Some(1));
-    put(m, "pcntl_wexitstatus", fn_wexitstatus, 1, Some(1));
-    put(m, "pcntl_wtermsig", fn_wtermsig, 1, Some(1));
-    put(m, "pcntl_wstopsig", fn_wstopsig, 1, Some(1));
 }

@@ -1,0 +1,387 @@
+//! `ProtoBuilder`: one function body under construction, its registers, pools and line table.
+
+use std::collections::HashMap;
+
+use crate::parse::cst::{Expression, Identifier};
+use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
+use rhp_values::{PhpStr, Thrown, Value};
+
+use crate::file::FileCtx;
+use crate::fold::{const_eq, fold_const};
+use crate::names::NameKind;
+use crate::util::{compile_error, is_superglobal};
+
+/// What kind of scope a proto is, for the `__FUNCTION__`/`__METHOD__` magic
+/// constants (which read differently at top level vs in a function/method/closure).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopeKind {
+    Main,
+    Function,
+    Method,
+    Closure,
+    Init,
+}
+
+pub(crate) struct ProtoBuilder<'c> {
+    /// The file this body belongs to.
+    pub(crate) cx: &'c FileCtx<'c>,
+    pub(crate) name: PhpStr,
+    /// Enclosing class/trait/enum name for `__CLASS__`/`__METHOD__` (None outside).
+    pub(crate) class_name: Option<PhpStr>,
+    /// `function &f()` — this proto returns by reference (affects `return`).
+    pub(crate) returns_ref: bool,
+    /// The scope discriminator for `__FUNCTION__`/`__METHOD__`.
+    pub(crate) scope_kind: ScopeKind,
+    /// For a closure, PHP 8.5's generated name `{closure:<scope>:<line>}` used by
+    /// `__FUNCTION__`/`__METHOD__` inside it (the proto name stays "{closure}").
+    pub(crate) magic_fn_name: Option<PhpStr>,
+    pub(crate) code: Vec<Instr>,
+    pub(crate) consts: Vec<Value>,
+    pub(crate) names: Vec<PhpStr>,
+    pub(crate) cv_map: Vec<Vec<u8>>, // index = Reg, value = variable name bytes
+    pub(crate) exception_table: Vec<rhp_bytecode::ExRegion>,
+    /// Per enclosing try-with-finally: positions of pending-return jump
+    /// placeholders to patch to the finally entry.
+    pub(crate) finally_rets: Vec<Vec<usize>>,
+    pub(crate) num_cvs: u16,
+    pub(crate) next_temp: Reg,
+    pub(crate) high_water: Reg,
+    /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
+    /// subject held live across fall-through case bodies).
+    pub(crate) temp_floor: Reg,
+    /// Stack of enclosing loops/switches, for `break`/`continue` resolution.
+    pub(crate) loops: Vec<LoopCtx>,
+    /// Current source line (set per statement); recorded into `lines` on change.
+    pub(crate) cur_line: u32,
+    /// (pc, line) pairs, appended whenever `cur_line` changes at an emit point.
+    pub(crate) lines: Vec<(rhp_bytecode::Pc, u32)>,
+    /// Lines of the enclosing call / `new` expressions (innermost last): php
+    /// gives the call opcode the line of the callee name (or `new`), not the
+    /// statement's, which is what getLine() and traces report.
+    pub(crate) call_lines: Vec<u32>,
+    /// Set once the CV pre-pass is done: every `$var` of the body must already
+    /// have its slot (a later slot would alias a temporary).
+    pub(crate) cvs_frozen: bool,
+    /// The enclosing loop/switch and finally-body scopes (unique ids; finally
+    /// bodies have the high bit set), for checking `goto` jumps.
+    pub(crate) goto_scope: Vec<u32>,
+    pub(crate) goto_serial: u32,
+    /// `label:` name -> (pc, scope path at the label).
+    pub(crate) labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
+    /// Pending `goto`s: placeholder position, label, scope path, line.
+    pub(crate) gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
+}
+
+/// A break/continue target under construction. Jump placeholders are recorded
+/// as code positions and patched once the loop's exit/continue labels are known.
+#[derive(Default)]
+pub(crate) struct LoopCtx {
+    /// `finally_rets.len()` when the loop was entered: a break/continue
+    /// inside more try-with-finally levels than this must run them.
+    pub(crate) finally_depth: usize,
+    pub(crate) break_jumps: Vec<usize>,
+    pub(crate) continue_jumps: Vec<usize>,
+}
+
+impl<'c> ProtoBuilder<'c> {
+    pub(crate) fn new(cx: &'c FileCtx<'c>, name: PhpStr) -> Self {
+        ProtoBuilder {
+            cx,
+            name,
+            class_name: None,
+            returns_ref: false,
+            scope_kind: ScopeKind::Function,
+            magic_fn_name: None,
+            code: Vec::new(),
+            consts: Vec::new(),
+            names: Vec::new(),
+            cv_map: Vec::new(),
+            exception_table: Vec::new(),
+            finally_rets: Vec::new(),
+            num_cvs: 0,
+            next_temp: 0,
+            high_water: 0,
+            temp_floor: 0,
+            loops: Vec::new(),
+            cur_line: 0,
+            lines: Vec::new(),
+            call_lines: Vec::new(),
+            cvs_frozen: false,
+            goto_scope: Vec::new(),
+            goto_serial: 0,
+            labels: HashMap::new(),
+            gotos: Vec::new(),
+        }
+    }
+
+    /// Enter a loop/switch (`finally == false`) or finally-body scope.
+    pub(crate) fn enter_goto_scope(&mut self, finally: bool) {
+        self.goto_serial += 1;
+        let id = self.goto_serial | if finally { 1 << 31 } else { 0 };
+        self.goto_scope.push(id);
+    }
+
+    /// Bind each `goto` to its label (php's zend_resolve_goto_label plus the
+    /// finally checks of pass_two): the label must exist, must not be inside a
+    /// loop/switch the `goto` is not in, and the jump may not cross a finally
+    /// body boundary. A jump out of a try/catch with a finally runs it first.
+    fn resolve_gotos(&mut self) -> Result<(), Thrown> {
+        for (pos, name, scope, line) in std::mem::take(&mut self.gotos) {
+            let label = String::from_utf8_lossy(&name).into_owned();
+            let Some((target, lscope)) = self.labels.get(&name) else {
+                return Err(compile_error(
+                    format!("'goto' to undefined label '{label}'"),
+                    line,
+                ));
+            };
+            let common = scope
+                .iter()
+                .zip(lscope.iter())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if lscope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump into a finally block is disallowed",
+                    line,
+                ));
+            }
+            if scope[common..].iter().any(|id| id & (1 << 31) != 0) {
+                return Err(compile_error(
+                    "jump out of a finally block is disallowed",
+                    line,
+                ));
+            }
+            if common < lscope.len() {
+                return Err(compile_error(
+                    "'goto' into loop or switch statement is disallowed",
+                    line,
+                ));
+            }
+            let target = *target;
+            self.code[pos] = match self.code[pos] {
+                Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+                _ => Instr::Jmp { target },
+            };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<FunctionProto, Thrown> {
+        self.resolve_gotos()?;
+        let mut proto = FunctionProto::new(self.name);
+        proto.num_cvs = self.num_cvs;
+        proto.num_registers = self.high_water.max(self.num_cvs);
+        proto.code = self.code;
+        proto.consts = self.consts;
+        proto.names = self.names;
+        proto.exception_table = self.exception_table;
+        proto.cv_var_names = self
+            .cv_map
+            .iter()
+            .map(|n| PhpStr::from_bytes(n.clone()))
+            .collect();
+        proto.debug.lines = self.lines;
+        proto.debug.file = self.cx.file.clone();
+        proto.superglobals = self
+            .cv_map
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| is_superglobal(n))
+            .map(|(i, n)| (i as Reg, PhpStr::from_bytes(n.clone())))
+            .collect();
+        proto.strict_types = self.cx.strict_types;
+        proto.returns_ref = self.returns_ref;
+        if self.cx.is_prelude {
+            proto.flags.insert(ProtoFlags::INTERNAL);
+        }
+        // The VM keeps the proto as it is for as long as the program lives
+        // (with opcache, across requests): drop the growth slack.
+        proto.code.shrink_to_fit();
+        proto.consts.shrink_to_fit();
+        proto.names.shrink_to_fit();
+        proto.exception_table.shrink_to_fit();
+        proto.debug.lines.shrink_to_fit();
+        proto.superglobals.shrink_to_fit();
+        Ok(proto)
+    }
+
+    pub(crate) fn emit(&mut self, instr: Instr) {
+        let line = match (&instr, self.call_lines.last()) {
+            (
+                Instr::Call { .. }
+                | Instr::CallV { .. }
+                | Instr::CallDyn { .. }
+                | Instr::CallDynV { .. }
+                | Instr::New { .. }
+                | Instr::NewV { .. }
+                | Instr::CallMethod { .. }
+                | Instr::CallMethodV { .. }
+                | Instr::CallMethodDyn { .. }
+                | Instr::CallStatic { .. }
+                | Instr::CallStaticV { .. }
+                | Instr::CallStaticDyn { .. }
+                | Instr::CallMethodDynV { .. }
+                | Instr::CallStaticDynV { .. },
+                Some(&l),
+            ) if l != 0 => l,
+            _ => self.cur_line,
+        };
+        // Record a line entry whenever the source line changes (for debug info).
+        if self.lines.last().map(|(_, l)| *l) != Some(line) {
+            self.lines.push((self.code.len() as rhp_bytecode::Pc, line));
+        }
+        self.code.push(instr);
+    }
+
+    pub(crate) fn alloc_temp(&mut self) -> Reg {
+        let r = self.next_temp;
+        self.next_temp += 1;
+        self.high_water = self.high_water.max(self.next_temp);
+        r
+    }
+
+    /// Allocate `n` contiguous temporaries (for a call arg window).
+    pub(crate) fn alloc_temps(&mut self, n: u16) -> Reg {
+        let base = self.next_temp;
+        self.next_temp += n;
+        self.high_water = self.high_water.max(self.next_temp);
+        base
+    }
+
+    /// Free temporaries back to the current floor (end of a statement).
+    pub(crate) fn reset_temps(&mut self) {
+        self.next_temp = self.temp_floor;
+    }
+
+    /// Patch a placeholder `Nop` at `pos` into a jump to `target`.
+    pub(crate) fn patch_jmp(&mut self, pos: usize, target: u32) {
+        self.code[pos] = match self.code[pos] {
+            Instr::JmpFinally { .. } => Instr::JmpFinally { target },
+            _ => Instr::Jmp { target },
+        };
+    }
+
+    pub(crate) fn here(&self) -> u32 {
+        self.code.len() as u32
+    }
+
+    pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {
+        if let Some(i) = self.cv_map.iter().position(|n| n == var_name) {
+            return i as Reg;
+        }
+        debug_assert!(
+            !self.cvs_frozen,
+            "CV ${} was missed by the pre-pass (its slot would alias a temporary)",
+            String::from_utf8_lossy(var_name)
+        );
+        let r = self.cv_map.len() as Reg;
+        self.cv_map.push(var_name.to_vec());
+        r
+    }
+
+    pub(crate) fn intern_name(&mut self, bytes: &[u8]) -> NIdx {
+        if let Some(i) = self.names.iter().position(|n| n.as_bytes() == bytes) {
+            return i as NIdx;
+        }
+        let i = self.names.len() as NIdx;
+        self.names.push(PhpStr::from_bytes(bytes.to_vec()));
+        i
+    }
+
+    /// Intern an optional global-fallback name, or `NO_NAME` when there is none.
+    pub(crate) fn intern_fallback(&mut self, fb: &Option<Vec<u8>>) -> NIdx {
+        match fb {
+            Some(f) => self.intern_name(f),
+            None => rhp_bytecode::NO_NAME,
+        }
+    }
+
+    /// The register holding the unresolved callee `name` (then `fallback`)
+    /// of the call being compiled, emitting its `ResolveFunc` the first time.
+    pub(crate) fn resolve_callee(
+        &mut self,
+        callee: &mut Option<Reg>,
+        name: &[u8],
+        fallback: &Option<Vec<u8>>,
+    ) -> Reg {
+        if let Some(r) = *callee {
+            return r;
+        }
+        let dst = self.alloc_temp();
+        let name = self.intern_name(&name.to_ascii_lowercase());
+        let fallback = self.intern_fallback(&fallback.as_ref().map(|f| f.to_ascii_lowercase()));
+        self.emit(Instr::ResolveFunc {
+            dst,
+            name,
+            fallback,
+        });
+        *callee = Some(dst);
+        dst
+    }
+
+    /// Resolve a first-class-callable's target function to a single name. An
+    /// unqualified reference inside a namespace prefers the namespaced user
+    /// function when one is declared, else the global name (builtins are
+    /// global), returned with the namespaced name it fell back from.
+    pub(crate) fn resolve_callable_name(&self, id: &Identifier) -> (Vec<u8>, Option<Vec<u8>>) {
+        let (primary, fallback) = self.cx.resolve_name(id, NameKind::Func);
+        match fallback {
+            None => (primary, None),
+            Some(global) => {
+                if self.cx.sigs.contains_key(&primary.to_ascii_lowercase()) {
+                    (primary, None)
+                } else {
+                    (global, Some(primary))
+                }
+            }
+        }
+    }
+
+    /// Evaluate a parameter default to a constant and intern it. Only
+    /// compile-time constants are supported (literals, `[]`, true/false/null,
+    /// negated numeric literals); other expressions are deferred.
+    pub(crate) fn const_default(
+        &mut self,
+        e: &Expression,
+    ) -> Result<rhp_bytecode::ParamDefault, Thrown> {
+        let v = self.const_value(e)?;
+        Ok(rhp_bytecode::ParamDefault::Const(self.intern_const(v)))
+    }
+
+    /// Emit prologue code for non-constant parameter defaults (e.g.
+    /// `$v = self::CONST`): for each, `JmpIfArg index -> after` skips the init when
+    /// the argument was passed, else the default expression is evaluated into the
+    /// param's CV (in the callee's scope, so `self::`/`static::` resolve).
+    pub(crate) fn emit_param_defaults(
+        &mut self,
+        defs: &[(u16, Reg, &Expression)],
+    ) -> Result<(), Thrown> {
+        for &(index, cv, expr) in defs {
+            let jpos = self.code.len();
+            self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
+            let t = self.compile_expr(expr)?;
+            self.emit(Instr::Mov { dst: cv, src: t });
+            let after = self.here();
+            self.code[jpos] = Instr::JmpIfArg {
+                index,
+                target: after,
+            };
+            self.reset_temps();
+        }
+        Ok(())
+    }
+
+    fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
+        // Parameter defaults fold with the same rules as class consts / props.
+        fold_const(self.cx, e)
+    }
+
+    pub(crate) fn intern_const(&mut self, v: Value) -> CIdx {
+        if let Some(i) = self.consts.iter().position(|c| const_eq(c, &v)) {
+            return i as CIdx;
+        }
+        let i = self.consts.len() as CIdx;
+        self.consts.push(v);
+        i
+    }
+}

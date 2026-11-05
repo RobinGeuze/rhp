@@ -1,0 +1,7 @@
+
+Warning: PHP Request Startup: function "no_such_function" not found or invalid function name in Unknown on line 0
+abc
+string(1) "0"
+int(0)
+array(0) {
+}

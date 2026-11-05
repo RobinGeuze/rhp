@@ -1,0 +1,124 @@
+1t
+<?xml version="1.0"?>
+<a b="1">
+  <c>t</c>
+</a>
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+<?xml version="1.0"?>
+<a>
+  <b>t</b>  <c/>
+  <!-- c -->
+  <d>  </d>
+<e><f/>x</e><g><![CDATA[ <&> ]]><h/></g></a>
+<?xml version="1.0"?>
+<a>
+  <b>t</b>  <c/>
+  <!-- c -->
+  <d>  </d>
+<e><f/>x</e><g><![CDATA[ <&> ]]><h/></g></a>
+<a>
+  <b>t</b>  <c/>
+  <!-- c -->
+  <d>  </d>
+<e><f/>x</e><g><![CDATA[ <&> ]]><h/></g></a>
+<?xml version="1.0"?>
+<a><b>t</b><c/><!-- c --><d>  </d><e><f/>x</e><g><![CDATA[ <&> ]]><h/></g></a>
+<?xml version="1.0"?>
+<a>
+  <b>t</b>
+  <c/>
+  <!-- c -->
+  <d>  </d>
+  <e><f/>x</e>
+  <g><![CDATA[ <&> ]]><h/></g>
+</a>
+<a>
+  <b>t</b>
+  <c/>
+  <!-- c -->
+  <d>  </d>
+  <e><f/>x</e>
+  <g><![CDATA[ <&> ]]><h/></g>
+</a>
+<?xml version="1.0" encoding="UTF-8"?>
+<a x="é">é</a>
+3c3f786d6c2076657273696f6e3d22312e302220656e636f64696e673d2249534f2d383835392d31223f3e0a3c6120783d22e9223ee93c2f613e0a
+<a x="é">é</a>
+<?xml version="1.0"?>
+<?pi data?>
+<!-- top -->
+<!DOCTYPE a [
+<!ENTITY e "v">
+]>
+<a>&e;&amp;<?p2 x ?></a>
+<!-- end -->
+string(2) "v&"
+string(1) "a"
+string(16) "<!ENTITY e "v">
+"
+<?xml version="1.0"?>
+<a xmlns="urn:u" xmlns:x="urn:v" b="1" x:c="2"><x:d/></a>
+string(5) "urn:u"
+string(1) "x"
+string(1) "d"
+string(5) "urn:v"
+string(1) "2"
+string(1) "2"
+string(5) "urn:u"
+bool(true)
+string(5) "urn:v"
+string(1) "x"
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="x &amp; &quot;y&quot; &lt;z&gt;"><e/><child>a &amp; b</child>t&lt;x&gt;<!--cm--><![CDATA[cd]]]]><![CDATA[>x]]><?pi dd?></root>
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="x &amp; &quot;y&quot; &lt;z&gt;"><x><y k="v"/></x><child>a &amp; b</child>t&lt;x&gt;<!--cm--><![CDATA[cd]]]]><![CDATA[>x]]></root>
+int(5)
+string(1) "x"
+int(4)
+bool(true)
+bool(true)
+0:DOMElement:x
+1:DOMElement:child
+2:DOMText:#text
+3:DOMComment:#comment
+4:DOMCdataSection:#cdata-section
+name=x & "y" <z>
+string(0) ""
+bool(true)
+bool(true)
+bool(false)
+<v>p &amp; q</v>
+<v>p &amp;amp; q</v>
+string(4) "<w/>"
+string(4) "<w/>"
+int(3)
+int(3)
+int(4)
+string(1) "i"
+NULL
+r i i j i i 
+DOMException: Invalid Character Error 5
+Not Found Error 8
+Wrong Document Error 4
+ValueError: DOMDocument::loadXML(): Argument #1 ($source) must not be empty
+NULL
+string(3) "val"
+bool(true)
+<?xml version="1.0"?>
+<r><i n="1"/><i n="2"/><j><i n="3"/></j><i/><free>val</free></r>
+NULL
+string(4) "<r/>"
+string(7) "/r/free"
+string(14) "/r/free/text()"
+int(1)
+<r><i n="1"/><i n="2"/><j><i n="3"/></j><i/><free>val</free><k>1</k><k>2</k></r>
+int(7)
+string(1) "k"

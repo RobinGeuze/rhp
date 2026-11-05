@@ -8,101 +8,49 @@
 //! `socket_create` & co. are not implemented, so the extension is not
 //! reported as loaded (`extension_loaded('sockets')` stays false).
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::cell::Cell;
+use std::rc::Rc;
 
-use rhp_values::{ArrayKey, ObjectData, ObjectHandle, PhpArray, Value};
+use rhp_values::ops::deref;
+use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::proc_fns::{zpp_long, zpp_type_name};
-use crate::{Builtin, Host, Thrown};
+use crate::main::streams::errno;
+use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
+use crate::zend::zpp::{zpp_long, zval_value_name};
+use crate::{Host, Thrown};
 
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+/// `Socket`'s handlers: no clone, not comparable.
+pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "Socket",
+    handlers: &ObjectHandlers::OPAQUE,
+    create_object: true,
+}];
 
-/// A `Socket` object of ours: the stream it was imported from (kept alive,
-/// as php holds a reference) and its last error.
+/// A `Socket` object's payload (php's `php_socket`): the stream it was
+/// imported from and its last error.
 struct Sock {
-    obj: Weak<RefCell<ObjectData>>,
-    /// Held so the resource stays alive, as php's `zstream` reference does.
+    /// Held so the resource stays alive, as php's `zstream` reference does;
+    /// released with the object.
     #[allow(dead_code)]
     stream: Value,
     /// php's `bsd_socket`: the stream's descriptor number at import time
     /// (still used after an `fclose` of the stream, as php does).
     fd: i32,
-    error: i32,
-}
-
-#[derive(Default)]
-struct Registry {
-    socks: HashMap<usize, Sock>,
-    last_error: i32,
+    error: Cell<i32>,
 }
 
 thread_local! {
-    static REG: RefCell<Registry> = RefCell::new(Registry::default());
+    /// php's `SOCKETS_G(last_error)`.
+    static LAST_ERROR: Cell<i32> = const { Cell::new(0) };
 }
 
-fn key_of(h: &ObjectHandle) -> usize {
-    Rc::as_ptr(h) as *const () as usize
+/// A new request: php keeps the last error per worker (GINIT); a request
+/// here starts as a fresh process does.
+pub(crate) fn reset_state() {
+    LAST_ERROR.with(|e| e.set(0));
 }
 
-fn obj_handle(v: &Value) -> Option<ObjectHandle> {
-    match v {
-        Value::Object(h) => Some(h.clone()),
-        Value::Ref(r) => obj_handle(&r.borrow()),
-        _ => None,
-    }
-}
-
-/// The object free hook's part for sockets: drop the entries of `Socket`s
-/// that just died, releasing their stream reference then (php frees the
-/// socket, and with it its `zstream` reference, at refcount 0) instead of
-/// whenever the next import tidies up — by which time, with several runs
-/// on one thread, the stream id may name another run's resource.
-pub(crate) fn object_freed() {
-    let dead: Vec<Sock> = REG
-        .try_with(|r| {
-            let Ok(mut r) = r.try_borrow_mut() else {
-                return Vec::new();
-            };
-            if r.socks.is_empty() {
-                return Vec::new();
-            }
-            let keys: Vec<usize> = r
-                .socks
-                .iter()
-                .filter(|(_, s)| s.obj.strong_count() == 0)
-                .map(|(k, _)| *k)
-                .collect();
-            keys.iter().filter_map(|k| r.socks.remove(k)).collect()
-        })
-        .unwrap_or_default();
-    // Released outside the registry borrow.
-    drop(dead);
-}
-
-/// Is `h` a `Socket` of ours?
-pub fn is_socket_object(h: &ObjectHandle) -> bool {
-    lookup(h).is_some()
-}
-
-/// The registry key and descriptor of the `Socket` object `h`.
-fn lookup(h: &ObjectHandle) -> Option<(usize, i32)> {
-    let k = key_of(h);
-    REG.with(|r| {
-        r.borrow().socks.get(&k).and_then(|s| {
-            let live = s.obj.upgrade()?;
-            Rc::ptr_eq(&live, h).then_some((k, s.fd))
-        })
-    })
-}
-
-/// The descriptor behind a `Socket` argument (TypeError for anything else;
+/// The `Socket` behind a `Socket` argument (TypeError for anything else;
 /// `nullable` is php's `?Socket`).
 fn socket_arg(
     host: &dyn Host,
@@ -110,16 +58,16 @@ fn socket_arg(
     i: usize,
     fname: &str,
     nullable: bool,
-) -> Result<(usize, i32), Thrown> {
+) -> Result<Rc<Sock>, Thrown> {
     let v = args.get(i).map(deref).unwrap_or(Value::Null);
-    if let Some(found) = obj_handle(&v).and_then(|h| lookup(&h)) {
-        return Ok(found);
+    if let Some(s) = crate::zend::object_handlers::payload::<Sock>(&v) {
+        return Ok(s);
     }
     Err(Thrown::type_error(format!(
         "{fname}(): Argument #{} ($socket) must be of type {}Socket, {} given",
         i + 1,
         if nullable { "?" } else { "" },
-        zpp_type_name(host, &v)
+        zval_value_name(host, &v)
     )))
 }
 
@@ -127,18 +75,13 @@ fn socket_arg(
 /// and warn unless it is a would-block / in-progress condition.
 fn socket_error(
     host: &mut dyn Host,
-    key: usize,
+    sock: &Sock,
     fname: &str,
     msg: &str,
     err: i32,
 ) -> Result<(), Thrown> {
-    REG.with(|r| {
-        let mut r = r.borrow_mut();
-        r.last_error = err;
-        if let Some(s) = r.socks.get_mut(&key) {
-            s.error = err;
-        }
-    });
+    LAST_ERROR.with(|e| e.set(err));
+    sock.error.set(err);
     if err != libc::EAGAIN && err != libc::EWOULDBLOCK && err != libc::EINPROGRESS {
         crate::warn(
             host,
@@ -159,20 +102,16 @@ fn sockets_strerror(e: i32) -> String {
             return unsafe { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
         }
     }
-    crate::streams::strerror(e)
+    crate::main::streams::strerror(e)
 }
 
 extern "C" {
     fn hstrerror(err: libc::c_int) -> *const libc::c_char;
 }
 
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
 fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_import_stream";
-    let (stream, _) = crate::fs_fns::stream_param(host, args, 0, fname, "stream")?;
+    let (stream, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
     if host.stream_sock_info(&stream).is_none() {
         let ty = host
             .stream_meta(&stream)
@@ -190,22 +129,16 @@ fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let v = host
         .instantiate(b"Socket", Vec::new())
         .ok_or_else(|| Thrown::unsupported(fname, "cannot instantiate Socket"))?;
-    let h = obj_handle(&v).ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
-    // Socket uses zend_objects_not_comparable.
-    rhp_semantics::ops::set_not_comparable_hook(super::not_comparable_object);
-    REG.with(|r| {
-        let mut r = r.borrow_mut();
-        r.socks.retain(|_, s| s.obj.strong_count() > 0);
-        r.socks.insert(
-            key_of(&h),
-            Sock {
-                obj: Rc::downgrade(&h),
-                stream,
-                fd,
-                error: 0,
-            },
-        );
-    });
+    let h = crate::zend::object_handlers::object_of(&v)
+        .ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
+    crate::zend::object_handlers::set_payload(
+        &h,
+        Rc::new(Sock {
+            stream,
+            fd,
+            error: Cell::new(0),
+        }),
+    );
     Ok(v)
 }
 
@@ -229,11 +162,12 @@ fn getsockopt_raw<T>(fd: i32, level: i32, name: i32, val: &mut T) -> Result<(), 
 
 fn fn_socket_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_get_option";
-    let (key, fd) = socket_arg(host, args, 0, fname, false)?;
+    let sock = socket_arg(host, args, 0, fname, false)?;
+    let fd = sock.fd;
     let level = zpp_long(host, args, 1, fname, "level")? as i32;
     let opt = zpp_long(host, args, 2, fname, "option")? as i32;
     let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
-        socket_error(host, key, fname, "Unable to retrieve socket option", e)?;
+        socket_error(host, &sock, fname, "Unable to retrieve socket option", e)?;
         Ok(Value::Bool(false))
     };
     if level == libc::SOL_SOCKET {
@@ -317,7 +251,8 @@ fn table_entry(a: &PhpArray, k: &str, fname: &str) -> Result<Value, Thrown> {
 fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     use crate::ext::curl::zval_get_long;
     let fname = "socket_set_option";
-    let (key, fd) = socket_arg(host, args, 0, fname, false)?;
+    let sock = socket_arg(host, args, 0, fname, false)?;
+    let fd = sock.fd;
     let level = zpp_long(host, args, 1, fname, "level")?;
     let opt = zpp_long(host, args, 2, fname, "option")?;
     let value = args.get(3).map(deref).unwrap_or(Value::Null);
@@ -332,7 +267,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         let Some(a) = option_table(&value) else {
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is SO_LINGER, {} given",
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let onoff = table_entry(&a, "l_onoff", fname)?;
@@ -363,7 +298,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             return Err(Thrown::type_error(format!(
                 "{fname}(): Argument #4 ($value) must be of type array when argument #3 ($option) is {}, {} given",
                 if opt == libc::SO_RCVTIMEO as i64 { "SO_RCVTIMEO" } else { "SO_SNDTIMEO" },
-                zpp_type_name(host, &value)
+                zval_value_name(host, &value)
             )));
         };
         let sec = table_entry(&a, "sec", fname)?;
@@ -384,7 +319,7 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         )
     };
     if r != 0 {
-        socket_error(host, key, fname, "Unable to set socket option", errno())?;
+        socket_error(host, &sock, fname, "Unable to set socket option", errno())?;
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
@@ -407,70 +342,42 @@ fn fn_socket_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 
 fn fn_socket_last_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first().map(deref) {
-        None | Some(Value::Null) => Ok(Value::Int(REG.with(|r| r.borrow().last_error) as i64)),
+        None | Some(Value::Null) => Ok(Value::Int(LAST_ERROR.with(Cell::get) as i64)),
         Some(_) => {
-            let (key, _) = socket_arg(host, args, 0, "socket_last_error", true)?;
-            Ok(Value::Int(
-                REG.with(|r| r.borrow().socks.get(&key).map_or(0, |s| s.error)) as i64,
-            ))
+            let sock = socket_arg(host, args, 0, "socket_last_error", true)?;
+            Ok(Value::Int(sock.error.get() as i64))
         }
     }
 }
 
 fn fn_socket_clear_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match args.first().map(deref) {
-        None | Some(Value::Null) => REG.with(|r| r.borrow_mut().last_error = 0),
+        None | Some(Value::Null) => LAST_ERROR.with(|e| e.set(0)),
         Some(_) => {
-            let (key, _) = socket_arg(host, args, 0, "socket_clear_error", true)?;
-            REG.with(|r| {
-                if let Some(s) = r.borrow_mut().socks.get_mut(&key) {
-                    s.error = 0;
-                }
-            });
+            let sock = socket_arg(host, args, 0, "socket_clear_error", true)?;
+            sock.error.set(0);
         }
     }
     Ok(Value::Null)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "socket_import_stream",
-        fn_socket_import_stream,
-        1,
-        Some(1),
+        &[
+            ("socket_import_stream", fn_socket_import_stream),
+            ("socket_get_option", fn_socket_get_option),
+            ("socket_getopt", fn_socket_get_option),
+            ("socket_set_option", fn_socket_set_option),
+            ("socket_setopt", fn_socket_set_option),
+            ("socket_strerror", fn_socket_strerror),
+            ("socket_last_error", fn_socket_last_error),
+            ("socket_clear_error", fn_socket_clear_error),
+        ],
     );
-    put(m, "socket_get_option", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_getopt", fn_socket_get_option, 3, Some(3));
-    put(m, "socket_set_option", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_setopt", fn_socket_set_option, 4, Some(4));
-    put(m, "socket_strerror", fn_socket_strerror, 1, Some(1));
-    put(m, "socket_last_error", fn_socket_last_error, 0, Some(1));
-    put(m, "socket_clear_error", fn_socket_clear_error, 0, Some(1));
 }
 
-pub const PRELUDE_PHP: &str = r#"
-final class Socket {
-    public function __construct() { throw new Error("Cannot directly construct Socket, use socket_create() instead"); }
-}
-"#;
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
 /// The extension's constants, with the host platform's numbers.
 pub fn constants() -> Vec<(&'static str, Value)> {

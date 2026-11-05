@@ -1,0 +1,123 @@
+int(1)
+int(4)
+float(5)
+string(4) "2.5!"
+int(0)
+float(6.25)
+float(-2.5)
+int(-1)
+int(1)
+int(3)
+bool(true)
+int(0)
+int(2)
+int(2)
+float(2.5)
+bool(false)
+bool(true)
+string(3) "abc"
+array(2) {
+  [0]=>
+  string(2) "3x"
+  [1]=>
+  string(3) "2.5"
+}
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+float(3.5)
+float(3.5)
+Array
+(
+    [@attributes] => Array
+        (
+            [x] => 1
+        )
+
+    [b] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+
+    [c] => SimpleXMLElement Object
+        (
+            [d] => q
+        )
+
+)
+Array
+(
+    [d] => q
+)
+Array
+(
+    [@attributes] => Array
+        (
+            [x] => 1
+        )
+
+    [b] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+
+    [c] => SimpleXMLElement Object
+        (
+            [d] => q
+        )
+
+)
+\SimpleXMLElement::__set_state(array(
+   '@attributes' => 
+  array (
+    'x' => '1',
+  ),
+   'b' => 
+  array (
+    0 => '1',
+    1 => '2',
+  ),
+   'c' => 
+  \SimpleXMLElement::__set_state(array(
+     'd' => 'q',
+  )),
+))
+bool(true)
+bool(false)
+bool(true)
+int(2)
+string(1) "2"
+<?xml version="1.0"?>
+<a x="1"><b>1</b><b>2</b><c><d>q</d></c></a>
+<?xml version="1.0"?>
+<a x="1"><b>cl</b><b>2</b><c><d>q</d></c></a>
+<c><d>q</d></c>
+<c><d>changed</d></c>
+Exception: Serialization of 'SimpleXMLElement' is not allowed
+Exception: Unserialization of 'SimpleXMLElement' is not allowed
+<?xml version="1.0"?>
+<a x="1"><b>2</b><c><d>q</d></c></a>
+<?xml version="1.0"?>
+<a x="1"><b>2</b></a>
+<?xml version="1.0"?>
+<a><b>2</b></a>
+E2: SimpleXMLElement::asXML(/nonexistent-dir/x.xml): Failed to open stream: No such file or directory
+bool(false)
+string(1) "s"
+Error: Object of class stdClass could not be converted to string
+get x
+unset 0
+get y
+unset k

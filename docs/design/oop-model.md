@@ -197,9 +197,9 @@ class B extends A { public function hi(){return "B::hi + ".parent::hi();} }
 ```
 
 - **Dispatch is O(1) and JIT-cacheable.** `$o->m()` is `classes[o.class].methods[lc(m)]`
-  — one lookup. A monomorphic inline cache (`InlineCache{class_id, payload}`,
-  already reserved in `bytecode.md` §2.5) guards on the object's `ClassId` and
-  caches the resolved `Rc<FunctionProto>` / property index; a walk-the-chain
+  — one lookup. A monomorphic inline cache (not built; the operands once
+  reserved for it are gone, see `bytecode.md`) would guard on the object's
+  `ClassId` and cache the resolved `Rc<FunctionProto>` / property index; a walk-the-chain
   model would make the cached payload depend on the whole ancestry and defeat the
   single-`ClassId` guard.
 - **It matches Zend**, which copies the parent's `function_table` /

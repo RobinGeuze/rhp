@@ -15,9 +15,10 @@
 //
 //     php -n tools/capture-ref-build.php tables
 //
-// prints the reference build's ini directives and constant modules instead
-// (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php -- tables`), which
-// `rhp-difftest gen dumps` turns into ini_table.rs and const_modules.rs.
+// prints the reference build's ini directives, constant modules and function
+// modules instead (php-cgi: `php-cgi -n -q -f tools/capture-ref-build.php --
+// tables`), which `rhp-difftest gen dumps` turns into main/ini_table.rs,
+// const_modules.rs and func_modules.rs.
 
 function row(string $key, mixed $value): void
 {
@@ -37,6 +38,20 @@ function info_rows(array $keys, bool $zend = false): void
         }
         if ($zend && str_starts_with($line, 'Zend Engine v')) {
             row('phpinfo[Zend Engine]', $line);
+        }
+    }
+}
+
+/** The rows of `phpinfo(INFO_MODULES)` named in $keys. */
+function module_rows(array $keys): void
+{
+    ob_start();
+    phpinfo(INFO_MODULES);
+    $info = ob_get_clean();
+    foreach (explode("\n", $info) as $line) {
+        $parts = explode(' => ', $line, 2);
+        if (count($parts) === 2 && in_array($parts[0], $keys, true)) {
+            row("phpinfo[{$parts[0]}]", $parts[1]);
         }
     }
 }
@@ -65,6 +80,10 @@ if (($argv[1] ?? '') === 'tables') {
     foreach (get_defined_constants(true) as $module => $constants) {
         echo $module, "\t", implode(' ', array_keys($constants)), "\n";
     }
+    echo "# functions\n";
+    foreach (get_loaded_extensions() as $module) {
+        echo $module, "\t", implode(' ', get_extension_funcs($module) ?: []), "\n";
+    }
     echo "# paths\n";
     row('PHP_EXTENSION_DIR', PHP_EXTENSION_DIR);
     row('DEFAULT_INCLUDE_PATH', DEFAULT_INCLUDE_PATH);
@@ -91,9 +110,25 @@ row("ini_get_all()[memory_hard_limit_percent]",
 // be the ones php links, on every machine.
 echo "# linked\n";
 foreach (['PCRE_VERSION', 'PCRE_VERSION_MAJOR', 'PCRE_VERSION_MINOR',
-          'LIBXML_VERSION', 'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION'] as $c) {
+          'LIBXML_VERSION', 'LIBXML_DOTTED_VERSION', 'LIBXML_LOADED_VERSION',
+          'INTL_ICU_VERSION', 'INTL_ICU_DATA_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
+// The OpenSSL loaded at run time. OPENSSL_VERSION_TEXT/NUMBER are the headers
+// each binary was compiled against: a Homebrew bottle built before an
+// openssl@4 update reports the older headers, so they are compared nowhere.
+module_rows(['OpenSSL Library Version']);
+ext_row('curl', 'curl_version()', function () {
+    $v = curl_version();
+    // The array without feature_list (derived from 'features').
+    unset($v['feature_list']);
+    return $v;
+});
+foreach (['ICONV_IMPL', 'ICONV_VERSION', 'GMP_VERSION'] as $c) {
+    row($c, defined($c) ? constant($c) : '(undefined)');
+}
+ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
+module_rows(['GMP version']);
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',
@@ -106,15 +141,6 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
 info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
-foreach (['ICONV_VERSION', 'MB_ONIGURUMA_VERSION',
-          'OPENSSL_VERSION_TEXT', 'OPENSSL_VERSION_NUMBER', 'INTL_ICU_VERSION',
-          'INTL_ICU_DATA_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
+foreach (['MB_ONIGURUMA_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
-ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
-ext_row('curl', 'curl_version()', function () {
-    $v = curl_version();
-    // The array without feature_list (derived from 'features').
-    unset($v['feature_list']);
-    return $v;
-});

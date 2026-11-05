@@ -3,20 +3,14 @@
 //! `posix_get_last_error`/`posix_strerror` error channel — thin wrappers over
 //! the real libc calls.
 
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
+use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
-use crate::proc_fns::{getpwnam, getpwuid, zpp_long, zpp_string, Passwd};
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::main::streams::errno;
+use crate::zend::zpp::{zpp_long, zpp_string};
+use crate::{Host, Thrown};
 
 /// php's `PHP_POSIX_CHECK_PID`: ValueError unless `lower <= pid <= upper`.
 fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Result<(), Thrown> {
@@ -31,10 +25,6 @@ fn check_pid(pid: i64, arg: usize, fname: &str, pname: &str, lower: i64) -> Resu
         ));
     }
     Ok(())
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The module's `last_error` (posix_get_last_error).
@@ -300,11 +290,10 @@ fn fn_uname(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_getcwd(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    use std::os::unix::ffi::OsStrExt;
-    match std::env::current_dir() {
-        Ok(p) => Ok(Value::str(p.as_os_str().as_bytes().to_vec())),
+    match crate::zend::virtual_cwd::current_dir() {
+        Ok(p) => Ok(Value::str(p)),
         Err(e) => {
-            set_last_error(host, e.raw_os_error().unwrap_or(0));
+            set_last_error(host, e);
             Ok(Value::Bool(false))
         }
     }
@@ -322,7 +311,7 @@ fn fn_access(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(_) => zpp_long(host, args, 1, "posix_access", "flags")?,
         None => 0,
     };
-    let Ok(c) = CString::new(path) else {
+    let Some(c) = crate::zend::virtual_cwd::c_path(&path) else {
         return Ok(Value::Bool(false));
     };
     if unsafe { libc::access(c.as_ptr(), mode as i32) } != 0 {
@@ -356,46 +345,84 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
+// ---------------------------------------------------------------------------
+// process environment helpers
+// ---------------------------------------------------------------------------
+
+/// The passwd entry for a uid: (name, passwd, uid, gid, gecos, dir, shell).
+pub(crate) struct Passwd {
+    pub name: Vec<u8>,
+    pub passwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub shell: Vec<u8>,
+}
+
+fn passwd_from(pw: &libc::passwd) -> Passwd {
+    unsafe {
+        Passwd {
+            name: cbytes(pw.pw_name),
+            passwd: cbytes(pw.pw_passwd),
+            uid: pw.pw_uid,
+            gid: pw.pw_gid,
+            gecos: cbytes(pw.pw_gecos),
+            dir: cbytes(pw.pw_dir),
+            shell: cbytes(pw.pw_shell),
+        }
     }
-    put(m, "posix_getpid", fn_getpid, 0, Some(0));
-    put(m, "posix_getppid", fn_getppid, 0, Some(0));
-    put(m, "posix_getuid", fn_getuid, 0, Some(0));
-    put(m, "posix_geteuid", fn_geteuid, 0, Some(0));
-    put(m, "posix_getgid", fn_getgid, 0, Some(0));
-    put(m, "posix_getegid", fn_getegid, 0, Some(0));
-    put(m, "posix_getpgrp", fn_getpgrp, 0, Some(0));
-    put(m, "posix_getsid", fn_getsid, 1, Some(1));
-    put(m, "posix_getpgid", fn_getpgid, 1, Some(1));
-    put(m, "posix_kill", fn_kill, 2, Some(2));
-    put(m, "posix_isatty", fn_isatty, 1, Some(1));
-    put(m, "posix_ttyname", fn_ttyname, 1, Some(1));
-    put(m, "posix_getpwuid", fn_getpwuid, 1, Some(1));
-    put(m, "posix_getpwnam", fn_getpwnam, 1, Some(1));
-    put(m, "posix_getgrgid", fn_getgrgid, 1, Some(1));
-    put(m, "posix_getgrnam", fn_getgrnam, 1, Some(1));
-    put(m, "posix_getgroups", fn_getgroups, 0, Some(0));
-    put(m, "posix_getlogin", fn_getlogin, 0, Some(0));
-    put(m, "posix_uname", fn_uname, 0, Some(0));
-    put(m, "posix_getcwd", fn_getcwd, 0, Some(0));
-    put(m, "posix_access", fn_access, 1, Some(2));
-    put(m, "posix_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "posix_errno", fn_get_last_error, 0, Some(0));
-    put(m, "posix_strerror", fn_strerror, 1, Some(1));
+}
+
+pub(crate) fn getpwuid(uid: u32) -> Option<Passwd> {
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
+}
+
+pub(crate) fn getpwnam(name: &[u8]) -> Option<Passwd> {
+    let c = CString::new(name.to_vec()).ok()?;
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let r = libc::getpwnam_r(c.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut res);
+        (r == 0 && !res.is_null()).then(|| passwd_from(&pw))
+    }
+}
+
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("posix_getpid", fn_getpid),
+            ("posix_getppid", fn_getppid),
+            ("posix_getuid", fn_getuid),
+            ("posix_geteuid", fn_geteuid),
+            ("posix_getgid", fn_getgid),
+            ("posix_getegid", fn_getegid),
+            ("posix_getpgrp", fn_getpgrp),
+            ("posix_getsid", fn_getsid),
+            ("posix_getpgid", fn_getpgid),
+            ("posix_kill", fn_kill),
+            ("posix_isatty", fn_isatty),
+            ("posix_ttyname", fn_ttyname),
+            ("posix_getpwuid", fn_getpwuid),
+            ("posix_getpwnam", fn_getpwnam),
+            ("posix_getgrgid", fn_getgrgid),
+            ("posix_getgrnam", fn_getgrnam),
+            ("posix_getgroups", fn_getgroups),
+            ("posix_getlogin", fn_getlogin),
+            ("posix_uname", fn_uname),
+            ("posix_getcwd", fn_getcwd),
+            ("posix_access", fn_access),
+            ("posix_get_last_error", fn_get_last_error),
+            ("posix_errno", fn_get_last_error),
+            ("posix_strerror", fn_strerror),
+        ],
+    );
 }

@@ -1,0 +1,117 @@
+48: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+65: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+33: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+256: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+-129: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+1000: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+-1000: 
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_alpha(): Argument of type int will be interpreted as string in the future in F on line 7
+0
+Deprecated: ctype_graph(): Argument of type int will be interpreted as string in the future in F on line 7
+1
+Deprecated: ctype_print(): Argument of type int will be interpreted as string in the future in F on line 8
+1
+Deprecated: ctype_punct(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 8
+0
+
+Deprecated: ctype_digit(): Argument of type int will be interpreted as string in the future in F on line 10
+
+Deprecated: ctype_xdigit(): Argument of type int will be interpreted as string in the future in F on line 10
+bool(false)
+bool(false)
+
+Deprecated: ctype_digit(): Argument of type null will be interpreted as string in the future in F on line 11
+
+Deprecated: ctype_alpha(): Argument of type bool will be interpreted as string in the future in F on line 11
+
+Deprecated: ctype_digit(): Argument of type float will be interpreted as string in the future in F on line 11
+
+Deprecated: ctype_space(): Argument of type array will be interpreted as string in the future in F on line 11
+
+Deprecated: ctype_alnum(): Argument of type stdClass will be interpreted as string in the future in F on line 12
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(true)
+bool(true)
+handler: 8192 ctype_upper(): Argument of type int will be interpreted as string in the future
+bool(true)
+ErrorException: ctype_lower(): Argument of type int will be interpreted as string in the future

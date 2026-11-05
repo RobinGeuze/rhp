@@ -1,10 +1,13 @@
 //! Startup (`-d`) ini values run their directive's on_modify handler, as
-//! php's module startup does: memory_hard_limit_percent warns "in Unknown on
-//! line 0" and a refused value leaves the directive NULL. Checked against
-//! fixed output and, when the local php is the same release as rhp, against
-//! `php -n` itself (stdout, stderr and exit status).
+//! php's module startup does: a sweep of memory_hard_limit_percent,
+//! openssl.libctx and bcmath.scale values (the first two crossed with the
+//! display settings), compared with `php -n` (stdout, stderr and exit
+//! status) when the local php is rhp's release. The fixed cases are CLI
+//! fixtures (`tests/cli/startup_ini`).
 
 use std::process::Command;
+
+use rhp_difftest::php_bin;
 
 const SCRIPT: &str = r#"echo "start\n";
 var_dump(ini_get('memory_hard_limit_percent'));
@@ -12,13 +15,27 @@ var_dump(ini_get_all(null, false)['memory_hard_limit_percent']);
 var_dump(error_get_last());
 var_dump(ini_set('memory_hard_limit_percent', '200'));"#;
 
+const BCMATH_SCRIPT: &str = r#"var_dump(bcscale(), ini_get('bcmath.scale'));
+echo bcadd('1', '2'), "\n";
+ini_set('bcmath.scale', '2');
+var_dump(bcscale());
+ini_restore('bcmath.scale');
+var_dump(bcscale(), ini_get_all('bcmath')['bcmath.scale']['global_value']);"#;
+
+const LIBCTX_SCRIPT: &str = r#"echo "start\n";
+var_dump(ini_get('openssl.libctx'), error_get_last(), ini_set('openssl.libctx', 'default'));"#;
+
 fn run(bin: &str, ini: &[&str]) -> (String, String, Option<i32>) {
+    run_script(bin, ini, SCRIPT)
+}
+
+fn run_script(bin: &str, ini: &[&str], script: &str) -> (String, String, Option<i32>) {
     let mut c = Command::new(bin);
     c.arg("-n");
     for kv in ini {
         c.args(["-d", kv]);
     }
-    let o = c.args(["-r", SCRIPT]).output().expect("run engine");
+    let o = c.args(["-r", script]).output().expect("run engine");
     (
         String::from_utf8_lossy(&o.stdout).into_owned(),
         String::from_utf8_lossy(&o.stderr).into_owned(),
@@ -28,21 +45,8 @@ fn run(bin: &str, ini: &[&str]) -> (String, String, Option<i32>) {
 
 const RHP: &str = env!("CARGO_BIN_EXE_rhp");
 
-#[test]
-fn refused_startup_value_warns_and_stays_null() {
-    let (out, err, code) = run(RHP, &["memory_hard_limit_percent=50"]);
-    assert_eq!(
-        out,
-        "\nWarning: memory_hard_limit_percent must be >= 100, or -1 in Unknown on line 0\n\
-         start\nstring(0) \"\"\nNULL\nNULL\nstring(0) \"\"\n"
-    );
-    assert_eq!(err, "");
-    assert_eq!(code, Some(0));
-}
-
-#[test]
-fn startup_ini_matches_php() {
-    let same_release = Command::new("php")
+fn same_release() -> bool {
+    let same = Command::new(php_bin())
         .args(["-n", "-r", "echo PHP_VERSION;"])
         .output()
         .ok()
@@ -53,8 +57,51 @@ fn startup_ini_matches_php() {
             .output()
             .ok()
             .map(|o| o.stdout);
-    if !same_release {
+    if !same {
         eprintln!("skipping: php is missing or not rhp's release");
+    }
+    same
+}
+
+#[test]
+fn openssl_libctx_matches_php() {
+    if !same_release() {
+        return;
+    }
+    let has_openssl = Command::new(php_bin())
+        .args(["-n", "-r", "echo extension_loaded('openssl') ? 1 : 0;"])
+        .output()
+        .is_ok_and(|o| o.stdout == b"1");
+    if !has_openssl {
+        eprintln!("skipping: php -n has no openssl");
+        return;
+    }
+    for v in ["bogus", "default", "custom", "", "Custom"] {
+        let kv = format!("openssl.libctx={v}");
+        for extra in [
+            &[][..],
+            &["display_errors=0"],
+            &["display_errors=stderr"],
+            &["display_startup_errors=0"],
+            &["html_errors=1"],
+            &["fatal_error_backtraces=0"],
+            &["error_reporting=0"],
+            &["error_reporting=0", "display_errors=0"],
+        ] {
+            let mut ini = vec![kv.as_str()];
+            ini.extend_from_slice(extra);
+            assert_eq!(
+                run_script(&php_bin(), &ini, LIBCTX_SCRIPT),
+                run_script(RHP, &ini, LIBCTX_SCRIPT),
+                "-d {ini:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn startup_ini_matches_php() {
+    if !same_release() {
         return;
     }
     for v in [
@@ -78,7 +125,22 @@ fn startup_ini_matches_php() {
         ] {
             let mut ini = vec![kv.as_str()];
             ini.extend_from_slice(extra);
-            assert_eq!(run("php", &ini), run(RHP, &ini), "-d {ini:?}");
+            assert_eq!(run(&php_bin(), &ini), run(RHP, &ini), "-d {ini:?}");
         }
+    }
+}
+
+#[test]
+fn bcmath_scale_matches_php() {
+    if !same_release() {
+        return;
+    }
+    for v in ["4", "-1", "abc", "3x", " 7 ", "2147483648", "1k", ""] {
+        let kv = format!("bcmath.scale={v}");
+        assert_eq!(
+            run_script(&php_bin(), &[&kv], BCMATH_SCRIPT),
+            run_script(RHP, &[&kv], BCMATH_SCRIPT),
+            "-d {kv}"
+        );
     }
 }

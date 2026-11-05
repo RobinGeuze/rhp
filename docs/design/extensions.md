@@ -12,6 +12,9 @@ version is in `crates/rhp-builtins/src/version.rs`). Written against 8.5.8 / PCR
 > pure-Rust default (§4.1, §7), "libxml2 — defer" (§6 item 8) and "leave
 > json/date/hash/mbstring-core pure-Rust" (§6 summary, §8 item 5) no longer
 > hold. PCRE2 is linked from the system library, not through `pcre2-sys`.
+> The `rhp-builtins` file names below (`preg_fns.rs`, `misc_fns.rs`, `lib.rs`
+> lines) are from the time of writing; [`builtins-layout.md`](./builtins-layout.md)
+> maps today's files.
 
 This doc distinguishes three very different things that all get called
 "extensions", gives a verdict on each, then proposes a concrete
@@ -22,7 +25,7 @@ This doc distinguishes three very different things that all get called
 > **Decision (2026-10-24).** The macro-shim prototype of §9 is **abandoned** —
 > `crates/rhp-zendshim` has been removed. The chosen strategy is to
 > **reimplement each extension in Rust and prove it byte-identical to the real
-> `php` binary with a differential-test framework** (`crates/rhp-difftest`,
+> `php` binary with a differential-test framework** (`tools/rhp-difftest`,
 > documented in §10). Pure-Rust crates are used where a faithful 1:1 exists; a
 > C system library (e.g. libmysqlclient, libpq) is permitted only where no 1:1
 > Rust alternative exists. The first extension reimplemented this way is `hash`
@@ -125,7 +128,7 @@ exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
 
 | PHP surface | Underlying C lib | Rust binding |
 |---|---|---|
-| `preg_*` | **PCRE2** (`libpcre2-8`) | `pcre2-sys` / `pcre2` crate |
+| `preg_*` | **PCRE2** (`libpcre2-8`) | none: rhp links the system library and declares what it calls (`src/pcre/sys.rs`) |
 | `intl`, parts of `mbstring` (casing, collation, normalization), `IntlDateFormatter` | **ICU** (`libicui18n`/`libicuuc`) | `icu`/`rust_icu_*` (bindgen over system ICU), or ICU4X (pure Rust, *different data*) |
 | `mb_ereg*` | **Oniguruma** (`libonig`) | `onig` crate |
 | `dom`, `simplexml`, `xml` | **libxml2** | `libxml`/bindgen |
@@ -218,8 +221,8 @@ only where a function *is* a thin wrapper over a shared lib (regex, intl, gmp).
 Goal: let a single builtin delegate to a `-sys` crate **without** (a) forcing
 that C dependency on every build, (b) changing the `registry()` / `Host`
 contract, or (c) weakening the differential guarantee. The current layering
-makes this clean — `rhp-builtins` depends only on `rhp-values` +
-`rhp-semantics`, and each builtin is a `NativeFn = fn(&mut dyn Host,
+makes this clean — `rhp-builtins` depends only on `rhp-values` and
+`rhp-bytecode` (for the stub signatures), and each builtin is a `NativeFn = fn(&mut dyn Host,
 &[Value]) -> Result<Value, Thrown>` looked up by name in `registry()`
 (`crates/rhp-builtins/src/lib.rs:78`, `:101`).
 
@@ -300,7 +303,7 @@ Key design rules this encodes:
 ### 4.3 Keeping byte-exactness tested (the differential harness is the gate)
 
 The harness in `crates/rhp-cli/tests/diff.rs` holds the VM strictly to
-committed `.out` files captured from the reference php, over `tests/golden/*.php`. Make
+committed `.out` files captured from the reference php, over `tests/golden/**/*.php`. Make
 the native backend subordinate to it:
 
 1. **Same fixtures, both backends.** Golden `.out`s are captured from php once.
@@ -314,8 +317,8 @@ the native backend subordinate to it:
    pure-Rust build legitimately skips it rather than failing.
 3. **Capture provenance.** Record, next to the goldens, the exact lib versions
    PHP used (PCRE, ICU, JSON — from `PCRE_VERSION`,
-   `INTL_ICU_VERSION`; now `crates/rhp-builtins/src/version.rs`, checked by
-   `tools/capture-ref-build.php`). A native build that links a *different* version is
+   `INTL_ICU_VERSION`; now read from the linked libraries, checked by the
+   "linked" section of `tools/capture-ref-build.php`). A native build that links a *different* version is
    expected to diverge on version-sensitive fixtures; the harness turns that
    into a visible failure instead of silent drift.
 4. **Fuzz the wrapper, not the lib.** Differentially fuzz `rhp preg_match`
@@ -485,8 +488,8 @@ Every Category-2 adoption adds a C dependency, so the architecture makes them
   finds them). This is the cost that keeps these gated.
 - **Bundled vs system libs — bundle for byte-exactness.** A *system* PCRE2/ICU
   is whatever the build host ships, which defeats version-pinning (§2 caveat).
-  Prefer `-sys` crates in **vendored/bundled mode** (`pcre2-sys` builds a pinned
-  PCRE2 from source; `icu`/`rug` can vendor) so the binary carries the *exact*
+  Prefer `-sys` crates in **vendored/bundled mode** (`icu`/`rug` can vendor)
+  so the binary carries the *exact*
   version matched to the goldens. Trade-off: longer builds, larger binary. For
   ICU specifically, bundling the **data** is the hard part (tens of MB) — this
   is a real reason ICU stays opt-in.
@@ -611,7 +614,7 @@ pulled in: `ZEND_SET_ALIGNED`, `zend_string`, `zend_string_safe_alloc`,
 ### 9.3 Build mechanics
 
 - `crates/rhp-zendshim/build.rs` uses the **`cc` crate** (already in the tree
-  via `pcre2-sys`) to compile `csrc/*.c` with `-I include` into a static archive
+  for rhp-csrc) to compile `csrc/*.c` with `-I include` into a static archive
   linked into the Rust crate. Stage 2's vendored file is detected at build time
   and gated by a `--cfg zendshim_bin2hex` (declared with `rustc-check-cfg`, so
   zero warnings).
@@ -743,7 +746,7 @@ The adopted extension strategy is deliberately simple and hard to fool:
    VM, and require identical stdout — not against a hand-committed `.out`, but
    against php live, over a broad, generated, seed-reproducible corpus.
 
-### 10.1 The framework — `crates/rhp-difftest`
+### 10.1 The framework — `tools/rhp-difftest`
 
 A small crate with a library, a binary, and integration tests:
 
@@ -774,13 +777,14 @@ php 8.5.8 over the sweep.
 
 - **Pure-Rust crates (1:1):** RustCrypto `md2`, `md4`, `md-5`, `sha1`, `sha2`
   (sha224/256/384/512 and the sha512/224, sha512/256 truncations), `sha3`,
-  `ripemd`, `whirlpool`, `tiger` (3-pass), `gost94` (gost + gost-crypto);
+  `ripemd`, `whirlpool`, `gost94` (gost + gost-crypto);
   `xxhash-rust` (xxh32/64/3/128).
 - **zlib:** `crc32b` (and `crc32()`) and `adler32` call the linked zlib.
 - **Hand-rolled (no 1:1 crate):** the `crc32` and `crc32c` variants; FNV-1/1a (32/64);
   joaat; MurmurHash3 (x86_32, x86_128, x64_128); and the table-heavy
-  `hash_tiger.rs` (4-pass tiger), `hash_snefru.rs` (Snefru-256),
-  `hash_haval.rs` (HAVAL 3/4/5-pass × 128–256-bit).
+  `hash/tiger.rs` (Tiger, 3- and 4-pass through one N-pass
+  implementation), `hash/snefru.rs` (Snefru-256), `hash/haval.rs` (HAVAL
+  3/4/5-pass × 128–256-bit).
 - **Quirks the differential sweep surfaced** (each invisible to spec reading, each
   caught instantly by diffing php): PHP emits the non-reflected `crc32`
   **little-endian** while `crc32b`/`crc32c` are big-endian; `snefru` and

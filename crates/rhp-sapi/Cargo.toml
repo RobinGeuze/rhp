@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rhp-builtins = { path = "../rhp-builtins" }
+rhp-bytecode = { path = "../rhp-bytecode" }
 rhp-compiler = { path = "../rhp-compiler" }
-rhp-frontend = { path = "../rhp-frontend" }
 rhp-values = { path = "../rhp-values" }
 rhp-vm = { path = "../rhp-vm" }

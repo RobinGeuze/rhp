@@ -1,0 +1,10 @@
+Eng 100 Alice
+Eng 100 Bob
+Eng 110 Dave
+Sales 90 Carol
+9,6,5,4,3,2,1,1
+apple,banana,cherry,Date
+Error: natsort(): Argument #1 ($array) could not be passed by reference
+img10,img2,img1,img12
+1,2,9,10
+1,10,2,9

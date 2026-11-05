@@ -19,17 +19,18 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
  server / front end        rhp-cli (argv)   rhp --cgi        future: -S, embed, FastCGI
           │                      │               │                     │
           ▼                      ▼               ▼                     ▼
- rhp-sapi            run_cli()          cgi::main()            run_request()
+ rhp-sapi            cli::main()        cgi::main()            run_request()
                          └──────────────┬───────┴──────────────────┘
                                         ▼
                      run_request(Box<dyn Sapi>, Request) -> Outcome
                                         │   one fresh Vm per call
                                         ▼
- rhp-vm              Vm: set_sapi → set_ini → set_request → start_request
+ rhp-vm              Vm::new(sapi) → set_ini → set_request → start_request
                          → run_main → finish_request
                                         │
- rhp-builtins        sapi::{Sapi, Response, RequestInfo, header_op},
-                     query_fns (treat_data), rfc1867 (multipart), output layer
+ rhp-builtins        main::sapi::{Sapi, Response, RequestInfo, header_op},
+                     main::php_variables (treat_data), main::rfc1867 (multipart),
+                     main::output
 ```
 
 - **`rhp-builtins::sapi`** defines the contract: the `Sapi` trait, the
@@ -40,11 +41,22 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   `$_POST`, `$_COOKIE`, `$_FILES`, `$_ENV` and `$_REQUEST`, reads POST
   bodies (`post_max_size`, `enable_post_data_reading`, multipart), and sends
   the headers lazily.
-- **`rhp-sapi`** is the library entry point (`run_request`) plus the two
-  shipped SAPIs, `CliSapi` (php-cli) and `cgi::CgiSapi` (php-cgi, with
-  `cgi::main` porting `cgi_main.c`'s argv and environment handling).
-- **`rhp-cli`** is a thin argv front end: `rhp script.php`, `rhp -r code`,
-  `rhp --cgi …`.
+- **`rhp-sapi`** is the library entry point (`run_request`, and
+  `compile_file`, the one parse-and-compile path for scripts, includes,
+  eval and preload) plus the shipped SAPIs: `CliSapi` (php-cli, with
+  `cli::main` porting `php_cli.c`'s option table and passes),
+  `cgi::CgiSapi` (php-cgi, with `cgi::main` porting `cgi_main.c`'s argv
+  and environment handling) and
+  `CaptureSapi`, which keeps a request's output in memory for tests and
+  tools (`CaptureSapi::cli()` behaves as php-cli, `CaptureSapi::web(name)`
+  as a web server).
+- **`rhp-cli`** only picks the SAPI (`rhp --cgi …`, or the binary named
+  `php-cgi`) and hands the command line to `cli::main` or `cgi::main`.
+  Both parse it with a port of php's `php_getopt`, so bad options get
+  php's messages; the php-cli modes rhp lacks (`-i`, `-l`, `-m`, `-s`,
+  `-w`, `-B`/`-R`/`-F`/`-E`, `-S`, `--rf` and friends, `--ini`,
+  `--repeat`) are refused after php's own checks, and `-a` gets the error
+  of a php without readline.
 
 ## The embedding API
 
@@ -93,6 +105,8 @@ let outcome = run_request(
 | `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included) | no-op |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
+| `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer | `flush`, then stdout |
+| `exits_on_hard_limit` | whether the hard memory limit ends the process (php-cli: exit 137) rather than just the request | `false` |
 
 The SAPI decides the wire format. `CgiSapi` writes `Status:` (when not
 200) + header lines + a blank line + the body to stdout; an HTTP server
@@ -123,6 +137,12 @@ Byte strings throughout (PHP is binary-safe). Everything is optional:
 `info: None` means a CLI run: superglobals come from the process
 environment and `$argv` from `Request::args`.
 
+`Request::script` is a `Script::File` (its real path is `__FILE__`; it goes
+through the compiled-script cache), a `Script::Source { path, bytes }` the
+caller already holds (run as the file `path`, not cached), `Script::Code`
+(`-r`) or `Script::Stdin`. `Request::new(script)` is a CLI-style request
+with no settings or arguments.
+
 ### `Outcome`
 
 `Exit(code)` (the script's exit status; 255 after a fatal error or a parse
@@ -133,21 +153,63 @@ The HTTP status is in the `Response` that `send_headers` received, not in
 ### Lower level
 
 `run_request` is a convenience over `Vm`. A server that needs to step
-in between (to cache compiled scripts, for instance) can drive it directly:
-`Vm::new()`, `set_sapi` (right away, before anything else), `set_ini` for
-each setting, `set_request`, `start_request` (post-size check,
+in between can drive it directly:
+`Vm::new(sapi)`, `set_ini` for each setting, `set_request`, `start_request` (post-size check,
 `X-Powered-By`), compile, `run_main` (script, shutdown functions,
 destructors, output-buffer flush, headers if still unsent), and finally
 `finish_request` (headers, `Sapi::flush`, upload cleanup). Dropping the
-`Vm` also deletes this request's uploaded temp files.
+`Vm` also deletes this request's uploaded temp files and resets the
+thread's request state (see *Threading model*). Compile the main
+script with `Vm::compile_main` to go through the compiled-script cache
+(below); run `opcache.preload` first with `Vm::preload_pending` and
+`Vm::run_preload` on an engine of its own, as `run_request` does.
+
+## The compiled-script cache (opcache)
+
+`rhp-vm`'s `opcache` module is Zend OPcache without the optimizer and the
+JIT. A request's main script and every `include` / `require` of an
+unchanged file reuse its compiled `Program`, with php's settings:
+`opcache.enable` (web SAPIs; on by default) / `opcache.enable_cli`,
+`validate_timestamps`, `revalidate_freq`, `file_update_protection`
+(a file changed in the last 2 s is compiled but not cached),
+`max_accelerated_files`, `max_file_size`, `memory_consumption` and
+`blacklist_filename`. `opcache_get_status()` and the other `opcache_*`
+functions report it; `opcache_reset()` takes effect at the next request.
+
+- **Per thread.** A `Program` holds `Rc`s, so the cache is a
+  `thread_local!`: every request served on a worker thread shares it, as
+  php-fpm workers share their shared-memory segment. Once bytecode is
+  `Arc`-based it can become process-wide behind a lock; only the module
+  touches it (bytecode.md §3.7 lists what that needs).
+- **Nothing per-request is cached.** A `Program` is immutable: the VM runs
+  its protos as they are (bytecode.md §3.6) and keeps statics, class
+  statics, constants and globals in the request's `Vm`, so they start
+  fresh in every request. Loading a cached file copies none of its code;
+  the request only builds its own entries for it (functions, linked
+  classes).
+- **Preload.** `opcache.preload` runs once per thread, before its first
+  request, on an engine of its own (its output goes to stdout). The
+  functions and classes it declared are declared again at the start of
+  every request; a preloaded file included later doesn't redeclare them.
+  A failed preload (parse error, uncaught exception) fails that request
+  and every later one on the thread with exit status 1, as php refuses
+  to start (`Vm::preload_outcome` tells an embedder that drives `Vm`
+  itself).
+- **Not implemented:** the file cache (`opcache.file_cache`: compiled
+  units aren't serialisable), the optimizer and its debug output, the JIT
+  (`opcache_get_status()['jit']` reports what the settings select),
+  switching to `opcache.preload_user` (only its warning), the inheritance
+  cache, `opcache.enable_file_override`, and caching `phar://` scripts.
 
 ## Request lifecycle
 
 What happens inside one `run_request`, in php's order:
 
-1. **Engine setup.** A fresh `Vm`. `set_sapi` installs the SAPI name and ini
-   defaults for this thread and defines `PHP_SAPI`. `-d`-style settings
-   apply over them.
+1. **Engine setup.** A fresh `Vm` for the SAPI: `Vm::new` resets the
+   thread's request state, installs the SAPI name and ini defaults and
+   defines `PHP_SAPI`. `Request::cwd` (`Vm::set_cwd`) sets the directory
+   the script runs in (php-cgi's chdir to the script's directory).
+   `-d`-style settings apply over them.
 2. **`sapi_activate`.** `set_request` records the method, protocol and HEAD
    flag. `start_request` checks the POST body against `post_max_size`
    ("PHP Request Startup: POST Content-Length …", in Unknown on line 0)
@@ -171,10 +233,11 @@ What happens inside one `run_request`, in php's order:
 
 ## Threading model
 
-**One `Vm` per OS thread, values stay plain `Rc`.** Engine values (`Value`,
-arrays, objects, the `Sapi` box) are deliberately neither `Send` nor
-`Sync`: reference counting stays cheap and non-atomic, as in php's NTS
-build. Concurrency comes from threads, never from sharing an engine:
+**One live `Vm` per OS thread, pinned to it for the request's lifetime;
+values stay plain `Rc`.** Engine values (`Value`, arrays, objects, the
+`Sapi` box) are deliberately neither `Send` nor `Sync`: reference counting
+stays cheap and non-atomic, as in php's NTS build. Concurrency comes from
+threads, never from sharing an engine:
 
 - A server keeps a pool of long-lived worker threads and runs
   `run_request` on one of them per request. The `Sapi` is built *on* that
@@ -186,17 +249,141 @@ build. Concurrency comes from threads, never from sharing an engine:
   FrankenPHP's classic mode. Worker mode (one bootstrapped app serving many
   requests) can come later as a separate API.
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
-  request-scoped builtin state) is in `thread_local!`s and is reset for
-  each request. `rhp-sapi`'s `concurrent_requests_on_worker_threads_are_isolated`
-  test runs requests on several threads at once and checks that none of
-  this leaks across threads or between requests on one thread.
-- **Process-wide state.** Like php's ZTS builds, some things belong to the
-  OS process, not the thread: the working directory (`chdir()`, and
-  `cgi::main`'s chdir to the script's directory), environment changes from
-  `putenv()`, `umask()`, signal handlers (`pcntl`), and the shared caches
-  (builtin registry, TLS and HTTP connection pools in `curl`), which are
-  read-only or locked. A multi-threaded server must not rely on chdir; a
-  per-`Vm` working directory is future work (see *Gaps*).
+  request-scoped builtin state) is in `thread_local!`s, like php's ZTS
+  module globals. `Vm::new` resets it, and so does dropping the `Vm`
+  (after its own values), so the engine a thread runs is the one that
+  state belongs to and an idle thread keeps nothing of its last request:
+  a second engine on the same thread while one runs (nested, or two
+  requests multiplexed on one thread) would clobber it. A request keeps
+  its thread from `Vm::new` until its `Vm` is dropped.
+  [`request-state.md`](./request-state.md) lists every `thread_local!`
+  and which ones each request resets. The prelude's classes are linked
+  once per thread (at its second request) and copied into each `Vm`, with
+  fresh static properties. `rhp-sapi`'s
+  `concurrent_requests_on_worker_threads_are_isolated` and
+  `tests/isolation.rs` run requests on several threads at once and one
+  after another on one thread and check that none of this leaks.
+- **Working directory and umask are the request's.** rhp never calls
+  chdir(2) or umask(2) for a script (`rhp_builtins::zend::virtual_cwd`, php's ZTS
+  virtual cwd): `chdir()`, `getcwd()` and `umask()` change and read the
+  request's values, every relative path rhp hands the OS, a C library or
+  a child process is taken from the request's directory first (stat,
+  open, access and opendir start from a descriptor of it, so the kernel
+  walks no more of the path than from a real working directory), and files
+  are created with the request's umask (a new file's mode is fixed up when
+  the request's umask allows bits the process's takes away). Each request
+  starts in `Request::cwd`, else the process's directory, with the
+  process's umask, read once when the first engine starts (on macOS by
+  setting it to 0777 for a moment, so a file another thread creates then
+  can only come out stricter). Child processes start in the request's
+  directory with its umask; posix_spawn can't set a umask, so when the
+  request's differs from the process's, the child is forked and set up by
+  hand. A Unix socket bound by a relative path is bound in the request's
+  directory and still reports the name it was given; one the directory
+  would make too long for `sun_path` is left relative. `opcache.preload`
+  and `opcache.blacklist_filename`, startup settings, stay relative to
+  the process's directory, as in php.
+- **When the directory moves.** If the request's directory is renamed or
+  removed while the request is in it, the calls that start from its
+  descriptor (stat, open, access, opendir, chdir) follow it, as from a
+  real working directory, and `getcwd()` gives its new name, or false once
+  it is gone. Other paths (rename, unlink, mkdir, include, the C
+  libraries, a child's directory) are joined to the name it had, until
+  `getcwd()` or `chdir()` notices the new one. `realpath('.')` in a
+  removed directory is false; php's is `'.'`.
+- **SAPI functions.** Each SAPI supplies its own functions, as php's
+  `sapi_module.additional_functions` and a SAPI's own module do: php-cli
+  has `cli_set_process_title` / `cli_get_process_title`, php-cgi its
+  `cgi-fcgi` module's `getallheaders` and `apache_*` functions
+  (rhp-builtins `sapi/`, a `SapiDef` per SAPI name). An embedding SAPI
+  has none of them. `function_exists()`, `get_extension_funcs()`,
+  `get_defined_functions()` and Reflection see the running SAPI's set.
+  php-cli and php-cgi also have `dl()`; rhp does not, as it cannot load
+  php's C extensions.
+- **pcntl only under the CLI and CGI.** pcntl is a `cli_only` module
+  (PHP_NEW_EXTENSION's `cli` class): its functions, constants and
+  extension entry exist only under the command-line SAPIs
+  (`main::sapi::is_command_line`), so an embedding server never gets
+  process-wide signal handlers or `fork` from a script. This differs
+  from php only for embed: php's static build adds a `cli`-class
+  extension to the cli, cgi, phpdbg and embed SAPIs (not php-fpm).
+- **Process-wide state.** `putenv()` changes stay in the request (an
+  overlay its child processes get); the process's environment never
+  changes. What belongs to the OS process: signal handlers (`pcntl`, CLI
+  and CGI only), and the shared caches (builtin registry, TLS and HTTP
+  connection pools in `curl`), which are read-only or locked. The
+  descriptor table is the process's too: the pipes rhp makes for a child
+  are close-on-exec until its spawn hands them over, and spawns don't
+  overlap, so a child started for one request never holds another's pipe
+  ends open (php leaves them inheritable; its children come from one
+  thread).
+
+## Memory
+
+`memory_limit` and `memory_get_usage()` need the binary to install the
+counting allocator, once:
+
+```rust
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+```
+
+It is the system allocator plus per-thread counters (`rhp_values::mem`).
+While a request runs on a thread, they follow php's zend_mm: `size` counts
+blocks rounded about as zend_mm rounds them, real usage counts 2 MiB
+chunks (kept once emptied, as zend_mm caches them) plus huge blocks.
+Counting starts when the script starts (`Vm::run_main`; compiling the main
+script is not counted, as with opcache) and stops at `finish_request`.
+Without the allocator, requests run, `memory_get_usage()` reads 0, and
+only the builtins that check a size up front enforce the limit.
+
+The allocator can't fail or unwind, so it only records that the limit was
+crossed. As in php 8.5 (`zend_mm_delayed_error`), the VM raises "Allowed
+memory size of N bytes exhausted" at its next interrupt check: a jump,
+entering or leaving a function, a builtin returning, the end of the script.
+The request then ends like any fatal error: shutdown functions run, the
+exit status is 255, a 200 becomes a 500 when the error isn't displayed.
+The next request on the thread starts from zero. Builtins that know a big
+size first refuse it before allocating, as php's fallible allocations do:
+`str_repeat`, `str_pad`, `implode`, `array_fill`, `array_pad`, `range`,
+`fread`, `stream_get_line`, `file_get_contents` (plain files) and
+`unserialize`.
+
+php's hard limit (twice `memory_limit`, or `memory_hard_limit_percent`)
+kills php-cli with exit 137. rhp checks it where the VM or a builtin
+allocates a size it knows first but php can't refuse: string concatenation
+(`.`, `.=`, interpolation), a far string offset, `hash_pbkdf2`. php-cli
+exits as php does; any other SAPI ends just the request with the fatal
+error.
+
+What still escapes the limit, until more builtins are mirrored:
+
+- A builtin without a pre-check (`str_replace`, `explode`, `array_merge`,
+  …) allocates as much as its input asks for and only reports the
+  crossing when it returns. One call can use far more than the limit.
+- An allocation the system refuses aborts the process (Rust's
+  `handle_alloc_error`), taking every request on it down. php's hard
+  limit stops such sizes first; rhp stops them only where it checks.
+- Arrays grow without a hard-limit check. Growth is at most a doubling
+  per insert, and the crossing is raised at the next interrupt check, so
+  a VM loop can't run away; a builtin that builds a big array can.
+
+Limits of the model:
+
+- Per thread. A block freed on another thread than the one that allocated
+  it is subtracted from the freeing thread; counters saturate at zero.
+  Memory allocated before the request and freed during it (engine
+  startup data) makes the counts read low by that much.
+- Data kept from one request to the next belongs inside
+  `rhp_values::mem::uncounted`, as php's opcache memory is outside the
+  request heap; otherwise the request that built it is charged and a
+  later one credited when it is freed. The compiled-script cache compiles
+  the programs it keeps, and changes its tables, that way.
+- rhp's data structures are not php's: an array of ints takes about three
+  times php's memory, strings about the same. Scripts close to the limit
+  can fail earlier (or later) than under php, and "tried to allocate N" for
+  a growing array differs. Sizes a builtin checks up front use php's
+  numbers.
 
 ## Where this goes
 
@@ -211,9 +398,7 @@ build. Concurrency comes from threads, never from sharing an engine:
   needed beyond today's API: a streaming body reader (`Sapi::read_body`,
   so uploads don't have to be buffered first), `max_execution_time`
   enforcement with an interrupt flag the server can also set when a client
-  disconnects (`connection_aborted()`), a per-`Vm` working directory, and a
-  compiled-script cache shared between requests on one thread (a
-  thread-local opcache).
+  disconnects (`connection_aborted()`).
 - **FastCGI.** A `cgi-fcgi` front end that reads FastCGI records, builds a
   `RequestInfo` from the params, and writes stdout records through a
   `Sapi`. It reuses `cgi::CgiSapi`'s header logic and `php_sapi_name()`
@@ -225,7 +410,6 @@ build. Concurrency comes from threads, never from sharing an engine:
   streaming reader yet.
 - `max_execution_time` / `max_input_time` are not enforced.
 - `auto_prepend_file` / `auto_append_file` are ignored (in every SAPI).
-- `chdir` is process-wide (see *Threading model*).
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`.
 - Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.

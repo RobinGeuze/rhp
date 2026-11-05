@@ -1,0 +1,1621 @@
+//! ext/standard/file.c: `fopen` and the per-handle functions (`fread`,
+//! `fgets`, `flock`, `fseek`, ...), whole-file reads and writes (`file`,
+//! `file_get_contents`, `file_put_contents`, `readfile`), `mkdir`/`unlink`/
+//! `rename`/`copy`, temporary files, CSV, `popen` and `fnmatch`.
+
+use std::ffi::CString;
+
+use rhp_values::ops::deref;
+use rhp_values::{conv, PhpArray, Value};
+
+use crate::ext::standard::filestat::arr_from_stat;
+use crate::ext::standard::proc_open::{zpp_path, SPAWN_LOCK};
+use crate::main::php_glob::{
+    GLOB_AVAILABLE, GLOB_BRACE, GLOB_ERR, GLOB_MARK, GLOB_NOCHECK, GLOB_NOESCAPE, GLOB_NOSORT,
+    GLOB_ONLYDIR,
+};
+use crate::main::streams::split_scheme;
+use crate::zend::zpp::{int_param, str_param};
+use crate::{Host, StreamKind, Thrown};
+
+pub(crate) fn str_arg(args: &[Value], i: usize) -> Vec<u8> {
+    args.get(i)
+        .map(|v| conv::to_string_bytes(&deref(v)))
+        .unwrap_or_default()
+}
+
+pub(crate) fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
+    match args.get(i).map(deref) {
+        None | Some(Value::Null) => default,
+        Some(v) => conv::to_int(&v),
+    }
+}
+
+/// A `Z_PARAM_PATH` argument: a string without NUL bytes.
+pub(crate) fn path_param(
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let p = str_arg(args, i);
+    if p.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "{fname}(): Argument #{} (${pname}) must not contain any null bytes",
+                i + 1
+            ),
+        ));
+    }
+    Ok(p)
+}
+
+/// A `resource $stream` argument that must be a live stream.
+pub(crate) fn stream_param(
+    host: &dyn Host,
+    args: &[Value],
+    i: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<(Value, StreamKind), Thrown> {
+    let v = args.get(i).map(deref).unwrap_or(Value::Null);
+    if !matches!(v, Value::Resource(_)) {
+        return Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be of type resource, {} given",
+            i + 1,
+            crate::zend::zpp::zval_value_name(host, &v)
+        )));
+    }
+    match host.stream_kind(&v) {
+        Some(k) => Ok((v, k)),
+        None => Err(Thrown::type_error(format!(
+            "{fname}(): Argument #{} (${pname}) must be an open stream resource",
+            i + 1
+        ))),
+    }
+}
+
+/// php's `php_stream_context_from_zval(zcontext, 0)`: with no explicit
+/// context argument the default context is fetched (allocating its resource
+/// on first use).
+pub(crate) fn touch_ctx(host: &mut dyn Host, args: &[Value], idx: usize) {
+    if matches!(args.get(idx).map(deref), None | Some(Value::Null)) {
+        host.default_stream_context();
+    }
+}
+
+fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "fopen", "filename")?;
+    let mode = str_arg(args, 1);
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
+    touch_ctx(host, args, 3);
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        return Ok(crate::ext::standard::http_fopen_wrapper::open_arg(
+            host,
+            "fopen",
+            &path,
+            &mode,
+            args.get(3),
+        )?
+        .unwrap_or(Value::Bool(false)));
+    }
+    crate::main::streams::clear_errno();
+    let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
+    match host.stream_open_ctx(&path, &mode, &ctx) {
+        Some(v) => Ok(v),
+        None => {
+            if crate::main::streams::split_scheme(&path).0 == b"file"
+                && crate::main::streams::parse_fopen_mode(&mode).is_none()
+            {
+                crate::warn_arg(
+                    host,
+                    "fopen",
+                    &path,
+                    &[
+                        b"Failed to open stream: `".as_slice(),
+                        &mode,
+                        b"' is not a valid mode for fopen",
+                    ]
+                    .concat(),
+                )?;
+            } else {
+                crate::open_failed(host, "fopen", &path)?;
+            }
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+// --- file() --------------------------------------------------------------------
+
+fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "file", "filename")?;
+    let flags = int_arg(args, 1, 0);
+    const USE_INCLUDE_PATH: i64 = 1;
+    const IGNORE_NEW_LINES: i64 = 2;
+    const SKIP_EMPTY_LINES: i64 = 4;
+    const NO_DEFAULT_CONTEXT: i64 = 16;
+    if flags & !(USE_INCLUDE_PATH | IGNORE_NEW_LINES | SKIP_EMPTY_LINES | NO_DEFAULT_CONTEXT) != 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "file(): Argument #2 ($flags) must be a valid flag value",
+        ));
+    }
+    if flags & NO_DEFAULT_CONTEXT == 0 {
+        touch_ctx(host, args, 2);
+    }
+    let include_new_line = flags & IGNORE_NEW_LINES == 0;
+    let skip_blank = flags & SKIP_EMPTY_LINES != 0;
+    crate::main::streams::clear_errno();
+    let mut opened = crate::ext::standard::http_fopen_wrapper::is_http(&path);
+    let data = if opened {
+        match crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "file",
+            &path,
+            args.get(2),
+            0,
+            None,
+        )? {
+            Some(b) => Some(b),
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if let Some(r) = read_via_opener(host, "file", &path, args.get(2))? {
+        opened = true;
+        match r {
+            Some(b) => Some(b),
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if flags & USE_INCLUDE_PATH != 0 {
+        match resolve_include_path(&path) {
+            Some(p) => host.stream_get_contents(&p),
+            None => host.stream_get_contents(&path),
+        }
+    } else {
+        host.stream_get_contents(&path)
+    };
+    let Some(buf) = data else {
+        if crate::main::streams::last_errno() == Some(libc::EISDIR) {
+            host.consume_resource_ids(1);
+            crate::notice(
+                host,
+                "file",
+                "Read of 8192 bytes failed with errno=21 Is a directory",
+            )?;
+            return Ok(Value::Array(PhpArray::new()));
+        }
+        crate::open_failed(host, "file", &path)?;
+        return Ok(Value::Bool(false));
+    };
+    if !opened {
+        host.consume_resource_ids(crate::main::streams::open_resource_ids(&path));
+    }
+    let mut a = PhpArray::new();
+    if buf.is_empty() {
+        return Ok(Value::Array(a));
+    }
+    let e = buf.len();
+    let mut s = 0usize;
+    let find = |from: usize| {
+        buf[from..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| from + i)
+    };
+    match find(0) {
+        None => {
+            a.push(Value::str(buf.clone()));
+            return Ok(Value::Array(a));
+        }
+        Some(first) => {
+            let mut p = first;
+            if include_new_line {
+                loop {
+                    p += 1;
+                    a.push(Value::str(buf[s..p].to_vec()));
+                    s = p;
+                    match find(p) {
+                        Some(n) => p = n,
+                        None => break,
+                    }
+                }
+            } else {
+                loop {
+                    let windows_eol = usize::from(p != 0 && buf[p - 1] == b'\r');
+                    if skip_blank && p - s - windows_eol == 0 {
+                        p += 1;
+                        s = p;
+                    } else {
+                        a.push(Value::str(buf[s..p - windows_eol].to_vec()));
+                        p += 1;
+                        s = p;
+                    }
+                    match find(p) {
+                        Some(n) => p = n,
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+    if s != e {
+        a.push(Value::str(buf[s..e].to_vec()));
+    }
+    Ok(Value::Array(a))
+}
+
+// --- descriptor ops on open streams ---------------------------------------------
+
+fn fn_fstat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fstat", "stream")?;
+    Ok(host
+        .stream_fstat(&h)
+        .map(|s| arr_from_stat(&s))
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_flock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "flock", "stream")?;
+    let op = int_arg(args, 1, 0);
+    let act = op & 3;
+    if !(1..=3).contains(&act) {
+        return Err(Thrown::error(
+            "ValueError",
+            "flock(): Argument #2 ($operation) must be one of LOCK_SH, LOCK_EX, or LOCK_UN",
+        ));
+    }
+    let wb = args.get(2).and_then(|v| match v {
+        Value::Ref(r) => Some(r.clone()),
+        _ => None,
+    });
+    if let Some(r) = &wb {
+        *r.borrow_mut() = Value::Int(0);
+    }
+    // Socket streams do not implement php's LOCKING option.
+    if host.stream_sock_info(&h).is_some() {
+        return Ok(Value::Bool(false));
+    }
+    let Some(fd) = host.stream_fd(&h) else {
+        return Ok(Value::Bool(false));
+    };
+    let mut lop = match act {
+        1 => libc::LOCK_SH,
+        2 => libc::LOCK_EX,
+        _ => libc::LOCK_UN,
+    };
+    if op & 4 != 0 {
+        lop |= libc::LOCK_NB;
+    }
+    let r = unsafe { libc::flock(fd, lop) };
+    if r != 0 {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if errno == libc::EWOULDBLOCK {
+            if let Some(r) = &wb {
+                *r.borrow_mut() = Value::Int(1);
+            }
+        }
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn fn_ftruncate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, kind) = stream_param(host, args, 0, "ftruncate", "stream")?;
+    let size = int_arg(args, 1, 0);
+    if size < 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "ftruncate(): Argument #2 ($size) must be greater than or equal to 0",
+        ));
+    }
+    // Socket streams have no truncate support (php's TRUNCATE_SUPPORTED probe).
+    if host.stream_sock_info(&h).is_some() {
+        crate::warn(host, "ftruncate", "Can't truncate this stream!")?;
+        return Ok(Value::Bool(false));
+    }
+    match host.stream_truncate(&h, size) {
+        Some(r) => Ok(Value::Bool(r)),
+        // Nor do the wrapper and extension streams without a set_option
+        // (zip entries).
+        None if kind == StreamKind::Memory => {
+            crate::warn(host, "ftruncate", "Can't truncate this stream!")?;
+            Ok(Value::Bool(false))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+fn fn_fseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fseek", "stream")?;
+    let off = int_arg(args, 1, 0);
+    let whence = int_arg(args, 2, 0) as i32;
+    let ok = stream_seek(host, "fseek", &h, off, whence)?;
+    Ok(Value::Int(if ok { 0 } else { -1 }))
+}
+
+/// `_php_stream_seek` for builtin `fname`: php emulates a forward relative
+/// seek on an unseekable stream by reading (failing quietly at eof);
+/// anything else it cannot do warns.
+pub(crate) fn stream_seek(
+    host: &mut dyn Host,
+    fname: &str,
+    h: &Value,
+    off: i64,
+    whence: i32,
+) -> Result<bool, Thrown> {
+    if host.stream_seek(h, off, whence) {
+        return Ok(true);
+    }
+    let forward = whence == libc::SEEK_CUR && off >= 0;
+    if !forward && host.stream_meta(h).is_some_and(|m| !m.seekable) {
+        crate::warn(host, fname, "Stream does not support seeking")?;
+    }
+    Ok(false)
+}
+
+fn fn_ftell(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "ftell", "stream")?;
+    Ok(host
+        .stream_tell(&h)
+        .map(Value::Int)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_rewind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "rewind", "stream")?;
+    if host.stream_rewind(&h) {
+        return Ok(Value::Bool(true));
+    }
+    // php's seek of an unseekable stream (pipe, socket) warns.
+    if host.stream_meta(&h).is_some_and(|m| !m.seekable) {
+        crate::warn(host, "rewind", "Stream does not support seeking")?;
+    }
+    Ok(Value::Bool(false))
+}
+
+fn fn_fgets(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgets", "stream")?;
+    let line = match args.get(1).map(deref) {
+        None | Some(Value::Null) => host.stream_gets(&h),
+        Some(v) => {
+            let len = conv::to_int(&v);
+            if len <= 0 {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "fgets(): Argument #2 ($length) must be greater than 0",
+                ));
+            }
+            if len == 1 {
+                // php: a zero-byte read returns false? no — it returns "" only
+                // when not at eof; match php_stream_get_line's maxlen=0 path.
+                return Ok(Value::Bool(false));
+            }
+            host.stream_gets_max(&h, (len - 1) as usize)
+        }
+    };
+    Ok(line.map(Value::str).unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fread(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fread", "stream")?;
+    let len = int_arg(args, 1, 0);
+    if len <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "fread(): Argument #2 ($length) must be greater than 0",
+        ));
+    }
+    // php_stream_read_to_str allocates `len` bytes up front, fallibly.
+    if !rhp_values::mem::reserve_str(len as usize)
+        || !crate::ext::standard::streamsfuncs::reserve_read_chunk(host, &h)
+    {
+        return Ok(Value::Null);
+    }
+    Ok(host
+        .stream_read(&h, len)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fwrite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fwrite", "stream")?;
+    // Borrow a string argument rather than copying it: a large write to a
+    // non-blocking socket should reach send() as promptly as php's does.
+    let arg = args.get(1).map(deref).unwrap_or(Value::Null);
+    let owned;
+    let mut data: &[u8] = match &arg {
+        Value::Str(s) => s.as_bytes(),
+        v => {
+            owned = conv::to_string_bytes(v);
+            &owned
+        }
+    };
+    match args.get(2).map(deref) {
+        None | Some(Value::Null) => {}
+        Some(v) => {
+            let n = conv::to_int(&v);
+            if n <= 0 {
+                return Ok(Value::Int(0));
+            }
+            if (n as usize) < data.len() {
+                data = &data[..n as usize];
+            }
+        }
+    }
+    if data.is_empty() {
+        return Ok(Value::Int(0));
+    }
+    Ok(host
+        .stream_write(&h, data)
+        .map(|n| Value::Int(n as i64))
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_fclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, kind) = stream_param(host, args, 0, "fclose", "stream")?;
+    if kind == StreamKind::Dir {
+        // php: "cannot close the provided stream, as it must not be manually
+        // closed" (directory handles are closed with closedir()).
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(host.stream_close(&h)))
+}
+
+fn fn_feof(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "feof", "stream")?;
+    Ok(Value::Bool(host.stream_eof(&h)))
+}
+
+fn fn_fflush(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fflush", "stream")?;
+    Ok(Value::Bool(host.stream_flush(&h)))
+}
+
+fn fn_fgetc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgetc", "stream")?;
+    match host.stream_read(&h, 1) {
+        Some(b) if !b.is_empty() => Ok(Value::str(b)),
+        _ => Ok(Value::Bool(false)),
+    }
+}
+
+// --- mkdir / copy ------------------------------------------------------------------
+
+#[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS, u32 on Linux
+fn sys_mkdir(path: &[u8], mode: i64) -> Result<(), i32> {
+    crate::zend::virtual_cwd::mkdir(path, mode as libc::mode_t as u32)
+        .map_err(|e| e.raw_os_error().unwrap_or(libc::EINVAL))
+}
+
+/// `mkdir($directory, $permissions = 0777, $recursive = false)` — php's
+/// plain-files mkdir: the mode is honoured (minus umask); a recursive mkdir
+/// creates each missing component and fails if the leaf already exists.
+fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "mkdir", "directory")?;
+    let mode = int_arg(args, 1, 0o777);
+    let recursive = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
+    touch_ctx(host, args, 3);
+    let (scheme, _) = split_scheme(&path);
+    if scheme != b"file" {
+        return Ok(Value::Bool(false));
+    }
+    let local = crate::main::streams::file_path(&path).to_vec();
+    let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
+        crate::warn(host, "mkdir", &crate::main::streams::strerror(e))?;
+        Ok(Value::Bool(false))
+    };
+    if !recursive {
+        return match sys_mkdir(&local, mode) {
+            Ok(()) => Ok(Value::Bool(true)),
+            Err(e) => fail(host, e),
+        };
+    }
+    // Every cumulative prefix ending before a '/', then the whole path.
+    let mut prefixes: Vec<Vec<u8>> = Vec::new();
+    for (i, &b) in local.iter().enumerate() {
+        if b == b'/' && i > 0 && local[i - 1] != b'/' {
+            prefixes.push(local[..i].to_vec());
+        }
+    }
+    let trimmed_end = local
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map(|i| i + 1)
+        .unwrap_or(local.len());
+    let leaf = local[..trimmed_end].to_vec();
+    prefixes.retain(|p| p.len() < leaf.len());
+    for p in &prefixes {
+        if crate::main::streams::sys_stat(p, false).is_some() {
+            continue;
+        }
+        match sys_mkdir(p, mode) {
+            Ok(()) => {}
+            Err(e) if e == libc::EEXIST => {}
+            Err(e) => return fail(host, e),
+        }
+    }
+    match sys_mkdir(&leaf, mode) {
+        Ok(()) => Ok(Value::Bool(true)),
+        Err(e) => fail(host, e),
+    }
+}
+
+/// `copy($from, $to)` — php_copy_file_ctx: refuses directories and copying a
+/// file onto itself; reads through the stream layer (so `phar://` sources
+/// work) and writes like `fopen($to, "wb")` (an existing target keeps its
+/// mode, a new one gets 0666 & ~umask).
+fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let from = path_param(args, 0, "copy", "from")?;
+    let to = path_param(args, 1, "copy", "to")?;
+    touch_ctx(host, args, 2);
+    if let Some(s) = host.stream_stat(&from) {
+        if s.is_dir {
+            crate::warn(
+                host,
+                "copy",
+                "The first argument to copy() function cannot be a directory",
+            )?;
+            return Ok(Value::Bool(false));
+        }
+        if let Some(d) = host.stream_stat(&to) {
+            if d.is_dir {
+                crate::warn(
+                    host,
+                    "copy",
+                    "The second argument to copy() function cannot be a directory",
+                )?;
+                return Ok(Value::Bool(false));
+            }
+            if s.ino != 0 && d.ino != 0 {
+                if s.ino == d.ino && s.dev == d.dev {
+                    return Ok(Value::Bool(false));
+                }
+            } else if realpath_bytes(&from).is_some()
+                && realpath_bytes(&from) == realpath_bytes(&to)
+            {
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
+    crate::main::streams::clear_errno();
+    let data = if crate::ext::standard::http_fopen_wrapper::is_http(&from) {
+        match crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "copy",
+            &from,
+            args.get(2),
+            0,
+            None,
+        )? {
+            Some(b) => b,
+            None => return Ok(Value::Bool(false)),
+        }
+    } else if let Some(r) = read_via_opener(host, "copy", &from, args.get(2))? {
+        match r {
+            Some(b) => b,
+            None => return Ok(Value::Bool(false)),
+        }
+    } else {
+        let Some(data) = host.stream_get_contents(&from) else {
+            crate::open_failed(host, "copy", &from)?;
+            return Ok(Value::Bool(false));
+        };
+        host.consume_resource_ids(1);
+        data
+    };
+    let (scheme, _) = split_scheme(&to);
+    crate::main::streams::clear_errno();
+    if scheme == b"file" {
+        let Some(mut f) = crate::main::streams::LocalFile::open(&to, b"wb") else {
+            crate::open_failed(host, "copy", &to)?;
+            return Ok(Value::Bool(false));
+        };
+        host.consume_resource_ids(1);
+        return Ok(Value::Bool(f.write(&data).is_some()));
+    }
+    if host.stream_put_contents(&to, &data).is_none() {
+        crate::open_failed(host, "copy", &to)?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+// --- temp files / paths ------------------------------------------------------------
+
+/// php_get_temporary_directory(): $TMPDIR (trailing slash dropped), else
+/// P_tmpdir.
+pub fn temp_dir() -> Vec<u8> {
+    if let Some(s) = std::env::var_os("TMPDIR") {
+        use std::os::unix::ffi::OsStrExt;
+        let b = s.as_bytes();
+        if !b.is_empty() {
+            let mut v = b.to_vec();
+            if v.last() == Some(&b'/') {
+                v.pop();
+            }
+            return v;
+        }
+    }
+    if cfg!(target_os = "macos") {
+        b"/var/tmp/".to_vec()
+    } else {
+        b"/tmp".to_vec()
+    }
+}
+
+fn fn_sys_get_temp_dir(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::str(temp_dir()))
+}
+
+use crate::zend::virtual_cwd::realpath as realpath_bytes;
+
+fn fn_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let p = path_param(args, 0, "realpath", "path")?;
+    Ok(realpath_bytes(&p)
+        .map(Value::str)
+        .unwrap_or(Value::Bool(false)))
+}
+
+pub(crate) fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
+    if dir.is_empty() {
+        return None;
+    }
+    let real = realpath_bytes(dir)?;
+    let mut rnd = [0u8; 8];
+    getrandom_fill(&mut rnd);
+    let mut random = u64::from_le_bytes(rnd);
+    const ALPHA: &[u8] = b"0123456789abcdefghijklmnopqrstuv";
+    let mut name = real.clone();
+    if name.last() != Some(&b'/') {
+        name.push(b'/');
+    }
+    name.extend_from_slice(pfx);
+    for _ in 0..13 {
+        name.push(ALPHA[(random % 32) as usize]);
+        random /= 32;
+    }
+    name.extend_from_slice(b"XXXXXX");
+    let c = CString::new(name).ok()?;
+    let raw = c.into_raw();
+    let fd = unsafe { libc::mkstemp(raw) };
+    let c = unsafe { CString::from_raw(raw) };
+    if fd < 0 {
+        return None;
+    }
+    crate::zend::virtual_cwd::created_fd(fd, 0o600);
+    unsafe { libc::close(fd) };
+    Some(c.into_bytes())
+}
+
+fn getrandom_fill(buf: &mut [u8]) {
+    use std::io::Read;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        if f.read_exact(buf).is_ok() {
+            return;
+        }
+    }
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (std::process::id() as u64) << 32;
+    buf.copy_from_slice(&t.to_le_bytes()[..buf.len().min(8)]);
+}
+
+fn fn_tempnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let dir = path_param(args, 0, "tempnam", "directory")?;
+    let prefix = path_param(args, 1, "tempnam", "prefix")?;
+    // php_basename(prefix), truncated to 63 bytes.
+    let end = prefix
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let start = prefix[..end]
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let mut pfx = prefix[start..end].to_vec();
+    pfx.truncate(63);
+    if !dir.is_empty() {
+        if let Some(p) = open_temp(&dir, &pfx) {
+            return Ok(Value::str(p));
+        }
+    }
+    match open_temp(&temp_dir(), &pfx) {
+        Some(p) => {
+            if !dir.is_empty() {
+                crate::notice(
+                    host,
+                    "tempnam",
+                    "file created in the system's temporary directory",
+                )?;
+            }
+            Ok(Value::str(p))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+/// `readfile($filename)`: copy a file to the output; bytes written or false.
+fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_param(args, 0, "readfile", "filename")?;
+    touch_ctx(host, args, 2);
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        let Some(data) = crate::ext::standard::http_fopen_wrapper::get_contents(
+            host,
+            "readfile",
+            &path,
+            args.get(2),
+            0,
+            None,
+        )?
+        else {
+            return Ok(Value::Bool(false));
+        };
+        host.write_out(&data);
+        return Ok(Value::Int(data.len() as i64));
+    }
+    if let Some(r) = read_via_opener(host, "readfile", &path, args.get(2))? {
+        let Some(data) = r else {
+            return Ok(Value::Bool(false));
+        };
+        host.write_out(&data);
+        return Ok(Value::Int(data.len() as i64));
+    }
+    crate::main::streams::clear_errno();
+    let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
+        match resolve_include_path(&path) {
+            Some(p) => host.stream_get_contents(&p),
+            None => host.stream_get_contents(&path),
+        }
+    } else {
+        host.stream_get_contents(&path)
+    };
+    let Some(data) = data else {
+        if crate::main::streams::last_errno() == Some(libc::EISDIR) {
+            // The open succeeds; the first read fails (php returns -1).
+            host.consume_resource_ids(1);
+            crate::notice(
+                host,
+                "readfile",
+                "Read of 8192 bytes failed with errno=21 Is a directory",
+            )?;
+            return Ok(Value::Int(-1));
+        }
+        crate::open_failed(host, "readfile", &path)?;
+        return Ok(Value::Bool(false));
+    };
+    host.consume_resource_ids(1);
+    host.write_out(&data);
+    Ok(Value::Int(data.len() as i64))
+}
+
+/// `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"",
+/// $escape = "\\")`: one CSV record, reading on while an enclosure is open;
+/// false at EOF, `[null]` for a blank line.
+fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fgetcsv", "stream")?;
+    if args.len() < 5 {
+        crate::deprecated(
+            host,
+            "fgetcsv",
+            "the $escape parameter must be provided as its default value will change",
+        )?;
+    }
+    let ch = |i: usize, d: u8| -> Option<u8> {
+        match args.get(i).map(deref) {
+            None | Some(Value::Null) => Some(d),
+            Some(v) => conv::to_string_bytes(&v).first().copied(),
+        }
+    };
+    let sep = ch(2, b',').unwrap_or(b',');
+    let enc = ch(3, b'"').unwrap_or(b'"');
+    let esc = ch(4, b'\\');
+    // $length: the first line is read up to that many bytes (0 or null:
+    // the whole line); continuation lines are read whole.
+    let len = match args.get(1).map(deref) {
+        None | Some(Value::Null) => 0,
+        Some(v) => conv::to_int(&v),
+    };
+    if !(0..i64::MAX).contains(&len) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "fgetcsv(): Argument #2 ($length) must be between 0 and {}",
+                i64::MAX - 1
+            ),
+        ));
+    }
+    let first = if len == 0 {
+        host.stream_gets(&h)
+    } else {
+        host.stream_gets_max(&h, len as usize)
+    };
+    let Some(mut buf) = first else {
+        return Ok(Value::Bool(false));
+    };
+    // An enclosure left open at the end of the line continues on the next.
+    let open = |b: &[u8]| {
+        let (mut inq, mut i) = (false, 0);
+        while i < b.len() {
+            let c = b[i];
+            if inq && Some(c) == esc && Some(c) != Some(enc) && i + 1 < b.len() {
+                i += 2;
+                continue;
+            }
+            if c == enc {
+                inq = !inq;
+            }
+            i += 1;
+        }
+        inq
+    };
+    while open(&buf) {
+        match host.stream_gets(&h) {
+            Some(more) => buf.extend_from_slice(&more),
+            None => break,
+        }
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    } else if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    Ok(Value::Array(crate::ext::standard::string::parse_csv(
+        &buf, sep, enc, esc,
+    )))
+}
+
+/// php_fputcsv: a field is enclosed when it holds the separator, the
+/// enclosure, the escape character or whitespace; enclosures inside are
+/// doubled (unless escaped). Returns the bytes written.
+fn fn_fputcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fputcsv", "stream")?;
+    if args.len() < 5 {
+        crate::deprecated(
+            host,
+            "fputcsv",
+            "the $escape parameter must be provided as its default value will change",
+        )?;
+    }
+    let Value::Array(fields) = args.get(1).map(deref).unwrap_or(Value::Null) else {
+        return Err(Thrown::type_error(
+            "fputcsv(): Argument #2 ($fields) must be of type array",
+        ));
+    };
+    let ch = |i: usize, d: u8| -> Option<u8> {
+        match args.get(i).map(deref) {
+            None | Some(Value::Null) => Some(d),
+            Some(v) => conv::to_string_bytes(&v).first().copied(),
+        }
+    };
+    let sep = ch(2, b',').unwrap_or(b',');
+    let enc = ch(3, b'"').unwrap_or(b'"');
+    let esc = ch(4, b'\\');
+    let eol = match args.get(5).map(deref) {
+        None | Some(Value::Null) => b"\n".to_vec(),
+        Some(v) => conv::to_string_bytes(&v),
+    };
+    let mut line = Vec::new();
+    for (i, (_, v)) in fields.iter().enumerate() {
+        if i > 0 {
+            line.push(sep);
+        }
+        let f = conv::to_string_bytes(&deref(v));
+        let needs = f.iter().any(|&c| {
+            c == sep || c == enc || Some(c) == esc || matches!(c, b'\n' | b'\r' | b'\t' | b' ')
+        });
+        if needs {
+            line.push(enc);
+            let mut escaped = false;
+            for &c in &f {
+                if Some(c) == esc && esc.is_some() {
+                    escaped = true;
+                } else if !escaped && c == enc {
+                    line.push(enc);
+                } else {
+                    escaped = false;
+                }
+                line.push(c);
+            }
+            line.push(enc);
+        } else {
+            line.extend_from_slice(&f);
+        }
+    }
+    line.extend_from_slice(&eol);
+    Ok(match host.stream_write(&h, &line) {
+        Some(n) => Value::Int(n as i64),
+        None => Value::Bool(false),
+    })
+}
+
+/// `tmpfile()`: a new unlinked temporary file opened "w+b".
+fn fn_tmpfile(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let Some(path) = open_temp(&temp_dir(), b"php") else {
+        return Ok(Value::Bool(false));
+    };
+    let r = host.stream_open(&path, b"w+b");
+    if let Ok(c) = CString::new(path) {
+        unsafe { libc::unlink(c.as_ptr()) };
+    }
+    Ok(r.unwrap_or(Value::Bool(false)))
+}
+
+/// `fpassthru($stream)`: output the rest of the stream; bytes written.
+fn fn_fpassthru(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, "fpassthru", "stream")?;
+    let data = host.stream_read(&h, -1).unwrap_or_default();
+    host.write_out(&data);
+    Ok(Value::Int(data.len() as i64))
+}
+
+/// php_resolve_path() against the default include_path (".").
+pub(crate) fn resolve_include_path(name: &[u8]) -> Option<Vec<u8>> {
+    if name.contains(&0) {
+        return None;
+    }
+    // Paths with a protocol: only file:// resolves.
+    let mut p = 0;
+    while p < name.len()
+        && (name[p].is_ascii_alphanumeric() || matches!(name[p], b'+' | b'-' | b'.'))
+    {
+        p += 1;
+    }
+    if p > 1
+        && name.get(p) == Some(&b':')
+        && name.get(p + 1) == Some(&b'/')
+        && name.get(p + 2) == Some(&b'/')
+    {
+        let (scheme, _) = split_scheme(name);
+        if scheme.eq_ignore_ascii_case(b"file") {
+            return realpath_bytes(crate::main::streams::file_path(name));
+        }
+        return None;
+    }
+    if name.starts_with(b"./") || name.starts_with(b"../") || name.starts_with(b"/") {
+        return realpath_bytes(name);
+    }
+    let mut t = b"./".to_vec();
+    t.extend_from_slice(name);
+    realpath_bytes(&t)
+}
+
+/// `file_put_contents`'s flag to append.
+const FILE_APPEND: i64 = 8;
+
+pub fn constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("FILE_USE_INCLUDE_PATH", Value::Int(1)),
+        ("FILE_IGNORE_NEW_LINES", Value::Int(2)),
+        ("FILE_SKIP_EMPTY_LINES", Value::Int(4)),
+        ("FILE_APPEND", Value::Int(FILE_APPEND)),
+        ("FILE_NO_DEFAULT_CONTEXT", Value::Int(16)),
+        ("FILE_TEXT", Value::Int(0)),
+        ("FILE_BINARY", Value::Int(0)),
+        ("LOCK_SH", Value::Int(1)),
+        ("LOCK_EX", Value::Int(2)),
+        ("LOCK_UN", Value::Int(3)),
+        ("LOCK_NB", Value::Int(4)),
+        ("SEEK_SET", Value::Int(0)),
+        ("SEEK_CUR", Value::Int(1)),
+        ("SEEK_END", Value::Int(2)),
+        ("SCANDIR_SORT_ASCENDING", Value::Int(0)),
+        ("SCANDIR_SORT_DESCENDING", Value::Int(1)),
+        ("SCANDIR_SORT_NONE", Value::Int(2)),
+        ("GLOB_BRACE", Value::Int(GLOB_BRACE)),
+        ("GLOB_ERR", Value::Int(GLOB_ERR)),
+        ("GLOB_MARK", Value::Int(GLOB_MARK)),
+        ("GLOB_NOCHECK", Value::Int(GLOB_NOCHECK)),
+        ("GLOB_NOESCAPE", Value::Int(GLOB_NOESCAPE)),
+        ("GLOB_NOSORT", Value::Int(GLOB_NOSORT)),
+        ("GLOB_ONLYDIR", Value::Int(GLOB_ONLYDIR)),
+        ("GLOB_AVAILABLE_FLAGS", Value::Int(GLOB_AVAILABLE)),
+    ]
+}
+
+pub(crate) fn path_arg(args: &[Value], i: usize) -> Vec<u8> {
+    conv::to_string_bytes(&deref(&args[i]))
+}
+
+/// `umask(?int $mask = null): int` — get, or set-and-return-old, the
+/// request's file mode creation mask.
+fn fn_umask(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let old = match args.first().map(deref) {
+        Some(v) if !matches!(v, Value::Null) => {
+            crate::zend::virtual_cwd::set_umask(conv::to_int(&v) as u32)
+        }
+        _ => crate::zend::virtual_cwd::umask(),
+    };
+    Ok(Value::Int(old as i64))
+}
+
+fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let url = path_arg(args, 0);
+    let offset = args.get(3).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    let maxlen = match args.get(4).map(deref) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let n = conv::to_int(&v);
+            if n < 0 {
+                return Err(Thrown::error(
+                    "ValueError",
+                    "file_get_contents(): Argument #5 ($length) must be greater than or equal to 0",
+                ));
+            }
+            Some(n as usize)
+        }
+    };
+    touch_ctx(host, args, 2);
+    if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
+        return Ok(
+            match crate::ext::standard::http_fopen_wrapper::get_contents(
+                host,
+                "file_get_contents",
+                &url,
+                args.get(2),
+                offset,
+                maxlen,
+            )? {
+                Some(b) => Value::str(b),
+                None => Value::Bool(false),
+            },
+        );
+    }
+    let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
+    if host
+        .stream_wrapper(&scheme)
+        .is_some_and(|w| w.has_stream_opener())
+    {
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
+        return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
+    }
+    let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    if !use_include_path {
+        if !reserve_file_read(&url, offset, maxlen) {
+            host.consume_resource_ids(1);
+            return Ok(Value::str(""));
+        }
+        if let Some(part) = read_file_part(&url, offset, maxlen) {
+            host.consume_resource_ids(1);
+            let Some(part) = part else {
+                crate::warn(
+                    host,
+                    "file_get_contents",
+                    &format!("Failed to seek to position {offset} in the stream"),
+                )?;
+                return Ok(Value::Bool(false));
+            };
+            return Ok(Value::str(part));
+        }
+    }
+    crate::main::streams::clear_errno();
+    match host.stream_get_contents(&url) {
+        Some(bytes) => {
+            host.consume_resource_ids(crate::main::streams::open_resource_ids(&url));
+            // php seeks to `$offset` (SEEK_SET, or SEEK_END when negative)
+            // before copying at most `$length` bytes. A plain file may be
+            // positioned past its end (reads nothing); other wrappers, and
+            // any position before the start, fail the seek -> false.
+            let len = bytes.len() as i64;
+            let start = if offset > 0 {
+                if offset > len && crate::main::streams::split_scheme(&url).0 != b"file" {
+                    return Ok(Value::Bool(false));
+                }
+                offset.min(len)
+            } else if offset < 0 {
+                if -offset > len {
+                    return Ok(Value::Bool(false));
+                }
+                len + offset
+            } else {
+                0
+            } as usize;
+            let mut out = bytes;
+            out.drain(..start);
+            if let Some(m) = maxlen {
+                out.truncate(m);
+            }
+            Ok(Value::str(out))
+        }
+        None => {
+            if crate::main::streams::last_errno() == Some(libc::EISDIR) {
+                host.consume_resource_ids(1);
+                crate::notice(
+                    host,
+                    "file_get_contents",
+                    "Read of 8320 bytes failed with errno=21 Is a directory",
+                )?;
+                return Ok(Value::str(""));
+            }
+            crate::open_failed(host, "file_get_contents", &url)?;
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+/// file_get_contents over a wrapper's own stream (`zip://`): open with the
+/// context, seek to `offset`, copy at most `maxlen` bytes, close.
+fn get_contents_via_stream(
+    host: &mut dyn Host,
+    url: &[u8],
+    ctx: &Value,
+    offset: i64,
+    maxlen: Option<usize>,
+) -> Result<Value, Thrown> {
+    let Some(res) = host.stream_open_ctx(url, b"rb", ctx) else {
+        crate::open_failed(host, "file_get_contents", url)?;
+        return Ok(Value::Bool(false));
+    };
+    if offset != 0 {
+        let whence = if offset < 0 {
+            libc::SEEK_END
+        } else {
+            libc::SEEK_SET
+        };
+        if !stream_seek(host, "file_get_contents", &res, offset, whence)? {
+            crate::warn(
+                host,
+                "file_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            host.stream_close(&res);
+            return Ok(Value::Bool(false));
+        }
+    }
+    let data = match maxlen {
+        None => host.stream_read(&res, -1).unwrap_or_default(),
+        Some(max) => {
+            let mut out = Vec::new();
+            while out.len() < max && !host.stream_eof(&res) {
+                match host.stream_read(&res, (max - out.len()) as i64) {
+                    Some(b) if !b.is_empty() => out.extend_from_slice(&b),
+                    _ => break,
+                }
+            }
+            out
+        }
+    };
+    host.stream_close(&res);
+    Ok(Value::str(data))
+}
+
+/// A whole-stream read through a wrapper's own opener (`zip://`), with the
+/// call's context, for builtin `fname`: `None` when the wrapper has no
+/// opener (read as before), `Some(None)` when the open failed (warned).
+pub(crate) fn read_via_opener(
+    host: &mut dyn Host,
+    fname: &str,
+    url: &[u8],
+    ctx: Option<&Value>,
+) -> Result<Option<Option<Vec<u8>>>, Thrown> {
+    let scheme = crate::main::streams::split_scheme(url).0.to_vec();
+    if !host
+        .stream_wrapper(&scheme)
+        .is_some_and(|w| w.has_stream_opener())
+    {
+        return Ok(None);
+    }
+    let ctx = ctx.map(deref).unwrap_or(Value::Null);
+    let Some(res) = host.stream_open_ctx(url, b"rb", &ctx) else {
+        crate::open_failed(host, fname, url)?;
+        return Ok(Some(None));
+    };
+    let data = host.stream_read(&res, -1).unwrap_or_default();
+    host.stream_close(&res);
+    Ok(Some(Some(data)))
+}
+
+/// A local path given without a scheme or as `file://`.
+fn plain_path(url: &[u8]) -> Option<std::borrow::Cow<'_, std::path::Path>> {
+    match crate::main::streams::split_scheme(url) {
+        (b"file", p) => Some(crate::zend::virtual_cwd::os_path(
+            crate::main::streams::file_path(p),
+        )),
+        _ => None,
+    }
+}
+
+/// php_stream_copy_to_mem's first block for a plain file: the size left
+/// after the read position plus a chunk (at most `$length`), allocated
+/// fallibly. `false` when that crosses memory_limit (then recorded) and
+/// file_get_contents() returns "" without reading.
+fn reserve_file_read(url: &[u8], offset: i64, maxlen: Option<usize>) -> bool {
+    const CHUNK: usize = 8192;
+    if maxlen == Some(0) {
+        return true;
+    }
+    let Some(path) = plain_path(url) else {
+        return true;
+    };
+    // (A regular file php can open: stat before opening, a FIFO would block.)
+    let size = match std::fs::metadata(&path) {
+        Ok(m) if m.is_file() && m.len() > 0 => m.len() as i64,
+        _ => return true,
+    };
+    if std::fs::File::open(&path).is_err() {
+        return true;
+    }
+    // (A seek before the start fails before php allocates.)
+    let pos = match offset {
+        o if o < 0 && size + o < 0 => return true,
+        o if o < 0 => size + o,
+        o => o,
+    };
+    let mut len = (size - pos).max(0) as usize + CHUNK;
+    if let Some(m) = maxlen {
+        if m < 4 * CHUNK || len > m {
+            len = m;
+        }
+    }
+    rhp_values::mem::reserve_str(len)
+}
+
+/// file_get_contents() of part of a regular file (`$offset` or `$length`
+/// given): read only that part, as php does, not the whole file (which may
+/// be past memory_limit). `Some(None)`: a negative offset before the start
+/// (the seek fails). `None`: not a regular file, left to the wrapper.
+fn read_file_part(url: &[u8], offset: i64, maxlen: Option<usize>) -> Option<Option<Vec<u8>>> {
+    use std::io::{Read, Seek, SeekFrom};
+    if offset == 0 && maxlen.is_none() {
+        return None;
+    }
+    let path = plain_path(url)?;
+    if !std::fs::metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let mut f = std::fs::File::open(&path).ok()?;
+    let len = f.metadata().ok()?.len() as i64;
+    // A plain file may be positioned past its end (reads nothing).
+    let start = match offset {
+        o if o < 0 && len + o < 0 => return Some(None),
+        o if o < 0 => len + o,
+        o => o.min(len),
+    };
+    f.seek(SeekFrom::Start(start as u64)).ok()?;
+    let want = ((len - start) as usize).min(maxlen.unwrap_or(usize::MAX));
+    let mut out = Vec::with_capacity(want);
+    f.take(want as u64).read_to_end(&mut out).ok()?;
+    Some(Some(out))
+}
+
+fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let path = path_arg(args, 0);
+    let src = deref(&args[1]);
+    if matches!(src, Value::Resource(_)) && host.stream_kind(&src).is_none() {
+        return Err(Thrown::type_error(
+            "file_put_contents(): supplied resource is not a valid stream resource",
+        ));
+    }
+    let flags = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        // php opens the target before reading `$data`; the http wrapper
+        // refuses to write
+        let mode: &[u8] = if flags & FILE_APPEND != 0 {
+            b"ab"
+        } else {
+            b"wb"
+        };
+        if let Some(res) = crate::ext::standard::http_fopen_wrapper::open_arg(
+            host,
+            "file_put_contents",
+            &path,
+            mode,
+            args.get(3),
+        )? {
+            host.stream_close(&res);
+        }
+        return Ok(Value::Bool(false));
+    }
+    // `$data` is a string, an array (concatenated) or a stream resource
+    // (copied from its current position to the end).
+    let data = match src {
+        r @ Value::Resource(_) => host.stream_read(&r, -1).unwrap_or_default(),
+        Value::Array(a) => {
+            let mut b = Vec::new();
+            for (_, v) in a.iter() {
+                b.extend_from_slice(&conv::to_string_bytes(v));
+            }
+            b
+        }
+        other => conv::to_string_bytes(&other),
+    };
+    if flags & 16 == 0 {
+        touch_ctx(host, args, 3);
+    }
+    let to_write = if flags & FILE_APPEND != 0 {
+        let mut existing = host.stream_get_contents(&path).unwrap_or_default();
+        existing.extend_from_slice(&data);
+        existing
+    } else {
+        data.clone()
+    };
+    crate::main::streams::clear_errno();
+    match host.stream_put_contents(&path, &to_write) {
+        // php returns the number of bytes written (the `$data` length).
+        Some(_) => {
+            host.consume_resource_ids(1);
+            Ok(Value::Int(data.len() as i64))
+        }
+        None => {
+            crate::open_failed(host, "file_put_contents", &path)?;
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    touch_ctx(host, args, 1);
+    let path = path_arg(args, 0);
+    let c = crate::zend::virtual_cwd::c_path(&path).unwrap_or_default();
+    // php_plain_files_unlink: unlink(2) (a directory fails with EPERM/EISDIR).
+    if unsafe { libc::unlink(c.as_ptr()) } != 0 {
+        let e = std::io::Error::last_os_error();
+        crate::warn_arg(host, "unlink", &path, &os_text(&e))?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+/// `strerror` of an `io::Error`'s errno (php's warning text).
+pub(crate) fn os_text(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(c) => crate::main::streams::strerror(c),
+        None => e.to_string(),
+    }
+}
+
+fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    touch_ctx(host, args, 1);
+    let path = path_arg(args, 0);
+    if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(&path)) {
+        crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn fn_rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    touch_ctx(host, args, 2);
+    let from_b = path_arg(args, 0);
+    let to_b = path_arg(args, 1);
+    let from = crate::zend::virtual_cwd::os_path(&from_b);
+    let to = crate::zend::virtual_cwd::os_path(&to_b);
+    let both = [&from_b[..], b",", &to_b[..]].concat();
+    match std::fs::rename(&from, &to) {
+        Ok(()) => Ok(Value::Bool(true)),
+        // php_plain_files_rename: across devices a file is copied (keeping
+        // its mode) and the source unlinked.
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            let meta = match std::fs::symlink_metadata(&from) {
+                Ok(m) => m,
+                Err(e) => {
+                    crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                    return Ok(Value::Bool(false));
+                }
+            };
+            if meta.is_dir() {
+                crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                return Ok(Value::Bool(false));
+            }
+            let r = std::fs::copy(&from, &to).and_then(|_| std::fs::remove_file(&from));
+            match r {
+                Ok(()) => Ok(Value::Bool(true)),
+                Err(e) => {
+                    crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+                    Ok(Value::Bool(false))
+                }
+            }
+        }
+        Err(e) => {
+            crate::warn_arg(host, "rename", &both, &os_text(&e))?;
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+/// Children of `popen()` streams, by stream resource id.
+struct PopenState(std::collections::HashMap<u32, std::process::Child>);
+
+fn popen_state(host: &mut dyn Host) -> Option<&mut PopenState> {
+    host.module_state("popen", || Box::new(PopenState(Default::default())))?
+        .downcast_mut::<PopenState>()
+}
+
+/// `popen($command, $mode)`: `/bin/sh -c` with its stdout (mode "r") or
+/// stdin ("w") as a pipe stream.
+fn fn_popen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::{Command, Stdio};
+    let cmd = zpp_path(args, 0, "popen", "command")?;
+    let mode = zpp_path(args, 1, "popen", "mode")?;
+    let write = match mode.first() {
+        Some(b'r') if !mode.contains(&b'+') => false,
+        Some(b'w') if !mode.contains(&b'+') => true,
+        _ => {
+            return Err(Thrown::error(
+                "ValueError",
+                "popen(): Argument #2 ($mode) must be one of \"r\", \"rb\", \"w\", or \"wb\"",
+            ))
+        }
+    };
+    let mut c = Command::new("/bin/sh");
+    c.arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd));
+    if let Some(dir) = crate::zend::virtual_cwd::child_cwd() {
+        c.current_dir(std::ffi::OsStr::from_bytes(&dir));
+    }
+    if let Some(mask) = crate::zend::virtual_cwd::child_umask() {
+        use std::os::unix::process::CommandExt;
+        // umask(2) is async-signal-safe.
+        unsafe {
+            c.pre_exec(move || {
+                libc::umask(mask as libc::mode_t);
+                Ok(())
+            })
+        };
+    }
+    if write {
+        c.stdin(Stdio::piped());
+    } else {
+        c.stdout(Stdio::piped());
+    }
+    let spawned = {
+        let _spawning = SPAWN_LOCK.write().unwrap_or_else(|e| e.into_inner());
+        c.spawn()
+    };
+    let mut child = match spawned {
+        Ok(ch) => ch,
+        Err(e) => {
+            crate::warn(host, "popen", &format!("{e}"))?;
+            return Ok(Value::Bool(false));
+        }
+    };
+    let fd: OwnedFd = if write {
+        child.stdin.take().map(OwnedFd::from)
+    } else {
+        child.stdout.take().map(OwnedFd::from)
+    }
+    .expect("piped");
+    let Some(stream) = host.stream_from_fd(fd) else {
+        return Ok(Value::Bool(false));
+    };
+    if let (Value::Resource(r), Some(st)) = (&stream, popen_state(host)) {
+        st.0.insert(r.id, child);
+    }
+    Ok(stream)
+}
+
+/// `pclose($handle)`: close the pipe and wait; the exit status.
+fn fn_pclose(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let h = deref(&args[0]);
+    let id = match &h {
+        Value::Resource(r) => r.id,
+        other => {
+            return Err(Thrown::type_error(format!(
+                "pclose(): Argument #1 ($handle) must be of type resource, {} given",
+                crate::zend::zpp::zval_value_name(host, other)
+            )))
+        }
+    };
+    host.stream_close(&h);
+    let child = popen_state(host).and_then(|st| st.0.remove(&id));
+    let Some(mut child) = child else {
+        return Ok(Value::Int(-1));
+    };
+    Ok(Value::Int(match child.wait() {
+        Ok(st) => {
+            use std::os::unix::process::ExitStatusExt;
+            st.code()
+                .map(|c| c as i64)
+                .unwrap_or_else(|| st.into_raw() as i64)
+        }
+        Err(_) => -1,
+    }))
+}
+
+// --- filesystem --------------------------------------------------------------
+
+const MAXPATHLEN: usize = libc::PATH_MAX as usize;
+
+fn fn_fnmatch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pattern = str_param(host, args, 0, "fnmatch", "pattern")?;
+    let filename = str_param(host, args, 1, "fnmatch", "filename")?;
+    let flags = int_param(host, args, 2, "fnmatch", "flags", 0)?;
+    if pattern.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "fnmatch(): Argument #1 ($pattern) must not contain any null bytes",
+        ));
+    }
+    if filename.contains(&0) {
+        return Err(Thrown::error(
+            "ValueError",
+            "fnmatch(): Argument #2 ($filename) must not contain any null bytes",
+        ));
+    }
+    if filename.len() >= MAXPATHLEN {
+        crate::warn(
+            host,
+            "fnmatch",
+            &format!("Filename exceeds the maximum allowed length of {MAXPATHLEN} characters"),
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    if pattern.len() >= MAXPATHLEN {
+        crate::warn(
+            host,
+            "fnmatch",
+            &format!("Pattern exceeds the maximum allowed length of {MAXPATHLEN} characters"),
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    let p = std::ffi::CString::new(pattern).unwrap();
+    let f = std::ffi::CString::new(filename).unwrap();
+    let rc = unsafe { libc::fnmatch(p.as_ptr(), f.as_ptr(), flags as libc::c_int) };
+    Ok(Value::Bool(rc == 0))
+}
+
+/// `fnmatch`'s `FNM_*` constants.
+pub fn fnmatch_constants() -> Vec<(&'static str, Value)> {
+    vec![
+        ("FNM_NOESCAPE", Value::Int(libc::FNM_NOESCAPE as i64)),
+        ("FNM_PATHNAME", Value::Int(libc::FNM_PATHNAME as i64)),
+        ("FNM_PERIOD", Value::Int(libc::FNM_PERIOD as i64)),
+        ("FNM_CASEFOLD", Value::Int(libc::FNM_CASEFOLD as i64)),
+    ]
+}
+
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("fopen", fn_fopen),
+            ("mkdir", fn_mkdir),
+            ("copy", fn_copy),
+            ("file", fn_file),
+            ("fstat", fn_fstat),
+            ("flock", fn_flock),
+            ("ftruncate", fn_ftruncate),
+            ("fseek", fn_fseek),
+            ("ftell", fn_ftell),
+            ("rewind", fn_rewind),
+            ("fgets", fn_fgets),
+            ("fread", fn_fread),
+            ("fwrite", fn_fwrite),
+            ("fputs", fn_fwrite),
+            ("fclose", fn_fclose),
+            ("feof", fn_feof),
+            ("fflush", fn_fflush),
+            ("fgetc", fn_fgetc),
+            ("sys_get_temp_dir", fn_sys_get_temp_dir),
+            ("realpath", fn_realpath),
+            ("tempnam", fn_tempnam),
+            ("fgetcsv", fn_fgetcsv),
+            ("fputcsv", fn_fputcsv),
+            ("tmpfile", fn_tmpfile),
+            ("readfile", fn_readfile),
+            ("fpassthru", fn_fpassthru),
+            ("file_get_contents", fn_file_get_contents),
+            ("file_put_contents", fn_file_put_contents),
+            ("unlink", fn_unlink),
+            ("rmdir", fn_rmdir),
+            ("rename", fn_rename),
+            ("umask", fn_umask),
+            ("popen", fn_popen),
+            ("pclose", fn_pclose),
+            ("fnmatch", fn_fnmatch),
+        ],
+    );
+}

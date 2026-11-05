@@ -1,0 +1,14 @@
+string(4) "128M"
+bool(false)
+string(2) "8M"
+bool(false)
+string(2) "8M"
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+NULL
+filling
+1 20 Allowed memory size of 8388608 bytes exhausted (tried to allocate N bytes)
+string(2) "8M"
+bool(true)

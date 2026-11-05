@@ -1,0 +1,37 @@
+strtr 3 null to: TypeError: strtr(): Argument #3 ($to) must be of type string, null given
+dynamic 3 null to: TypeError: strtr(): Argument #3 ($to) must be of type string, null given
+strtr 3 array from: TypeError: strtr(): Argument #2 ($from) must be of type string, array given
+dynamic 3 array from: TypeError: strtr(): Argument #2 ($from) must be of type string, array given
+strtr 2 int from: TypeError: strtr(): Argument #2 ($from) must be of type array, int given
+dynamic 2 int from: TypeError: strtr(): Argument #2 ($from) must be of type array, int given
+strtr 2 string from: TypeError: strtr(): Argument #2 ($from) must be of type array, string given
+strtr 2 null from: TypeError: strtr(): Argument #2 ($from) must be of type array, null given
+strtr 3 ints: TypeError: strtr(): Argument #2 ($from) must be of type string, int given
+strtr 3 object from: TypeError: strtr(): Argument #2 ($from) must be of type string, T given
+strtr 3 object to: TypeError: strtr(): Argument #3 ($to) must be of type string, T given
+strtr 3 array to: TypeError: strtr(): Argument #3 ($to) must be of type string, array given
+strtr 3 null from: TypeError: strtr(): Argument #2 ($from) must be of type string, null given
+call_user_func: TypeError: strtr(): Argument #3 ($to) must be of type string, null given
+array_map: TypeError: strtr(): Argument #2 ($from) must be of type array, int given
+empty string, int from: TypeError: strtr(): Argument #2 ($from) must be of type array, int given
+empty string, array to: TypeError: strtr(): Argument #3 ($to) must be of type string, array given
+pairs: string(7) "bye you"
+implode object sep: TypeError: implode(): Argument #1 ($separator) must be of type string, stdClass given
+dynamic object sep: TypeError: implode(): Argument #1 ($separator) must be of type array|string, stdClass given
+implode stringable sep: TypeError: implode(): Argument #1 ($separator) must be of type string, T given
+implode int: TypeError: implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given
+dynamic int: TypeError: implode(): Argument #1 ($separator) must be of type array|string, int given
+implode object: TypeError: implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given
+dynamic object: TypeError: implode(): Argument #1 ($separator) must be of type array|string, stdClass given
+implode null: TypeError: implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given
+dynamic null: TypeError: implode(): Argument #1 ($separator) must be of type array|string, null given
+implode null sep: TypeError: implode(): Argument #1 ($separator) must be of type string, null given
+implode string array: TypeError: implode(): Argument #2 ($array) must be of type ?array, string given
+dynamic string array: TypeError: implode(): Argument #2 ($array) must be of type ?array, string given
+implode null array: TypeError: implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given
+dynamic null array: TypeError: implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given
+implode two arrays: TypeError: implode(): Argument #1 ($separator) must be of type string, array given
+dynamic two arrays: TypeError: implode(): Argument #1 ($separator) must be of type string, array given
+implode array, null: TypeError: implode(): Argument #1 ($separator) must be of type string, array given
+implode float sep: TypeError: implode(): Argument #1 ($separator) must be of type string, float given
+implode int sep: TypeError: implode(): Argument #1 ($separator) must be of type string, int given

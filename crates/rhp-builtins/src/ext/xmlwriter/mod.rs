@@ -1,13 +1,11 @@
 //! The `xmlwriter` extension on libxml2's xmlTextWriter: a port of
 //! ext/xmlwriter/php_xmlwriter.c. The `XMLWriter` class is declared in PHP
 //! ([`PRELUDE_PHP`]) and calls `__xmlwriter` for its methods, the
-//! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer belongs to
-//! its object (by id) and is freed with it.
+//! procedural `xmlwriter_*` functions `__xmlwriter_fn`. A writer is its
+//! object's payload, freed by the class's `dtor_obj` or with the object.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_void, OsStr};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::ffi::{c_char, c_int, c_void};
+use std::os::unix::ffi::OsStringExt;
 use std::ptr;
 use std::rc::Rc;
 
@@ -16,8 +14,9 @@ use rhp_values::{conv, Value};
 use crate::ext::libxml::io::Io;
 use crate::ext::libxml::sys::{self, cbytes};
 use crate::ext::libxml::{ffi, io};
-use crate::ext::zpp::{deref, given_type};
-use crate::{Builtin, Host, Thrown};
+use crate::zend::object_handlers::{ClassHandlers, CloneObj, ObjectHandlers};
+use crate::zend::zpp::deref;
+use crate::{Host, Thrown};
 
 /// `ze_xmlwriter_object`: the writer and, for a memory writer, its buffer
 /// (owned by the writer's output buffer, freed by its close callback).
@@ -37,21 +36,24 @@ impl Drop for Writer {
     }
 }
 
-thread_local! {
-    static WRITERS: RefCell<HashMap<u32, Rc<Writer>>> = RefCell::new(HashMap::new());
-}
-
-/// A new request: object ids restart.
-pub(crate) fn reset_state() {
-    let old = WRITERS.with(|m| m.try_borrow_mut().map(|mut m| std::mem::take(&mut *m)).ok());
-    drop(old);
-}
+/// `XMLWriter`'s handlers: no clone; `dtor_obj` frees the writer.
+pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
+    class: "XMLWriter",
+    handlers: &ObjectHandlers {
+        clone_obj: CloneObj::None,
+        dtor_obj: Some(object_dtor),
+        ..ObjectHandlers::STD
+    },
+    create_object: true,
+}];
 
 /// xmlwriter_object_dtor: free the writer while a host can take its last
 /// writes (a URI or stream writer flushes on free). Methods called later,
-/// from a subclass's `__destruct`, find no writer, as in php.
-pub(crate) fn object_dtor(host: &mut dyn Host, id: u32) -> Result<(), Thrown> {
-    let w = WRITERS.with(|m| m.borrow_mut().remove(&id));
+/// from a subclass's `__destruct`, find no writer, as in php. Without a
+/// `dtor_obj` (a fatal error's bailout, a constructor that threw) the
+/// writer goes with the object, with no host, and stream writes are lost.
+fn object_dtor(host: &mut dyn Host, obj: &rhp_values::ObjectHandle) -> Result<(), Thrown> {
+    let w = obj.borrow_mut().take_payload();
     if w.is_none() {
         return Ok(());
     }
@@ -59,41 +61,21 @@ pub(crate) fn object_dtor(host: &mut dyn Host, id: u32) -> Result<(), Thrown> {
     ffi::with_host(host, "Unknown", || drop(w))
 }
 
-/// `free_obj` for an XMLWriter whose `dtor_obj` did not run (a fatal
-/// error's bailout, a constructor that threw): no host, so stream writes
-/// are lost.
-pub(crate) fn object_freed(id: u32) {
-    let w = WRITERS
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
-        .ok()
-        .flatten();
-    drop(w);
-}
-
-fn obj_id(v: &Value) -> Option<u32> {
-    match v {
-        Value::Object(h) => Some(h.borrow().id),
-        _ => None,
-    }
-}
-
 /// Attach `w` to the object, freeing the writer it had (inside the caller's
 /// host frame).
 fn set_writer(obj: &Value, w: Option<Writer>) {
-    let Some(id) = obj_id(obj) else { return };
-    let old = WRITERS.with(|m| {
-        let mut m = m.borrow_mut();
-        match w {
-            Some(w) => m.insert(id, Rc::new(w)),
-            None => m.remove(&id),
-        }
-    });
+    let Some(h) = crate::zend::object_handlers::object_of(obj) else {
+        return;
+    };
+    let old = match w {
+        Some(w) => h.borrow_mut().set_payload(Rc::new(w)),
+        None => h.borrow_mut().take_payload(),
+    };
     drop(old);
 }
 
 fn writer_of(obj: &Value) -> Option<Rc<Writer>> {
-    let id = obj_id(obj)?;
-    WRITERS.with(|m| m.borrow().get(&id).cloned())
+    crate::zend::object_handlers::payload::<Writer>(obj)
 }
 
 unsafe extern "C" fn memory_write(ctx: *mut c_void, buf: *const c_char, len: c_int) -> c_int {
@@ -146,25 +128,6 @@ unsafe extern "C" fn stream_close(ctx: *mut c_void) -> c_int {
     })
 }
 
-/// zend_dirname
-fn zend_dirname(path: &[u8]) -> Vec<u8> {
-    let mut end = path.len();
-    while end > 1 && path[end - 1] == b'/' {
-        end -= 1;
-    }
-    match path[..end].iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
-        Some(0) => b"/".to_vec(),
-        Some(i) => {
-            let mut j = i;
-            while j > 1 && path[j - 1] == b'/' {
-                j -= 1;
-            }
-            path[..j].to_vec()
-        }
-    }
-}
-
 /// _xmlwriter_get_valid_file_path
 fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
     let mut source = source;
@@ -202,16 +165,16 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
         return Some(source.to_vec());
     }
     // VCWD_REALPATH, else expand_filepath; paths stay bytes.
-    let resolved = match std::fs::canonicalize(OsStr::from_bytes(source)) {
+    let resolved = match std::fs::canonicalize(crate::zend::virtual_cwd::os_path(source)) {
         Ok(p) => p.into_os_string().into_vec(),
-        Err(_) => crate::ext::dom::expand_filepath(source),
+        Err(_) => crate::zend::virtual_cwd::expand_filepath(source),
     };
     // expand_filepath fails on a path longer than MAXPATHLEN.
     if resolved.len() >= libc::PATH_MAX as usize {
         return None;
     }
-    let dir = zend_dirname(source);
-    if !dir.is_empty() && std::fs::metadata(OsStr::from_bytes(&dir)).is_err() {
+    let dir = crate::ext::standard::string::php_dirname(source);
+    if !dir.is_empty() && std::fs::metadata(crate::zend::virtual_cwd::os_path(&dir)).is_err() {
         return None;
     }
     Some(resolved)
@@ -815,7 +778,7 @@ fn fn_to(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if !matches!(stream, Value::Resource(_)) {
                 return Err(Thrown::type_error(format!(
                     "{F}(): Argument #1 ($stream) must be of type resource, {} given",
-                    given_type(host, &stream)
+                    crate::zend::zpp::zval_value_name(host, &stream)
                 )));
             }
             if host.stream_kind(&stream).is_none() {
@@ -903,33 +866,14 @@ fn fn_procedural(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     run(host, &call, m, &this, &args[1.min(args.len())..])
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    m.insert(
-        "__xmlwriter_fn",
-        Builtin {
-            name: "__xmlwriter_fn",
-            func: fn_procedural,
-            min_args: 1,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "__xmlwriter",
-        Builtin {
-            name: "__xmlwriter",
-            func: fn_method,
-            min_args: 2,
-            max_args: None,
-        },
-    );
-    m.insert(
-        "__xmlwriter_to",
-        Builtin {
-            name: "__xmlwriter_to",
-            func: fn_to,
-            min_args: 2,
-            max_args: None,
-        },
+pub fn register(m: &mut crate::Registry) {
+    crate::register_helpers(
+        m,
+        &[
+            ("__xmlwriter_fn", fn_procedural, 1, None),
+            ("__xmlwriter", fn_method, 2, None),
+            ("__xmlwriter_to", fn_to, 2, None),
+        ],
     );
 }
 

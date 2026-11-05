@@ -13,8 +13,9 @@ full notices.
 
 vendor/php-src
 --------------
-Copied unmodified from php-src (https://github.com/php/php-src) at the tag and
-commit in vendor/php-src/VERSION by tools/sync-php-src-c.sh. php-src is
+Copied from php-src (https://github.com/php/php-src) at the tag and commit in
+vendor/php-src/VERSION by tools/sync-php-src-c.sh, unmodified except as noted
+for timezonedb.h. php-src is
 distributed under the PHP License 3.01 (vendor/php-src/LICENSE). php-src's
 changes to the files below (for example Pierre Joye's Windows port of
 crypt_sha256.c and crypt_sha512.c) come under that licence; the original code
@@ -43,6 +44,16 @@ ext/standard/crypt_sha256.c, ext/standard/crypt_sha512.c
   Public domain.
   SHA256- and SHA512-based Unix crypt implementation. Released into the
   Public Domain by Ulrich Drepper <drepper@redhat.com>.
+
+ext/date/lib/
+  MIT (ext/date/lib/LICENSE.rst). timelib, php's date library: Copyright (c)
+  2015-2026 Derick Rethans, Copyright (c) 2017-2021 MongoDB, Inc., as each
+  file's header states. astro.c's algorithms are from a public domain source
+  by Paul Schlyter. timezonedb.h, timezonemap.h and fallbackmap.h are
+  generated from the IANA time zone database (public domain).
+  timezonedb.h is the one file not copied verbatim: it holds the database
+  twice, and the copy keeps only the "slim" branch parse_tz.c compiles
+  (TIMELIB_SUPPORT_SLIM_FILE). The compiled object is byte-identical.
 
 
 vendor/argon2

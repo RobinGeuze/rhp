@@ -1,0 +1,13 @@
+[8192] str_getcsv(): the $escape parameter must be provided as its default value will change (line 5)
+[8192] str_getcsv(): the $escape parameter must be provided as its default value will change (line 8)
+[8192] str_getcsv(): the $escape parameter must be provided as its default value will change (line 8)
+[8192] str_getcsv(): the $escape parameter must be provided as its default value will change (line 8)
+1  Alice     95.50
+2  Bob       82.00
+3  Carol     77.25
+avg: 84.917
+winner: Alice
+id,name,score
+1,Alice,95.5
+2,Bob,82
+3,Carol,77.25

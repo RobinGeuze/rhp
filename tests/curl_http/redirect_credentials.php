@@ -1,7 +1,9 @@
 <?php
 // FOLLOWLOCATION to another host drops the user's Authorization / Cookie
-// headers, CURLOPT_USERPWD and CURLOPT_COOKIE (libcurl's
-// this_is_a_follow / allow_auth_to_host), unless CURLOPT_UNRESTRICTED_AUTH.
+// headers and CURLOPT_USERPWD (libcurl's this_is_a_follow /
+// allow_auth_to_host), unless CURLOPT_UNRESTRICTED_AUTH. Whether
+// CURLOPT_COOKIE goes along depends on the libcurl release (8.18 sends it,
+// 8.23 does not): rhp-difftest's tests/curl.rs compares that with php.
 $base = '__BASE__';
 function req($path, array $opts) {
     global $base;
@@ -12,8 +14,8 @@ function req($path, array $opts) {
 }
 echo "== custom headers, other host\n";
 req('/xhost', [CURLOPT_HTTPHEADER => ['Authorization: Bearer SECRET', 'Cookie: s=1', 'X-Keep: yes']]);
-echo "== USERPWD + COOKIE, other host\n";
-req('/xhost', [CURLOPT_USERPWD => 'u:p', CURLOPT_COOKIE => 'c=2']);
+echo "== USERPWD, other host\n";
+req('/xhost', [CURLOPT_USERPWD => 'u:p']);
 echo "== USERNAME/PASSWORD, other host\n";
 req('/xhost', [CURLOPT_USERNAME => 'user', CURLOPT_PASSWORD => 'pw']);
 echo "== same host keeps everything (custom Authorization wins)\n";

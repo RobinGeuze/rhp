@@ -1,0 +1,8 @@
+Dear Alice, you have 5 new messages from Bob.
+<ul>
+  <li class="item-0">Apple</li>
+  <li class="item-1">Banana</li>
+  <li class="item-2">Cherry</li>
+</ul>
+Alice        30
+Bob          25

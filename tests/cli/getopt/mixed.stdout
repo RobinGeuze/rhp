@@ -1,0 +1,38 @@
+array(8) {
+  ["a"]=>
+  array(2) {
+    [0]=>
+    bool(false)
+    [1]=>
+    bool(false)
+  }
+  ["b"]=>
+  bool(false)
+  ["c"]=>
+  string(3) "val"
+  ["d"]=>
+  string(2) "dv"
+  ["long"]=>
+  string(2) "lv"
+  ["req"]=>
+  string(2) "rv"
+  ["flag"]=>
+  array(2) {
+    [0]=>
+    bool(false)
+    [1]=>
+    bool(false)
+  }
+  [1]=>
+  bool(false)
+}
+int(14)
+array(1) {
+  ["a"]=>
+  array(2) {
+    [0]=>
+    bool(false)
+    [1]=>
+    bool(false)
+  }
+}

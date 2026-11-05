@@ -23,12 +23,29 @@ runs:
       env:
         PHP_BIN: ${{ inputs.php }}
       run: |
-        # PCRE2 (libpcre2-8.a) and libxml2 (libxml2.a), linked statically.
+        # PCRE2 (libpcre2-8.a), libxml2 (libxml2.a), ICU (libicu*.a),
+        # OpenSSL (libcrypto.a, libssl.a) and libcurl (libcurl.a), linked
+        # statically. Ubuntu's libcrypto.a also needs its Libs.private, which
+        # libssl-dev does not pull in: -l:libjitterentropy.a -lz -lzstd.
+        # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
+        # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
+        # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
+        # static archive.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
           libpcre2-dev \
-          libxml2-dev
+          libxml2-dev \
+          libicu-dev \
+          libssl-dev \
+          libjitterentropy3-dev \
+          zlib1g-dev \
+          libzstd-dev \
+          libcurl4-openssl-dev \
+          libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
+          libpsl-dev librtmp-dev libssh-dev libssh2-1-dev \
+          libzip-dev \
+          libgmp-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>
@@ -44,12 +61,60 @@ runs:
         compare pcre2 libpcre2-8 'echo strtok(PCRE_VERSION, " ");'
         # shellcheck disable=SC2016
         compare libxml2 libxml-2.0 '$v = (int) LIBXML_LOADED_VERSION; echo intdiv($v, 10000), ".", intdiv($v, 100) % 100, ".", $v % 100;'
+        # ICU has no source build here: its release must be the distro's.
         if [ -n "$php" ]; then
+          have="$(pkg-config --modversion icu-uc)"
+          want="$("$php" -n -r 'echo defined("INTL_ICU_VERSION") ? INTL_ICU_VERSION : "";')"
+          echo "icu: the distro has $have; $php links ${want:-no intl}"
+          if [ -n "$want" ] && [ "$want" != "$have" ]; then
+            echo "::error::php links ICU $want but libicu-dev is $have; rhp must link php's ICU (docs/design/libraries.md)"
+            exit 1
+          fi
+        fi
+        if [ -n "$php" ]; then
+          # libcurl has no source build here: php must link the distro's.
+          # shellcheck disable=SC2016
+          curl_want="$("$php" -n -r 'echo function_exists("curl_version") ? curl_version()["version"] : "";')"
+          curl_have="$(pkg-config --modversion libcurl)"
+          echo "libcurl: the distro has $curl_have; $php links ${curl_want:-no libcurl}"
+          if [ -n "$curl_want" ] && [ "$curl_want" != "$curl_have" ]; then
+            echo "::error::$php links libcurl $curl_want, but the distro's libcurl4-openssl-dev is $curl_have. rhp links the distro's libcurl.a and cannot build another release."
+            exit 1
+          fi
+          # libgmp has no source build here: php must load the distro's.
+          # shellcheck disable=SC2016
+          gmp_want="$("$php" -n -r 'echo defined("GMP_VERSION") ? GMP_VERSION : "";')"
+          gmp_have="$(pkg-config --modversion gmp)"
+          echo "gmp: the distro has $gmp_have; $php loads ${gmp_want:-no gmp}"
+          if [ -n "$gmp_want" ] && [ "$gmp_want" != "$gmp_have" ]; then
+            echo "::error::$php loads libgmp $gmp_want, but the distro's libgmp-dev is $gmp_have; rhp links the distro's"
+            exit 1
+          fi
+          # libzip has no source build here either.
+          # shellcheck disable=SC2016
+          zip_want="$("$php" -n -r 'echo class_exists("ZipArchive") ? ZipArchive::LIBZIP_VERSION : "";')"
+          zip_have="$(pkg-config --modversion libzip)"
+          echo "libzip: the distro has $zip_have; $php links ${zip_want:-no libzip}"
+          if [ -n "$zip_want" ] && [ "$zip_want" != "$zip_have" ]; then
+            echo "::error::$php links libzip $zip_want, but the distro's libzip-dev is $zip_have; rhp links the distro's libzip"
+            exit 1
+          fi
           # rhp's LIBXML_DOTTED_VERSION is its headers' and LIBXML_LOADED_VERSION
           # its library's: one release. php can differ only if it loads a
           # libxml2 other than the one it was compiled against.
           # shellcheck disable=SC2016
           "$php" -n -r 'echo "libxml2: php compiled against ", LIBXML_DOTTED_VERSION, ", loads ", LIBXML_LOADED_VERSION, "\n";'
+        fi
+        # OpenSSL is not built from source: php must load the distro's release.
+        have="$(pkg-config --modversion libcrypto)"
+        if [ -n "$php" ]; then
+          # shellcheck disable=SC2016
+          want="$("$php" -n -r 'ob_start(); phpinfo(INFO_MODULES); preg_match("/^OpenSSL Library Version => OpenSSL (\\S+)/m", ob_get_clean(), $m); echo $m[1] ?? "";')"
+          echo "openssl: the distro has $have; $php loads $want"
+          if [ -n "$want" ] && [ "$want" != "$have" ]; then
+            echo "::error::php loads OpenSSL $want but the distro's libssl-dev is $have; rhp links the distro's"
+            exit 1
+          fi
         fi
         echo "build=${build# }" >> "$GITHUB_OUTPUT"
         echo "os=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"

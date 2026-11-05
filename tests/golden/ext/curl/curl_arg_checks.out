@@ -1,0 +1,38 @@
+== null arguments
+E[8192] curl_strerror(): Passing null to parameter #1 ($error_code) of type int is deprecated
+E[8192] curl_multi_strerror(): Passing null to parameter #1 ($error_code) of type int is deprecated
+E[8192] curl_share_strerror(): Passing null to parameter #1 ($error_code) of type int is deprecated
+bool(true)
+bool(true)
+bool(true)
+E[8192] curl_pause(): Passing null to parameter #2 ($flags) of type int is deprecated
+bool(true)
+E[8192] curl_setopt(): Passing null to parameter #2 ($option) of type int is deprecated
+curl_setopt(): Argument #2 ($option) is not a valid cURL option
+E[8192] curl_multi_setopt(): Passing null to parameter #2 ($option) of type int is deprecated
+curl_multi_setopt(): Argument #2 ($option) is not a valid cURL multi option
+E[8192] curl_share_setopt(): Passing null to parameter #2 ($option) of type int is deprecated
+curl_share_setopt(): Argument #2 ($option) is not a valid cURL share option
+E[8192] curl_multi_select(): Passing null to parameter #2 ($timeout) of type float is deprecated
+int(0)
+E[8192] curl_pause(): Passing null to parameter #2 ($flags) of type int is deprecated
+bool(true)
+== curl_share_init_persistent
+E[8192] Implicit conversion from float 1.5 to int loses precision
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+E[2] A non-numeric value encountered
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+E[2] The float NAN is not representable as an int, cast occurred
+E[8192] Implicit conversion from float NAN to int loses precision
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+E[2] The float INF is not representable as an int, cast occurred
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+TypeError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only int values, string given
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+TypeError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only int values, array given
+E[8192] Implicit conversion from float-string "2.5" to int loses precision
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must not contain CURL_LOCK_DATA_COOKIE because sharing cookies across PHP requests is unsafe
+E[8192] Implicit conversion from float-string "1e100" to int loses precision
+ValueError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only CURL_LOCK_DATA_* constants
+TypeError: curl_share_init_persistent(): Argument #1 ($share_options) must contain only int values, stdClass given

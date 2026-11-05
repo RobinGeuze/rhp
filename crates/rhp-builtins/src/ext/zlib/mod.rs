@@ -13,20 +13,14 @@
 pub(crate) mod zraw;
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::rc::Rc;
 
+use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
-use crate::streams::{self, StatInfo, StreamWrapper, WrapperReg};
-use crate::{Builtin, Host, Thrown};
-
-fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
-}
+use crate::main::streams;
+use crate::main::streams::{StatInfo, StreamWrapper, WrapperReg};
+use crate::{Host, Thrown};
 
 fn bytes_arg(args: &[Value], i: usize) -> Vec<u8> {
     conv::to_string_bytes(&deref(&args[i]))
@@ -87,7 +81,10 @@ fn encode(
         match zraw::deflate(data, level, encoding, zraw::MAX_MEM_LEVEL, false) {
             Ok(out) => Value::str(out),
             Err(status) => {
-                host.raise_diagnostic(crate::E_WARNING, &format!("{name}(): {}", z_error(status)));
+                host.raise_diagnostic(
+                    crate::E_WARNING,
+                    format!("{name}(): {}", z_error(status)).as_bytes(),
+                );
                 Value::Bool(false)
             }
         },
@@ -107,7 +104,10 @@ fn decode(host: &mut dyn Host, name: &str, args: &[Value], encoding: i64) -> Res
     Ok(match zraw::decode(&data, encoding, max as usize) {
         Ok(out) => Value::str(out),
         Err(status) => {
-            host.raise_diagnostic(crate::E_WARNING, &format!("{name}(): {}", z_error(status)));
+            host.raise_diagnostic(
+                crate::E_WARNING,
+                format!("{name}(): {}", z_error(status)).as_bytes(),
+            );
             Value::Bool(false)
         }
     })
@@ -222,7 +222,7 @@ fn include_path_arg(args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
     if !args.get(i).is_some_and(|v| conv::to_bool(&deref(v))) {
         return path;
     }
-    crate::fs_fns::resolve_include_path(inner(&path)).unwrap_or(path)
+    crate::ext::standard::file::resolve_include_path(inner(&path)).unwrap_or(path)
 }
 
 fn zlib_url(path: &[u8]) -> Vec<u8> {
@@ -240,17 +240,15 @@ fn zlib_url(path: &[u8]) -> Vec<u8> {
 /// The `strerror` text php's plain-files wrapper reports when opening `path`
 /// with `mode` fails ("No such file or directory", …), or its mode error.
 pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
-    let p = String::from_utf8_lossy(path).into_owned();
-    if p.contains("://") {
+    if path.windows(3).any(|w| w == b"://") {
         return "operation failed".into();
     }
-    let mut o = std::fs::OpenOptions::new();
-    match mode.first() {
-        Some(b'r') => o.read(true),
-        Some(b'w') => o.write(true).create(true).truncate(false),
-        Some(b'a') => o.append(true).create(true),
-        Some(b'x') => o.write(true).create_new(true),
-        Some(b'c') => o.write(true).create(true).truncate(false),
+    let w = libc::O_WRONLY | libc::O_CREAT;
+    let flags = match mode.first() {
+        Some(b'r') => libc::O_RDONLY,
+        Some(b'w' | b'c') => w,
+        Some(b'a') => w | libc::O_APPEND,
+        Some(b'x') => w | libc::O_EXCL,
         _ => {
             return format!(
                 "`{}' is not a valid mode for fopen",
@@ -258,28 +256,26 @@ pub(crate) fn open_failure_reason(path: &[u8], mode: &[u8]) -> String {
             );
         }
     };
-    match o.open(&p) {
+    match crate::zend::virtual_cwd::open(path, flags | libc::O_CLOEXEC, 0o666) {
         Ok(_) => "operation failed".into(),
-        Err(e) => {
-            let s = e.to_string();
-            match s.find(" (os error") {
-                Some(i) => s[..i].to_string(),
-                None => s,
-            }
-        }
+        Err(e) => match e.raw_os_error() {
+            Some(code) => crate::main::streams::strerror(code),
+            None => e.to_string(),
+        },
     }
 }
 
 /// php's "fn(path): Failed to open stream: reason" warning.
 pub(crate) fn warn_open_failed(host: &mut dyn Host, func: &str, path: &[u8], mode: &[u8]) {
     let reason = open_failure_reason(path, mode);
-    host.raise_diagnostic(
-        crate::E_WARNING,
-        &format!(
-            "{func}({}): Failed to open stream: {reason}",
-            String::from_utf8_lossy(path)
-        ),
-    );
+    let msg = [
+        func.as_bytes(),
+        b"(",
+        path,
+        format!("): Failed to open stream: {reason}").as_bytes(),
+    ]
+    .concat();
+    host.raise_diagnostic(crate::E_WARNING, &msg);
 }
 
 fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -288,7 +284,7 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if mode.contains(&b'+') {
         host.raise_diagnostic(
             crate::E_WARNING,
-            "gzopen(): Cannot open a zlib stream for reading and writing at the same time!",
+            b"gzopen(): Cannot open a zlib stream for reading and writing at the same time!",
         );
         return Ok(Value::Bool(false));
     }
@@ -306,14 +302,14 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // php opens (creating/truncating) the underlying file right away.
     let rel = inner(&path);
     if mode[0] != b'r' && !rel.windows(3).any(|w| w == b"://") {
-        let mut o = std::fs::OpenOptions::new();
-        match mode[0] {
-            b'w' => o.write(true).create(true).truncate(true),
-            b'a' => o.append(true).create(true),
-            b'x' => o.write(true).create_new(true),
-            _ => o.write(true).create(true),
+        let w = libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC;
+        let flags = match mode[0] {
+            b'w' => w | libc::O_TRUNC,
+            b'a' => w | libc::O_APPEND,
+            b'x' => w | libc::O_EXCL,
+            _ => w,
         };
-        if o.open(String::from_utf8_lossy(rel).as_ref()).is_err() {
+        if crate::zend::virtual_cwd::open(rel, flags, 0o666).is_err() {
             warn_open_failed(host, "gzopen", rel, &mode);
             return Ok(Value::Bool(false));
         }
@@ -411,49 +407,41 @@ aliases! {
 /// `gzseek` is `fseek` on the gz stream, whose seek op rejects SEEK_END.
 fn fn_gzseek(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if int_arg(args, 2, 0) == 2 {
-        host.raise_diagnostic(crate::E_WARNING, "gzseek(): SEEK_END is not supported");
+        host.raise_diagnostic(crate::E_WARNING, b"gzseek(): SEEK_END is not supported");
         return Ok(Value::Int(-1));
     }
     alias(host, "fseek", args)
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    let table: &[(&'static str, crate::NativeFn, usize, Option<usize>)] = &[
-        ("gzdeflate", fn_gzdeflate, 1, Some(3)),
-        ("gzinflate", fn_gzinflate, 1, Some(2)),
-        ("gzcompress", fn_gzcompress, 1, Some(3)),
-        ("gzuncompress", fn_gzuncompress, 1, Some(2)),
-        ("gzencode", fn_gzencode, 1, Some(3)),
-        ("gzdecode", fn_gzdecode, 1, Some(2)),
-        ("zlib_encode", fn_zlib_encode, 2, Some(3)),
-        ("zlib_decode", fn_zlib_decode, 1, Some(2)),
-        ("zlib_get_coding_type", fn_zlib_get_coding_type, 0, Some(0)),
-        ("gzopen", fn_gzopen, 2, Some(3)),
-        ("gzfile", fn_gzfile, 1, Some(2)),
-        ("readgzfile", fn_readgzfile, 1, Some(2)),
-        ("gzpassthru", fn_gzpassthru, 1, Some(1)),
-        ("gzread", fn_gzread, 2, Some(2)),
-        ("gzwrite", fn_gzwrite, 2, Some(3)),
-        ("gzputs", fn_gzwrite, 2, Some(3)),
-        ("gzclose", fn_gzclose, 1, Some(1)),
-        ("gzeof", fn_gzeof, 1, Some(1)),
-        ("gzgets", fn_gzgets, 1, Some(2)),
-        ("gzgetc", fn_gzgetc, 1, Some(1)),
-        ("gzrewind", fn_gzrewind, 1, Some(1)),
-        ("gzseek", fn_gzseek, 2, Some(3)),
-        ("gztell", fn_gztell, 1, Some(1)),
-    ];
-    for &(name, func, min, max) in table {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
+        m,
+        &[
+            ("gzdeflate", fn_gzdeflate),
+            ("gzinflate", fn_gzinflate),
+            ("gzcompress", fn_gzcompress),
+            ("gzuncompress", fn_gzuncompress),
+            ("gzencode", fn_gzencode),
+            ("gzdecode", fn_gzdecode),
+            ("zlib_encode", fn_zlib_encode),
+            ("zlib_decode", fn_zlib_decode),
+            ("zlib_get_coding_type", fn_zlib_get_coding_type),
+            ("gzopen", fn_gzopen),
+            ("gzfile", fn_gzfile),
+            ("readgzfile", fn_readgzfile),
+            ("gzpassthru", fn_gzpassthru),
+            ("gzread", fn_gzread),
+            ("gzwrite", fn_gzwrite),
+            ("gzputs", fn_gzwrite),
+            ("gzclose", fn_gzclose),
+            ("gzeof", fn_gzeof),
+            ("gzgets", fn_gzgets),
+            ("gzgetc", fn_gzgetc),
+            ("gzrewind", fn_gzrewind),
+            ("gzseek", fn_gzseek),
+            ("gztell", fn_gztell),
+        ],
+    );
 }
 
 /// `ZLIB_*` / `FORCE_*` constants.
@@ -489,9 +477,4 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZLIB_BUF_ERROR", Value::Int(-5)),
         ("ZLIB_VERSION_ERROR", Value::Int(-6)),
     ]
-}
-
-/// Deflate for other modules (ZipArchive): raw, libzip's level/mem level.
-pub fn raw_deflate(data: &[u8], level: i64) -> Option<Vec<u8>> {
-    zraw::deflate(data, level, zraw::ENCODING_RAW, zraw::MAX_MEM_LEVEL, false).ok()
 }

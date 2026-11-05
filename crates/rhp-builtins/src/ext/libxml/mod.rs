@@ -5,47 +5,43 @@
 //! once-per-process and once-per-thread libxml2 setup.
 //!
 //! [`sys`] declares the libxml2 calls, [`ffi`] is how C callbacks reach the
-//! VM. ext/xml and ext/xmlwriter run on libxml2. DOM, SimpleXML and XMLReader
-//! still run on the hand-written parser and tree below (`parser`, `tree`,
-//! `xpath`, `xsd`, `charset`) and report into the same error store.
+//! VM, [`node`] is php's ownership of libxml2 trees, shared by DOM,
+//! SimpleXML and XMLReader.
 
-pub mod charset;
 pub mod ffi;
 pub mod io;
-pub mod parser;
+pub(crate) mod node;
 pub mod sys;
-pub mod tree;
-pub mod xpath;
-pub mod xsd;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{Once, OnceLock};
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, PhpArray, PhpStr, Value};
 
-use crate::{Builtin, Host, Thrown};
-pub use parser::XmlError;
+use crate::{Host, Thrown};
 
-pub(crate) fn deref(v: &Value) -> Value {
-    match v {
-        Value::Ref(r) => r.borrow().clone(),
-        o => o.clone(),
-    }
+/// An error record of libxml2's (php's `LibXMLError`).
+#[derive(Clone, Debug)]
+pub struct XmlError {
+    pub level: i32,
+    pub code: i32,
+    pub line: i32,
+    pub column: i32,
+    pub message: Vec<u8>,
+    pub file: Option<Vec<u8>>,
 }
 
-/// How a diagnostic is shown as a php warning when internal errors are off.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Ctx {
-    /// A parser diagnostic: `msg in <file|Entity>, line: N`.
-    Parser,
-    /// Anything else (validation, I/O): the bare message.
-    Plain,
-    /// libxml2's generic error handler (no parser context registered, as
-    /// SimpleXML loads): `Entity: line N: parser error : msg`, then the
-    /// source line and a caret line, each its own warning.
-    Generic,
+pub(crate) use rhp_values::ops::deref;
+
+/// String argument `i` as zpp's `s` hands it over: the string itself, not
+/// a copy (a document as large as memory_limit allows still loads).
+pub(crate) fn str_arg(args: &[Value], i: usize) -> PhpStr {
+    match args.get(i).map(deref) {
+        Some(Value::Str(s)) => s,
+        Some(v) => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+        None => PhpStr::from_bytes(Vec::new()),
+    }
 }
 
 /// php's LIBXML() globals.
@@ -54,9 +50,6 @@ struct State {
     error_list: Option<Vec<XmlError>>,
     /// `LIBXML(error_buffer)`: a message libxml2 delivers in pieces.
     error_buffer: Vec<u8>,
-    /// The last error of the hand-written parser; libxml2 keeps its own
-    /// (`xmlGetLastError`).
-    last: Option<XmlError>,
     /// `LIBXML(stream_context)`.
     stream_context: Option<Value>,
     /// `LIBXML(entity_loader_callback)`.
@@ -69,7 +62,6 @@ thread_local! {
     static STATE: RefCell<State> = const { RefCell::new(State {
         error_list: None,
         error_buffer: Vec::new(),
-        last: None,
         stream_context: None,
         entity_loader: None,
         entity_loader_disabled: false,
@@ -118,14 +110,43 @@ pub fn reset_state() {
         let mut s = s.borrow_mut();
         s.error_list = None;
         s.error_buffer.clear();
-        s.last = None;
         s.stream_context = None;
         s.entity_loader = None;
         s.entity_loader_disabled = false;
     });
     thread_init();
-    crate::ext::xml::reset_state();
-    crate::ext::xmlwriter::reset_state();
+}
+
+/// php_libxml_import_node: the node a DOM node or SimpleXML element stands
+/// for (DOM and SimpleXML register their export functions in php), with
+/// the object's document reference.
+pub(crate) fn import_node(
+    host: &mut dyn Host,
+    v: &Value,
+) -> Result<Option<(*mut sys::XmlNode, *mut node::RefObj)>, Thrown> {
+    if let Some(n) = crate::ext::dom::export_node(v) {
+        return Ok(Some(n));
+    }
+    crate::ext::simplexml::export_node(host, v)
+}
+
+/// php_libxml_issue_error's internal-errors half: record `msg` as an
+/// XML_ERR_INTERNAL_ERROR when internal errors are on; false otherwise.
+pub fn push_internal_error(msg: &str) -> bool {
+    STATE.with(|s| match s.borrow_mut().error_list.as_mut() {
+        Some(l) => {
+            l.push(XmlError {
+                level: sys::XML_ERR_ERROR,
+                code: sys::XML_ERR_INTERNAL_ERROR,
+                line: 0,
+                column: 0,
+                message: msg.as_bytes().to_vec(),
+                file: None,
+            });
+            true
+        }
+        None => false,
+    })
 }
 
 /// php_libxml_uses_internal_errors
@@ -150,14 +171,12 @@ pub fn stream_context() -> Option<Value> {
 fn error_from_raw(e: &sys::XmlErrorRaw) -> XmlError {
     let text = |p: *mut c_char| unsafe { sys::cstr(p) }.to_vec();
     XmlError {
-        domain: e.domain,
         level: e.level,
         code: e.code,
         line: e.line,
         column: e.int2,
-        message: String::from_utf8_lossy(&text(e.message)).into_owned(),
+        message: text(e.message),
         file: (!e.file.is_null()).then(|| text(e.file)),
-        context: None,
     }
 }
 
@@ -229,14 +248,12 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
         let msg = b[..end].to_vec();
         if let Some(l) = s.error_list.as_mut() {
             l.push(XmlError {
-                domain: 0,
                 level: sys::XML_ERR_ERROR,
                 code: sys::XML_ERR_INTERNAL_ERROR,
                 line,
                 column,
-                message: String::from_utf8_lossy(&msg).into_owned(),
+                message: msg,
                 file: None,
-                context: None,
             });
             return None;
         }
@@ -247,7 +264,6 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
     if ffi::aborted() {
         return;
     }
-    let msg = String::from_utf8_lossy(&msg).into_owned();
     let fname = ffi::fname();
     match kind {
         PHP_LIBXML_CTX_ERROR => ctx_error_level(crate::E_WARNING, ctx, &fname, &msg, line),
@@ -259,136 +275,31 @@ fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int
 }
 
 /// php_libxml_ctx_error_level
-fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &str, line: c_int) {
+fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &[u8], line: c_int) {
     let mut file = std::ptr::null();
     let (mut l, mut c) = (0, 0);
     let has_input = !ctx.is_null()
         && unsafe { sys::rhp_xml_ctxt_input_pos(ctx.cast(), &mut file, &mut l, &mut c) } != 0;
     if has_input {
         let src = if file.is_null() {
-            "Entity".to_string()
+            &b"Entity"[..]
         } else {
-            String::from_utf8_lossy(unsafe { sys::cstr(file) }).into_owned()
+            unsafe { sys::cstr(file) }
         };
-        ffi::call_host(|h| {
-            h.emit_diagnostic(level, &format!("{fname}(): {msg} in {src}, line: {line}"))
-        });
+        let line = format!(", line: {line}");
+        let msg = [
+            fname.as_bytes(),
+            b"(): ",
+            msg,
+            b" in ",
+            src,
+            line.as_bytes(),
+        ]
+        .concat();
+        ffi::call_host(|h| h.emit_diagnostic(level, &msg));
     } else {
         ffi::call_host(|h| crate::warn(h, fname, msg));
     }
-}
-
-/// Record an error of the hand-written parser as the last error, in place
-/// of libxml2's.
-fn set_last(e: &XmlError) {
-    unsafe { sys::xmlResetLastError() };
-    STATE.with(|s| s.borrow_mut().last = Some(e.clone()));
-}
-
-/// Route libxml2 diagnostics the way php's libxml glue does: always record
-/// the last error; collect into the error list when internal errors are on,
-/// else raise each one as an E_WARNING from `fname`.
-pub fn report(
-    host: &mut dyn Host,
-    fname: &str,
-    errors: Vec<XmlError>,
-    ctx: Ctx,
-) -> Result<(), Thrown> {
-    for e in errors {
-        set_last(&e);
-        let internal = STATE.with(|s| match s.borrow_mut().error_list.as_mut() {
-            Some(l) => {
-                l.push(e.clone());
-                true
-            }
-            None => false,
-        });
-        if internal {
-            continue;
-        }
-        let msg = e.message.trim_end_matches('\n');
-        let text = match ctx {
-            Ctx::Parser => {
-                let file = match &e.file {
-                    Some(f) => String::from_utf8_lossy(f).into_owned(),
-                    None => "Entity".to_string(),
-                };
-                format!("{msg} in {file}, line: {}", e.line)
-            }
-            Ctx::Plain => msg.to_string(),
-            Ctx::Generic => {
-                let mut head = String::new();
-                match &e.file {
-                    Some(f) => {
-                        head.push_str(&format!("{}:{}: ", String::from_utf8_lossy(f), e.line))
-                    }
-                    None if e.line != 0 && e.domain == 1 => {
-                        head.push_str(&format!("Entity: line {}: ", e.line))
-                    }
-                    None => {}
-                }
-                head.push_str(match e.domain {
-                    1 => "parser ",
-                    3 => "namespace ",
-                    _ => "",
-                });
-                head.push_str(if e.level == 1 {
-                    "warning : "
-                } else {
-                    "error : "
-                });
-                head.push_str(msg);
-                crate::warn(host, fname, &head)?;
-                if let Some((content, caret)) = &e.context {
-                    crate::warn(host, fname, &String::from_utf8_lossy(content))?;
-                    crate::warn(host, fname, &String::from_utf8_lossy(caret))?;
-                }
-                continue;
-            }
-        };
-        crate::warn(host, fname, &text)?;
-    }
-    Ok(())
-}
-
-/// Report the serializer's diagnostics (see `tree::take_save_diags`). The
-/// output-module ones are structured errors (they also become the last
-/// error); code 1 comes through libxml2's generic channel, which php turns
-/// into an XML_ERR_INTERNAL_ERROR record without touching the last error.
-pub fn report_save_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
-    for (code, msg) in tree::take_save_diags() {
-        if code == 1 {
-            let internal = STATE.with(|s| match s.borrow_mut().error_list.as_mut() {
-                Some(l) => {
-                    l.push(plain_error(2, 1, 0, 0, msg.to_string()));
-                    true
-                }
-                None => false,
-            });
-            if !internal {
-                crate::warn(host, fname, msg)?;
-            }
-        } else {
-            report(
-                host,
-                fname,
-                vec![plain_error(2, code, 7, 0, msg.to_string())],
-                Ctx::Plain,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// A libxml2 tree-module error (`xmlTreeErr`, e.g. XML_TREE_UNTERMINATED_ENTITY
-/// = 1302): an XML_FROM_TREE record with line -1, or a warning from `fname`.
-pub fn report_tree_error(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
-    report(
-        host,
-        fname,
-        vec![plain_error(2, 1302, 2, -1, format!("{msg}\n"))],
-        Ctx::Plain,
-    )
 }
 
 /// The user function a property hook runs on behalf of (what php's
@@ -413,77 +324,13 @@ pub fn active_user_function(host: &dyn Host) -> String {
     }
 }
 
-/// Write serialized output to `path` through the stream layer (libxml's
-/// php_libxml_streams_IO_open_write_wrapper): the byte count, or `None` after
-/// php's "Failed to open stream" warning from `fname`.
-pub fn save_to_uri(
-    host: &mut dyn Host,
-    fname: &str,
-    path: &[u8],
-    data: &[u8],
-) -> Result<Option<usize>, Thrown> {
-    crate::streams::clear_errno();
-    match host.stream_put_contents(path, data) {
-        Some(_) => Ok(Some(data.len())),
-        None => {
-            crate::open_failed(host, fname, path)?;
-            Ok(None)
-        }
-    }
-}
-
-/// A non-parser error record (validation, I/O): no file/column.
-pub fn plain_error(level: i32, code: i32, domain: i32, line: i32, msg: String) -> XmlError {
-    XmlError {
-        domain,
-        level,
-        code,
-        line,
-        column: 0,
-        message: msg,
-        file: None,
-        context: None,
-    }
-}
-
-/// Report php's "I/O warning : failed to load external entity" for `path`.
-pub fn report_io(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
-    let p = String::from_utf8_lossy(path).into_owned();
-    let e = plain_error(
-        1,
-        1549,
-        8,
-        0,
-        format!("failed to load external entity \"{p}\"\n"),
-    );
-    set_last(&e);
-    let internal = STATE.with(|s| match s.borrow_mut().error_list.as_mut() {
-        Some(l) => {
-            l.push(e.clone());
-            true
-        }
-        None => false,
-    });
-    if !internal {
-        crate::warn(
-            host,
-            fname,
-            &format!("I/O warning : failed to load external entity \"{p}\""),
-        )?;
-    }
-    Ok(())
-}
-
 /// php_libxml_create_error_object
 fn error_object(host: &mut dyn Host, e: &XmlError) -> Value {
     let props = vec![
         (b"level".to_vec(), Value::Int(e.level as i64)),
         (b"code".to_vec(), Value::Int(e.code as i64)),
         (b"column".to_vec(), Value::Int(e.column as i64)),
-        (
-            b"message".to_vec(),
-            Value::str(e.message.as_bytes().to_vec()),
-        ),
+        (b"message".to_vec(), Value::str(e.message.clone())),
         (
             b"file".to_vec(),
             Value::str(e.file.clone().unwrap_or_default()),
@@ -529,15 +376,12 @@ fn fn_get_errors(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
 }
 
 /// The last error: the newest in the list while internal errors are on,
-/// else libxml2's, else the hand-written parser's.
+/// else libxml2's.
 fn last_error() -> Option<XmlError> {
     if let Some(l) = STATE.with(|s| s.borrow().error_list.as_ref().map(|l| l.last().cloned())) {
         return l;
     }
-    if let Some(e) = unsafe { sys::xmlGetLastError().as_ref() } {
-        return Some(error_from_raw(e));
-    }
-    STATE.with(|s| s.borrow().last.clone())
+    unsafe { sys::xmlGetLastError().as_ref() }.map(error_from_raw)
 }
 
 fn fn_get_last_error(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -554,18 +398,11 @@ fn fn_clear_errors(_h: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> 
         if let Some(l) = s.error_list.as_mut() {
             l.clear();
         }
-        s.last = None;
     });
     Ok(Value::Null)
 }
 
-fn fn_disable_entity_loader(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    crate::deprecated_fn(
-        host,
-        "libxml_disable_entity_loader",
-        "8.0",
-        "as external entity loading is disabled by default",
-    )?;
+fn fn_disable_entity_loader(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let on = args
         .first()
         .map(|v| conv::to_bool(&deref(v)))
@@ -579,7 +416,7 @@ fn fn_set_streams_context(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let Value::Resource(r) = &arg else {
         return Err(Thrown::type_error(format!(
             "libxml_set_streams_context(): Argument #1 ($context) must be of type resource, {} given",
-            crate::ext::zpp::given_type(host, &arg)
+            crate::zend::zpp::zval_value_name(host, &arg)
         )));
     };
     if r.type_name != "stream-context" {
@@ -609,61 +446,25 @@ fn fn_get_external_entity_loader(_h: &mut dyn Host, _args: &[Value]) -> Result<V
     Ok(entity_loader_callback().unwrap_or(Value::Null))
 }
 
-pub fn register(m: &mut HashMap<&'static str, Builtin>) {
-    fn put(
-        m: &mut HashMap<&'static str, Builtin>,
-        name: &'static str,
-        func: crate::NativeFn,
-        min: usize,
-        max: Option<usize>,
-    ) {
-        m.insert(
-            name,
-            Builtin {
-                name,
-                func,
-                min_args: min,
-                max_args: max,
-            },
-        );
-    }
-    put(
+pub fn register(m: &mut crate::Registry) {
+    crate::register(
         m,
-        "libxml_use_internal_errors",
-        fn_use_internal_errors,
-        0,
-        Some(1),
-    );
-    put(m, "libxml_get_errors", fn_get_errors, 0, Some(0));
-    put(m, "libxml_get_last_error", fn_get_last_error, 0, Some(0));
-    put(m, "libxml_clear_errors", fn_clear_errors, 0, Some(0));
-    put(
-        m,
-        "libxml_disable_entity_loader",
-        fn_disable_entity_loader,
-        0,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_set_streams_context",
-        fn_set_streams_context,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_set_external_entity_loader",
-        fn_set_external_entity_loader,
-        1,
-        Some(1),
-    );
-    put(
-        m,
-        "libxml_get_external_entity_loader",
-        fn_get_external_entity_loader,
-        0,
-        Some(0),
+        &[
+            ("libxml_use_internal_errors", fn_use_internal_errors),
+            ("libxml_get_errors", fn_get_errors),
+            ("libxml_get_last_error", fn_get_last_error),
+            ("libxml_clear_errors", fn_clear_errors),
+            ("libxml_disable_entity_loader", fn_disable_entity_loader),
+            ("libxml_set_streams_context", fn_set_streams_context),
+            (
+                "libxml_set_external_entity_loader",
+                fn_set_external_entity_loader,
+            ),
+            (
+                "libxml_get_external_entity_loader",
+                fn_get_external_entity_loader,
+            ),
+        ],
     );
 }
 
@@ -704,21 +505,4 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     out
 }
 
-pub const PRELUDE_PHP: &str = r#"
-class LibXMLError {
-    public int $level;
-    public int $code;
-    public int $column;
-    public string $message;
-    public string $file;
-    public int $line;
-}
-"#;
-
-/// Drop diagnostics suppressed by LIBXML_NOWARNING / LIBXML_NOERROR.
-pub fn filter_by_flags(errors: Vec<XmlError>, flags: i64) -> Vec<XmlError> {
-    errors
-        .into_iter()
-        .filter(|e| !((e.level == 1 && flags & 64 != 0) || (e.level >= 2 && flags & 32 != 0)))
-        .collect()
-}
+pub const PRELUDE_PHP: &str = include_str!("prelude.php");

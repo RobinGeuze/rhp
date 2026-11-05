@@ -1,0 +1,7 @@
+Caught: main
+
+Fatal error: Uncaught Exception: from handler in {DIR}/throws.php:4
+Stack trace:
+#0 [internal function]: {closure:{DIR}/throws.php:2}(Object(Exception))
+#1 {main}
+  thrown in {DIR}/throws.php on line 4

@@ -1,0 +1,70 @@
+-- a write's fetch mode stays with its own accessor
+<?xml version="1.0"?>
+<a><b/></a>
+<?xml version="1.0"?>
+<a><b/></a>
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+-- empty() on a dimension asks has_dimension(check_empty)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+exists(n) exists(z) get(z) exists(y) get(y) bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+-- unset() fetches the object's properties for writing
+<?xml version="1.0"?>
+<a><b/></a>
+<?xml version="1.0"?>
+<a><b/></a>
+<?xml version="1.0"?>
+<a><b/></a>
+<?xml version="1.0"?>
+<a><b/></a>
+{"p":{}}
+-- XMLReader::open/XML show as themselves in a trace
+ValueError: XMLReader::XML(): Argument #1 ($source) must not be empty
+  #0 sxe_fetch_modes.php(63): XMLReader::XML(1)
+  #1 sxe_fetch_modes.php(67): xa(0)
+ValueError: XMLReader::open(): Argument #1 ($uri) must not be empty
+  #0 sxe_fetch_modes.php(64): XMLReader->open(1)
+  #1 sxe_fetch_modes.php(67): xb(0)
+Error: Call to undefined method XMLReader::nosuch()
+  #0 sxe_fetch_modes.php(67): xc(0)
+g(): Cannot add element b number 3 when only 0 such elements exist
+  #0 sxe_fetch_modes.php(71): thrower(4)
+  #1 sxe_fetch_modes.php(72): g(0)
+-- XMLReader's dynamic properties
+E8192: Creation of dynamic property XMLReader::$foo is deprecated
+int(2)
+bool(true)
+E8192: Creation of dynamic property XMLReader::$foo is deprecated
+-- a document close to memory_limit loads without copies
+r1
+r
+r
+r
+r
+r
+bool(true)
+done

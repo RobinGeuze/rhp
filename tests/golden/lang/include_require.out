@@ -1,0 +1,6 @@
+hi x|cl/arrow|1.2
+cfg620
+dedup-ok
+hi sub|cl/arrow
+bool(false)
+file-ok=yes

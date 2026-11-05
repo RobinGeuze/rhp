@@ -1,0 +1,46 @@
+-- int
+get_class_vars: TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, 1 given
+simplexml_load_string: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1 given
+simplexml_import_dom: TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1 given
+-- null
+get_class_vars: TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name,  given
+simplexml_load_string: SimpleXMLElement
+simplexml_import_dom: SimpleXMLElement
+-- float
+get_class_vars: TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, 1.5 given
+simplexml_load_string: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1.5 given
+simplexml_import_dom: TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1.5 given
+-- bool
+get_class_vars: TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, 1 given
+simplexml_load_string: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1 given
+simplexml_import_dom: TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, 1 given
+-- array
+get_class_vars: Warning: Array to string conversion
+TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, Array given
+simplexml_load_string: Warning: Array to string conversion
+TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Array given
+simplexml_import_dom: Warning: Array to string conversion
+TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Array given
+-- Named
+get_class_vars: 0
+simplexml_load_string: S
+simplexml_import_dom: S
+-- Plain
+get_class_vars: Error: Object of class Plain could not be converted to string
+simplexml_load_string: Error: Object of class Plain could not be converted to string
+simplexml_import_dom: Error: Object of class Plain could not be converted to string
+-- string
+get_class_vars: 0
+simplexml_load_string: S
+simplexml_import_dom: S
+-- string
+get_class_vars: TypeError: get_class_vars(): Argument #1 ($class) must be a valid class name, Nope given
+simplexml_load_string: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Nope given
+simplexml_import_dom: TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Nope given
+-- string
+get_class_vars: 0
+simplexml_load_string: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+simplexml_import_dom: TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+bad class, bad options: TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Nope given
+class, bad options: TypeError: simplexml_load_string(): Argument #3 ($options) must be of type int, string given
+bad node, array class: TypeError: simplexml_import_dom(): Argument #1 ($node) must be of type object, int given

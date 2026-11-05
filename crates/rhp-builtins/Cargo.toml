@@ -5,24 +5,34 @@ version.workspace = true
 # Our code: MIT OR Apache-2.0. Translated or derived code keeps its licence
 # (THIRD-PARTY-NOTICES, by section): php-src (4: PHP-3.01, Zend-2.0),
 # md5crypt (8: Beerware), the Bison skeleton (10), charset maps (11), glob and
-# Mt19937 (13, 16: BSD-3-Clause), libc++ sort (14), strnatcmp (15: Zlib),
-# timelib (17: MIT), Unicode data (18), the email regexes (19).
-license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND Beerware AND GPL-3.0-or-later WITH Bison-exception-2.2 AND LicenseRef-Unicode-Mapping-Files AND BSD-3-Clause AND (NCSA OR MIT) AND Zlib AND MIT AND Unicode-3.0 AND LicenseRef-Rushton-Email-Regex"
+# Mt19937 (21, 24: BSD-3-Clause), libc++ sort (22), strnatcmp (23: Zlib), the
+# email regexes (25). The C libraries it links are not part of its source.
+license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND Beerware AND GPL-3.0-or-later WITH Bison-exception-2.2 AND LicenseRef-Unicode-Mapping-Files AND BSD-3-Clause AND (NCSA OR MIT) AND Zlib AND LicenseRef-Rushton-Email-Regex"
 publish.workspace = true
+
+[features]
+default = ["mbstring-libmbfl"]
+# The mbstring extension, on php-src's libmbfl (LGPL-2.1, in the
+# rhp-mbfl-sys crate). Without it rhp-builtins has no mbstring extension and
+# contains no LGPL code; rhp-vm, rhp-sapi and rhp-difftest enable it (they use
+# the default features).
+mbstring-libmbfl = ["dep:rhp-mbfl-sys"]
 
 [dependencies]
 rhp-values = { path = "../rhp-values" }
-rhp-semantics = { path = "../rhp-semantics" }
+# The stub signatures (rhp_bytecode::signatures).
+rhp-bytecode = { path = "../rhp-bytecode" }
 libc = "0.2"
 indexmap = { workspace = true }
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see
-# docs/design/libraries.md) and src/pcre/sys.rs declares what rhp calls.
+# docs/design/libraries.md) and src/ext/pcre/sys.rs declares what rhp calls.
 # pcre2-sys would silently build its bundled copy instead.
 
 # `hash` extension algorithms. Pure-Rust (RustCrypto et al.) where a faithful
 # 1:1 implementation exists; crc32b and adler32 use zlib (libz-sys). The
-# oddballs with no crate (snefru, haval, php's 4-pass tiger, crc32 (bzip2),
-# crc32c, fnv, joaat, murmur) are hand-rolled in `hash/`.
+# oddballs with no crate (snefru, haval, tiger (php's 4-pass form, so 3-pass
+# shares it), crc32 (bzip2), crc32c, fnv, joaat, murmur) are hand-rolled in
+# `hash/`.
 digest = "0.11"
 md2 = "0.11"
 md4 = "0.11"
@@ -32,23 +42,23 @@ sha2 = "0.11"
 sha3 = "0.12"
 ripemd = "0.2"
 whirlpool = "0.11"
-tiger = "0.3"
 gost94 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
-# bcmath + gmp: arbitrary-precision integers (the decimal/scale semantics for
-# bcmath are PHP-specific and hand-rolled in ext/bcmath).
+# bcmath: arbitrary-precision integers (the decimal/scale semantics are
+# PHP-specific and hand-rolled in ext/bcmath). gmp links libgmp.
 num-bigint = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
 
 # crypt() and password_*: php-src's crypt C and the argon2 reference C php
 # links, compiled from source and linked statically.
-rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2"] }
+rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2", "timelib"] }
+rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,
-# CRC-32. Backed by C zlib (system libz, or libz-sys's bundled copy) rather than
-# miniz_oxide so compressed bytes are identical to php's (which links zlib).
+# CRC-32. Backed by the system C zlib (build.rs refuses libz-sys's bundled
+# copy) rather than miniz_oxide so compressed bytes are identical to php's.
 flate2 = { version = "1.1", default-features = false, features = ["zlib"] }
 # Direct zlib calls where php's exact deflateInit2 parameters matter (memLevel 9,
 # sync flushes): gzencode & co., the compress.zlib:// wrapper, ZipArchive; also
@@ -61,38 +71,16 @@ libz-sys = "1.1"
 # Pinned: bzip2 0.6 defaults to the pure-Rust libbz2-rs instead of C libbz2.
 bzip2 = { version = "=0.5.2", features = ["static"] }
 
-# openssl extension: pure-Rust X.509 certificate parsing (openssl_x509_parse).
-x509-parser = { version = "0.18", features = ["verify"] }
-
-# HTTP(S) client for the stream http:// / https:// wrappers (rustls TLS with
-# bundled Mozilla roots — no system OpenSSL dependency). ext/curl also takes
-# its rustls from here (`ureq::rustls`), so dropping ureq needs a direct
-# rustls dependency.
-ureq = "2.12"
-# ext/curl: parsing request and proxy URLs, resolving redirect Locations
-# (already in the tree via ureq).
-url = "2.5"
-# ext/curl's own HTTP/1.1 transport (over ureq's rustls): the Mozilla roots
-# ureq bundles, plus the brotli / zstd decoders behind CURLOPT_ENCODING
-# (libcurl's "deflate, gzip, br, zstd"; deflate/gzip go through flate2).
-webpki-roots = "0.26"
-brotli-decompressor = "4"
-ruzstd = "0.8"
+# openssl extension, the TLS stream transports (and so https://) and phar's
+# OpenSSL signatures: the OpenSSL php links,
+# statically (no bindgen, no vendored copy; see .cargo/config.toml and
+# build/native.rs). src/ext/openssl/sys.rs declares what openssl-sys lacks.
+openssl-sys = "0.9.118"
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
 
-# intl extension: ICU4X grapheme segmentation, normalization (incl. the UTS #46
-# mapping) and character properties, plus the idna crate's Punycode codec.
-# (icu_normalizer / icu_properties / idna were already in the tree via url.)
-# `unstable` exposes the state-machine grapheme data (`new_neo`), the only
-# ICU4X grapheme data with ICU 79's rules (GB9c `Linker Extend* × Consonant`);
-# pinned to a minor version because that API is semver-exempt.
-icu_segmenter = { version = "~2.4", features = ["unstable"] }
-icu_normalizer = "2"
-icu_properties = "2"
-idna = "1"
-
 [build-dependencies]
-# Compiles src/ext/libxml/shim.c against the headers of the libxml2 it links.
+# Compiles the libxml2, ICU and curl shims against the headers of the
+# libraries it links.
 cc = "1.9"

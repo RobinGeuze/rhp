@@ -1,0 +1,38 @@
+Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+bool(true)
+Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+ArgumentCountError: lcg_value() expects exactly 0 arguments, 1 given
+Deprecated: Function strftime() is deprecated since 8.1, use IntlDateFormatter::format() instead
+TypeError: strftime(): Argument #1 ($format) must be of type string, array given
+Deprecated: Function strftime() is deprecated since 8.1, use IntlDateFormatter::format() instead
+TypeError: strftime(): Argument #2 ($timestamp) must be of type ?int, string given
+Deprecated: Function date_sunrise() is deprecated since 8.1, use date_sun_info() instead
+TypeError: date_sunrise(): Argument #1 ($timestamp) must be of type int, string given
+Deprecated: Function socket_set_timeout() is deprecated since 8.5, use stream_set_timeout() instead
+TypeError: socket_set_timeout(): Argument #1 ($stream) must be of type resource, null given
+Deprecated: Function socket_set_timeout() is deprecated since 8.5, use stream_set_timeout() instead
+TypeError: socket_set_timeout(): Argument #2 ($seconds) must be of type int, string given
+Deprecated: Function zip_read() is deprecated since 8.0, use ZipArchive::statIndex() instead
+TypeError: zip_read(): Argument #1 ($zip) must be of type resource, int given
+Deprecated: Function zip_entry_name() is deprecated since 8.0, use ZipArchive::statIndex() instead
+TypeError: zip_entry_name(): Argument #1 ($zip_entry) must be of type resource, int given
+Deprecated: Function openssl_pkey_free() is deprecated since 8.0, as OpenSSLAsymmetricKey objects are freed automatically
+TypeError: openssl_pkey_free(): Argument #1 ($key) must be of type OpenSSLAsymmetricKey, int given
+Deprecated: Function openssl_x509_free() is deprecated since 8.0, as OpenSSLCertificate objects are freed automatically
+TypeError: openssl_x509_free(): Argument #1 ($certificate) must be of type OpenSSLCertificate, int given
+Deprecated: Function curl_close() is deprecated since 8.5, as it has no effect since PHP 8.0
+TypeError: curl_close(): Argument #1 ($handle) must be of type CurlHandle, int given
+Deprecated: Function xml_parser_free() is deprecated since 8.5, as it has no effect since PHP 8.0
+TypeError: xml_parser_free(): Argument #1 ($parser) must be of type XMLParser, int given
+Deprecated: Function xml_set_object() is deprecated since 8.4, provide a proper method callable to xml_set_*_handler() functions
+TypeError: xml_set_object(): Argument #1 ($parser) must be of type XMLParser, int given
+Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+bool(true)
+array(0) {
+}
+Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+bool(true)
+Deprecated: Function lcg_value() is deprecated since 8.4, use \Random\Randomizer::getFloat() instead
+bool(true)
+ErrorException: Function strftime() is deprecated since 8.1, use IntlDateFormatter::format() instead
+ErrorException: Function socket_set_timeout() is deprecated since 8.5, use stream_set_timeout() instead

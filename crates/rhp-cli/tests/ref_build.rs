@@ -10,7 +10,8 @@
 //!
 //! The "linked" section holds the versions of the libraries rhp links
 //! itself. It must match any php 8.5 on the same machine (Homebrew's on the
-//! mac, setup-php's on CI): rhp has to link what php links.
+//! mac, setup-php's on CI): rhp has to link what php links. The ICU and
+//! OpenSSL rows are left out when that php has no intl or openssl under `-n`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,7 +58,7 @@ fn section<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
 
 #[test]
 fn rhp_reports_the_reference_build() {
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
     let script = script();
     let script = script.to_str().unwrap();
@@ -115,7 +116,7 @@ fn rhp_reports_the_reference_build() {
 
 #[test]
 fn rhp_links_what_php_links() {
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
     let rhp = Path::new(env!("CARGO_BIN_EXE_rhp"));
     let script = script();
     let script = script.to_str().unwrap();
@@ -137,9 +138,30 @@ fn rhp_links_what_php_links() {
         eprintln!("php is {minor:?}, not 8.5: no reference; skipping");
         return;
     }
+    let (mut linked_ours, mut linked_theirs) =
+        (section(&ours, "linked"), section(&theirs, "linked"));
+    // A php without intl under -n (built without it, or a shared module that
+    // -n leaves out) has no ICU version to compare.
+    if linked_theirs.contains(&"INTL_ICU_VERSION = '(undefined)'") {
+        eprintln!(
+            "{} -n has no intl: ICU versions not compared",
+            php.display()
+        );
+        linked_ours.retain(|l| !l.starts_with("INTL_"));
+        linked_theirs.retain(|l| !l.starts_with("INTL_"));
+    }
+    // Likewise a php without openssl prints no OpenSSL row.
+    let openssl = "phpinfo[OpenSSL Library Version]";
+    if !linked_theirs.iter().any(|l| l.starts_with(openssl)) {
+        eprintln!(
+            "{} -n has no openssl: OpenSSL version not compared",
+            php.display()
+        );
+        linked_ours.retain(|l| !l.starts_with(openssl));
+    }
     assert_eq!(
-        section(&ours, "linked"),
-        section(&theirs, "linked"),
+        linked_ours,
+        linked_theirs,
         "rhp links other library versions than {}: install the libraries it links \
          (docs/design/libraries.md) and rebuild",
         php.display()
@@ -169,8 +191,8 @@ fn version_banner() {
     let ours = run(rhp, &["-n", "-v", "-r", "echo 1;"]).expect("rhp -v -r");
     assert!(!ours.contains("\n1"), "{ours}");
 
-    let php = PathBuf::from(std::env::var("RHP_PHP").unwrap_or_else(|_| "php".into()));
-    let cgi = PathBuf::from(std::env::var("PHP_CGI").unwrap_or_else(|_| "php-cgi".into()));
+    let php = PathBuf::from(rhp_difftest::php_bin());
+    let cgi = rhp_difftest::php_cgi().unwrap_or_else(|| PathBuf::from("php-cgi"));
     // php-cgi is the same build as php (CI and Homebrew install them together).
     let same_bottle = bottle(&php).is_some_and(|b| bottle(rhp) == Some(b));
     for (bin, args, ours_args) in [

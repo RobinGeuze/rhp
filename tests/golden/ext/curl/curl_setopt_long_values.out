@@ -1,0 +1,9 @@
+Warning: The float 1.0E+20 is not representable as an int, cast occurred
+bool(true)
+Warning: The float NAN is not representable as an int, cast occurred
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+Warning: Object of class stdClass could not be converted to int
+bool(true)

@@ -1,0 +1,33 @@
+ZipArchive
+E8192: Creation of dynamic property ZipArchive::$extra is deprecated
+int(2)
+bool(true)
+bool(false)
+PlainZip
+E8192: Creation of dynamic property PlainZip::$extra is deprecated
+int(2)
+bool(true)
+bool(false)
+AllowZip
+int(2)
+bool(true)
+bool(false)
+DatePeriod
+E8192: Creation of dynamic property DatePeriod::$extra is deprecated
+int(2)
+bool(true)
+bool(false)
+AllowPeriod
+int(2)
+bool(true)
+bool(false)
+XMLReader
+E8192: Creation of dynamic property XMLReader::$extra is deprecated
+int(2)
+bool(true)
+bool(false)
+DOMDocument
+E8192: Creation of dynamic property DOMDocument::$extra is deprecated
+int(2)
+bool(true)
+bool(false)

@@ -1,0 +1,19 @@
+# Goldens whose .out holds facts of the reference build (php 8.5.12, the
+# Homebrew build on macOS) that another build of php 8.5.12 prints
+# differently: its configuration and the versions and features of the
+# libraries it links. `rhp-difftest golden --check --portable` skips them;
+# only the reference build may rewrite them. One fixture name per line (path
+# below tests/golden, no extension). See docs/testing.md.
+#
+# Derived by running every golden under Ubuntu's php 8.5 with CI's library
+# versions (libxml2 2.15, ICU 78, curl 8.18, OpenSSL 3.5) and with Ubuntu
+# 24.04's older ones. Output that depends on the libxml2 release is in
+# live-php tests (tools/rhp-difftest/tests/libxml.rs), not here.
+
+ext/curl/curl_api                    # libcurl version: option and info counts, protocol names
+ext/curl/curl_setopt_checks          # libcurl version and features (HTTP/3, option ranges)
+ext/intl/intl_idn                    # ICU's UTS #46 data
+ext/openssl/openssl_pkey             # OpenSSL's digest list
+ext/pcre/preg_php_pcre_glue          # PCRE2 version (the r modifier needs 10.43)
+stdlib/general/core_build_constants  # phpinfo()'s configuration file path
+stdlib/general/phpinfo_text          # phpinfo()'s configure command

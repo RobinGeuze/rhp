@@ -1,0 +1,20 @@
+Array
+(
+    [0] => alice@example.com
+    [1] => bob@test.org
+)
+users: alice,bob
+Contact: alice@example.com, bob@test.org; phone XXX-XXXX, XXX-XXXX
+Array
+(
+    [0] => a
+    [1] => b
+    [2] => 
+    [3] => c
+    [4] => d
+)
+2 and 4 and 60
+1
+a\.b\*c
+2024/03/15
+world hello

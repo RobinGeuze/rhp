@@ -12,12 +12,20 @@ decisions are folded in and the losing alternatives are noted inline.
 > left below (the §1 crate table and graph, §2.3, §2.5, §4, the §7 migration
 > steps) record the design as planned and executed; §6 and §8 item 10 describe
 > the test setup as it is today.
+>
+> The instruction set and the proto layout have grown since:
+> `crates/rhp-bytecode/src/lib.rs` is the authority. The reserved inline-cache
+> plumbing (`InlineCache`, `caches`, the `cache` operands), the sketched
+> `ProtoFlags`, `DebugInfo.cv_names`, `FnIdx` and the `Refuse` opcode were
+> never used and are gone; `Default` is now `ParamDefault { Const(CIdx),
+> Init }`. The flags that exist now are in §2.6. `eval` and
+> `include`/`require` run (§4 lists them as refused).
 
-Synthesizes: [`isa.md`](./isa.md) (instruction set), [`vm.md`](./vm.md) (VM
-runtime), [`bytecode-prior-art.md`](./bytecode-prior-art.md) (Zend/Lua lessons),
-[`reorg.md`](./reorg.md) (crate layout + migration). Read first and reused
+Synthesizes: [`isa.md`](./history/isa.md) (instruction set), [`vm.md`](./history/vm.md) (VM
+runtime), [`bytecode-prior-art.md`](./history/bytecode-prior-art.md) (Zend/Lua lessons),
+[`reorg.md`](./history/reorg.md) (crate layout + migration). Read first and reused
 verbatim: [`value-model.md`](./value-model.md), [`php-semantics.md`](./php-semantics.md),
-[`ast-surface.md`](./ast-surface.md), and the already-built crates below.
+[`ast-surface.md`](./history/ast-surface.md), and the already-built crates below.
 
 Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
@@ -30,6 +38,20 @@ construct nodes and via `is_refused()` for function names (§4). `eval` is
 ---
 
 ## 1. Crate layout and the ops/conv/Thrown decision
+
+> **Today.** The operators are `rhp_values::ops` (rhp-semantics is gone),
+> parsing is `rhp_compiler::parse` (rhp-frontend is gone) and the oracle is
+> gone: the engine crates are values, bytecode, compiler, builtins, vm,
+> sapi and cli, plus rhp-csrc and rhp-mbfl-sys for vendored C. The README
+> has the table and the graph. rhp-bytecode also holds php's stub
+> signatures (`rhp_bytecode::signatures`), which the compiler, the VM and
+> the builtins read. The compiler does not depend on rhp-builtins:
+> `rhp_sapi::compile_file` passes it a `rhp_compiler::Builtins` (the
+> prelude source, which native functions exist, the values of builtin
+> constants for compile-time evaluation, the request's working directory
+> for `__DIR__` of code without a file), so the two build in parallel.
+> rhp-builtins owns all of the PHP prelude (`core_prelude.php` and each
+> module's `prelude.php`). §1.1 to §1.3 are the plan as it was made.
 
 ### 1.1 Decision (one coherent answer, justified)
 
@@ -99,7 +121,7 @@ each other — only `rhp-cli` knits them.
 ### 1.4 Reused verbatim (confirmed signatures — do not reimplement)
 
 ```rust
-// rhp-semantics::ops  (moved from rhp-runtime/src/ops.rs, Thrown path rewritten)
+// rhp_values::ops  (was rhp-semantics::ops; first moved from rhp-runtime/src/ops.rs)
 pub fn add/sub/mul/div/modulo/pow(a: &Value, b: &Value) -> Result<Value, Thrown>;
 pub fn negate(a: &Value) -> Result<Value, Thrown>;
 pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value;   // BitOp::{And,Or,Xor,Shl,Shr}
@@ -119,7 +141,7 @@ fmt::{float_echo (precision-14), float_serialize (serialize_precision -1)}
 pub enum Thrown { Error{class:&'static str, message:String}, Unsupported{feature:String, reason:&'static str}, Exit(i32) }  // (def'n now in rhp-values)
 pub trait Host { fn write_out(&mut self, bytes: &[u8]); }
 pub type NativeFn = fn(&mut dyn Host, &[Value]) -> Result<Value, Thrown>;
-pub struct Builtin { /* func: NativeFn, min_args, max_args, by_ref flags, ... */ }
+pub struct Builtin { /* name, func: NativeFn, min_args, max_args (from the stub signatures) */ }
 pub fn registry() -> &'static HashMap<&'static str, Builtin>;
 pub fn lookup(name: &str) -> Option<&'static Builtin>;
 pub fn constants() -> Vec<(&'static str, Value)>;
@@ -350,6 +372,14 @@ BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot
 **Calls / return (phase 5)** — positional args evaluated into a contiguous temp
 window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`
 straight to `NativeFn`. `cache` reserved for monomorphic function-resolution ICs.
+(Now: a builtin's arity and by-ref positions come from php's stubs
+(`rhp_bytecode::signatures`), and before the call `crates/rhp-vm/src/zpp.rs`
+parses its stub-typed scalar and array arguments as zpp does, in the caller's
+`strict_types` mode, so the body gets coerced values. `gen signatures` also
+reads each function's C body for the parameters php parses as any value, a
+resource or an open stream, so the VM checks those too and parses the
+scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
+before any of this, from the stub's `since` and `message`.)
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
@@ -394,6 +424,10 @@ calling convention; omitted here.
 
 ### 2.5 Inline caches, constants, names
 
+(Not built: there are no inline caches. Method and property lookups probe
+the flattened class table's hash maps; see the note at the top. Calls by
+name have a per-VM resolution cache instead, §2.6.)
+
 - `caches: Vec<InlineCache>` is a Zend-style **side** table (not interleaved),
   `Cell`-based (single-threaded ⇒ no atomics), **monomorphic to start**, guarded
   by `ClassId` (u32) compare. Reserve the `cache` field on `CallUser`/`CallByName`
@@ -407,9 +441,65 @@ calling convention; omitted here.
   builtin table lowercases). Engine constants come from `builtins::constants()`
   at link time; `FetchConst` consults the engine/user constant table, not `consts`.
 
+### 2.6 Compile-time flags and call resolution
+
+What the VM needs to know about code it runs is decided when it is
+compiled, not guessed from debug info:
+
+- `FunctionProto::flags` (`ProtoFlags`). `INTERNAL` marks every proto
+  compiled from the prelude (and the VM's own `[internal function]`
+  `{main}`). php runs internal code without a user frame, so the VM skips
+  such frames when it reports an error's file and line or a caller's
+  `strict_types`, and words their argument errors like an internal
+  function's. `SHUTDOWN_SCOPE` is set only by the VM, on the copy of the
+  finished script's `{main}` that holds the globals while shutdown
+  callbacks run; it is no user frame either (`Vm::is_internal_frame`).
+- `Call` carries `CallFlags`, php's compile-time decisions for a call
+  that reaches a builtin: `INLINE` (zend_try_compile_special_func: no
+  trace frame), `ICALL` (php 8.4 frameless internal calls) and `USER_CALL`
+  (`call_user_func[_array]` compiled to ZEND_INIT_USER_CALL). The compiler
+  sets them from the call's name and argument count: `INLINE` and
+  `USER_CALL` only for a name resolved at compile time (no namespace
+  fallback), `ICALL` also for a namespaced call that falls back to the
+  builtin. `CallV` (an unpacked or named argument) has none: php compiles
+  such a call as a plain internal call.
+
+A call by name is resolved once per call site and request, like php's
+run-time cache slots: `Vm::call_sites` maps (proto address, pc) to the user
+function or the builtin with its stub signature, so a repeated call does
+no lowercasing, lookups or `is_refused` check. The cache is per VM, never
+in the proto, so a program opcache shares between requests stays as
+compiled, and it is not counted in `memory_get_usage()` (php allocates an
+op_array's run-time cache in one piece, so reaching a new call site does
+not move the number). Each entry holds a `Weak` to its proto, which keeps
+the address from being reused while the entry exists. An include's or eval's `{main}`
+is not cached: it is usually freed when it returns. An entry that a later
+function declaration could change (a namespaced call that fell back to the
+global name, or a builtin, since rhp still lets a declaration take a
+builtin's name) records `Vm::fn_gen` and is resolved again after a
+declaration; php would keep the first result.
+
+The engine's helpers behind the prelude classes are builtins named `__…`
+(`calls::is_helper_function`). php has no such functions, so a direct call
+from prelude code reaches them and nothing else does: user calls,
+callables, first-class callables, `function_exists`, `is_callable`,
+`get_defined_functions` and Reflection all treat them as undefined, and a
+user function may take such a name. A first-class callable of such a name
+is looked up when it is made, as in php: in a namespace `MakeFcc` carries
+the namespaced name, which is tried first and named in the error.
+
 ---
 
 ## 3. The VM (`rhp-vm`)
+
+> **Source layout (2026-11).** `crates/rhp-vm/src/lib.rs` holds the `Vm`
+> struct and `Frame`; the rest is split by concern: `dispatch` (the run loop,
+> one `match` over `Instr`), `calls`, `props`, `types`, `lvalue`,
+> `generators`, `include`, `errors` (diagnostics, traces, unwinding),
+> `lifecycle` (`Vm::new`, globals, shutdown), `host` (the `Host` impl) and
+> `streams` (the `StreamTable`), beside `classes`, `compare`, `output`,
+> `request`, `reflect`, `memory` and `opcache`. The sketches below predate it;
+> §3.6 and §3.7 are current.
 
 ### 3.1 Vm struct
 
@@ -589,6 +679,84 @@ control flow wins) — the finally body replaces the top `pending` before
 path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
 `Frame::pending`: `FinallyEnd` *is* FAST_RET; the entry jump *is* FAST_CALL.)
 
+### 3.6 Units: one copy of the bytecode
+
+The VM never copies or patches a proto after compile: a `Program` the
+compiled-script cache keeps runs as it is in every request. Three
+instructions name things by a *file-local* index: `MakeClosure` and
+`DeclareFunc` (the file's `Program::closures`) and `DeclareClass` (its class
+declarations). Each install of a program (the main script, which is unit
+0, every `include`/`require`, every `eval`) appends its closures and class
+declarations to the VM's flat tables (`Vm::closures`, `Vm::decl_classes`)
+and records where they start in a `UnitBase` in `Vm::units`. A frame
+carries its unit, and those three instructions add the unit's base to
+their operand. A program loaded right after one that added nothing to
+either table has the same base, so it shares that unit: a file without
+closures or classes included in a loop does not grow `Vm::units`.
+
+Whatever can start a frame records its unit beside its proto: the function
+and closure tables and the class initializer thunks hold a `UnitFn`, a
+`ResolvedMethod` has `unit` (a trait method keeps the trait's), and so do
+declaration slots and `ClassEntry`s. Nested thunks (parameter defaults,
+attribute arguments) run in their owner's unit; for a trait's property or
+constant that is the trait's. Function statics are keyed by (proto, unit,
+class, name), so a closure from a file included twice keeps two sets, as
+two compiles would. An include's or eval's `{main}` keeps its statics only
+while it runs (`Vm::include_statics`, keyed by stack index), since php
+starts them fresh on every load; so a unit shared by two loads never mixes
+their statics, and the protos keyed in `Vm::statics` (functions, closures,
+methods) all stay alive until the request ends.
+
+`run_frames` takes the running frame's proto (an `Rc` clone) only when a
+call or a return changes the top frame, not per instruction.
+
+### 3.7 Sharing compiled code across threads (design notes)
+
+Each thread compiles and caches its own programs (opcache's cache and the
+compiler's prelude cache, keyed on the prelude source, are `thread_local!`)
+because compiled code holds
+`Rc`s. Since the VM no longer writes into protos (§3.6), what is left for
+sharing one `Program` between threads is in the data types:
+
+- **Proto links.** `Program`, `MethodProto`, `PropDefaultProto::Init`,
+  `ConstInitProto::Thunk` and `ParamInfo::default_thunk` hold
+  `Rc<FunctionProto>` / `Rc<ClassProto>`; they become `Arc`. The VM clones
+  these handles when it installs or links (function, closure and method
+  tables, `ClassEntry::proto`), which stays cheap. `Frame::proto` would make
+  every call and return an atomic increment and decrement; a frame could
+  borrow the proto instead, kept alive by an `Arc<Program>` held by its
+  unit.
+- **Constants and names.** `FunctionProto::consts` is a `Vec<Value>`, and
+  `names`, `cv_var_names`, `superglobals`, `debug.file`, the class protos'
+  names, `TypeHint`, `DeclMeta` and attribute arguments hold `PhpStr`
+  (constant arrays hold `PhpArray`): non-atomic `Rc`s, so not `Send`.
+  `LoadConst` clones a constant into the frame, which writes its
+  refcount. Either a shared pool gets a `Send` representation that each
+  thread turns into `Value`s on first use (memory per thread, a lookup per
+  proto), or strings and arrays get php's immutable flag
+  (`GC_IMMUTABLE`): clone and drop skip the counter of an immutable value,
+  so a shared one is never written. The second keeps `LoadConst` a plain
+  clone but adds a branch to every `PhpStr`/`PhpArray` clone and drop;
+  measure it on the benchmarks first.
+- **`Program::compile_diags_reported`** is a `Cell<bool>`; it becomes an
+  atomic.
+- **Caches.** opcache's `Cache` and the compiler's `PRELUDE_CACHE` move
+  from `thread_local!` behind a process-wide lock (only the `opcache`
+  module touches the cache). Preloading can then run once per process; its
+  declarations are still linked into each request's VM. The linked prelude
+  classes `Vm::install_prelude` copies into each request are VM state, so
+  they stay per thread.
+- **Memory accounting.** The counters are per thread and a block freed on
+  another thread is charged there, so shared programs are built and freed
+  inside `rhp_values::mem::uncounted`, as the cache already does.
+- **What stays per VM.** Units, the function, closure and declaration
+  tables, linked `ClassEntry`s (static properties, lazily evaluated
+  constants, enum case objects), statics, the call-site cache (§2.6) and
+  everything else a request changes. None of it needs to be `Send`.
+
+The model stays one VM per thread with plain `Rc` (sapi.md, *Threading
+model*); `Arc` comes later, behind a flag, once measured.
+
 ---
 
 ## 4. Refusals in the new pipeline (structural, in `rhp-compiler`)
@@ -685,18 +853,21 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
 > The VM went on to hold every golden by itself, and the oracle was removed
 > (2026-11). This section describes the harness as it is now.
 
-- **Goldens** (`tests/golden/NAME.php` + `NAME.out`). `NAME.out` is the exact
+- **Goldens** (`tests/golden/**/NAME.php` + `NAME.out`). `NAME.out` is the exact
   stdout the reference `php` printed for the fixture.
   `crates/rhp-cli/tests/diff.rs` (`vm_matches_php_baseline`) compiles every
   fixture, runs it on the VM the way the CLI does (include/eval via the CLI
   includer; `run_main`'s uncaught-throwable report, shutdown functions and
   output flush), and requires byte-identical output. It needs no `php` binary,
   so it also runs in the "test (no php)" CI job.
+- **CLI fixtures** (`tests/cli`, `crates/rhp-cli/tests/cli.rs`): the built
+  `rhp` against php's committed stdout, stderr and exit status for argv,
+  stdin, `-d`/`-r`, uncaught errors and `fork`.
 - **Live php diffs.** The built `rhp` and a real `php` / `php-cgi` run the same
-  input and their outputs are compared byte for byte: the `rhp-cli` tests that
-  shell out (argv, stdin, multi-file includes, exit codes, CGI; they skip when
-  no `php` is on `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with
-  its known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
+  input and their outputs are compared byte for byte: rhp-cli's live tests
+  (CGI fixtures, memory_limit, intl, phar; they skip when no `php` is on
+  `PATH`), and `rhp-difftest` (the php-src `.phpt` corpus with its
+  known-passing ratchet in `tests/phpt/`, fixture apps, extension sweeps).
 - **Refusals** have no php output to compare against, so their tests
   (`crates/rhp-cli/tests/unsupported.rs`) assert the `RHP_UNSUPPORTED` marker
   instead.
@@ -789,7 +960,7 @@ unaffected); 5–10 build the VM path and wire the runner.
    one explicit terminator per basic block. Never bury an opcode's semantics in
    the loop such that a helper can't be extracted — the JIT calls the same
    `ops::`/`NativeFn` on cold paths.
-10. **The goldens are the regression net.** Every `tests/golden/*.out` is php's
+10. **The goldens are the regression net.** Every `tests/golden/**/*.out` is php's
     own output, and the VM is held to all of them without needing the `php`
     binary (§6), so a VM regression fails CI even where no php is installed.
     Keep every golden green, and add a fixture alongside each fix.

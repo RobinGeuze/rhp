@@ -1,0 +1,41 @@
+{"name":"test","values":[1,2,3],"nested":{"a":true,"b":null,"c":3.14},"unicode":"caf\u00e9","empty":[]}
+{
+    "name": "test",
+    "values": [
+        1,
+        2,
+        3
+    ],
+    "nested": {
+        "a": true,
+        "b": null,
+        "c": 3.14
+    },
+    "unicode": "caf\u00e9",
+    "empty": []
+}
+Array
+(
+    [x] => 1
+    [y] => Array
+        (
+            [0] => 1
+            [1] => 
+            [2] => 
+        )
+
+    [z] => hi
+)
+int(123)
+string(6) "string"
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  float(2.5)
+  [2]=>
+  bool(true)
+}
+3
+{"slash":"a\/b","quote":"he said \"hi\""}
+[1,2.5,100]

@@ -1,0 +1,25 @@
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+int(2)
+bool(true)
+bool(true)
+string(5) "alpha"
+string(4) "beta"
+string(4) "beta"
+[8192] Function zip_open() is deprecated since 8.0, use ZipArchive::open() instead
+bool(true)
+[8192] Function zip_close() is deprecated since 8.0, use ZipArchive::close() instead
+bool(true)
+string(7) "gzipped"
+string(7) "gzipped"
+zzint(2)
+int(2)
+
+string(7) "bzipped"
+string(7) "bzipped"
+bool(true)
+bool(true)

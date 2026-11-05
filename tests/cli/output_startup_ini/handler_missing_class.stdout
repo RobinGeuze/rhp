@@ -1,0 +1,7 @@
+
+Warning: PHP Request Startup: class "NoSuchClass" not found in Unknown on line 0
+abc
+string(1) "0"
+int(0)
+array(0) {
+}

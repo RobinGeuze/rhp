@@ -1,0 +1,19 @@
+array(6) {
+  ["a"]=>
+  string(2) "-1"
+  ["b"]=>
+  string(1) "0"
+  ["c"]=>
+  string(1) "1"
+  ["d"]=>
+  string(11) "-2147483648"
+  ["e"]=>
+  string(1) "1"
+  ["f"]=>
+  string(1) "0"
+}
+int(-1)
+int(0)
+int(2)
+int(8)
+int(8)

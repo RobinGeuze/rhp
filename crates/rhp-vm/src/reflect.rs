@@ -11,9 +11,9 @@ use rhp_bytecode::{AttributeProto, ConstInitProto, DeclMeta, FunctionProto, Type
 use rhp_values::{ArrayKey, ClassId, ClassKind, PhpArray, PhpStr, Thrown, Value, Visibility};
 
 use crate::classes::ResolvedMethod;
-use crate::{deref, Vm};
+use crate::{deref, UnitFn, UnitId, Vm};
 
-use rhp_builtins::signatures::{self as sigs, Signature};
+use rhp_bytecode::signatures::{self as sigs, Signature};
 
 fn put(a: &mut PhpArray, k: &str, v: Value) {
     a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
@@ -61,8 +61,8 @@ pub(crate) const T_PARAMETER: i64 = 32;
 /// A resolved function-like reflection subject.
 #[derive(Clone)]
 enum FnSubject {
-    /// A user (or prelude) function by proto.
-    Func(Rc<FunctionProto>),
+    /// A user (or prelude) function.
+    Func(UnitFn),
     /// A builtin (native) function.
     Builtin(&'static str),
     /// A method, as found on `class` (the reflected class).
@@ -121,7 +121,7 @@ impl Vm {
                 let internal = self.is_internal_class(cid);
                 let mut out = PhpArray::new();
                 for m in self.classes[cid as usize].methods.values() {
-                    if internal && crate::is_engine_helper_name(m.proto.name.as_bytes()) {
+                    if internal && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) {
                         continue;
                     }
                     if m.visibility == Visibility::Private && m.defining_class != cid {
@@ -234,7 +234,7 @@ impl Vm {
             b"attr_args" => self.attr_args(args),
             b"deprecated" => {
                 let msg = arg_bytes(args, 0);
-                self.raise_error(8192, &String::from_utf8_lossy(&msg));
+                self.raise_error(rhp_builtins::E_DEPRECATED, &msg);
                 match self.pending_throw.take() {
                     Some(t) => Err(t),
                     None => Ok(Value::Null),
@@ -270,18 +270,16 @@ impl Vm {
                 Ok(Value::Array(out))
             }
             b"functions" => {
-                let mut internal: Vec<Vec<u8>> = rhp_builtins::registry()
-                    .keys()
-                    .filter(|n| crate::user_visible_builtin(n.as_bytes()))
+                let mut internal: Vec<Vec<u8>> = rhp_builtins::functions()
+                    .map(|b| b.name)
+                    .filter(|n| crate::calls::user_visible_builtin(n.as_bytes()))
                     .map(|n| n.as_bytes().to_ascii_lowercase())
                     .collect();
                 let mut user = PhpArray::new();
                 for f in &self.functions {
-                    let name = lc(f.name.as_bytes());
-                    if f.debug.file.is_empty() {
-                        if !name.starts_with(b"__") {
-                            internal.push(name);
-                        }
+                    let name = lc(f.proto.name.as_bytes());
+                    if f.proto.is_internal() {
+                        internal.push(name);
                     } else {
                         user.push(s(&name));
                     }
@@ -303,11 +301,9 @@ impl Vm {
                 // code or a script read from stdin).
                 let main = self.main_script_path.clone().or_else(|| {
                     let f = self.stack.first()?.proto.debug.file.as_bytes();
-                    std::path::Path::new(
-                        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(f),
-                    )
-                    .is_file()
-                    .then(|| f.to_vec())
+                    rhp_builtins::zend::virtual_cwd::os_path(f)
+                        .is_file()
+                        .then(|| f.to_vec())
                 });
                 if let Some(m) = &main {
                     out.push(s(m));
@@ -417,7 +413,7 @@ impl Vm {
                         let called = this.as_ref().map(|h| h.borrow().class).unwrap_or(class);
                         self.method_closure(&m, this, called)
                     }
-                    Some(FnSubject::Func(p)) => self.fcc_value(Value::Str(p.name.clone())),
+                    Some(FnSubject::Func(f)) => self.fcc_value(Value::Str(f.proto.name.clone())),
                     Some(FnSubject::EnumBuiltin { class, name }) => {
                         let mut a = PhpArray::new();
                         a.push(Value::Str(self.classes[class as usize].name.clone()));
@@ -515,13 +511,14 @@ impl Vm {
             put(&mut a, "end", Value::Bool(false));
             put(&mut a, "doc", Value::Bool(false));
         } else {
-            put(&mut a, "file", Value::Str(p.file.clone()));
+            put(&mut a, "file", Value::Str(p.decl_file.clone()));
             put(&mut a, "start", Value::Int(p.meta.start_line as i64));
             put(&mut a, "end", Value::Int(p.meta.end_line as i64));
             put(&mut a, "doc", opt_str(&p.meta.doc_comment));
         }
         let anon = full.windows(10).any(|w| w == b"@anonymous");
         put(&mut a, "anon", Value::Bool(anon));
+        put(&mut a, "create_object", Value::Bool(e.create_object));
         // php: ZEND_ACC_EXPLICIT_ABSTRACT_CLASS (64) for `abstract class`,
         // ZEND_ACC_IMPLICIT_ABSTRACT_CLASS (16) for a class with abstract
         // methods / an interface / a trait; final 32; readonly 65536.
@@ -633,7 +630,7 @@ impl Vm {
                 continue;
             }
             if self.is_internal_class(m.defining_class)
-                && crate::is_engine_helper_name(m.proto.name.as_bytes())
+                && crate::calls::is_engine_helper_name(m.proto.name.as_bytes())
             {
                 continue; // engine-internal helper of a prelude class
             }
@@ -743,18 +740,20 @@ impl Vm {
     }
 
     /// Find the compiled declaration of property `name` of class `cid`
-    /// (searching its traits for a trait-imported one).
-    fn find_prop_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, bool)> {
+    /// (searching its traits for a trait-imported one). The last field is
+    /// the class or trait that declares it.
+    fn find_prop_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, bool, ClassId)> {
         let p = &self.classes[cid as usize].proto;
         if let Some(pp) = p.props.iter().find(|pp| pp.name.as_bytes() == name) {
             return Some((
                 pp.meta.clone(),
                 pp.promoted,
                 !matches!(pp.default, rhp_bytecode::PropDefaultProto::None),
+                cid,
             ));
         }
         if let Some(sp) = p.static_props.iter().find(|sp| sp.name.as_bytes() == name) {
-            return Some((sp.meta.clone(), false, sp.has_default));
+            return Some((sp.meta.clone(), false, sp.has_default, cid));
         }
         for &t in &self.classes[cid as usize].traits {
             if let Some(r) = self.find_prop_meta(t, name) {
@@ -764,13 +763,14 @@ impl Vm {
         None
     }
 
-    fn find_const_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool)> {
+    /// [`Vm::find_prop_meta`] for a class constant or enum case.
+    fn find_const_meta(&self, cid: ClassId, name: &[u8]) -> Option<(DeclMeta, bool, ClassId)> {
         let p = &self.classes[cid as usize].proto;
         if let Some(c) = p.constants.iter().find(|c| c.name.as_bytes() == name) {
-            return Some((c.meta.clone(), c.is_final));
+            return Some((c.meta.clone(), c.is_final, cid));
         }
         if let Some(c) = p.enum_cases.iter().find(|c| c.name.as_bytes() == name) {
-            return Some((c.meta.clone(), false));
+            return Some((c.meta.clone(), false, cid));
         }
         for &t in &self.classes[cid as usize].traits {
             if let Some(r) = self.find_const_meta(t, name) {
@@ -819,7 +819,7 @@ impl Vm {
         if vis == Visibility::Private && decl != cid {
             return Value::Null;
         }
-        let (meta, promoted, has_default_decl) =
+        let (meta, promoted, has_default_decl, _) =
             self.find_prop_meta(decl, name).unwrap_or_default();
         let internal = self.is_internal_class(decl);
         let mut a = PhpArray::new();
@@ -926,7 +926,7 @@ impl Vm {
             .get(name)
             .map(|c| c.value.clone())
             .unwrap_or(Value::Null);
-        let (meta, is_final) = self.find_const_meta(decl, name).unwrap_or_default();
+        let (meta, is_final, _) = self.find_const_meta(decl, name).unwrap_or_default();
         let is_case = self.classes[decl as usize]
             .proto
             .enum_cases
@@ -1015,7 +1015,7 @@ impl Vm {
                     let uninit = sp.ty.is_some()
                         && !self
                             .find_prop_meta(sp.declaring_class, name.as_bytes())
-                            .is_some_and(|(_, _, has)| has);
+                            .is_some_and(|(_, _, has, _)| has);
                     if uninit && !vars {
                         continue;
                     }
@@ -1092,8 +1092,8 @@ impl Vm {
         }
         let kind = rhp_values::conv::to_string_bytes(&k[0]);
         let idx_of = |v: &Value| rhp_values::conv::to_int(v) as usize;
-        // (attribute, scope class)
-        let found: Option<(AttributeProto, Option<ClassId>)> = match kind.as_slice() {
+        // (attribute, scope class, unit)
+        let found: Option<(AttributeProto, Option<ClassId>, UnitId)> = match kind.as_slice() {
             b"class" => {
                 let cid = self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(&k[1]))?;
                 self.classes[cid as usize]
@@ -1102,18 +1102,21 @@ impl Vm {
                     .attributes
                     .get(idx_of(&k[2]))
                     .cloned()
-                    .map(|a| (a, Some(cid)))
+                    .map(|a| (a, Some(cid), self.classes[cid as usize].unit))
             }
             b"prop" | b"const" => {
                 let cid = self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(&k[1]))?;
                 let name = rhp_values::conv::to_string_bytes(&k[2]);
+                // A trait member's thunks run in the trait's unit.
                 let meta = if kind == b"prop" {
-                    self.find_prop_meta(cid, &name).map(|m| m.0)
+                    self.find_prop_meta(cid, &name).map(|m| (m.0, m.3))
                 } else {
-                    self.find_const_meta(cid, &name).map(|m| m.0)
+                    self.find_const_meta(cid, &name).map(|m| (m.0, m.2))
                 };
-                meta.and_then(|m| m.attributes.get(idx_of(&k[3])).cloned())
-                    .map(|a| (a, Some(cid)))
+                meta.and_then(|(m, owner)| {
+                    let a = m.attributes.get(idx_of(&k[3])).cloned()?;
+                    Some((a, Some(cid), self.classes[owner as usize].unit))
+                })
             }
             b"fn" | b"param" => {
                 let sub = self.fn_subject(&k[1])?;
@@ -1122,6 +1125,7 @@ impl Vm {
                     Some(FnSubject::Closure { cd, .. }) => cd.bound_class,
                     _ => None,
                 };
+                let unit = sub.as_ref().map_or(0, |s| self.subject_unit(s));
                 let proto = sub.as_ref().and_then(|s| self.subject_proto(s));
                 proto
                     .and_then(|p| {
@@ -1133,18 +1137,19 @@ impl Vm {
                                 .and_then(|pi| pi.attributes.get(idx_of(&k[3])).cloned())
                         }
                     })
-                    .map(|a| (a, scope))
+                    .map(|a| (a, scope, unit))
             }
             _ => None,
         };
-        let Some((at, scope)) = found else {
+        let Some((at, scope, unit)) = found else {
             return Ok(Value::Array(PhpArray::new()));
         };
         match at.args {
             None => Ok(Value::Array(PhpArray::new())),
             Some(ConstInitProto::Const(v)) => Ok(v),
-            Some(ConstInitProto::Thunk(t)) => {
-                self.run_proto_sync(t, None, scope, scope, Vec::new(), None)
+            Some(ConstInitProto::Thunk(proto)) => {
+                let f = UnitFn { proto, unit };
+                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
             }
         }
     }
@@ -1158,28 +1163,26 @@ impl Vm {
                 let name = name.strip_prefix(b"\\").unwrap_or(name);
                 if let Some(&i) = self.fn_names.get(&lc(name)) {
                     Some(FnSubject::Func(self.functions[i].clone()))
-                } else if crate::user_visible_builtin(name) {
-                    rhp_builtins::registry()
-                        .get_key_value(String::from_utf8_lossy(&lc(name)).as_ref())
-                        .map(|(k, _)| FnSubject::Builtin(k))
+                } else if crate::calls::user_visible_builtin(name) {
+                    rhp_builtins::lookup_lc(String::from_utf8_lossy(&lc(name)).as_ref())
+                        .map(|b| FnSubject::Builtin(b.name))
                 } else {
                     None
                 }
             }
-            Value::Closure(cd) => {
-                match &cd.wrapped {
-                    Some(w) => {
-                        let w = (**w).clone();
-                        self.fn_subject(&w)?
-                    }
-                    None => self.closures.get(cd.fnidx as usize).cloned().map(|proto| {
-                        FnSubject::Closure {
-                            cd: cd.clone(),
-                            proto,
-                        }
-                    }),
+            Value::Closure(cd) => match &cd.wrapped {
+                Some(w) => {
+                    let w = (**w).clone();
+                    self.fn_subject(&w)?
                 }
-            }
+                None => self
+                    .closures
+                    .get(cd.fnidx as usize)
+                    .map(|f| FnSubject::Closure {
+                        cd: cd.clone(),
+                        proto: f.proto.clone(),
+                    }),
+            },
             Value::Array(a) => {
                 let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
                 if v.len() != 2 {
@@ -1201,7 +1204,7 @@ impl Vm {
                     // user-visible method.
                     Some(m)
                         if self.is_internal_class(m.defining_class)
-                            && crate::is_engine_helper_name(m.proto.name.as_bytes()) =>
+                            && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) =>
                     {
                         None
                     }
@@ -1219,10 +1222,21 @@ impl Vm {
 
     fn subject_proto(&self, sub: &FnSubject) -> Option<Rc<FunctionProto>> {
         match sub {
-            FnSubject::Func(p) => Some(p.clone()),
+            FnSubject::Func(f) => Some(f.proto.clone()),
             FnSubject::Method { m, .. } => Some(m.proto.clone()),
             FnSubject::Closure { proto, .. } => Some(proto.clone()),
             FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => None,
+        }
+    }
+
+    /// The unit a user function's nested thunks (parameter defaults,
+    /// attribute arguments) run in.
+    fn subject_unit(&self, sub: &FnSubject) -> UnitId {
+        match sub {
+            FnSubject::Func(f) => f.unit,
+            FnSubject::Method { m, .. } => m.unit,
+            FnSubject::Closure { cd, .. } => self.closures[cd.fnidx as usize].unit,
+            FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => 0,
         }
     }
 
@@ -1231,8 +1245,8 @@ impl Vm {
     fn subject_stub_sig(&self, sub: &FnSubject) -> Option<StubSig> {
         match sub {
             FnSubject::Builtin(name) => sigs::function(name.as_bytes()).map(StubSig::of_fn),
-            FnSubject::Func(p) if p.debug.file.is_empty() => {
-                sigs::function(p.name.as_bytes()).map(StubSig::of_fn)
+            FnSubject::Func(f) if f.proto.is_internal() => {
+                sigs::function(f.proto.name.as_bytes()).map(StubSig::of_fn)
             }
             FnSubject::Method { m, .. } if self.is_internal_class(m.defining_class) => {
                 sigs::method(
@@ -1287,7 +1301,7 @@ impl Vm {
             return Ok(Value::Null);
         };
         match &p.default {
-            Some(rhp_bytecode::Default::Const(k)) => Ok(proto.consts[*k as usize].clone()),
+            Some(rhp_bytecode::ParamDefault::Const(k)) => Ok(proto.consts[*k as usize].clone()),
             _ => match &p.default_thunk {
                 Some(t) => {
                     let scope = match sub {
@@ -1295,7 +1309,11 @@ impl Vm {
                         FnSubject::Closure { cd, .. } => cd.bound_class,
                         _ => None,
                     };
-                    self.run_proto_sync(t.clone(), None, scope, scope, Vec::new(), None)
+                    let f = UnitFn {
+                        proto: t.clone(),
+                        unit: self.subject_unit(sub),
+                    };
+                    self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
                 }
                 None => Ok(Value::Null),
             },
@@ -1307,7 +1325,7 @@ impl Vm {
         let (proto, internal) = match sub {
             FnSubject::Builtin(name) => return self.builtin_fn_info(name),
             FnSubject::EnumBuiltin { class, name } => return self.enum_builtin_info(*class, name),
-            FnSubject::Func(p) => (p.clone(), p.debug.file.is_empty()),
+            FnSubject::Func(f) => (f.proto.clone(), f.proto.is_internal()),
             FnSubject::Method { m, .. } => {
                 (m.proto.clone(), self.is_internal_class(m.defining_class))
             }
@@ -1605,7 +1623,7 @@ impl Vm {
                         // nullable.
                         let implicit_null = matches!(
                             &p.default,
-                            Some(rhp_bytecode::Default::Const(k))
+                            Some(rhp_bytecode::ParamDefault::Const(k))
                                 if matches!(proto.consts[*k as usize], Value::Null)
                         );
                         if implicit_null && !t.nullable {
@@ -1656,7 +1674,7 @@ impl Vm {
     /// A value that `fn_subject` resolves back to `sub`.
     fn subject_locator(&self, sub: &FnSubject) -> Value {
         match sub {
-            FnSubject::Func(p) => Value::Str(p.name.clone()),
+            FnSubject::Func(f) => Value::Str(f.proto.name.clone()),
             FnSubject::Builtin(n) => s(n.as_bytes()),
             FnSubject::EnumBuiltin { class, name } => {
                 let mut a = PhpArray::new();
@@ -1781,14 +1799,11 @@ impl Vm {
 
     /// A native builtin's descriptor, from its stub row when there is one.
     fn builtin_fn_info(&self, name: &'static str) -> Value {
-        let b = rhp_builtins::registry().get(name);
+        let b = rhp_builtins::lookup_lc(name);
         let sig = sigs::function(name.as_bytes());
         let mut a = PhpArray::new();
-        put(
-            &mut a,
-            "ext",
-            s(sig.map_or("standard", |f| f.ext).as_bytes()),
-        );
+        let ext = rhp_builtins::sapi_function_module(name).or(sig.map(|f| f.ext));
+        put(&mut a, "ext", s(ext.unwrap_or("standard").as_bytes()));
         put(&mut a, "name", s(sig.map_or(name, |f| f.name).as_bytes()));
         if let Some(f) = sig {
             put(&mut a, "short", s(name.as_bytes()));

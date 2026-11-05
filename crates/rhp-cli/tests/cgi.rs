@@ -1,7 +1,9 @@
 //! Differential test of `rhp --cgi` against php-cgi: every `tests/cgi/*.php`
 //! fixture runs under both with the same environment, ini settings, argv and
 //! stdin, and stdout, stderr and the exit status must match byte for byte.
-//! Skipped when php-cgi is not installed (`PHP_CGI` overrides the path).
+//! Skipped when there is no php-cgi (`rhp_difftest::php_cgi`: `RHP_PHP_CGI`
+//! names it). It must be the real binary, not CI's `-n` shim: the shim's
+//! extra `-d extension=…` arguments change php-cgi's option parsing.
 //!
 //! An optional `NAME.cgi` next to `NAME.php` describes the request, one
 //! directive per line (`{SCRIPT}` / `{DIR}` expand to the fixture's absolute
@@ -18,30 +20,10 @@
 //!   argument after the options.
 //! - `cwd DIR`: the directory both binaries start in.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-fn php_cgi() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("PHP_CGI") {
-        return Some(PathBuf::from(p));
-    }
-    for dir in std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .chain([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/bin"),
-        ])
-    {
-        let c = dir.join("php-cgi");
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
-}
+use rhp_difftest::{php_cgi, replace_bytes, spawn, Ran};
 
 #[derive(Default)]
 struct Spec {
@@ -108,28 +90,7 @@ fn spec(php: &Path) -> Spec {
     s
 }
 
-fn replace(hay: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(hay.len());
-    let mut i = 0;
-    while i < hay.len() {
-        if hay[i..].starts_with(from) {
-            out.extend_from_slice(to);
-            i += from.len();
-        } else {
-            out.push(hay[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-struct Run {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    status: Option<i32>,
-}
-
-fn run(bin: &Path, pre: &[&str], s: &Spec) -> Run {
+fn run(bin: &Path, pre: &[&str], s: &Spec) -> Ran {
     let mut cmd = Command::new(bin);
     cmd.env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -148,24 +109,7 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Run {
     for (k, v) in &s.env {
         cmd.env(k, v);
     }
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
-    let mut stdin = child.stdin.take().unwrap();
-    let body = s.stdin.clone();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&body);
-    });
-    let out = child.wait_with_output().expect("wait");
-    let _ = writer.join();
-    Run {
-        stdout: out.stdout,
-        stderr: out.stderr,
-        status: out.status.code(),
-    }
+    spawn(&mut cmd, Some(&s.stdin)).unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()))
 }
 
 /// The `X.Y.Z` version php-cgi reports for `-n -v` (`PHP 8.5.12 (cgi-fcgi) …`).
@@ -237,7 +181,7 @@ fn cgi_matches_php_cgi() {
         let s = spec(f);
         let mut want = run(&php, &[], &s);
         if their_powered != our_powered {
-            want.stdout = replace(&want.stdout, &their_powered, &our_powered);
+            want.stdout = replace_bytes(&want.stdout, &their_powered, &our_powered);
             // Anything else printing php's version (headers_list(),
             // PHP_VERSION, var_dump lengths) can't match another patch
             // release: skip it, as the phpt runner does.
@@ -248,39 +192,19 @@ fn cgi_matches_php_cgi() {
             }
         }
         if their_name != "php-cgi" {
-            want.stdout = replace(
+            want.stdout = replace_bytes(
                 &want.stdout,
                 format!("Usage: {their_name} ").as_bytes(),
                 b"Usage: php-cgi ",
             );
-            want.stdout = replace(
+            want.stdout = replace_bytes(
                 &want.stdout,
                 format!("       {their_name} <file>").as_bytes(),
                 b"       php-cgi <file>",
             );
         }
         let got = run(rhp, &["--cgi"], &s);
-        let mut diffs = Vec::new();
-        if want.stdout != got.stdout {
-            diffs.push(format!(
-                "stdout:\n--- php-cgi\n{}\n--- rhp\n{}",
-                String::from_utf8_lossy(&want.stdout),
-                String::from_utf8_lossy(&got.stdout)
-            ));
-        }
-        if want.stderr != got.stderr {
-            diffs.push(format!(
-                "stderr:\n--- php-cgi\n{}\n--- rhp\n{}",
-                String::from_utf8_lossy(&want.stderr),
-                String::from_utf8_lossy(&got.stderr)
-            ));
-        }
-        if want.status != got.status {
-            diffs.push(format!(
-                "exit: php-cgi {:?}, rhp {:?}",
-                want.status, got.status
-            ));
-        }
+        let diffs = want.differences("php-cgi", &got, "rhp");
         if !diffs.is_empty() {
             failures.push(format!("== {name}\n{}", diffs.join("\n")));
         }

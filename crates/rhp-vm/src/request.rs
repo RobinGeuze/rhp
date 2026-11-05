@@ -1,58 +1,63 @@
 //! The engine side of the SAPI layer: the output sink, lazy header sending
 //! (`php_output_header` / `sapi_send_headers`), the response a request
 //! builds, and the request input (superglobals, `php://input`).
-//!
-//! Without a [`Sapi`] installed the VM keeps its built-in php-cli behaviour
-//! (output collected for [`Vm::output`] or passed through to stdout), with
-//! php-cli's header semantics: nothing stored, `headers_sent()` true after
-//! the first output byte.
 
-use rhp_builtins::rfc1867::{self, BodyState, Diag};
-use rhp_builtins::sapi::{self, RequestInfo, Response, Sapi, TreatData};
+use rhp_builtins::main::rfc1867;
+use rhp_builtins::main::rfc1867::{BodyState, Diag};
+use rhp_builtins::main::sapi;
+use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi, TreatData};
 use rhp_builtins::{self as builtins, Host};
 use rhp_values::{ArrayKey, PhpArray, Value};
 
-use crate::{is_prelude_proto, Vm};
+use crate::Vm;
 
 /// Per-request SAPI state kept on the [`Vm`].
-#[derive(Default)]
 pub(crate) struct SapiState {
-    /// The installed server API (None: the built-in CLI behaviour).
-    pub(crate) sapi: Option<Box<dyn Sapi>>,
+    /// The server API the request runs under.
+    pub(crate) sapi: Box<dyn Sapi>,
     /// The response being built (`SG(sapi_headers)`).
     pub(crate) response: Response,
     /// The request's input, when a SAPI supplied one.
     pub(crate) request: Option<RequestInfo>,
-    /// The message being displayed came from a builtin's
-    /// `php_error_docref` (HTML-escaped under html_errors).
-    pub(crate) docref_msg: bool,
     /// Request startup is running (php's `during_request_startup`):
     /// diagnostics are reported in "Unknown" on line 0.
     pub(crate) startup: bool,
     /// The body exceeded `post_max_size`: `$_POST` stays empty.
     pub(crate) post_too_big: bool,
-    /// php-cgi: module-startup warnings shown after the response body.
-    pub(crate) deferred_startup_diags: Vec<String>,
+    /// php-cgi: module-startup diagnostics (level, message) shown after the
+    /// response body.
+    pub(crate) deferred_startup_diags: Vec<(i64, String)>,
+    /// The exit status when the script ends without `exit`: 255 after an
+    /// E_ERROR at module startup (`EG(exit_status)`).
+    pub(crate) startup_status: i32,
     /// What has been read of the request body, and this request's uploads
     /// (deleted when the request ends).
     pub(crate) body: BodyState,
 }
 
-impl Vm {
-    /// Install the server API this request runs under: its name
-    /// (`php_sapi_name()`, `PHP_SAPI`), ini defaults, header semantics and
-    /// output sink. Call right after [`Vm::new`], before ini settings,
-    /// compiling and running.
-    pub fn set_sapi(&mut self, sapi: Box<dyn Sapi>) {
-        let name = sapi.name().to_string();
-        builtins::sapi::set_sapi(&name, &sapi.ini_defaults());
-        self.constants
-            .insert(b"PHP_SAPI".to_vec(), Value::str(name.into_bytes()));
-        self.sapi.response.store = sapi.stores_headers();
-        self.sapi.response.code = sapi.initial_response_code();
-        self.sapi.sapi = Some(sapi);
+impl SapiState {
+    /// The state for a request under `sapi`, after its name and ini defaults
+    /// were installed for this thread ([`builtins::main::sapi::set_sapi`]).
+    pub(crate) fn new(sapi: Box<dyn Sapi>) -> SapiState {
+        let response = Response {
+            store: sapi.stores_headers(),
+            code: sapi.initial_response_code(),
+            ..Response::default()
+        };
+        SapiState {
+            sapi,
+            response,
+            request: None,
+            startup: false,
+            post_too_big: false,
+            deferred_startup_diags: Vec::new(),
+            startup_status: 0,
+            body: BodyState::default(),
+        }
     }
+}
 
+impl Vm {
     /// Hand the engine the request's input (server variables, query string,
     /// cookies, body …). Superglobals are built from it when the script
     /// starts.
@@ -74,15 +79,25 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        // opcache's own log (its ini handlers' warnings at module startup).
+        let (lines, dest) = builtins::take_accel_log();
+        for line in lines {
+            self.write_accel_log(&line, &dest);
+        }
         // Warnings from applying the -d values (module startup): php-cli
         // shows them before anything else; php-cgi's reach the client only
         // after the response body.
         let diags = builtins::take_startup_diagnostics();
-        if builtins::sapi::is_cgi() {
+        // php_error_cb: an E_ERROR before the module is up sets the exit
+        // status but does not bail out; the script still runs.
+        if diags.iter().any(|d| d.0 == 1) {
+            self.sapi.startup_status = 255;
+        }
+        if builtins::main::sapi::is_cgi() {
             self.sapi.deferred_startup_diags = diags;
         } else {
-            for d in diags {
-                self.module_startup_warning(&d);
+            for (level, msg) in diags {
+                self.module_startup_diag(level, &msg);
             }
         }
         // sapi_activate reads the POST body before the headers are set up.
@@ -101,6 +116,15 @@ impl Vm {
         }
     }
 
+    /// A line of opcache's log, to stderr or the `opcache.error_log` file.
+    pub(crate) fn write_accel_log(&mut self, line: &str, dest: &[u8]) {
+        if dest.is_empty() {
+            self.write_stderr(line.as_bytes());
+        } else {
+            let _ = builtins::zend::virtual_cwd::append_file(dest, line.as_bytes(), 0o666);
+        }
+    }
+
     /// A warning raised during request startup ("PHP Request Startup: …"
     /// in Unknown on line 0, as php's docref reports it with no function
     /// running).
@@ -108,21 +132,58 @@ impl Vm {
         self.startup_diag(2, &format!("PHP Request Startup: {msg}"));
     }
 
-    /// php_error_cb for a warning raised before the module finished
-    /// starting up: never recorded for `error_get_last()` nor passed to a
-    /// handler; displayed when display_errors and display_startup_errors
-    /// allow, otherwise always logged.
-    fn module_startup_warning(&mut self, msg: &str) {
+    /// php_error_cb for a warning, or an ini handler's E_ERROR, raised
+    /// before the module finished starting up: never recorded for
+    /// `error_get_last()` nor passed to a handler; displayed when
+    /// display_errors and display_startup_errors allow, otherwise always
+    /// logged. An E_ERROR obeys error_reporting, carries the
+    /// `fatal_error_backtraces` trace, and its docref message is escaped
+    /// under html_errors (and escaped again when displayed, as in php).
+    fn module_startup_diag(&mut self, level: i64, msg: &str) {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let shown = !matches!(
-            crate::display_errors_mode(&ini(self, b"display_errors")),
-            crate::DisplayErrors::Off
+            crate::errors::display_errors_mode(&ini(self, b"display_errors")),
+            crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
-        if shown {
-            self.display_error(2, "Warning", msg.as_bytes(), b"Unknown", 0);
+        if level != rhp_builtins::E_ERROR {
+            if shown {
+                self.display_error(
+                    rhp_builtins::E_WARNING,
+                    "Warning",
+                    msg.as_bytes(),
+                    b"Unknown",
+                    0,
+                );
+            } else {
+                let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
+                self.write_stderr(line.as_bytes());
+            }
+            return;
+        }
+        if builtins::zend::builtin_functions::error_reporting_level(self) & 1 == 0 {
+            return;
+        }
+        let mut msg = msg.as_bytes().to_vec();
+        if crate::ini_bool(&ini(self, b"html_errors")) {
+            msg = builtins::main::sapi::escape_html(self, &msg);
+        }
+        let trace: &[u8] = if crate::ini_bool(&ini(self, b"fatal_error_backtraces")) {
+            b"#0 {main}"
         } else {
-            let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
-            self.write_stderr(line.as_bytes());
+            b""
+        };
+        if shown {
+            self.display_error_trace(1, "Fatal error", &msg, b"Unknown", 0, trace);
+        } else {
+            let mut line = b"PHP Fatal error:  ".to_vec();
+            line.extend_from_slice(&msg);
+            line.extend_from_slice(b" in Unknown on line 0\n");
+            if !trace.is_empty() {
+                line.extend_from_slice(b"Stack trace:\n");
+                line.extend_from_slice(trace);
+                line.push(b'\n');
+            }
+            self.write_stderr(&line);
         }
     }
 
@@ -179,19 +240,24 @@ impl Vm {
         // zend_ini_deactivate restores startup values changed at runtime
         // (re-running their handlers); php-cgi's deferred startup warnings
         // come out with them.
-        for d in std::mem::take(&mut self.sapi.deferred_startup_diags) {
-            self.module_startup_warning(&d);
+        for (level, msg) in std::mem::take(&mut self.sapi.deferred_startup_diags) {
+            self.module_startup_diag(level, &msg);
         }
         // The module is up by now: the usual display / log rules apply.
         for d in builtins::take_shutdown_diagnostics() {
-            self.display_error(2, "Warning", d.as_bytes(), b"Unknown", 0);
+            self.display_error(
+                rhp_builtins::E_WARNING,
+                "Warning",
+                d.as_bytes(),
+                b"Unknown",
+                0,
+            );
         }
         self.sapi_send_headers();
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.flush();
-        }
+        self.sapi.sapi.flush();
         // sapi_deactivate_destroy: uploads not moved away are deleted.
         self.sapi.body.cleanup();
+        rhp_values::mem::end_request();
     }
 
     /// Write bytes through the output layer (output buffers, then the
@@ -200,33 +266,16 @@ impl Vm {
         builtins::Host::write_out(self, data);
     }
 
-    /// The response as it stands (status, headers, whether they were sent).
-    pub fn response(&self) -> &Response {
-        &self.sapi.response
-    }
-
-    /// Mutable access to the response (a front end setting the status
-    /// before the script runs, e.g. php-cgi's 404 "No input file").
-    pub fn response_mut(&mut self) -> &mut Response {
-        &mut self.sapi.response
-    }
-
-    /// Write to the request's error stream (the SAPI's `write_stderr`; the
-    /// process's stderr without one).
+    /// Write to the request's error stream (the SAPI's `write_stderr`).
     pub fn write_error_stream(&mut self, data: &[u8]) {
         self.write_stderr(data);
-    }
-
-    /// The installed SAPI (to recover its state after the request).
-    pub fn take_sapi(&mut self) -> Option<Box<dyn Sapi>> {
-        self.sapi.sapi.take()
     }
 
     /// Where the currently executing user code is (file, line), if any.
     pub(crate) fn exec_location(&self) -> Option<(Vec<u8>, i64)> {
         let i = (0..self.stack.len())
             .rev()
-            .find(|&i| !is_prelude_proto(&self.stack[i].proto))?;
+            .find(|&i| !self.stack[i].proto.is_internal())?;
         let file = self.current_file(i);
         if file.is_empty() {
             return None;
@@ -236,22 +285,15 @@ impl Vm {
 
     /// Unbuffered output on its way to the SAPI (`php_output_op`'s tail):
     /// the headers go out first, then the bytes reach the sink.
-    pub(crate) fn sapi_write(&mut self, data: &[u8]) -> bool {
+    pub(crate) fn sapi_write(&mut self, data: &[u8]) {
         if data.is_empty() {
-            return true;
+            return;
         }
         if !self.sapi.response.sent {
             self.php_output_header();
         }
-        if self.sapi.response.output_disabled {
-            return true;
-        }
-        match self.sapi.sapi.as_mut() {
-            Some(s) => {
-                s.ub_write(data);
-                true
-            }
-            None => false,
+        if !self.sapi.response.output_disabled {
+            self.sapi.sapi.ub_write(data);
         }
     }
 
@@ -282,9 +324,7 @@ impl Vm {
             }
         }
         self.sapi.response.sent = true;
-        if let Some(s) = self.sapi.sapi.as_mut() {
-            s.send_headers(&self.sapi.response);
-        }
+        self.sapi.sapi.send_headers(&self.sapi.response);
         self.sapi.response.status_line = None;
     }
 
@@ -293,8 +333,8 @@ impl Vm {
     pub(crate) fn fatal_status(&mut self) {
         let display = self.ini_get(b"display_errors").unwrap_or_default();
         if !matches!(
-            crate::display_errors_mode(&display),
-            crate::DisplayErrors::Off
+            crate::errors::display_errors_mode(&display),
+            crate::errors::DisplayErrors::Off
         ) {
             return;
         }

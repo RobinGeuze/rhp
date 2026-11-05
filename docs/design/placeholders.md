@@ -5,8 +5,12 @@
 or outright no-ops a piece of PHP behaviour, with a concrete plan to finish each.
 **Ground truth:** the reference `php` (the differential oracle; see `crates/rhp-builtins/src/version.rs`). Every item below
 was confirmed by reading the cited `file:line` in `crates/` and, where relevant,
-by comparing against php's documented behaviour. The goal that orders the roadmap
-is the north star — run `composer.phar` end to end (`modules-and-streams.md`) and
+by comparing against php's documented behaviour. The `vm/lib.rs:N` citations
+predate the 2026-11 split of `rhp-vm` into modules (bytecode.md §3), and the
+`rhp-builtins` file names (`php_fns.rs`, `fs_fns.rs`, ...) predate its php-src
+layout ([builtins-layout.md](./builtins-layout.md)): search for the named
+function instead. The goal that orders the roadmap
+is the north star — run `composer.phar` end to end (`history/modules-and-streams.md`) and
 then real frameworks.
 
 Nothing here is a *bug* in the sense of "wrong where it claims to be right": each
@@ -25,7 +29,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 2 | `set_error_handler`/`set_exception_handler`/`restore_*` — stored-nowhere no-ops | `php_fns.rs:140`,`:146` | framework error pipelines, `trigger_error` routing | high | high |
 | 3 | `trigger_error` — returns true, emits nothing | `php_fns.rs:150` | user warnings/deprecations, logging | med | med |
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
-| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::request_shutdown` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
+| 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::run_main` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
 | 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
@@ -50,11 +54,15 @@ priority order rather than rediscovered one framework crash at a time.
 | 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
 | 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
 | 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
-| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `compiler/lib.rs:805` | rebinding via instance form; scoped invoke | med | high |
+| 30 | `Closure::bindTo`/`Closure::call` instance methods missing | `builtins/core_prelude.php` | rebinding via instance form; scoped invoke | med | high |
 | 31 | var_dump object ids — monotonic, no handle recycling | `vm/classes.rs:321` | byte-exact `var_dump`/`spl_object_id` vs php | high | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
-| 33 | `declare(strict_types=1)` — no-op; type hints unenforced | `compiler/lib.rs:1977` | type coercion/TypeError on hinted params — **in progress** | high | high |
+| 33 | ~~`declare(strict_types=1)` — no-op; type hints unenforced~~ RESOLVED (§8.1) | `vm/zpp.rs` | — | — | — |
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
+| 35 | Arithmetic on a leading-numeric string (`"1abc" + 5`, `"8k" % 3`) — no "A non-numeric value encountered" warning | VM arithmetic | warning output, error handlers that throw on it | low | med |
+| 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
+| 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
+| 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
 
 ---
 
@@ -121,8 +129,7 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
 
 ### 1.5 `register_shutdown_function` — registered, **never invoked** — RESOLVED
 - **Resolved:** callbacks are stored on the `Vm` and run by
-  `Vm::request_shutdown` (called by the SAPI after `{main}` returns, exits or
-  throws): shutdown functions in order (an `exit`/uncaught throwable stops the
+  `Vm::run_main` after `{main}` returns, exits or throws: shutdown functions in order (an `exit`/uncaught throwable stops the
   rest), then destructors (globals holding the sole reference, last first, then
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed
@@ -172,6 +179,12 @@ The original notes:
   which matches php's default.
 - **Full impl:** only needed if locale-sensitive functions (`strcoll`,
   locale-aware `printf`, `strftime`) are implemented; defer until then.
+  PCRE depends on it too: under a non-C `LC_CTYPE` php compiles patterns
+  with `pcre2_maketables` and keys its pattern cache on the locale, so
+  `/\w/` and `/i` see the locale's letters (`preg_match('/^\w$/', "\xE4")`
+  is 1 under `de_DE.ISO8859-1`). rhp's cache key needs the locale once
+  `setlocale` switches `LC_CTYPE`; while it is always `"C"` there is
+  nothing to key on.
 - **Effort/priority:** low / low.
 
 ### 1.9 `php_uname`
@@ -200,7 +213,7 @@ The original notes:
   is the Reflection extension itself (a separate, large work item — `modules.md`
   M2 names Reflection as the next composer milestone). The list should be derived
   from actually-registered modules, not hand-maintained, once the `ModuleDef`
-  system (`modules-and-streams.md` §1) is in place.
+  system (`history/modules-and-streams.md` §1) is in place.
 - **Effort/priority:** (a) low / high — delete one line to stop lying.
   (b) high / high — Reflection is the M2 blocker for `composer list`/`about`.
 
@@ -247,6 +260,10 @@ The original notes:
   is global/unsafe). Simple map on the `Vm`.
 - **Effort/priority:** low / med.
 
+### 1.14 `metaphone()` — not implemented
+- **Now:** "Call to undefined function metaphone()". `tests/golden/corpus/strings.php`
+  leaves it out; add it back with the function.
+
 ---
 
 ## 2. Stream & filesystem
@@ -265,7 +282,7 @@ The original notes:
 - **OK because:** rhp's streams are synchronous in-memory/file; blocking and
   buffering have no observable effect.
 - **Full impl:** only meaningful once real sockets/pipes exist (networking is out
-  of scope for composer per `modules-and-streams.md`). Leave as accept-and-ignore.
+  of scope for composer per `history/modules-and-streams.md`). Leave as accept-and-ignore.
 - **Effort/priority:** low / low.
 
 ### 2.3 `stream_isatty` / `posix_isatty` / `sapi_windows_vt100_support` → false
@@ -319,7 +336,8 @@ The original notes:
   read the same stat.
 
 ### 2.8 `chmod` / `chdir` / `clearstatcache` — RESOLVED (cache semantics aside)
-- `chmod`/`chdir`/`umask` are real (process-global cwd, like php CLI).
+- `chmod` is real; `chdir`/`getcwd`/`umask` are the request's (php's ZTS
+  virtual cwd, `rhp_builtins::zend::virtual_cwd`), with php CLI's results.
   `clearstatcache` is a no-op: rhp keeps no stat cache, so a php script that
   observes a *stale* cached stat (e.g. `filesize` after an external change
   without `clearstatcache`) sees fresh data under rhp. Known, deliberate gap.
@@ -351,7 +369,7 @@ The module is deliberately "READ-ONLY, native format only"
   `verify_with_pem`), with php's exact `PharException` messages for a missing
   key ("openssl public key could not be read"), an unreadable key ("openssl
   signature could not be processed") and a mismatch ("broken openssl
-  signature"). Covered by `tests/golden/phar_openssl_signature.php`.
+  signature"). Covered by `tests/golden/ext/phar/phar_openssl_signature.php`.
 
 ### 3.2 bzip2 entries unsupported
 - **Now:** a `COMPRESSED_BZ2` entry returns `None` from `read`
@@ -360,7 +378,7 @@ The module is deliberately "READ-ONLY, native format only"
   handled (`:118-122`).
 - **Breaks:** bz2-compressed phars.
 - **Full impl:** add a pure-Rust bzip2 decoder (`bzip2-rs`, or `bzip2` crate with a
-  pure backend per `modules-and-streams.md` §5) and decompress in the `BZ2` arm.
+  pure backend per `history/modules-and-streams.md` §5) and decompress in the `BZ2` arm.
 - **Effort/priority:** low / low.
 
 ### 3.3 Read-only: no write/create; `createDefaultStub`→`""`, `canCompress`→false
@@ -374,7 +392,7 @@ The module is deliberately "READ-ONLY, native format only"
   phar — so this blocks `composer self-update` specifically.
 - **Full impl:** a native-format manifest *writer* (emit stub + manifest + data +
   recomputed signature), a writable `Phar` object model (per-VM open-archive state
-  keyed by handle, as the zip plan in `modules-and-streams.md` §4 describes), and
+  keyed by handle, as the zip plan in `history/modules-and-streams.md` §4 describes), and
   `createDefaultStub` producing php's canonical stub source. Large; gated behind
   `phar.readonly` semantics.
 - **Effort/priority:** high / low (not needed for `install`; only self-update).
@@ -386,7 +404,7 @@ The module is deliberately "READ-ONLY, native format only"
 - **Breaks:** tar-based and zip-based phars (some tools ship these).
 - **Full impl:** detect the format and dispatch to a tar reader (`tar` crate) or a
   zip reader (`zip` crate) — the same crates the M2 install path needs for
-  tgz/zip dist (`modules-and-streams.md` §4-5), so this rides along with that work.
+  tgz/zip dist (`history/modules-and-streams.md` §4-5), so this rides along with that work.
 - **Effort/priority:** med / low.
 
 ---
@@ -450,11 +468,11 @@ The module is deliberately "READ-ONLY, native format only"
 
 ---
 
-## 6. Closures (`crates/rhp-compiler/src/lib.rs`, `crates/rhp-vm/src/lib.rs`)
+## 6. Closures (`crates/rhp-builtins/src/core_prelude.php`, `crates/rhp-vm/src/lib.rs`)
 
 ### 6.1 `Closure::bindTo` / `Closure::call` instance methods missing
 - **Now:** the prelude `Closure` class has only the two **static** methods
-  `fromCallable` and `bind` (`compiler/lib.rs:805-808`; a second copy at `:876`).
+  `fromCallable` and `bind` (in `crates/rhp-builtins/src/core_prelude.php`).
   The underlying rebinding machinery exists and works — `__closure_bind`
   (`php_fns.rs:216`) calls `host.closure_bind` (`vm/lib.rs:355`), and the VM honours
   a rebound `$this`/scope when invoking (`vm/lib.rs:2273-2279`). Only the
@@ -487,8 +505,8 @@ The module is deliberately "READ-ONLY, native format only"
   undefined-index/variable reads yield null without a notice, etc. The `E_*`
   constants exist (`builtins/lib.rs:416-433`) purely as values.
 - **How it's worked around:** the differential harness runs php with
-  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests at
-  `rhp-cli/tests/include.rs:16-20`, `tests/namespaces.rs:18`), so php writes no
+  `error_reporting=0` (`rhp-difftest/src/lib.rs:57`, and the CLI diff tests of
+  the time), so php writes no
   diagnostics to stdout either — parity is achieved by *both sides being silent*.
   php sends diagnostics to stderr, which the harness ignores.
 - **Breaks:** (a) code that sets `error_reporting(E_ALL)` and treats warnings as
@@ -507,36 +525,27 @@ The module is deliberately "READ-ONLY, native format only"
 - **Effort/priority:** high / med. Co-dependent with #1.2–#1.4. Not required for
   composer (which runs clean), but a prerequisite for faithful framework dev-mode.
 
+### 7.2 Arithmetic on leading-numeric strings — no warning
+- **Now:** `"1abc" + 5` and `"8k" % 3` give php's values (6, 2) but no
+  `Warning: A non-numeric value encountered`, which php 8.5 emits for an
+  operand with trailing data. Found folding tests/corpus into goldens
+  (2026-11).
+- **Workaround:** `tests/golden/corpus/typejuggle.php` silences that line
+  with `@`; drop the `@` when this is fixed.
+- **Full impl:** warn where the arithmetic operators convert a string
+  operand, as php's `_zendi_try_convert_scalar_to_number` and
+  `zendi_try_get_long` (for `%`, `<<`, `>>`, `|`, `&`, `^`) do in
+  `Zend/zend_operators.c`.
+
 ---
 
 ## 8. Type system
 
-### 8.1 `declare(strict_types=1)` is a no-op; type hints unenforced — **IN PROGRESS**
-- **Now:** the compiler treats all `declare(...)` directives — including
-  `strict_types=1` — as no-ops and just compiles the body
-  (`compiler/lib.rs:1977-1988`). Parameter and return *types are parsed and stored*
-  (`rhp-bytecode/src/lib.rs:279`, `:403`) and the proto carries a `strict_types`
-  flag (`:405-407`, defaulting false at `:433`), but nothing reads them to coerce
-  or to throw `TypeError`. So a function typed `(int $x)` accepts a string
-  unchanged.
-- **Status:** **actively being implemented right now** — the open modification in
-  this working tree is `crates/rhp-bytecode/src/lib.rs` (the proto/type plumbing),
-  which is the data side of exactly this feature.
-- **OK because (until now):** the diff corpus avoided relying on coercion/TypeError
-  at typed boundaries.
-- **Breaks:** PHP's scalar type juggling at call boundaries — in weak mode, `"5"`
-  passed to `(int $x)` coerces to `5` (with a deprecation for non-numeric); in
-  strict mode, a type mismatch throws `TypeError`. Both are observable and
-  common.
-- **Full impl (the in-progress plan):** at the call boundary (`bind_params`,
-  `vm/lib.rs:3170`) and at `return`, check each value against the declared type;
-  in **weak** mode coerce per php's scalar rules (int↔float↔string↔bool, with the
-  int→string and numeric-string rules), in **strict** mode (proto `strict_types`
-  true) accept only exact types (plus the int→float widening php allows) and else
-  throw `TypeError` with php's exact message. The `strict_types` flag must be set
-  from the `declare` directive per-file and propagated to each proto.
-- **Effort/priority:** high / high. On the critical path for real frameworks;
-  already underway.
+### 8.1 `declare(strict_types=1)` and type hints — RESOLVED
+- User functions coerce or reject their typed parameters and return values
+  in the calling file's mode. Builtins get php's zpp in the caller's mode
+  from `crates/rhp-vm/src/zpp.rs` (§8.3); a callback a builtin invokes is
+  called in weak mode, as in php.
 
 ### 8.2 Named arguments to functions whose defaults don't fold — refused
 - **Now:** for a call with named args into a *known* user function, the compiler
@@ -563,6 +572,68 @@ The module is deliberately "READ-ONLY, native format only"
   Touches the compiler (emit default-init thunks), the proto (store them), and the
   VM prologue (run them for unfilled params).
 - **Effort/priority:** med / med.
+
+### 8.3 Builtin int/number parameters take leading-numeric strings — RESOLVED
+- `crates/rhp-vm/src/zpp.rs` parses a builtin's stub-typed scalar arguments
+  as `zend_parse_arg_*_weak` does (or strictly, under `strict_types`), so
+  `intdiv("9z", 2)` throws php's TypeError. Goldens
+  `lang/builtin_arg_types` and `lang/builtin_arg_types_strict`.
+- Class-name parameters (zpp's `C`: get_class_vars, simplexml_*) are
+  converted and looked up as `zend_parse_arg_class` does; strtr and
+  implode parse by argument count and frameless variant
+  (`signatures::scalar_params_for`); `in_array()` with a constant
+  haystack and a literal flag is folded as php's compiler folds it, so
+  the flag is never type-checked.
+- Parameters php's C body parses as any value (`Z_PARAM_ZVAL`, `z`), a
+  resource (`Z_PARAM_RESOURCE`, `r`) or an open stream
+  (`PHP_Z_PARAM_STREAM`) are read from php-src by `gen signatures`
+  (`gen/signatures/zpp.rs`, flags `ZV`, `RS`, `ST`, `NUL`); the VM checks
+  the resources and streams and parses the scalars after all three
+  (`fwrite($fp, null)` under `strict_types` is php's TypeError). Goldens
+  `lang/zpp_resource_params` and its strict twin.
+- A typed parameter whose C parse takes null though its stub does not
+  (`*_OR_NULL`, `!`) is listed in `signatures::ZPP_OWN` and left to the
+  body: fputcsv's `$eol`, pcntl_signal's `$restart_syscalls`. A strict
+  `pcntl_signal(…, 1)` is accepted where php throws. **Follow-up:** have
+  `gen signatures` record that null as `NUL` so the VM parses these with
+  `?type`.
+- A zpp error carries the builtin's frame, with the arguments as php's
+  frame has them then (`lang/zpp_error_traces`). A scalar zpp would turn
+  into a string in place reaches the builtin unconverted (a string per
+  call costs too much); a trace taken during the call shows the string.
+- **Left:** past the first parameter whose checks are still a builtin
+  body's (a callable, an object or class type, an iterable, a function
+  whose parse is in a helper or follows code that may raise), the VM only
+  does the object, array and null checks, so php's order of errors holds;
+  the body coerces the rest itself. There a null argument still gets the
+  weak-mode deprecation under `strict_types` (`array_filter($a, null,
+  null)`, `preg_replace_callback(…, null)`; php throws the TypeError), and
+  a scalar is not coerced or checked strictly. Modelling `Z_PARAM_FUNC`
+  and the object parses in the VM would lift most of it. Bodies that
+  still differ from php for values zpp accepts: `number_format()` of NAN,
+  INF and huge floats, and `iterator_to_array()` of a scalar (the golden
+  skips those).
+- **Follow-up:** the builtins' own scalar TypeError branches (the
+  `zend::zpp` helpers, `ext/standard/file.rs`'s and the extensions' own
+  `*_arg` helpers) still run after the VM's pass. They serve prelude
+  callers and the parameters past the prefix; once those are covered
+  they can become plain extractors.
+- `#[\Deprecated]` builtins: the VM raises the deprecation before the
+  arguments are counted or parsed (`gen signatures` keeps each one's
+  `since` and `message`). Functions the prelude wraps (`utf8_encode`,
+  `xml_parser_free`, …) raise it in the body, so a prelude parameter's
+  TypeError still comes first there (`utf8_encode([])`).
+
+### 8.4 Named arguments to builtins — refused
+- **Now:** a call with named arguments to a builtin function stops with
+  `RHP_UNSUPPORTED: named arguments to a builtin function is not supported
+  (deferred)` (`vm/lib.rs`, both call paths).
+- **Workaround:** `tests/golden/corpus/namedargs.php` keeps only named
+  arguments to user functions; restore the `str_replace(search: …)` lines
+  when this lands.
+- **Full impl:** map names to positions with the builtin's arginfo (the
+  generated signatures already hold parameter names) and fill skipped
+  optional parameters with their defaults.
 
 ---
 
@@ -616,17 +687,17 @@ packages, then **general framework compatibility**, then long-tail parity.
 
 ### For `composer install` (M2 critical path)
 1. **Reflection extension** (#1.10b) — named as the M2 blocker in
-   `modules-and-streams.md`; also stop `extension_loaded('reflection')` lying today
+   `history/modules-and-streams.md`; also stop `extension_loaded('reflection')` lying today
    (#1.10a, one-line). *High effort, highest priority.*
 2. **`register_shutdown_function` actually runs** (#1.5) — composer plugins and
    error paths depend on it. *High / high.*
-3. **`strict_types` + type enforcement** (#8.1) — already in progress; real
-   packages declare it and rely on coercion/TypeError. *High / high.*
+3. ~~**`strict_types` + type enforcement** (#8.1)~~ — done; builtins keep
+   the zpp prefix limit of #8.3.
 4. **`chdir` + permission-accurate `is_writable`/`is_readable`** (#2.8, #2.6) —
    composer probes writability and changes directories during install.
    *Med / med.*
 5. **`gzopen` + `compress.zlib://`** (#4.2) and **tar/zip phar + ZipArchive**
-   (#3.4, and `modules-and-streams.md` §4) — needed to unpack tgz/zip dist archives.
+   (#3.4, and `history/modules-and-streams.md` §4) — needed to unpack tgz/zip dist archives.
    *Med / med.* (Networking to *fetch* them is out of scope per the modules doc.)
 
 ### For general framework compatibility
@@ -658,7 +729,7 @@ packages, then **general framework compatibility**, then long-tail parity.
     them*.
 
 The through-line: items 1–5 are gated by the composer-install goal and the
-`modules-and-streams.md` M2 plan; items 6–12 are what turns "runs composer" into
+`history/modules-and-streams.md` M2 plan; items 6–12 are what turns "runs composer" into
 "runs a framework"; everything in the long tail is parity polish the differential
 harness already lets rhp defer safely (by both sides staying silent, or by keeping
 the diverging surface — object ids, compressed bytes — out of the byte-exact

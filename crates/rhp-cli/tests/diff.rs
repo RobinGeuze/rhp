@@ -1,14 +1,25 @@
-//! Golden test: the VM is held strictly to the committed `NAME.out`
-//! (captured from the reference php, see `rhp_builtins::version`) on every
-//! fixture in `tests/golden`. It needs no php binary, so it also runs in the
-//! php-free CI job.
+//! Golden test: every fixture below `tests/golden` runs as a CLI request
+//! (`rhp_sapi::CaptureSapi`) and must print exactly its committed `NAME.out`,
+//! which the reference php printed (`rhp-difftest golden --check`, see
+//! docs/testing.md); `tests/golden/vm` is rhp-vm's to run. It needs no php
+//! binary, so it also runs in the php-free CI job. `GOLDEN_ONLY=SUBSTR`
+//! runs only the fixtures whose name (`lang/closures`) contains SUBSTR; it
+//! fails when no fixture matches, vm/ included.
+//!
+//! Each fixture runs in its own directory (`Request::cwd`); the test
+//! process's working directory and umask never change, so the fixtures run
+//! on several threads at once (`GOLDEN_THREADS`, default: the CPUs). Those
+//! that install signal handlers, which belong to the process, run alone
+//! afterwards.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::Arena;
-use rhp_values::Thrown;
-use rhp_vm::{IncludeError, Vm};
+use rhp_difftest::golden::{fixtures, Fixture};
+use rhp_sapi::{CaptureSapi, Outcome, Request, Script};
+
+// The engine's memory accounting (memory_get_usage(), memory_limit).
+#[global_allocator]
+static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -17,70 +28,96 @@ fn golden_dir() -> PathBuf {
         .expect("golden dir exists")
 }
 
-fn run_vm(source: &[u8], name: &str) -> Result<Vec<u8>, Thrown> {
-    let arena = Arena::new();
-    let parsed = arena.parse(name.as_bytes(), source);
-    assert!(!parsed.has_parse_errors(), "{name}: unexpected parse error");
-    let program = compile_with_source(parsed.program(), source, name)?;
-    let mut vm = Vm::new();
-    // include/require/eval compile like the CLI SAPI's includer.
-    vm.set_includer(|file: &str, src: &[u8]| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), src);
-        if let Some(f) = rhp_sapi::parse_error(&parsed, src) {
-            return Err(IncludeError::Parse {
-                class: f.class,
-                message: f.message,
-                line: f.line,
-            });
-        }
-        compile_include(parsed.program(), src, file).map_err(rhp_sapi::include_error)
-    });
-    // The whole CLI request: uncaught-throwable report, shutdown functions,
-    // output-buffer flush.
-    vm.run_main(&program)?;
-    Ok(vm.output().to_vec())
+/// Run `php` as php runs a golden: by its absolute path, from its directory.
+fn run(php: &Path) -> (Outcome, rhp_sapi::Captured) {
+    use std::os::unix::ffi::OsStrExt;
+    let script = Script::File(php.to_string_lossy().into_owned());
+    let req = Request {
+        cwd: Some(php.parent().unwrap().as_os_str().as_bytes().to_vec()),
+        ..Request::new(script)
+    };
+    CaptureSapi::cli().run(req)
 }
 
-fn cases() -> Vec<PathBuf> {
-    let mut v: Vec<_> = std::fs::read_dir(golden_dir())
+/// An engine refusal (`Thrown::Unsupported`), reported on stderr.
+fn refused(stderr: &[u8]) -> bool {
+    stderr.windows(16).any(|w| w == b"RHP_UNSUPPORTED:")
+}
+
+fn cases() -> Vec<Fixture> {
+    let only = std::env::var("GOLDEN_ONLY").ok();
+    let all: Vec<Fixture> = fixtures(&golden_dir())
         .expect("read golden dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "php"))
+        .into_iter()
+        .filter(|f| only.as_deref().is_none_or(|o| f.name.contains(o)))
         .collect();
-    v.sort();
-    v
+    assert!(!all.is_empty(), "no golden fixture matches GOLDEN_ONLY");
+    // rhp-vm's tests/golden.rs runs these.
+    all.into_iter()
+        .filter(|f| !f.name.starts_with("vm/"))
+        .collect()
+}
+
+/// Fixtures that install signal handlers or signal the process: they run
+/// one after another, after the rest.
+const ALONE: &[&str] = &["ext/pcntl/", "ext/posix/posix_pcntl"];
+
+/// `None` when the fixture prints its `.out`, else what went wrong.
+fn check(name: &str, php: &Path) -> Option<String> {
+    let Ok(expected) = std::fs::read(php.with_extension("out")) else {
+        return Some(format!("{name}: missing .out"));
+    };
+    match std::panic::catch_unwind(|| run(php)) {
+        Ok((_, out)) if refused(&out.stderr) => Some(format!(
+            "{name}: refused: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )),
+        Ok((_, out)) if out.stdout == expected => None,
+        Ok((outcome, out)) => Some(format!(
+            "{name}: MISMATCH ({outcome:?})\n  expected: {:?}\n  actual:   {:?}\n  stderr:   {:?}",
+            String::from_utf8_lossy(&expected),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )),
+        Err(_) => Some(format!("{name}: panicked")),
+    }
 }
 
 /// The VM must match php on every fixture.
 #[test]
 fn vm_matches_php_baseline() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     let cases = cases();
-    assert!(!cases.is_empty());
-    let mut passed = 0;
-    let mut failures = Vec::new();
-    for php in &cases {
-        let name = php.file_stem().unwrap().to_string_lossy().into_owned();
-        let Ok(expected) = std::fs::read(php.with_extension("out")) else {
-            failures.push(format!("{name}: missing .out"));
-            continue;
-        };
-        let source = std::fs::read(php).expect("read php");
-        // Compile under the fixture's real path, as php reports it (getFile(),
-        // traces, __FILE__); fixtures print only its basename to stay portable.
-        let file = php.to_string_lossy().into_owned();
-        match std::panic::catch_unwind(|| run_vm(&source, &file)) {
-            Ok(Ok(actual)) if actual == expected => passed += 1,
-            Ok(Ok(actual)) => failures.push(format!(
-                "{name}: MISMATCH\n  expected: {:?}\n  actual:   {:?}",
-                String::from_utf8_lossy(&expected),
-                String::from_utf8_lossy(&actual),
-            )),
-            Ok(Err(e)) => failures.push(format!("{name}: VM error: {e:?}")),
-            Err(_) => failures.push(format!("{name}: panicked")),
+    let (alone, shared): (Vec<&Fixture>, Vec<&Fixture>) = cases
+        .iter()
+        .partition(|f| ALONE.iter().any(|a| f.name.starts_with(a)));
+    let threads = std::env::var("GOLDEN_THREADS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
+        .max(1);
+    let next = AtomicUsize::new(0);
+    let failures = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(f) = shared.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    if let Some(e) = check(&f.name, &f.php) {
+                        failures.lock().unwrap().push(e);
+                    }
+                }
+            });
         }
-    }
-    eprintln!("[VM] golden: {passed}/{} passed", cases.len());
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.extend(alone.iter().filter_map(|f| check(&f.name, &f.php)));
+    failures.sort();
+    eprintln!(
+        "[VM] golden: {}/{} passed",
+        cases.len() - failures.len(),
+        cases.len()
+    );
     assert!(
         failures.is_empty(),
         "[VM] {} failure(s):\n{}",

@@ -1,0 +1,835 @@
+//! Class-like declarations: classes, interfaces, traits, enums and their members, attributes and doc comments.
+
+use std::rc::Rc;
+
+use crate::parse::cst::{
+    Access, Class, ClassLikeMember, Expression, Hint, Modifier, Node, Property, PropertyItem,
+};
+use rhp_bytecode::{
+    ClassProto, ConstInitProto, ConstProto, FunctionProto, Instr, MethodProto, PropDefaultProto,
+    PropProto, StaticPropProto,
+};
+use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{ClassFlags, ClassKind, Visibility};
+
+use crate::builder::{ProtoBuilder, ScopeKind};
+use crate::file::FileCtx;
+use crate::fold::fold_const;
+use crate::functions::compile_method;
+use crate::hints::type_hint;
+use crate::names::{identifier_raw, join_ns};
+use crate::util::strip_dollar;
+
+pub(crate) fn modifiers_visibility(mods: &crate::parse::cst::Sequence<Modifier>) -> Visibility {
+    for m in mods.iter() {
+        match m {
+            // `private(set)` etc. only restrict writes (asymmetric visibility,
+            // not enforced yet); the read visibility is the plain modifier,
+            // defaulting to public.
+            Modifier::Private(_) => return Visibility::Private,
+            Modifier::Protected(_) => return Visibility::Protected,
+            Modifier::Public(_) => return Visibility::Public,
+            _ => {}
+        }
+    }
+    Visibility::Public
+}
+
+/// The asymmetric write visibility (`private(set)` / `protected(set)`), when
+/// it is narrower than the read visibility.
+pub(crate) fn modifiers_set_visibility(
+    mods: &crate::parse::cst::Sequence<Modifier>,
+) -> Option<Visibility> {
+    let read = modifiers_visibility(mods);
+    let set = mods.iter().find_map(|m| match m {
+        Modifier::PrivateSet(_) => Some(Visibility::Private),
+        Modifier::ProtectedSet(_) => Some(Visibility::Protected),
+        Modifier::PublicSet(_) => Some(Visibility::Public),
+        _ => None,
+    })?;
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    (rank(set) > rank(read)).then_some(set)
+}
+
+pub(crate) fn has_modifier(
+    mods: &crate::parse::cst::Sequence<Modifier>,
+    want: fn(&Modifier) -> bool,
+) -> bool {
+    mods.iter().any(want)
+}
+
+/// Whether the attribute lists carry `#[AllowDynamicProperties]`.
+fn has_allow_dynamic(
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
+) -> bool {
+    lists.iter().any(|l| {
+        l.attributes.iter().any(|a| {
+            let n = identifier_raw(&a.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            n.eq_ignore_ascii_case(b"AllowDynamicProperties")
+        })
+    })
+}
+
+/// php's scanner keeps the last `/** */` comment until a declaration claims
+/// it (its "backup" point: a function/class name, a property / parameter
+/// variable, a constant name) or a `}` resets it. Approximate that by walking
+/// back from `pos` over the tokens that can sit between a doc comment and the
+/// claiming point (whitespace, other comments, attribute groups, modifiers and
+/// keywords, type hints): the first doc comment reached is the declaration's.
+impl FileCtx<'_> {
+    pub(crate) fn doc_comment_before(&self, pos: u32) -> Option<PhpStr> {
+        use crate::parse::TokenKind as T;
+        let (src, toks) = self.doc_tokens();
+        if toks.is_empty() {
+            return None;
+        }
+        let pos = pos as usize;
+        let mut i = toks.partition_point(|t| t.end <= pos);
+        let mut attr_depth = 0usize;
+        let mut paren_depth = 0usize;
+        while i > 0 {
+            i -= 1;
+            let t = toks[i];
+            if attr_depth > 0 {
+                match t.kind {
+                    T::RightBracket => attr_depth += 1,
+                    T::LeftBracket | T::HashLeftBracket => attr_depth -= 1,
+                    _ => {}
+                }
+                continue;
+            }
+            match t.kind {
+                T::DocBlockComment => {
+                    let text = &src[t.start..t.end];
+                    // `"/**"{WHITESPACE}` — `/**/` is a plain comment.
+                    if text.len() > 4 && text[3].is_ascii_whitespace() {
+                        return Some(PhpStr::from_bytes(text.to_vec()));
+                    }
+                }
+                T::Whitespace | T::SingleLineComment | T::HashComment | T::MultiLineComment => {}
+                T::RightBracket => attr_depth = 1,
+                T::RightParenthesis => paren_depth += 1,
+                T::LeftParenthesis => {
+                    if paren_depth == 0 {
+                        return None;
+                    }
+                    paren_depth -= 1;
+                }
+                T::Identifier
+                | T::QualifiedIdentifier
+                | T::FullyQualifiedIdentifier
+                | T::Question
+                | T::Pipe
+                | T::Ampersand
+                | T::DotDotDot => {}
+                k if k.is_keyword() => {}
+                _ => return None,
+            }
+        }
+        None
+    }
+}
+
+/// Compile `#[...]` attribute groups: each attribute's resolved class name
+/// and its argument list as an array (folded when constant, else a thunk run
+/// in `class_name`'s scope when Reflection asks for the arguments).
+pub(crate) fn compile_attributes(
+    cx: &FileCtx,
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
+    class_name: Option<&PhpStr>,
+) -> Result<Vec<rhp_bytecode::AttributeProto>, Thrown> {
+    use crate::parse::cst::PartialArgument as PA;
+    let mut out = Vec::new();
+    for list in lists.iter() {
+        for a in list.attributes.iter() {
+            let name = PhpStr::from_bytes(cx.resolve_class_name(&a.name));
+            let args = match &a.argument_list {
+                None => None,
+                Some(al) => {
+                    // (name, expr) pairs; positional args have no name.
+                    let mut items: Vec<(Option<&[u8]>, &Expression)> = Vec::new();
+                    for arg in al.arguments.iter() {
+                        match arg {
+                            PA::Positional(p) => items.push((None, p.value)),
+                            PA::Named(n) => items.push((Some(n.name.value), n.value)),
+                            _ => {}
+                        }
+                    }
+                    let folded: Result<Vec<Value>, Thrown> =
+                        items.iter().map(|(_, e)| fold_const(cx, e)).collect();
+                    match folded {
+                        Ok(vals) => {
+                            let mut arr = PhpArray::new();
+                            for ((n, _), v) in items.iter().zip(vals) {
+                                match n {
+                                    Some(n) => arr.insert(ArrayKey::from_bytes(n), v),
+                                    None => arr.push(v),
+                                }
+                            }
+                            Some(ConstInitProto::Const(Value::Array(arr)))
+                        }
+                        Err(_) => {
+                            let mut c = ProtoBuilder::new(cx, PhpStr::from("{init}"));
+                            c.class_name = class_name.cloned();
+                            c.scope_kind = ScopeKind::Init;
+                            for (_, e) in &items {
+                                c.scan_expr_vars(e);
+                            }
+                            c.num_cvs = c.cv_map.len() as u16;
+                            c.next_temp = c.num_cvs;
+                            c.high_water = c.num_cvs;
+                            c.temp_floor = c.num_cvs;
+                            let dst = c.alloc_temp();
+                            c.emit(Instr::NewArray { dst, cap: 0 });
+                            for (n, e) in &items {
+                                let val = c.compile_expr(e)?;
+                                match n {
+                                    Some(n) => {
+                                        let key = c.load_string_const(n);
+                                        c.emit(Instr::ArrSet { arr: dst, key, val });
+                                    }
+                                    None => c.emit(Instr::ArrPush { arr: dst, val }),
+                                }
+                            }
+                            c.emit(Instr::Ret { src: dst });
+                            Some(ConstInitProto::Thunk(Rc::new(c.finish()?)))
+                        }
+                    }
+                }
+            };
+            out.push(rhp_bytecode::AttributeProto { name, args });
+        }
+    }
+    Ok(out)
+}
+
+/// Reflection metadata of a declaration: its attributes, the doc comment
+/// claimed at `doc_pos`, and the line span `[start, end]` (byte offsets).
+pub(crate) fn decl_meta(
+    cx: &FileCtx,
+    lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
+    class_name: Option<&PhpStr>,
+    doc_pos: u32,
+    start: u32,
+    end: u32,
+) -> Result<rhp_bytecode::DeclMeta, Thrown> {
+    Ok(rhp_bytecode::DeclMeta {
+        attributes: compile_attributes(cx, lists, class_name)?,
+        doc_comment: cx.doc_comment_before(doc_pos),
+        start_line: cx.line_of(start),
+        offset: start,
+        end_line: cx.line_of(end.saturating_sub(1).max(start)),
+    })
+}
+
+/// Reflection data for a parameter default: a standalone thunk for a
+/// non-constant default, and the constant's name when the default is a bare
+/// constant / class-constant reference.
+pub(crate) fn param_default_meta(
+    cx: &FileCtx,
+    p: &crate::parse::cst::FunctionLikeParameter,
+    class_name: Option<&PhpStr>,
+) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
+    let Some(dv) = &p.default_value else {
+        return (None, None);
+    };
+    let e = dv.value;
+    let cname = match e {
+        Expression::ConstantAccess(ca) => {
+            let n = identifier_raw(&ca.name);
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            let lcn = n.to_ascii_lowercase();
+            (!matches!(lcn.as_slice(), b"true" | b"false" | b"null"))
+                .then(|| PhpStr::from_bytes(n.to_vec()))
+        }
+        Expression::Access(Access::ClassConstant(cca)) => {
+            let class: Option<Vec<u8>> = match cca.class {
+                Expression::Identifier(id) => Some(identifier_raw(id).to_vec()),
+                Expression::Self_(_) => Some(b"self".to_vec()),
+                Expression::Static(_) => Some(b"static".to_vec()),
+                Expression::Parent(_) => Some(b"parent".to_vec()),
+                _ => None,
+            };
+            match (&cca.constant, class) {
+                (crate::parse::cst::ClassLikeConstantSelector::Identifier(c), Some(mut cl)) => {
+                    cl.extend_from_slice(b"::");
+                    cl.extend_from_slice(c.value);
+                    Some(PhpStr::from_bytes(cl))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let thunk = if fold_const(cx, e).is_err() {
+        compile_const_thunk(cx, e, class_name).ok()
+    } else {
+        None
+    };
+    (thunk, cname)
+}
+
+/// php's `add_stringable_interface`: a class-like (not a trait) declaring
+/// `__toString` implicitly implements `Stringable`.
+fn add_stringable(interfaces: &mut Vec<PhpStr>, methods: &[MethodProto], self_name: &PhpStr) {
+    if self_name.as_bytes().eq_ignore_ascii_case(b"Stringable") {
+        return;
+    }
+    if methods
+        .iter()
+        .any(|m| m.name.as_bytes().eq_ignore_ascii_case(b"__toString"))
+        && !interfaces
+            .iter()
+            .any(|i| i.as_bytes().eq_ignore_ascii_case(b"Stringable"))
+    {
+        interfaces.push(PhpStr::from("Stringable"));
+    }
+}
+
+/// The span offsets `(start, end)` of an AST node.
+pub(crate) fn span_of(n: &impl mago_span::HasSpan) -> (u32, u32) {
+    let s = n.span();
+    (s.start.offset, s.end.offset)
+}
+
+pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, Thrown> {
+    let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), class.name.value));
+    let flags = ClassFlags {
+        is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
+        is_final: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Final(_))),
+        is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&class.attribute_lists),
+        ..ClassFlags::default()
+    };
+    // Single inheritance: a class `extends` one parent.
+    let parent = class.extends.as_ref().and_then(|e| {
+        e.types
+            .iter()
+            .next()
+            .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+    });
+    let interfaces: Vec<PhpStr> = class
+        .implements
+        .as_ref()
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let m = compile_members(cx, &class.members, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        cx,
+        &class.attribute_lists,
+        Some(&name),
+        class.name.span.start.offset,
+        class.class.span.start.offset,
+        class.right_brace.end.offset,
+    )?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+        meta,
+        decl_file: cx.file.clone(),
+        decl_line: cx.line_of(class.class.span.start.offset),
+    })
+}
+
+/// Compile an anonymous class body under its generated `name`
+/// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
+pub(crate) fn compile_anon_class(
+    cx: &FileCtx,
+    ac: &crate::parse::cst::AnonymousClass,
+) -> Result<ClassProto, Thrown> {
+    use mago_span::HasSpan;
+    let parent = ac.extends.as_ref().and_then(|e| {
+        e.types
+            .iter()
+            .next()
+            .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+    });
+    let interfaces: Vec<PhpStr> = ac
+        .implements
+        .as_ref()
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut name = parent
+        .as_ref()
+        .or(interfaces.first())
+        .map(|n| n.as_bytes().to_vec())
+        .unwrap_or_else(|| b"class".to_vec());
+    name.extend_from_slice(b"@anonymous\0");
+    name.extend_from_slice(&cx.file_name());
+    let n = cx.anon_classes.borrow().len();
+    name.extend_from_slice(format!(":{}${:x}", cx.line_of(ac.span().start.offset), n).as_bytes());
+    let name = PhpStr::from_bytes(name);
+    let flags = ClassFlags {
+        is_abstract: false,
+        is_final: true,
+        is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+        allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
+        // zend_compile_class_decl: every anonymous class.
+        not_serializable: true,
+        ..ClassFlags::default()
+    };
+    let m = compile_members(cx, &ac.members, &name)?;
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        cx,
+        &ac.attribute_lists,
+        Some(&name),
+        ac.class.span.start.offset,
+        ac.class.span.start.offset,
+        ac.right_brace.end.offset,
+    )?;
+    Ok(ClassProto {
+        decl_file: cx.file.clone(),
+        decl_line: cx.line_of(ac.class.span.start.offset),
+        name,
+        kind: ClassKind::Class,
+        flags,
+        parent,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+        meta,
+    })
+}
+
+/// Compile an `enum` declaration into a `ClassProto` of kind `Enum`.
+///
+/// Enum cases are collected and materialized by the VM at link time (one
+/// singleton object per case, exposed as class constants). The enum implements
+/// `UnitEnum` (pure) or `BackedEnum` (backed), plus any declared interfaces.
+pub(crate) fn compile_enum(
+    cx: &FileCtx,
+    en: &crate::parse::cst::Enum,
+) -> Result<ClassProto, Thrown> {
+    use rhp_bytecode::EnumBacking;
+    let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), en.name.value));
+
+    let backing = match &en.backing_type_hint {
+        None => None,
+        Some(h) => match &h.hint {
+            Hint::Integer(_) => Some(EnumBacking::Int),
+            Hint::String(_) => Some(EnumBacking::Str),
+            _ => {
+                return Err(Thrown::unsupported(
+                    "enum backing type",
+                    "only int and string backings are valid",
+                ))
+            }
+        },
+    };
+
+    let mut interfaces: Vec<PhpStr> = en
+        .implements
+        .as_ref()
+        .map(|i| {
+            i.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Every enum implements UnitEnum; a backed enum also implements BackedEnum.
+    interfaces.push(PhpStr::from("UnitEnum"));
+    if backing.is_some() {
+        interfaces.push(PhpStr::from("BackedEnum"));
+    }
+
+    let m = compile_members(cx, &en.members, &name)?;
+    add_stringable(&mut interfaces, &m.methods, &name);
+    let meta = decl_meta(
+        cx,
+        &en.attribute_lists,
+        Some(&name),
+        en.name.span.start.offset,
+        en.r#enum.span.start.offset,
+        en.right_brace.end.offset,
+    )?;
+    Ok(ClassProto {
+        meta,
+        name,
+        kind: ClassKind::Enum,
+        // Enums are implicitly final.
+        flags: ClassFlags {
+            is_final: true,
+            ..ClassFlags::default()
+        },
+        parent: None,
+        interfaces,
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: m.enum_cases,
+        enum_backing: backing,
+        decl_file: cx.file.clone(),
+        decl_line: cx.line_of(en.r#enum.span.start.offset),
+    })
+}
+
+/// Compile a (possibly non-constant) initializer expression — a class constant,
+/// static-property, or instance-property default — into a zero-argument thunk
+/// the VM evaluates in the class's scope after all classes are linked. This is
+/// how `const X = self::Y` / `private State $s = State::Idle` resolve.
+fn compile_const_thunk(
+    cx: &FileCtx,
+    expr: &Expression,
+    class_name: Option<&PhpStr>,
+) -> Result<Rc<FunctionProto>, Thrown> {
+    let mut c = ProtoBuilder::new(cx, PhpStr::from("{init}"));
+    c.class_name = class_name.cloned(); // for `__CLASS__`
+    c.scope_kind = ScopeKind::Init;
+    c.scan_expr_vars(expr); // const-exprs use no $vars, but be safe
+    c.scan_node_vars(Node::Expression(expr));
+    c.freeze_cvs();
+    let r = c.compile_expr(expr)?;
+    c.emit(Instr::Ret { src: r });
+    Ok(Rc::new(c.finish()?))
+}
+
+/// Fold an initializer to a constant, or fall back to a runtime thunk.
+fn const_init_or_thunk(
+    cx: &FileCtx,
+    expr: &Expression,
+    class_name: Option<&PhpStr>,
+) -> Result<ConstInitProto, Thrown> {
+    match fold_const(cx, expr) {
+        Ok(v) => Ok(ConstInitProto::Const(v)),
+        Err(_) => Ok(ConstInitProto::Thunk(compile_const_thunk(
+            cx, expr, class_name,
+        )?)),
+    }
+}
+
+fn prop_default_or_thunk(
+    cx: &FileCtx,
+    expr: &Expression,
+    class_name: Option<&PhpStr>,
+) -> Result<PropDefaultProto, Thrown> {
+    match fold_const(cx, expr) {
+        Ok(v) => Ok(PropDefaultProto::Const(v)),
+        Err(_) => Ok(PropDefaultProto::Init(compile_const_thunk(
+            cx, expr, class_name,
+        )?)),
+    }
+}
+
+/// php's `zend_is_valid_default_value`: a literal int initializer of a
+/// property / class constant whose type admits float but not int becomes a
+/// float at compile time.
+fn widen_int_default(v: Value, hint: Option<&rhp_bytecode::TypeHint>) -> Value {
+    use rhp_bytecode::TypeKind as K;
+    match (v, hint) {
+        (Value::Int(n), Some(h))
+            if h.kinds.contains(&K::Float)
+                && !h.kinds.iter().any(|k| matches!(k, K::Int | K::Mixed)) =>
+        {
+            Value::Float(n as f64)
+        }
+        (v, _) => v,
+    }
+}
+
+fn coerce_prop_default(
+    d: PropDefaultProto,
+    hint: Option<&rhp_bytecode::TypeHint>,
+) -> PropDefaultProto {
+    match d {
+        PropDefaultProto::Const(v) => PropDefaultProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
+fn coerce_const_init(d: ConstInitProto, hint: Option<&rhp_bytecode::TypeHint>) -> ConstInitProto {
+    match d {
+        ConstInitProto::Const(v) => ConstInitProto::Const(widen_int_default(v, hint)),
+        other => other,
+    }
+}
+
+#[derive(Default)]
+struct CompiledMembers {
+    methods: Vec<MethodProto>,
+    props: Vec<PropProto>,
+    static_props: Vec<StaticPropProto>,
+    constants: Vec<ConstProto>,
+    traits: Vec<PhpStr>,
+    enum_cases: Vec<rhp_bytecode::EnumCaseProto>,
+}
+
+fn compile_members(
+    cx: &FileCtx,
+    members: &crate::parse::cst::Sequence<ClassLikeMember>,
+    class_name: &PhpStr,
+) -> Result<CompiledMembers, Thrown> {
+    let mut out = CompiledMembers::default();
+    for member in members.iter() {
+        use mago_span::HasSpan;
+        compile_member(cx, &mut out, member, class_name)
+            .map_err(|e| cx.locate(e, member.span().start.offset))?;
+    }
+    Ok(out)
+}
+
+/// Compile one class-like member into `out`.
+fn compile_member(
+    cx: &FileCtx,
+    out: &mut CompiledMembers,
+    member: &ClassLikeMember,
+    class_name: &PhpStr,
+) -> Result<(), Thrown> {
+    match member {
+        ClassLikeMember::Method(m) => {
+            let (mp, promoted) = compile_method(cx, m, class_name)?;
+            out.methods.push(mp);
+            out.props.extend(promoted);
+        }
+        ClassLikeMember::Property(_) if cx.in_interface.get() => {}
+        ClassLikeMember::Property(Property::Plain(p)) => {
+            let visibility = modifiers_visibility(&p.modifiers);
+            let set_visibility = modifiers_set_visibility(&p.modifiers);
+            let is_static = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Static(_)));
+            let is_readonly = has_modifier(&p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+            let hint = p.hint.as_ref().map(|h| type_hint(cx, h));
+            let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
+            let (pstart, pend) = span_of(p);
+            for item in p.items.iter() {
+                let (var, default) = match item {
+                    PropertyItem::Concrete(c) => (
+                        &c.variable,
+                        coerce_prop_default(
+                            prop_default_or_thunk(cx, c.value, Some(class_name))?,
+                            hint.as_ref(),
+                        ),
+                    ),
+                    PropertyItem::Abstract(a) => (&a.variable, PropDefaultProto::None),
+                };
+                let meta = rhp_bytecode::DeclMeta {
+                    attributes: attributes.clone(),
+                    doc_comment: cx.doc_comment_before(var.span.start.offset),
+                    start_line: cx.line_of(pstart),
+                    offset: var.span.start.offset,
+                    end_line: cx.line_of(pend),
+                };
+                let pname = PhpStr::from_bytes(strip_dollar(var.name).to_vec());
+                if is_static {
+                    let has_default = !matches!(default, PropDefaultProto::None);
+                    let init = match default {
+                        PropDefaultProto::Const(v) => ConstInitProto::Const(v),
+                        PropDefaultProto::Init(t) => ConstInitProto::Thunk(t),
+                        PropDefaultProto::None => ConstInitProto::Const(Value::Null),
+                    };
+                    out.static_props.push(StaticPropProto {
+                        name: pname,
+                        visibility,
+                        is_readonly,
+                        init,
+                        type_hint: hint.clone(),
+                        meta,
+                        has_default,
+                    });
+                } else {
+                    out.props.push(PropProto {
+                        name: pname,
+                        visibility,
+                        set_visibility,
+                        is_readonly,
+                        default,
+                        type_hint: hint.clone(),
+                        meta,
+                        promoted: false,
+                    });
+                }
+            }
+        }
+        ClassLikeMember::Property(Property::Hooked(_)) => {
+            return Err(Thrown::unsupported("property hooks", "deferred"))
+        }
+        ClassLikeMember::Constant(c) => {
+            let visibility = modifiers_visibility(&c.modifiers);
+            let hint = c.hint.as_ref().map(|h| type_hint(cx, h));
+            let is_final = has_modifier(&c.modifiers, |m| matches!(m, Modifier::Final(_)));
+            let attributes = compile_attributes(cx, &c.attribute_lists, Some(class_name))?;
+            let (cstart, cend) = span_of(c);
+            for item in c.items.iter() {
+                out.constants.push(ConstProto {
+                    name: PhpStr::from_bytes(item.name.value.to_vec()),
+                    visibility,
+                    value: coerce_const_init(
+                        const_init_or_thunk(cx, item.value, Some(class_name))?,
+                        hint.as_ref(),
+                    ),
+                    type_hint: hint.clone(),
+                    meta: rhp_bytecode::DeclMeta {
+                        attributes: attributes.clone(),
+                        doc_comment: cx.doc_comment_before(item.name.span.start.offset),
+                        start_line: cx.line_of(cstart),
+                        offset: item.name.span.start.offset,
+                        end_line: cx.line_of(cend),
+                    },
+                    is_final,
+                });
+            }
+        }
+        ClassLikeMember::TraitUse(tu) => {
+            for t in tu.trait_names.iter() {
+                out.traits
+                    .push(PhpStr::from_bytes(cx.resolve_class_name(t)));
+            }
+        }
+        ClassLikeMember::EnumCase(ec) => {
+            use crate::parse::cst::EnumCaseItem;
+            let (name, value) = match &ec.item {
+                EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
+                EnumCaseItem::Backed(b) => (
+                    PhpStr::from_bytes(b.name.value.to_vec()),
+                    Some(const_init_or_thunk(cx, b.value, Some(class_name))?),
+                ),
+            };
+            let name_off = match &ec.item {
+                EnumCaseItem::Unit(u) => u.name.span.start.offset,
+                EnumCaseItem::Backed(b) => b.name.span.start.offset,
+            };
+            let (cstart, cend) = span_of(ec);
+            let meta = decl_meta(
+                cx,
+                &ec.attribute_lists,
+                Some(class_name),
+                name_off,
+                cstart,
+                cend,
+            )?;
+            out.enum_cases
+                .push(rhp_bytecode::EnumCaseProto { name, value, meta });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn compile_trait(
+    cx: &FileCtx,
+    t: &crate::parse::cst::Trait,
+) -> Result<ClassProto, Thrown> {
+    let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), t.name.value));
+    let saved = cx.in_trait.replace(true);
+    let m = compile_members(cx, &t.members, &name);
+    cx.in_trait.set(saved);
+    let m = m?;
+    let meta = decl_meta(
+        cx,
+        &t.attribute_lists,
+        Some(&name),
+        t.name.span.start.offset,
+        t.r#trait.span.start.offset,
+        t.right_brace.end.offset,
+    )?;
+    Ok(ClassProto {
+        meta,
+        decl_file: cx.file.clone(),
+        decl_line: cx.line_of(t.r#trait.span.start.offset),
+        name,
+        kind: ClassKind::Trait,
+        flags: ClassFlags::default(),
+        parent: None,
+        interfaces: Vec::new(),
+        traits: m.traits,
+        methods: m.methods,
+        props: m.props,
+        static_props: m.static_props,
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+    })
+}
+
+pub(crate) fn compile_interface(
+    cx: &FileCtx,
+    iface: &crate::parse::cst::Interface,
+) -> Result<ClassProto, Thrown> {
+    let name = PhpStr::from_bytes(join_ns(&cx.cur_ns(), iface.name.value));
+    let interfaces: Vec<PhpStr> = iface
+        .extends
+        .as_ref()
+        .map(|e| {
+            e.types
+                .iter()
+                .map(|id| PhpStr::from_bytes(cx.resolve_class_name(id)))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Constants and (abstract) method signatures; interface properties
+    // contribute no runtime members.
+    let saved = cx.in_interface.replace(true);
+    let m = compile_members(cx, &iface.members, &name);
+    cx.in_interface.set(saved);
+    let m = m?;
+    let methods: Vec<MethodProto> = m
+        .methods
+        .into_iter()
+        .map(|mut mp| {
+            mp.is_abstract = true;
+            mp
+        })
+        .collect();
+    let mut interfaces = interfaces;
+    add_stringable(&mut interfaces, &methods, &name);
+    let meta = decl_meta(
+        cx,
+        &iface.attribute_lists,
+        Some(&name),
+        iface.name.span.start.offset,
+        iface.interface.span.start.offset,
+        iface.right_brace.end.offset,
+    )?;
+    Ok(ClassProto {
+        name,
+        kind: ClassKind::Interface,
+        flags: ClassFlags::default(),
+        parent: None,
+        interfaces,
+        traits: Vec::new(),
+        methods,
+        props: Vec::new(),
+        static_props: Vec::new(),
+        constants: m.constants,
+        enum_cases: Vec::new(),
+        enum_backing: None,
+        meta,
+        decl_file: cx.file.clone(),
+        decl_line: cx.line_of(iface.interface.span.start.offset),
+    })
+}

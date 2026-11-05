@@ -1,6 +1,6 @@
 //! The interpreter's unwinding type, at the leaf of the crate graph so that
-//! `rhp-semantics` (operators), `rhp-builtins`, the compiler and the VM can
-//! all return `Result<_, Thrown>` without a dependency cycle.
+//! the operators ([`crate::ops`]), `rhp-builtins`, the compiler and the VM
+//! can all return `Result<_, Thrown>` without a dependency cycle.
 
 /// Unwinds the interpreter: a real PHP `Throwable`, an engine refusal for an
 /// unsupported high-risk feature, or `exit`/`die`.
@@ -119,31 +119,4 @@ impl Thrown {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Thrown;
-
-    #[test]
-    fn unsupported_message_appends_location_last() {
-        let t = Thrown::unsupported("goto statement", "phase 2");
-        assert_eq!(
-            t.unsupported_message().unwrap(),
-            "RHP_UNSUPPORTED: goto statement is not supported (phase 2)"
-        );
-        let t = t.with_location(|| "/p/a.php".to_string(), 12);
-        assert_eq!(
-            t.unsupported_message().unwrap(),
-            "RHP_UNSUPPORTED: goto statement is not supported (phase 2) in /p/a.php on line 12"
-        );
-        // The innermost (first) location wins.
-        let t = t.with_location(|| "/p/b.php".to_string(), 3);
-        assert!(t
-            .unsupported_message()
-            .unwrap()
-            .ends_with("a.php on line 12"));
-        assert!(Thrown::Exit(0).unsupported_message().is_none());
-        assert!(matches!(
-            Thrown::Exit(1).with_location(String::new, 1),
-            Thrown::Exit(1)
-        ));
-    }
-}
+mod tests;

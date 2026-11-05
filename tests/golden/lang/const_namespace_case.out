@@ -1,0 +1,28 @@
+warning: Constant foo\sub\X already defined, this will be an error in PHP 9
+1 1 1
+bool(true)
+bool(true)
+bool(false)
+int(1)
+int(1)
+warning: Constant a\b\C already defined, this will be an error in PHP 9
+bool(true)
+bool(false)
+bool(true)
+1133
+array(3) {
+  ["Foo\Sub\X"]=>
+  int(1)
+  ["A\B\C"]=>
+  int(1)
+  ["A\B\c"]=>
+  int(3)
+}
+Error: Undefined constant "Nope\X"
+Error: Undefined constant "nope\X"
+Error: Undefined constant "Foo\Sub\x"
+Error: Undefined constant "Nope\Y"
+Error: Undefined constant "Foo\Sub\Z"
+warning: Constant N already defined, this will be an error in PHP 9
+bool(true)
+bool(false)

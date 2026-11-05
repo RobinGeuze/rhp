@@ -13,11 +13,11 @@ default = []
 [dependencies]
 rhp-values = { path = "../rhp-values" }
 rhp-bytecode = { path = "../rhp-bytecode" }
-rhp-semantics = { path = "../rhp-semantics" }
 rhp-builtins = { path = "../rhp-builtins" }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
-rhp-compiler = { path = "../rhp-compiler" }
-rhp-frontend = { path = "../rhp-frontend" }
+# tests/golden.rs runs tests/golden/vm through the request layer.
+rhp-sapi = { path = "../rhp-sapi" }

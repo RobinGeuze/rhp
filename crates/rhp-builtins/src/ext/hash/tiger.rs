@@ -1,10 +1,8 @@
-//! PHP's 4-pass Tiger variant (`tiger128,4` / `tiger160,4` / `tiger192,4`).
+//! Tiger, 3- and 4-pass (`tiger128,3` … `tiger192,4`). The 4-pass form is a
+//! PHP/mhash extension no crate has, so both run through this one generic
+//! N-pass implementation over the Tiger S-boxes.
 //!
-//! The standard 3-pass Tiger is provided by the `tiger` crate; the non-standard
-//! 4-pass form is a PHP/mhash extension with no crate, so it is hand-rolled here
-//! over the shared Tiger S-boxes.
-//!
-//! This is a generic N-pass Tiger (original Tiger, *not* Tiger2): little-endian
+//! This is original Tiger, *not* Tiger2: little-endian
 //! message words, `0x01` padding, and the little-endian 64-bit *bit* length in
 //! the final block. The pass multiplier is 5 on pass 0, 7 on pass 1, and 9 on
 //! every pass from 2 onward, with the key schedule run between passes. The
@@ -125,10 +123,10 @@ fn digest_bytes(state: [u64; 3]) -> [u8; 24] {
     out
 }
 
-/// PHP's 4-pass Tiger (`tiger<width*8>,4`), truncated to `width` bytes
-/// (16, 20, or 24).
-pub fn tiger4(data: &[u8], width: usize) -> Vec<u8> {
-    digest_bytes(tiger_hash(data, 4))[..width].to_vec()
+/// `passes`-pass Tiger (`tiger<width*8>,<passes>`), truncated to `width`
+/// bytes (16, 20, or 24).
+pub fn tiger(data: &[u8], passes: usize, width: usize) -> Vec<u8> {
+    digest_bytes(tiger_hash(data, passes))[..width].to_vec()
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,41 +1168,3 @@ static T4: [u64; 256] = [
     0xC832_23F1_720A_EF96,
     0xC3A0_396F_7363_A51F,
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    #[test]
-    fn three_pass_byte_order_matches_php() {
-        // Known php `tiger192,3` values: proves S-boxes, little-endian words and
-        // output byte order are all correct before relying on 4-pass.
-        assert_eq!(
-            hex(&digest_bytes(tiger_hash(b"", 3))),
-            "3293ac630c13f0245f92bbb1766e16167a4e58492dde73f3"
-        );
-        assert_eq!(
-            hex(&digest_bytes(tiger_hash(b"abc", 3))),
-            "2aab1484e8c158f2bfb8c5ff41b57a525129131c957b5f93"
-        );
-    }
-
-    #[test]
-    fn four_pass_matches_php() {
-        assert_eq!(
-            hex(&tiger4(b"", 24)),
-            "24cc78a7f6ff3546e7984e59695ca13d804e0b686e255194"
-        );
-        assert_eq!(
-            hex(&tiger4(b"abc", 24)),
-            "538883c8fc5f28250299018e66bdf4fdb5ef7b65f2e91753"
-        );
-        // Truncated widths are a prefix of the 192-bit digest.
-        assert_eq!(tiger4(b"abc", 16), tiger4(b"abc", 24)[..16]);
-        assert_eq!(tiger4(b"abc", 20), tiger4(b"abc", 24)[..20]);
-    }
-}

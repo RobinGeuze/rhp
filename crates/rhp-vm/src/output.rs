@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rhp_builtins::{Host, ObCall};
+use rhp_builtins::{Host, ObCall, E_DEPRECATED, E_NOTICE, E_WARNING};
 use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
 
 use crate::Vm;
@@ -58,10 +58,6 @@ const O_WRITTEN: u32 = 0x04;
 const O_SENT: u32 = 0x08;
 const O_ACTIVATED: u32 = 0x10_0000;
 
-const E_WARNING: i64 = 2;
-const E_NOTICE: i64 = 8;
-const E_DEPRECATED: i64 = 8192;
-
 const DEFAULT_HANDLER_NAME: &[u8] = b"default output handler";
 
 /// PHP_OUTPUT_HANDLER_INITBUF_SIZE: the (emulated) buffer capacity php
@@ -79,6 +75,9 @@ enum Func {
     Default,
     /// A user callback, resolved (in `ob_start`'s scope) when started.
     User(Value),
+    /// An extension's handler, started by its alias name
+    /// (`ob_iconv_handler`).
+    Internal(rhp_builtins::OutputHandlerFn),
 }
 
 pub(crate) struct Handler {
@@ -188,18 +187,10 @@ impl Vm {
         self.output.flags |= O_SENT;
     }
 
-    /// sapi_flush: push buffered response bytes to the client.
-    /// The installed SAPI's `flush`; without one, pending CLI output goes
-    /// to the process's stdout.
+    /// sapi_flush: push buffered response bytes to the client (the
+    /// installed SAPI's `flush`).
     fn sapi_flush(&mut self) {
-        match self.sapi.sapi.as_mut() {
-            Some(s) => s.flush(),
-            None if self.direct_stdout => self.flush_stdout(),
-            None => {
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-        }
+        self.sapi.sapi.flush();
     }
 
     /// php_request_startup's output setup: the `output_handler` /
@@ -209,7 +200,7 @@ impl Vm {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
         let handler = ini(self, b"output_handler");
         // OnUpdateLong: "On" etc. read as 0 (atol), so php ignores them.
-        let buffering = rhp_builtins::php_fns::atol(&ini(self, b"output_buffering"));
+        let buffering = rhp_builtins::c_atol(&ini(self, b"output_buffering"));
         if !handler.is_empty() {
             self.output.starting = true;
             // No autoloader is registered yet, so resolving cannot throw.
@@ -232,6 +223,15 @@ impl Vm {
     /// buffer, top first, each into the one below.
     pub(crate) fn output_end_all(&mut self) {
         while self.output.active.is_some() && self.stack_pop(POP_FORCE) {}
+    }
+
+    /// php_output_discard_all, as php_error_cb runs it for an out-of-memory
+    /// error: skipped while a handler runs (that would free it under itself).
+    pub(crate) fn output_discard_all_unlocked(&mut self) {
+        if self.output.running.is_some() {
+            return;
+        }
+        while self.output.active.is_some() && self.stack_pop(POP_DISCARD | POP_FORCE) {}
     }
 
     /// The `func(): ` origin php_error_docref puts before a message: the
@@ -268,8 +268,11 @@ impl Vm {
         }
     }
 
-    fn ob_diag(&mut self, level: i64, msg: &str) {
-        let m = format!("{}{}", self.docref_prefix(), msg);
+    /// `php_error_docref(NULL, level, msg)` named after the active function.
+    pub(crate) fn ob_diag(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let mut m = self.docref_prefix().into_bytes();
+        m.extend_from_slice(msg.as_ref());
+        let m = self.docref_html(&m).into_owned();
         if self.no_code_running() || self.output.starting {
             self.raise_error_at(level, &m, b"Unknown".to_vec(), 0);
         } else {
@@ -288,7 +291,7 @@ impl Vm {
         let msg = format!("{}{}", self.docref_prefix(), msg);
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !crate::is_prelude_proto(&self.stack[i].proto))
+            .find(|&i| !self.stack[i].proto.is_internal())
         {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
@@ -296,7 +299,7 @@ impl Vm {
         let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
         let trace = if crate::ini_bool(&backtraces) {
             let trace = Value::Array(self.build_trace_ex(false, false));
-            rhp_builtins::php_fns::trace_to_string(self, &trace)
+            rhp_builtins::zend::exceptions::trace_to_string(self, &trace)
         } else {
             Vec::new()
         };
@@ -472,12 +475,50 @@ impl Vm {
             ctx.op |= OP_START;
         }
         self.output.running = Some(h.clone());
-        let user = match &h.borrow().func {
-            Func::User(cb) => Some(cb.clone()),
-            Func::Default => None,
+        let (user, internal) = match &h.borrow().func {
+            Func::User(cb) => (Some(cb.clone()), None),
+            Func::Internal(f) => (None, Some(*f)),
+            Func::Default => (None, None),
         };
         let mut still_have_handler = true;
         let status = match user {
+            None if internal.is_some() => {
+                let data = h.borrow().buf.clone();
+                let mut cx = rhp_builtins::OutputHandlerCtx {
+                    op: ctx.op,
+                    input: &data,
+                    output_sent: self.output.flags & O_SENT != 0,
+                    out: Vec::new(),
+                    immutable: false,
+                    diags: Vec::new(),
+                };
+                let ok = internal.is_some_and(|f| f(self, &mut cx));
+                if cx.immutable {
+                    h.borrow_mut().flags &= !(H_REMOVABLE | H_CLEANABLE);
+                }
+                // Raised while the handler still runs: the output they
+                // produce goes into its own buffer, which php drops. None
+                // while an out-of-memory error is pending (php_verror).
+                for (level, msg) in std::mem::take(&mut cx.diags) {
+                    if !self.mem.attention() {
+                        self.ob_diag(level, &msg);
+                    }
+                }
+                if !self.output_activated() {
+                    return Status::Failure;
+                }
+                match (ok, cx.out.is_empty()) {
+                    (false, _) => Status::Failure,
+                    (true, true) => Status::NoData,
+                    (true, false) => {
+                        ctx.out = cx.out;
+                        Status::Success
+                    }
+                }
+            }
+            // zend_call_function refuses while an out-of-memory error is
+            // handled (php_error_cb discards the buffers then).
+            Some(_) if self.mem.oom_handled() => Status::Failure,
             Some(cb) => {
                 let data = h.borrow().buf.clone();
                 let at_shutdown = self.no_code_running();
@@ -686,11 +727,45 @@ impl Vm {
         if self.lock_error(OP_START) {
             return false;
         }
+        if self.handler_conflicts(&h.name) {
+            return false;
+        }
         h.level = self.output.handlers.len();
         let r = Rc::new(RefCell::new(h));
         self.output.handlers.push(r.clone());
         self.output.active = Some(r);
         true
+    }
+
+    /// The conflict check an extension registered for a handler named
+    /// `name` (php_output_handler_conflict_register): with output buffering
+    /// active, a handler it conflicts with must not be started already.
+    fn handler_conflicts(&mut self, name: &[u8]) -> bool {
+        let Some(alias) = rhp_builtins::output_handler_alias(name) else {
+            return false;
+        };
+        if self.ob_level() == 0 {
+            return false;
+        }
+        for set in alias.conflicts {
+            let started = self
+                .output
+                .handlers
+                .iter()
+                .any(|h| h.borrow().name == set.as_bytes());
+            if started {
+                // php_output_handler_conflict.
+                let new = String::from_utf8_lossy(name).into_owned();
+                let msg = if new == *set {
+                    format!("Output handler '{new}' cannot be used twice")
+                } else {
+                    format!("Output handler '{new}' conflicts with '{set}'")
+                };
+                self.ob_diag(E_WARNING, &msg);
+                return true;
+            }
+        }
+        false
     }
 
     /// php_output_start_user: `ob_start($callback, $chunk_size, $flags)`.
@@ -700,6 +775,10 @@ impl Vm {
         chunk: usize,
         flags: i64,
     ) -> Result<bool, Thrown> {
+        let alias = match crate::deref(callback) {
+            Value::Str(s) if !s.is_empty() => rhp_builtins::output_handler_alias(s.as_bytes()),
+            _ => None,
+        };
         let h = match crate::deref(callback) {
             Value::Null => Some(Handler::new(
                 DEFAULT_HANDLER_NAME.to_vec(),
@@ -707,7 +786,19 @@ impl Vm {
                 chunk,
                 ability_flags(flags),
             )),
-            cb => match self.check_callable(&cb)? {
+            // php_output_handler_create_internal through the alias.
+            _ if alias.is_some() => alias.map(|a| {
+                Handler::new(
+                    a.name.as_bytes().to_vec(),
+                    Func::Internal(a.func),
+                    chunk,
+                    ability_flags(flags),
+                )
+            }),
+            cb => match self
+                .autoload_callable_class(&cb)
+                .map(|()| self.resolve_callable(&cb).err())?
+            {
                 Some(err) => {
                     self.ob_diag(E_WARNING, &err);
                     None
@@ -752,7 +843,7 @@ impl Vm {
                 // A first-class callable is named after what it wraps.
                 Some(w) => self.callable_name(w),
                 None => match self.closures.get(cd.fnidx as usize) {
-                    Some(p) => p.name.as_bytes().to_vec(),
+                    Some(f) => f.proto.name.as_bytes().to_vec(),
                     None => b"Closure::__invoke".to_vec(),
                 },
             },
@@ -960,5 +1051,18 @@ impl Handler {
             buf: Vec::new(),
             buf_size: initbuf_size(size),
         }
+    }
+}
+
+impl Vm {
+    /// Output past the output buffers, to the SAPI.
+    fn emit_stdout(&mut self, data: &[u8]) {
+        self.sapi_write(data);
+    }
+
+    /// A write to the `STDOUT` stream: php writes the descriptor directly,
+    /// bypassing the output layer (no headers, no SAPI buffering).
+    pub(crate) fn emit_raw_stdout(&mut self, data: &[u8]) {
+        self.sapi.sapi.write_raw_stdout(data);
     }
 }

@@ -10,8 +10,9 @@
 //! engine values are not `Send`, so a threaded server keeps a long-lived
 //! worker thread per concurrent request and calls [`run_request`] on it.
 //!
-//! Provided SAPIs: [`CliSapi`] (php-cli: unbuffered stdout, no headers) and
-//! [`cgi::CgiSapi`] (php-cgi: `Status:` + headers + body on stdout);
+//! Provided SAPIs: [`CliSapi`] (php-cli: unbuffered stdout, no headers),
+//! [`cgi::CgiSapi`] (php-cgi: `Status:` + headers + body on stdout) and
+//! [`CaptureSapi`] (everything kept in memory, for tests and tools);
 //! [`cgi::main`] is the `php-cgi` front end.
 //!
 //! The full contract (lifecycle, threading model, what is process-wide,
@@ -20,22 +21,49 @@
 
 use std::io::Write;
 
-pub use rhp_builtins::zend::ParseFailure;
-use rhp_compiler::{compile_include, compile_with_source};
-use rhp_frontend::{Arena, Parsed};
+use rhp_builtins::zend::ParseFailure;
+use rhp_bytecode::Program;
+use rhp_compiler::parse::{Arena, Parsed};
 use rhp_values::{Thrown, Value};
-use rhp_vm::{IncludeError, Vm};
+use rhp_vm::Vm;
 
+mod capture;
 pub mod cgi;
+pub mod cli;
+mod getopt;
 
-pub use rhp_builtins::sapi::{RequestInfo, Response, Sapi};
+pub use capture::{CaptureSapi, Captured};
+
+pub use rhp_compiler::Mode;
+pub use rhp_vm::IncludeError;
+
+pub use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi};
 /// The `-v` banner (`PHP 8.5.x (cli) (built: …)`) for a SAPI name.
 pub use rhp_builtins::version::banner as version_banner;
+/// The global allocator a binary that runs requests must install, for
+/// `memory_get_usage()` and `memory_limit`:
+///
+/// ```ignore
+/// #[global_allocator]
+/// static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
+/// ```
+///
+/// It is the system allocator plus per-thread accounting of the request
+/// running on that thread (see `docs/design/sapi.md`, *Memory*).
+pub use rhp_values::mem::CountingAlloc;
 
 /// What to run.
 pub enum Script {
     /// A script file (its real path becomes `__FILE__`).
     File(String),
+    /// A script the caller already holds, run as the file `path` (its
+    /// `__FILE__` and `$argv[0]`, as given); not cached.
+    Source {
+        /// The script's path.
+        path: String,
+        /// Its source.
+        bytes: Vec<u8>,
+    },
     /// Inline code (`-r`), run as "Command line code".
     Code(String),
     /// No script file and no `-r`: the script is read from standard input.
@@ -55,6 +83,27 @@ pub struct Request {
     pub info: Option<RequestInfo>,
     /// `PHP_BINARY` (composer re-invokes it); default: unchanged.
     pub php_binary: Option<Vec<u8>>,
+    /// The directory the script runs in (`getcwd()`, relative paths, child
+    /// processes): php-cgi's script directory, an embedder's document root.
+    /// `None`: the process's. A relative script path is still opened from
+    /// the process's directory, as php-cgi opens the script before its
+    /// chdir. The process's own directory never changes.
+    pub cwd: Option<Vec<u8>>,
+}
+
+impl Request {
+    /// A CLI-style request for `script`: no settings, arguments or request
+    /// input.
+    pub fn new(script: Script) -> Request {
+        Request {
+            script,
+            ini: Vec::new(),
+            args: Vec::new(),
+            info: None,
+            php_binary: None,
+            cwd: None,
+        }
+    }
 }
 
 /// How a request ended.
@@ -103,13 +152,17 @@ impl Sapi for CliSapi {
     fn flush(&mut self) {
         let _ = std::io::stdout().flush();
     }
+
+    fn exits_on_hard_limit(&self) -> bool {
+        true
+    }
 }
 
 /// The error php raises parsing `src`: its own grammar, scanner and grammar
 /// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
 /// does not (mago's bugs, or its recursion limit on deeply nested code),
 /// mago's error, which is not php's.
-pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
+fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
     rhp_builtins::zend::syntax_error(src).or_else(|| {
         let (message, line) = parsed.parse_error()?;
         Some(ParseFailure {
@@ -120,25 +173,44 @@ pub fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
     })
 }
 
-/// The includer every SAPI installs: parse + compile an included file.
+/// [`parse_error`] as the includer reports it.
+fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
+    parse_error(parsed, src).map(|f| IncludeError::Parse {
+        class: f.class,
+        message: f.message,
+        line: f.line,
+    })
+}
+
+/// rhp-builtins as the compiler sees it.
+static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
+    prelude: rhp_builtins::prelude,
+    native_function: rhp_builtins::native_function,
+    constant: rhp_builtins::ct_constant,
+    cwd: rhp_builtins::zend::virtual_cwd::getcwd,
+};
+
+/// Parse and compile the source `src` of `file` as rhp runs a file: php's
+/// own grammar decides what parses (see [`parse_error`]), then the
+/// compiler. Every script, include, eval and preload goes through here, and
+/// `rhp-difftest lint` too.
+pub fn compile_file(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
+    let arena = Arena::new();
+    let parsed = arena.parse(file.as_bytes(), src);
+    if let Some(e) = parse_failure(&parsed, src) {
+        return Err(e);
+    }
+    rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode).map_err(include_error)
+}
+
+/// The includer every SAPI installs: compile an included or eval'd file.
 fn install_includer(vm: &mut Vm) {
-    vm.set_includer(|file: &str, src: &[u8]| {
-        let arena = Arena::new();
-        let parsed = arena.parse(file.as_bytes(), src);
-        if let Some(f) = parse_error(&parsed, src) {
-            return Err(IncludeError::Parse {
-                class: f.class,
-                message: f.message,
-                line: f.line,
-            });
-        }
-        compile_include(parsed.program(), src, file).map_err(include_error)
-    });
+    vm.set_includer(|file: &str, src: &[u8]| compile_file(file, src, Mode::Include));
 }
 
 /// A compile entry point's failure as the includer reports it: a compile
 /// error (E_COMPILE_ERROR) is a located fatal, anything else is thrown.
-pub fn include_error(t: Thrown) -> IncludeError {
+fn include_error(t: Thrown) -> IncludeError {
     match t {
         Thrown::Error {
             class: "CompileError",
@@ -156,6 +228,10 @@ pub fn include_error(t: Thrown) -> IncludeError {
 /// nothing did, and flush. Parse errors are displayed per `display_errors`
 /// (exit 255); uncaught throwables are reported like php does.
 pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
+    // php refuses to start when preloading fails.
+    if !preload(&*sapi, &req.ini) {
+        return Outcome::Exit(1);
+    }
     let (file, source, argv0) = match &req.script {
         Script::File(path) => {
             let source = match std::fs::read(path) {
@@ -175,6 +251,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
                 .unwrap_or_else(|_| path.clone());
             (file, source, path.clone())
         }
+        Script::Source { path, bytes } => (path.clone(), bytes.clone(), path.clone()),
         Script::Stdin => {
             let mut src = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
@@ -200,8 +277,10 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         }
     };
 
-    let mut vm = Vm::new();
-    vm.set_sapi(sapi);
+    let mut vm = Vm::new(sapi);
+    if let Some(dir) = &req.cwd {
+        vm.set_cwd(dir);
+    }
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
@@ -210,32 +289,33 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     }
     vm.start_request();
 
-    let arena = Arena::new();
-    let parsed = arena.parse(file.as_bytes(), &source);
-    if let Some(f) = parse_error(&parsed, &source) {
-        // line 0: php raised it outside any file
-        let at = if f.line == 0 {
-            "[no active file]"
-        } else {
-            &file
-        };
-        vm.report_parse_error(f.class, &f.message, at, f.line);
-        vm.finish_request();
-        return Outcome::Exit(255);
-    }
-    // Compile to owned bytecode; the arena can be dropped after this.
-    let program = match compile_with_source(parsed.program(), &source, &file) {
+    // Compile to owned bytecode (the arena is dropped after this). A script
+    // file goes through the compiled-script cache; `-r` code and standard
+    // input never do, as in php.
+    let compile = |source: &[u8]| compile_file(&file, source, Mode::Main);
+    let compiled = match req.script {
+        Script::File(_) => vm.compile_main(&file, &argv0, source, compile),
+        _ => compile(&source).map(std::rc::Rc::new),
+    };
+    let program = match compiled {
         Ok(p) => p,
-        Err(t) => {
-            let t = match include_error(t) {
-                IncludeError::Compile { message, line } => {
-                    vm.compile_error(&message, file.as_bytes(), line);
-                    vm.finish_request();
-                    return Outcome::Exit(255);
-                }
-                IncludeError::Thrown(t) => t,
-                IncludeError::Parse { .. } => unreachable!("not built by include_error"),
-            };
+        Err(IncludeError::Parse {
+            class,
+            message,
+            line,
+        }) => {
+            // line 0: php raised it outside any file
+            let at = if line == 0 { "[no active file]" } else { &file };
+            vm.report_parse_error(class, &message, at, line);
+            vm.finish_request();
+            return Outcome::Exit(255);
+        }
+        Err(IncludeError::Compile { message, line }) => {
+            vm.compile_error(&message, file.as_bytes(), line);
+            vm.finish_request();
+            return Outcome::Exit(255);
+        }
+        Err(IncludeError::Thrown(t)) => {
             let code = fatal(&mut vm, t);
             vm.finish_request();
             return Outcome::Exit(code);
@@ -245,7 +325,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Some(bin) = req.php_binary {
         vm.set_constant("PHP_BINARY", Value::str(bin));
     }
-    if let Script::File(_) = req.script {
+    if let Script::File(_) | Script::Source { .. } = req.script {
         // The top-level script's path, so `Phar::mapPhar` can parse it.
         vm.set_main_script_path(file.as_bytes().to_vec());
     }
@@ -261,6 +341,75 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     };
     vm.finish_request();
     Outcome::Exit(code)
+}
+
+/// The SAPI `opcache.preload` runs under: the request's SAPI name and ini
+/// defaults, output straight to the process's stdout, no headers (php's
+/// `preload_ub_write` and friends).
+struct PreloadSapi {
+    name: String,
+    defaults: Vec<(&'static str, &'static str)>,
+    exits_on_hard_limit: bool,
+}
+
+impl Sapi for PreloadSapi {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
+        self.defaults.clone()
+    }
+
+    fn stores_headers(&self) -> bool {
+        false
+    }
+
+    fn ub_write(&mut self, data: &[u8]) {
+        let mut so = std::io::stdout().lock();
+        let _ = so.write_all(data);
+        let _ = so.flush();
+    }
+
+    fn flush(&mut self) {
+        let _ = std::io::stdout().flush();
+    }
+
+    fn exits_on_hard_limit(&self) -> bool {
+        self.exits_on_hard_limit
+    }
+}
+
+/// Run `opcache.preload` once per thread, before the first request that
+/// has opcache on (php runs it at startup). Its functions and classes are
+/// then declared in every request on this thread. False: preloading failed,
+/// now or in an earlier request on this thread (php doesn't start).
+fn preload(sapi: &dyn Sapi, ini: &[(String, String)]) -> bool {
+    let set = |k: &str, v: &str| k == "opcache.preload" && !v.is_empty();
+    if !ini.iter().any(|(k, v)| set(k, v)) && !sapi.ini_defaults().iter().any(|(k, v)| set(k, v)) {
+        return true;
+    }
+    if let Some(ok) = Vm::preload_outcome() {
+        return ok;
+    }
+    let mut vm = Vm::new(Box::new(PreloadSapi {
+        name: sapi.name().to_string(),
+        defaults: sapi.ini_defaults(),
+        exits_on_hard_limit: sapi.exits_on_hard_limit(),
+    }));
+    for (k, v) in ini {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    let Some(path) = vm.preload_pending() else {
+        return true;
+    };
+    let file = std::fs::canonicalize(&path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.clone());
+    install_includer(&mut vm);
+    let ok = vm.run_preload(&path, |source| compile_file(&file, source, Mode::Main));
+    vm.finish_request();
+    ok
 }
 
 /// Report an uncaught throwable (or honour `exit`); returns the exit code.
@@ -279,18 +428,29 @@ fn fatal(vm: &mut Vm, t: Thrown) -> i32 {
     255
 }
 
+/// A `-d key[=value]` setting (php_ini_builder_define, shared by php-cli
+/// and php-cgi): `key` alone is `key=1`.
+pub(crate) fn ini_define(kv: &str) -> (String, String) {
+    let (k, v) = kv.split_once('=').unwrap_or((kv, "1"));
+    (k.trim().to_string(), ini_define_value(v))
+}
+
 /// The value php gives a `-d key=value` setting (php_ini_builder_define,
 /// shared by php-cli and php-cgi): one starting with a character other than
 /// an alphanumeric or a quote is taken literally; otherwise it goes through
 /// the ini scanner, which unquotes a quoted string, stops a bare value at a
-/// `;` comment, and maps the bareword booleans (`On`/`Yes`/`True` → "1",
-/// `Off`/`No`/`False`/`None`/`Null` → ""). Constant expressions
-/// (`E_ALL & ~E_NOTICE`) are not evaluated.
+/// `;` comment, maps the bareword booleans (`On`/`Yes`/`True` → "1",
+/// `Off`/`No`/`False`/`None`/`Null` → ""), replaces a constant's name by
+/// its value and evaluates `| & ^ ~ !` expressions (`E_ALL & ~E_NOTICE`).
 pub fn ini_define_value(raw: &str) -> String {
-    let v = raw.trim();
-    let Some(first) = v.chars().next() else {
+    let Some(first) = raw.chars().next() else {
         return String::new();
     };
+    if !first.is_ascii_alphanumeric() && first != '"' && first != '\'' {
+        // Quoted by php_ini_builder_define, leading whitespace included.
+        return raw.to_string();
+    }
+    let v = raw.trim_end();
     if first == '"' || first == '\'' {
         let inner = &v[1..];
         return match inner.find(first) {
@@ -298,15 +458,217 @@ pub fn ini_define_value(raw: &str) -> String {
             None => inner.to_string(),
         };
     }
-    if !first.is_ascii_alphanumeric() {
-        return v.to_string();
-    }
     let v = v.split(';').next().unwrap_or("").trim_end();
     match v.to_ascii_lowercase().as_str() {
         "on" | "yes" | "true" => "1".to_string(),
         "off" | "no" | "false" | "none" | "null" => String::new(),
-        _ => v.to_string(),
+        _ => ini_expr(v),
     }
+}
+
+/// The ini parser's value grammar (zend_ini_parser.y): runs of value
+/// characters, a constant name standing for its value, and the integer
+/// operators `| & ^` (one precedence, left to right) and prefix `~ !`,
+/// computed as C `int`s.
+fn ini_expr(v: &str) -> String {
+    const OPS: &[u8] = b"&|^~()!";
+    let b = v.as_bytes();
+    // Operands are the text between operators, constants substituted.
+    let operand = |s: &str| -> String {
+        let mut out = String::new();
+        let mut word = String::new();
+        let flush = |w: &mut String, out: &mut String| {
+            let ident = w
+                .bytes()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+            match ident.then(|| ini_constant(w)).flatten() {
+                Some(c) => out.push_str(&c),
+                None => out.push_str(w),
+            }
+            w.clear();
+        };
+        for ch in s.chars() {
+            if ch == ' ' || ch == '\t' {
+                flush(&mut word, &mut out);
+                out.push(ch);
+            } else {
+                word.push(ch);
+            }
+        }
+        flush(&mut word, &mut out);
+        out
+    };
+    if !b.iter().any(|c| OPS.contains(c)) {
+        return operand(v);
+    }
+    // Recursive descent over the token stream.
+    enum Tok {
+        Op(u8),
+        Val(String),
+    }
+    let mut toks = Vec::new();
+    let mut start = 0;
+    for (i, c) in b.iter().enumerate() {
+        if OPS.contains(c) {
+            let text = v[start..i].trim();
+            if !text.is_empty() {
+                toks.push(Tok::Val(operand(text)));
+            }
+            toks.push(Tok::Op(*c));
+            start = i + 1;
+        }
+    }
+    let text = v[start..].trim();
+    if !text.is_empty() {
+        toks.push(Tok::Val(operand(text)));
+    }
+    fn unary(t: &[Tok], i: &mut usize) -> i32 {
+        match t.get(*i) {
+            Some(Tok::Op(b'~')) => {
+                *i += 1;
+                !unary(t, i)
+            }
+            Some(Tok::Op(b'!')) => {
+                *i += 1;
+                (unary(t, i) == 0) as i32
+            }
+            Some(Tok::Op(b'(')) => {
+                *i += 1;
+                let v = binary(t, i);
+                if matches!(t.get(*i), Some(Tok::Op(b')'))) {
+                    *i += 1;
+                }
+                v
+            }
+            Some(Tok::Val(s)) => {
+                *i += 1;
+                rhp_builtins::c_atoi(s.as_bytes())
+            }
+            _ => 0,
+        }
+    }
+    fn binary(t: &[Tok], i: &mut usize) -> i32 {
+        let mut acc = unary(t, i);
+        while let Some(Tok::Op(op @ (b'|' | b'&' | b'^'))) = t.get(*i) {
+            *i += 1;
+            let rhs = unary(t, i);
+            acc = match op {
+                b'|' => acc | rhs,
+                b'&' => acc & rhs,
+                _ => acc ^ rhs,
+            };
+        }
+        acc
+    }
+    binary(&toks, &mut 0).to_string()
+}
+
+/// The constants that exist when php parses `-d` settings (php_init_config):
+/// Zend's standard constants and main's. Extensions register theirs later,
+/// so `SORT_DESC` or `M_PI` stay literal.
+const INI_CONSTANTS: &[&str] = &[
+    // Zend/zend_constants.stub.php
+    "E_ERROR",
+    "E_WARNING",
+    "E_PARSE",
+    "E_NOTICE",
+    "E_CORE_ERROR",
+    "E_CORE_WARNING",
+    "E_COMPILE_ERROR",
+    "E_COMPILE_WARNING",
+    "E_USER_ERROR",
+    "E_USER_WARNING",
+    "E_USER_NOTICE",
+    "E_STRICT",
+    "E_RECOVERABLE_ERROR",
+    "E_DEPRECATED",
+    "E_USER_DEPRECATED",
+    "E_ALL",
+    "DEBUG_BACKTRACE_PROVIDE_OBJECT",
+    "DEBUG_BACKTRACE_IGNORE_ARGS",
+    "ZEND_THREAD_SAFE",
+    "ZEND_DEBUG_BUILD",
+    "ZEND_VM_KIND",
+    // main/main.stub.php
+    "PHP_VERSION",
+    "PHP_MAJOR_VERSION",
+    "PHP_MINOR_VERSION",
+    "PHP_RELEASE_VERSION",
+    "PHP_EXTRA_VERSION",
+    "PHP_VERSION_ID",
+    "PHP_BUILD_DATE",
+    "PHP_BUILD_PROVIDER",
+    "PHP_ZTS",
+    "PHP_DEBUG",
+    "PHP_OS",
+    "PHP_OS_FAMILY",
+    "DEFAULT_INCLUDE_PATH",
+    "PEAR_INSTALL_DIR",
+    "PEAR_EXTENSION_DIR",
+    "PHP_EXTENSION_DIR",
+    "PHP_PREFIX",
+    "PHP_BINDIR",
+    "PHP_SBINDIR",
+    "PHP_MANDIR",
+    "PHP_LIBDIR",
+    "PHP_DATADIR",
+    "PHP_SYSCONFDIR",
+    "PHP_LOCALSTATEDIR",
+    "PHP_CONFIG_FILE_PATH",
+    "PHP_CONFIG_FILE_SCAN_DIR",
+    "PHP_SHLIB_SUFFIX",
+    "PHP_EOL",
+    "PHP_MAXPATHLEN",
+    "PHP_INT_MAX",
+    "PHP_INT_MIN",
+    "PHP_INT_SIZE",
+    "PHP_FD_SETSIZE",
+    "PHP_FLOAT_DIG",
+    "PHP_FLOAT_EPSILON",
+    "PHP_FLOAT_MAX",
+    "PHP_FLOAT_MIN",
+    "PHP_OUTPUT_HANDLER_START",
+    "PHP_OUTPUT_HANDLER_WRITE",
+    "PHP_OUTPUT_HANDLER_FLUSH",
+    "PHP_OUTPUT_HANDLER_CLEAN",
+    "PHP_OUTPUT_HANDLER_FINAL",
+    "PHP_OUTPUT_HANDLER_CONT",
+    "PHP_OUTPUT_HANDLER_END",
+    "PHP_OUTPUT_HANDLER_CLEANABLE",
+    "PHP_OUTPUT_HANDLER_FLUSHABLE",
+    "PHP_OUTPUT_HANDLER_REMOVABLE",
+    "PHP_OUTPUT_HANDLER_STDFLAGS",
+    "PHP_OUTPUT_HANDLER_STARTED",
+    "PHP_OUTPUT_HANDLER_DISABLED",
+    "PHP_OUTPUT_HANDLER_PROCESSED",
+    "UPLOAD_ERR_OK",
+    "UPLOAD_ERR_INI_SIZE",
+    "UPLOAD_ERR_FORM_SIZE",
+    "UPLOAD_ERR_PARTIAL",
+    "UPLOAD_ERR_NO_FILE",
+    "UPLOAD_ERR_NO_TMP_DIR",
+    "UPLOAD_ERR_CANT_WRITE",
+    "UPLOAD_ERR_EXTENSION",
+    "PHP_SAPI",
+    "PHP_BINARY",
+];
+
+/// A constant's value as the ini scanner substitutes it.
+fn ini_constant(name: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static CONSTANTS: OnceLock<HashMap<&'static str, Vec<u8>>> = OnceLock::new();
+    let m = CONSTANTS.get_or_init(|| {
+        rhp_builtins::constants()
+            .into_iter()
+            .filter(|(n, _)| INI_CONSTANTS.contains(n))
+            .filter(|(_, v)| !matches!(v, Value::Array(_) | Value::Object(_)))
+            .map(|(n, v)| (n, rhp_values::conv::to_string_bytes(&v)))
+            .collect()
+    });
+    m.get(name).map(|v| String::from_utf8_lossy(v).into_owned())
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
@@ -326,6 +688,7 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
         args,
         info: None,
         php_binary,
+        cwd: None,
     };
     match run_request(Box::new(CliSapi), req) {
         Outcome::Exit(code) => code,
@@ -337,23 +700,4 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ini_define_value as v;
-
-    #[test]
-    fn ini_define_values_match_php() {
-        assert_eq!(v("On"), "1");
-        assert_eq!(v("on "), "1");
-        assert_eq!(v("TRUE"), "1");
-        assert_eq!(v("true;x"), "1");
-        assert_eq!(v("off"), "");
-        assert_eq!(v("NULL"), "");
-        assert_eq!(v("none"), "");
-        assert_eq!(v("\"On\""), "On");
-        assert_eq!(v("'On'"), "On");
-        assert_eq!(v(""), "");
-        assert_eq!(v("-1"), "-1");
-        assert_eq!(v("128M"), "128M");
-        assert_eq!(v("/a;b"), "/a;b");
-    }
-}
+mod tests;

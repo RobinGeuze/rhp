@@ -1,0 +1,49 @@
+bool(true)
+10 root               d=0 empty=0 hasval=0 val="" attrs=0 ns="" prefix= local=root
+1 root               d=0 empty=0 hasval=0 val="" attrs=3 ns="" prefix= local=root
+string(1) "1"
+NULL
+string(5) "urn:p"
+string(1) "2"
+  attr 2 xmlns:p=urn:p d=1
+  attr 2 a=1 d=1
+  attr 2 p:b=2 d=1
+  back root
+14 #text              d=1 empty=0 hasval=1 val="\n  " attrs=0 ns="" prefix= local=#text
+1 item               d=1 empty=0 hasval=0 val="" attrs=1 ns="" prefix= local=item
+NULL
+NULL
+string(1) "x"
+NULL
+  attr 2 id=x d=2
+  back item
+string(13) "one &amp; two"
+string(33) "<item id="x">one &amp; two</item>"
+string(9) "one & two"
+3 #text              d=2 empty=0 hasval=1 val="one & two" attrs=0 ns="" prefix= local=#text
+15 item               d=1 empty=0 hasval=0 val="" attrs=0 ns="" prefix= local=item
+14 #text              d=1 empty=0 hasval=1 val="\n  " attrs=0 ns="" prefix= local=#text
+1 empty              d=1 empty=1 hasval=0 val="" attrs=0 ns="" prefix= local=empty
+1 p:n                d=1 empty=0 hasval=0 val="" attrs=0 ns="urn:p" prefix=p local=n
+3 #text              d=2 empty=0 hasval=1 val="t" attrs=0 ns="" prefix= local=#text
+15 p:n                d=1 empty=0 hasval=0 val="" attrs=0 ns="urn:p" prefix=p local=n
+8 #comment           d=1 empty=0 hasval=1 val=" c " attrs=0 ns="" prefix= local=#comment
+7 pi                 d=1 empty=0 hasval=1 val="d" attrs=0 ns="" prefix= local=pi
+4 #cdata-section     d=1 empty=0 hasval=1 val="cd" attrs=0 ns="" prefix= local=#cdata-section
+14 #text              d=1 empty=0 hasval=1 val="\n" attrs=0 ns="" prefix= local=#text
+15 root               d=0 empty=0 hasval=0 val="" attrs=0 ns="" prefix= local=root
+bool(false)
+int(0)
+string(0) ""
+b
+c
+b 3
+bool(true)
+string(10) "DOMElement"
+string(1) "x"
+string(1) "1"
+int(1)
+int(1)
+int(15)
+int(14)
+int(4)

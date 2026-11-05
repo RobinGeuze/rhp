@@ -107,7 +107,7 @@ fn open_wrapper(
         }
     };
     // php_stream_locate_url_wrapper: a file:// URL opens as a plain path.
-    let (scheme, _) = crate::streams::split_scheme(&resolved);
+    let (scheme, _) = crate::main::streams::split_scheme(&resolved);
     let is_url = resolved.len() > scheme.len() && resolved[scheme.len()..].starts_with(b"://");
     let plain = !is_url || scheme.eq_ignore_ascii_case(b"file");
     let path: Vec<u8> = if is_url && scheme.eq_ignore_ascii_case(b"file") {
@@ -142,7 +142,7 @@ fn open_wrapper(
     if super::stream_context().is_none() {
         h.default_stream_context();
     }
-    crate::streams::clear_errno();
+    crate::main::streams::clear_errno();
     match h.stream_open(&path, mode) {
         Some(res) => Ok(Some(res)),
         None => {
@@ -364,30 +364,26 @@ fn external_entity_loader(
 pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
     match v {
         Value::Array(_) => {
-            h.emit_diagnostic(crate::E_WARNING, "Array to string conversion")?;
+            h.emit_diagnostic(crate::E_WARNING, b"Array to string conversion")?;
             Ok(b"Array".to_vec())
         }
-        Value::Object(_) => {
-            let cls = h.object_class_name(v).unwrap_or_default();
-            let has = h
-                .resolve_class(&cls)
-                .is_some_and(|id| h.class_has_method(id, b"__tostring"));
-            if !has {
-                return Err(Thrown::error(
+        Value::Object(_) => match crate::zend::object_handlers::to_string(h, v)? {
+            Some(s) => Ok(s),
+            None => {
+                let cls = h.object_class_name(v).unwrap_or_default();
+                Err(Thrown::error(
                     "Error",
                     format!(
                         "Object of class {} could not be converted to string",
                         String::from_utf8_lossy(&cls)
                     ),
-                ));
+                ))
             }
-            let mut cb = PhpArray::new();
-            cb.push(v.clone());
-            cb.push(Value::str("__toString"));
-            Ok(conv::to_string_bytes(
-                &h.call_callable(&Value::Array(cb), &[])?,
-            ))
-        }
+        },
+        Value::Closure(_) => Err(Thrown::error(
+            "Error",
+            "Object of class Closure could not be converted to string",
+        )),
         other => Ok(conv::to_string_bytes(other)),
     }
 }

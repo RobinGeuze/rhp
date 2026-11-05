@@ -1,0 +1,15 @@
+arg -ab
+arg -cval
+arg -d
+arg dv
+arg --long=lv
+arg --req
+arg rv
+arg --flag
+arg --flag
+arg -a
+arg --1
+arg --unknown
+arg -z
+arg rest
+arg -a

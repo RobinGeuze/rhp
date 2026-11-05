@@ -1,0 +1,63 @@
+testsuites/testsuite                     => 2: testsuite="tests\/Unita.php" testsuite="tests\/Iso"
+//directory                              => 2: directory="tests\/Unit" directory="tests\/Iso"
+php/ini                                  => 2: ini="" ini=""
+//comment()                              => 1: #comment=" a comment "
+/phpunit/*                               => 3: testsuites="tests\/Unita.phptests\/Iso" php="" n:extra="onetwo"
+//testsuite[@name="iso"]/directory       => 1: directory="tests\/Iso"
+//ini[2]                                 => 1: ini=""
+//ini[last()]                            => 1: ini=""
+//ini[position() < 2]/@name              => 1: name="a"
+//@name                                  => 5: name="unit" name="iso" name="a" name="b" name="X"
+testsuites/testsuite[1]/*                => 2: directory="tests\/Unit" file="a.php"
+//text()                                 => 5: #text="tests\/Unit" #text="a.php" #text="tests\/Iso" #text="one" #text="two"
+(//ini | //const)                        => 3: ini="" ini="" const=""
+//testsuite[directory/@suffix]           => 1: testsuite="tests\/Unita.php"
+//*[not(*)]                              => 8: directory="tests\/Unit" file="a.php" directory="tests\/Iso" ini="" ini="" const="" n:item="one" n:item="two"
+//ini[@value > 1]                        => 1: ini=""
+child::php/child::ini[@name = "b"]       => 1: ini=""
+//testsuite[contains(@name, "n")]        => 1: testsuite="tests\/Unita.php"
+..                                       => 1: #document=null
+.                                        => 1: phpunit="tests\/Unita.phptests\/Isoonetwo"
+//directory/..                           => 2: testsuite="tests\/Unita.php" testsuite="tests\/Iso"
+//ini/following-sibling::*               => 2: ini="" const=""
+//const/preceding-sibling::ini           => 2: ini="" ini=""
+count(//ini)                             => 2.0
+string(//ini/@name)                      => 'a'
+sum(//ini/@value)                        => 3.0
+name(/*)                                 => 'phpunit'
+local-name(//*[last()])                  => 'phpunit'
+1 = 1                                    => true
+//ini/@value = 2                         => true
+concat("a", "b", 3)                      => 'ab3'
+substring("12345", 2, 3)                 => '234'
+string-length("héllo")                  => 5.0
+normalize-space("  a  b ")               => 'a b'
+translate("abc", "ab", "AB")             => 'ABc'
+10 div 4                                 => 2.5
+7 mod 3                                  => 1.0
+-3 + 1.5                                 => -1.5
+floor(2.7)                               => 2.0
+ceiling(2.1)                             => 3.0
+round(2.5)                               => 3.0
+boolean(//nope)                          => false
+not(true())                              => false
+number("12")                             => 12.0
+starts-with("phpunit", "php")            => true
+substring-before("a/b", "/")             => 'a'
+substring-after("a/b", "/")              => 'b'
+1 div 0                                  => INF
+0 div 0                                  => NAN
+string(1 div 3)                          => '0.333333333333333'
+string(0.1 + 0.2)                        => '0.3'
+string(1e20 * 1)                         => '1e+20'
+string(10) "tests/Unit"
+string(4) "unit"
+string(3) "two"
+float(3)
+W[2]: DOMXPath::query(): Invalid expression
+bool(false)
+int(0)
+bool(true)
+string(6) ""it's""
+string(18) "concat('a"b',"'c")"
+int(0)

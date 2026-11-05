@@ -1,0 +1,19 @@
+autoload App\Xml\El
+App\Xml\El
+App\Xml\El
+SimpleXMLIterator
+SimpleXMLElement
+autoload Boom
+Exception: cannot load Boom
+autoload Missing
+TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, Missing given
+TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+TypeError: simplexml_load_string(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+TypeError: simplexml_load_file(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+App\Xml\El
+TypeError: simplexml_import_dom(): Argument #2 ($class_name) must be a class name derived from SimpleXMLElement or null, stdClass given
+autoload Boom
+Exception: cannot load Boom
+TypeError: simplexml_import_dom(): Argument #1 ($node) must be a valid XML node
+warning: simplexml_import_dom(): Invalid Nodetype to import
+NULL

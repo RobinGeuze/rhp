@@ -1,0 +1,5 @@
+5
+3
+f(): Argument #1 ($x) must be of type int, string given, called in types_strict_mode.php on line 9
+TE-bool
+TE-ret

@@ -12,7 +12,8 @@ use std::cmp::Ordering;
 
 /// One parameter: its name, its type as Reflection prints it (empty when
 /// untyped), its default as Reflection prints it (empty when none), and
-/// flags ([`R`], [`PR`], [`V`], [`U`]).
+/// flags ([`R`], [`PR`], [`V`], [`U`], and [`ZV`], [`RS`], [`ST`], [`NUL`]
+/// for what a function's C body parses it as).
 #[derive(Debug)]
 pub struct Param {
     pub name: &'static str,
@@ -30,6 +31,14 @@ pub const PR: u8 = 2;
 pub const V: u8 = 4;
 /// Optional without a default value (`= UNKNOWN` in the stub).
 pub const U: u8 = 8;
+/// php's C body parses it as any value (`Z_PARAM_ZVAL`, `z`).
+pub const ZV: u8 = 16;
+/// php's C body parses it as a resource (`Z_PARAM_RESOURCE`, `r`).
+pub const RS: u8 = 32;
+/// php's C body parses it as an open stream (`PHP_Z_PARAM_STREAM`).
+pub const ST: u8 = 64;
+/// With [`RS`] or [`ST`]: or null.
+pub const NUL: u8 = 128;
 
 impl Param {
     pub fn by_ref(&self) -> bool {
@@ -305,6 +314,18 @@ pub fn method(class: &[u8], name: &[u8]) -> Option<&'static Method> {
     })
     .ok()
     .map(|i| &t[i])
+}
+
+/// A `#[\Deprecated]` function's `since` and `message` (each empty when
+/// the attribute leaves it out).
+pub fn deprecation(f: &Func) -> Option<(&'static str, &'static str)> {
+    if !f.deprecated() {
+        return None;
+    }
+    let t = table::DEPRECATIONS;
+    t.binary_search_by(|r| cmp_ci(r.0.as_bytes(), f.name.as_bytes()))
+        .ok()
+        .map(|i| (t[i].1, t[i].2))
 }
 
 /// Every function row.

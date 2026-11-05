@@ -262,10 +262,10 @@ jobs:
           --timeout 60 --check-known tests/asan/phpts.txt
 
   # The committed generated tables still match their sources: php-src's
-  # stubs (builtin signatures, intl, curl, zip) and entity tables, and the
-  # Bison output in the php release tarball (the git tag has none). The
-  # tarball is pinned in tools/php-dist.sha256 and cached on that pin, so
-  # php.net is fetched once per release.
+  # stubs and C bodies (builtin signatures), stubs (intl, curl, zip) and
+  # entity tables, and the Bison output in the php release tarball (the
+  # git tag has none). The tarball is pinned in tools/php-dist.sha256 and
+  # cached on that pin, so php.net is fetched once per release.
   generated:
     name: generated tables
     needs: build
@@ -284,6 +284,11 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             **/*.stub.php
+            /Zend/**/*.c
+            /main/**/*.c
+            /ext/**/*.c
+            /sapi/cgi/*.c
+            /sapi/cli/*.c
             /ext/standard/html_tables/
             /ext/standard/html_tables.h
             /ext/curl/curl_private.h

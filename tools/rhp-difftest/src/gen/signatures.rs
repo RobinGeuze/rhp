@@ -9,9 +9,12 @@
 //!   pretty printer after name resolution), which is the string Reflection
 //!   shows;
 //! - by-ref, `@prefer-ref`, variadic, `@tentative-return-type`,
-//!   `@frameless-function` arities, `#[\Deprecated]`, modifiers, parent
-//!   and interfaces;
-//! - the extension name php registers the item under.
+//!   `@frameless-function` arities, `#[\Deprecated]` (with a function's
+//!   `since` and `message`), modifiers, parent and interfaces;
+//! - the extension name php registers the item under;
+//! - for a function parameter php's C body parses as any value, a resource
+//!   or a stream (`zpp.rs`), that parse, so the VM's zpp pass can check
+//!   past it.
 //!
 //! Declarations php only compiles on Windows or in debug builds are left out.
 
@@ -170,14 +173,19 @@ struct Param {
     by_ref: bool,
     prefer_ref: bool,
     variadic: bool,
+    /// What php's C body parses it as, when the VM can check that.
+    parse: Option<zpp::Parse>,
 }
 
 #[derive(Debug)]
 struct Func {
     name: String,
+    /// The C function (`@alias` / `@implementation-alias`, else the name).
+    imp: String,
     ext: &'static str,
     ret: String,
-    deprecated: bool,
+    /// `#[\Deprecated]`'s `since` and `message` (empty when not given).
+    deprecated: Option<(String, String)>,
     /// `F_FRAMELESS << arity` for each `@frameless-function`.
     frameless: u32,
     params: Vec<Param>,
@@ -283,7 +291,32 @@ fn generate(php_src: &Path) -> Result<String, String> {
             .to_string();
         parse_stub(&rel, &src, ext, &mut out).map_err(|e| format!("{rel}: {e}"))?;
     }
+    let mut dirs: Vec<&str> = SOURCES.iter().map(|&(rel, _)| rel).collect();
+    dirs.push("main");
+    let parses = zpp::scan(php_src, &dirs)?;
+    for fr in out.funcs.values_mut() {
+        apply_parses(fr, &parses);
+    }
     Ok(render(&out))
+}
+
+/// Record the C body's parse of a function's parameters, when it has one
+/// entry per stub parameter: any value on any parameter, a resource or a
+/// stream on an untyped one.
+fn apply_parses(fr: &mut Func, parses: &zpp::Parses) {
+    let Some(ps) = parses.get(&fr.imp) else {
+        return;
+    };
+    if ps.len() != fr.params.len() {
+        return;
+    }
+    for (p, &parse) in fr.params.iter_mut().zip(ps) {
+        p.parse = match parse {
+            zpp::Parse::Zval => Some(parse),
+            zpp::Parse::Resource(_) | zpp::Parse::Stream(_) if p.ty.is_empty() => Some(parse),
+            _ => None,
+        };
+    }
 }
 
 /// Per-file parse state.
@@ -440,11 +473,18 @@ fn walk_stmts(
                 let name = qualify(&ns, &String::from_utf8_lossy(func.name.value));
                 let params =
                     params(&func.parameter_list, doc, &ns).map_err(|e| format!("{name}: {e}"))?;
+                // Namespaced functions are ZEND_NS_FUNCTIONs: no C name.
+                let imp = doc_tags(doc)
+                    .into_iter()
+                    .find(|(t, _)| t == "alias" || t == "implementation-alias")
+                    .map_or_else(|| name.clone(), |(_, v)| v);
                 let row = Func {
                     name: name.clone(),
+                    imp: if ns.is_empty() { imp } else { String::new() },
                     ext: f.ext,
                     ret: ret_type(&func.return_type_hint, &ns),
-                    deprecated: has_attr(&func.attribute_lists, "Deprecated"),
+                    deprecated: deprecated_attr(&func.attribute_lists)
+                        .map_err(|e| format!("{name}: {e}"))?,
                     frameless: frameless_arities(doc).map_err(|e| format!("{name}: {e}"))?,
                     params,
                 };
@@ -679,6 +719,39 @@ fn has_attr(lists: &Sequence<rhp_compiler::parse::cst::AttributeList>, name: &st
     })
 }
 
+/// The `since` and `message` of a `#[\Deprecated]` attribute (literal
+/// strings, named or in Deprecated::__construct's order), if it has one.
+fn deprecated_attr(
+    lists: &Sequence<rhp_compiler::parse::cst::AttributeList>,
+) -> Result<Option<(String, String)>, String> {
+    use rhp_compiler::parse::cst::PartialArgument;
+    let Some(a) = lists.iter().flat_map(|l| l.attributes.iter()).find(|a| {
+        let n = ident_bytes(&a.name);
+        n.strip_prefix(b"\\")
+            .unwrap_or(n)
+            .eq_ignore_ascii_case(b"Deprecated")
+    }) else {
+        return Ok(None);
+    };
+    let mut vals = [String::new(), String::new()];
+    let args = a.argument_list.iter().flat_map(|l| l.arguments.iter());
+    for (pos, arg) in args.enumerate() {
+        let (slot, value) = match arg {
+            PartialArgument::Positional(p) if pos < 2 => (pos, p.value),
+            PartialArgument::Named(n) if n.name.value == b"message" => (0, n.value),
+            PartialArgument::Named(n) if n.name.value == b"since" => (1, n.value),
+            _ => return Err("unexpected #[\\Deprecated] argument".into()),
+        };
+        let Expression::Literal(Literal::String(s)) = value else {
+            return Err("#[\\Deprecated] argument is no string literal".into());
+        };
+        let v = s.value.ok_or("undecodable string literal")?;
+        vals[slot] = String::from_utf8_lossy(v).into_owned();
+    }
+    let [message, since] = vals;
+    Ok(Some((since, message)))
+}
+
 /// The `@frameless-function {"arity": N}` tags of a doc comment, as
 /// `F_FRAMELESS << N` bits (zend's arities are 0 to 3).
 fn frameless_arities(doc: &str) -> Result<u32, String> {
@@ -748,6 +821,7 @@ fn params(list: &FunctionLikeParameterList, doc: &str, ns: &str) -> Result<Vec<P
             by_ref: p.ampersand.is_some() || prefer_ref,
             prefer_ref,
             variadic: p.ellipsis.is_some(),
+            parse: None,
         });
     }
     Ok(out)
@@ -1171,6 +1245,16 @@ fn render_params(ps: &[Param]) -> String {
             if p.default.as_deref() == Some("") {
                 fl.push("U");
             }
+            match p.parse {
+                Some(zpp::Parse::Zval) => fl.push("ZV"),
+                Some(zpp::Parse::Resource(n)) => {
+                    fl.extend(["RS"].into_iter().chain(n.then_some("NUL")))
+                }
+                Some(zpp::Parse::Stream(n)) => {
+                    fl.extend(["ST"].into_iter().chain(n.then_some("NUL")))
+                }
+                Some(zpp::Parse::Other) | None => {}
+            }
             let fl = if fl.is_empty() {
                 "0".to_string()
             } else {
@@ -1191,14 +1275,18 @@ fn render(out: &Out) -> String {
     s.push_str(
         "// @generated by `rhp-difftest gen signatures` from php-src's *.stub.php at\n\
          // tests/phpt/php-src.ref. Do not edit; regenerate instead.\n\n\
-         use super::{c, f, m, p, Class, Func, Method, PR, R, U, V};\n\n",
+         use super::{c, f, m, p, Class, Func, Method, NUL, PR, R, RS, ST, U, V, ZV};\n\n",
     );
     s.push_str(
         "/// Functions, sorted by lowercase name: name, extension, flags, return type, params.\n",
     );
     s.push_str("#[rustfmt::skip]\npub static FUNCTIONS: &[Func] = &[\n");
     for fr in out.funcs.values() {
-        let flags = if fr.deprecated { M_DEPRECATED } else { 0 } | fr.frameless;
+        let flags = if fr.deprecated.is_some() {
+            M_DEPRECATED
+        } else {
+            0
+        } | fr.frameless;
         s.push_str(&format!(
             "f({}, {}, {flags}, {}, {}),\n",
             lit(&fr.name),
@@ -1206,6 +1294,21 @@ fn render(out: &Out) -> String {
             lit(&fr.ret),
             render_params(&fr.params)
         ));
+    }
+    s.push_str("];\n\n");
+    s.push_str(
+        "/// `#[\\Deprecated]` functions, sorted by lowercase name: name, since, message.\n",
+    );
+    s.push_str("#[rustfmt::skip]\npub static DEPRECATIONS: &[(&str, &str, &str)] = &[\n");
+    for fr in out.funcs.values() {
+        if let Some((since, message)) = &fr.deprecated {
+            s.push_str(&format!(
+                "({}, {}, {}),\n",
+                lit(&fr.name),
+                lit(since),
+                lit(message)
+            ));
+        }
     }
     s.push_str("];\n\n");
     s.push_str("/// Classes, sorted by lowercase name: name, extension, kind, flags, parent, interfaces.\n");
@@ -1240,6 +1343,8 @@ fn render(out: &Out) -> String {
     s.push_str("];\n");
     s
 }
+
+mod zpp;
 
 #[cfg(test)]
 mod tests;

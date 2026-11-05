@@ -18,8 +18,45 @@ use crate::util::{compile_error, dirname, strip_dollar};
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
-        self.compile_expr_inner(expr)
-            .map_err(|e| self.cx.locate(e, expr.span().start.offset))
+        let addr = expr as *const Expression as usize;
+        let inner = self.sc_inner == addr;
+        let link = chain_object(expr);
+        if let Some(obj) = link {
+            self.sc_inner = obj as *const Expression as usize;
+        } else if inner {
+            self.sc_inner = 0;
+        }
+        if link.is_none() || inner {
+            return self
+                .compile_expr_inner(expr)
+                .map_err(|e| self.cx.locate(e, expr.span().start.offset));
+        }
+        // The outermost link of a chain: a nullsafe guard anywhere in it
+        // makes the whole chain null.
+        let saved = std::mem::take(&mut self.sc_jumps);
+        let r = self.compile_expr_inner(expr);
+        let jumps = std::mem::replace(&mut self.sc_jumps, saved);
+        let r = r.map_err(|e| self.cx.locate(e, expr.span().start.offset))?;
+        if jumps.is_empty() {
+            return Ok(r);
+        }
+        let jend = self.code.len();
+        self.emit(Instr::Nop);
+        let lnull = self.here();
+        self.emit(Instr::LoadNull { dst: r });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        for (pos, src) in jumps {
+            self.code[pos] = Instr::JmpNull { src, target: lnull };
+        }
+        Ok(r)
+    }
+
+    /// A nullsafe guard on `src` for the open chain.
+    pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
+        let pos = self.code.len();
+        self.emit(Instr::Nop);
+        self.sc_jumps.push((pos, src));
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
@@ -1119,6 +1156,22 @@ fn node_has_yield(node: Node) -> bool {
     let mut found = false;
     node.visit_children(|ch| found = found || node_has_yield(ch));
     found
+}
+
+/// The object (or class, or array) of a chain link that nullsafe
+/// short-circuiting runs through.
+fn chain_object<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    use crate::parse::cst::Call;
+    match e {
+        Expression::Access(Access::Property(p)) => Some(p.object),
+        Expression::Access(Access::NullSafeProperty(p)) => Some(p.object),
+        Expression::Access(Access::StaticProperty(p)) => Some(p.class),
+        Expression::Call(Call::Method(c)) => Some(c.object),
+        Expression::Call(Call::NullSafeMethod(c)) => Some(c.object),
+        Expression::Call(Call::StaticMethod(c)) => Some(c.class),
+        Expression::ArrayAccess(a) => Some(a.array),
+        _ => None,
+    }
 }
 
 fn expr_kind(e: &Expression) -> &'static str {

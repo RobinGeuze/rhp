@@ -261,7 +261,22 @@ impl ProtoBuilder<'_> {
             } else {
                 // A variable's value is taken when its argument is evaluated
                 // (php's SEND_VAR), before later arguments can change it.
-                let r = self.compile_expr(p.value)?;
+                // A file function not compiled yet is called by name: `[]`
+                // in its argument fails at run time (SEND_FUNC_ARG).
+                let late = builtin.is_none() && {
+                    use mago_span::HasSpan;
+                    let at = fc.span().start.offset;
+                    [Some(&name_lc), global_lc.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|n| self.cx.sig_ends.get(n))
+                        .is_some_and(|end| *end > at)
+                };
+                let saved = self.func_arg_read;
+                self.func_arg_read |= late;
+                let r = self.compile_expr(p.value);
+                self.func_arg_read = saved;
+                let r = r?;
                 let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
@@ -817,7 +832,12 @@ impl ProtoBuilder<'_> {
         null_safe: bool,
     ) -> Result<Reg, Thrown> {
         let obj = self.compile_expr(object)?;
-        if !null_safe {
+        // `$o?->m(...)`: a null object makes the whole chain null, without
+        // evaluating the arguments.
+        if null_safe {
+            self.nullsafe_guard(obj);
+        }
+        {
             match self.compile_selector(selector)? {
                 Sel::Static(name) => {
                     if has_spread(args) || has_named(args) {
@@ -873,72 +893,6 @@ impl ProtoBuilder<'_> {
                 }
             }
         }
-        // `$o?->m(...)`: if $o is null, the whole call is null and args are not
-        // evaluated (the guard jumps over both the arg marshalling and the call).
-        let dst = self.alloc_temp();
-        self.emit(Instr::Mov { dst, src: obj });
-        let jn = self.code.len();
-        self.emit(Instr::Nop); // JmpNull dst -> Lnull
-        let sel = self.compile_selector(selector)?;
-        let t = self.alloc_temp();
-        if has_spread(args) || has_named(args) {
-            let args = self.build_args_array(Some(args))?;
-            match sel {
-                Sel::Static(name) => self.emit(Instr::CallMethodV {
-                    dst: t,
-                    obj: dst,
-                    name,
-                    args,
-                }),
-                Sel::Dyn(name) => self.emit(Instr::CallMethodDynV {
-                    dst: t,
-                    obj: dst,
-                    name,
-                    args,
-                }),
-            }
-        } else {
-            match sel {
-                Sel::Static(name) => {
-                    let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window_t(
-                        Some(args),
-                        &mask,
-                        true,
-                        Some(ArgRefTarget::Method(dst, name)),
-                    )?;
-                    self.emit(Instr::CallMethod {
-                        dst: t,
-                        obj: dst,
-                        name,
-                        base,
-                        argc,
-                    });
-                }
-                Sel::Dyn(name) => {
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
-                    self.emit(Instr::CallMethodDyn {
-                        dst: t,
-                        obj: dst,
-                        name,
-                        base,
-                        argc,
-                    });
-                }
-            }
-        }
-        self.emit(Instr::Mov { dst, src: t });
-        let jend = self.code.len();
-        self.emit(Instr::Nop); // Jmp end
-        let lnull = self.here();
-        self.emit(Instr::LoadNull { dst });
-        let end = self.here();
-        self.code[jn] = Instr::JmpNull {
-            src: dst,
-            target: lnull,
-        };
-        self.code[jend] = Instr::Jmp { target: end };
-        Ok(dst)
     }
 
     fn compile_static_call(

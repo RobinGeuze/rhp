@@ -86,6 +86,12 @@ pub(crate) struct ProtoBuilder<'c> {
     /// Compiling the by-value side of a SEND_FUNC_ARG argument: `[]` there
     /// is a runtime Error, not a compile error.
     pub(crate) func_arg_read: bool,
+    /// Nullsafe short-circuiting (zend_short_circuiting_commit): the object
+    /// node of the chain link being compiled, which continues its chain...
+    pub(crate) sc_inner: usize,
+    /// ...and the pending `JmpNull` guards of the open chain, jumping to
+    /// where its outermost link's result is set to null.
+    pub(crate) sc_jumps: Vec<(usize, Reg)>,
     /// CV 0 is `$this`, always set (instance methods and hooks).
     pub(crate) this_bound: bool,
     /// The body contains `yield`.
@@ -142,6 +148,8 @@ impl<'c> ProtoBuilder<'c> {
             hook: None,
             ret_type: None,
             this_bound: false,
+            sc_inner: 0,
+            sc_jumps: Vec::new(),
             func_arg_read: false,
             static_vars: Vec::new(),
             is_generator: false,

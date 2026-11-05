@@ -307,29 +307,12 @@ impl ProtoBuilder<'_> {
             }
             Access::NullSafeProperty(npa) => {
                 // `$o?->p`: null short-circuits the whole access to null.
+                // The chain's outermost link sets the result to null.
                 let obj = self.compile_expr(npa.object)?;
-                let dst = self.alloc_temp();
-                self.emit(Instr::Mov { dst, src: obj });
-                let jn = self.code.len();
-                self.emit(Instr::Nop); // JmpNull dst -> Lnull
+                self.nullsafe_guard(obj);
                 let name = self.selector_name(&npa.property)?;
-                let t = self.alloc_temp();
-                self.emit(Instr::FetchProp {
-                    dst: t,
-                    obj: dst,
-                    name,
-                });
-                self.emit(Instr::Mov { dst, src: t });
-                let jend = self.code.len();
-                self.emit(Instr::Nop); // Jmp end
-                let lnull = self.here();
-                self.emit(Instr::LoadNull { dst });
-                let end = self.here();
-                self.code[jn] = Instr::JmpNull {
-                    src: dst,
-                    target: lnull,
-                };
-                self.code[jend] = Instr::Jmp { target: end };
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchProp { dst, obj, name });
                 Ok(dst)
             }
             Access::StaticProperty(spa) => {

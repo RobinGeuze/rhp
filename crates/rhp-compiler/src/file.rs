@@ -40,6 +40,9 @@ pub(crate) struct FileCtx<'s> {
     /// Function name (fully qualified, lowercase) -> per-parameter by-ref
     /// flags, so a call site can pass by reference to a function it names.
     pub(crate) sigs: HashMap<Vec<u8>, Vec<bool>>,
+    /// The end offset of each function in `sigs`: php knows a function
+    /// at compile time only after its declaration was compiled.
+    pub(crate) sig_ends: HashMap<Vec<u8>, u32>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -110,6 +113,7 @@ impl<'s> FileCtx<'s> {
             is_prelude: false,
             strict_types: false,
             sigs: HashMap::new(),
+            sig_ends: HashMap::new(),
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -148,6 +152,8 @@ impl<'s> FileCtx<'s> {
                     .iter()
                     .map(|p| p.ampersand.is_some())
                     .collect();
+                use mago_span::HasSpan;
+                cx.sig_ends.insert(fqn.clone(), func.span().end.offset);
                 cx.sigs.insert(fqn, flags);
             }
         }

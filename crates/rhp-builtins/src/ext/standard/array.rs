@@ -780,11 +780,11 @@ fn array_binop(
                     acc = op(&acc, &Value::Int(0))?;
                     None
                 }
-                Some(_) => {
+                Some((num, _)) => {
                     if conv::numeric_string(s.as_bytes()).is_none() {
                         host.emit_diagnostic(E_WARNING, b"A non-numeric value encountered")?;
                     }
-                    Some(v.clone())
+                    Some(num.to_value())
                 }
             },
             _ => Some(v.clone()),

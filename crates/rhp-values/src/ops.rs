@@ -69,27 +69,45 @@ pub fn inc_dec_value(v: &Value, delta: i64) -> Value {
     }
 }
 
-/// Coerce an operand to a number for arithmetic, raising `TypeError` for
-/// unsupported types and non-numeric strings (PHP 8 behavior).
+/// Coerce an operand to a number for arithmetic without an engine: only
+/// operands php converts silently. Anything that would warn or throw (a
+/// leading-numeric or non-numeric string, an array, a resource, an object)
+/// is an error; the VM's slow path (`compare.rs`) handles those with php's
+/// diagnostics, and constant folding leaves them to run time.
 fn arith_num(v: &Value, op: &str) -> Result<Num, Thrown> {
     match v {
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => Ok(conv::to_number(v).0),
-        Value::Str(s) => match conv::scan_number(s.as_bytes()) {
-            // leading-numeric strings are allowed (PHP warns; we accept)
-            Some((num, _)) => Ok(num),
-            None => Err(Thrown::type_error(format!(
-                "Unsupported operand types: string {op} int"
-            ))),
-        },
-        Value::Array(_) => Err(Thrown::type_error(format!(
-            "Unsupported operand types: array {op} int"
-        ))),
-        Value::Object(_) | Value::Closure(_) => Err(Thrown::type_error(format!(
-            "Unsupported operand types: object {op} int"
-        ))),
-        Value::Resource(r) => Ok(Num::Int(r.id as i64)),
+        Value::Str(s) if s.as_bytes().first().is_none_or(|&c| c <= b'9') => {
+            match conv::numeric_string(s.as_bytes()) {
+                Some(num) => Ok(num),
+                None => Err(unsupported(op)),
+            }
+        }
         Value::Ref(r) => arith_num(&r.borrow(), op),
+        _ => Err(unsupported(op)),
     }
+}
+
+fn unsupported(op: &str) -> Thrown {
+    Thrown::type_error(format!("Unsupported operand types for {op}"))
+}
+
+/// An operand as an int for `%`, `<<`, `>>`, `|`, `&`, `^` without an
+/// engine: only conversions php does silently (see [`arith_num`]).
+fn long_num(v: &Value, op: &str) -> Result<i64, Thrown> {
+    let f = match arith_num(v, op)? {
+        Num::Int(n) => return Ok(n),
+        Num::Float(f) => f,
+    };
+    // zend_dval_to_lval_safe would warn or deprecate.
+    if !f.is_finite()
+        || f.fract() != 0.0
+        || f >= 9_223_372_036_854_775_808.0
+        || f < -9_223_372_036_854_775_808.0
+    {
+        return Err(unsupported(op));
+    }
+    Ok(f as i64)
 }
 
 /// `+` `-` `*` on two numbers, with int-overflow → float promotion.
@@ -145,15 +163,9 @@ pub fn div(a: &Value, b: &Value) -> Result<Value, Thrown> {
 }
 
 pub fn modulo(a: &Value, b: &Value) -> Result<Value, Thrown> {
-    let p = conv::to_int(&deref(a));
-    let q = conv::to_int(&deref(b));
-    if q == 0 {
-        return Err(Thrown::error("DivisionByZeroError", "Modulo by zero"));
-    }
-    if q == -1 {
-        return Ok(Value::Int(0)); // avoid i64::MIN % -1 overflow panic
-    }
-    Ok(Value::Int(p % q)) // Rust % has sign of dividend, like PHP
+    let p = long_num(a, "%")?;
+    let q = long_num(b, "%")?;
+    long_binop(BitOp::Mod, p, q)
 }
 
 pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
@@ -182,28 +194,98 @@ pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
     Ok(Value::Float(x.as_f64().powf(y.as_f64())))
 }
 
-pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Value {
-    let x = conv::to_int(&deref(a));
-    let y = conv::to_int(&deref(b));
-    Value::Int(match op {
-        BitOp::And => x & y,
-        BitOp::Or => x | y,
-        BitOp::Xor => x ^ y,
-        BitOp::Shl => x.wrapping_shl(y as u32),
-        BitOp::Shr => x.wrapping_shr(y as u32),
-    })
+/// `| & ^ << >> %` on two plain values (no diagnostics: see [`arith_num`]).
+/// Two strings combine bytewise for `| & ^`.
+pub fn bitwise(a: &Value, b: &Value, op: BitOp) -> Result<Value, Thrown> {
+    let (a, b) = (deref(a), deref(b));
+    if let (Value::Str(x), Value::Str(y)) = (&a, &b) {
+        if let Some(r) = string_bitwise(x.as_bytes(), y.as_bytes(), &op) {
+            return Ok(Value::str(r));
+        }
+    }
+    let sigil = op.sigil();
+    long_binop(op, long_num(&a, sigil)?, long_num(&b, sigil)?)
 }
 
+/// `bitwise_or/and/xor_function` on two strings: `|` keeps the longer
+/// string's tail, `&` and `^` stop at the shorter one. `None` for shifts.
+pub fn string_bitwise(x: &[u8], y: &[u8], op: &BitOp) -> Option<Vec<u8>> {
+    let f: fn(u8, u8) -> u8 = match op {
+        BitOp::Or => |p, q| p | q,
+        BitOp::And => |p, q| p & q,
+        BitOp::Xor => |p, q| p ^ q,
+        _ => return None,
+    };
+    let (longer, shorter) = if x.len() >= y.len() { (x, y) } else { (y, x) };
+    let mut out: Vec<u8> = shorter.iter().zip(longer).map(|(&p, &q)| f(q, p)).collect();
+    if matches!(op, BitOp::Or) {
+        out.extend_from_slice(&longer[shorter.len()..]);
+    }
+    Some(out)
+}
+
+/// `% << >> | & ^` on two ints (mod_function, shift_left_function, …).
+pub fn long_binop(op: BitOp, a: i64, b: i64) -> Result<Value, Thrown> {
+    Ok(Value::Int(match op {
+        BitOp::Mod if b == 0 => return Err(Thrown::error("DivisionByZeroError", "Modulo by zero")),
+        BitOp::Mod if b == -1 => 0,
+        BitOp::Mod => a % b,
+        BitOp::Shl | BitOp::Shr if b < 0 => {
+            return Err(Thrown::error(
+                "ArithmeticError",
+                "Bit shift by negative number",
+            ))
+        }
+        BitOp::Shl if b >= 64 => 0,
+        BitOp::Shl => ((a as u64) << b) as i64,
+        BitOp::Shr if b >= 64 => {
+            if a < 0 {
+                -1
+            } else {
+                0
+            }
+        }
+        BitOp::Shr => a >> b,
+        BitOp::And => a & b,
+        BitOp::Or => a | b,
+        BitOp::Xor => a ^ b,
+    }))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BitOp {
     And,
     Or,
     Xor,
     Shl,
     Shr,
+    Mod,
 }
 
-pub fn bitwise_not(a: &Value) -> Value {
-    Value::Int(!conv::to_int(&deref(a)))
+impl BitOp {
+    pub fn sigil(self) -> &'static str {
+        match self {
+            BitOp::And => "&",
+            BitOp::Or => "|",
+            BitOp::Xor => "^",
+            BitOp::Shl => "<<",
+            BitOp::Shr => ">>",
+            BitOp::Mod => "%",
+        }
+    }
+}
+
+/// `~` on a plain value: ints, whole floats in range, strings bytewise;
+/// the rest (which php warns about or rejects) is an error.
+pub fn bitwise_not(a: &Value) -> Result<Value, Thrown> {
+    match deref(a) {
+        Value::Int(n) => Ok(Value::Int(!n)),
+        f @ Value::Float(_) => Ok(Value::Int(!long_num(&f, "~")?)),
+        Value::Str(s) => Ok(Value::str(
+            s.as_bytes().iter().map(|b| !b).collect::<Vec<u8>>(),
+        )),
+        _ => Err(unsupported("~")),
+    }
 }
 
 pub fn negate(a: &Value) -> Result<Value, Thrown> {

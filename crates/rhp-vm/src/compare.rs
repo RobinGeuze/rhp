@@ -5,7 +5,7 @@
 
 use rhp_builtins::zend::object_handlers::{CastTarget, Op};
 use rhp_values::conv::Num;
-use rhp_values::ops::CompareCx;
+use rhp_values::ops::{BitOp, CompareCx};
 use rhp_values::{ClassId, ClassKind, ObjectHandle, PhpStr, Thrown, Value};
 
 use crate::Vm;
@@ -112,17 +112,24 @@ impl Vm {
         }
     }
 
-    /// `+ - * / **` with an object operand (`add_function_slow` and its
-    /// siblings): the `do_operation` of op1's class, else op2's; then both
-    /// operands as numbers (`zendi_try_convert_scalar_to_number`), failing
-    /// with the operand-type error.
-    pub(crate) fn arith_object(
+    /// `+ - * / **` past the number fast path (`add_function_slow` and its
+    /// siblings): array + array is the union; else the `do_operation` of
+    /// op1's class, else op2's; then both operands as numbers
+    /// (`zendi_try_convert_scalar_to_number`), failing with the
+    /// operand-type error.
+    #[inline(never)]
+    pub(crate) fn bin_slow(
         &mut self,
         op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
         x: &Value,
         y: &Value,
     ) -> Result<Value, Thrown> {
+        if op == Op::Add {
+            if let (Value::Array(_), Value::Array(_)) = (x, y) {
+                return rhp_values::ops::add(x, y);
+            }
+        }
         if let Some(v) = self.try_do_operation(op, x, y)? {
             return Ok(v);
         }
@@ -135,10 +142,25 @@ impl Vm {
         f(&a, &b)
     }
 
-    /// `% << >> | & ^` with an object operand (`convert_op1_op2_long`): op1's
-    /// `do_operation`, then op1 as an int, then the same for op2. A failed
-    /// conversion is the operand-type error, before op2's handler is tried.
-    pub(crate) fn long_op_object(&mut self, op: Op, x: &Value, y: &Value) -> Result<Value, Thrown> {
+    /// `% << >> | & ^` (`convert_op1_op2_long`): two strings combine
+    /// bytewise for `| & ^`; else op1's `do_operation`, then op1 as an int,
+    /// then the same for op2. A failed conversion is the operand-type
+    /// error, before op2's handler is tried.
+    #[inline(never)]
+    pub(crate) fn long_op(&mut self, op: Op, x: &Value, y: &Value) -> Result<Value, Thrown> {
+        let bop = match op {
+            Op::Mod => BitOp::Mod,
+            Op::Shl => BitOp::Shl,
+            Op::Shr => BitOp::Shr,
+            Op::BitOr => BitOp::Or,
+            Op::BitAnd => BitOp::And,
+            _ => BitOp::Xor,
+        };
+        if let (Value::Str(p), Value::Str(q)) = (x, y) {
+            if let Some(r) = rhp_values::ops::string_bitwise(p.as_bytes(), q.as_bytes(), &bop) {
+                return Ok(Value::str(r));
+            }
+        }
         let a = match x {
             Value::Int(n) => *n,
             _ => {
@@ -163,7 +185,38 @@ impl Vm {
                 }
             }
         };
-        long_binop(op, a, b)
+        rhp_values::ops::long_binop(bop, a, b)
+    }
+
+    /// `bitwise_not_function` for anything but an int.
+    #[inline(never)]
+    pub(crate) fn bitwise_not_slow(&mut self, v: &Value) -> Result<Value, Thrown> {
+        match v {
+            Value::Float(f) => Ok(Value::Int(!self.dval_to_lval_safe(*f)?)),
+            Value::Str(s) => Ok(Value::str(
+                s.as_bytes().iter().map(|b| !b).collect::<Vec<u8>>(),
+            )),
+            Value::Ref(r) => {
+                let inner = r.borrow().clone();
+                if let Value::Int(n) = inner {
+                    return Ok(Value::Int(!n));
+                }
+                self.bitwise_not_slow(&inner)
+            }
+            _ => {
+                if let Value::Object(h) = v {
+                    if let Some(f) = self.handlers_of(h).and_then(|t| t.do_operation) {
+                        if let Some(r) = f(self, Op::BitNot, v, None)? {
+                            return Ok(r);
+                        }
+                    }
+                }
+                Err(Thrown::type_error(format!(
+                    "Cannot perform bitwise not on {}",
+                    rhp_builtins::zval_value_name(self, v)
+                )))
+            }
+        }
     }
 
     /// `.` with an object or array operand (`concat_function`): op1's
@@ -303,28 +356,20 @@ impl Vm {
         Ok(Some(num))
     }
 
-    /// `zend_dval_to_lval_safe`, with php 8.5's out-of-range warning.
-    fn dval_to_lval_safe(&mut self, d: f64) -> Result<i64, Thrown> {
-        let shown = || String::from_utf8_lossy(&rhp_values::fmt::float_serialize(d)).into_owned();
-        let l = if !d.is_finite() || !fits_long(d) {
-            self.diag(
-                rhp_builtins::E_WARNING,
-                &format!(
-                    "The float {} is not representable as an int, cast occurred",
-                    shown()
-                ),
-            )?;
-            rhp_values::float_to_int(d)
-        } else {
-            d as i64
-        };
+    /// `zend_dval_to_lval_safe`: `zend_dval_to_lval` (php 8.5's
+    /// out-of-range warning), then the deprecation for a lost fraction.
+    pub(crate) fn dval_to_lval_safe(&mut self, d: f64) -> Result<i64, Thrown> {
+        let l = self.dval_to_lval(d)?;
         if l as f64 != d && fits_long(d) {
+            let shown = rhp_values::fmt::float_serialize(d);
             self.diag(
                 rhp_builtins::E_DEPRECATED,
-                &format!(
-                    "Implicit conversion from float {} to int loses precision",
-                    shown()
-                ),
+                &[
+                    b"Implicit conversion from float ".as_slice(),
+                    &shown,
+                    b" to int loses precision",
+                ]
+                .concat(),
             )?;
         }
         Ok(l)
@@ -348,31 +393,6 @@ impl Vm {
 /// `ZEND_DOUBLE_FITS_LONG`.
 fn fits_long(d: f64) -> bool {
     !(d >= 9_223_372_036_854_775_808.0 || d < -9_223_372_036_854_775_808.0)
-}
-
-/// `% << >> | & ^` on two ints (mod_function, shift_left_function, …).
-fn long_binop(op: Op, a: i64, b: i64) -> Result<Value, Thrown> {
-    let negative_shift = || Thrown::error("ArithmeticError", "Bit shift by negative number");
-    Ok(Value::Int(match op {
-        Op::Mod if b == 0 => return Err(Thrown::error("DivisionByZeroError", "Modulo by zero")),
-        Op::Mod if b == -1 => 0,
-        Op::Mod => a % b,
-        Op::Shl | Op::Shr if b < 0 => return Err(negative_shift()),
-        Op::Shl if b >= 64 => 0,
-        Op::Shl => ((a as u64) << b) as i64,
-        Op::Shr if b >= 64 => {
-            if a < 0 {
-                -1
-            } else {
-                0
-            }
-        }
-        Op::Shr => a >> b,
-        Op::BitOr => a | b,
-        Op::BitAnd => a & b,
-        Op::BitXor => a ^ b,
-        _ => unreachable!("not an integer operator"),
-    }))
 }
 
 impl CompareCx for Vm {

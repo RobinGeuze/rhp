@@ -45,7 +45,7 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 (Op::Negation(_), Value::Int(n)) => Value::Int(-n),
                 (Op::Negation(_), Value::Float(f)) => Value::Float(-f),
                 (Op::Plus(_), v @ (Value::Int(_) | Value::Float(_))) => v,
-                (Op::BitwiseNot(_), v) => rhp_values::ops::bitwise_not(&v),
+                (Op::BitwiseNot(_), v) => rhp_values::ops::bitwise_not(&v)?,
                 (Op::Not(_), v) => Value::Bool(!rhp_values::conv::to_bool(&v)),
                 _ => return Err(non_const_err()),
             }
@@ -62,12 +62,18 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 Bop::Division(_) => ops::div(&l, &r)?,
                 Bop::Modulo(_) => ops::modulo(&l, &r)?,
                 Bop::Exponentiation(_) => ops::pow(&l, &r)?,
-                Bop::StringConcat(_) => ops::concat(&l, &r),
-                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And),
-                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or),
-                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor),
-                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl),
-                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr),
+                Bop::StringConcat(_) => {
+                    // Arrays warn (Array to string conversion): left to run time.
+                    if matches!(l, Value::Array(_)) || matches!(r, Value::Array(_)) {
+                        return Err(non_const_err());
+                    }
+                    ops::concat(&l, &r)
+                }
+                Bop::BitwiseAnd(_) => ops::bitwise(&l, &r, BitOp::And)?,
+                Bop::BitwiseOr(_) => ops::bitwise(&l, &r, BitOp::Or)?,
+                Bop::BitwiseXor(_) => ops::bitwise(&l, &r, BitOp::Xor)?,
+                Bop::LeftShift(_) => ops::bitwise(&l, &r, BitOp::Shl)?,
+                Bop::RightShift(_) => ops::bitwise(&l, &r, BitOp::Shr)?,
                 Bop::Equal(_) => Value::Bool(ops::loose_eq(&l, &r)),
                 Bop::NotEqual(_) | Bop::AngledNotEqual(_) => Value::Bool(!ops::loose_eq(&l, &r)),
                 Bop::Identical(_) => Value::Bool(ops::strict_eq(&l, &r)),
@@ -108,8 +114,21 @@ fn fold_const_array<'a>(
             ArrayElement::KeyValue(kv) => {
                 let k = fold_const(cx, kv.key)?;
                 let v = fold_const(cx, kv.value)?;
-                let key = ArrayKey::from_value(&k)
-                    .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
+                // Keys php converts with a diagnostic (null, a float that
+                // isn't a whole int, a resource) or rejects: left to run time.
+                let key = match &k {
+                    Value::Int(n) => ArrayKey::Int(*n),
+                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    Value::Bool(b) => ArrayKey::Int(*b as i64),
+                    Value::Float(f)
+                        if f.fract() == 0.0
+                            && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0)
+                                .contains(f) =>
+                    {
+                        ArrayKey::Int(*f as i64)
+                    }
+                    _ => return Err(non_const_err()),
+                };
                 a.insert(key, v);
             }
             ArrayElement::Value(v) => a.push(fold_const(cx, v.value)?),

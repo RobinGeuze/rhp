@@ -1044,20 +1044,18 @@ impl Vm {
     /// address_inner` / `slow_index_convert`), with its diagnostics. `None`:
     /// an illegal offset type (TypeError raised by the caller).
     fn dim_key(&mut self, key: &Value, quiet: bool) -> Result<Option<ArrayKey>, Thrown> {
+        let _ = quiet;
         match key {
-            Value::Null if !quiet => self.diag(
+            Value::Null => self.diag(
                 builtins::E_DEPRECATED,
                 "Using null as an array offset is deprecated, use an empty string instead",
             )?,
-            Value::Float(f) if !quiet && (!f.is_finite() || f.fract() != 0.0) => {
-                let shown =
-                    String::from_utf8_lossy(&rhp_values::fmt::float_serialize(*f)).into_owned();
-                self.diag(
-                    builtins::E_DEPRECATED,
-                    &format!("Implicit conversion from float {shown} to int loses precision"),
-                )?
+            Value::Float(f) => {
+                for (level, msg) in builtins::zend::operators::dval_to_lval_safe_msgs(*f) {
+                    self.diag(level, &msg)?;
+                }
             }
-            Value::Resource(r) if !quiet => self.diag(
+            Value::Resource(r) => self.diag(
                 builtins::E_WARNING,
                 &format!(
                     "Resource ID#{} used as offset, casting to integer ({})",
@@ -1067,6 +1065,107 @@ impl Vm {
             _ => {}
         }
         Ok(ArrayKey::from_value(key))
+    }
+
+    /// The key of an array literal element (ZEND_INIT_ARRAY /
+    /// ZEND_ADD_ARRAY_ELEMENT): php's offset diagnostics, and
+    /// zend_illegal_container_offset's TypeError for an unusable key.
+    pub(crate) fn init_array_key(&mut self, k: &Value) -> Result<ArrayKey, Thrown> {
+        match k {
+            Value::Int(n) => Ok(ArrayKey::Int(*n)),
+            Value::Str(s) => Ok(ArrayKey::from_bytes(s.as_bytes())),
+            _ => match self.dim_key(k, false)? {
+                Some(key) => Ok(key),
+                None => Err(Thrown::type_error(format!(
+                    "Cannot access offset of type {} on array",
+                    rhp_builtins::zval_type_name(self, k)
+                ))),
+            },
+        }
+    }
+
+    /// `isset($c[$k])` / `empty($c[$k])` on anything but an ArrayAccess
+    /// object (ZEND_ISSET_ISEMPTY_DIM_OBJ: zend_find_array_dim_slow,
+    /// zend_isset_dim_slow, zend_isempty_dim_slow). The result is
+    /// `isset` or, with `empty`, `empty`.
+    pub(crate) fn isset_isempty_dim(
+        &mut self,
+        container: &Value,
+        key: &Value,
+        empty: bool,
+    ) -> Result<bool, Thrown> {
+        let key = &deref(key);
+        match deref(container) {
+            Value::Array(a) => {
+                let k = match key {
+                    Value::Int(n) => ArrayKey::Int(*n),
+                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    _ => match self.dim_key(key, true)? {
+                        Some(k) => k,
+                        None => {
+                            return Err(Thrown::type_error(format!(
+                                "Cannot access offset of type {} in isset or empty",
+                                rhp_builtins::zval_type_name(self, key)
+                            )))
+                        }
+                    },
+                };
+                let v = a.get(&k).map(deref);
+                if empty {
+                    match v {
+                        Some(v) => Ok(!self.truthy(&v)?),
+                        None => Ok(true),
+                    }
+                } else {
+                    Ok(!matches!(v, None | Some(Value::Null)))
+                }
+            }
+            Value::Str(s) => {
+                let off = match key {
+                    Value::Int(n) => Some(*n),
+                    Value::Null => Some(0),
+                    Value::Bool(b) => Some(*b as i64),
+                    // zval_get_long_ex(is_strict): the float warning, then
+                    // the deprecation when the value changed.
+                    Value::Float(f) => {
+                        let l = self.dval_to_lval(*f)?;
+                        if l as f64 != *f {
+                            let shown = rhp_values::fmt::float_serialize(*f);
+                            self.diag(
+                                builtins::E_DEPRECATED,
+                                &[
+                                    b"Implicit conversion from float ".as_slice(),
+                                    &shown,
+                                    b" to int loses precision",
+                                ]
+                                .concat(),
+                            )?;
+                        }
+                        Some(l)
+                    }
+                    Value::Str(ks) => match conv::numeric_string(ks.as_bytes()) {
+                        Some(conv::Num::Int(n))
+                            if ks.as_bytes().first().is_some_and(|&c| c <= b'9') =>
+                        {
+                            Some(n)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let bytes = s.as_bytes();
+                let len = bytes.len() as i64;
+                let at = off
+                    .map(|o| if o < 0 { o + len } else { o })
+                    .filter(|&i| i >= 0 && i < len);
+                Ok(match at {
+                    Some(i) if empty => bytes[i as usize] == b'0',
+                    Some(_) => true,
+                    None => empty,
+                })
+            }
+            _ => Ok(empty),
+        }
     }
 
     /// A dimension read `$c[$k]` with php's diagnostics: undefined keys,
@@ -1134,7 +1233,7 @@ impl Vm {
                             Some((conv::Num::Int(n), end)) => {
                                 let trailing =
                                     !kb[end..].iter().all(|b| b" \t\n\r\x0b\x0c".contains(b));
-                                if trailing && !quiet {
+                                if trailing {
                                     self.diag(
                                         builtins::E_WARNING,
                                         &[b"Illegal string offset \"".as_slice(), kb, b"\""]
@@ -1160,9 +1259,6 @@ impl Vm {
                         conv::to_int(key)
                     }
                     _ => {
-                        if quiet {
-                            return Ok(Value::Null);
-                        }
                         return Err(Thrown::type_error(format!(
                             "Cannot access offset of type {} on string",
                             rhp_builtins::zval_type_name(self, key)
@@ -1208,54 +1304,6 @@ impl Vm {
                 Ok(Value::Null)
             }
         }
-    }
-}
-
-/// `$container[$key]` read: array element (Null if absent) or string byte.
-/// `isset($container[$key])` for arrays and strings (php's
-/// `zend_isset_dim_slow` string-offset rules).
-pub(crate) fn isset_dim(container: &Value, key: &Value) -> bool {
-    match deref(container) {
-        Value::Array(_) => !matches!(dim_fetch(container, key), Value::Null),
-        Value::Str(s) => {
-            let k = deref(key);
-            let idx = match &k {
-                Value::Int(n) => *n,
-                Value::Null | Value::Bool(_) | Value::Float(_) => conv::to_int(&k),
-                Value::Str(ks) => match conv::numeric_string(ks.as_bytes()) {
-                    Some(conv::Num::Int(n)) => n,
-                    _ => return false,
-                },
-                _ => return false,
-            };
-            let len = s.as_bytes().len() as i64;
-            let i = if idx < 0 { idx + len } else { idx };
-            i >= 0 && i < len
-        }
-        _ => false,
-    }
-}
-
-#[allow(dead_code)]
-fn dim_fetch(container: &Value, key: &Value) -> Value {
-    match deref(container) {
-        Value::Array(a) => match ArrayKey::from_value(key) {
-            // A read yields the value, never the element's reference cell.
-            Some(k) => a.get(&k).map(deref).unwrap_or(Value::Null),
-            None => Value::Null,
-        },
-        Value::Str(s) => {
-            let bytes = s.as_bytes();
-            let len = bytes.len() as i64;
-            let idx = conv::to_int(key);
-            let i = if idx < 0 { len + idx } else { idx };
-            if i >= 0 && i < len {
-                Value::str(vec![bytes[i as usize]])
-            } else {
-                Value::str("")
-            }
-        }
-        _ => Value::Null,
     }
 }
 
@@ -1341,13 +1389,11 @@ fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
             builtins::E_DEPRECATED,
             "Using null as an array offset is deprecated, use an empty string instead",
         ),
-        Value::Float(f) if f.is_finite() && f.fract() != 0.0 => path_diag(
-            builtins::E_DEPRECATED,
-            format!(
-                "Implicit conversion from float {} to int loses precision",
-                String::from_utf8_lossy(&conv::to_string_bytes(&Value::Float(f)))
-            ),
-        ),
+        Value::Float(f) => {
+            for (level, msg) in builtins::zend::operators::dval_to_lval_safe_msgs(f) {
+                path_diag(level, msg);
+            }
+        }
         _ => {}
     }
     ArrayKey::from_value(k).ok_or_else(|| illegal_offset_on_array(k, cx))

@@ -696,18 +696,7 @@ impl Vm {
         match self.check_one(&val, &ty, strict, Some(decl)) {
             Ok(None) => Ok(val),
             Ok(Some(c)) => {
-                if let (Value::Float(f), Value::Int(_)) = (deref(&val), &c) {
-                    if f.fract() != 0.0 {
-                        let shown = String::from_utf8_lossy(&rhp_values::fmt::float_serialize(f))
-                            .into_owned();
-                        self.diag(
-                            builtins::E_DEPRECATED,
-                            &format!(
-                                "Implicit conversion from float {shown} to int loses precision"
-                            ),
-                        )?;
-                    }
-                }
+                self.coercion_diag(&val, &c)?;
                 Ok(c)
             }
             Err(()) => Err(Thrown::type_error(format!(

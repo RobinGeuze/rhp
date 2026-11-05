@@ -269,10 +269,40 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         Ok(())
     };
+    // php 8.5: NAN warns when coerced; array and object read the variable
+    // again after the warning (a handler may have changed it).
+    let is_nan = matches!(cur, Value::Float(f) if f.is_nan());
+    let nan_warn = |host: &mut dyn Host, to: &str| -> Result<(), Thrown> {
+        host.emit_diagnostic(
+            crate::E_WARNING,
+            format!("unexpected NAN value was coerced to {to}").as_bytes(),
+        )
+    };
+    let cur = match ty.as_slice() {
+        b"array" | b"object" if is_nan => {
+            nan_warn(host, std::str::from_utf8(&ty).unwrap_or(""))?;
+            deref(&args[0])
+        }
+        b"bool" | b"boolean" | b"string" | b"null" if is_nan => {
+            let to = match ty.as_slice() {
+                b"boolean" => "bool",
+                t => std::str::from_utf8(t).unwrap_or(""),
+            };
+            nan_warn(host, to)?;
+            cur.clone()
+        }
+        _ => cur.clone(),
+    };
     let new = match ty.as_slice() {
         b"integer" | b"int" => {
             object_warn(host, "int")?;
-            Value::Int(conv::to_int(&cur))
+            match cur {
+                Value::Float(f) => {
+                    let n = crate::zend::operators::dval_to_lval(host, f)?;
+                    Value::Int(n)
+                }
+                _ => Value::Int(conv::to_int(&cur)),
+            }
         }
         b"float" | b"double" => {
             object_warn(host, "float")?;
@@ -302,6 +332,11 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             _ => Value::str(conv::to_string_bytes(&cur)),
         },
         b"array" => match &cur {
+            _ if is_nan => {
+                let mut a = PhpArray::new();
+                a.push(cur.clone());
+                Value::Array(a)
+            }
             Value::Array(_) => cur.clone(),
             Value::Null => Value::Array(PhpArray::new()),
             Value::Object(h) => Value::Array(host.object_props_mangled(h)),
@@ -312,6 +347,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         },
         b"object" => match &cur {
+            _ if is_nan => host.make_object(vec![(b"scalar".to_vec(), cur.clone())]),
             Value::Object(_) | Value::Closure(_) => cur.clone(),
             Value::Array(a) => {
                 let props = a
@@ -329,7 +365,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Value::Null => host.make_object(Vec::new()),
             other => host.make_object(vec![(b"scalar".to_vec(), other.clone())]),
         },
-        b"bool" | b"boolean" => Value::Bool(conv::to_bool(&cur)),
+        b"bool" | b"boolean" => Value::Bool(is_nan || conv::to_bool(&cur)),
         b"null" => Value::Null,
         b"resource" => {
             return Err(Thrown::error(

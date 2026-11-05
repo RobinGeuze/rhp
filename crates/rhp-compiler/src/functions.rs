@@ -70,6 +70,7 @@ pub(crate) fn compile_method(
     };
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
+    c.check_generator_type(cx.line_of(m.function.span.start.offset))?;
     for ((p, info), ty) in m.parameter_list.parameters.iter().zip(&params).zip(&types) {
         if p.modifiers.is_empty() && p.hooks.is_none() {
             continue;
@@ -226,6 +227,7 @@ pub(crate) fn compile_function(
     let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
     let (params, nonconst_defaults, _) =
         c.lower_params(&func.parameter_list, &display, false, None)?;
+    c.check_generator_type(cx.line_of(func.function.span.start.offset))?;
     let num_params = params.len() as u16;
 
     // Scan the body for the rest of the function's local variables.
@@ -484,6 +486,7 @@ impl ProtoBuilder<'_> {
         let cname = c.class_name.clone();
         let (params, nonconst_defaults, _) =
             c.lower_params(param_list, &display, true, cname.as_ref())?;
+        c.check_generator_type(meta.start_line)?;
         let num_params = params.len() as u16;
 
         match body {

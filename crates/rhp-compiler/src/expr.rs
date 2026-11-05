@@ -1110,7 +1110,13 @@ impl ProtoBuilder<'_> {
                 self.cur_line,
             ));
         }
-        if std::mem::replace(&mut self.yield_seen, true) {
+        Ok(())
+    }
+
+    /// zend_mark_function_as_generator's return type check. php runs it
+    /// after the parameters, at the declaration's line.
+    pub(crate) fn check_generator_type(&self, line: u32) -> Result<(), Thrown> {
+        if !self.is_generator {
             return Ok(());
         }
         let Some(t) = &self.ret_type else {
@@ -1130,7 +1136,7 @@ impl ProtoBuilder<'_> {
                     "Generator return type must be a supertype of Generator, {} given",
                     crate::checks::type_string(t)
                 ),
-                self.cur_line,
+                line,
             ));
         }
         Ok(())

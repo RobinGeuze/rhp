@@ -98,8 +98,6 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) this_bound: bool,
     /// The body contains `yield`.
     pub(crate) is_generator: bool,
-    /// A `yield` was compiled (the generator type check runs once).
-    pub(crate) yield_seen: bool,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -156,7 +154,6 @@ impl<'c> ProtoBuilder<'c> {
             func_arg_read: false,
             static_vars: Vec::new(),
             is_generator: false,
-            yield_seen: false,
         }
     }
 

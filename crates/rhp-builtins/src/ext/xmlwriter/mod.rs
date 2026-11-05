@@ -128,25 +128,6 @@ unsafe extern "C" fn stream_close(ctx: *mut c_void) -> c_int {
     })
 }
 
-/// zend_dirname
-fn zend_dirname(path: &[u8]) -> Vec<u8> {
-    let mut end = path.len();
-    while end > 1 && path[end - 1] == b'/' {
-        end -= 1;
-    }
-    match path[..end].iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
-        Some(0) => b"/".to_vec(),
-        Some(i) => {
-            let mut j = i;
-            while j > 1 && path[j - 1] == b'/' {
-                j -= 1;
-            }
-            path[..j].to_vec()
-        }
-    }
-}
-
 /// _xmlwriter_get_valid_file_path
 fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
     let mut source = source;
@@ -192,7 +173,7 @@ fn valid_file_path(source: &[u8]) -> Option<Vec<u8>> {
     if resolved.len() >= libc::PATH_MAX as usize {
         return None;
     }
-    let dir = zend_dirname(source);
+    let dir = crate::ext::standard::string::php_dirname(source);
     if !dir.is_empty() && std::fs::metadata(crate::zend::virtual_cwd::os_path(&dir)).is_err() {
         return None;
     }

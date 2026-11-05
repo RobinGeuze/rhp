@@ -1,0 +1,39 @@
+"" => "" | "" | ""
+"\/" => "\/" | "\/" | "\/"
+"\/\/\/" => "\/" | "\/" | "\/"
+"a" => "." | "." | "."
+"a\/" => "." | "." | "."
+"a\/\/b" => "a" | "." | "a"
+"\/\/a" => "\/" | "\/" | "\/"
+"\/a\/b\/c" => "\/a\/b" | "\/a" | "\/a\/b"
+"a\/b\/" => "a" | "." | "a"
+"\/a\/b\/\/c\/\/" => "\/a\/b" | "\/a" | "\/a\/b"
+"." => "." | "." | "."
+".." => "." | "." | "."
+"\/.." => "\/" | "\/" | "\/"
+"a\/.\/b" => "a\/." | "a" | "a\/."
+string(2) "/a"
+string(1) "."
+string(1) "/"
+ValueError: dirname(): Argument #2 ($levels) must be greater than or equal to 1
+ValueError: dirname(): Argument #2 ($levels) must be greater than or equal to 1
+ValueError: dirname(): Argument #2 ($levels) must be greater than or equal to 1
+bool(false)
+string(1) "/"
+string(1) "a"
+string(2) "/a"
+string(1) "c"
+string(0) ""
+string(0) ""
+string(2) "/a"
+string(0) ""
+array(4) {
+  ["dirname"]=>
+  string(1) "."
+  ["basename"]=>
+  string(9) ".htaccess"
+  ["extension"]=>
+  string(8) "htaccess"
+  ["filename"]=>
+  string(0) ""
+}

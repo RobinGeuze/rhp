@@ -1211,7 +1211,7 @@ fn extract_file(
     let dirname_full = if is_dir_only {
         [dest, b"/", &cleaned].concat()
     } else {
-        let dir = zend_dirname(&cleaned);
+        let dir = crate::ext::standard::string::php_dirname(&cleaned);
         if dir.is_empty() || dir == b"." {
             dest.to_vec()
         } else {
@@ -1287,25 +1287,6 @@ fn basename(path: &[u8]) -> Vec<u8> {
         .rposition(|&b| b == b'/')
         .map_or(0, |i| i + 1);
     path[start..end].to_vec()
-}
-
-/// zend_dirname
-fn zend_dirname(path: &[u8]) -> Vec<u8> {
-    let mut end = path.len();
-    while end > 1 && path[end - 1] == b'/' {
-        end -= 1;
-    }
-    match path[..end].iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
-        Some(0) => b"/".to_vec(),
-        Some(i) => {
-            let mut j = i;
-            while j > 1 && path[j - 1] == b'/' {
-                j -= 1;
-            }
-            path[..j].to_vec()
-        }
-    }
 }
 
 /// php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE) on the

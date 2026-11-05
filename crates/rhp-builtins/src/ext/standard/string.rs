@@ -2433,8 +2433,8 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// `pathinfo(path, flags=PATHINFO_ALL)` — splits a path into dirname/basename/
-/// extension/filename. Returns an assoc array, or a single string when exactly
-/// one flag bit is requested.
+/// extension/filename. Returns an assoc array for PATHINFO_ALL, else the
+/// first part the flags ask for.
 fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     const DIRNAME: i64 = 1;
     const BASENAME: i64 = 2;
@@ -2466,29 +2466,11 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Some(dot) => (&basename[..dot], Some(&basename[dot + 1..])),
         };
 
-    let dir = dirname_once(&path);
-    // php: dirname is "." for a bare name only when the input had no slash.
-    let dirname: Vec<u8> = if path.contains(&b'/') {
-        dir
-    } else {
-        b".".to_vec()
-    };
-
-    // Single-component request -> return a string.
-    if flags != ALL && (flags & (flags - 1)) == 0 {
-        let s: Vec<u8> = match flags {
-            DIRNAME => dirname,
-            BASENAME => basename.to_vec(),
-            EXTENSION => extension.unwrap_or(b"").to_vec(),
-            FILENAME => filename.to_vec(),
-            _ => Vec::new(),
-        };
-        return Ok(Value::str(s));
-    }
+    let dirname = php_dirname(&path);
 
     use rhp_values::{ArrayKey as K, PhpArray};
     let mut arr = PhpArray::new();
-    if flags & DIRNAME != 0 {
+    if flags & DIRNAME != 0 && !dirname.is_empty() {
         arr.insert(K::from_bytes(b"dirname"), Value::str(dirname));
     }
     if flags & BASENAME != 0 {
@@ -2502,36 +2484,66 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if flags & FILENAME != 0 {
         arr.insert(K::from_bytes(b"filename"), Value::str(filename.to_vec()));
     }
-    Ok(Value::Array(arr))
+    // The array for PATHINFO_ALL; for any other flags its first element.
+    if flags == ALL {
+        return Ok(Value::Array(arr));
+    }
+    Ok(arr
+        .iter()
+        .next()
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| Value::str(Vec::new())))
 }
 
-/// `dirname(path, levels=1)` — matching php: "." when no slash, "/" at root.
+/// `dirname(path, levels=1)` (`_zend_dirname`): a level less than 1 is a
+/// ValueError; further levels stop once the path no longer shrinks.
 fn fn_dirname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut path = path_arg(args, 0);
-    let levels = args
-        .get(1)
-        .map(|v| conv::to_int(&deref(v)))
-        .unwrap_or(1)
-        .max(1);
-    for _ in 0..levels {
-        path = dirname_once(&path);
+    let mut levels = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(1);
+    if levels < 1 {
+        let msg = "must be greater than or equal to 1";
+        return Err(crate::zend::zpp::value_error("dirname", 2, "levels", msg));
+    }
+    loop {
+        let up = php_dirname(&path);
+        let shrank = up.len() < path.len();
+        path = up;
+        levels -= 1;
+        if !shrank || levels == 0 {
+            break;
+        }
     }
     Ok(Value::str(path))
 }
 
-fn dirname_once(path: &[u8]) -> Vec<u8> {
-    // drop trailing slashes
-    let end = path
-        .iter()
-        .rposition(|&b| b != b'/')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let trimmed = &path[..end];
-    match trimmed.iter().rposition(|&b| b == b'/') {
-        None => b".".to_vec(),
-        Some(0) => b"/".to_vec(),
-        Some(i) => trimmed[..i].to_vec(),
+/// `php_dirname` (zend_dirname): `path` without its last component and the
+/// slashes around it; "/" for a path of slashes, "." when no slash is left,
+/// and "" for "".
+pub(crate) fn php_dirname(path: &[u8]) -> Vec<u8> {
+    if path.is_empty() {
+        return Vec::new();
     }
+    let mut end = path.len();
+    // Trailing slashes, then the file name, then the slashes before it.
+    while end > 0 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    if end == 0 {
+        return b"/".to_vec();
+    }
+    while end > 0 && path[end - 1] != b'/' {
+        end -= 1;
+    }
+    if end == 0 {
+        return b".".to_vec();
+    }
+    while end > 0 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    if end == 0 {
+        return b"/".to_vec();
+    }
+    path[..end].to_vec()
 }
 
 // ---------------------------------------------------------------------------

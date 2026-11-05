@@ -19,6 +19,17 @@ pub fn deref(v: &Value) -> Value {
     }
 }
 
+/// A copy of an array element as php makes one (zend_array_dup_element,
+/// and the builtins that build arrays from other arrays' elements): a
+/// reference nothing else holds (refcount 1) becomes its value.
+#[inline]
+pub fn copy_elem(v: &Value) -> Value {
+    match v {
+        Value::Ref(r) if std::rc::Rc::strong_count(r) == 1 => r.borrow().clone(),
+        other => other.clone(),
+    }
+}
+
 /// `(array)` cast: arrays pass through, null → empty, scalars → single element.
 pub fn cast_to_array(v: Value) -> Value {
     match deref(&v) {

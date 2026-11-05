@@ -281,6 +281,13 @@ impl ProtoBuilder<'_> {
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
             // `FeFetchRef` derefs an `arr_cv` that holds a `Ref`).
+            let lval_source = matches!(
+                fe.expression,
+                Expression::ArrayAccess(_)
+                    | Expression::ArrayAppend(_)
+                    | Expression::Access(Access::Property(_))
+                    | Expression::Access(Access::StaticProperty(_))
+            );
             let arr_cv = match fe.expression {
                 Expression::Variable(Variable::Direct(sd)) => self.cv(strip_dollar(sd.name)),
                 Expression::ArrayAccess(_)
@@ -345,6 +352,14 @@ impl ProtoBuilder<'_> {
             self.patch_all(ctx.break_jumps, end);
             self.patch_all(ctx.continue_jumps, fetch_label);
             self.temp_floor = saved_floor;
+            if lval_source {
+                // FE_FREE: the iterated temporary (a reference to the
+                // source) goes away with the loop.
+                self.emit(Instr::ClearTemps {
+                    from: arr_cv,
+                    to: arr_cv + 1,
+                });
+            }
             return Ok(());
         }
 

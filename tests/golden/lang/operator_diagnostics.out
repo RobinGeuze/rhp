@@ -110,6 +110,15 @@ array(1) {
 float(3.6893488147419103E+19)
 100000000000000000000:
 float(1.0E+20)
+65-bit binary literal:
+float(3.68934881474191E+19)
+big octal literals:
+array(2) {
+  [0]=>
+  float(1.8446744073709552E+19)
+  [1]=>
+  float(9.903520314283042E+27)
+}
 takes_int(2.5):
   [8192] Implicit conversion from float 2.5 to int loses precision
 int(2)

@@ -66,6 +66,8 @@ t('[null => "a"]', function () { $k = null; return [$k => "a"]; });
 t('[1e20 => "a"]', function () { $k = 1e20; return [$k => "a"]; });
 t('0x1FFFFFFFFFFFFFFFF', fn() => 0x1FFFFFFFFFFFFFFFF);
 t('100000000000000000000', fn() => 100000000000000000000);
+t('65-bit binary literal', fn() => 0b11111111111111111111111111111111111111111111111111111111111111111);
+t('big octal literals', fn() => [01777777777777777777777, 0o7777777777777777777777777777777]);
 function takes_int(int $i) { return $i; }
 function takes_string(string $s) { return $s; }
 t('takes_int(2.5)', fn() => takes_int(2.5));

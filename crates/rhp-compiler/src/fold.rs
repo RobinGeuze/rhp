@@ -290,7 +290,12 @@ fn big_int_literal(raw: &[u8]) -> f64 {
         }
     };
     body.iter().fold(0.0, |acc, &c| {
-        acc * base as f64 + (c as char).to_digit(16).unwrap_or(0) as f64
+        if base == 16 {
+            acc * 16.0 + (c as char).to_digit(16).unwrap_or(0) as f64
+        } else {
+            // zend_oct/bin_strtod: `value * base + c - '0'`, two roundings.
+            acc * base as f64 + c as f64 - b'0' as f64
+        }
     })
 }
 

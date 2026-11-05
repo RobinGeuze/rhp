@@ -112,7 +112,9 @@ runs:
         php -n -i | grep -E '^(PCRE (Library|Unicode) Version|PCRE JIT|libXML (Compiled|Loaded) Version|ICU (version|Data version|Unicode version)|cURL Information|SSL Version|ZLib Version|libSSH Version|OpenSSL (Library|Header) Version|Libzip version|GMP version|iconv (implementation|library version)|Multibyte regex \(oniguruma\) version|("Olson" )?Timezone Database|Compiled Version|Linked Version|SQLite Library)' || true
         # shellcheck disable=SC2016 # PHP code, not shell
         php -n -r 'echo "PCRE2 headers php was compiled with => ", PCRE_VERSION_MAJOR, ".", PCRE_VERSION_MINOR, "\n";'
-        bin="$(php -n -r 'echo PHP_BINARY;')"
+        # On Linux PHP_BINARY is the shim script (make-shims.sh); list the
+        # executable the kernel actually runs.
+        bin="$(php -n -r 'echo @readlink("/proc/self/exe") ?: PHP_BINARY;')"
         extdir="$(php-config --extension-dir)"
         loaded="$(php -n -m | tr 'A-Z' 'a-z')"
         list() { if command -v ldd >/dev/null 2>&1; then ldd "$1"; else otool -L "$1"; fi; }

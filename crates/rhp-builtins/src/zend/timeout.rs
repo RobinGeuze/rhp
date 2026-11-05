@@ -1,13 +1,15 @@
 //! max_execution_time (Zend/zend_execute_API.c's zend_set_timeout,
 //! zend_timeout_handler and zend_timeout): a one-shot interval timer whose
 //! signal sets `EG(timed_out)` and the VM interrupt flag; the VM then
-//! raises "Maximum execution time of N seconds exceeded" at the next
-//! instruction. hard_timeout re-arms the timer from the handler, so
+//! raises "Maximum execution time of N seconds exceeded" where php's
+//! interrupt checks are: where a jump lands, where a user function starts,
+//! or when a builtin call returns. hard_timeout re-arms the timer from the handler, so
 //! shutdown functions get one more window; a timeout the VM does not get
 //! to in time kills the process, as in php. Like php's NTS build this uses
 //! a process-wide timer (ITIMER_PROF, ITIMER_REAL on Apple Silicon where
-//! ITIMER_PROF is broken), so only the command-line SAPIs arm it. Builtins
-//! that block (sleep, stream reads) are not interrupted.
+//! ITIMER_PROF is broken), so only the command-line SAPIs arm it. A
+//! blocking builtin ends early only if the signal interrupts its system
+//! call (sleep under ITIMER_REAL), as in php.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
@@ -31,9 +33,14 @@ fn armable() -> bool {
 /// zend_set_timeout_ex: arm the timer for `seconds` (0: leave it), and with
 /// `reset_signals` (re)install the handler.
 fn set_timeout_ex(seconds: i64, reset_signals: bool) {
-    if !armable() {
-        return;
+    if armable() {
+        arm(seconds, reset_signals);
     }
+}
+
+/// [`set_timeout_ex`] without the SAPI check (the signal handler calls it:
+/// no thread-locals, no allocation).
+fn arm(seconds: i64, reset_signals: bool) {
     let seconds = if (0..=999_999_999).contains(&seconds) {
         seconds
     } else {
@@ -67,13 +74,19 @@ extern "C" fn handler(_sig: libc::c_int) {
         // The VM never got to the first timeout: die (hard timeout).
         let secs = SECONDS.load(Ordering::Relaxed);
         let hard = HARD.load(Ordering::Relaxed);
-        let s = if secs == 1 { "" } else { "s" };
-        let msg = format!(
-            "\nFatal error: Maximum execution time of {secs}+{hard} second{s} exceeded (terminated) in [no active file] on line 0\n"
+        // Formatted into a stack buffer: no allocation in a signal handler.
+        let mut buf = [0u8; 192];
+        let mut w = &mut buf[..];
+        let _ = std::io::Write::write_fmt(
+            &mut w,
+            format_args!(
+                "\nFatal error: Maximum execution time of {secs}+{hard} seconds exceeded (terminated) in [no active file] on line 0\n"
+            ),
         );
+        let len = 192 - w.len();
         // SAFETY: write(2) and _exit are async-signal-safe.
         unsafe {
-            libc::write(2, msg.as_ptr().cast(), msg.len());
+            libc::write(2, buf.as_ptr().cast(), len);
             libc::_exit(124);
         }
     }
@@ -81,7 +94,7 @@ extern "C" fn handler(_sig: libc::c_int) {
     crate::ext::pcntl::raise_interrupt();
     let hard = HARD.load(Ordering::Relaxed);
     if hard > 0 {
-        set_timeout_ex(hard, true);
+        arm(hard, true);
     }
 }
 

@@ -2027,10 +2027,29 @@ impl Vm {
         // php's ZEND_VM_FCALL_INTERRUPT_CHECK: an out-of-memory error the
         // call ran into is raised now, with the call still on the trace.
         let r = self.oom_interrupt().and(r);
+        // Its timeout check too (zend_fcall_interrupt): a timer that fired
+        // during the call raises here, with the call on the trace.
+        let r = match self.fcall_timeout() {
+            Some(e) => Err(e),
+            None => r,
+        };
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);
         r
+    }
+
+    /// zend_fcall_interrupt's zend_timeout: the fatal error, when
+    /// max_execution_time ran out.
+    #[inline]
+    fn fcall_timeout(&mut self) -> Option<Thrown> {
+        if !builtins::pcntl_interrupt_pending() || !builtins::zend::timeout::timed_out() {
+            return None;
+        }
+        let msg = builtins::zend::timeout::take_timed_out()?;
+        self.timeout_prev = None;
+        self.timeout_wait = None;
+        Some(self.fatal_error_here(1, msg.as_bytes()))
     }
 
     /// `New`: instantiate `class` into `dst` and push its constructor frame.

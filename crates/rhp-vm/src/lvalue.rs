@@ -1576,6 +1576,7 @@ fn make_ref_path(
     if let CursorStep::Prop(name) = head {
         let handle = match slot {
             Value::Object(h) => h.clone(),
+            Value::Closure(_) => return Err(crate::props::closure_prop_error(name.as_bytes())),
             // zend_throw_non_object_error for a fetch for write
             other => {
                 return Err(Thrown::error(

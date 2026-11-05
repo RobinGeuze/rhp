@@ -361,8 +361,8 @@ impl Vm {
                         continue;
                     }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
-                    let v = if matches!(x, Value::Object(_) | Value::Array(_))
-                        || matches!(y, Value::Object(_) | Value::Array(_))
+                    let v = if matches!(x, Value::Object(_) | Value::Array(_) | Value::Closure(_))
+                        || matches!(y, Value::Object(_) | Value::Array(_) | Value::Closure(_))
                     {
                         self.concat_object(&x, &y)?
                     } else {
@@ -700,14 +700,24 @@ impl Vm {
                         .collect();
                     // Bind the defining/static class scope so the closure body can
                     // reach private members and resolve `self::`/`static::`.
+                    // `fnidx` is file-local; resolve into the flat table.
+                    let fnidx = self.unit_base(top).closures + fnidx;
+                    // A non-static closure binds the creating frame's `$this`
+                    // (zend_create_closure), whether or not it uses it.
+                    let bound_this = if self.closures[fnidx as usize].proto.is_static {
+                        None
+                    } else {
+                        self.current_this(top)
+                    };
                     let cd = Rc::new(rhp_values::ClosureData {
-                        // `fnidx` is file-local; resolve into the flat table.
-                        fnidx: self.unit_base(top).closures + fnidx,
+                        fnidx,
                         captures,
-                        bound_this: None,
+                        bound_this,
                         bound_class: self.stack[top].defining_class,
                         bound_static: self.stack[top].called_class,
                         wrapped: None,
+                        id: rhp_values::alloc_object_id(),
+                        statics: Default::default(),
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
                 }
@@ -724,6 +734,17 @@ impl Vm {
                     self.var_var_bind(top, &gname, cell);
                 }
                 Instr::BindStatic { cv, name, init } => {
+                    if let Some(cd) = self.stack[top].closure.clone() {
+                        let cell = closure_static(&cd, &proto.names[name as usize], || {
+                            if init == u32::MAX {
+                                Value::Null
+                            } else {
+                                proto.consts[init as usize].clone()
+                            }
+                        });
+                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
                     let statics = self.static_table(top);
@@ -744,6 +765,20 @@ impl Vm {
                     self.sync_global_cv(top, cv);
                 }
                 Instr::BindStaticOrJmp { cv, name, target } => {
+                    if let Some(cd) = self.stack[top].closure.clone() {
+                        let n = &proto.names[name as usize];
+                        let found = cd
+                            .statics
+                            .borrow()
+                            .iter()
+                            .find(|(k, _)| k == n)
+                            .map(|(_, c)| c.clone());
+                        if let Some(cell) = found {
+                            self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                            self.stack[top].pc = target as usize;
+                        }
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.static_table(top).get(&key) {
@@ -754,9 +789,14 @@ impl Vm {
                     }
                 }
                 Instr::BindStaticInit { cv, name, src } => {
+                    let v = self.reg_get(top, src);
+                    if let Some(cd) = self.stack[top].closure.clone() {
+                        let cell = closure_static(&cd, &proto.names[name as usize], || v);
+                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        continue;
+                    }
                     let sname = proto.names[name as usize].as_bytes().to_vec();
                     let key = self.static_key(top, &proto, sname);
-                    let v = self.reg_get(top, src);
                     let cell = self
                         .static_table(top)
                         .entry(key)
@@ -795,6 +835,8 @@ impl Vm {
                         bound_class: self.stack[top].defining_class,
                         bound_static: self.stack[top].called_class,
                         wrapped: Some(Box::new(c)),
+                        id: rhp_values::alloc_object_id(),
+                        statics: Default::default(),
                     });
                     self.reg_set(top, dst, Value::Closure(cd));
                 }
@@ -2622,4 +2664,20 @@ fn perl_increment(s: &[u8]) -> Vec<u8> {
         v.insert(0, if last == b'0' { b'1' } else { last });
     }
     v
+}
+
+/// A closure's own static variable `name` (bound once, then shared by every
+/// run of that Closure object).
+fn closure_static(
+    cd: &rhp_values::ClosureData,
+    name: &rhp_values::PhpStr,
+    init: impl FnOnce() -> Value,
+) -> Rc<RefCell<Value>> {
+    let mut st = cd.statics.borrow_mut();
+    if let Some((_, c)) = st.iter().find(|(k, _)| k == name) {
+        return c.clone();
+    }
+    let c = Rc::new(RefCell::new(init()));
+    st.push((name.clone(), c.clone()));
+    c
 }

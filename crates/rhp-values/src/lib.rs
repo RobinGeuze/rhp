@@ -15,10 +15,12 @@ use rustc_hash::FxBuildHasher;
 
 pub mod conv;
 pub mod fmt;
+pub mod handles;
 pub mod mem;
 pub mod ops;
 pub mod thrown;
 
+pub use handles::{alloc_object_id, release_object_id};
 pub use thrown::Thrown;
 
 // php's error levels (Zend/zend_errors.h).
@@ -138,9 +140,49 @@ pub struct ClosureData {
     /// forwards its arguments to the wrapped callable value. `fnidx`/`captures`
     /// are unused when this is `Some`.
     pub wrapped: Option<Box<Value>>,
+    /// The Closure object's handle ([`alloc_object_id`]).
+    pub id: u32,
+    /// The closure's own static variables, by name, once its body bound
+    /// them (php copies a closure's static variables into each Closure
+    /// object). Unbound ones still have their declared initial value.
+    pub statics: RefCell<Vec<(PhpStr, PhpRef)>>,
+}
+
+impl ClosureData {
+    /// A copy of the static variables' current values, for a new Closure
+    /// made from this one (`bind`, `clone`: zend_array_dup).
+    pub fn statics_copy(&self) -> RefCell<Vec<(PhpStr, PhpRef)>> {
+        RefCell::new(
+            self.statics
+                .borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), Rc::new(RefCell::new(v.borrow().clone()))))
+                .collect(),
+        )
+    }
+}
+
+impl Drop for ClosureData {
+    fn drop(&mut self) {
+        // What the closure holds is freed before its handle goes back.
+        drop(std::mem::take(&mut self.captures));
+        drop(self.bound_this.take());
+        drop(self.wrapped.take());
+        drop(std::mem::take(self.statics.get_mut()));
+        release_object_id(self.id);
+    }
 }
 
 pub type ClosureHandle = Rc<ClosureData>;
+
+/// The object handle of an object or closure value (`spl_object_id`).
+pub fn object_id(v: &Value) -> Option<u32> {
+    match v {
+        Value::Object(h) => Some(h.borrow().id),
+        Value::Closure(c) => Some(c.id),
+        _ => None,
+    }
+}
 
 /// Interned class id; the class table lives in the engine, not the value.
 pub type ClassId = u32;
@@ -249,6 +291,10 @@ impl Drop for ObjectData {
         if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
             f(self.id);
         }
+        // The handle goes back after what the properties held (php frees the
+        // object, then puts its handle on the free list).
+        drop(std::mem::take(&mut self.properties));
+        release_object_id(self.id);
     }
 }
 

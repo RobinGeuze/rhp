@@ -33,6 +33,7 @@ impl Drop for RequestStateReset {
 /// (docs/design/request-state.md).
 fn reset_request_state() {
     builtins::reset_request_state();
+    rhp_values::handles::reset_object_ids();
     crate::lvalue::reset_path_diags();
 }
 
@@ -85,7 +86,6 @@ impl Vm {
             cursor_global: None,
             classes: Vec::new(),
             class_ids: Default::default(),
-            next_object_id: 1,
             globals: indexmap::IndexMap::new(),
             jit_globals: HashMap::new(),
             unset_typed_props: HashMap::new(),
@@ -126,7 +126,6 @@ impl Vm {
             ctor_frames: Vec::new(),
             finished_main: None,
             in_shutdown_scope: false,
-            destructed_below: 0,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
             opcache: None,
@@ -349,6 +348,13 @@ impl Vm {
         self.main_script_path = Some(path.into());
     }
 
+    /// A fatal error bailed out (php_error_cb's
+    /// zend_objects_store_mark_destructed): no object alive now runs its
+    /// destructor. Objects created later (by shutdown functions) still do.
+    pub(crate) fn mark_objects_destructed(&mut self) {
+        self.destructibles.clear();
+    }
+
     /// Remember a new object whose class defines `__destruct` or has a
     /// native `dtor_obj` / `free_obj_host`.
     pub(crate) fn track_destructible(&mut self, h: &ObjectHandle) {
@@ -367,9 +373,6 @@ impl Vm {
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
     fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
-        if h.borrow().id < self.destructed_below {
-            return Ok(()); // marked destructed by a fatal error's bailout
-        }
         let cls = h.borrow().class;
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
@@ -585,7 +588,9 @@ impl Vm {
             }
         }
         // Then every object still alive, in creation order (objects created
-        // by destructors included).
+        // by destructors included). From here on freed handles are not
+        // reused (zend_objects_store_call_destructors).
+        rhp_values::handles::stop_object_id_reuse();
         while !self.destructibles.is_empty() {
             let batch = std::mem::take(&mut self.destructibles);
             let mut it = batch.into_iter();

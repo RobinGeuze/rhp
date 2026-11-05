@@ -1110,6 +1110,9 @@ impl ProtoFlags {
     /// holds the globals while shutdown callbacks run. php runs them with
     /// no frame at all, so this one, too, is no user frame.
     pub const SHUTDOWN_SCOPE: ProtoFlags = ProtoFlags(2);
+    /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
+    /// refuses to unbind it.
+    pub const USES_THIS: ProtoFlags = ProtoFlags(4);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0

@@ -12,6 +12,7 @@
 
 mod calls;
 mod classes;
+mod closures;
 mod compare;
 mod dispatch;
 mod errors;
@@ -116,7 +117,6 @@ pub struct Vm {
     // OOP class table (see `classes` module).
     classes: Vec<classes::ClassEntry>,
     class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
-    next_object_id: u32,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.
@@ -178,7 +178,7 @@ pub struct Vm {
     streams: StreamTable,
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
-    readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
+    readonly_reinit: HashMap<u32, Vec<PhpStr>>,
     next_resource_id: u32,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds
@@ -230,10 +230,6 @@ pub struct Vm {
     finished_main: Option<Frame>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
-    // A fatal error bailed out (php_error_cb's zend_objects_store_mark_destructed):
-    // objects with an id below this never run their destructor (shutdown
-    // functions still run). 0: no bailout.
-    destructed_below: u32,
     // Per-run extension state (`Host::module_state`), by module key.
     module_states: HashMap<&'static str, Box<dyn std::any::Any>>,
     /// The server API layer: sink, response headers, request input.
@@ -325,6 +321,9 @@ struct Frame {
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
+    /// The Closure object this frame runs (`Closure::getCurrent()`, the
+    /// closure's own static variables).
+    closure: Option<Rc<rhp_values::ClosureData>>,
 }
 
 impl Frame {
@@ -347,6 +346,7 @@ impl Frame {
             include_caller: None,
             dyn_vars: HashMap::new(),
             global_scope: false,
+            closure: None,
         }
     }
 }

@@ -3,7 +3,7 @@
 
 use std::rc::{Rc, Weak};
 
-use rhp_builtins::{self as builtins, Host};
+use rhp_builtins::{self as builtins};
 use rhp_bytecode::{ClassRef, FunctionProto, NIdx, ParamDefault, Reg};
 use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -433,10 +433,12 @@ impl Vm {
                 b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
                 b"call" if !named.is_empty() && !argv.is_empty() => {
                     let new_this = argv.remove(0);
-                    let bound = self
-                        .closure_bind(&o, &new_this, &new_this)
-                        .unwrap_or(Value::Null);
-                    self.call_named(&bound, argv, named, None)?
+                    let bound = self.closure_call_target(&o, &new_this)?;
+                    if matches!(bound, Value::Null) {
+                        Value::Null
+                    } else {
+                        self.call_named(&bound, argv, named, None)?
+                    }
                 }
                 _ => self.closure_method(&o, &mname, argv)?,
             };
@@ -773,7 +775,11 @@ impl Vm {
 
     /// The `$this` of the current frame, if it is bound to an object.
     pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
-        let cv = self.stack[top].proto.this_cv?;
+        let Some(cv) = self.stack[top].proto.this_cv else {
+            // A closure whose body has no `$this` slot still has the bound
+            // object (traces show `A->{closure}`).
+            return self.stack[top].closure.as_ref()?.bound_this.clone();
+        };
         match &self.stack[top].regs[cv as usize] {
             Value::Object(h) => Some(h.clone()),
             // Passed to a by-reference-capable argument slot, the register
@@ -895,7 +901,7 @@ impl Vm {
     /// after) and drive it to completion (re-entrant; exceptions handled within).
     pub(crate) fn run_closure_sync(
         &mut self,
-        cd: &rhp_values::ClosureData,
+        cd: &Rc<rhp_values::ClosureData>,
         args: Args<'_>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
@@ -915,6 +921,7 @@ impl Vm {
         }
         frame.defining_class = cd.bound_class;
         frame.called_class = cd.bound_static;
+        frame.closure = Some(cd.clone());
         self.bind_frame(&mut frame, args, caller)?;
         self.bind_superglobals(&mut frame);
         if proto.is_generator {
@@ -1056,16 +1063,22 @@ impl Vm {
             b"bindto" => {
                 let new_this = args.first().cloned().unwrap_or(Value::Null);
                 let scope = args.get(1).cloned().unwrap_or_else(|| Value::str("static"));
-                Ok(self
-                    .closure_bind(closure, &new_this, &scope)
-                    .unwrap_or(Value::Null))
+                self.bind_closure(
+                    "Closure::bindTo",
+                    1,
+                    closure,
+                    &new_this,
+                    Some(&scope),
+                    crate::closures::BindMode::Bind,
+                )
             }
             b"call" => {
                 // Temporarily binds `$this` AND the scope to the new object.
                 let new_this = args.remove(0);
-                let bound = self
-                    .closure_bind(closure, &new_this, &new_this)
-                    .unwrap_or(Value::Null);
+                let bound = self.closure_call_target(closure, &new_this)?;
+                if matches!(bound, Value::Null) {
+                    return Ok(Value::Null);
+                }
                 self.call_callable_value(&bound, args)
             }
             b"__invoke" => self.call_callable_value(closure, args),
@@ -1260,6 +1273,21 @@ impl Vm {
                     return Err(b"array callback must have exactly two members".to_vec());
                 };
                 let (cls, called, obj) = match item0 {
+                    // zend_closure_get_method: a Closure's `__invoke`.
+                    Value::Closure(cd) => {
+                        return match &item1 {
+                            Value::Str(m) if m.as_bytes().eq_ignore_ascii_case(b"__invoke") => {
+                                Ok(Callee::Closure(cd))
+                            }
+                            Value::Str(m) => Err([
+                                &b"class Closure does not have a method \""[..],
+                                m.as_bytes(),
+                                b"\"",
+                            ]
+                            .concat()),
+                            _ => Err(b"second array member is not a valid method".to_vec()),
+                        };
+                    }
                     Value::Object(h) => {
                         let c = h.borrow().class;
                         (c, c, Some(h))
@@ -1917,6 +1945,13 @@ impl Vm {
                     what,
                     String::from_utf8_lossy(entry.name.as_bytes())
                 ),
+            ));
+        }
+        if entry.name.as_bytes() == b"Closure" {
+            // zend_closure_new
+            return Err(Thrown::error(
+                "Error",
+                "Instantiation of class Closure is not allowed",
             ));
         }
         if self.is_directory_class(cls) {

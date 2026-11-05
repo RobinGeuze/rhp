@@ -484,6 +484,12 @@ impl Vm {
         if let Value::Array(_) = d {
             self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
         }
+        if let Value::Closure(_) = d {
+            return Err(Thrown::error(
+                "Error",
+                "Object of class Closure could not be converted to string",
+            ));
+        }
         Ok(conv::to_string_bytes(&d))
     }
 

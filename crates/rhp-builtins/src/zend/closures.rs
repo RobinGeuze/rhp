@@ -26,10 +26,13 @@ fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value
 fn fn_closure_bind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let closure = deref(&args[0]);
     let new_this = args.get(1).map(deref).unwrap_or(Value::Null);
-    let scope = args.get(2).map(deref).unwrap_or(Value::Null);
-    Ok(host
-        .closure_bind(&closure, &new_this, &scope)
-        .unwrap_or(Value::Null))
+    host.closure_bind(&closure, &new_this, args.get(2))
+}
+
+/// `Closure::getCurrent()`: the Closure running in the calling frame.
+fn fn_closure_current(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.current_closure()
+        .ok_or_else(|| Thrown::error("Error", "Current function is not a closure"))
 }
 
 pub fn register(m: &mut crate::Registry) {
@@ -43,6 +46,7 @@ pub fn register(m: &mut crate::Registry) {
                 Some(1),
             ),
             ("__closure_bind", fn_closure_bind, 2, Some(3)),
+            ("__closure_current", fn_closure_current, 0, Some(0)),
         ],
     );
 }

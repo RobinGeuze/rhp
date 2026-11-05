@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::{self as builtins, Host};
-use rhp_values::{
-    conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
-};
+use rhp_values::{ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, user_visible_builtin};
 use crate::classes::PropRes;
@@ -1788,6 +1786,19 @@ impl Host for Vm {
         }
     }
 
+    fn closure_debug_info(&self, closure: &Value) -> Option<PhpArray> {
+        match deref(closure) {
+            Value::Closure(cd) => Some(Vm::closure_debug_info(self, &cd)),
+            _ => None,
+        }
+    }
+
+    fn current_closure(&self) -> Option<Value> {
+        let f = self.stack.iter().rev().find(|f| !f.proto.is_internal())?;
+        let cd = f.closure.as_ref()?;
+        Some(Value::Closure(cd.clone()))
+    }
+
     fn run_released_destructors(&mut self) -> Result<(), Thrown> {
         self.collect_released_now()
     }
@@ -1836,42 +1847,21 @@ impl Host for Vm {
                 .is_some_and(|&i| self.functions[i].proto.is_internal())
     }
 
-    fn closure_bind(&self, closure: &Value, new_this: &Value, scope: &Value) -> Option<Value> {
-        let cd = match deref(closure) {
-            Value::Closure(cd) => cd,
-            _ => return None,
-        };
-        let new_this_h = match deref(new_this) {
-            Value::Object(h) => Some(h),
-            _ => None,
-        };
-        // php's do_closure_bind: an object's class, `"static"` = keep the
-        // closure's scope, a class name, or null = no scope. The called scope
-        // (`static::`) is the new `$this`'s class, else the new scope.
-        let scope_class = match deref(scope) {
-            Value::Null => None,
-            Value::Object(h) => Some(h.borrow().class),
-            v => {
-                let name = conv::to_string_bytes(&v);
-                if name == b"static" {
-                    cd.bound_class
-                } else {
-                    self.resolve_class_by_name(&name).ok().or(cd.bound_class)
-                }
-            }
-        };
-        let called = new_this_h
-            .as_ref()
-            .map(|h| h.borrow().class)
-            .or(scope_class);
-        Some(Value::Closure(Rc::new(rhp_values::ClosureData {
-            fnidx: cd.fnidx,
-            captures: cd.captures.clone(),
-            bound_this: new_this_h,
-            bound_class: scope_class,
-            bound_static: called,
-            wrapped: cd.wrapped.clone(),
-        })))
+    fn closure_bind(
+        &mut self,
+        closure: &Value,
+        new_this: &Value,
+        scope: Option<&Value>,
+    ) -> Result<Value, Thrown> {
+        let scope = scope.cloned().unwrap_or_else(|| Value::str("static"));
+        self.bind_closure(
+            "Closure::bind",
+            2,
+            closure,
+            new_this,
+            Some(&scope),
+            crate::closures::BindMode::Bind,
+        )
     }
 
     fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool {
@@ -2143,6 +2133,8 @@ impl Host for Vm {
             bound_class: scope,
             bound_static: called,
             wrapped: Some(Box::new(callable)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
         }))
     }
 }

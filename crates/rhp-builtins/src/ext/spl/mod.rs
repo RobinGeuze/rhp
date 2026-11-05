@@ -156,17 +156,14 @@ fn fn_spl_autoload_call(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 
 /// `spl_object_id(object $obj): int` — the object's per-run handle id.
 fn fn_spl_object_id(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
-        Value::Object(h) => Ok(Value::Int(h.borrow().id as i64)),
-        _ => Err(Thrown::type_error(
+    match rhp_values::object_id(&deref(&args[0])) {
+        Some(id) => Ok(Value::Int(id as i64)),
+        None => Err(Thrown::type_error(
             "spl_object_id(): Argument #1 ($object) must be of type object",
         )),
     }
 }
 
-/// `spl_object_hash(object $obj): string` — a 32-hex-char id unique to the
-/// object for its lifetime. (Derived from the handle id; not byte-identical to
-/// php's hash, but stable and collision-free as a map key.)
 /// `__spl_deprecated($message)`: an E_DEPRECATED raised on behalf of an SPL
 /// prelude method (php's `#[\Deprecated]` methods / zend_error notices).
 fn fn_spl_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -184,13 +181,14 @@ fn fn_spl_user_props(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     }
 }
 
+/// `spl_object_hash(object $obj): string`: the handle as 16 hex digits,
+/// then 16 zeros (php_spl_object_hash).
 fn fn_spl_object_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match deref(&args[0]) {
-        Value::Object(h) => {
-            let id = h.borrow().id;
-            Ok(Value::str(format!("{id:032x}").into_bytes()))
-        }
-        _ => Err(Thrown::type_error(
+    match rhp_values::object_id(&deref(&args[0])) {
+        Some(id) => Ok(Value::str(
+            format!("{id:016x}0000000000000000").into_bytes(),
+        )),
+        None => Err(Thrown::type_error(
             "spl_object_hash(): Argument #1 ($object) must be of type object",
         )),
     }

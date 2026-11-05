@@ -107,6 +107,7 @@ fn callable_name(host: &dyn Host, v: &Value) -> Vec<u8> {
             let class = match &parts[0] {
                 Value::Str(c) => c.as_bytes().to_vec(),
                 Value::Object(h) => class_of(h),
+                Value::Closure(_) => b"Closure".to_vec(),
                 _ => return b"Array".to_vec(),
             };
             [&class[..], b"::", &method[..]].concat()

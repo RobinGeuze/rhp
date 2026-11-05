@@ -440,6 +440,8 @@ impl Vm {
             bound_class: None,
             bound_static: None,
             wrapped: Some(Box::new(callable)),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
         }))
     }
 
@@ -463,6 +465,8 @@ impl Vm {
             bound_class: Some(m.defining_class),
             bound_static: Some(called),
             wrapped: Some(Box::new(Value::Array(pair))),
+            id: rhp_values::alloc_object_id(),
+            statics: Default::default(),
         }))
     }
 

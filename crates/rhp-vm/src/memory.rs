@@ -130,7 +130,7 @@ impl Vm {
         let msg = d.message.into_bytes();
         self.last_error = Some((1, msg.clone(), d.file.clone(), d.line));
         self.display_error_trace(1, "Fatal error", &msg, &d.file, d.line, &trace);
-        self.destructed_below = self.next_object_id;
+        self.mark_objects_destructed();
         Thrown::Exit(255)
     }
 

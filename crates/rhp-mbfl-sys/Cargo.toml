@@ -8,7 +8,7 @@ publish.workspace = true
 # libmbfl (LGPL-2.1-only; filters/mbfilter_singlebyte.c and .h PHP-3.01),
 # php_unicode.c and .h (PHP-3.01, with the ucdata MIT notice), and php-src's
 # generated unicode_data.h and rare_cp_bitvec.h (PHP-3.01).
-license = "(MIT OR Apache-2.0) AND LGPL-2.1-only AND PHP-3.01 AND MIT"
+license = "(MIT OR Apache-2.0) AND LGPL-2.1-only AND PHP-3.01 AND MIT AND Unicode-3.0"
 links = "rhp_mbfl"
 build = "build.rs"
 

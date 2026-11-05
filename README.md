@@ -20,8 +20,8 @@ The crates are in `crates/`, the test tooling in `tools/`.
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv.
 - **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the Argon2 reference
   code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
-- **rhp-mbfl-sys**: php-src's libmbfl and php_unicode.c (LGPL-2.1), vendored and linked statically in a
-  crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
+- **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
+  statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
   streams. Also an opcache-style compiled-script cache (no optimizer or JIT) and a request's engine state.
 - **rhp-sapi**: the request layer: `run_request` runs one PHP request through a `Sapi` trait that
@@ -47,7 +47,7 @@ passing, so the percentages are of all php-src tests.
 | tests | 530 | 895 | 59.2% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | most tests run the php binary or `-S`, which rhp lacks |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,298 | 3,880 | 59.2% | no user stream wrappers or filters, `dns_*`, `mail`, `getimagesize` |
+| ext/standard | 2,298 | 3,880 | 59.2% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 7 | 27 | 25.9% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -58,7 +58,7 @@ passing, so the percentages are of all php-src tests.
 | ext/gmp | 78 | 99 | 78.8% | on libgmp |
 | ext/hash | 58 | 83 | 69.9% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 74 | 82 | 90.2% | the system iconv |
-| ext/intl | 36 | 511 | 7.0% | `grapheme_*`, `Normalizer` and `idn_*` only, on ICU; not reported as loaded |
+| ext/intl | 36 | 511 | 7.0% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 72 | 94 | 76.6% | |
 | ext/libxml | 17 | 32 | 53.1% | on libxml2 |
 | ext/mbstring | 193 | 446 | 43.3% | on php-src's libmbfl (rhp-mbfl-sys) |
@@ -93,7 +93,7 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 
 | application | version | what works |
 |---|---|---|
-| Composer | 2.11.1 (phar) | Read-only commands (`list`, `about`, `show`, `validate`, `licenses`, `depends`, `why-not`, `outdated`, `audit`, `search`, ...) print what php prints. `update` and `require` write the same `composer.lock`, and `install --no-autoloader` the same `vendor/`. Generating the autoloader fails (rhp's `^` on two strings returns an int), so `install`, `update`, `require` and `dump-autoload` stop at "Generating autoload files". Installed code may still fail: monolog's `Logger` needs `Fiber`. |
+| Composer | 2.11.1 (phar) | Read-only commands (`list`, `about`, `show` except `--platform`, `validate`, `licenses`, `depends`, `why-not`, `outdated`, `audit`, `search`, ...) print what php prints. `update` and `require` write the same `composer.lock`, and `install --no-autoloader` the same `vendor/`. Generating the autoloader fails (rhp's `^` on two strings returns an int), so `install`, `update`, `require` and `dump-autoload` stop at "Generating autoload files". Installed code may still fail: monolog's `Logger` needs `Fiber`. |
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | Compiles only: 1,749 of its 1,751 PHP files compile under rhp. It does not boot: every console command and request stops at `get_error_handler()`, a PHP 8.5 function rhp lacks. |
 | Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: the container calls `spl_object_id()` on a closure, which rhp rejects, so every artisan command and request fails. |
 

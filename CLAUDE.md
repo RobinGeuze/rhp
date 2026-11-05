@@ -7,8 +7,9 @@ tests/phpt/README.md and tests/apps/README.md describe the harnesses.
 
 ## Keep the README's tables current
 
-README.md has three tables: the crate list, PHP test support and application
-support. A change to what a table describes updates the table in the same PR.
+README.md has three sections that describe the code: the crate list and the
+PHP test support and application support tables. A change to what one of them
+describes updates it in the same PR.
 
 - **Crates**: a crate added, removed, renamed or given another job.
 - **PHP test support**: generated from tests/phpt/known-passing.txt,

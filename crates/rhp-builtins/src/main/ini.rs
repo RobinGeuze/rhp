@@ -597,6 +597,9 @@ pub(crate) fn alter_ini_entry(
     }
     let old = ini_value(name).flatten().unwrap_or_default();
     ini_apply(name, Some(&newv));
+    if name == b"max_execution_time" {
+        crate::zend::timeout::on_update(&newv);
+    }
     ini_store(name, newv);
     #[cfg(feature = "mbstring-libmbfl")]
     if mb_changed {

@@ -82,6 +82,8 @@ impl Vm {
             constants,
             user_const_order: Vec::new(),
             max_depth: 1 << 16,
+            timeout_prev: None,
+            timeout_wait: None,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),

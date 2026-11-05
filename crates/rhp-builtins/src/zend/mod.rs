@@ -19,6 +19,7 @@ pub mod multibyte;
 mod language_parser_tables;
 pub mod object_handlers;
 pub mod operators;
+pub mod timeout;
 pub mod virtual_cwd;
 pub(crate) mod zpp;
 

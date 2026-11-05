@@ -80,6 +80,7 @@ impl Vm {
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
         builtins::zend::call_stack::init();
+        builtins::zend::timeout::request_startup();
         // opcache's own log (its ini handlers' warnings at module startup).
         let (lines, dest) = builtins::take_accel_log();
         for line in lines {
@@ -237,6 +238,7 @@ impl Vm {
     /// php_request_shutdown's tail: send the headers if no output did, then
     /// flush the SAPI. Call after [`Vm::run_main`].
     pub fn finish_request(&mut self) {
+        builtins::zend::timeout::unset_timeout();
         // zend_ini_deactivate restores startup values changed at runtime
         // (re-running their handlers); php-cgi's deferred startup warnings
         // come out with them.

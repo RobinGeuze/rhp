@@ -104,6 +104,13 @@ pub struct Vm {
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
     max_depth: usize,
+    /// After max_execution_time ran out: the (frame, pc) of the last user
+    /// instruction run. php raises the timeout where a jump lands or a
+    /// function starts (its VM interrupt checks).
+    timeout_prev: Option<(usize, usize)>,
+    /// A jump landed on a loop head: php's layout tests the condition at
+    /// the bottom, so its landing is the body start, here (frame, pc).
+    timeout_wait: Option<(usize, usize)>,
     /// Builtin calls in progress (innermost last), for exception traces.
     native_calls: Vec<NativeCall>,
     /// `set_exception_handler` stack (innermost last; null = none).

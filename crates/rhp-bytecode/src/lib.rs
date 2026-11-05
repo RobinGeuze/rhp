@@ -65,6 +65,7 @@ impl CallFlags {
 
 /// One bytecode instruction. `Copy`, fixed-width, one variant per opcode.
 #[derive(Clone, Copy, Debug)]
+#[repr(u16)]
 pub enum Instr {
     // -- move / const / load --
     Nop,
@@ -1387,3 +1388,7 @@ pub enum ConstInitProto {
     Const(Value),
     Thunk(Rc<FunctionProto>),
 }
+
+// The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
+// it without decoding a niche.
+const _: () = assert!(std::mem::size_of::<Instr>() == 24);

@@ -75,6 +75,81 @@ impl Vm {
         *slot = v;
     }
 
+    /// [`Vm::reg_get`], inline for a scalar (also behind a reference: a
+    /// global-scope variable).
+    #[inline(always)]
+    fn reg_get_fast(&self, top: usize, r: Reg) -> Value {
+        let slot = &self.stack[top].regs[r as usize];
+        if let Value::Ref(rc) = slot {
+            if let Ok(v) = rc.try_borrow() {
+                if let Some(s) = scalar_copy(&v) {
+                    return s;
+                }
+            }
+        } else if let Some(s) = scalar_copy(slot) {
+            return s;
+        }
+        self.reg_get(top, r)
+    }
+
+    /// [`Vm::reg_set`], inline when the old value is a scalar: nothing to
+    /// drop or destruct.
+    #[inline(always)]
+    fn reg_set_fast(&mut self, top: usize, r: Reg, v: Value) {
+        let slot = &mut self.stack[top].regs[r as usize];
+        if is_scalar(slot) {
+            std::mem::forget(std::mem::replace(slot, v));
+        } else {
+            self.reg_set(top, r, v);
+        }
+    }
+
+    /// The integer fast path of a binary instruction: when both operands
+    /// are ints and `f` gives a result, write it to `dst` and say so.
+    #[inline(always)]
+    fn int_binop(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        f: impl FnOnce(i64, i64) -> Option<Value>,
+    ) -> bool {
+        let regs = &mut self.stack[top].regs;
+        let (Some(x), Some(y)) = (int_of(&regs[a as usize]), int_of(&regs[b as usize])) else {
+            return false;
+        };
+        let Some(v) = f(x, y) else {
+            return false;
+        };
+        let slot = &mut regs[dst as usize];
+        if is_scalar(slot) {
+            std::mem::forget(std::mem::replace(slot, v));
+        } else {
+            self.reg_set(top, dst, v);
+        }
+        true
+    }
+
+    /// Write `v` to CV `cv` as [`Vm::cv_assign`] does, inline when the old
+    /// value (behind a reference too) is a scalar.
+    #[inline(always)]
+    fn cv_assign_fast(&mut self, top: usize, cv: Reg, v: Value) {
+        let slot = &mut self.stack[top].regs[cv as usize];
+        if let Value::Ref(rc) = slot {
+            if let Ok(mut cell) = rc.try_borrow_mut() {
+                if is_scalar(&cell) {
+                    std::mem::forget(std::mem::replace(&mut *cell, v));
+                    return;
+                }
+            }
+        } else if is_scalar(slot) {
+            std::mem::forget(std::mem::replace(slot, v));
+            return;
+        }
+        self.cv_assign(top, cv, v);
+    }
+
     /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
     /// through it (so by-ref aliases see the change); otherwise overwrite.
     pub(crate) fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) {
@@ -136,19 +211,25 @@ impl Vm {
                 proto = self.stack[top].proto.clone();
             }
             debug_assert!(Rc::ptr_eq(&proto, &self.stack[top].proto));
-            let pc = self.stack[top].pc;
-            if self.mem.attention() {
-                self.oom_tick(top, pc)?;
-            }
-            if pc >= proto.code.len() {
-                // fell off the end == RetNull
-                if let Some(done) = self.do_return(Value::Null) {
-                    return Ok(done);
+            let frame = &mut self.stack[top];
+            let pc = frame.pc;
+            if pc < proto.code.len() && !self.mem.attention() {
+                frame.pc = pc + 1;
+            } else {
+                // The frame's pc is still `pc` here (oom_tick reports at it).
+                if self.mem.attention() {
+                    self.oom_tick(top, pc)?;
                 }
-                continue;
+                if pc >= proto.code.len() {
+                    // fell off the end == RetNull
+                    if let Some(done) = self.do_return(Value::Null) {
+                        return Ok(done);
+                    }
+                    continue;
+                }
+                self.stack[top].pc = pc + 1;
             }
             let instr = proto.code[pc];
-            self.stack[top].pc = pc + 1;
 
             // Run destructors of objects the program has just released.
             if self.dtor_check {
@@ -173,12 +254,12 @@ impl Vm {
             match instr {
                 Instr::Nop => {}
                 Instr::Mov { dst, src } => {
-                    let v = self.reg_get(top, src);
-                    self.reg_set(top, dst, v);
+                    let v = self.reg_get_fast(top, src);
+                    self.reg_set_fast(top, dst, v);
                 }
                 Instr::LoadConst { dst, k } => {
                     let v = proto.consts[k as usize].clone();
-                    self.reg_set(top, dst, v);
+                    self.reg_set_fast(top, dst, v);
                 }
                 Instr::LoadNull { dst } => {
                     // `unset($x)` in the global scope drops the symbol-table
@@ -194,39 +275,77 @@ impl Vm {
                         self.reg_set(top, dst, Value::Null);
                     }
                 }
-                Instr::LoadBool { dst, b } => self.reg_set(top, dst, Value::Bool(b)),
-                Instr::LoadInt { dst, n } => self.reg_set(top, dst, Value::Int(n)),
+                Instr::LoadBool { dst, b } => self.reg_set_fast(top, dst, Value::Bool(b)),
+                Instr::LoadInt { dst, n } => self.reg_set_fast(top, dst, Value::Int(n)),
 
                 Instr::Assign { cv, src } => {
-                    let v = self.reg_get(top, src);
-                    self.cv_assign(top, cv, v);
+                    let v = self.reg_get_fast(top, src);
+                    self.cv_assign_fast(top, cv, v);
                 }
 
-                Instr::Add { dst, a, b } => self.bin(top, dst, a, b, Op::Add, ops::add)?,
-                Instr::Sub { dst, a, b } => self.bin(top, dst, a, b, Op::Sub, ops::sub)?,
-                Instr::Mul { dst, a, b } => self.bin(top, dst, a, b, Op::Mul, ops::mul)?,
+                // Int operands that don't overflow: what ops::add/sub/mul
+                // return for them.
+                Instr::Add { dst, a, b } => {
+                    if !self.int_binop(top, dst, a, b, |x, y| x.checked_add(y).map(Value::Int)) {
+                        self.bin(top, dst, a, b, Op::Add, ops::add)?
+                    }
+                }
+                Instr::Sub { dst, a, b } => {
+                    if !self.int_binop(top, dst, a, b, |x, y| x.checked_sub(y).map(Value::Int)) {
+                        self.bin(top, dst, a, b, Op::Sub, ops::sub)?
+                    }
+                }
+                Instr::Mul { dst, a, b } => {
+                    if !self.int_binop(top, dst, a, b, |x, y| x.checked_mul(y).map(Value::Int)) {
+                        self.bin(top, dst, a, b, Op::Mul, ops::mul)?
+                    }
+                }
                 Instr::Div { dst, a, b } => self.bin(top, dst, a, b, Op::Div, ops::div)?,
                 Instr::Mod { dst, a, b } => self.bin(top, dst, a, b, Op::Mod, ops::modulo)?,
                 Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
+                // Int operands (shift counts 0..63): what ops::bitwise
+                // returns for them.
                 Instr::BitAnd { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, Op::BitAnd, |x, y| {
-                        ops::bitwise(x, y, ops::BitOp::And)
-                    })?
+                    if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x & y))) {
+                        self.bin_inf(top, dst, a, b, Op::BitAnd, |x, y| {
+                            ops::bitwise(x, y, ops::BitOp::And)
+                        })?
+                    }
                 }
-                Instr::BitOr { dst, a, b } => self.bin_inf(top, dst, a, b, Op::BitOr, |x, y| {
-                    ops::bitwise(x, y, ops::BitOp::Or)
-                })?,
+                Instr::BitOr { dst, a, b } => {
+                    if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x | y))) {
+                        self.bin_inf(top, dst, a, b, Op::BitOr, |x, y| {
+                            ops::bitwise(x, y, ops::BitOp::Or)
+                        })?
+                    }
+                }
                 Instr::BitXor { dst, a, b } => {
-                    self.bin_inf(top, dst, a, b, Op::BitXor, |x, y| {
-                        ops::bitwise(x, y, ops::BitOp::Xor)
-                    })?
+                    if !self.int_binop(top, dst, a, b, |x, y| Some(Value::Int(x ^ y))) {
+                        self.bin_inf(top, dst, a, b, Op::BitXor, |x, y| {
+                            ops::bitwise(x, y, ops::BitOp::Xor)
+                        })?
+                    }
                 }
-                Instr::Shl { dst, a, b } => self.bin_inf(top, dst, a, b, Op::Shl, |x, y| {
-                    ops::bitwise(x, y, ops::BitOp::Shl)
-                })?,
-                Instr::Shr { dst, a, b } => self.bin_inf(top, dst, a, b, Op::Shr, |x, y| {
-                    ops::bitwise(x, y, ops::BitOp::Shr)
-                })?,
+                Instr::Shl { dst, a, b } => {
+                    let shl = |x: i64, y: i64| {
+                        (0..64)
+                            .contains(&y)
+                            .then(|| Value::Int(x.wrapping_shl(y as u32)))
+                    };
+                    if !self.int_binop(top, dst, a, b, shl) {
+                        self.bin_inf(top, dst, a, b, Op::Shl, |x, y| {
+                            ops::bitwise(x, y, ops::BitOp::Shl)
+                        })?
+                    }
+                }
+                Instr::Shr { dst, a, b } => {
+                    let shr = |x: i64, y: i64| (0..64).contains(&y).then(|| Value::Int(x >> y));
+                    if !self.int_binop(top, dst, a, b, shr) {
+                        self.bin_inf(top, dst, a, b, Op::Shr, |x, y| {
+                            ops::bitwise(x, y, ops::BitOp::Shr)
+                        })?
+                    }
+                }
                 Instr::Concat { dst, a, b } => {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
@@ -281,6 +400,14 @@ impl Vm {
                     pre,
                     delta,
                 } => {
+                    // An int that doesn't overflow: inc_dec_value's result,
+                    // written in place (through a reference too).
+                    let regs = &mut self.stack[top].regs;
+                    if let Some(old) = int_in_place(&mut regs[cv as usize], delta as i64) {
+                        let r = old + if pre { delta as i64 } else { 0 };
+                        self.reg_set_fast(top, dst, Value::Int(r));
+                        continue;
+                    }
                     let cur = self.reg_get(top, cv);
                     let new = self.inc_dec_vm(&cur, delta as i64)?;
                     self.cv_assign(top, cv, new.clone());
@@ -357,6 +484,22 @@ impl Vm {
                 }
 
                 Instr::Cmp { dst, a, b, kind } => {
+                    // Two ints: what eval_cmp returns (compare_values
+                    // raises a waiting pending_throw, so not then).
+                    let int_cmp = |x: i64, y: i64| {
+                        Some(match kind {
+                            CmpKind::Eq | CmpKind::Identical => Value::Bool(x == y),
+                            CmpKind::Ne | CmpKind::NotIdentical => Value::Bool(x != y),
+                            CmpKind::Lt => Value::Bool(x < y),
+                            CmpKind::Le => Value::Bool(x <= y),
+                            CmpKind::Gt => Value::Bool(x > y),
+                            CmpKind::Ge => Value::Bool(x >= y),
+                            CmpKind::Spaceship => Value::Int(x.cmp(&y) as i64),
+                        })
+                    };
+                    if self.pending_throw.is_none() && self.int_binop(top, dst, a, b, int_cmp) {
+                        continue;
+                    }
                     let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
                     let r = self.eval_cmp(kind, &x, &y)?;
                     self.reg_set(top, dst, r);
@@ -395,15 +538,29 @@ impl Vm {
                     }
                 }
                 Instr::JmpTrue { cond, target } => {
-                    let c = self.reg_get(top, cond);
-                    if self.truthy(&c)? {
-                        self.stack[top].pc = target as usize;
+                    let f = &mut self.stack[top];
+                    if let Value::Bool(b) = f.regs[cond as usize] {
+                        if b {
+                            f.pc = target as usize;
+                        }
+                    } else {
+                        let c = self.reg_get(top, cond);
+                        if self.truthy(&c)? {
+                            self.stack[top].pc = target as usize;
+                        }
                     }
                 }
                 Instr::JmpFalse { cond, target } => {
-                    let c = self.reg_get(top, cond);
-                    if !self.truthy(&c)? {
-                        self.stack[top].pc = target as usize;
+                    let f = &mut self.stack[top];
+                    if let Value::Bool(b) = f.regs[cond as usize] {
+                        if !b {
+                            f.pc = target as usize;
+                        }
+                    } else {
+                        let c = self.reg_get(top, cond);
+                        if !self.truthy(&c)? {
+                            self.stack[top].pc = target as usize;
+                        }
                     }
                 }
                 Instr::JmpNull { src, target } => {
@@ -2362,6 +2519,65 @@ impl Vm {
 }
 
 /// Describe the unmatched subject for an UnhandledMatchError message.
+/// The int in `v`, also behind a reference (not while it is borrowed:
+/// the slow path then fails as it always did).
+#[inline(always)]
+fn int_of(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(n) => Some(*n),
+        Value::Ref(rc) => match *rc.try_borrow().ok()? {
+            Value::Int(n) => Some(n),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Add `delta` to the int in `slot` (behind a reference too) unless that
+/// overflows; the old value. Not while the reference is borrowed (the
+/// slow path then fails as it always did).
+#[inline(always)]
+fn int_in_place(slot: &mut Value, delta: i64) -> Option<i64> {
+    match slot {
+        Value::Int(n) => {
+            let old = *n;
+            *n = old.checked_add(delta)?;
+            Some(old)
+        }
+        Value::Ref(rc) => match &mut *rc.try_borrow_mut().ok()? {
+            Value::Int(n) => {
+                let old = *n;
+                *n = old.checked_add(delta)?;
+                Some(old)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A copy of a scalar, without the out-of-line clone.
+#[inline(always)]
+fn scalar_copy(v: &Value) -> Option<Value> {
+    match *v {
+        Value::Null => Some(Value::Null),
+        Value::Bool(b) => Some(Value::Bool(b)),
+        Value::Int(n) => Some(Value::Int(n)),
+        Value::Float(f) => Some(Value::Float(f)),
+        _ => None,
+    }
+}
+
+/// A value with nothing to drop: overwriting it needs no drop glue and
+/// never releases an object or array.
+#[inline(always)]
+fn is_scalar(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+    )
+}
+
 fn match_case_desc(v: &Value) -> String {
     match v {
         Value::Int(n) => n.to_string(),

@@ -9341,7 +9341,6 @@ tests/basic/bug45986.phpt
 tests/basic/bug53180.phpt
 tests/basic/bug55500.phpt
 tests/basic/bug61000.phpt
-tests/basic/bug67198.phpt
 tests/basic/bug67988.phpt
 tests/basic/bug73969.phpt
 tests/basic/bug78236.phpt

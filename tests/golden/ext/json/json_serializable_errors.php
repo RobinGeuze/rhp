@@ -15,3 +15,18 @@ class Ser implements JsonSerializable { function jsonSerialize(): mixed { throw 
 try { var_dump(json_encode(new Ser)); } catch (Exception $e) { echo "caught ", $e->getMessage(), "\n"; }
 try { var_dump(json_encode([1, [new Ser]], JSON_PARTIAL_OUTPUT_ON_ERROR)); } catch (Exception $e) { echo "caught ", $e->getMessage(), "\n"; }
 echo json_last_error(), "\n";
+
+// A json_encode() inside jsonSerialize() sees the outer guard; its
+// failure leaves no json_last_error() once the outer call succeeds.
+class JsonPeer implements JsonSerializable {
+    public $peer;
+    public function __construct(public int $n) {}
+    public function jsonSerialize(): mixed {
+        return ['n' => $this->n, 'inner' => json_encode($this->peer)];
+    }
+}
+$p1 = new JsonPeer(1);
+$p2 = new JsonPeer(2);
+$p1->peer = $p2;
+$p2->peer = $p1;
+var_dump(json_encode($p1), json_last_error());

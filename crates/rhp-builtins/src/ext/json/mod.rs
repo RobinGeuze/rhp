@@ -128,7 +128,11 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     };
     if ok {
         // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
-        // json_last_error code.
+        // json_last_error code. Without it nothing failed here: a nested
+        // json_encode() (from jsonSerialize()) leaves no code behind.
+        if flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
+            set_last_error(JSON_ERROR_NONE);
+        }
         Ok(Value::str(out))
     } else {
         // Failure sets json_last_error at the failure site.

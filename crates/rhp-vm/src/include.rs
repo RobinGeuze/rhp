@@ -283,10 +283,9 @@ impl Vm {
                     })
                 };
                 if let Some(reason) = reason {
-                    self.diag(
-                        builtins::E_WARNING,
-                        &format!("{fname}({path_str}): Failed to open stream: {reason}"),
-                    )?;
+                    let msg = format!("{fname}({path_str}): Failed to open stream: {reason}");
+                    let msg = self.docref_html(msg.as_bytes()).into_owned();
+                    self.diag(builtins::E_WARNING, &msg)?;
                 }
                 if kind.is_require() {
                     return Err(Thrown::error(

@@ -531,6 +531,19 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     }
 }
 
+/// php_log_err's file mode: error_log_mode when it is a valid mode, else
+/// 0644.
+pub fn error_log_mode() -> u32 {
+    let m = ini_value(b"error_log_mode")
+        .flatten()
+        .map_or(0, |v| ini_parse_quantity(&v));
+    if (1..=0o777).contains(&m) {
+        m as u32
+    } else {
+        0o644
+    }
+}
+
 /// C `strtol(s, NULL, 10)` / `atol` (php's ZEND_ATOL): leading whitespace,
 /// sign, digits; saturates on overflow.
 pub(crate) fn c_atol(s: &[u8]) -> i64 {

@@ -411,7 +411,8 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(b"] ");
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
-                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, 0o644);
+                    let mode = crate::main::ini::error_log_mode();
+                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, mode);
                 }
                 _ => host.log_message(&msg),
             }

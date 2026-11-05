@@ -1133,6 +1133,14 @@ impl Vm {
                         }
                     }
                 }
+                Instr::ConstExprDim { arr } => {
+                    if let Value::Object(_) = self.reg_get(top, arr) {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot use [] on objects in constant expression",
+                        ));
+                    }
+                }
                 Instr::ThrowError { k } => {
                     let msg = match &proto.consts[k as usize] {
                         Value::Str(m) => String::from_utf8_lossy(m.as_bytes()).into_owned(),

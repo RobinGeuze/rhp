@@ -494,6 +494,10 @@ pub enum Instr {
         obj: Reg,
         name: Reg,
     },
+    /// A dimension read in a constant expression: not on an object.
+    ConstExprDim {
+        arr: Reg,
+    },
     /// Throw an `Error` whose message is the string constant `k`: a form
     /// php compiles but always rejects when it runs.
     ThrowError {

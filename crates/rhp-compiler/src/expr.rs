@@ -122,6 +122,9 @@ impl ProtoBuilder<'_> {
             Expression::ArrayAccess(aa) => {
                 let arr = self.compile_expr(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
+                if self.in_const_expr() {
+                    self.emit(Instr::ConstExprDim { arr });
+                }
                 let dst = self.alloc_temp();
                 self.emit(Instr::DimFetch { dst, arr, key });
                 Ok(dst)

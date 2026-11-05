@@ -161,8 +161,16 @@ pub(crate) fn compile_attributes(
                         .any(|a| matches!(a, PA::VariadicPlaceholder(_)))
                     {
                         use mago_span::HasSpan;
+                        // Reported at the declaration's line: the first
+                        // token after the attribute list.
+                        let end = list.span().end.offset as usize;
+                        let src = cx.doc_tokens().0;
+                        let skip = src[end.min(src.len())..]
+                            .iter()
+                            .take_while(|b| b.is_ascii_whitespace())
+                            .count();
                         cx.fatal(
-                            a.span().start.offset,
+                            (end + skip) as u32,
                             "Cannot create Closure as attribute argument".into(),
                         );
                     }

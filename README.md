@@ -43,7 +43,7 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 3,609 | 5,396 | 66.9% | no Fiber (0/113) or lazy objects (1/229); the pipe operator `\|>` is refused |
+| Zend/tests | 3,610 | 5,396 | 66.9% | no Fiber (0/113) or lazy objects (1/229); the pipe operator `\|>` is refused |
 | tests | 626 | 895 | 69.9% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 20 | 117 | 17.1% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 20 | 3,953 | 0.5% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **11,410** | **22,219** | **51.4%** | |
+| **total** | **11,411** | **22,219** | **51.4%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

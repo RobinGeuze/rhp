@@ -1187,6 +1187,7 @@ Zend/tests/first_class_callable/first_class_callable_005.phpt
 Zend/tests/first_class_callable/first_class_callable_007.phpt
 Zend/tests/first_class_callable/first_class_callable_009.phpt
 Zend/tests/first_class_callable/first_class_callable_010.phpt
+Zend/tests/first_class_callable/first_class_callable_011.phpt
 Zend/tests/first_class_callable/first_class_callable_013.phpt
 Zend/tests/first_class_callable/first_class_callable_014.phpt
 Zend/tests/first_class_callable/first_class_callable_015.phpt

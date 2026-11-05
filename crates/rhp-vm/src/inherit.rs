@@ -980,7 +980,12 @@ impl Vm {
                     Single::Inter(_) => None,
                 })
                 .collect();
-            parts.push(names.join("&"));
+            // An implicitly nullable intersection is the DNF `(A&B)|null`.
+            if ty.mask & M_NULL != 0 {
+                parts.push(format!("({})", names.join("&")));
+            } else {
+                parts.push(names.join("&"));
+            }
         } else {
             for s in &ty.singles {
                 match s {

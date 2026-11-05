@@ -38,9 +38,16 @@ var_dump($outer);
 // closures: by-reference captures are shared, static variables are not
 $cap = 5;
 $f = function () use (&$cap) { static $s = 0; return $cap + $s; };
-var_dump($f);
+// (the name and file hold this script's path: replace it)
+function dump_closure($c) {
+    ob_start();
+    var_dump($c);
+    $out = ob_get_clean();
+    echo preg_replace('/string\(\d+\) "(\{closure:)?[^"]*' . preg_quote(basename(__FILE__)) . '/', 'string "$1FILE', $out);
+}
+dump_closure($f);
 $g = function () use ($cap) { return $cap; };
-var_dump($g);
+dump_closure($g);
 
 // __debugInfo() returning references
 class D {

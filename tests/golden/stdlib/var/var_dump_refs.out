@@ -127,9 +127,9 @@ array(2) {
 }
 object(Closure)#1 (4) {
   ["name"]=>
-  string(118) "{closure:/Users/robing/gits/rhp/.claude/worktrees/rest/var-dump-fidelity/tests/golden/stdlib/var/var_dump_refs.php:40}"
+  string "{closure:FILE:40}"
   ["file"]=>
-  string(105) "/Users/robing/gits/rhp/.claude/worktrees/rest/var-dump-fidelity/tests/golden/stdlib/var/var_dump_refs.php"
+  string "FILE"
   ["line"]=>
   int(40)
   ["static"]=>
@@ -142,11 +142,11 @@ object(Closure)#1 (4) {
 }
 object(Closure)#2 (4) {
   ["name"]=>
-  string(118) "{closure:/Users/robing/gits/rhp/.claude/worktrees/rest/var-dump-fidelity/tests/golden/stdlib/var/var_dump_refs.php:42}"
+  string "{closure:FILE:49}"
   ["file"]=>
-  string(105) "/Users/robing/gits/rhp/.claude/worktrees/rest/var-dump-fidelity/tests/golden/stdlib/var/var_dump_refs.php"
+  string "FILE"
   ["line"]=>
-  int(42)
+  int(49)
   ["static"]=>
   array(1) {
     ["cap"]=>

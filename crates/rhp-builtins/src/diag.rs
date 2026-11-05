@@ -54,6 +54,67 @@ pub fn warn_arg(
     host.emit_diagnostic(E_WARNING, &m)
 }
 
+thread_local! {
+    /// [`locate_url`] already warned about an unknown wrapper for the open
+    /// that may now fail.
+    static UNKNOWN_WRAPPER_WARNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether `scheme` names a registered wrapper (as written: php's hash is
+/// case-sensitive, the lowercase retry is the caller's).
+pub(crate) fn wrapper_registered(host: &dyn Host, scheme: &[u8]) -> bool {
+    scheme == b"glob" || host.stream_wrapper_schemes().iter().any(|s| s == scheme)
+}
+
+/// `php_stream_locate_url_wrapper(path)` from builtin `fname`, with its
+/// "Unable to find the wrapper" warning.
+pub fn locate_url(
+    host: &mut dyn Host,
+    fname: &str,
+    path: &[u8],
+) -> Result<streams::Located, Thrown> {
+    UNKNOWN_WRAPPER_WARNED.with(|w| w.set(false));
+    let located = streams::locate_url_wrapper(path, |s| wrapper_registered(host, s));
+    if let streams::Located::Unknown(name) = &located {
+        let mut m = b"Unable to find the wrapper \"".to_vec();
+        m.extend_from_slice(name);
+        m.extend_from_slice(b"\" - did you forget to enable it when you configured PHP?");
+        warn(host, fname, &m)?;
+        UNKNOWN_WRAPPER_WARNED.with(|w| w.set(true));
+    }
+    Ok(located)
+}
+
+/// The wrapper lookup of `php_stream_open_wrapper_ex(path, REPORT_ERRORS)`
+/// from builtin `fname`: the path the stream layer should open (a
+/// `file://` URL as its local path, an unknown wrapper's path as the plain
+/// file php falls back to), or `None` after php's warnings when no wrapper
+/// fits.
+pub fn locate_for_open(
+    host: &mut dyn Host,
+    fname: &str,
+    path: &[u8],
+) -> Result<Option<Vec<u8>>, Thrown> {
+    Ok(match locate_url(host, fname, path)? {
+        // the stream layer takes a file:// prefix off itself
+        streams::Located::Plain(_) => Some(path.to_vec()),
+        streams::Located::Wrapper(p) => Some(p),
+        streams::Located::Unknown(_) => Some(crate::zend::virtual_cwd::expand_local(path)),
+        streams::Located::RemoteHost => {
+            let mut m = b"Remote host file access not supported, ".to_vec();
+            m.extend_from_slice(path);
+            warn(host, fname, &m)?;
+            warn_arg(
+                host,
+                fname,
+                path,
+                "Failed to open stream: no suitable wrapper could be found",
+            )?;
+            None
+        }
+    })
+}
+
 /// php_stream_open_wrapper's failure report for `path` from builtin `fname`:
 /// an unknown wrapper / bad php:// URL first, then "Failed to open stream:"
 /// with the errno the failing syscall recorded (see [`streams::note_errno`]).
@@ -66,6 +127,15 @@ pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), 
         "operation failed".to_string()
     };
     let known = host.stream_wrapper_schemes();
+    if UNKNOWN_WRAPPER_WARNED.with(|w| w.replace(false)) {
+        // locate_url warned; the plain open's errno is the reason
+        return warn_arg(
+            host,
+            fname,
+            path,
+            &format!("Failed to open stream: {}", streams::last_strerror()),
+        );
+    }
     if let Some(msg) = streams::take_wrapper_error() {
         return warn_arg(host, fname, path, &format!("Failed to open stream: {msg}"));
     }

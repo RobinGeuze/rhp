@@ -379,10 +379,76 @@ pub fn split_scheme(path: &[u8]) -> (&[u8], &[u8]) {
                 .iter()
                 .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'))
         {
+            // php finds the plain-files wrapper whatever the case
+            if scheme.eq_ignore_ascii_case(b"file") {
+                return (b"file", path);
+            }
             return (scheme, path);
         }
     }
     (b"file", path)
+}
+
+/// The length of the protocol `php_stream_locate_url_wrapper` sees at the
+/// start of `path`: `[A-Za-z0-9+.-]{2,}` followed by `://`, or `data:`.
+pub fn protocol_len(path: &[u8]) -> Option<usize> {
+    let n = path
+        .iter()
+        .position(|&c| !(c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.')))
+        .unwrap_or(path.len());
+    let ok = path.get(n) == Some(&b':')
+        && n > 1
+        && (path[n + 1..].starts_with(b"//") || (n == 4 && path.starts_with(b"data:")));
+    ok.then_some(n)
+}
+
+/// Where `php_stream_locate_url_wrapper` sends a path.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Located {
+    /// The plain-files wrapper, with the local path to open (a `file://`
+    /// prefix taken off).
+    Plain(Vec<u8>),
+    /// A registered wrapper; the URL with its scheme as registered.
+    Wrapper(Vec<u8>),
+    /// `file://host/...`: "Remote host file access not supported".
+    RemoteHost,
+    /// No wrapper has this scheme (`name`, at most 31 bytes): php warns and
+    /// opens the whole path as a plain file.
+    Unknown(Vec<u8>),
+}
+
+/// `php_stream_locate_url_wrapper`: `registered` says whether a scheme
+/// names a wrapper (php tries it as written, then lowercased).
+pub fn locate_url_wrapper(path: &[u8], registered: impl Fn(&[u8]) -> bool) -> Located {
+    let Some(n) = protocol_len(path) else {
+        return Located::Plain(path.to_vec());
+    };
+    let proto = &path[..n];
+    let lower = proto.to_ascii_lowercase();
+    let exact = registered(proto);
+    if !exact && !registered(&lower) {
+        return Located::Unknown(proto[..n.min(31)].to_vec());
+    }
+    if lower == b"file" {
+        let localhost = path.len() >= 17 && path[..17].eq_ignore_ascii_case(b"file://localhost/");
+        if !localhost && !matches!(path.get(n + 3), None | Some(b'/')) {
+            return Located::RemoteHost;
+        }
+        // skip the protocol and all but the last leading slash
+        let mut p = n + 1 + if localhost { 11 } else { 0 };
+        loop {
+            p += 1;
+            if path.get(p) != Some(&b'/') {
+                break;
+            }
+        }
+        return Located::Plain(path[p - 1..].to_vec());
+    }
+    if exact {
+        Located::Wrapper(path.to_vec())
+    } else {
+        Located::Wrapper([&lower[..], &path[n..]].concat())
+    }
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -391,10 +457,22 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 // --- the default `file://` wrapper ------------------------------------------
 
-/// Strip a leading `file://` (keeping an absolute leading slash) for the local
-/// filesystem path.
+/// The local path of a `file://` URL (any case), as
+/// `php_stream_locate_url_wrapper`'s `path_for_open`: the protocol (and a
+/// `localhost` host) and all but one leading slash taken off.
 pub fn file_path(url: &[u8]) -> &[u8] {
-    url.strip_prefix(b"file://").unwrap_or(url)
+    if url.len() < 7 || !url[..7].eq_ignore_ascii_case(b"file://") {
+        return url;
+    }
+    let localhost = url.len() >= 17 && url[..17].eq_ignore_ascii_case(b"file://localhost/");
+    let mut p = 5 + if localhost { 11 } else { 0 };
+    loop {
+        p += 1;
+        if url.get(p) != Some(&b'/') {
+            break;
+        }
+    }
+    &url[p - 1..]
 }
 
 /// The default local-filesystem wrapper.

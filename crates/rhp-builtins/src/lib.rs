@@ -29,7 +29,8 @@ pub mod version;
 pub mod zend;
 
 pub use diag::{
-    deprecated, deprecated_function, flush_stream_diags, notice, open_failed, warn, warn_arg,
+    deprecated, deprecated_function, flush_stream_diags, locate_for_open, locate_url, notice,
+    open_failed, warn, warn_arg,
 };
 pub use ext::pcre;
 pub use ext::standard::http_fopen_wrapper;

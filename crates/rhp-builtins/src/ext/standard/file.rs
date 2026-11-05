@@ -106,9 +106,16 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let ctx = args.get(3).map(deref).unwrap_or(Value::Null);
     let use_path = args.get(2).is_some_and(|v| conv::to_bool(&deref(v)));
     let opened = if use_path && split_scheme(&path).0 == b"file" {
-        open_with_path(host, &path, &mode, &ctx)
+        let resolved = include_path_target(host, &path);
+        let Some(target) = crate::locate_for_open(host, "fopen", &resolved)? else {
+            return Ok(Value::Bool(false));
+        };
+        host.stream_open_ctx(&target, &mode, &ctx)
     } else {
-        host.stream_open_ctx(&path, &mode, &ctx)
+        let Some(target) = crate::locate_for_open(host, "fopen", &path)? else {
+            return Ok(Value::Bool(false));
+        };
+        host.stream_open_ctx(&target, &mode, &ctx)
     };
     match opened {
         Some(v) => Ok(v),
@@ -135,16 +142,33 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-/// A plain-file open with USE_PATH: php_stream_open_wrapper_ex opens the
-/// php_resolve_path result when there is one, else the name as given.
-pub(crate) fn open_with_path(
+/// `php_stream_open_wrapper_ex(path, mode, [USE_PATH |] REPORT_ERRORS)`
+/// from builtin `fname`: with USE_PATH a plain file opens at its
+/// php_resolve_path result when there is one; failures are reported.
+pub(crate) fn open_stream(
     host: &mut dyn Host,
+    fname: &str,
     path: &[u8],
     mode: &[u8],
     ctx: &Value,
-) -> Option<Value> {
-    let target = include_path_target(host, path);
-    host.stream_open_ctx(&target, mode, ctx)
+    use_path: bool,
+) -> Result<Option<Value>, Thrown> {
+    let path_to_open = if use_path {
+        include_path_target(host, path)
+    } else {
+        path.to_vec()
+    };
+    let Some(target) = crate::locate_for_open(host, fname, &path_to_open)? else {
+        return Ok(None);
+    };
+    crate::main::streams::clear_errno();
+    match host.stream_open_ctx(&target, mode, ctx) {
+        Some(v) => Ok(Some(v)),
+        None => {
+            crate::open_failed(host, fname, path)?;
+            Ok(None)
+        }
+    }
 }
 
 // --- fsync() / fdatasync() ------------------------------------------------------
@@ -243,11 +267,16 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Some(b) => Some(b),
             None => return Ok(Value::Bool(false)),
         }
-    } else if flags & USE_INCLUDE_PATH != 0 {
-        let p = include_path_target(host, &path);
-        host.stream_get_contents(&p)
     } else {
-        host.stream_get_contents(&path)
+        let target = if flags & USE_INCLUDE_PATH != 0 {
+            include_path_target(host, &path)
+        } else {
+            path.clone()
+        };
+        let Some(target) = crate::locate_for_open(host, "file", &target)? else {
+            return Ok(Value::Bool(false));
+        };
+        host.stream_get_contents(&target)
     };
     let Some(buf) = data else {
         if crate::main::streams::last_errno() == Some(libc::EISDIR) {
@@ -845,13 +874,16 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         host.write_out(&data);
         return Ok(Value::Int(data.len() as i64));
     }
-    crate::main::streams::clear_errno();
-    let data = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
-        let p = include_path_target(host, &path);
-        host.stream_get_contents(&p)
+    let target = if args.get(1).is_some_and(|v| conv::to_bool(&deref(v))) {
+        include_path_target(host, &path)
     } else {
-        host.stream_get_contents(&path)
+        path.clone()
     };
+    let Some(target) = crate::locate_for_open(host, "readfile", &target)? else {
+        return Ok(Value::Bool(false));
+    };
+    crate::main::streams::clear_errno();
+    let data = host.stream_get_contents(&target);
     let Some(data) = data else {
         if crate::main::streams::last_errno() == Some(libc::EISDIR) {
             // The open succeeds; the first read fails (php returns -1).
@@ -947,9 +979,13 @@ pub(crate) fn php_fgetcsv(
 ) -> Option<Vec<Vec<u8>>> {
     let at = |b: &[u8], i: usize| b.get(i).copied().unwrap_or(0);
     let isspace = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    // The C code walks a NUL-terminated buffer and can step onto (and
+    // copy) the terminator; keep one here too.
     let mut bptr = 0usize;
     let mut limit = csv_trailing(&buf);
     let mut line_end = limit;
+    let mut buf_len = buf.len();
+    buf.push(0);
     let mut values = Vec::new();
     let mut temp: Vec<u8> = Vec::new();
     let mut first_field = true;
@@ -996,7 +1032,7 @@ pub(crate) fn php_fgetcsv(
                         hunk = bptr;
                     }
                     // the embedded line end belongs to the field
-                    copy(&mut temp, &buf, line_end, buf.len());
+                    copy(&mut temp, &buf, line_end, buf_len);
                     let more = match next_line.as_mut() {
                         Some(f) => f(),
                         None => None,
@@ -1012,9 +1048,11 @@ pub(crate) fn php_fgetcsv(
                         break;
                     };
                     buf = nb;
+                    buf_len = buf.len();
+                    buf.push(0);
                     bptr = 0;
                     hunk = 0;
-                    limit = csv_trailing(&buf);
+                    limit = csv_trailing(&buf[..buf_len]);
                     line_end = limit;
                     state = 0;
                 } else {
@@ -1220,13 +1258,15 @@ pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u
     if name.is_empty() || name.contains(&0) {
         return None;
     }
-    // Paths with a protocol: only file:// resolves.
+    // Paths with a protocol: only the plain-files wrapper resolves.
     if protocol_len(name).is_some() {
-        let (scheme, _) = split_scheme(name);
-        if scheme.eq_ignore_ascii_case(b"file") {
-            return realpath_bytes(crate::main::streams::file_path(name));
-        }
-        return None;
+        let located = crate::main::streams::locate_url_wrapper(name, |s| {
+            crate::diag::wrapper_registered(host, s)
+        });
+        return match located {
+            crate::main::streams::Located::Plain(local) => realpath_bytes(&local),
+            _ => None,
+        };
     }
     let path = host.ini_get(b"include_path").unwrap_or_default();
     if name.starts_with(b"./")
@@ -1377,10 +1417,14 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
     }
     let use_include_path = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    let shown = url.clone();
     let url = if use_include_path {
         include_path_target(host, &url)
     } else {
         url
+    };
+    let Some(url) = crate::locate_for_open(host, "file_get_contents", &url)? else {
+        return Ok(Value::Bool(false));
     };
     {
         if !reserve_file_read(&url, offset, maxlen) {
@@ -1439,7 +1483,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
                 )?;
                 return Ok(Value::str(""));
             }
-            crate::open_failed(host, "file_get_contents", &url)?;
+            crate::open_failed(host, "file_get_contents", &shown)?;
             Ok(Value::Bool(false))
         }
     }
@@ -1647,14 +1691,8 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         return Ok(Value::Bool(false));
     }
-    crate::main::streams::clear_errno();
-    let opened = if flags & 1 != 0 && split_scheme(&path).0 == b"file" {
-        open_with_path(host, &path, mode, &ctx)
-    } else {
-        host.stream_open_ctx(&path, mode, &ctx)
-    };
-    let Some(stream) = opened else {
-        crate::open_failed(host, "file_put_contents", &path)?;
+    let Some(stream) = open_stream(host, "file_put_contents", &path, mode, &ctx, flags & 1 != 0)?
+    else {
         return Ok(Value::Bool(false));
     };
     if flags & LOCK_EX != 0 {
@@ -1755,7 +1793,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
-    let c = crate::zend::virtual_cwd::c_path(&path).unwrap_or_default();
+    let c = crate::zend::virtual_cwd::c_path(strip_file_scheme(&path)).unwrap_or_default();
     // php_plain_files_unlink: unlink(2) (a directory fails with EPERM/EISDIR).
     if unsafe { libc::unlink(c.as_ptr()) } != 0 {
         let e = std::io::Error::last_os_error();
@@ -1763,6 +1801,16 @@ fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
+}
+
+/// The plain wrapper's rmdir/unlink/mkdir take a leading `file://` off
+/// (any case).
+pub(crate) fn strip_file_scheme(url: &[u8]) -> &[u8] {
+    if url.len() >= 7 && url[..7].eq_ignore_ascii_case(b"file://") {
+        &url[7..]
+    } else {
+        url
+    }
 }
 
 /// `strerror` of an `io::Error`'s errno (php's warning text).
@@ -1776,7 +1824,8 @@ pub(crate) fn os_text(e: &std::io::Error) -> String {
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "rmdir", "directory")?;
     touch_ctx(host, args, 1);
-    if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(&path)) {
+    if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(strip_file_scheme(&path)))
+    {
         crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
         return Ok(Value::Bool(false));
     }

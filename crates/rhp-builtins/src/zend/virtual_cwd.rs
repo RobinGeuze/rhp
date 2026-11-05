@@ -357,6 +357,12 @@ pub fn expand_filepath(path: &[u8]) -> Vec<u8> {
     if path.windows(3).any(|w| w == b"://") {
         return path.to_vec();
     }
+    expand_local(path)
+}
+
+/// [`expand_filepath`] of any path, a `scheme://` one included (php's
+/// plain-files fallback for an unknown wrapper).
+pub fn expand_local(path: &[u8]) -> Vec<u8> {
     let full = expand_path(path);
     let parts: Vec<&[u8]> = full
         .split(|&b| b == b'/')

@@ -8,7 +8,7 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::standard::file::{os_text, path_arg, path_param, str_arg};
-use crate::main::streams::{split_scheme, StatInfo};
+use crate::main::streams::{Located, StatInfo};
 use crate::{Host, Thrown};
 
 pub(crate) fn arr_from_stat(s: &StatInfo) -> Value {
@@ -39,16 +39,46 @@ pub(crate) fn arr_from_stat(s: &StatInfo) -> Value {
 
 // --- stat family -----------------------------------------------------------------
 
-fn stat_path(host: &dyn Host, args: &[Value], link: bool) -> Option<StatInfo> {
+/// `php_stream_stat_path` of the first argument for builtin `fname`.
+fn stat_path(
+    host: &mut dyn Host,
+    args: &[Value],
+    link: bool,
+    fname: &str,
+) -> Result<Option<StatInfo>, Thrown> {
     let p = str_arg(args, 0);
     if p.is_empty() || p.contains(&0) {
-        return None;
+        return Ok(None);
     }
-    if link {
-        host.stream_lstat(&p)
+    let url = match crate::locate_url(host, fname, &p)? {
+        Located::Plain(local) => local,
+        Located::Wrapper(u) => u,
+        // the plain url_stat of the whole path, or no wrapper at all
+        Located::Unknown(_) => return Ok(crate::main::streams::sys_stat(&p, link)),
+        Located::RemoteHost => return Ok(None),
+    };
+    Ok(if link {
+        host.stream_lstat(&url)
     } else {
-        host.stream_stat(&p)
-    }
+        host.stream_stat(&url)
+    })
+}
+
+/// The path php_stat's access checks (`file_exists`, `is_readable`, …)
+/// give `access(2)`: the local path, expanded when the wrapper was not
+/// found. `Err(url)` for a URL of a registered wrapper; `Ok(None)` when no
+/// wrapper fits.
+fn access_path(
+    host: &mut dyn Host,
+    fname: &str,
+    p: &[u8],
+) -> Result<Result<Option<Vec<u8>>, Vec<u8>>, Thrown> {
+    Ok(match crate::locate_url(host, fname, p)? {
+        Located::Plain(local) => Ok(Some(local)),
+        Located::Unknown(_) => Ok(Some(crate::zend::virtual_cwd::expand_local(p))),
+        Located::RemoteHost => Ok(None),
+        Located::Wrapper(u) => Err(u),
+    })
 }
 
 /// php_stat's failure warning (not for the existence checks).
@@ -80,14 +110,14 @@ fn stat_failed(
 }
 
 fn fn_stat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match stat_path(host, args, false) {
+    match stat_path(host, args, false, "stat")? {
         Some(s) => Ok(arr_from_stat(&s)),
         None => stat_failed(host, args, "stat", false),
     }
 }
 
 fn fn_lstat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match stat_path(host, args, true) {
+    match stat_path(host, args, true, "lstat")? {
         Some(s) => Ok(arr_from_stat(&s)),
         None => stat_failed(host, args, "lstat", true),
     }
@@ -96,7 +126,7 @@ fn fn_lstat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 macro_rules! stat_field_fn {
     ($name:ident, $fname:literal, $link:expr, $warn:expr, |$s:ident| $e:expr) => {
         fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-            match stat_path(host, args, $link) {
+            match stat_path(host, args, $link, $fname)? {
                 Some($s) => Ok($e),
                 None if $warn => stat_failed(host, args, $fname, $link),
                 None => Ok(Value::Bool(false)),
@@ -133,25 +163,30 @@ stat_field_fn!(fn_is_link, "is_link", true, false, |s| Value::Bool(
     s.is_link()
 ));
 
-fn exists_check(host: &dyn Host, args: &[Value], link: bool) -> Option<StatInfo> {
-    stat_path(host, args, link)
+fn exists_check(
+    host: &mut dyn Host,
+    args: &[Value],
+    link: bool,
+    fname: &str,
+) -> Result<Option<StatInfo>, Thrown> {
+    stat_path(host, args, link, fname)
 }
 
 fn fn_is_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(
-        exists_check(host, args, false).is_some_and(|s| s.is_regular),
+        exists_check(host, args, false, "is_file")?.is_some_and(|s| s.is_regular),
     ))
 }
 
 fn fn_is_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(
-        exists_check(host, args, false).is_some_and(|s| s.is_dir),
+        exists_check(host, args, false, "is_dir")?.is_some_and(|s| s.is_dir),
     ))
 }
 
 #[allow(clippy::unnecessary_cast)]
 fn fn_filetype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(s) = stat_path(host, args, true) else {
+    let Some(s) = stat_path(host, args, true, "filetype")? else {
         return stat_failed(host, args, "filetype", true);
     };
     let t = s.mode & libc::S_IFMT as u32;
@@ -177,17 +212,24 @@ fn fn_filetype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// is_readable / is_writable / is_executable: `access(2)` for plain files;
 /// for other wrappers php checks the stat mode bits against the uid/gid.
-fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
+fn access_check(
+    host: &mut dyn Host,
+    args: &[Value],
+    amode: libc::c_int,
+    fname: &str,
+) -> Result<bool, Thrown> {
     let p = str_arg(args, 0);
     if p.is_empty() || p.contains(&0) {
-        return false;
+        return Ok(false);
     }
-    let (scheme, _) = split_scheme(&p);
-    if scheme == b"file" {
-        return crate::zend::virtual_cwd::access(crate::main::streams::file_path(&p), amode);
-    }
-    let Some(s) = host.stream_stat(&p) else {
-        return false;
+    let url = match access_path(host, fname, &p)? {
+        Ok(local) => {
+            return Ok(local.is_some_and(|l| crate::zend::virtual_cwd::access(&l, amode)));
+        }
+        Err(url) => url,
+    };
+    let Some(s) = host.stream_stat(&url) else {
+        return Ok(false);
     };
     // php_stat (filestat.c): owner bits if we own it, group bits for our
     // primary or any supplementary group, else "other" bits. The root
@@ -217,17 +259,32 @@ fn access_check(host: &dyn Host, args: &[Value], amode: libc::c_int) -> bool {
         libc::W_OK => 2,
         _ => 1,
     };
-    s.mode & (bit << shift) != 0
+    Ok(s.mode & (bit << shift) != 0)
 }
 
 fn fn_is_readable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(access_check(host, args, libc::R_OK)))
+    Ok(Value::Bool(access_check(
+        host,
+        args,
+        libc::R_OK,
+        "is_readable",
+    )?))
 }
 fn fn_is_writable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(access_check(host, args, libc::W_OK)))
+    Ok(Value::Bool(access_check(
+        host,
+        args,
+        libc::W_OK,
+        "is_writable",
+    )?))
 }
 fn fn_is_executable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(access_check(host, args, libc::X_OK)))
+    Ok(Value::Bool(access_check(
+        host,
+        args,
+        libc::X_OK,
+        "is_executable",
+    )?))
 }
 
 /// chown / chgrp / lchown / lchgrp: a user/group name or id; plain paths.
@@ -323,7 +380,15 @@ fn fn_lchgrp(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // --- local-fs metadata via libc (matches php's own ext/standard/filestat.c) ---
 
 fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(host.stream_exists(&path_arg(args, 0))))
+    let p = path_arg(args, 0);
+    if p.is_empty() || p.contains(&0) {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(match access_path(host, "file_exists", &p)? {
+        Ok(Some(local)) => host.stream_exists(&local),
+        Ok(None) => false,
+        Err(url) => host.stream_exists(&url),
+    }))
 }
 
 fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

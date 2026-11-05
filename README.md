@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 2,439 | 5,396 | 45.2% | no Fiber (0/113) or lazy objects (0/229); property hooks and the pipe operator `\|>` are refused |
-| tests | 530 | 895 | 59.2% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 2,441 | 5,396 | 45.2% | no Fiber (0/113) or lazy objects (0/229); property hooks and the pipe operator `\|>` are refused |
+| tests | 531 | 895 | 59.3% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | most tests run the php binary or `-S`, which rhp lacks |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,298 | 3,880 | 59.2% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
+| ext/standard | 2,452 | 3,880 | 63.2% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 7 | 27 | 25.9% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -73,16 +73,16 @@ passing, so the percentages are of all php-src tests.
 | ext/reflection | 318 | 540 | 58.9% | |
 | ext/simplexml | 145 | 165 | 87.9% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
-| ext/spl | 495 | 796 | 62.2% | |
+| ext/spl | 496 | 796 | 62.3% | |
 | ext/tokenizer | 46 | 54 | 85.2% | a port of the Zend scanner |
 | ext/xml | 60 | 71 | 84.5% | on libxml2 |
 | ext/xmlreader | 57 | 63 | 90.5% | on libxml2 |
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 112 | 125 | 89.6% | `ZipArchive` on libzip |
-| ext/zlib | 78 | 161 | 48.4% | system zlib; no incremental deflate/inflate contexts |
+| ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **9,692** | **22,219** | **43.6%** | |
+| **total** | **9,853** | **22,219** | **44.3%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

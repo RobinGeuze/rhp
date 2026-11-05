@@ -315,8 +315,10 @@ impl Vm {
         Ok(())
     }
 
-    /// The common `C::m()`: an accessible static method of a class, with
-    /// its called class. `None`: take [`Vm::static_call_target`].
+    /// The common `C::m()`: an accessible method of a class that needs no
+    /// fallback, with its `$this` and called class. A non-static method
+    /// (`parent::m()`) takes the caller's `$this` when it is-a `cls`.
+    /// `None`: take [`Vm::static_call_target`].
     #[inline(always)]
     fn static_call_fast(
         &self,
@@ -324,15 +326,22 @@ impl Vm {
         class: ClassRef,
         cls: ClassId,
         mname: &[u8],
-    ) -> Option<(classes::ResolvedMethod, ClassId)> {
-        let m = self.lookup_method(cls, mname)?;
-        let ok = m.is_static
-            && !m.is_abstract
+        ctor: bool,
+    ) -> Option<(classes::ResolvedMethod, Option<ObjectHandle>, ClassId)> {
+        let m = self.lookup_method(cls, if ctor { b"__construct" } else { mname })?;
+        let ok = !m.is_abstract
             && (m.visibility == rhp_values::Visibility::Public
-                || Some(m.defining_class) == self.stack[top].defining_class)
+                || (!ctor && Some(m.defining_class) == self.stack[top].defining_class))
             && self.classes[m.defining_class as usize].kind != ClassKind::Trait;
         if !ok {
             return None;
+        }
+        if !m.is_static {
+            let h = self
+                .current_this(top)
+                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))?;
+            let oc = h.borrow().class;
+            return Some((m, Some(h), oc));
         }
         let called = match class {
             ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
@@ -340,7 +349,7 @@ impl Vm {
             }
             _ => cls,
         };
-        Some((m, called))
+        Some((m, None, called))
     }
 
     /// What `C::m()` run by frame `top` calls (ZEND_INIT_STATIC_METHOD_CALL):
@@ -436,10 +445,8 @@ impl Vm {
         ctor: bool,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
-        if !ctor {
-            if let Some((m, called)) = self.static_call_fast(top, class, cls, mname) {
-                return self.enter_method(top, &m, None, called, dst, base, argc);
-            }
+        if let Some((m, this, called)) = self.static_call_fast(top, class, cls, mname, ctor) {
+            return self.enter_method(top, &m, this, called, dst, base, argc);
         }
         match self.static_call_target(top, class, cls, mname, ctor)? {
             StaticTarget::Enum(lc) => {

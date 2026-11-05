@@ -469,7 +469,9 @@ never a second source of semantics.
   constructor", "Cannot call private C::__construct()"). A non-static
   target binds the calling `$this` (called class = its class) or throws
   "Non-static method … cannot be called statically"; a static one gets
-  `called_class` per the §4 forwarding table.
+  `called_class` per the §4 forwarding table. An accessible method that
+  needs no fallback (also `parent::m()` and `parent::__construct()` with a
+  compatible `$this`) takes the one-lookup path (`static_call_fast`).
 - **Callables** (callables.rs): `resolve_callable_ex` ports
   zend_is_callable_ex (self/parent/static relative to the calling frame,
   their deprecations, `["C", "parent::m"]`, `$this` borrowed for a
@@ -478,6 +480,9 @@ never a second source of semantics.
   borrowed `$this`). A callback an internal function calls gets
   "f(): Argument #N ($x) must be passed by reference, value given" for a
   plain value sent to a by-reference parameter, then a temporary reference.
+  When an error handler throws from a callable's deprecation, a builtin's
+  zpp keeps just that exception; only `call_user_func[_array]` compiled as
+  a user call (`CallFlags::USER_CALL`) chains a "(null)" TypeError to it.
 - **`InstanceOf`**: deref `val`; non-object → `Bool(false)`. Never autoloads.
   `Bool(resolve_class
   (class).map(|c| classes[val.class].ancestors.contains(&c)).unwrap_or(false))`.

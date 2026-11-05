@@ -26,7 +26,7 @@ const END: &str = "<!-- phpt-table end -->";
 
 /// Extensions rhp provides some functions of without registering the module
 /// (get_loaded_extensions() leaves them out). They get their own row too.
-const PARTIAL_EXTS: &[&str] = &["intl", "sockets"];
+const PARTIAL_EXTS: &[&str] = &["intl", "readline", "sockets"];
 
 /// The SAPIs rhp implements (rhp-sapi), in table order.
 const SAPIS: &[&str] = &["cli", "cgi"];

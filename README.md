@@ -71,6 +71,7 @@ php-src tests.
 | ext/phar | 16 | 574 | 2.8% | enough to run composer.phar |
 | ext/posix | 30 | 61 | 49.2% | |
 | ext/random | 17 | 69 | 24.6% | the functions only; no `Random\Randomizer` or engines |
+| ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing |
 | ext/reflection | 311 | 540 | 57.6% | |
 | ext/simplexml | 103 | 165 | 62.4% | on rhp's own XML tree |
 | ext/sockets | 3 | 119 | 2.5% | constants and options only; no `socket_create` |
@@ -81,11 +82,11 @@ php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 54 | 125 | 43.2% | `ZipArchive` only, in Rust |
 | ext/zlib | 77 | 161 | 47.8% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 2 | 3,982 | 0.1% | the passing tests need none of the extension's code |
+| other ext/ | 2 | 3,954 | 0.1% | the passing tests need none of the extension's code |
 | other sapi/ | 0 | 217 | 0.0% | |
 | **total** | **7,044** | **22,280** | **31.6%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, readline, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support

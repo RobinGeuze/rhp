@@ -652,6 +652,34 @@ zend_object_handlers.c.
   `PropertyHookType` enum (the prelude now compiles enums; each request gets
   its own case objects).
 
+### 8.2 Lazy objects
+
+Follows Zend/zend_lazy_objects.c and the lazy branches of
+zend_object_handlers.c (vm/src/lazy.rs).
+
+- **State.** `ObjectData` keeps rarely used state behind one boxed
+  `extra` slot (the native payload and `LazyInfo`), so objects stay the same
+  size. `LazyInfo` holds php's object flags (`UNINIT`, `PROXY`; both clear
+  while the initializer runs, which guards re-entry), the info flags, the
+  initializer, an initialized proxy's instance, and the storage keys of the
+  slots still lazy (php's IS_PROP_LAZY). It goes away with the object.
+- **Triggers.** A lazy object's declared slots are absent from
+  `properties`, so accesses reach the absent-slot branches of props.rs and
+  only there call `lazy_slot` (a lazy slot, or an undefined property with
+  no unguarded magic method); the hit path is unchanged. `lazy_init`
+  initializes (a ghost reverts its properties when the initializer throws,
+  a proxy checks the factory's result) and the access repeats on the
+  object it returns, holding the instance's magic guard as php does. Cursor
+  paths split at such a step (`MagicSplit::Lazy`) and continue on the
+  instance. get_properties users (`foreach`, `get_object_vars`,
+  `json_encode`, `var_export`, `serialize`, `==`, clone) initialize through
+  `Host::lazy_props_object` or `hooked_properties_for`; `(array)`,
+  `get_mangled_object_vars` and `var_dump`/`print_r` do not, and an
+  initialized proxy shows its instance.
+- **Not done.** Typed reference sources (php's "Cannot assign string to
+  reference held by property") and "Lazy object was released during
+  initialization" (needs refcounts php's way).
+
 ---
 
 ## 9. OOP opcodes (calling convention; full spec with the compiler work)

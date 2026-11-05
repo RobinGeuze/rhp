@@ -1,0 +1,39 @@
+== get_object_vars
+init
+array(2) {
+  ["a"]=>
+  int(1)
+  ["d"]=>
+  NULL
+}
+== json_encode
+init
+{"a":1,"d":null}
+== compare
+init
+init
+init
+bool(true)
+bool(true)
+== foreach by reference
+init
+string(2) "xa"
+== (array) and get_mangled_object_vars do not initialize
+int(0)
+array(0) {
+}
+bool(true)
+== array_splice converts the object
+int(4)
+== isLazy
+bool(true)
+bool(false)
+bool(true)
+== dynamic property name from __toString
+int(5)
+== reference to an uninitialized non-nullable property
+Cannot access uninitialized non-nullable property T::$i by reference
+NULL
+== ReflectionProperty::__toString
+Property [ public ?int $j ]
+Property [ public int $i ]

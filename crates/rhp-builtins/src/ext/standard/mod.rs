@@ -13,7 +13,9 @@ pub mod base64;
 pub mod basic_functions;
 pub mod crc32;
 pub mod crypt;
+pub mod datetime;
 pub mod dir;
+pub mod dl;
 pub mod dns;
 pub mod exec;
 pub mod file;
@@ -27,12 +29,15 @@ pub mod html;
 pub mod html_tables;
 pub mod http;
 pub mod http_fopen_wrapper;
+pub mod image;
 pub mod info;
+pub mod iptc;
 pub mod levenshtein;
 pub mod link;
 pub mod math;
 pub mod md5;
 pub mod microtime;
+pub mod net;
 pub mod pack;
 pub mod pageinfo;
 pub mod password;
@@ -42,6 +47,7 @@ pub mod sha1;
 pub mod soundex;
 pub mod streamsfuncs;
 pub mod string;
+pub mod syslog;
 pub mod r#type;
 pub mod uniqid;
 pub mod url;
@@ -95,6 +101,10 @@ fn register(m: &mut crate::Registry) {
     assert::register(m);
     pageinfo::register(m);
     dns::register(m);
+    syslog::register(m);
+    net::register(m);
+    datetime::register(m);
+    iptc::register(m);
     versioning::register(m);
     info::register(m);
     streamsfuncs::register(m);
@@ -124,6 +134,10 @@ fn constants() -> Vec<(&'static str, Value)> {
         crypt::constants(),
         streamsfuncs::constants(),
         password::constants(),
+        assert::constants(),
+        image::constants(),
+        dns::constants(),
+        syslog::constants(),
     ]
     .concat()
 }

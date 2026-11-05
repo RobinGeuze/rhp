@@ -7,8 +7,7 @@ use crate::sapi::SapiDef;
 use crate::zend::zpp::str_param;
 use crate::{Host, NativeFn, Thrown};
 
-/// php-cli: its additional functions (php's `dl` is not among them: rhp
-/// cannot load php's C extensions).
+/// php-cli: its additional functions.
 pub(crate) static SAPI: SapiDef = SapiDef {
     name: "cli",
     functions: FUNCTIONS,
@@ -18,6 +17,7 @@ pub(crate) static SAPI: SapiDef = SapiDef {
 };
 
 const FUNCTIONS: &[(&str, NativeFn)] = &[
+    ("dl", crate::ext::standard::dl::fn_dl),
     ("cli_set_process_title", fn_cli_set_process_title),
     ("cli_get_process_title", fn_cli_get_process_title),
 ];

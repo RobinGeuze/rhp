@@ -490,15 +490,20 @@ fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
 
 /// `disk_free_space` — `f_bavail * f_frsize` as a float (php's formula).
 fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let path = crate::ext::standard::file::path_param(args, 0, "disk_free_space", "directory")?;
+    disk_free_space(host, args, "disk_free_space")
+}
+
+/// `diskfreespace`: disk_free_space under its own name.
+fn fn_diskfreespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    disk_free_space(host, args, "diskfreespace")
+}
+
+fn disk_free_space(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
+    let path = crate::ext::standard::file::path_param(args, 0, func, "directory")?;
     match statvfs_of(&path) {
         Some(s) => Ok(Value::Float(s.f_bavail as f64 * s.f_frsize as f64)),
         None => {
-            crate::warn(
-                host,
-                "disk_free_space",
-                &crate::main::streams::last_strerror(),
-            )?;
+            crate::warn(host, func, &crate::main::streams::last_strerror())?;
             Ok(Value::Bool(false))
         }
     }
@@ -551,7 +556,7 @@ pub fn register(m: &mut crate::Registry) {
             ("chmod", fn_chmod),
             ("clearstatcache", fn_clearstatcache),
             ("disk_free_space", fn_disk_free_space),
-            ("diskfreespace", fn_disk_free_space),
+            ("diskfreespace", fn_diskfreespace),
             ("disk_total_space", fn_disk_total_space),
         ],
     );

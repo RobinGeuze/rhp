@@ -545,9 +545,16 @@ fn link_private_dynamic(lib: &Lib, pc_file: &Path) -> Result<(), String> {
         done.push(n);
         // `-l:FILE` goes through `+verbatim` (rustc would read `:FILE` as
         // `NAME:RENAME`); as a dylib it comes after all the Rust archives,
-        // and GNU ld still links a `-l:lib.a` statically.
+        // and GNU ld still links a `-l:lib.a` statically. In this crate's
+        // own test binary its native libraries come before openssl-sys's
+        // libcrypto, and GNU ld drops an archive nothing needs yet
+        // (Ubuntu's libjitterentropy.a): the link arg names it again at
+        // the end of that link line.
         match n.strip_prefix(':') {
-            Some(file) => println!("cargo:rustc-link-lib=dylib:+verbatim={file}"),
+            Some(file) => {
+                println!("cargo:rustc-link-lib=dylib:+verbatim={file}");
+                println!("cargo:rustc-link-arg=-l:{file}");
+            }
             None => println!("cargo:rustc-link-lib=dylib={n}"),
         }
     }

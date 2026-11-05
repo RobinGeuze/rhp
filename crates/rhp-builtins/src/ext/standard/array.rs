@@ -1650,20 +1650,10 @@ fn parse_args(
     let narr = args.len() - ncb;
     let cbs: Vec<Value> = args[narr..].iter().map(deref).collect();
     for (i, cb) in cbs.iter().enumerate() {
-        if !host.is_callable_value(cb) {
+        if let Some(why) = host.check_callable(cb)? {
             return Err(Thrown::type_error(format!(
-                "{func}(): Argument #{} must be a valid callback, {}",
+                "{func}(): Argument #{} must be a valid callback, {why}",
                 narr + i + 1,
-                match cb {
-                    Value::Str(s) => format!(
-                        "function \"{}\" not found or invalid function name",
-                        String::from_utf8_lossy(s.as_bytes())
-                    ),
-                    other => format!(
-                        "no array or string given ({} given)",
-                        zval_value_name(host, other)
-                    ),
-                }
             )));
         }
     }
@@ -2433,25 +2423,65 @@ fn usort_impl(
         return Ok(Value::Bool(false));
     };
     let cmp = args[1].clone();
-    let mut pairs = pairs;
+    // zend_sort with php_array_user_compare: the user's result, a `false`
+    // retried with the operands swapped, ties kept in order.
+    let mut items: Vec<(usize, (ArrayKey, Value))> = pairs.into_iter().enumerate().collect();
     let mut err: Option<Thrown> = None;
-    pairs.sort_by(|a, b| {
-        if err.is_some() {
-            return Ordering::Equal;
-        }
-        let (x, y) = if by_key {
-            (a.0.to_value(), b.0.to_value())
-        } else {
-            (a.1.clone(), b.1.clone())
-        };
-        match host.call_callable(&cmp, &[x, y]) {
-            Ok(v) => conv::to_int(&v).cmp(&0),
-            Err(e) => {
-                err = Some(e);
-                Ordering::Equal
+    let mut warned = false;
+    zend_sort(&mut items, &mut |a, b| {
+        let operands = |a: &(usize, (ArrayKey, Value))| {
+            if by_key {
+                a.1 .0.to_value()
+            } else {
+                a.1 .1.clone()
             }
+        };
+        let call = |host: &mut dyn Host, x: Value, y: Value, err: &mut Option<Thrown>| {
+            if err.is_some() {
+                return None;
+            }
+            match host.call_callable(&cmp, &[x, y]) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    *err = Some(e);
+                    None
+                }
+            }
+        };
+        let r = match call(host, operands(a), operands(b), &mut err) {
+            None => 0,
+            Some(Value::Bool(v)) => {
+                if !warned {
+                    warned = true;
+                    if let Err(e) = host.emit_diagnostic(
+                        crate::E_DEPRECATED,
+                        format!(
+                            "{}(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero",
+                            if by_key { "uksort" } else if preserve_keys { "uasort" } else { "usort" }
+                        )
+                        .as_bytes(),
+                    ) {
+                        err.get_or_insert(e);
+                    }
+                }
+                if v {
+                    1
+                } else {
+                    match call(host, operands(b), operands(a), &mut err) {
+                        None => 0,
+                        Some(v) => -normalize(conv::to_int(&v)),
+                    }
+                }
+            }
+            Some(v) => normalize(conv::to_int(&v)),
+        };
+        if r == 0 {
+            (a.0 as i64 - b.0 as i64).signum() as i32
+        } else {
+            r
         }
     });
+    let pairs: Vec<(ArrayKey, Value)> = items.into_iter().map(|(_, p)| p).collect();
     if let Some(e) = err {
         return Err(e);
     }

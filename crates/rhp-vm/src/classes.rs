@@ -944,6 +944,7 @@ impl Vm {
         unit: UnitId,
         early: bool,
     ) -> Result<bool, Thrown> {
+        self.check_link(proto)?;
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),

@@ -581,8 +581,15 @@ then switch the check on — but the metadata must be stored from step 1.)*
 1. **Topological order** by dependency (`parent`, each interface, each used trait
    must link first). A dependency cycle (`class A extends A`, mutual `extends`) →
    fatal `Error`. A missing name → `Error "Class \"X\" not found"`.
-2. **Assign `ClassId`** = index in `Vm.classes`; record `class_ids[lc(name)] = id`.
-3. **Flatten, parent-first** (traits → parent overlay → interface-set union):
+2. **Declaration errors** (`link_checks.rs`, zend_do_link_class's order):
+   extending an enum / final class / interface / trait, readonly mismatches,
+   UnitEnum/BackedEnum on a non-enum, trait constants against enum cases,
+   enum properties and magic methods. Each is a fatal error at the class
+   declaration's line. The checks php makes while compiling a declaration
+   (reserved names, member redeclaration, magic method signatures, promotion,
+   interface and readonly rules) live in the compiler's `checks.rs`.
+3. **Assign `ClassId`** = index in `Vm.classes`; record `class_ids[lc(name)] = id`.
+4. **Flatten, parent-first** (traits → parent overlay → interface-set union):
    - `methods` = clone `parent.methods`; merge trait methods (adopting the using
      class as `defining_class`); insert own methods (lowercase key), **overriding**
      inherited (the override rules are step 4).

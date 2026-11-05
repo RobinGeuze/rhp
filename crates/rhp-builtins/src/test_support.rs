@@ -303,8 +303,8 @@ impl Host for TestHost<'_> {
     fn resolve_class_autoload(&mut self, name: &[u8]) -> Result<Option<u32>, Thrown> {
         Ok(self.resolve_class(name))
     }
-    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> bool {
-        false
+    fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> Result<bool, Thrown> {
+        Ok(false)
     }
     fn register_autoloader(&mut self, _callback: Value, _prepend: bool) {}
     fn autoload_functions(&self) -> Vec<Value> {

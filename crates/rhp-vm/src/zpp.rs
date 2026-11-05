@@ -499,6 +499,58 @@ enum Got {
     Fail,
 }
 
+impl Vm {
+    /// The `$value` argument of a backed enum's from()/tryFrom()
+    /// (zend_enum_from_base): `Z_PARAM_LONG` for an int-backed enum, else
+    /// `Z_PARAM_STR` (strict) or `Z_PARAM_STR_OR_LONG` with the int turned
+    /// into a string.
+    pub(crate) fn zpp_enum_value(
+        &mut self,
+        fname: &str,
+        int: bool,
+        v: &Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        let sp = ScalarParam {
+            pos: 0,
+            name: "value",
+            // The stub's declared type (deprecation messages).
+            ty: "string|int",
+            kind: match (int, strict) {
+                (true, _) => Zpp::Long,
+                (false, true) => Zpp::Str,
+                (false, false) => Zpp::StrOrLong,
+            },
+            variadic: false,
+            nullable: false,
+            has_str: !int,
+            has_arr: false,
+            by_ref: false,
+        };
+        let got = self.zpp_arg(fname, &sp, 0, v, strict)?;
+        let out = match got {
+            Got::Keep => v.clone(),
+            Got::KeepStr => Value::str(conv::to_string_bytes(v)),
+            Got::Set(n) => n,
+            Got::Fail => {
+                let given = rhp_builtins::zval_value_name(self, v);
+                let ty = match sp.kind {
+                    Zpp::Long => "int",
+                    Zpp::Str => "string",
+                    _ => "string|int",
+                };
+                return Err(Thrown::type_error(format!(
+                    "{fname}(): Argument #1 ($value) must be of type {ty}, {given} given"
+                )));
+            }
+        };
+        Ok(match out {
+            Value::Int(n) if !int => Value::str(n.to_string().into_bytes()),
+            other => other,
+        })
+    }
+}
+
 /// ` ($name)` after "Argument #n", or nothing for a variadic argument
 /// (get_function_arg_name has no name past the declared parameters).
 fn arg_label(sp: &ScalarParam) -> String {

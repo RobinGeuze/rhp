@@ -1,0 +1,2 @@
+start
+last: 64: Class G cannot extend final class F (decl_link_final_parent.php:12)

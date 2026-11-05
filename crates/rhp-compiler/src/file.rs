@@ -173,6 +173,33 @@ impl<'s> FileCtx<'s> {
         }
     }
 
+    /// Run `f` with the compile errors and diagnostics it records dropped
+    /// (a check that only needs a value, such as a lowered type).
+    pub(crate) fn quietly<T>(&self, f: impl FnOnce() -> T) -> T {
+        let fatal = self.fatal.borrow().clone();
+        let ndiags = self.compile_diags.borrow().len();
+        let r = f();
+        *self.fatal.borrow_mut() = fatal;
+        self.compile_diags.borrow_mut().truncate(ndiags);
+        r
+    }
+
+    /// [`FileCtx::fatal`] reported at `line`, ordered as if found at source
+    /// `order` (php raises some errors at a declaration's first line only
+    /// after compiling its body).
+    pub(crate) fn fatal_line(&self, order: u32, line: u32, message: String) {
+        let mut f = self.fatal.borrow_mut();
+        if f.as_ref().is_none_or(|(o, _, _)| order < *o) {
+            *f = Some((order, line, message));
+        }
+    }
+
+    /// Record a diagnostic php raises while compiling, at the line of `offset`.
+    pub(crate) fn diag(&self, level: i64, offset: u32, message: String) {
+        let line = self.line_of(offset);
+        self.compile_diags.borrow_mut().push((level, message, line));
+    }
+
     /// The earliest recorded compile error: `(line, message)`.
     pub(crate) fn take_fatal(&self) -> Option<(u32, String)> {
         self.fatal

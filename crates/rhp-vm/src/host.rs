@@ -1874,16 +1874,31 @@ impl Host for Vm {
         })))
     }
 
-    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> bool {
+    fn class_alias(&mut self, class_id: u32, alias: &[u8]) -> Result<bool, Thrown> {
         let key = alias
             .strip_prefix(b"\\")
             .unwrap_or(alias)
             .to_ascii_lowercase();
+        // zend_assert_valid_class_name(lcname, "a class alias")
+        let tail = key.rsplit(|&b| b == b'\\').next().unwrap_or(&key);
+        if crate::link_checks::is_reserved_class_name(tail) {
+            let msg = format!(
+                "Cannot use \"{}\" as a class alias as it is reserved",
+                String::from_utf8_lossy(&key)
+            );
+            return Err(self.fatal_compile_error(msg.as_bytes()));
+        }
+        if key == b"_" {
+            self.raise_error(
+                rhp_values::E_DEPRECATED,
+                "Using \"_\" as a class alias is deprecated since 8.4",
+            );
+        }
         if self.class_ids.contains_key(&key) {
-            return false;
+            return Ok(false);
         }
         self.class_ids.insert(key, class_id);
-        true
+        Ok(true)
     }
 
     fn class_relations(&self, class_id: u32) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>)> {

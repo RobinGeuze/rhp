@@ -21,6 +21,7 @@ mod host;
 mod include;
 mod inherit;
 mod lifecycle;
+mod link_checks;
 mod lvalue;
 mod memory;
 mod opcache;

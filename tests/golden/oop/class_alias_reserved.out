@@ -1,0 +1,3 @@
+handler: 8192: Using "_" as a class alias is deprecated since 8.4 (class_alias_reserved.php:12)
+bool(true)
+last: 64: Cannot use "foo\mixed" as a class alias as it is reserved (class_alias_reserved.php:13)

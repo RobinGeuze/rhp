@@ -91,6 +91,7 @@ them. rhp resets them, so each request starts as a fresh php process does.
 | where | static | kind | reset by |
 |---|---|---|---|
 | compiler `lib.rs` | `COMPILE_ERROR_LINE` (line of the last compile error, read right after) | call | — |
+| compiler `lib.rs` | `COMPILE_ERROR_DIAGS` (diagnostics raised before that error, taken right after) | call | — |
 | compiler `prelude.rs` | `PRELUDE_CACHE` (the compiled prelude) | thread | — |
 | vm `classes.rs` | `LINKED_PRELUDE`, `PRELUDE_LINKED_ONCE` | thread | — |
 | vm `lvalue.rs` | `PATH_DIAGS` (warnings of a cursor walk) | call | `lvalue::reset_path_diags` via `lifecycle::reset_request_state` |

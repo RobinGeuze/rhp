@@ -13,7 +13,7 @@ use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::fold::{literal_array, literal_value, php_swaps_operands};
 use crate::names::{identifier_name, NameKind};
 use crate::oop::Sel;
-use crate::util::{dirname, strip_dollar};
+use crate::util::{compile_error, dirname, strip_dollar};
 
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
@@ -417,7 +417,7 @@ impl ProtoBuilder<'_> {
         pre: bool,
         delta: i8,
     ) -> Result<Reg, Thrown> {
-        check_globals_write(target)?;
+        check_globals_write(target, self.cur_line)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -793,9 +793,9 @@ impl ProtoBuilder<'_> {
                 (key, value)
             }
             Yield::From(_) if self.returns_ref => {
-                return Err(Thrown::error(
-                    "Error",
+                return Err(compile_error(
                     "Cannot use \"yield from\" inside a by-reference generator",
+                    self.cur_line,
                 ))
             }
             Yield::From(yf) => return self.compile_yield_from(yf.iterator),

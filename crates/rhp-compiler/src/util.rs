@@ -18,8 +18,11 @@ pub(crate) fn dirname(builtins: &Builtins, path: &[u8]) -> Vec<u8> {
 }
 
 /// A php compile-time fatal error (E_COMPILE_ERROR) at `line`.
-pub(crate) fn compile_error(msg: impl Into<String>, _line: u32) -> Thrown {
-    Thrown::error("Error", msg)
+/// The error unwinds the compile (php bails out at the first one); the
+/// compile entry point reports it at `line` (see `crate::compile_error_line`).
+pub(crate) fn compile_error(msg: impl Into<String>, line: u32) -> Thrown {
+    crate::set_compile_error_line(line);
+    Thrown::error("CompileError", msg)
 }
 
 pub(crate) fn strip_dollar(name: &[u8]) -> &[u8] {

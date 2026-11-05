@@ -9,7 +9,7 @@ use rhp_values::Thrown;
 
 use crate::builder::ProtoBuilder;
 use crate::oop::Sel;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
 pub(crate) enum CursorStep {
@@ -47,19 +47,19 @@ pub(crate) fn is_globals_var(e: &Expression) -> bool {
 
 /// php's compile-time errors for `$GLOBALS` as (the root of) a write target:
 /// only `$GLOBALS[$name]...` may be written.
-pub(crate) fn check_globals_write(target: &Expression) -> Result<(), Thrown> {
+pub(crate) fn check_globals_write(target: &Expression, line: u32) -> Result<(), Thrown> {
     match target {
-        e if is_globals_var(e) => Err(Thrown::error(
-            "Error",
+        e if is_globals_var(e) => Err(compile_error(
             "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+            line,
         )),
         Expression::ArrayAppend(ap) if is_globals_var(ap.array) => {
-            Err(Thrown::error("Error", "Cannot append to $GLOBALS"))
+            Err(compile_error("Cannot append to $GLOBALS", line))
         }
         Expression::ArrayAccess(aa) if is_globals_var(aa.array) => Ok(()),
-        Expression::ArrayAccess(aa) => check_globals_write(aa.array),
-        Expression::ArrayAppend(ap) => check_globals_write(ap.array),
-        Expression::Parenthesized(p) => check_globals_write(p.expression),
+        Expression::ArrayAccess(aa) => check_globals_write(aa.array, line),
+        Expression::ArrayAppend(ap) => check_globals_write(ap.array, line),
+        Expression::Parenthesized(p) => check_globals_write(p.expression, line),
         _ => Ok(()),
     }
 }
@@ -120,7 +120,7 @@ impl ProtoBuilder<'_> {
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
     pub(crate) fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
-        check_globals_write(target)?;
+        check_globals_write(target, self.cur_line)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -229,12 +229,12 @@ impl ProtoBuilder<'_> {
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
     pub(crate) fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
         if is_globals_var(src) {
-            return Err(Thrown::error(
-                "Error",
+            return Err(compile_error(
                 "Cannot acquire reference to $GLOBALS",
+                self.cur_line,
             ));
         }
-        check_globals_write(src)?;
+        check_globals_write(src, self.cur_line)?;
         match src {
             Expression::Variable(Variable::Direct(v)) => {
                 let name = strip_dollar(v.name);
@@ -274,7 +274,7 @@ impl ProtoBuilder<'_> {
         &mut self,
         a: &crate::parse::cst::Assignment,
     ) -> Result<Reg, Thrown> {
-        check_globals_write(a.lhs)?;
+        check_globals_write(a.lhs, self.cur_line)?;
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
@@ -302,9 +302,9 @@ impl ProtoBuilder<'_> {
                 ) = (a.lhs, u.operand)
                 {
                     if strip_dollar(src.name) == b"GLOBALS" {
-                        return Err(Thrown::error(
-                            "Error",
+                        return Err(compile_error(
                             "Cannot acquire reference to $GLOBALS",
+                            self.cur_line,
                         ));
                     }
                     if strip_dollar(src.name) != b"this" {
@@ -591,7 +591,7 @@ impl ProtoBuilder<'_> {
                             name: *name,
                         }),
                         CursorStep::Append => {
-                            return Err(Thrown::error("Error", "Cannot use [] for reading"))
+                            return Err(compile_error("Cannot use [] for reading", self.cur_line))
                         }
                     }
                     cur = t;

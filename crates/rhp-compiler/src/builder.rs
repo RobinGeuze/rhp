@@ -437,7 +437,10 @@ impl<'c> ProtoBuilder<'c> {
         for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
-            let t = self.compile_expr(expr)?;
+            self.in_const_decl = true;
+            let t = self.compile_expr(expr);
+            self.in_const_decl = false;
+            let t = t?;
             self.emit(Instr::Mov { dst: cv, src: t });
             if let Some(line) = check_line {
                 let saved = std::mem::replace(&mut self.cur_line, line);

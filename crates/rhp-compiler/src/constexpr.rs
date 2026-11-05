@@ -137,6 +137,13 @@ fn compile_pass(e: &Expression, allow_dynamic: bool) -> Result<(), Fail> {
         | Expression::Parent(_)
         | Expression::Static(_)
         | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)) => {}
+        // A heredoc or string without interpolation is a literal.
+        Expression::CompositeString(cs)
+            if !matches!(cs, crate::parse::cst::CompositeString::ShellExecute(_))
+                && cs
+                    .parts()
+                    .iter()
+                    .all(|p| matches!(p, crate::parse::cst::StringPart::Literal(_))) => {}
         Expression::Binary(b) => {
             if matches!(b.operator, BinaryOperator::Instanceof(_)) {
                 return invalid(e);

@@ -93,7 +93,7 @@ impl ProtoBuilder<'_> {
             }
         };
         let dst = self.alloc_temp();
-        let const_expr = self.scope_kind == ScopeKind::Init || self.in_const_decl;
+        let const_expr = self.in_const_expr();
         self.emit(Instr::FetchClassName {
             dst,
             class,
@@ -126,19 +126,6 @@ impl ProtoBuilder<'_> {
             Some(_) => return Ok(()),
         };
         Err(compile_error(msg, self.cur_line))
-    }
-
-    fn selector_name(
-        &mut self,
-        sel: &crate::parse::cst::ClassLikeMemberSelector,
-    ) -> Result<NIdx, Thrown> {
-        match sel {
-            ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
-            _ => Err(Thrown::unsupported(
-                "dynamic member name",
-                "`->$x`/`->{expr}` deferred",
-            )),
-        }
     }
 
     /// A member selector as either a static interned name or a runtime name
@@ -394,28 +381,41 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    fn fetch_prop(&mut self, obj: Reg, sel: &ClassLikeMemberSelector) -> Result<Reg, Thrown> {
+        let sel = self.compile_selector(sel)?;
+        if self.in_const_expr() {
+            let name = match sel {
+                Sel::Dyn(r) => r,
+                Sel::Static(_) => Reg::MAX,
+            };
+            self.emit(Instr::ConstExprProp { obj, name });
+        }
+        let dst = self.alloc_temp();
+        match sel {
+            Sel::Static(name) => self.emit(Instr::FetchProp { dst, obj, name }),
+            Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
+        }
+        Ok(dst)
+    }
+
+    /// Compiling a constant expression (an initializer thunk, a parameter
+    /// default or a `const` value).
+    pub(crate) fn in_const_expr(&self) -> bool {
+        self.scope_kind == ScopeKind::Init || self.in_const_decl
+    }
+
     pub(crate) fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
         match acc {
             Access::Property(pa) => {
                 let obj = self.compile_expr(pa.object)?;
-                let dst = self.alloc_temp();
-                match self.compile_selector(&pa.property)? {
-                    Sel::Static(name) => {
-                        self.emit(Instr::FetchProp { dst, obj, name });
-                    }
-                    Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
-                }
-                Ok(dst)
+                self.fetch_prop(obj, &pa.property)
             }
             Access::NullSafeProperty(npa) => {
                 // `$o?->p`: null short-circuits the whole access to null.
                 // The chain's outermost link sets the result to null.
                 let obj = self.compile_expr(npa.object)?;
                 self.nullsafe_guard(obj);
-                let name = self.selector_name(&npa.property)?;
-                let dst = self.alloc_temp();
-                self.emit(Instr::FetchProp { dst, obj, name });
-                Ok(dst)
+                self.fetch_prop(obj, &npa.property)
             }
             Access::StaticProperty(spa) => {
                 let class = self.class_ref(spa.class)?;

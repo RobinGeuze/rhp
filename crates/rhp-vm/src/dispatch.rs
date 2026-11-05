@@ -1117,6 +1117,22 @@ impl Vm {
                         ));
                     }
                 }
+                Instr::ConstExprProp { obj, name } => {
+                    if name != Reg::MAX {
+                        let n = self.reg_get(top, name);
+                        let s = self.to_string_vm(&n)?;
+                        self.reg_set(top, name, Value::str(s));
+                    }
+                    if let Value::Object(h) = self.reg_get(top, obj) {
+                        let cls = h.borrow().class;
+                        if self.class(cls).kind != rhp_values::ClassKind::Enum {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Fetching properties on non-enums in constant expressions is not allowed",
+                            ));
+                        }
+                    }
+                }
                 Instr::ThrowError { k } => {
                     let msg = match &proto.consts[k as usize] {
                         Value::Str(m) => String::from_utf8_lossy(m.as_bytes()).into_owned(),

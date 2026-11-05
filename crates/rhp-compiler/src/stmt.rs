@@ -21,6 +21,19 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
+        if matches!(
+            stmt,
+            Statement::Class(_)
+                | Statement::Interface(_)
+                | Statement::Trait(_)
+                | Statement::Enum(_)
+        ) && self.cx.class_scope.borrow().is_some()
+        {
+            return Err(compile_error(
+                "Class declarations may not be nested",
+                self.cx.line_of(stmt.span().start.offset),
+            ));
+        }
         self.compile_stmt_inner(stmt)
             .map_err(|e| self.cx.locate(e, stmt.span().start.offset))
     }

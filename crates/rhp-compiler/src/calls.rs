@@ -837,6 +837,7 @@ impl ProtoBuilder<'_> {
         args: &crate::parse::cst::ArgumentList,
         null_safe: bool,
     ) -> Result<Reg, Thrown> {
+        self.check_method_name(selector)?;
         let obj = self.compile_expr(object)?;
         // `$o?->m(...)`: a null object makes the whole chain null, without
         // evaluating the arguments.
@@ -901,6 +902,21 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// zend_compile_method_call: a constant method name must be a string.
+    fn check_method_name(
+        &self,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
+    ) -> Result<(), Thrown> {
+        if let crate::parse::cst::ClassLikeMemberSelector::Expression(e) = sel {
+            if crate::fold::fold_const(self.cx, e.expression)
+                .is_ok_and(|v| !matches!(v, Value::Str(_)))
+            {
+                return Err(compile_error("Method name must be a string", self.cur_line));
+            }
+        }
+        Ok(())
+    }
+
     fn compile_static_call(
         &mut self,
         smc: &crate::parse::cst::StaticMethodCall,
@@ -909,6 +925,7 @@ impl ProtoBuilder<'_> {
             return Ok(r);
         }
         let class = self.class_ref(smc.class)?;
+        self.check_method_name(&smc.method)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
                 if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {

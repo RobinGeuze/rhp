@@ -486,6 +486,14 @@ pub enum Instr {
     CheckThis {
         cv: Reg,
     },
+    /// A property fetch in a constant expression (zend_ast_evaluate's
+    /// ZEND_AST_PROP): the runtime name (`Reg::MAX` for none) must convert
+    /// to a string, and an object must be an enum. Replaces `name` with
+    /// its string.
+    ConstExprProp {
+        obj: Reg,
+        name: Reg,
+    },
     /// Throw an `Error` whose message is the string constant `k`: a form
     /// php compiles but always rejects when it runs.
     ThrowError {

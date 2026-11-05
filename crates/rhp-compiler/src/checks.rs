@@ -265,9 +265,19 @@ fn check_members(cx: &FileCtx, d: &Decl, cname: &str, backed: bool) {
             }
             ClassLikeMember::Constant(c) => {
                 let vis = modifiers_visibility(&c.modifiers);
+                let is_final = has_modifier(&c.modifiers, |x| matches!(x, Modifier::Final(_)));
                 for item in c.items.iter() {
                     let at = item.name.span.start.offset;
                     let n = item.name.value;
+                    if vis == Visibility::Private && is_final {
+                        cx.fatal(
+                            at,
+                            format!(
+                                "Private constant {cname}::{} cannot be final as it is not visible to other classes",
+                                s(n)
+                            ),
+                        );
+                    }
                     if d.kind == DeclKind::Interface && vis != Visibility::Public {
                         cx.fatal(
                             at,

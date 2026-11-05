@@ -52,6 +52,27 @@ impl ProtoBuilder<'_> {
         Ok(r)
     }
 
+    /// "Cannot use positional argument after argument unpacking".
+    pub(crate) fn check_arg_order(
+        &self,
+        args: &crate::parse::cst::ArgumentList,
+    ) -> Result<(), Thrown> {
+        let mut unpacked = false;
+        for a in args.arguments.iter() {
+            match a {
+                Argument::Positional(p) if p.ellipsis.is_some() => unpacked = true,
+                Argument::Positional(_) if unpacked => {
+                    return Err(compile_error(
+                        "Cannot use positional argument after argument unpacking",
+                        self.cur_line,
+                    ))
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// A nullsafe guard on `src` for the open chain.
     pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
         let pos = self.code.len();
@@ -137,6 +158,13 @@ impl ProtoBuilder<'_> {
                     Call::NullSafeMethod(mc) => mc.method.span(),
                     Call::StaticMethod(smc) => smc.method.span(),
                 };
+                let args = match call {
+                    Call::Function(fc) => &fc.argument_list,
+                    Call::Method(mc) => &mc.argument_list,
+                    Call::NullSafeMethod(mc) => &mc.argument_list,
+                    Call::StaticMethod(smc) => &smc.argument_list,
+                };
+                self.check_arg_order(args)?;
                 self.call_lines.push(self.cx.line_of(at.start.offset));
                 let r = self.compile_call(call);
                 self.call_lines.pop();
@@ -624,6 +652,46 @@ impl ProtoBuilder<'_> {
         els: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
     ) -> Result<Reg, Thrown> {
         self.check_no_empty_elements(els.clone())?;
+        // zend_try_ct_eval_array: a constant array unpacking a non-array.
+        let has_spread = els
+            .clone()
+            .any(|el| matches!(el, ArrayElement::Variadic(_)));
+        let folded: Option<Vec<(bool, rhp_values::Value)>> = has_spread
+            .then(|| els.clone())
+            .into_iter()
+            .flatten()
+            .map(|el| match el {
+                ArrayElement::Value(v) if as_reference(v.value).is_none() => {
+                    crate::fold::fold_const(self.cx, v.value)
+                        .ok()
+                        .map(|x| (false, x))
+                }
+                ArrayElement::KeyValue(kv) if as_reference(kv.value).is_none() => {
+                    crate::fold::fold_const(self.cx, kv.key).ok()?;
+                    crate::fold::fold_const(self.cx, kv.value)
+                        .ok()
+                        .map(|x| (false, x))
+                }
+                ArrayElement::Variadic(v) => crate::fold::fold_const(self.cx, v.value)
+                    .ok()
+                    .map(|x| (true, x)),
+                _ => None,
+            })
+            .collect();
+        if let Some(vals) = folded.filter(|_| has_spread) {
+            if let Some((_, v)) = vals
+                .iter()
+                .find(|(spread, v)| *spread && !matches!(v, rhp_values::Value::Array(_)))
+            {
+                return Err(compile_error(
+                    format!(
+                        "Only arrays and Traversables can be unpacked, {} given",
+                        crate::oop::value_name(v)
+                    ),
+                    self.cur_line,
+                ));
+            }
+        }
         // An array of plain literals (CallMap-style data files) is one
         // constant: no per-element temporaries, no runtime building.
         if let Some(v) = literal_array(els.clone()) {
@@ -722,6 +790,17 @@ impl ProtoBuilder<'_> {
     fn compile_constant(&mut self, id: &Identifier) -> Result<Reg, Thrown> {
         let name = identifier_name(id);
         let dst = self.alloc_temp();
+        // `namespace\true` and `a\true` are ordinary constants.
+        if matches!(id, Identifier::Qualified(_)) {
+            let (primary, _) = self.cx.resolve_name(id, NameKind::Const);
+            let n = self.intern_name(&primary);
+            self.emit(Instr::FetchConst {
+                dst,
+                name: n,
+                fallback: rhp_bytecode::NO_NAME,
+            });
+            return Ok(dst);
+        }
         // zend_get_halt_offset_constant: the file's own halt offset.
         if let Some(n) = self.cx.halt_offset {
             let halt = match id {

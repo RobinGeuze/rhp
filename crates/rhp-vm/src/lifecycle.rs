@@ -708,9 +708,28 @@ impl Vm {
         // {main}'s variables are the global symbol table's entries.
         self.bind_global_scope(&mut main_frame);
         self.stack.push(main_frame);
+        // auto_prepend_file runs first, required in the global scope
+        // (php_execute_script's zend_execute_scripts).
+        let prepend = builtins::ini_value(b"auto_prepend_file")
+            .flatten()
+            .filter(|p| !p.is_empty());
+        let prepended = match prepend {
+            Some(path) => {
+                let depth = self.stack.len();
+                let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+                if r.is_err() {
+                    self.stack.truncate(depth - 1);
+                }
+                r.map(|_| ())
+            }
+            None => Ok(()),
+        };
         // zend_execute_script raises an out-of-memory error still pending
         // when the script ends.
-        match self.run_loop().and_then(|_| self.oom_interrupt()) {
+        match prepended
+            .and_then(|_| self.run_loop())
+            .and_then(|_| self.oom_interrupt())
+        {
             Ok(()) => Ok(self.sapi.startup_status),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),

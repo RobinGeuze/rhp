@@ -259,7 +259,8 @@ fn output_filter(p: &mut Program, f: &rhp_builtins::zend::multibyte::OutputFilte
 
 fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
     let arena = Arena::new();
-    let parsed = arena.parse(file.as_bytes(), src);
+    let short_tags = rhp_builtins::short_open_tag();
+    let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
     let parse_diags = parse_failure(&parsed, src)?;
     let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
     if parse_diags.is_empty() {

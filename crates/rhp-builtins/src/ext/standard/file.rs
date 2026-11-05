@@ -732,6 +732,15 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// php_get_temporary_directory(): $TMPDIR (trailing slash dropped), else
 /// P_tmpdir.
 pub fn temp_dir() -> Vec<u8> {
+    // php_get_temporary_directory: sys_temp_dir first (one trailing slash
+    // dropped).
+    if let Some(d) = crate::ini_value(b"sys_temp_dir").flatten() {
+        match d.last() {
+            Some(b'/') if d.len() >= 2 => return d[..d.len() - 1].to_vec(),
+            Some(c) if *c != b'/' => return d,
+            _ => {}
+        }
+    }
     if let Some(s) = std::env::var_os("TMPDIR") {
         use std::os::unix::ffi::OsStrExt;
         let b = s.as_bytes();

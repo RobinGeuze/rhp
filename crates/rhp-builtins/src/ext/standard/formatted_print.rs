@@ -621,19 +621,15 @@ pub(crate) fn do_sprintf(
     Ok(out)
 }
 
-/// zval_get_double: an object warns and is 1.0.
+/// zval_get_double: an object's cast_object, else a warning and 1.0.
 pub(crate) fn zval_get_double(host: &mut dyn Host, v: &Value) -> Result<f64, Thrown> {
     let v = deref(v);
-    if let Value::Object(_) | Value::Closure(_) = v {
-        host.emit_diagnostic(
-            crate::E_WARNING,
-            format!(
-                "Object of class {} could not be converted to float",
-                crate::zend::zpp::zval_value_name(host, &v)
-            )
-            .as_bytes(),
-        )?;
-        return Ok(1.0);
+    if let Some(n) = crate::zend::object_handlers::object_to_number(
+        host,
+        &v,
+        crate::zend::object_handlers::CastTarget::Float,
+    )? {
+        return Ok(conv::to_float(&n));
     }
     Ok(conv::to_float(&v))
 }

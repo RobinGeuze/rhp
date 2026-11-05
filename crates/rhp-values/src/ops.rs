@@ -611,18 +611,26 @@ fn num_vs_str(n: &Value, s: &[u8]) -> Ordering {
 fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
     match (conv::numeric_string(x), conv::numeric_string(y)) {
         (Some(Num::Int(a)), Some(Num::Int(b))) => a.cmp(&b),
-        (Some(nx), Some(ny)) => {
-            let (o1, o2) = (int_overflow(x, nx), int_overflow(y, ny));
-            match (nx, ny) {
-                // Integers overflowed to the same side and equal as doubles:
-                // the double compare lost the difference.
-                _ if o1 != 0 && o1 == o2 && nx.as_f64() == ny.as_f64() => cmp_bytes(x, y),
-                (Num::Int(_), _) if o2 != 0 => (-o2).cmp(&0),
-                (_, Num::Int(_)) if o1 != 0 => o1.cmp(&0),
-                (Num::Float(a), Num::Float(b)) if a == b && !a.is_finite() => cmp_bytes(x, y),
-                _ => cmp_num(nx, ny),
+        // An integer string past the int range against an int: its side.
+        (Some(nx @ Num::Int(_)), Some(ny)) => match int_overflow(y, ny) {
+            0 => cmp_num(nx, ny),
+            o => (-o).cmp(&0),
+        },
+        (Some(nx), Some(ny @ Num::Int(_))) => match int_overflow(x, nx) {
+            0 => cmp_num(nx, ny),
+            o => o.cmp(&0),
+        },
+        // Equal as doubles but overflowed integers (or infinities): the
+        // double compare lost the difference.
+        (Some(nx), Some(ny)) if nx.as_f64() == ny.as_f64() => {
+            let o1 = int_overflow(x, nx);
+            if (o1 != 0 && o1 == int_overflow(y, ny)) || !nx.as_f64().is_finite() {
+                cmp_bytes(x, y)
+            } else {
+                Ordering::Equal
             }
         }
+        (Some(nx), Some(ny)) => cmp_num(nx, ny),
         _ => cmp_bytes(x, y),
     }
 }

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
-use rhp_bytecode::Reg;
+use rhp_bytecode::{Reg, TypeKind};
 use rhp_values::{
     conv, ArrayKey, ClassId, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
 };
@@ -38,6 +38,9 @@ pub(crate) enum MagicSplit {
     /// Step `.0` (a key / append) indexes this ArrayAccess object: the leaf
     /// is `offsetSet`/`offsetUnset`, a deeper path goes through `offsetGet`.
     Offset(usize, ObjectHandle),
+    /// Step `.0` reaches a lazy slot (or an undefined property) of this
+    /// lazy object: it initializes, and the path continues on the instance.
+    Lazy(usize, ObjectHandle),
 }
 
 /// How an ArrayAccess element is fetched below a nested write (php's
@@ -182,6 +185,10 @@ impl Vm {
                 Ok(self.cursor_read_steps(top, steps))
             }
             MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
+            MagicSplit::Lazy(i, h) => {
+                let cell = self.lazy_cursor_cell(&h)?;
+                self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, &steps[i..], incdec))
+            }
             MagicSplit::Nested(i, h, name) if self.cursor_hooked(top, &h, &name) => {
                 let cell = self.magic_write_cell(top, h, name)?;
                 let rest = &steps[i + 1..];
@@ -397,6 +404,19 @@ impl Vm {
                         PropRes::Slot(k) => present.is_none() && self.uninit_typed(&h, &k),
                         _ => false,
                     };
+                    if present.is_none() {
+                        let lazy = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                            PropRes::Slot(k) => self.lazy_slot(&h, Some(&k)),
+                            PropRes::Dynamic => {
+                                self.lazy_slot(&h, None)
+                                    && self.magic(&h, cls, b"__get", name).is_none()
+                            }
+                            PropRes::Denied(_) => false,
+                        };
+                        if lazy {
+                            return MagicSplit::Lazy(i, h);
+                        }
+                    }
                     match present {
                         Some(v) => v,
                         None if uninit => return MagicSplit::Plain,
@@ -439,6 +459,13 @@ impl Vm {
                     .count()
             })
             .sum()
+    }
+
+    /// Initialize the lazy object `h`: a cell holding the object the
+    /// cursor path continues on.
+    fn lazy_cursor_cell(&mut self, h: &ObjectHandle) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let inst = self.lazy_init(h)?;
+        Ok(Rc::new(RefCell::new(Value::Object(inst))))
     }
 
     /// Run `f` with the cursor temporarily re-rooted at `cell`.
@@ -511,6 +538,10 @@ impl Vm {
             }
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
+            MagicSplit::Lazy(i, h) => {
+                let cell = self.lazy_cursor_cell(&h)?;
+                return self.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, &steps[i..]));
+            }
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W)?;
@@ -673,6 +704,10 @@ impl Vm {
                 });
             }
             MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
+            MagicSplit::Lazy(i, h) => {
+                let cell = self.lazy_cursor_cell(&h)?;
+                return self.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v));
+            }
             MagicSplit::Nested(i, h, name) => {
                 let cell = self.magic_write_cell(top, h, name)?;
                 let rest = &steps[i + 1..];
@@ -722,6 +757,10 @@ impl Vm {
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Plain | MagicSplit::Leaf(..) => {}
+            MagicSplit::Lazy(i, h) => {
+                let cell = self.lazy_cursor_cell(&h)?;
+                return self.with_cursor_root(cell, |vm| vm.cursor_unset(top, &steps[i..]));
+            }
             MagicSplit::Nested(i, h, name) => {
                 let cell = self.magic_write_cell(top, h, name)?;
                 let rest = &steps[i + 1..];
@@ -825,6 +864,17 @@ impl Vm {
                     let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_steps = CursorSteps::from(&steps[i + 1..]);
+                }
+                MagicSplit::Lazy(i, h) => {
+                    let cell = match self.lazy_cursor_cell(&h) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            self.cursor_steps = steps;
+                            return Err(e);
+                        }
+                    };
+                    self.cursor_root = CursorRoot::Cell(cell);
+                    self.cursor_steps = CursorSteps::from(&steps[i..]);
                 }
                 _ => {
                     self.cursor_steps = steps;
@@ -1766,6 +1816,30 @@ fn make_ref_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "indirectly modify", rest)?;
+        if rest.is_empty() && !od.properties.contains_key(&key) {
+            // zend_handle_fetch_obj_flags (ZEND_FETCH_REF): an uninitialized
+            // typed property that does not accept null.
+            if let Some(pe) = cx.classes[od.class as usize].props.get(&key) {
+                if let Some(t) = &pe.ty {
+                    let null_ok = t.nullable
+                        || t.kinds
+                            .iter()
+                            .any(|k| matches!(k, TypeKind::Mixed | TypeKind::Null));
+                    if !null_ok {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot access uninitialized non-nullable property {}::${} by reference",
+                                String::from_utf8_lossy(
+                                    cx.classes[pe.declaring_class as usize].name.as_bytes()
+                                ),
+                                String::from_utf8_lossy(pe.name.as_bytes())
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return make_ref_path(child, rest, cx);
     }

@@ -365,6 +365,11 @@ pub trait CompareCx {
     fn is_internal_prop(&self, _class: crate::ClassId, _name: &PhpStr) -> bool {
         false
     }
+    /// The object whose properties a comparison reads (php's
+    /// get_properties: a lazy object initializes, a proxy forwards).
+    fn props_object(&mut self, obj: &crate::ObjectHandle) -> Result<crate::ObjectHandle, Thrown> {
+        Ok(obj.clone())
+    }
     /// The class name (for the conversion notice).
     fn class_name(&self, _class: crate::ClassId) -> Vec<u8> {
         b"object".to_vec()
@@ -765,6 +770,15 @@ fn std_compare_objects(
     if xc != yc {
         return Ok(Ordering::Greater); // different classes: uncomparable
     }
+    // A lazy object initializes (a proxy compares its instance).
+    let lazy;
+    let (x, y, xc, yc) = if x.borrow().is_lazy() || y.borrow().is_lazy() {
+        lazy = (cx.props_object(x)?, cx.props_object(y)?);
+        let (xc, yc) = (lazy.0.borrow().class, lazy.1.borrow().class);
+        (&lazy.0, &lazy.1, xc, yc)
+    } else {
+        (x, y, xc, yc)
+    };
     // Snapshot the property tables: comparing nested values may run user code
     // (`__toString`) that touches these objects.
     let xp: Vec<(PhpStr, Value)> = x

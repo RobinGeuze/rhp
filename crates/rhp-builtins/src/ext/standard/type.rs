@@ -341,7 +341,10 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
             Value::Array(_) => cur.clone(),
             Value::Null => Value::Array(PhpArray::new()),
-            Value::Object(h) => Value::Array(host.object_props_mangled(h)),
+            Value::Object(h) => {
+                let h = rhp_values::lazy_target(h);
+                Value::Array(host.object_props_mangled(&h))
+            }
             other => {
                 let mut a = PhpArray::new();
                 a.push(other.clone());

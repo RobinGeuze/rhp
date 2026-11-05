@@ -2841,7 +2841,7 @@ fn rebuild_reindex_ints(pairs: impl Iterator<Item = (ArrayKey, Value)>) -> PhpAr
 /// `array_splice(&$array, $offset, $length?, $replacement?)`: remove a slice
 /// (reindexed), optionally splicing in `$replacement`, and return the removed
 /// elements (reindexed). The array is passed by reference (arg 0).
-fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(pairs) = snapshot(&args[0]) else {
         return Ok(Value::Array(PhpArray::new()));
     };
@@ -2870,14 +2870,19 @@ fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
 
     // replacement: an array splices its values; a scalar splices as one element.
-    let replacement: Vec<Value> = match args.get(3) {
+    let replacement: Vec<Value> = match args.get(3).map(deref) {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(a)) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
-        Some(Value::Ref(r)) => match &*r.borrow() {
-            Value::Array(a) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
-            other => vec![deref(other).clone()],
-        },
-        Some(v) => vec![deref(v).clone()],
+        // convert_to_array: the object's properties (ARRAY_CAST).
+        Some(Value::Object(h)) => {
+            let purpose = crate::zend::object_handlers::PropPurpose::ArrayCast;
+            let a = match crate::zend::object_handlers::properties_for(host, &h, purpose)? {
+                Some(a) => a,
+                None => host.object_props_mangled(&h),
+            };
+            a.iter().map(|(_, v)| deref(v).clone()).collect()
+        }
+        Some(v) => vec![v],
     };
 
     let end = (offset + remove).min(pairs.len());

@@ -443,7 +443,11 @@ fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 /// names, ignoring scope and the class's property hooks.
 fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
-        Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
+        Value::Object(h) => {
+            // ARRAY_CAST: no lazy initialization.
+            let h = rhp_values::lazy_target(&h);
+            Ok(Value::Array(host.object_props_mangled(&h)))
+        }
         v => Err(Thrown::type_error(format!(
             "get_mangled_object_vars(): Argument #1 ($object) must be of type object, {} given",
             v.type_name()

@@ -865,7 +865,7 @@ impl Vm {
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
                 Instr::LvalPropDyn { name } => {
-                    let p = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let p = self.dyn_prop_name(top, name)?;
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
                 Instr::LvalStaticProp { class, name } => {
@@ -1185,7 +1185,7 @@ impl Vm {
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
@@ -1199,7 +1199,7 @@ impl Vm {
                 }
                 Instr::FetchPropDynW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
                         vm.prop_fetch(top, o, pname)
                     })?;
@@ -1213,7 +1213,7 @@ impl Vm {
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
@@ -1235,7 +1235,7 @@ impl Vm {
                 }
                 Instr::StorePropDyn { obj, name, src } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
                     if !self.destructibles.is_empty() {
@@ -1347,13 +1347,13 @@ impl Vm {
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
@@ -1367,7 +1367,7 @@ impl Vm {
                 }
                 Instr::UnsetPropDyn { obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     self.prop_unset(top, o, pname)?;
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true;
@@ -2038,11 +2038,13 @@ impl Vm {
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.classes[ocls as usize].hooked {
+                    let obj = self.lazy_props_object(&obj)?;
                     let scope = self.stack[top].defining_class;
                     let st = self.hooked_iter_state(&obj, scope);
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, st);
                 } else {
+                    let obj = self.lazy_props_object(&obj)?;
                     let arr = self.object_prop_array(&obj, top);
                     if arr.is_empty() {
                         self.stack[top].pc = end as usize;
@@ -2237,6 +2239,9 @@ impl Vm {
             _ => false,
         };
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            // get_properties initializes a lazy object (a proxy iterates
+            // its instance, see FeFetchRef).
+            let h = self.lazy_props_object(&h)?;
             if self.classes[h.borrow().class as usize].hooked {
                 let scope = self.stack[top].defining_class;
                 let st = self.hooked_iter_state(&h, scope);
@@ -2273,6 +2278,7 @@ impl Vm {
                     self.stack[top].pc = end as usize;
                     return Ok(());
                 };
+                let h = self.lazy_target(&h);
                 match self.hooked_iter_next(&h, &Value::Array(st), true)? {
                     Some((st, k, Value::Ref(rc))) => {
                         self.bind_ref_cv(top, val_cv, rc);
@@ -2345,6 +2351,7 @@ impl Vm {
         // accessible property slot so writes through the loop var are
         // visible on the object (matches PHP).
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
+            let h = self.lazy_props_object(&h)?;
             let caller = self.stack[top].defining_class;
             let cls = h.borrow().class;
             let mut b = h.borrow_mut();

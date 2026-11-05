@@ -30,6 +30,17 @@ pub fn unmangle_prop(key: &[u8]) -> (&[u8], Option<&[u8]>) {
     (key, None)
 }
 
+/// php_var_dump_object_prefix: "lazy ghost " / "lazy proxy " for a lazy
+/// object.
+pub fn lazy_prefix(h: &rhp_values::ObjectHandle) -> &'static str {
+    let b = h.borrow();
+    match b.lazy() {
+        Some(l) if l.obj_flags & rhp_values::LazyInfo::PROXY != 0 => "lazy proxy ",
+        Some(l) if l.obj_flags != 0 => "lazy ghost ",
+        _ => "",
+    }
+}
+
 /// An object's properties keyed by their php-mangled names (debug view).
 /// Engine-internal slots of built-in classes are left out.
 fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
@@ -96,6 +107,16 @@ fn resolve_in(
                     && host.class_has_method(class, b"__debuginfo") =>
                 {
                     Some(debug_info(host, &h, class)?)
+                }
+                // zend_lazy_object_debug_info: an initialized proxy shows
+                // its instance.
+                None if purpose == PropPurpose::Debug => {
+                    let inst = h.borrow().lazy_instance();
+                    inst.map(|i| {
+                        let mut a = rhp_values::PhpArray::new();
+                        a.insert(ArrayKey::from_bytes(b"instance"), Value::Object(i));
+                        a
+                    })
                 }
                 None => None,
             };
@@ -349,7 +370,8 @@ fn var_dump_value(
                 seen.objects.push(obj_id);
                 out.extend_from_slice(
                     format!(
-                        "{amp}object({})#{} ({}) {{\n",
+                        "{amp}{}object({})#{} ({}) {{\n",
+                        lazy_prefix(h),
                         String::from_utf8_lossy(&cname),
                         obj_id,
                         props.len()
@@ -983,9 +1005,20 @@ impl Serializer {
                     return Ok(());
                 }
             };
-            // (__sleep may have changed the properties.)
+            // (__sleep may have changed the properties.) A lazy object
+            // initializes unless SKIP_INITIALIZATION_ON_SERIALIZE.
+            let skip = h.borrow().lazy().is_some_and(|l| {
+                l.flags & rhp_values::LazyInfo::SKIP_INITIALIZATION_ON_SERIALIZE != 0
+            });
+            let src = if skip {
+                let i = h.borrow().lazy_instance();
+                i.unwrap_or_else(|| h.clone())
+            } else {
+                host.lazy_props_object(h)?
+            };
+            let uninit = host.uninit_props(&src);
             let props: Vec<(PhpStr, Value)> = {
-                let b = h.borrow();
+                let b = src.borrow();
                 b.properties
                     .iter()
                     .filter(|(k, _)| !host.is_internal_slot(class_id, k))
@@ -1021,6 +1054,10 @@ impl Serializer {
                             )?;
                         }
                     }
+                    // An uninitialized typed property is skipped silently.
+                    None if uninit.iter().any(|(k, _, _)| {
+                        [&n[..], &priv_[..], &prot[..]].contains(&k.as_bytes())
+                    }) => {}
                     None => host.emit_diagnostic(
                         crate::E_WARNING,
                         &[

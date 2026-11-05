@@ -70,7 +70,14 @@ impl Vm {
             .proto
             .this_cv
             .and_then(|cv| match f.regs.get(cv as usize) {
-                Some(Value::Object(o)) => Some(Rc::ptr_eq(o, h)),
+                // Also inside the hook of an initialized proxy whose
+                // instance is `h`.
+                Some(Value::Object(o)) => Some(
+                    Rc::ptr_eq(o, h)
+                        || o.borrow()
+                            .lazy_instance()
+                            .is_some_and(|i| Rc::ptr_eq(&i, h)),
+                ),
                 _ => None,
             })
             .unwrap_or(false);
@@ -366,6 +373,26 @@ impl Vm {
             self.reg_set(top, dst, v);
         }
         Ok(())
+    }
+
+    /// The table a hooked class shows for `purpose` (see
+    /// `Host::hooked_properties_for`).
+    pub(crate) fn hooked_view(
+        &mut self,
+        obj: &ObjectHandle,
+        purpose: rhp_builtins::zend::object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        use rhp_builtins::zend::object_handlers::PropPurpose as P;
+        let cls = obj.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return Ok(None);
+        }
+        let scope = match purpose {
+            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
+            P::Json | P::VarExport => None,
+            _ => return Ok(None),
+        };
+        self.hooked_props_table(obj, scope).map(Some)
     }
 
     /// php's zho_build_properties_ex + the readers of get_object_vars /

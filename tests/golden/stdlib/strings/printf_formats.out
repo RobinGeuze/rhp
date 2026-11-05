@@ -1,0 +1,21 @@
+[1.0e+20] [1.0E-7] [1.23e+5] [0.1]
+[*******abc] [42xxxxxxxx] [-00003.142] [2.50000000] [+0007] [+1.2e+4]
+[   42] [42   ] [3.14] [   42]
+[] [     ] [] [18446744073709551615] [A]
+[0.000000e+0] [1e+4] [-1.500000E-10] [1.0e-5] [1.0E+15] [-0]
+[   ab] [ab   |] [ab] [000ab]
+[8] printf(): Requested precision of 60 digits was truncated to PHP maximum of 53 digits
+[1.500000] [0.10000000000000000555111512312578270211815834045410156]
+ValueError: Missing format specifier at end of string
+ValueError: Missing format specifier at end of string
+ValueError: Argument number specifier must be greater than zero and less than 2147483647
+ValueError: Width must be an integer
+ValueError: Precision must be an integer
+ValueError: Unknown format specifier "y"
+ValueError: Missing padding character
+The arguments array must contain 2 items, 1 given
+3 arguments are required, 2 given
+Precision must be between -1 and 2147483647
+Precision -1 is only supported for %g, %G, %h and %H
+Width must be an integer
+0.10000000000000000555 0.33333333333333331483 -1.0000000000000000251E-300

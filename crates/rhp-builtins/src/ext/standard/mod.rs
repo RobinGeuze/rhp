@@ -23,6 +23,7 @@ pub mod filestat;
 pub mod formatted_print;
 pub mod fsock;
 pub mod head;
+pub mod hebrev;
 pub mod hrtime;
 pub mod html;
 #[rustfmt::skip]
@@ -36,12 +37,15 @@ pub mod levenshtein;
 pub mod link;
 pub mod math;
 pub mod md5;
+pub mod meta_tags;
+pub mod metaphone;
 pub mod microtime;
 pub mod net;
 pub mod pack;
 pub mod pageinfo;
 pub mod password;
 pub mod proc_open;
+pub mod quot_print;
 pub mod scanf;
 pub mod sha1;
 pub mod soundex;
@@ -51,6 +55,7 @@ pub mod syslog;
 pub mod r#type;
 pub mod uniqid;
 pub mod url;
+pub mod uuencode;
 pub mod var;
 pub mod versioning;
 
@@ -93,6 +98,11 @@ fn register(m: &mut crate::Registry) {
     formatted_print::register(m);
     scanf::register(m);
     soundex::register(m);
+    metaphone::register(m);
+    hebrev::register(m);
+    quot_print::register(m);
+    uuencode::register(m);
+    meta_tags::register(m);
     levenshtein::register(m);
     pack::register(m);
     uniqid::register(m);
@@ -142,11 +152,18 @@ fn constants() -> Vec<(&'static str, Value)> {
     .concat()
 }
 
-/// The module's PHP source: dir.c's `Directory` class, then string.c's
-/// prelude functions.
+/// The module's PHP source: dir.c's `Directory` class, string.c's
+/// prelude functions and math.c's `RoundingMode` enum.
 fn prelude() -> &'static str {
     static PRELUDE: OnceLock<String> = OnceLock::new();
-    PRELUDE.get_or_init(|| format!("{}\n{}", dir::PRELUDE_PHP, string::PRELUDE_PHP))
+    PRELUDE.get_or_init(|| {
+        format!(
+            "{}\n{}\n{}",
+            dir::PRELUDE_PHP,
+            string::PRELUDE_PHP,
+            math::PRELUDE_PHP
+        )
+    })
 }
 
 fn reset_state() {

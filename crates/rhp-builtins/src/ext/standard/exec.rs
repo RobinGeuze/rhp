@@ -271,14 +271,45 @@ fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
     out
 }
 
+/// exec.c's `cmd_max_len`: `sysconf(_SC_ARG_MAX)`.
+fn cmd_max_len() -> usize {
+    // SAFETY: sysconf only reads a system limit.
+    match unsafe { libc::sysconf(libc::_SC_ARG_MAX) } {
+        n if n > 0 => n as usize,
+        _ => 4096,
+    }
+}
+
+/// The length checks of `php_escape_shell_cmd` / `php_escape_shell_arg`.
+fn escape_checked(s: &[u8], what: &str, escape: fn(&[u8]) -> Vec<u8>) -> Result<Value, Thrown> {
+    let max = cmd_max_len();
+    if s.len() > max - 3 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("{what} exceeds the allowed length of {max} bytes"),
+        ));
+    }
+    let out = escape(s);
+    if out.len() > max + 1 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "Escaped {} exceeds the allowed length of {max} bytes",
+                what.to_ascii_lowercase()
+            ),
+        ));
+    }
+    Ok(Value::str(out))
+}
+
 fn fn_escapeshellarg(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = zpp_path(args, 0, "escapeshellarg", "arg")?;
-    Ok(Value::str(escape_shell_arg(&s)))
+    escape_checked(&s, "Argument", escape_shell_arg)
 }
 
 fn fn_escapeshellcmd(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = zpp_path(args, 0, "escapeshellcmd", "command")?;
-    Ok(Value::str(escape_shell_cmd(&s)))
+    escape_checked(&s, "Command", escape_shell_cmd)
 }
 
 fn fn_proc_nice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

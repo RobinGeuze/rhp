@@ -116,7 +116,11 @@ pub fn to_float(v: &Value) -> f64 {
         Value::Bool(b) => *b as i64 as f64,
         Value::Int(n) => *n as f64,
         Value::Float(f) => *f,
+        // zend_strtod: "-0" is -0.0.
         Value::Str(s) => match scan_number(s.as_bytes()) {
+            Some((Num::Int(0), _)) if s.as_bytes().iter().find(|&&b| !is_ws(b)) == Some(&b'-') => {
+                -0.0
+            }
             Some((num, _)) => num.as_f64(),
             None => 0.0,
         },

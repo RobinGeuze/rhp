@@ -62,7 +62,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 35 | ~~Arithmetic on a leading-numeric string — no "A non-numeric value encountered" warning~~ — RESOLVED (§7.2) | VM arithmetic | — | — | — |
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
 | 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
-| 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
+| 38 | ~~`metaphone()` — not implemented~~ — **done** (`ext/standard/metaphone.rs`) | — | — | — | — |
 | 39 | Typed class constant compatibility — no autoload, types only for traits (§8.5) | `vm/const_link.rs` | a redeclaration whose check needs a class an autoloader would load | low | low |
 
 ---
@@ -261,9 +261,9 @@ The original notes:
   is global/unsafe). Simple map on the `Vm`.
 - **Effort/priority:** low / med.
 
-### 1.14 `metaphone()` — not implemented
-- **Now:** "Call to undefined function metaphone()". `tests/golden/corpus/strings.php`
-  leaves it out; add it back with the function.
+### 1.14 `metaphone()` — RESOLVED
+- Ported from ext/standard/metaphone.c (`ext/standard/metaphone.rs`);
+  `tests/golden/stdlib/strings/codecs_misc.php` covers it.
 
 ---
 

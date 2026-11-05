@@ -1992,6 +1992,11 @@ impl Host for Vm {
         Some(Value::Array(arr))
     }
 
+    fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        let (a, b) = (rhp_values::ops::deref(a), rhp_values::ops::deref(b));
+        Vm::pow_op(self, &a, &b)
+    }
+
     fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
         Vm::reflect_op(self, op, args)
     }

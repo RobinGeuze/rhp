@@ -795,4 +795,17 @@ pub trait Host {
     /// function (the running builtin, else the innermost user function,
     /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown>;
+    /// `pow_function` (the `**` operator) with the engine's diagnostics and
+    /// object handlers.
+    fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        use rhp_values::ops;
+        let (x, y) = ops::arith_pair(a, b, "**")?;
+        if ops::pow_base0_neg_exp(x, y) {
+            self.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"Power of base 0 and negative exponent is deprecated",
+            )?;
+        }
+        Ok(ops::pow_num(x, y))
+    }
 }

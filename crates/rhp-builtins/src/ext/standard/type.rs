@@ -151,64 +151,82 @@ fn fn_intval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(intval_base(s.as_bytes(), base)))
 }
 
-/// Parse a string in an explicit base, matching PHP's `intval($s, $base)`:
-/// skips leading whitespace, an optional sign, and (for base 0/16) a `0x` / (0/8)
-/// `0o`/`0` / (0/2) `0b` prefix; stops at the first invalid digit.
-fn intval_base(bytes: &[u8], mut base: i64) -> i64 {
-    let mut i = 0;
-    while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
-        i += 1;
-    }
-    let neg = match bytes.get(i) {
-        Some(b'-') => {
-            i += 1;
-            true
+fn c_isspace(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r')
+}
+
+/// php's `intval($s, $base)` for a string: a "0b" prefix (after
+/// whitespace and a sign) for base 0 and 2, else C `strtol`.
+fn intval_base(bytes: &[u8], base: i64) -> i64 {
+    if base == 0 || base == 2 {
+        let start = bytes
+            .iter()
+            .position(|&c| !c_isspace(c))
+            .unwrap_or(bytes.len());
+        let s = &bytes[start..];
+        if s.len() > 2 {
+            let off = usize::from(s[0] == b'-' || s[0] == b'+');
+            if s[off] == b'0' && matches!(s.get(off + 1), Some(b'b' | b'B')) {
+                let mut tmp = s[..off].to_vec();
+                tmp.extend_from_slice(&s[off + 2..]);
+                return strtol(&tmp, 2);
+            }
         }
-        Some(b'+') => {
-            i += 1;
-            false
-        }
-        _ => false,
-    };
-    // Base 0: auto-detect from the prefix.
-    let rest = &bytes[i..];
-    let (digits_start, detected) = detect_prefix(rest, base);
-    i += digits_start;
-    if base == 0 {
-        base = detected;
     }
-    if !(2..=36).contains(&base) {
+    strtol(bytes, base)
+}
+
+/// C `strtol`: whitespace, sign, a 0x prefix for base 16 (and 0), octal
+/// for a leading 0 in base 0; saturates on overflow; 0 for a bad base.
+fn strtol(bytes: &[u8], mut base: i64) -> i64 {
+    if base != 0 && !(2..=36).contains(&base) {
         return 0;
     }
-    let mut acc: i64 = 0;
-    while i < bytes.len() {
-        let d = match bytes[i] {
-            b'0'..=b'9' => (bytes[i] - b'0') as i64,
-            b'a'..=b'z' => (bytes[i] - b'a' + 10) as i64,
-            b'A'..=b'Z' => (bytes[i] - b'A' + 10) as i64,
-            _ => break,
-        };
-        if d >= base {
+    let at = |i: usize| bytes.get(i).copied().unwrap_or(0);
+    let mut i = 0;
+    while c_isspace(at(i)) {
+        i += 1;
+    }
+    let neg = at(i) == b'-';
+    if matches!(at(i), b'-' | b'+') {
+        i += 1;
+    }
+    if (base == 0 || base == 16)
+        && at(i) == b'0'
+        && matches!(at(i + 1), b'x' | b'X')
+        && at(i + 2).is_ascii_hexdigit()
+    {
+        i += 2;
+        base = 16;
+    }
+    if base == 0 {
+        base = if at(i) == b'0' { 8 } else { 10 };
+    }
+    let mut acc: u64 = 0;
+    let mut overflow = false;
+    while let Some(d) = (at(i) as char).to_digit(36) {
+        if d as i64 >= base {
             break;
         }
-        acc = acc.saturating_mul(base).saturating_add(d);
+        match acc
+            .checked_mul(base as u64)
+            .and_then(|a| a.checked_add(d as u64))
+        {
+            Some(a) => acc = a,
+            None => overflow = true,
+        }
         i += 1;
     }
     if neg {
-        -acc
+        if overflow || acc > i64::MIN.unsigned_abs() {
+            i64::MIN
+        } else {
+            (acc as i64).wrapping_neg()
+        }
+    } else if overflow || acc > i64::MAX as u64 {
+        i64::MAX
     } else {
-        acc
-    }
-}
-
-/// Returns (bytes-consumed-by-prefix, detected-base) for base 0/16/8/2 prefixes.
-fn detect_prefix(rest: &[u8], base: i64) -> (usize, i64) {
-    match rest {
-        [b'0', b'x' | b'X', ..] if base == 0 || base == 16 => (2, 16),
-        [b'0', b'b' | b'B', ..] if base == 0 || base == 2 => (2, 2),
-        [b'0', b'o' | b'O', ..] if base == 0 || base == 8 => (2, 8),
-        [b'0', ..] if base == 0 => (1, 8),
-        _ => (0, if base == 0 { 10 } else { base }),
+        acc as i64
     }
 }
 
@@ -232,14 +250,30 @@ fn fn_boolval(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(zend::object_handlers::is_true(host, &args[0])?))
 }
 
-// Only arrays qualify until Traversable/Countable objects land (phase 7); php
-// also returns true for objects implementing those interfaces.
-fn fn_is_iterable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Array(_))))
+/// An array, or an object whose class is `iface` or implements it.
+fn array_or_instance(host: &mut dyn Host, v: &Value, iface: &[u8]) -> bool {
+    match deref(v) {
+        Value::Array(_) => true,
+        o @ Value::Object(_) => host
+            .object_class_name(&o)
+            .is_some_and(|c| host.reflect_is_a(&c, iface)),
+        Value::Closure(_) => false,
+        _ => false,
+    }
 }
 
-fn fn_is_countable(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(matches!(deref(&args[0]), Value::Array(_))))
+/// `is_iterable`: an array or a Traversable.
+fn fn_is_iterable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(array_or_instance(
+        host,
+        &args[0],
+        b"Traversable",
+    )))
+}
+
+/// `is_countable`: an array or a Countable.
+fn fn_is_countable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(array_or_instance(host, &args[0], b"Countable")))
 }
 
 pub(crate) fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

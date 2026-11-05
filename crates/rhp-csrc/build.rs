@@ -19,8 +19,6 @@ fn main() {
     println!("cargo:shim={}", manifest.join("shim").display());
     // Where the archives go, for rhp-mbfl-sys's symbol test.
     println!("cargo:out={}", std::env::var("OUT_DIR").unwrap());
-    php_cc().file("shim/zend_shim.c").compile("rhp_csrc_zend");
-    rerun(&["shim"]);
 
     if crypt {
         php_src(&[
@@ -40,8 +38,9 @@ fn main() {
         // ext/date/config0.m4: timelib's sources and PHP_TIMELIB_CFLAGS
         // (-fwrapv: timelib relies on signed overflow wrapping), plus php's
         // global -ffp-contract=off (astro.c's floating point). It builds
-        // without the Zend shim; glue/timelib_config.h stands in for php's
-        // generated timelib_config.h.
+        // without the Zend shim's headers; glue/timelib_config.h stands in
+        // for php's generated timelib_config.h and points timelib's
+        // allocator at the shim's emalloc family.
         let lib = Path::new("vendor/php-src/ext/date/lib");
         let mut b = cc::Build::new();
         b.include("glue")
@@ -96,6 +95,11 @@ fn main() {
         b.file("glue/argon2.c").compile("rhp_csrc_argon2");
         rerun(&["glue", "vendor/argon2"]);
     }
+
+    // Linked after the archives above, which call into it: GNU ld (the
+    // default linker on aarch64 Linux) takes archives left to right.
+    php_cc().file("shim/zend_shim.c").compile("rhp_csrc_zend");
+    rerun(&["shim"]);
 }
 
 /// A build of `files` (paths under vendor/php-src) against the shared Zend

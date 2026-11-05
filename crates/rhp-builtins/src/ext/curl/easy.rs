@@ -355,7 +355,7 @@ fn bytes<'a>(p: *const c_char, len: usize) -> &'a [u8] {
     if p.is_null() || len == 0 {
         &[]
     } else {
-        unsafe { std::slice::from_raw_parts(p as *const u8, len) }
+        unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len) }
     }
 }
 
@@ -600,7 +600,7 @@ unsafe extern "C" fn read_cb(
         };
         let out = |src: &[u8]| -> usize {
             let n = src.len().min(max);
-            unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), data as *mut u8, n) };
+            unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), data.cast::<u8>(), n) };
             n
         };
         let Some(h) = peek(cell, |e| e.read.clone()) else {
@@ -872,7 +872,7 @@ unsafe extern "C" fn mime_read(
         match ffi::call_host(|h| Ok(h.stream_read(&stream, max as i64))).flatten() {
             Some(data) => {
                 let n = data.len().min(max);
-                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buf as *mut u8, n) };
+                unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buf.cast::<u8>(), n) };
                 n
             }
             None => {

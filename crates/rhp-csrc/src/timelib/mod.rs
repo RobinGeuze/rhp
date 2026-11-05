@@ -460,7 +460,9 @@ fn messages<'a>(
         Message {
             code: m.error_code,
             position: m.position,
-            character: m.character as u8,
+            // c_char is i8 or u8 by target (u8 on aarch64 Linux): `as u8`
+            // would be an unnecessary cast (a clippy error) there.
+            character: m.character.to_ne_bytes()[0],
             message: unsafe { bytes(m.message) }.unwrap_or_default(),
         }
     })

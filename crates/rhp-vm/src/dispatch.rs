@@ -17,10 +17,20 @@ use crate::generators::GenStatus;
 use crate::lvalue::{
     aa_key, foreach_promote, isset_dim, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
-use crate::types::value_name_lc;
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
 impl Vm {
+    /// zend_match_unhandled_error's text for the subject: the value as
+    /// smart_str_append_zval prints it, else `of type T`.
+    #[cold]
+    fn match_case_desc(&self, v: &Value) -> String {
+        let mut out = Vec::new();
+        if !rhp_builtins::zend::exceptions::append_zval(self, v, &mut out) {
+            return format!("of type {}", rhp_builtins::zval_type_name(self, v));
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
     /// Key of a function-static slot: the proto plus, for a method, the class
     /// it runs as. A method declared in a class always runs with that class,
     /// but a trait method is copied into every using class and each copy has
@@ -929,7 +939,7 @@ impl Vm {
                     let v = self.reg_get(top, subject);
                     return Err(Thrown::error(
                         "UnhandledMatchError",
-                        format!("Unhandled match case {}", match_case_desc(&v)),
+                        format!("Unhandled match case {}", self.match_case_desc(&v)),
                     ));
                 }
                 Instr::SendNoRef { dst, src } => {
@@ -1107,7 +1117,7 @@ impl Vm {
                             format!(
                                 "Call to a member function {}() on {}",
                                 String::from_utf8_lossy(&mname),
-                                value_name_lc(&o)
+                                rhp_builtins::zval_value_name(self, &o)
                             ),
                         ));
                     };
@@ -1247,7 +1257,7 @@ impl Vm {
                             format!(
                                 "Call to a member function {}() on {}",
                                 String::from_utf8_lossy(&mname),
-                                value_name_lc(&o)
+                                rhp_builtins::zval_value_name(self, &o)
                             ),
                         ));
                     };
@@ -2357,18 +2367,6 @@ impl Vm {
             }
         }
         Ok(())
-    }
-}
-
-/// Describe the unmatched subject for an UnhandledMatchError message.
-fn match_case_desc(v: &Value) -> String {
-    match v {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(_) => "of type string".to_string(),
-        Value::Float(_) => "of type double".to_string(),
-        Value::Null => "NULL".to_string(),
-        other => format!("of type {}", other.type_name()),
     }
 }
 

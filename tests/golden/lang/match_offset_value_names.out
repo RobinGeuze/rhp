@@ -1,0 +1,30 @@
+UnhandledMatchError: Unhandled match case 1
+UnhandledMatchError: Unhandled match case -5
+UnhandledMatchError: Unhandled match case true
+UnhandledMatchError: Unhandled match case false
+UnhandledMatchError: Unhandled match case NULL
+UnhandledMatchError: Unhandled match case 1.5
+UnhandledMatchError: Unhandled match case 2.0
+UnhandledMatchError: Unhandled match case 1.0E+100
+UnhandledMatchError: Unhandled match case -INF
+UnhandledMatchError: Unhandled match case NAN
+UnhandledMatchError: Unhandled match case 'x'
+UnhandledMatchError: Unhandled match case 'a long string o...'
+UnhandledMatchError: Unhandled match case 'tab\there\n'
+UnhandledMatchError: Unhandled match case '\xFF\x00'
+UnhandledMatchError: Unhandled match case of type array
+UnhandledMatchError: Unhandled match case of type stdClass
+UnhandledMatchError: Unhandled match case of type resource
+UnhandledMatchError: Unhandled match case of type Closure
+UnhandledMatchError: Unhandled match case Suit::Hearts
+UnhandledMatchError: Unhandled match case Num::One
+UnhandledMatchError: Unhandled match case of type class@anonymous
+TypeError: Cannot access offset of type class@anonymous on array
+TypeError: Cannot access offset of type class@anonymous on array
+TypeError: Cannot unset offset of type class@anonymous on array
+TypeError: Cannot access offset of type class@anonymous on array
+TypeError: Cannot access offset of type class@anonymous on string
+TypeError: Cannot access offset of type class@anonymous on string
+TypeError: Cannot access offset of type stdClass on array
+TypeError: Cannot access offset of type array on array
+TypeError: Cannot unset offset of type Closure on array

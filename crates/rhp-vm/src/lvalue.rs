@@ -11,7 +11,6 @@ use rhp_values::{
 };
 
 use crate::classes::PropRes;
-use crate::types::{type_lc, value_name_lc};
 use crate::{classes, deref, Vm};
 
 /// A pending lvalue step (an evaluated key, an append, or an object property).
@@ -76,6 +75,26 @@ struct PropCtx<'a> {
 }
 
 impl PropCtx<'_> {
+    /// zend_zval_type_name, with the class names this context knows.
+    fn type_name(&self, v: &Value) -> String {
+        rhp_builtins::zval_type_name_by(v, |o| self.class_name(o))
+    }
+
+    /// zend_zval_value_name, with the class names this context knows.
+    fn value_name(&self, v: &Value) -> String {
+        rhp_builtins::zval_value_name_by(v, |o| self.class_name(o))
+    }
+
+    fn class_name(&self, o: &Value) -> Option<Vec<u8>> {
+        match o {
+            Value::Object(h) => h
+                .try_borrow()
+                .ok()
+                .map(|b| self.classes[b.class as usize].name.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
+
     /// Storage key for `name` on an instance of `cls`, or the access error.
     fn key(&self, cls: ClassId, name: &PhpStr) -> Result<PhpStr, Thrown> {
         classes::prop_key(self.classes, cls, self.scope, name)
@@ -961,7 +980,7 @@ impl Vm {
         let Some(akey) = akey else {
             return Err(Thrown::type_error(format!(
                 "Cannot access offset of type {} on {}",
-                type_lc(key),
+                rhp_builtins::zval_type_name(self, key),
                 String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes())
             )));
         };
@@ -1059,7 +1078,7 @@ impl Vm {
                 let Some(k) = self.dim_key(key, quiet)? else {
                     return Err(Thrown::type_error(format!(
                         "Cannot access offset of type {} on array",
-                        self.offset_type_name(key)
+                        rhp_builtins::zval_type_name(self, key)
                     )));
                 };
                 match a.get(&k) {
@@ -1141,7 +1160,7 @@ impl Vm {
                         }
                         return Err(Thrown::type_error(format!(
                             "Cannot access offset of type {} on string",
-                            self.offset_type_name(key)
+                            rhp_builtins::zval_type_name(self, key)
                         )));
                     }
                 };
@@ -1169,25 +1188,20 @@ impl Vm {
                 if !quiet {
                     // zend_zval_type_name for list(), else zend_zval_value_name
                     let msg = if mode == DimMode::List {
-                        format!("Cannot use {} as array", type_lc(other))
+                        format!(
+                            "Cannot use {} as array",
+                            rhp_builtins::zval_type_name(self, other)
+                        )
                     } else {
-                        format!("Trying to access array offset on {}", value_name_lc(other))
+                        format!(
+                            "Trying to access array offset on {}",
+                            rhp_builtins::zval_value_name(self, other)
+                        )
                     };
                     self.diag(builtins::E_WARNING, &msg)?;
                 }
                 Ok(Value::Null)
             }
-        }
-    }
-
-    /// zend_zval_value_name for an illegal offset.
-    fn offset_type_name(&self, key: &Value) -> String {
-        match key {
-            Value::Object(h) => {
-                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
-            }
-            Value::Closure(_) => "Closure".into(),
-            v => v.type_name().to_string(),
         }
     }
 }
@@ -1368,16 +1382,7 @@ fn string_offset(k: &Value, unset: bool, cx: &PropCtx) -> Result<i64, Thrown> {
             path_diag(rhp_builtins::E_WARNING, "String offset cast occurred");
             Ok(conv::to_int(&v))
         }
-        Value::Object(h) => Err(illegal(
-            h.try_borrow()
-                .map(|b| {
-                    String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes())
-                        .into_owned()
-                })
-                .unwrap_or_default(),
-        )),
-        Value::Closure(_) => Err(illegal("Closure".into())),
-        other => Err(illegal(type_lc(&other).to_string())),
+        other => Err(illegal(cx.type_name(&other))),
     }
 }
 
@@ -1488,7 +1493,7 @@ fn assign_path(
             // zend_throw_non_object_error: the property itself is assigned;
             // a write further down the path modifies it.
             other => {
-                let shown = value_name_lc(other);
+                let shown = cx.value_name(other);
                 return Err(Thrown::error(
                     "Error",
                     format!(
@@ -1573,7 +1578,7 @@ fn make_ref_path(
                     format!(
                         "Attempt to modify property \"{}\" on {}",
                         String::from_utf8_lossy(name.as_bytes()),
-                        value_name_lc(other)
+                        cx.value_name(other)
                     ),
                 ))
             }
@@ -1662,19 +1667,9 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 if !rest.is_empty() {
                     return Err(illegal_offset_on_array(k, cx));
                 }
-                let ty = match deref(k) {
-                    Value::Object(h) => h
-                        .try_borrow()
-                        .map(|b| {
-                            String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes())
-                                .into_owned()
-                        })
-                        .unwrap_or_default(),
-                    Value::Closure(_) => "Closure".into(),
-                    other => type_lc(&other).to_string(),
-                };
                 return Err(Thrown::type_error(format!(
-                    "Cannot unset offset of type {ty} on array"
+                    "Cannot unset offset of type {} on array",
+                    cx.type_name(k)
                 )));
             };
             if rest.is_empty() {
@@ -1729,15 +1724,8 @@ fn undefined_key_msg(k: &ArrayKey) -> String {
 /// php's "Cannot access offset of type T on array" TypeError (an array
 /// write/fetch-for-write with an unusable key).
 fn illegal_offset_on_array(k: &Value, cx: &PropCtx) -> Thrown {
-    let ty = match deref(k) {
-        Value::Object(h) => h
-            .try_borrow()
-            .map(|b| {
-                String::from_utf8_lossy(cx.classes[b.class as usize].name.as_bytes()).into_owned()
-            })
-            .unwrap_or_default(),
-        Value::Closure(_) => "Closure".into(),
-        other => type_lc(&other).to_string(),
-    };
-    Thrown::type_error(format!("Cannot access offset of type {ty} on array"))
+    Thrown::type_error(format!(
+        "Cannot access offset of type {} on array",
+        cx.type_name(k)
+    ))
 }

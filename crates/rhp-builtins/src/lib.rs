@@ -65,7 +65,7 @@ pub use rhp_values::{
 };
 
 pub use ext::standard::basic_functions::{apply_env_overrides, env_overrides};
-pub use zend::zpp::{zval_type_name, zval_value_name};
+pub use zend::zpp::{zval_type_name, zval_type_name_by, zval_value_name, zval_value_name_by};
 
 /// The php version this engine reports (`PHP_VERSION`).
 pub const PHP_VERSION: &str = version::PHP_VERSION;

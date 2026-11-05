@@ -13,8 +13,9 @@ publish.workspace = true
 [features]
 default = ["mbstring-libmbfl"]
 # The mbstring extension, on php-src's libmbfl (LGPL-2.1, in the
-# rhp-mbfl-sys crate). Without it rhp has no mbstring extension and contains
-# no LGPL code.
+# rhp-mbfl-sys crate). Without it rhp-builtins has no mbstring extension and
+# contains no LGPL code; rhp-vm, rhp-sapi and rhp-difftest enable it (they use
+# the default features).
 mbstring-libmbfl = ["dep:rhp-mbfl-sys"]
 
 [dependencies]

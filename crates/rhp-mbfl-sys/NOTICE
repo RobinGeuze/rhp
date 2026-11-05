@@ -9,7 +9,9 @@ modified copy of the library, as LGPL-2.1 section 6 asks. The repository's
 THIRD-PARTY-NOTICES carries the same entries with the full licence texts.
 
 rhp-builtins links this crate only with its `mbstring-libmbfl` feature (on
-by default); without it rhp contains no LGPL code.
+by default), and builds without it. rhp-vm, rhp-sapi and tools/rhp-difftest
+use rhp-builtins' default features, so every rhp binary this workspace builds
+contains libmbfl.
 
 
 vendor/php-src

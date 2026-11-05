@@ -235,7 +235,7 @@ test` checks it, and `gen readme --php-src` also recounts
 | rustfmt, clippy | `cargo fmt --check`, `cargo clippy -D warnings` |
 | test (no php) | the whole `cargo test --workspace --all-targets`, with php removed: goldens, CLI and curl fixtures, unit tests; live-php tests skip |
 | php 8.5 (live) | only what compares with php: `php -l` on every prelude file (`crates/rhp-builtins/src/**/*.php`), rhp-difftest's tests, rhp-cli's tests except the goldens (the live tests, the CGI fixtures against the real php-cgi), `cli -- --check`, `golden --check --portable` |
-| release build | `cargo build --release -p rhp-cli -p rhp-difftest` once, as an artifact for the jobs below |
+| release build | `cargo build --release -p rhp-cli -p rhp-difftest` once, as an artifact for the jobs below (with the licence files) |
 | phpt ratchet K/3 | the ratchet in three shards (`phpt --shard K/3`) |
 | generated tables | every `gen … --check` |
 | app NAME | per pinned app: smoke test, lint ratchet, request diff |

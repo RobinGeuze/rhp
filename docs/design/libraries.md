@@ -287,8 +287,10 @@ own prefix header (`glue/prefix_mbfl.h`) and tests: every global symbol is
 is defined in both crates. `glue/mbfl.c` wraps libmbfl's static inline
 buffer helpers and checks with `_Static_assert` the layouts and constants
 the Rust side mirrors. rhp-builtins depends on it only through its
-`mbstring-libmbfl` feature (on by default); without it there is no
-mbstring extension and no LGPL code in the binary. phpinfo reports
+`mbstring-libmbfl` feature (on by default); without it rhp-builtins has no
+mbstring extension and no LGPL code. rhp-vm, rhp-sapi and
+tools/rhp-difftest use rhp-builtins' default features, so every rhp binary
+the workspace builds contains libmbfl. phpinfo reports
 libmbfl's version from `MBFL_VERSION_*`, read through the glue, as php's
 does.
 

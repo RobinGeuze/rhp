@@ -2,7 +2,10 @@
 name = "rhp-bytecode"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+# Our code: MIT OR Apache-2.0; src/signatures/table.rs is generated from
+# php-src's *.stub.php and keeps the PHP License 3.01 (THIRD-PARTY-NOTICES,
+# section 4).
+license = "(MIT OR Apache-2.0) AND PHP-3.01"
 publish.workspace = true
 
 [dependencies]

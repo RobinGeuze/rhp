@@ -121,7 +121,7 @@ the Command Line Tools; on Debian/Ubuntu the `-dev` packages that
 ## Licence
 
 - rhp's own code is MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
-- Translated php-src code is also PHP-3.01 or Zend-2.0; other third-party code keeps its licence ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)).
+- Translated php-src code is also PHP-3.01 or Zend-2.0; other third-party code keeps its licence, notably libmbfl (LGPL-2.1, vendored in `crates/rhp-mbfl-sys`, linked statically) and libgmp (LGPL-3.0, linked dynamically) ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES)).
 - This product includes PHP software, freely available from <http://www.php.net/software/>, and the Zend Engine, freely available at http://www.zend.com.
 - rhp is not affiliated with or endorsed by The PHP Group or Zend; it prints php's version and credit strings only for compatibility.
-- Source only: anyone shipping an rhp binary must include LICENSE-*, THIRD-PARTY-NOTICES and the Rust crates' notices.
+- Source only: anyone shipping an rhp binary must include LICENSE-*, THIRD-PARTY-NOTICES, the Rust crates' notices and libmbfl's source.

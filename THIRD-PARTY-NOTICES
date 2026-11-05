@@ -11,7 +11,10 @@ package metadata (see Cargo.lock) and are not repeated here.
 The repository distributes source only. Whoever distributes an rhp binary
 must include LICENSE-MIT, LICENSE-APACHE and this file, plus the licence
 notices of the Rust crates compiled into it (cargo-about, for example, can
-collect them).
+collect them). A default build links libmbfl statically (section 17): ship
+its complete source with the binary, or meet another option of LGPL-2.1
+section 6. Whoever bundles libgmp (section 18) must keep it a replaceable
+shared library and include the GPL-3.0 and LGPL-3.0 texts.
 
 1. PCRE2           BSD-3-Clause WITH PCRE2-exception; JIT: BSD-2-Clause
 2. zlib            Zlib
@@ -189,8 +192,8 @@ The sljit JIT compiler (deps/sljit in PCRE2) carries this licence:
 ------------------------------------------------------------------------------
 
 The system zlib, linked dynamically through the libz-sys crate (macOS
-/usr/lib/libz, zlib1g on Debian/Ubuntu). libz-sys compiles its bundled zlib
-source instead only when it finds no system zlib.
+/usr/lib/libz, zlib1g on Debian/Ubuntu). rhp-builtins' build fails rather than
+let libz-sys build its bundled copy.
 
   Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler
 
@@ -310,7 +313,9 @@ ucdata-2.5, under this notice:
   in all copies or substantial portions of the Software.
 
 crates/rhp-bytecode/src/signatures/table.rs is generated from php-src's
-*.stub.php files.
+*.stub.php files. tests/golden/lang/opt_*.php and their .out files are
+adapted from php-src's ext/opcache/tests, without the opcode dumps; each
+names its .phpt.
 
 Commits before the licence files were added (abd69b88, 2026-11-03) contain
 the same php-src-derived code, including a verbatim excerpt of
@@ -734,6 +739,12 @@ Homebrew's icu4c@79 on macOS, libicu-dev on Debian/Ubuntu. ICU's LICENSE
 follows. Of its entries, those marked "only for ICU4C" are build scripts and
 those marked "only for ICU4J" belong to the Java library: neither ends up in
 rhp's binary.
+
+The Unicode License V3 that opens ICU's LICENSE also covers the tables
+crates/rhp-mbfl-sys compiles from the Unicode Character Database (php-src's
+ext/mbstring/unicode_data.h and libmbfl's mbfl/eaw_table.h, both generated
+by ext/mbstring/ucgendat/ucgendat.php) and, as far as they derive from
+Unicode data, libmbfl's conversion tables (filters/unicode_table_*.h).
 
 UNICODE LICENSE V3
 
@@ -1649,7 +1660,9 @@ ext/mbstring/libmbfl), compiled unmodified from crates/rhp-mbfl-sys/vendor
 and linked statically, with rhp-builtins' mbstring-libmbfl feature (on by
 default). rhp ships its full source, so the binary can be relinked against
 a modified libmbfl (section 6 below). Building rhp-builtins without the
-feature leaves libmbfl out.
+feature leaves libmbfl out, but rhp-vm, rhp-sapi and tools/rhp-difftest use
+rhp-builtins' default features, so every rhp binary this workspace builds
+contains libmbfl.
 
  Copyright (c) 1998-2002 HappySize, Inc. All rights reserved.
 

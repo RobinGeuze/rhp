@@ -1,0 +1,45 @@
+int(3)
+array(3) {
+  [0]=>
+  string(7) "changed"
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+func_get_arg(): Argument #1 ($position) must be greater than or equal to 0
+int(3)
+int(3)
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  string(1) "B"
+  [2]=>
+  int(3)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  array(1) {
+    [0]=>
+    int(3)
+  }
+}
+string(1) "C"
+string(1) "C"
+string(1) "C"
+string(1) "P"
+string(1) "C"
+string(3) "ABC"
+string(5) "x/1/l"
+Error: Cannot call forward_static_call() when no class scope is active
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}

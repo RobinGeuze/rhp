@@ -1,0 +1,81 @@
+string(154) "ffd8ffe000046162ffed003650686f746f73686f7020332e30003842494d040400000000001a1c020500055469746c651c021900036f6e651c0219000374776fffdb000363ffda000244415441"
+array(2) {
+  ["2#005"]=>
+  array(1) {
+    [0]=>
+    string(5) "Title"
+  }
+  ["2#025"]=>
+  array(2) {
+    [0]=>
+    string(3) "one"
+    [1]=>
+    string(3) "two"
+  }
+}
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+get_resources(): Argument #1 ($type) must be a valid resource type
+NULL
+NULL
+string(8) "var_dump"
+NULL
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+array(2) {
+  [0]=>
+  string(3) "Kid"
+  [1]=>
+  string(8) "kidalias"
+}
+array(2) {
+  [0]=>
+  string(1) "I"
+  [1]=>
+  string(6) "ialias"
+}
+array(2) {
+  [0]=>
+  string(2) "Tr"
+  [1]=>
+  string(7) "tralias"
+}
+int(1024)
+NULL
+int(16)
+NULL
+int(2097152)
+NULL
+int(1073741824)
+NULL
+int(-1)
+NULL
+int(12)
+string(96) "Invalid quantity "12q": unknown multiplier "q", interpreting as "12" for backwards compatibility"
+int(0)
+string(96) "Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility"
+int(0)
+string(99) "Invalid quantity "0b": no digits after base prefix, interpreting as "0" for backwards compatibility"
+int(0)
+string(68) "Invalid prefix "0z", interpreting as "0" for backwards compatibility"
+string(19) "["plain-A",{"b":2}]"
+float(1.7320508075688772)
+float(0.5772156649015329)
+float(1.1447298858494002)
+int(7)
+int(256)
+int(18)
+int(251721779)
+int(2)
+exit(): Argument #1 ($status) must be of type string|int, array given
+exit(): Argument #1 ($status) must be of type string|int, stdClass given
+bye

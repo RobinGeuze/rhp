@@ -53,6 +53,7 @@ jobs:
             /Zend/tests/
             /tests/
             /ext/*/tests/
+            /ext/*/*/tests/
             /sapi/*/tests/
       - uses: ./.github/actions/setup-php
         with:

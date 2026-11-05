@@ -1667,7 +1667,7 @@ fn emit_fixture(
 // ---------------------------------------------------------------------------
 
 /// All `.phpt` files under `root`, as `/`-joined paths relative to it.
-fn find_phpt(root: &Path, rel: &Path, out: &mut Vec<String>) {
+pub(crate) fn find_phpt(root: &Path, rel: &Path, out: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(root.join(rel)) else {
         return;
     };

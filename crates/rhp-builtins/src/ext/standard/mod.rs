@@ -33,6 +33,7 @@ pub mod levenshtein;
 pub mod link;
 pub mod math;
 pub mod md5;
+pub mod meta_tags;
 pub mod metaphone;
 pub mod microtime;
 pub mod pack;
@@ -95,6 +96,7 @@ fn register(m: &mut crate::Registry) {
     hebrev::register(m);
     quot_print::register(m);
     uuencode::register(m);
+    meta_tags::register(m);
     levenshtein::register(m);
     pack::register(m);
     uniqid::register(m);

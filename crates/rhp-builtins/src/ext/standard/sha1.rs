@@ -25,10 +25,10 @@ fn fn_sha1(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_sha1_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = conv::to_string_bytes(&args[0]);
     let binary = as_bool(args.get(1));
-    let Some(data) = host.stream_get_contents(&path) else {
+    let Some(data) = crate::ext::standard::md5::read_file_for_hash(host, "sha1_file", &path)?
+    else {
         return Ok(Value::Bool(false));
     };
-    host.consume_resource_ids(1);
     let raw = digest(b"sha1", &data).unwrap();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))
 }

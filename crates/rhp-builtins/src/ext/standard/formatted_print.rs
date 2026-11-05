@@ -622,7 +622,7 @@ pub(crate) fn do_sprintf(
 }
 
 /// zval_get_double: an object warns and is 1.0.
-fn zval_get_double(host: &mut dyn Host, v: &Value) -> Result<f64, Thrown> {
+pub(crate) fn zval_get_double(host: &mut dyn Host, v: &Value) -> Result<f64, Thrown> {
     let v = deref(v);
     if let Value::Object(_) | Value::Closure(_) = v {
         host.emit_diagnostic(

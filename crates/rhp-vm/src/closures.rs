@@ -130,7 +130,7 @@ impl Vm {
                     };
                     st.insert(rhp_values::ArrayKey::Str(n), v);
                 }
-                if st.len() > 0 {
+                if !st.is_empty() {
                     put(&mut a, "static", Value::Array(st));
                 }
                 proto_params(p)
@@ -245,7 +245,7 @@ impl Vm {
             };
             st.insert(rhp_values::ArrayKey::Str(name), v);
         }
-        (st.len() > 0).then_some(st)
+        (!st.is_empty()).then_some(st)
     }
 
     /// A class named in a first-class callable: `self`, `parent` and

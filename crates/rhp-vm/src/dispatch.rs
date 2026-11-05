@@ -592,14 +592,14 @@ impl Vm {
                     self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
                 }
                 Instr::ArrPush { arr, val } => {
-                    let v = self.reg_get(top, val);
+                    let v = self.elem_operand(top, &proto, val);
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.push(v);
                     }
                 }
                 Instr::ArrSet { arr, key, val } => {
                     let k = self.reg_get(top, key);
-                    let v = self.reg_get(top, val);
+                    let v = self.elem_operand(top, &proto, val);
                     let key = ArrayKey::from_value(&k)
                         .ok_or_else(|| Thrown::type_error("Illegal offset type"))?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
@@ -2742,7 +2742,7 @@ impl Vm {
             return;
         }
         let sname = proto.names[name as usize].as_bytes().to_vec();
-        let key = self.static_key(top, &proto, sname);
+        let key = self.static_key(top, proto, sname);
         let statics = self.static_table(top);
         let cell = match statics.get(&key) {
             Some(c) => c.clone(),
@@ -2759,6 +2759,23 @@ impl Vm {
         };
         self.stack[top].regs[cv as usize] = Value::Ref(cell);
         self.sync_global_cv(top, cv);
+    }
+}
+
+impl Vm {
+    /// An array literal's element: an object in a temporary moves into the
+    /// array (the temporary is dead, and php frees it there).
+    #[inline]
+    fn elem_operand(&mut self, top: usize, proto: &FunctionProto, r: Reg) -> Value {
+        if r >= proto.num_cvs
+            && matches!(
+                self.stack[top].regs[r as usize],
+                Value::Object(_) | Value::Closure(_)
+            )
+        {
+            return std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null);
+        }
+        self.reg_get(top, r)
     }
 }
 

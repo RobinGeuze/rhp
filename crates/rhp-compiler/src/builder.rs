@@ -7,7 +7,7 @@ use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
 use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::file::FileCtx;
-use crate::fold::{const_eq, fold_const};
+use crate::fold::const_eq;
 use crate::names::NameKind;
 use crate::util::{compile_error, is_superglobal};
 
@@ -337,30 +337,26 @@ impl<'c> ProtoBuilder<'c> {
         }
     }
 
-    /// Evaluate a parameter default to a constant and intern it. Only
-    /// compile-time constants are supported (literals, `[]`, true/false/null,
-    /// negated numeric literals); other expressions are deferred.
-    pub(crate) fn const_default(
-        &mut self,
-        e: &Expression,
-    ) -> Result<rhp_bytecode::ParamDefault, Thrown> {
-        let v = self.const_value(e)?;
-        Ok(rhp_bytecode::ParamDefault::Const(self.intern_const(v)))
-    }
-
     /// Emit prologue code for non-constant parameter defaults (e.g.
     /// `$v = self::CONST`): for each, `JmpIfArg index -> after` skips the init when
     /// the argument was passed, else the default expression is evaluated into the
     /// param's CV (in the callee's scope, so `self::`/`static::` resolve).
+    /// A typed parameter's default is then checked against its type
+    /// (php's RECV_INIT), at the parameter's line.
     pub(crate) fn emit_param_defaults(
         &mut self,
-        defs: &[(u16, Reg, &Expression)],
+        defs: &[(u16, Reg, &Expression, Option<u32>)],
     ) -> Result<(), Thrown> {
-        for &(index, cv, expr) in defs {
+        for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
             let t = self.compile_expr(expr)?;
             self.emit(Instr::Mov { dst: cv, src: t });
+            if let Some(line) = check_line {
+                let saved = std::mem::replace(&mut self.cur_line, line);
+                self.emit(Instr::RecvInitCheck { index });
+                self.cur_line = saved;
+            }
             let after = self.here();
             self.code[jpos] = Instr::JmpIfArg {
                 index,
@@ -369,11 +365,6 @@ impl<'c> ProtoBuilder<'c> {
             self.reset_temps();
         }
         Ok(())
-    }
-
-    fn const_value(&mut self, e: &Expression) -> Result<Value, Thrown> {
-        // Parameter defaults fold with the same rules as class consts / props.
-        fold_const(self.cx, e)
     }
 
     pub(crate) fn intern_const(&mut self, v: Value) -> CIdx {

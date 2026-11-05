@@ -768,7 +768,8 @@ impl Vm {
                 && proto
                     .parent
                     .as_ref()
-                    .is_none_or(|p| self.class_ids.contains_key(&lc(p.as_bytes())));
+                    .is_none_or(|p| self.class_ids.contains_key(&lc(p.as_bytes())))
+                && self.const_types_resolvable(&proto);
             if !early || self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
                 continue;
             }
@@ -1160,6 +1161,7 @@ impl Vm {
         }
 
         // Class constants.
+        self.check_const_types(proto, parent)?;
         let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
             .map(|p| self.classes[p as usize].constants.clone())
             .unwrap_or_default();

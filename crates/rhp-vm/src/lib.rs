@@ -13,6 +13,7 @@
 mod calls;
 mod classes;
 mod compare;
+mod const_link;
 mod dispatch;
 mod errors;
 mod generators;

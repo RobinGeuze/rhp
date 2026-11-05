@@ -1,0 +1,36 @@
+
+Deprecated: implicit(): Implicitly marking parameter $x as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
+
+Deprecated: implicit(): Implicitly marking parameter $f as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
+
+Deprecated: implicit(): Implicitly marking parameter $u as nullable is deprecated, the explicit nullable type must be used instead in /Users/robing/gits/rhp/.claude/worktrees/rest/type-decl-checks/tests/golden/lang/type_decl_defaults.php on line 32
+int(5)
+float(2)
+float(3)
+int(4)
+float(5)
+float(1)
+float(7)
+float(8)
+TypeError: K::m(): Argument #1 ($s) must be of type string, array given, called in X
+NULL
+NULL
+NULL
+NULL
+string(2) "IJ"
+NULL
+NULL
+NULL
+x: (I&J)|null
+f: ?Foo
+u: string|int|null
+n: ?int
+(I&J)|string|int|null
+dnf(): Argument #1 ($v) must be of type (I&J)|string|int|null, array given, called in X
+NULL
+only_null(): Argument #1 ($n) must be of type null, int given, called in X
+unloaded(): Argument #1 ($m) must be of type Ns\Missing, stdClass given, called in X
+Parameter #0 [ <optional> float $a = 3.0 ]
+Parameter #1 [ <optional> $b = 1.0 ]
+Parameter #2 [ <optional> $c = -0.0 ]
+Parameter #3 [ <optional> $d = 2.5 ]

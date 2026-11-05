@@ -89,6 +89,11 @@ class Reflection {
         if ($v === null) { return 'NULL'; }
         if (is_bool($v)) { return $v ? 'true' : 'false'; }
         if (is_string($v)) { return "'" . addcslashes($v, "\\'") . "'"; }
+        if (is_float($v)) {
+            // smart_str_append_double with zero_frac
+            $s = (string) $v;
+            return is_finite($v) && strpbrk($s, '.') === false ? $s . '.0' : $s;
+        }
         if (is_array($v)) {
             $list = array_is_list($v);
             $p = [];

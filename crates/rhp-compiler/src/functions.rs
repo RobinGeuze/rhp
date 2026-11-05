@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::parse::cst::{Expression, Hint, MethodBody, Modifier, Node, Statement};
 use rhp_bytecode::{FunctionProto, Instr, MethodProto, NIdx, PropDefaultProto, PropProto, Reg};
-use rhp_values::{PhpStr, Thrown};
+use rhp_values::{PhpStr, Thrown, Value};
 
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::cvs::collect_vars;
@@ -14,7 +14,7 @@ use crate::decl::{
 };
 use crate::expr::{block_has_yield, expr_has_yield, stmt_has_yield};
 use crate::file::FileCtx;
-use crate::hints::type_hint;
+use crate::hints::{compile_type, compile_type_ex, PhpType};
 use crate::names::join_ns;
 use crate::util::strip_dollar;
 
@@ -52,62 +52,55 @@ pub(crate) fn compile_method(
     let mut promoted: Vec<PropProto> = Vec::new();
     let mut promo_stores: Vec<(NIdx, Reg)> = Vec::new(); // (prop name, param cv)
 
-    let mut params = Vec::new();
-    let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
-    for (idx, p) in m.parameter_list.parameters.iter().enumerate() {
-        let var = strip_dollar(p.variable.name);
-        let cv = c.cv(var);
-        let pname = c.intern_name(var);
-        let default = p
-            .default_value
-            .as_ref()
-            .map(|dv| match c.const_default(dv.value) {
-                Ok(d) => d,
-                Err(_) => {
-                    nonconst_defaults.push((idx as u16, cv, dv.value));
-                    rhp_bytecode::ParamDefault::Init
-                }
-            });
-        let attributes = compile_attributes(cx, &p.attribute_lists, Some(class_name))?;
-        if !p.modifiers.is_empty() {
-            let vis = modifiers_visibility(&p.modifiers);
-            let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
-            let (pstart, pend) = span_of(p);
-            promoted.push(PropProto {
-                name: PhpStr::from_bytes(var.to_vec()),
-                visibility: vis,
-                set_visibility: modifiers_set_visibility(&p.modifiers),
-                is_readonly: ro,
-                default: PropDefaultProto::None,
-                type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
-                meta: rhp_bytecode::DeclMeta {
-                    attributes: attributes.clone(),
-                    doc_comment: cx.doc_comment_before(p.variable.span.start.offset),
-                    start_line: cx.line_of(pstart),
-                    offset: pstart,
-                    end_line: cx.line_of(pend),
-                },
-                promoted: true,
-            });
-            promo_stores.push((c.intern_name(var), cv));
+    let display = format!(
+        "{}::{}",
+        String::from_utf8_lossy(class_name.as_bytes()),
+        String::from_utf8_lossy(m.name.value)
+    );
+    // php compiles the return type before the parameters.
+    let return_type = m
+        .return_type_hint
+        .as_ref()
+        .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    let (params, nonconst_defaults, types) =
+        c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
+    for ((p, info), ty) in m.parameter_list.parameters.iter().zip(&params).zip(&types) {
+        if p.modifiers.is_empty() {
+            continue;
         }
-        let dmeta = param_default_meta(cx, p, Some(class_name));
-        params.push(rhp_bytecode::ParamInfo {
-            name: pname,
-            cv,
-            by_ref: p.ampersand.is_some(),
-            variadic: p.ellipsis.is_some(),
-            default,
-            type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
-            line: {
-                use mago_span::HasSpan;
-                cx.line_of(p.span().start.offset)
+        let var = strip_dollar(p.variable.name);
+        if let Some(ty) = ty.as_ref().filter(|t| t.has(crate::hints::MAY_CALLABLE)) {
+            use mago_span::HasSpan;
+            cx.fatal(
+                p.span().start.offset,
+                format!(
+                    "Property {}::${} cannot have type {}",
+                    String::from_utf8_lossy(class_name.as_bytes()),
+                    String::from_utf8_lossy(var),
+                    ty.to_php_string()
+                ),
+            );
+        }
+        let vis = modifiers_visibility(&p.modifiers);
+        let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+        let (pstart, pend) = span_of(p);
+        promoted.push(PropProto {
+            name: PhpStr::from_bytes(var.to_vec()),
+            visibility: vis,
+            set_visibility: modifiers_set_visibility(&p.modifiers),
+            is_readonly: ro,
+            default: PropDefaultProto::None,
+            type_hint: info.type_hint.clone(),
+            meta: rhp_bytecode::DeclMeta {
+                attributes: info.attributes.clone(),
+                doc_comment: cx.doc_comment_before(p.variable.span.start.offset),
+                start_line: cx.line_of(pstart),
+                offset: pstart,
+                end_line: cx.line_of(pend),
             },
-            attributes,
-            promoted: !p.modifiers.is_empty(),
-            default_thunk: dmeta.0,
-            default_const: dmeta.1,
+            promoted: true,
         });
+        promo_stores.push((c.intern_name(var), info.cv));
     }
     let num_params = params.len() as u16;
 
@@ -146,7 +139,7 @@ pub(crate) fn compile_method(
     proto.this_cv = if is_static { None } else { Some(0) };
     proto.is_static = is_static;
     proto.is_generator = body_stmts.iter().any(stmt_has_yield);
-    proto.return_type = m.return_type_hint.as_ref().map(|r| type_hint(cx, &r.hint));
+    proto.return_type = return_type;
     proto.meta = decl_meta(
         cx,
         &m.attribute_lists,
@@ -177,40 +170,13 @@ pub(crate) fn compile_function(
     let mut c = ProtoBuilder::new(cx, PhpStr::from_bytes(fname));
     c.returns_ref = func.ampersand.is_some();
 
-    let mut params = Vec::new();
-    let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
-    for (idx, p) in func.parameter_list.parameters.iter().enumerate() {
-        let var = strip_dollar(p.variable.name);
-        let cv = c.cv(var); // params get CV 0,1,2,... in order
-        let name = c.intern_name(var);
-        let default = p
-            .default_value
-            .as_ref()
-            .map(|dv| match c.const_default(dv.value) {
-                Ok(d) => d,
-                Err(_) => {
-                    nonconst_defaults.push((idx as u16, cv, dv.value));
-                    rhp_bytecode::ParamDefault::Init
-                }
-            });
-        let dmeta = param_default_meta(cx, p, None);
-        params.push(rhp_bytecode::ParamInfo {
-            name,
-            cv,
-            by_ref: p.ampersand.is_some(),
-            variadic: p.ellipsis.is_some(),
-            default,
-            type_hint: p.hint.as_ref().map(|h| type_hint(cx, h)),
-            line: {
-                use mago_span::HasSpan;
-                cx.line_of(p.span().start.offset)
-            },
-            attributes: compile_attributes(cx, &p.attribute_lists, None)?,
-            promoted: false,
-            default_thunk: dmeta.0,
-            default_const: dmeta.1,
-        });
-    }
+    let return_type = func
+        .return_type_hint
+        .as_ref()
+        .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
+    let (params, nonconst_defaults, _) =
+        c.lower_params(&func.parameter_list, &display, false, None)?;
     let num_params = params.len() as u16;
 
     // Scan the body for the rest of the function's local variables.
@@ -233,10 +199,7 @@ pub(crate) fn compile_function(
     proto.num_params = num_params;
     proto.params = params;
     proto.is_generator = block_has_yield(&func.body.statements);
-    proto.return_type = func
-        .return_type_hint
-        .as_ref()
-        .map(|r| type_hint(cx, &r.hint));
+    proto.return_type = return_type;
     proto.meta = decl_meta(
         cx,
         &func.attribute_lists,
@@ -418,40 +381,18 @@ impl ProtoBuilder<'_> {
         for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
         }
-        let mut params = Vec::new();
-        let mut nonconst_defaults: Vec<(u16, Reg, &Expression)> = Vec::new();
-        for (idx, p) in param_list.parameters.iter().enumerate() {
-            let var = strip_dollar(p.variable.name);
-            let cv = c.cv(var);
-            let name = c.intern_name(var);
-            let default = p
-                .default_value
-                .as_ref()
-                .map(|dv| match c.const_default(dv.value) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        nonconst_defaults.push((idx as u16, cv, dv.value));
-                        rhp_bytecode::ParamDefault::Init
-                    }
-                });
-            let dmeta = param_default_meta(self.cx, p, c.class_name.clone().as_ref());
-            params.push(rhp_bytecode::ParamInfo {
-                name,
-                cv,
-                by_ref: p.ampersand.is_some(),
-                variadic: p.ellipsis.is_some(),
-                default,
-                type_hint: p.hint.as_ref().map(|h| type_hint(self.cx, h)),
-                line: {
-                    use mago_span::HasSpan;
-                    self.cx.line_of(p.span().start.offset)
-                },
-                attributes: compile_attributes(self.cx, &p.attribute_lists, c.class_name.as_ref())?,
-                promoted: false,
-                default_thunk: dmeta.0,
-                default_const: dmeta.1,
-            });
-        }
+        let return_type = ret_hint.and_then(|h| compile_type(self.cx, h, true).map(|t| t.hint));
+        let display = match &self.class_name {
+            Some(cn) => format!(
+                "{}::{}",
+                String::from_utf8_lossy(cn.as_bytes()),
+                String::from_utf8_lossy(c.name.as_bytes())
+            ),
+            None => String::from_utf8_lossy(c.name.as_bytes()).into_owned(),
+        };
+        let cname = c.class_name.clone();
+        let (params, nonconst_defaults, _) =
+            c.lower_params(param_list, &display, true, cname.as_ref())?;
         let num_params = params.len() as u16;
 
         match body {
@@ -501,7 +442,7 @@ impl ProtoBuilder<'_> {
         proto.params = params;
         proto.num_captures = nc;
         proto.is_static = is_static;
-        proto.return_type = ret_hint.map(|h| type_hint(self.cx, h));
+        proto.return_type = return_type;
         proto.meta = meta;
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
@@ -536,5 +477,119 @@ impl ProtoBuilder<'_> {
             ncaptures: nc,
         });
         Ok(dst)
+    }
+}
+
+/// One parameter list's lowered parameters, their non-constant defaults
+/// (index, cv, expression) and php's view of each declared type.
+type LoweredParams<'a> = (
+    Vec<rhp_bytecode::ParamInfo>,
+    Vec<(u16, Reg, &'a Expression<'a>, Option<u32>)>,
+    Vec<Option<PhpType>>,
+);
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_params: the parameters' CVs, types and defaults, with
+    /// php's compile-time checks. `display` names the function in messages;
+    /// `closure`: the scope is not known at compile time.
+    fn lower_params<'a>(
+        &mut self,
+        list: &'a crate::parse::cst::FunctionLikeParameterList<'a>,
+        display: &str,
+        closure: bool,
+        class_name: Option<&PhpStr>,
+    ) -> Result<LoweredParams<'a>, Thrown> {
+        use mago_span::HasSpan;
+        let cx = self.cx;
+        let mut params = Vec::new();
+        let mut nonconst = Vec::new();
+        let mut types = Vec::new();
+        for (idx, p) in list.parameters.iter().enumerate() {
+            let var = strip_dollar(p.variable.name);
+            let cv = self.cv(var); // params get CVs in order
+            let name = self.intern_name(var);
+            let at = p.span().start.offset;
+            let line = cx.line_of(at);
+            let promoted = !p.modifiers.is_empty();
+            let mut folded = p
+                .default_value
+                .as_ref()
+                .map(|dv| crate::fold::fold_const(cx, dv.value).map_err(|_| dv.value));
+            let mut type_hint = None;
+            let mut php_type = None;
+            if let Some(h) = &p.hint {
+                let force_null = matches!(folded, Some(Ok(Value::Null))) && !promoted;
+                if let Some((t, forced)) = compile_type_ex(cx, h, closure, force_null) {
+                    let pname = String::from_utf8_lossy(var);
+                    if forced {
+                        cx.compile_diags.borrow_mut().push((
+                            rhp_values::E_DEPRECATED,
+                            format!(
+                                "{display}(): Implicitly marking parameter ${pname} as nullable is deprecated, the explicit nullable type must be used instead"
+                            ),
+                            line,
+                        ));
+                    }
+                    for (bit, word) in [
+                        (crate::hints::MAY_VOID, "void"),
+                        (crate::hints::MAY_NEVER, "never"),
+                    ] {
+                        if t.ty.has(bit) {
+                            cx.fatal(at, format!("{word} cannot be used as a parameter type"));
+                        }
+                    }
+                    if let Some(Ok(v)) = &mut folded {
+                        if !force_null && !t.ty.accepts_default(v) {
+                            cx.fatal(
+                                at,
+                                format!(
+                                    "Cannot use {} as default value for parameter ${pname} of type {}",
+                                    const_type_name(v),
+                                    t.ty.to_php_string()
+                                ),
+                            );
+                        }
+                    }
+                    type_hint = Some(t.hint);
+                    php_type = Some(t.ty);
+                }
+            }
+            let default = folded.map(|d| match d {
+                Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),
+                Err(e) => {
+                    nonconst.push((idx as u16, cv, e, type_hint.is_some().then_some(line)));
+                    rhp_bytecode::ParamDefault::Init
+                }
+            });
+            let dmeta = param_default_meta(cx, p, class_name);
+            params.push(rhp_bytecode::ParamInfo {
+                name,
+                cv,
+                by_ref: p.ampersand.is_some(),
+                variadic: p.ellipsis.is_some(),
+                default,
+                type_hint,
+                line,
+                attributes: compile_attributes(cx, &p.attribute_lists, class_name)?,
+                promoted,
+                default_thunk: dmeta.0,
+                default_const: dmeta.1,
+            });
+            types.push(php_type);
+        }
+        Ok((params, nonconst, types))
+    }
+}
+
+/// zend_get_type_by_const for a constant default's type.
+pub(crate) fn const_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        _ => "object",
     }
 }

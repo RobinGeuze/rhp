@@ -547,6 +547,7 @@ impl Vm {
                         self.stack[top].pc = target as usize;
                     }
                 }
+                Instr::RecvInitCheck { index } => self.recv_init_check(top, index)?,
                 Instr::JmpTrue { cond, target } => {
                     let f = &mut self.stack[top];
                     if let Value::Bool(b) = f.regs[cond as usize] {

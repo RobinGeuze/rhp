@@ -239,6 +239,11 @@ pub enum Instr {
         index: u16,
         target: Pc,
     },
+    /// After a non-constant default was stored into parameter `index`:
+    /// check it against the parameter's type (php's RECV_INIT).
+    RecvInitCheck {
+        index: u16,
+    },
     JmpTrue {
         cond: Reg,
         target: Pc,
@@ -1028,6 +1033,10 @@ pub struct TypeHint {
     /// DNF intersection groups of a union (`(A&B)|C|null`): each inner list is
     /// one parenthesized intersection; `kinds` holds the union's other members.
     pub groups: Vec<Vec<PhpStr>>,
+    /// Where each group sits among the union's class members (the count of
+    /// class members declared before it), for php's declaration-order type
+    /// strings. Missing entries mean "first".
+    pub group_pos: Vec<u16>,
     /// `null` was spelled as a union member (`int|null`), not `?int`; only
     /// matters for how Reflection prints a multi-member union.
     pub explicit_null: bool,

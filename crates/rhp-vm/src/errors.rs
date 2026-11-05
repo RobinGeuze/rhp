@@ -48,11 +48,7 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
-        self.last_error = Some((64, msg.to_vec(), file.clone(), line));
-        let trace = self.fatal_trace();
-        self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
-        self.destructed_below = self.next_object_id;
-        Thrown::Exit(255)
+        self.fatal_compile_error_at(msg, file, line)
     }
 
     /// The backtrace a fatal error shows (`fatal_error_backtraces`).

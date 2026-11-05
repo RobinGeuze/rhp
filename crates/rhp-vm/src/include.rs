@@ -36,7 +36,12 @@ pub enum IncludeError {
     },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
-    Compile { message: String, line: u32 },
+    Compile {
+        message: String,
+        line: u32,
+        /// Diagnostics raised before the error (level, message, line).
+        diags: Vec<(i64, String, u32)>,
+    },
     /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
@@ -119,8 +124,12 @@ impl Vm {
     fn include_error(&mut self, e: IncludeError, file: &str) -> Thrown {
         match e {
             IncludeError::Thrown(t) => t,
-            IncludeError::Compile { message, line } => {
-                self.compile_error(&message, file.as_bytes(), line);
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failure(&diags, &message, file.as_bytes(), line);
                 Thrown::Exit(255)
             }
             // raised outside the file: where the include/eval runs
@@ -138,6 +147,21 @@ impl Vm {
                 Some((file.as_bytes().to_vec(), line)),
             ),
         }
+    }
+
+    /// A failed compile of `file`: the diagnostics raised before the
+    /// error, then the error ([`Vm::compile_error`]).
+    pub fn compile_failure(
+        &mut self,
+        diags: &[(i64, String, u32)],
+        message: &str,
+        file: &[u8],
+        line: u32,
+    ) {
+        for (level, msg, l) in diags {
+            self.raise_error_at(*level, msg.as_bytes(), file.to_vec(), *l as i64);
+        }
+        self.compile_error(message, file, line);
     }
 
     /// php_error_cb for an E_COMPILE_ERROR at `file:line`: recorded for

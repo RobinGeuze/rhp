@@ -73,6 +73,13 @@ pub enum Instr {
         dst: Reg,
         src: Reg,
     },
+    /// `Mov` out of a temporary that is dead afterwards (an argument moved
+    /// into the call window): `src` becomes null, so a freed argument gives
+    /// its object handle back when the call returns, as in php.
+    MovTake {
+        dst: Reg,
+        src: Reg,
+    },
     LoadConst {
         dst: Reg,
         k: CIdx,

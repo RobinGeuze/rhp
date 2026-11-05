@@ -121,6 +121,7 @@ impl Vm {
             native_resources: HashMap::new(),
             stdin_reader: None,
             destructibles: Vec::new(),
+            marked_destructed: Vec::new(),
             dtor_check: false,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
@@ -352,7 +353,8 @@ impl Vm {
     /// zend_objects_store_mark_destructed): no object alive now runs its
     /// destructor. Objects created later (by shutdown functions) still do.
     pub(crate) fn mark_objects_destructed(&mut self) {
-        self.destructibles.clear();
+        let marked = std::mem::take(&mut self.destructibles);
+        self.marked_destructed.extend(marked);
     }
 
     /// Remember a new object whose class defines `__destruct` or has a
@@ -472,6 +474,7 @@ impl Vm {
             }
         }
         self.destructibles.clear();
+        self.marked_destructed.clear();
         // 3. php_output_end_all: finalize each buffer into the one below it
         // (an exception from a handler is fatal here).
         self.enter_shutdown_scope();

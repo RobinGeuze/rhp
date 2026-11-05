@@ -267,6 +267,14 @@ impl Vm {
                     let v = self.reg_get_fast(top, src);
                     self.reg_set_fast(top, dst, v);
                 }
+                Instr::MovTake { dst, src } => {
+                    let v = std::mem::replace(&mut self.stack[top].regs[src as usize], Value::Null);
+                    let v = match v {
+                        Value::Ref(rc) => rc.borrow().clone(),
+                        v => v,
+                    };
+                    self.reg_set_fast(top, dst, v);
+                }
                 Instr::LoadConst { dst, k } => {
                     let v = proto.consts[k as usize].clone();
                     self.reg_set_fast(top, dst, v);
@@ -822,7 +830,24 @@ impl Vm {
                     callee,
                     ns_name,
                 } => {
-                    let mut c = self.reg_get(top, callee);
+                    // A callee built in a temporary (`[$o, 'm']`) is dead
+                    // after this: the closure owns it.
+                    let mut c = if callee >= proto.num_cvs {
+                        match std::mem::replace(
+                            &mut self.stack[top].regs[callee as usize],
+                            Value::Null,
+                        ) {
+                            Value::Ref(rc) => rc.borrow().clone(),
+                            v => v,
+                        }
+                    } else {
+                        self.reg_get(top, callee)
+                    };
+                    // `$closure->__invoke(...)` is that Closure.
+                    if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+                        self.reg_set(top, dst, cl);
+                        continue;
+                    }
                     if let Value::Str(name) = &c {
                         if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
                             c = Value::Str(n);
@@ -858,6 +883,30 @@ impl Vm {
                             let args = Args::Window { top, base, argc };
                             let out = self.run_closure_sync(cd, args, Some(strict))?;
                             self.reg_set(top, dst, out);
+                            continue;
+                        }
+                        // A user function's first-class callable: a direct
+                        // call (by-reference parameters and return).
+                        if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
+                            let n = n.as_bytes();
+                            let n = n.strip_prefix(b"\\").unwrap_or(n);
+                            if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                                let callee = self.functions[i].clone();
+                                if !callee.proto.is_internal() {
+                                    self.enter_user_call(top, callee, dst, base, argc)?;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    // An invokable object: a call of its __invoke method, with
+                    // by-reference parameters and return.
+                    if let Value::Object(h) = &c {
+                        let cls = h.borrow().class;
+                        if self.lookup_method(cls, b"__invoke").is_some_and(|m| {
+                            !m.is_static && m.visibility == rhp_values::Visibility::Public
+                        }) {
+                            self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
                             continue;
                         }
                     }
@@ -1442,9 +1491,32 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let o = self.reg_get(top, obj);
+                    // An object in a temporary (`(new A)->m()`) is released
+                    // by the call (php frees it when the call returns).
+                    let o = if obj >= proto.num_cvs {
+                        match std::mem::replace(
+                            &mut self.stack[top].regs[obj as usize],
+                            Value::Null,
+                        ) {
+                            Value::Ref(rc) => rc.borrow().clone(),
+                            v => v,
+                        }
+                    } else {
+                        self.reg_get(top, obj)
+                    };
                     let mname = proto.names[name as usize].as_bytes();
-                    if let Value::Closure(_) = o {
+                    if let Value::Closure(cd) = &o {
+                        // `$closure->__invoke(...)` runs the closure, with
+                        // by-reference parameters.
+                        // Closure::__invoke is internal: the closure runs as
+                        // called from internal code.
+                        if cd.wrapped.is_none() && mname.eq_ignore_ascii_case(b"__invoke") {
+                            self.fcc_scope.set(None);
+                            let args = Args::Window { top, base, argc };
+                            let out = self.run_closure_sync(cd, args, None)?;
+                            self.reg_set(top, dst, out);
+                            continue;
+                        }
                         let args: Vec<Value> =
                             (0..argc).map(|i| self.reg_get(top, base + i)).collect();
                         let r = self.closure_method(&o, mname, args)?;

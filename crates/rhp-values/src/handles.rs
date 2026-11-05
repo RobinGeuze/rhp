@@ -59,6 +59,12 @@ pub fn release_object_id(id: u32) {
             return;
         }
         if let Ok(mut f) = s.free.try_borrow_mut() {
+            if f.len() == f.capacity() {
+                // php's free list lives in the freed slots: growing ours is
+                // not request memory (and it is never given back).
+                let more = f.len().max(64);
+                crate::mem::uncounted(|| f.reserve(more));
+            }
             f.push(id);
         }
     });

@@ -207,6 +207,7 @@ fn subject_class(
 ) -> Result<Option<Vec<u8>>, Thrown> {
     Ok(match subject {
         Value::Object(h) => host.class_name(h.borrow().class),
+        Value::Closure(_) => Some(b"Closure".to_vec()),
         Value::Str(s) if allow_string => {
             host.resolve_class_autoload(s.as_bytes())?;
             Some(s.as_bytes().to_vec())

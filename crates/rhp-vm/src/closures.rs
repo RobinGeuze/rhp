@@ -87,8 +87,12 @@ impl Vm {
         let mut this = cd.bound_this.clone();
         let params = match &cd.wrapped {
             Some(w) => {
-                let (name, params, fcc_this) = self.fcc_debug_target(w).unwrap_or_default();
+                let (name, params, fcc_this) = self.fcc_debug_target(w, cd).unwrap_or_default();
                 put(&mut a, "function", Value::str(name));
+                // A user function's static variables (shared with it).
+                if let Some(st) = self.fcc_function_statics(w) {
+                    put(&mut a, "static", Value::Array(st));
+                }
                 if this.is_none() {
                     this = fcc_this;
                 }
@@ -156,6 +160,7 @@ impl Vm {
     fn fcc_debug_target(
         &self,
         w: &Value,
+        cd: &ClosureData,
     ) -> Option<(Vec<u8>, Vec<DebugParam>, Option<ObjectHandle>)> {
         let method = |cid: u32, m: &[u8], this: Option<ObjectHandle>| {
             let rm = self.lookup_method(cid, m)?;
@@ -173,7 +178,7 @@ impl Vm {
                 let n = s.as_bytes();
                 let n = n.strip_prefix(b"\\").unwrap_or(n);
                 if let Some(i) = n.windows(2).position(|p| p == b"::") {
-                    let cid = self.resolve_class_by_name(&n[..i]).ok()?;
+                    let cid = self.scoped_class(&n[..i], cd)?;
                     return method(cid, &n[i + 2..], None);
                 }
                 let lc = n.to_ascii_lowercase();
@@ -202,7 +207,7 @@ impl Vm {
                     }
                     other => {
                         let n = rhp_values::conv::to_string_bytes(other);
-                        let cid = self.resolve_class_by_name(&n).ok()?;
+                        let cid = self.scoped_class(&n, cd)?;
                         method(cid, &m, None)
                     }
                 }
@@ -216,13 +221,52 @@ impl Vm {
         }
     }
 
+    /// The static variables of the user function a first-class callable
+    /// wraps, if it has any.
+    fn fcc_function_statics(&self, w: &Value) -> Option<PhpArray> {
+        let Value::Str(n) = deref(w) else { return None };
+        let n = n.as_bytes();
+        let n = n.strip_prefix(b"\\").unwrap_or(n);
+        let f = &self.functions[*self.fn_names.get(&n.to_ascii_lowercase())?];
+        if f.proto.is_internal() {
+            return None;
+        }
+        let mut st = PhpArray::new();
+        for (name, init) in declared_statics(&f.proto) {
+            let key = (
+                Rc::as_ptr(&f.proto) as usize,
+                f.unit,
+                None,
+                name.as_bytes().to_vec(),
+            );
+            let v = match self.statics.get(&key) {
+                Some(c) => deref(&c.borrow()),
+                None => init,
+            };
+            st.insert(rhp_values::ArrayKey::Str(name), v);
+        }
+        (st.len() > 0).then_some(st)
+    }
+
+    /// A class named in a first-class callable: `self`, `parent` and
+    /// `static` resolve against the scope the closure was created in.
+    fn scoped_class(&self, name: &[u8], cd: &ClosureData) -> Option<u32> {
+        let name = name.strip_prefix(b"\\").unwrap_or(name);
+        match name.to_ascii_lowercase().as_slice() {
+            b"self" => cd.bound_class,
+            b"static" => cd.bound_static,
+            b"parent" => self.classes[cd.bound_class? as usize].parent,
+            _ => self.resolve_class_by_name(name).ok(),
+        }
+    }
+
     /// `Closure::__invoke` as a first-class callable target.
     fn closure_invoke_target(
         &self,
         c: &Rc<ClosureData>,
     ) -> Option<(Vec<u8>, Vec<DebugParam>, Option<ObjectHandle>)> {
         let params = match &c.wrapped {
-            Some(w) => self.fcc_debug_target(w)?.1,
+            Some(w) => self.fcc_debug_target(w, c)?.1,
             None => proto_params(&self.closures.get(c.fnidx as usize)?.proto),
         };
         Some((b"Closure::__invoke".to_vec(), params, None))
@@ -240,14 +284,12 @@ pub(crate) enum BindMode {
 impl Vm {
     /// The method a first-class-callable Closure wraps (its scope is the
     /// closure's scope), if it wraps one.
-    fn fcc_method(&self, w: &Value) -> Option<crate::classes::ResolvedMethod> {
+    fn fcc_method(&self, w: &Value, cd: &ClosureData) -> Option<crate::classes::ResolvedMethod> {
         match deref(w) {
             Value::Str(s) => {
                 let n = s.as_bytes();
                 let i = n.windows(2).position(|p| p == b"::")?;
-                let cid = self
-                    .resolve_class_by_name(n.strip_prefix(b"\\").unwrap_or(&n[..i]))
-                    .ok()?;
+                let cid = self.scoped_class(&n[..i], cd)?;
                 self.lookup_method(cid, &n[i + 2..])
             }
             Value::Array(a) => {
@@ -257,9 +299,7 @@ impl Vm {
                 let cid = match target {
                     Value::Object(h) => h.borrow().class,
                     Value::Closure(_) => return None,
-                    other => self
-                        .resolve_class_by_name(&rhp_values::conv::to_string_bytes(other))
-                        .ok()?,
+                    other => self.scoped_class(&rhp_values::conv::to_string_bytes(other), cd)?,
                 };
                 self.lookup_method(cid, &m)
             }
@@ -309,7 +349,7 @@ impl Vm {
         };
         let closure_cls = self.resolve_class_by_name(b"Closure").ok();
         // The function's own scope: the closure's, or the wrapped method's.
-        let fake = cd.wrapped.as_ref().map(|w| self.fcc_method(w));
+        let fake = cd.wrapped.as_ref().map(|w| self.fcc_method(w, &cd));
         let (func_scope, func_static) = match &fake {
             Some(Some(m)) => (Some(m.defining_class), m.is_static),
             Some(None) => (None, false),

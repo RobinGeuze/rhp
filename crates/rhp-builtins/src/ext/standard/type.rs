@@ -80,8 +80,10 @@ fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             Value::Array(a) if a.len() == 2 => {
                 let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
                 return Ok(Value::Bool(
-                    matches!(parts[0], Value::Str(_) | Value::Object(_))
-                        && matches!(parts[1], Value::Str(_)),
+                    matches!(
+                        parts[0],
+                        Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                    ) && matches!(parts[1], Value::Str(_)),
                 ));
             }
             Value::Object(_) => {}
@@ -290,13 +292,17 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 match crate::zend::object_handlers::to_string(host, &cur)? {
                     Some(s) => Value::str(s),
                     None => {
+                        // convert_to_string leaves an empty string behind.
+                        if let Value::Ref(rc) = &args[0] {
+                            *rc.borrow_mut() = Value::str("");
+                        }
                         return Err(Thrown::error(
                             "Error",
                             format!(
                                 "Object of class {} could not be converted to string",
                                 zval_value_name(host, &cur)
                             ),
-                        ))
+                        ));
                     }
                 }
             }

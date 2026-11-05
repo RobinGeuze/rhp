@@ -215,6 +215,10 @@ pub struct Vm {
     // program: its destructor runs at the next check (`dtor_check`), as php's
     // refcount release would. Whatever is left runs at request shutdown.
     destructibles: Vec<ObjectHandle>,
+    // Objects a fatal error's bailout marked destructed
+    // (zend_objects_store_mark_destructed): kept, never destructed, until
+    // shutdown ends.
+    marked_destructed: Vec<ObjectHandle>,
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,

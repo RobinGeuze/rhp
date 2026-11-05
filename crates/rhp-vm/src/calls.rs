@@ -604,6 +604,18 @@ impl Vm {
             }
         };
         let bound = bind_params(&proto, slice, frame);
+        // The caller's argument temporaries are dead once bound (php moves
+        // arguments into the callee's frame).
+        if let Args::Window { top, base, argc } = args {
+            let ncv = self.stack[top].proto.num_cvs as usize;
+            let lo = (base as usize).max(ncv);
+            let hi = base as usize + argc as usize;
+            if lo < hi {
+                for r in &mut self.stack[top].regs[lo..hi] {
+                    *r = Value::Null;
+                }
+            }
+        }
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
             Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
@@ -1369,6 +1381,11 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         let c = deref(callable);
+        // `[$closure, '__invoke']`: Closure::__invoke is internal, so the
+        // closure runs as called from internal code.
+        if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+            return self.call_callable_value_mode(&cl, args, None);
+        }
         // First-class callable: forward to the wrapped callable.
         if let Value::Closure(cd) = &c {
             if let Some(w) = &cd.wrapped {
@@ -1783,10 +1800,21 @@ impl Vm {
         // positions kept as the `Value::Ref` the call site built, so they can
         // write back to the caller's variable. Other args deref to plain values.
         use rhp_bytecode::signatures::Signature;
+        // Arguments in temporaries move to the call (php frees them when the
+        // call returns, so their object handles come back then).
+        let ncv = self.stack[top].proto.num_cvs as usize;
         let args: Vec<Value> = (0..argc)
             .map(|i| {
-                if sig.is_some_and(|s| s.by_ref(i as usize)) {
-                    self.stack[top].regs[(base + i) as usize].clone()
+                let r = (base + i) as usize;
+                let by_ref = sig.is_some_and(|s| s.by_ref(i as usize));
+                if r >= ncv {
+                    let v = std::mem::replace(&mut self.stack[top].regs[r], Value::Null);
+                    match v {
+                        Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                        v => v,
+                    }
+                } else if by_ref {
+                    self.stack[top].regs[r].clone()
                 } else {
                     self.reg_get(top, base + i)
                 }

@@ -13,6 +13,10 @@ fn fn_closure_from_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value
     if matches!(c, Value::Closure(_)) {
         return Ok(c);
     }
+    // A Closure's own __invoke is that Closure.
+    if let Some(cl) = closure_invoke_of(&c) {
+        return Ok(cl);
+    }
     // zend_create_closure_from_callable's error (a TypeError).
     if let Some(err) = host.check_callable(&c)? {
         return Err(Thrown::type_error(format!(
@@ -33,6 +37,23 @@ fn fn_closure_bind(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 fn fn_closure_current(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     host.current_closure()
         .ok_or_else(|| Thrown::error("Error", "Current function is not a closure"))
+}
+
+/// The Closure of a `[$closure, '__invoke']` callable.
+pub fn closure_invoke_of(c: &Value) -> Option<Value> {
+    let Value::Array(a) = c else { return None };
+    if a.len() != 2 {
+        return None;
+    }
+    let mut it = a.iter().map(|(_, v)| deref(v));
+    match (it.next()?, it.next()?) {
+        (cl @ Value::Closure(_), Value::Str(m))
+            if m.as_bytes().eq_ignore_ascii_case(b"__invoke") =>
+        {
+            Some(cl)
+        }
+        _ => None,
+    }
 }
 
 pub fn register(m: &mut crate::Registry) {

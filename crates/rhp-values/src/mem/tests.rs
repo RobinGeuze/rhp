@@ -123,3 +123,94 @@ fn huge_growth_and_hard_limit() {
     .join()
     .unwrap();
 }
+
+/// The fast-path mark keeps paged, huge, chunks and peak the same as plain
+/// per-allocation bookkeeping, over random allocs, frees, reset_peak and
+/// set_limit.
+#[test]
+fn mark_matches_reference_model() {
+    std::thread::spawn(|| {
+        struct Model {
+            paged: usize,
+            huge: usize,
+            chunks: usize,
+            peak: usize,
+        }
+        impl Model {
+            fn alloc(&mut self, size: usize) {
+                let r = rounded(size);
+                if size <= MAX_LARGE {
+                    self.paged += r;
+                    if self.paged > self.chunks * MAX_LARGE {
+                        self.chunks = chunks_for(self.paged);
+                    }
+                } else {
+                    self.huge += r;
+                }
+                self.peak = self.peak.max(self.paged + self.huge);
+            }
+            fn free(&mut self, size: usize) {
+                let r = rounded(size);
+                if size <= MAX_LARGE {
+                    self.paged -= r
+                } else {
+                    self.huge -= r
+                }
+            }
+        }
+        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..200 {
+            begin_request();
+            force_limit(LIMIT_MAX);
+            let s = state();
+            let mut m = Model {
+                paged: 0,
+                huge: 0,
+                chunks: 1,
+                peak: 0,
+            };
+            let mut live: Vec<usize> = Vec::new();
+            for _ in 0..3000 {
+                let k = rnd() % 100;
+                if k < 50 || live.is_empty() {
+                    let size = match rnd() % 10 {
+                        0 => 3073 + (rnd() as usize % (MAX_LARGE - 3073)),
+                        1 if round % 3 == 0 => MAX_LARGE + 1 + (rnd() as usize % (8 << 20)),
+                        _ => 1 + (rnd() as usize % 3072),
+                    };
+                    s.on_alloc(size);
+                    m.alloc(size);
+                    live.push(size);
+                } else if k < 90 {
+                    let i = rnd() as usize % live.len();
+                    let size = live.swap_remove(i);
+                    s.on_free(size);
+                    m.free(size);
+                } else if k < 95 {
+                    reset_peak();
+                    m.peak = m.paged + m.huge;
+                } else {
+                    // A lower limit gives cached chunks back.
+                    let want = chunks_for(m.paged) * CHUNK_SIZE + m.huge;
+                    if set_limit(want) {
+                        m.chunks = chunks_for(m.paged);
+                    }
+                    force_limit(LIMIT_MAX);
+                }
+                assert_eq!(s.paged.get(), m.paged);
+                assert_eq!(s.huge.get(), m.huge);
+                assert_eq!(s.chunks.get(), m.chunks, "chunks");
+                assert_eq!(s.peak.get(), m.peak, "peak");
+            }
+            end_request();
+        }
+    })
+    .join()
+    .unwrap();
+}

@@ -10,6 +10,7 @@
 //! diagnostics and unwinds exceptions; `lifecycle` builds the engine and runs
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
+mod callables;
 mod calls;
 mod classes;
 mod closures;
@@ -155,6 +156,9 @@ pub struct Vm {
     /// The scope a first-class callable was created in, while its wrapped
     /// callable is resolved (php resolves `$this->priv(...)` at creation).
     fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
+    /// The `$this` that goes with `fcc_scope` (a callable bound when it was
+    /// checked, such as a shutdown function's).
+    fcc_this: std::cell::RefCell<Option<ObjectHandle>>,
     // Resolved real paths already included (for the `_once` variants), in
     // inclusion order (`get_included_files`).
     included_files: indexmap::IndexSet<Vec<u8>>,
@@ -175,6 +179,19 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// Set by `$f(...)` right before its callable dispatch, which then
+    /// resolves the value as a dynamic call (zend_init_dynamic_call_*).
+    dyn_call: bool,
+    /// The builtin about to run got a dynamic call's raw arguments: its
+    /// by-value positions are dereferenced first.
+    dyn_raw_args: bool,
+    /// A callable check's deprecation threw (see `Vm::check_callable_ex`).
+    callable_dep_thrown: bool,
+    /// The callable argument the running builtin's zpp resolved, by its
+    /// address in the builtin's argument vector (alive and unmodified for
+    /// the call), so calling it needs no second lookup. Cleared before
+    /// each builtin's zpp and after it returns.
+    zpp_fcc: Option<(*const Value, calls::Callee)>,
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,

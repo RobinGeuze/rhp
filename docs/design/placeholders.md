@@ -610,14 +610,16 @@ The module is deliberately "READ-ONLY, native format only"
   into a string in place reaches the builtin unconverted (a string per
   call costs too much); a trace taken during the call shows the string.
 - **Left:** past the first parameter whose checks are still a builtin
-  body's (a callable, an object or class type, an iterable, a function
-  whose parse is in a helper or follows code that may raise), the VM only
+  body's (an object or class type, an iterable, a function whose parse
+  is in a helper or follows code that may raise), the VM only
   does the object, array and null checks, so php's order of errors holds;
   the body coerces the rest itself. There a null argument still gets the
   weak-mode deprecation under `strict_types` (`array_filter($a, null,
   null)`, `preg_replace_callback(…, null)`; php throws the TypeError), and
-  a scalar is not coerced or checked strictly. Modelling `Z_PARAM_FUNC`
-  and the object parses in the VM would lift most of it. Bodies that
+  a scalar is not coerced or checked strictly. A `callable`/`?callable`
+  parameter is the VM's (`Z_PARAM_FUNC`: zend_is_callable_ex with its
+  deprecations, "must be a valid callback[ or null], …"); modelling the
+  object parses in the VM would lift most of the rest. Bodies that
   still differ from php for values zpp accepts: `number_format()` of NAN,
   INF and huge floats, and `iterator_to_array()` of a scalar (the golden
   skips those).

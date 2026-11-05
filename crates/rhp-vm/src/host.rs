@@ -886,6 +886,28 @@ impl Host for Vm {
         callback: Value,
         args: Vec<Value>,
     ) -> Result<(), Thrown> {
+        // php keeps the checked callable's fcc: a method callable bound to
+        // the registering frame's `$this` keeps it.
+        let callback = match (&callback, self.resolve_callable(&callback)) {
+            (
+                Value::Str(_) | Value::Array(_),
+                Ok(crate::calls::Callee::Method(_, Some(this), _)),
+            ) => {
+                let (scope, called, _) = self.callable_scope();
+                Value::Closure(Rc::new(rhp_values::ClosureData {
+                    fnidx: u32::MAX,
+                    captures: Vec::new(),
+                    bound_this: Some(this),
+                    bound_class: scope,
+                    bound_static: called,
+                    wrapped: Some(Box::new(callback.clone())),
+                    // Not an object php makes: no handle.
+                    id: 0,
+                    statics: Default::default(),
+                }))
+            }
+            _ => callback,
+        };
         self.shutdown_functions.push((callback, args));
         Ok(())
     }
@@ -2227,19 +2249,22 @@ impl Host for Vm {
     }
 
     fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
-        self.autoload_callable_class(callable)?;
-        let Err(e) = self.resolve_callable(callable) else {
-            return Ok(None);
-        };
-        Ok(Some(String::from_utf8_lossy(&e).into_owned()))
+        Ok(self.check_callable_ex(callable, false)?.err())
     }
 
     fn wrap_callable(&self, callable: Value) -> Value {
         let (scope, called, _) = self.callable_scope();
+        // zend_create_closure_from_callable binds the fcc's object.
+        let this = match self.resolve_callable(&callable) {
+            Ok(
+                crate::calls::Callee::Method(_, this, _) | crate::calls::Callee::Magic(_, this, ..),
+            ) => this,
+            _ => None,
+        };
         Value::Closure(Rc::new(rhp_values::ClosureData {
             fnidx: u32::MAX,
             captures: Vec::new(),
-            bound_this: None,
+            bound_this: this,
             bound_class: scope,
             bound_static: called,
             wrapped: Some(Box::new(callable)),

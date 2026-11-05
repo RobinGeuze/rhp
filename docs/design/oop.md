@@ -452,15 +452,34 @@ never a second source of semantics.
   `ClassConst` (`Resolving` re-entry → fatal `Error`); absent → `Error "Undefined
   constant C::K"`.
 - **`CallMethod`**: deref `obj`; non-object → `Error "Call to a member function
-  m() on <type>"`. Resolve `m` on the object's class (flattened `methods`);
-  absent → `__call` (args packed to an array) or `Error`. Visibility check (§5).
-  Push frame: `$this` = handle, `called_class = object's class`, `defining_class =
-  method.defining_class`.
-- **`CallStatic`**: `resolve_class`; resolve `m`; absent → `__callStatic` or
-  `Error`. `called_class` per the §4 forwarding table; `$this` forwarded when the
-  current `$this instanceof` target and the callee is non-static (baseline may
-  bind no `$this` for a true static and revisit).
-- **`InstanceOf`**: deref `val`; non-object → `Bool(false)`. `Bool(resolve_class
+  m() on <type>"`. `Vm::get_method` (callables.rs, zend_std_get_method):
+  a public method not flagged `changed` is the one-lookup fast path; else a
+  method that overrides a parent's private one (`changed`, ZEND_ACC_CHANGED)
+  yields that private method when called from its class, protected access
+  is checked against the prototype's root class (`root`,
+  zend_get_function_root_class), and a denied call goes to `__call` or
+  throws "Call to private method A::m() from scope B|global scope". Absent
+  → `__call` (args packed to an array, the name cut at a NUL) or `Error`.
+  Push frame: `$this` = handle, `called_class = object's class`,
+  `defining_class = method.defining_class`.
+- **`CallStatic`**: `resolve_class`; `Vm::get_static_method`
+  (zend_std_get_static_method): an inaccessible or absent method falls back
+  to `__call` when the calling `$this` is-a the class, else `__callStatic`.
+  A literal `C::__construct()` takes the constructor ("Cannot call
+  constructor", "Cannot call private C::__construct()"). A non-static
+  target binds the calling `$this` (called class = its class) or throws
+  "Non-static method … cannot be called statically"; a static one gets
+  `called_class` per the §4 forwarding table.
+- **Callables** (callables.rs): `resolve_callable_ex` ports
+  zend_is_callable_ex (self/parent/static relative to the calling frame,
+  their deprecations, `["C", "parent::m"]`, `$this` borrowed for a
+  non-static method); `$f()` on a string or array instead resolves like
+  zend_init_dynamic_call_* (`resolve_dynamic_call`: no relative names, no
+  borrowed `$this`). A callback an internal function calls gets
+  "f(): Argument #N ($x) must be passed by reference, value given" for a
+  plain value sent to a by-reference parameter, then a temporary reference.
+- **`InstanceOf`**: deref `val`; non-object → `Bool(false)`. Never autoloads.
+  `Bool(resolve_class
   (class).map(|c| classes[val.class].ancestors.contains(&c)).unwrap_or(false))`.
 - **`Clone`**: deref `src` → handle; build `ObjectData { class, id:
   next_object_id++ , properties: od.properties.clone() }` (shallow: nested

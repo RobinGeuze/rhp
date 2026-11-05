@@ -19,9 +19,7 @@ use crate::zend::builtin_functions::resolve_const;
 use crate::zend::ini_parser::{syntax_error, Event, Parser};
 use crate::zend::ini_scanner::{lexer, trim_ws, MODE_NORMAL, MODE_RAW, MODE_TYPED};
 use crate::zend::virtual_cwd::os_path;
-use crate::zend::zpp::{
-    bool_param, int_param, require_callback, str_or_null_param, str_param, zpp_long,
-};
+use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param, zpp_long};
 use crate::{ext, zend, Host, Thrown};
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -56,13 +54,12 @@ fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
+// The engine's zpp checked the callback (Z_PARAM_FUNC).
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
 }
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func_array", 1, &args[0])?;
     let params = as_array(&args[1], "call_user_func_array")?;
     let mut argv: Vec<Value> = Vec::new();
     let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
@@ -245,7 +242,8 @@ fn fn_error_clear_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 /// `register_shutdown_function(callable $callback, mixed ...$args): void`.
 fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let cb = deref(&args[0]);
-    if let Some(why) = host.check_callable(&cb)? {
+    // Checked by the engine's zpp already.
+    if let Some(why) = host.callable_error(&cb) {
         return Err(Thrown::type_error(format!(
             "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
         )));

@@ -9,6 +9,7 @@ use rhp_values::{
     conv, ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
 };
 
+use crate::callables::{trampoline_name, Found};
 use crate::errors::UnwindResult;
 use crate::{classes, deref, Frame, UnitFn, Vm};
 
@@ -16,6 +17,7 @@ use crate::{classes, deref, Frame, UnitFn, Vm};
 type NamedArgs = Vec<(PhpStr, Value)>;
 
 /// A resolved callable (see `Vm::resolve_callable`).
+#[derive(Clone)]
 pub(crate) enum Callee {
     Closure(Rc<rhp_values::ClosureData>),
     Function(UnitFn),
@@ -31,6 +33,15 @@ pub(crate) enum Callee {
     ),
     /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
     EnumStatic(ClassId, Vec<u8>),
+}
+
+/// What a `C::m()` call runs (see `Vm::static_call_target`).
+enum StaticTarget {
+    Method(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
+    /// `__call` / `__callStatic` with the method name.
+    Magic(classes::ResolvedMethod, Option<ObjectHandle>, ClassId),
+    /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
+    Enum(Vec<u8>),
 }
 
 /// A call's arguments: a slice, or the caller's argument window (`argc`
@@ -285,42 +296,135 @@ impl Vm {
                 return Ok(());
             }
         }
-        let found = self.lookup_method(cls, mname);
-        let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(
-                self.stack[top].defining_class,
-                m.defining_class,
-                m.visibility,
-            )
-        });
-        if let (Some(m), true) = (&found, accessible) {
-            let m = m.clone();
-            self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
-        } else if let Some(magic) = self.lookup_method(cls, b"__call") {
-            let mut arr = rhp_values::PhpArray::new();
-            for i in 0..argc {
-                arr.push(self.reg_get(top, base + i));
+        let scope = self.stack[top].defining_class;
+        match self.get_method(cls, mname, scope)? {
+            Some(Found::Method(m)) => {
+                self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
             }
-            let args = vec![Value::str(mname.to_vec()), Value::Array(arr)];
-            let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
-            self.reg_set(top, dst, r);
-        } else if let Some(m) = found {
-            return Err(self.access_err("method", m.defining_class, mname, m.visibility));
-        } else {
-            return Err(Thrown::error(
-                "Error",
-                format!(
-                    "Call to undefined method {}::{}()",
-                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                    String::from_utf8_lossy(mname)
-                ),
-            ));
+            Some(Found::Call(magic) | Found::CallStatic(magic)) => {
+                let mut arr = rhp_values::PhpArray::new();
+                for i in 0..argc {
+                    arr.push(self.reg_get(top, base + i));
+                }
+                let args = vec![Value::str(trampoline_name(mname)), Value::Array(arr)];
+                let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
+                self.reg_set(top, dst, r);
+            }
+            None => return Err(self.undefined_method(cls, mname)),
         }
         Ok(())
     }
 
-    /// Shared body for `C::m()` / `C::$m()` static dispatch (resolves the class,
-    /// handles enum built-ins, `__callStatic`, LSB, and `$this` forwarding).
+    /// The common `C::m()`: an accessible static method of a class, with
+    /// its called class. `None`: take [`Vm::static_call_target`].
+    #[inline(always)]
+    fn static_call_fast(
+        &self,
+        top: usize,
+        class: ClassRef,
+        cls: ClassId,
+        mname: &[u8],
+    ) -> Option<(classes::ResolvedMethod, ClassId)> {
+        let m = self.lookup_method(cls, mname)?;
+        let ok = m.is_static
+            && !m.is_abstract
+            && (m.visibility == rhp_values::Visibility::Public
+                || Some(m.defining_class) == self.stack[top].defining_class)
+            && self.classes[m.defining_class as usize].kind != ClassKind::Trait;
+        if !ok {
+            return None;
+        }
+        let called = match class {
+            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                self.stack[top].called_class.unwrap_or(cls)
+            }
+            _ => cls,
+        };
+        Some((m, called))
+    }
+
+    /// What `C::m()` run by frame `top` calls (ZEND_INIT_STATIC_METHOD_CALL):
+    /// the method or magic method, its `$this` and called class. `ctor`:
+    /// the call names `__construct` literally (php's CONSTRUCTOR operand).
+    #[inline(never)]
+    fn static_call_target(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        cls: ClassId,
+        mname: &[u8],
+        ctor: bool,
+    ) -> Result<StaticTarget, Thrown> {
+        let (fbc, magic) = if ctor {
+            let Some(c) = self.lookup_method(cls, b"__construct") else {
+                return Err(Thrown::error("Error", "Cannot call constructor"));
+            };
+            if let Some(h) = &self.current_this(top) {
+                if h.borrow().class != c.defining_class
+                    && c.visibility == rhp_values::Visibility::Private
+                {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Cannot call private {}::__construct()",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+            (c, None)
+        } else {
+            if self.class(cls).kind == ClassKind::Enum && self.lookup_method(cls, mname).is_none() {
+                let lc = mname.to_ascii_lowercase();
+                if self.is_enum_builtin(cls, &lc) {
+                    return Ok(StaticTarget::Enum(lc));
+                }
+            }
+            match self.get_static_method(cls, mname, top)? {
+                None => return Err(self.undefined_method(cls, mname)),
+                Some(Found::Method(m)) => (m, None),
+                Some(Found::Call(m)) => (m, Some(false)),
+                Some(Found::CallStatic(m)) => (m, Some(true)),
+            }
+        };
+        let is_static = magic.unwrap_or(fbc.is_static);
+        let (this, called) = if !is_static {
+            match self
+                .current_this(top)
+                .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
+            {
+                Some(h) => {
+                    let oc = h.borrow().class;
+                    (Some(h), oc)
+                }
+                None => {
+                    let name = if magic.is_some() {
+                        mname
+                    } else {
+                        fbc.proto.name.as_bytes()
+                    };
+                    return Err(self.non_static_method_call(fbc.defining_class, name));
+                }
+            }
+        } else {
+            // LSB: self/parent forward the called class.
+            let called = match class {
+                ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
+                    self.stack[top].called_class.unwrap_or(cls)
+                }
+                _ => cls,
+            };
+            (None, called)
+        };
+        Ok(match magic {
+            Some(_) => StaticTarget::Magic(fbc, this, called),
+            None => StaticTarget::Method(fbc, this, called),
+        })
+    }
+
+    /// Shared body for `C::m()` / `C::$m()` static dispatch (`ctor`: see
+    /// [`Vm::static_call_target`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn do_call_static(
         &mut self,
         top: usize,
@@ -329,88 +433,35 @@ impl Vm {
         dst: Reg,
         base: Reg,
         argc: u16,
+        ctor: bool,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
-        let found = self.lookup_method(cls, mname);
-        // Enum built-in static methods (cases/from/tryFrom) when not overridden.
-        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
-            let lc = mname.to_ascii_lowercase();
-            if self.is_enum_builtin(cls, &lc) {
+        if !ctor {
+            if let Some((m, called)) = self.static_call_fast(top, class, cls, mname) {
+                return self.enter_method(top, &m, None, called, dst, base, argc);
+            }
+        }
+        match self.static_call_target(top, class, cls, mname, ctor)? {
+            StaticTarget::Enum(lc) => {
                 let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
                 let strict = self.stack[top].proto.strict_types;
                 let r = self.enum_builtin_static(cls, &lc, args, strict)?;
                 self.reg_set(top, dst, r);
-                return Ok(());
+                Ok(())
             }
-        }
-        let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(
-                self.stack[top].defining_class,
-                m.defining_class,
-                m.visibility,
-            )
-        });
-        if !(found.is_some() && accessible) {
-            // Undefined / inaccessible static method -> __callStatic.
-            if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
+            StaticTarget::Magic(m, this, called) => {
                 let mut arr = rhp_values::PhpArray::new();
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
                 }
-                let args = vec![Value::str(mname.to_vec()), Value::Array(arr)];
-                let r = self.call_sync(&magic, None, cls, args)?;
+                let args = vec![Value::str(trampoline_name(mname)), Value::Array(arr)];
+                let r = self.call_sync(&m, this, called, args)?;
                 self.reg_set(top, dst, r);
-                return Ok(());
+                Ok(())
             }
-            return match found {
-                Some(m) => Err(self.access_err("method", m.defining_class, mname, m.visibility)),
-                None => Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Call to undefined method {}::{}()",
-                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                        String::from_utf8_lossy(mname)
-                    ),
-                )),
-            };
-        }
-        let m = found.unwrap();
-        // LSB: self/parent/static forward the called-class; Name/Dynamic set it.
-        let called = match class {
-            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
-                self.stack[top].called_class.unwrap_or(cls)
+            StaticTarget::Method(m, this, called) => {
+                self.enter_method(top, &m, this, called, dst, base, argc)
             }
-            _ => cls,
-        };
-        let this = self.static_call_this(top, &m, cls)?;
-        self.enter_method(top, &m, this, called, dst, base, argc)
-    }
-
-    /// The `$this` a `C::m()` call forwards (ZEND_INIT_STATIC_METHOD_CALL):
-    /// the caller's object when it is-a `cls`; a non-static method without
-    /// one is "Non-static method C::m() cannot be called statically".
-    fn static_call_this(
-        &self,
-        top: usize,
-        m: &classes::ResolvedMethod,
-        cls: ClassId,
-    ) -> Result<Option<ObjectHandle>, Thrown> {
-        if m.is_static {
-            return Ok(None);
-        }
-        match self
-            .current_this(top)
-            .filter(|h| self.class(h.borrow().class).ancestors.contains(&cls))
-        {
-            Some(h) => Ok(Some(h)),
-            None => Err(Thrown::error(
-                "Error",
-                format!(
-                    "Non-static method {}::{}() cannot be called statically",
-                    String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
-                    String::from_utf8_lossy(m.proto.name.as_bytes())
-                ),
-            )),
         }
     }
 
@@ -468,43 +519,24 @@ impl Vm {
             }
         }
         let cls = h.borrow().class;
-        let found = self.lookup_method(cls, &mname);
-        let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(
-                self.stack[top].defining_class,
-                m.defining_class,
-                m.visibility,
-            )
-        });
-        match (found, accessible) {
-            (Some(m), true) => {
+        let scope = self.stack[top].defining_class;
+        match self.get_method(cls, &mname, scope)? {
+            Some(Found::Method(m)) => {
                 let (argv, named) = self.split_call_args(&arr)?;
                 let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
                 self.push_method_frame(&m, Some(h.clone()), cls, Args::Slice(&argv), dst)
             }
-            (found, _) => {
-                if let Some(magic) = self.lookup_method(cls, b"__call") {
-                    let arr = match deref(&arr) {
-                        Value::Array(a) => Value::Array(a),
-                        _ => Value::Array(PhpArray::new()),
-                    };
-                    let r =
-                        self.call_sync(&magic, Some(h.clone()), cls, vec![Value::str(mname), arr])?;
-                    self.reg_set(top, dst, r);
-                    return Ok(());
-                }
-                Err(match found {
-                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
-                    None => Thrown::error(
-                        "Error",
-                        format!(
-                            "Call to undefined method {}::{}()",
-                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                            String::from_utf8_lossy(&mname)
-                        ),
-                    ),
-                })
+            Some(Found::Call(magic) | Found::CallStatic(magic)) => {
+                let arr = match deref(&arr) {
+                    Value::Array(a) => Value::Array(a),
+                    _ => Value::Array(PhpArray::new()),
+                };
+                let name = Value::str(trampoline_name(&mname));
+                let r = self.call_sync(&magic, Some(h.clone()), cls, vec![name, arr])?;
+                self.reg_set(top, dst, r);
+                Ok(())
             }
+            None => Err(self.undefined_method(cls, &mname)),
         }
     }
 
@@ -518,62 +550,34 @@ impl Vm {
         mname: Vec<u8>,
         args: Reg,
         dst: Reg,
+        ctor: bool,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
         let arr = self.reg_get(top, args);
-        let found = self.lookup_method(cls, &mname);
-        if found.is_none() && self.class(cls).kind == ClassKind::Enum {
-            let lc = mname.to_ascii_lowercase();
-            if self.is_enum_builtin(cls, &lc) {
+        match self.static_call_target(top, class, cls, &mname, ctor)? {
+            StaticTarget::Enum(lc) => {
                 let (argv, _named) = self.split_call_args(&arr)?;
                 let strict = self.stack[top].proto.strict_types;
                 let r = self.enum_builtin_static(cls, &lc, argv, strict)?;
                 self.reg_set(top, dst, r);
-                return Ok(());
+                Ok(())
+            }
+            StaticTarget::Magic(m, this, called) => {
+                let arr = match deref(&arr) {
+                    Value::Array(a) => Value::Array(a),
+                    _ => Value::Array(PhpArray::new()),
+                };
+                let name = Value::str(trampoline_name(&mname));
+                let r = self.call_sync(&m, this, called, vec![name, arr])?;
+                self.reg_set(top, dst, r);
+                Ok(())
+            }
+            StaticTarget::Method(m, this, called) => {
+                let (argv, named) = self.split_call_args(&arr)?;
+                let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+                self.push_method_frame(&m, this, called, Args::Slice(&argv), dst)
             }
         }
-        let accessible = found.as_ref().is_some_and(|m| {
-            self.check_access(
-                self.stack[top].defining_class,
-                m.defining_class,
-                m.visibility,
-            )
-        });
-        let m = match (found, accessible) {
-            (Some(m), true) => m,
-            (found, _) => {
-                if let Some(magic) = self.lookup_method(cls, b"__callstatic") {
-                    let arr = match deref(&arr) {
-                        Value::Array(a) => Value::Array(a),
-                        _ => Value::Array(PhpArray::new()),
-                    };
-                    let r = self.call_sync(&magic, None, cls, vec![Value::str(mname), arr])?;
-                    self.reg_set(top, dst, r);
-                    return Ok(());
-                }
-                return Err(match found {
-                    Some(m) => self.access_err("method", m.defining_class, &mname, m.visibility),
-                    None => Thrown::error(
-                        "Error",
-                        format!(
-                            "Call to undefined method {}::{}()",
-                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                            String::from_utf8_lossy(&mname)
-                        ),
-                    ),
-                });
-            }
-        };
-        let called = match class {
-            ClassRef::SelfClass | ClassRef::ParentClass | ClassRef::StaticClass => {
-                self.stack[top].called_class.unwrap_or(cls)
-            }
-            _ => cls,
-        };
-        let this = self.static_call_this(top, &m, cls)?;
-        let (argv, named) = self.split_call_args(&arr)?;
-        let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-        self.push_method_frame(&m, this, called, Args::Slice(&argv), dst)
     }
 
     /// The strict-types mode of the current caller (top of stack), for argument
@@ -682,7 +686,7 @@ impl Vm {
             return Ok(());
         }
         let scope = self.stack[top].defining_class;
-        if self.check_access(scope, m.defining_class, m.visibility) {
+        if self.method_accessible(&m, scope) {
             return Ok(());
         }
         let v = if m.visibility == rhp_values::Visibility::Private {
@@ -802,6 +806,10 @@ impl Vm {
     /// The `$this` of the current frame, if it is bound to an object.
     pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let Some(cv) = self.stack[top].proto.this_cv else {
+            // An include or eval runs with its caller's `$this`.
+            if let Some(caller) = self.stack[top].include_caller {
+                return self.current_this(caller);
+            }
             // A closure whose body has no `$this` slot still has the bound
             // object (traces show `A->{closure}`).
             return self.stack[top].closure.as_ref()?.bound_this.clone();
@@ -979,7 +987,7 @@ impl Vm {
 
     /// `lc` names a built-in static method of enum `cls`: `cases()`, and
     /// `from()`/`tryFrom()` of a backed enum.
-    fn is_enum_builtin(&self, cls: ClassId, lc: &[u8]) -> bool {
+    pub(crate) fn is_enum_builtin(&self, cls: ClassId, lc: &[u8]) -> bool {
         match lc {
             b"cases" => true,
             b"from" | b"tryfrom" => self.class(cls).enum_backing.is_some(),
@@ -1172,7 +1180,7 @@ impl Vm {
         &self,
     ) -> (Option<ClassId>, Option<ClassId>, Option<ObjectHandle>) {
         if let Some((scope, called)) = self.fcc_scope.get() {
-            return (scope, called, None);
+            return (scope, called, self.fcc_this.borrow().clone());
         }
         // Prelude (internal) methods act for their caller, as php's internal
         // functions do: the scope is the innermost user frame's.
@@ -1188,228 +1196,30 @@ impl Vm {
         }
     }
 
-    /// The class half of a `Class::method` / `[Class, method]` callable,
-    /// with `self`/`parent`/`static` relative to the calling scope. Returns
-    /// (class, called class).
-    fn callable_class(&self, name: &[u8]) -> Result<(ClassId, ClassId), Vec<u8>> {
-        let (scope, called, _) = self.callable_scope();
-        let lc = name.to_ascii_lowercase();
-        let no_scope =
-            |w: &str| format!("cannot access \"{w}\" when no class scope is active").into_bytes();
-        let forward = |cls: ClassId| match called {
-            Some(c) if self.class(c).ancestors.contains(&cls) => c,
-            _ => cls,
-        };
-        match lc.as_slice() {
-            b"self" => scope
-                .map(|c| (c, forward(c)))
-                .ok_or_else(|| no_scope("self")),
-            b"static" => called
-                .or(scope)
-                .map(|c| (c, c))
-                .ok_or_else(|| no_scope("static")),
-            b"parent" => {
-                let c = scope.ok_or_else(|| no_scope("parent"))?;
-                let p = self.class(c).parent.ok_or_else(|| {
-                    b"cannot access \"parent\" when current class scope has no parent".to_vec()
-                })?;
-                Ok((p, forward(p)))
-            }
-            _ => self
-                .resolve_class_by_name(name)
-                .map(|c| (c, c))
-                .map_err(|_| {
-                    let n = name.strip_prefix(b"\\").unwrap_or(name);
-                    [b"class \"", n, b"\" not found"].concat()
-                }),
-        }
-    }
-
-    /// The method half of a method callable (zend_is_callable_check_func).
-    fn callable_method(
-        &self,
-        cls: ClassId,
-        called: ClassId,
-        obj: Option<ObjectHandle>,
-        mname: &[u8],
-    ) -> Result<Callee, Vec<u8>> {
-        let (scope, _, this) = self.callable_scope();
-        let cname = || self.class(cls).name.as_bytes();
-        let magic = |obj: &Option<ObjectHandle>| -> Option<Callee> {
-            let name = mname.to_vec();
-            if let Some(o) = obj {
-                if let Some(m) = self.lookup_method(cls, b"__call") {
-                    return Some(Callee::Magic(m, Some(o.clone()), called, name));
-                }
-            }
-            if let Some(m) = self.lookup_method(cls, b"__callstatic") {
-                return Some(Callee::Magic(m, None, called, name));
-            }
-            None
-        };
-        // A non-static method called without an object borrows a compatible
-        // `$this` from the calling scope.
-        let obj =
-            obj.or_else(|| this.filter(|h| self.class(h.borrow().class).ancestors.contains(&cls)));
-        let Some(m) = self.lookup_method(cls, mname) else {
-            if self.class(cls).kind == ClassKind::Enum {
-                let lc = mname.to_ascii_lowercase();
-                if self.is_enum_builtin(cls, &lc) {
-                    return Ok(Callee::EnumStatic(cls, lc));
-                }
-            }
-            return magic(&obj).ok_or_else(|| {
-                [
-                    b"class ",
-                    cname(),
-                    b" does not have a method \"",
-                    mname,
-                    b"\"",
-                ]
-                .concat()
-            });
-        };
-        if !self.check_access(scope, m.defining_class, m.visibility) {
-            if let Some(c) = magic(&obj) {
-                return Ok(c);
-            }
-            let v = match m.visibility {
-                rhp_values::Visibility::Private => "private",
-                rhp_values::Visibility::Protected => "protected",
-                rhp_values::Visibility::Public => "public",
-            };
-            return Err([
-                b"cannot access ",
-                v.as_bytes(),
-                b" method ",
-                cname(),
-                b"::",
-                m.proto.name.as_bytes(),
-                b"()",
-            ]
-            .concat());
-        }
-        if m.is_static {
-            return Ok(Callee::Method(m, None, called));
-        }
-        match obj {
-            Some(o) => {
-                let oc = o.borrow().class;
-                Ok(Callee::Method(m, Some(o), oc))
-            }
-            None => Err([
-                b"non-static method ",
-                cname(),
-                b"::",
-                m.proto.name.as_bytes(),
-                b"() cannot be called statically",
-            ]
-            .concat()),
-        }
-    }
-
-    /// Resolve a callable value (zend_is_callable_ex), or say why it is not
-    /// one in zend_is_callable_error's words.
-    pub(crate) fn resolve_callable(&self, callable: &Value) -> Result<Callee, Vec<u8>> {
-        match deref(callable) {
-            Value::Closure(cd) => Ok(Callee::Closure(cd)),
-            Value::Str(s) => {
-                let b = s.as_bytes();
-                // `Class::method` splits at the last "::".
-                let split = (1..b.len())
-                    .rev()
-                    .find(|&i| b[i] == b':' && b[i - 1] == b':');
-                if let Some(i) = split {
-                    if i == 1 {
-                        return Err(b"invalid function name".to_vec());
-                    }
-                    let (cls, called) = self.callable_class(&b[..i - 1])?;
-                    return self.callable_method(cls, called, None, &b[i + 1..]);
-                }
-                let name = b.strip_prefix(b"\\").unwrap_or(b);
-                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
-                    return Ok(Callee::Function(self.functions[idx].clone()));
-                }
-                let n = String::from_utf8_lossy(name).into_owned();
-                // Engine-internal `__*` builtins are not user-visible functions.
-                if user_visible_builtin(name) {
-                    return Ok(Callee::Builtin(n));
-                }
-                Err([b"function \"", b, b"\" not found or invalid function name"].concat())
-            }
-            Value::Array(a) => {
-                if a.len() != 2 {
-                    return Err(b"array callback must have exactly two members".to_vec());
-                }
-                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
-                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
-                let (Some(item0), Some(item1)) = (item0, item1) else {
-                    return Err(b"array callback must have exactly two members".to_vec());
-                };
-                let (cls, called, obj) = match item0 {
-                    // zend_closure_get_method: a Closure's `__invoke`.
-                    Value::Closure(cd) => {
-                        return match &item1 {
-                            Value::Str(m) if m.as_bytes().eq_ignore_ascii_case(b"__invoke") => {
-                                Ok(Callee::Closure(cd))
-                            }
-                            Value::Str(m) => Err([
-                                &b"class Closure does not have a method \""[..],
-                                m.as_bytes(),
-                                b"\"",
-                            ]
-                            .concat()),
-                            _ => Err(b"second array member is not a valid method".to_vec()),
-                        };
-                    }
-                    Value::Object(h) => {
-                        let c = h.borrow().class;
-                        (c, c, Some(h))
-                    }
-                    Value::Str(cn) => {
-                        let (c, called) = self.callable_class(cn.as_bytes())?;
-                        (c, called, None)
-                    }
-                    _ => {
-                        return Err(
-                            b"first array member is not a valid class name or object".to_vec()
-                        )
-                    }
-                };
-                let Value::Str(m) = item1 else {
-                    return Err(b"second array member is not a valid method".to_vec());
-                };
-                self.callable_method(cls, called, obj, m.as_bytes())
-            }
-            Value::Object(h) => {
-                let cls = h.borrow().class;
-                match self.lookup_method(cls, b"__invoke") {
-                    Some(m) => Ok(Callee::Method(m, Some(h), cls)),
-                    None => Err(b"no array or string given".to_vec()),
-                }
-            }
-            _ => Err(b"no array or string given".to_vec()),
-        }
-    }
-
     /// Autoload the class half of a callable that names an unloaded class
     /// (php's zend_is_callable looks classes up with autoloading).
     pub(crate) fn autoload_callable_class(&mut self, callable: &Value) -> Result<(), Thrown> {
-        let class: Option<Vec<u8>> = match deref(callable) {
-            Value::Str(s) => {
-                let b = s.as_bytes();
-                (2..b.len())
-                    .rev()
-                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
-                    .map(|i| b[..i - 1].to_vec())
-            }
-            Value::Array(a) if a.len() == 2 => match a.get(&ArrayKey::Int(0)).map(deref) {
-                Some(Value::Str(s)) => Some(s.as_bytes().to_vec()),
-                _ => None,
-            },
-            _ => None,
+        let class_of = |b: &[u8]| {
+            (2..b.len())
+                .rev()
+                .find(|&i| b[i] == b':' && b[i - 1] == b':')
+                .map(|i| b[..i - 1].to_vec())
         };
-        if let Some(c) = class {
+        let mut classes: Vec<Vec<u8>> = Vec::new();
+        match deref(callable) {
+            Value::Str(s) => classes.extend(class_of(s.as_bytes())),
+            Value::Array(a) if a.len() == 2 => {
+                if let Some(Value::Str(s)) = a.get(&ArrayKey::Int(0)).map(deref) {
+                    classes.push(s.as_bytes().to_vec());
+                }
+                // `[C, "A::m"]`: the method half names a class too.
+                if let Some(Value::Str(m)) = a.get(&ArrayKey::Int(1)).map(deref) {
+                    classes.extend(class_of(m.as_bytes()));
+                }
+            }
+            _ => {}
+        }
+        for c in classes {
             let lc = c.to_ascii_lowercase();
             if !matches!(lc.as_slice(), b"self" | b"parent" | b"static")
                 && self.resolve_class_by_name(&c).is_err()
@@ -1442,10 +1252,19 @@ impl Vm {
         args: Vec<Value>,
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
+        // `$f()` (CallDyn) resolves as a dynamic call, not a callable check.
+        let dynamic = std::mem::take(&mut self.dyn_call);
         let c = deref(callable);
         // `[$closure, '__invoke']`: Closure::__invoke is internal, so the
         // closure runs as called from internal code.
         if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
+            let args = match &cl {
+                Value::Closure(cd) if cd.wrapped.is_none() => {
+                    let proto = self.closures[cd.fnidx as usize].proto.clone();
+                    self.wrap_by_ref_args(&proto, "Closure::__invoke", args)?
+                }
+                _ => args,
+            };
             return self.call_callable_value_mode(&cl, args, None);
         }
         // First-class callable: forward to the wrapped callable.
@@ -1456,26 +1275,64 @@ impl Vm {
                 let saved = self
                     .fcc_scope
                     .replace(Some((cd.bound_class, cd.bound_static)));
+                let saved_this = self.fcc_this.replace(cd.bound_this.clone());
+                // A dynamic call's raw arguments, as plain values.
+                let args = if dynamic {
+                    args.iter().map(deref).collect()
+                } else {
+                    args
+                };
                 let r = self.call_callable_value_mode(&w, args, caller);
                 self.fcc_scope.set(saved);
+                *self.fcc_this.borrow_mut() = saved_this;
                 return r;
             }
         }
-        let fcc = self.fcc_scope.take();
-        self.autoload_callable_class(&c)?;
-        self.fcc_scope.set(fcc);
-        let resolved = self.resolve_callable(&c);
-        // A first-class callable's creation scope applies to resolving it
-        // only, not to whatever it then runs.
-        self.fcc_scope.set(None);
-        let callee = match resolved {
-            Ok(callee) => callee,
-            Err(_) => return Err(self.dynamic_call_error(&c)),
+        let zpp = match &self.zpp_fcc {
+            Some((p, callee)) if std::ptr::eq(*p, callable) => Some(callee.clone()),
+            _ => None,
+        };
+        let callee = if let Some(callee) = zpp {
+            // The running builtin's zpp resolved this very argument.
+            callee
+        } else if dynamic && matches!(c, Value::Str(_) | Value::Array(_)) {
+            self.resolve_dynamic_call(&c)?
+        } else {
+            let fcc = self.fcc_scope.take();
+            self.autoload_callable_class(&c)?;
+            self.fcc_scope.set(fcc);
+            let resolved = self.resolve_callable(&c);
+            // A first-class callable's creation scope applies to resolving it
+            // only, not to whatever it then runs.
+            self.fcc_scope.set(None);
+            match resolved {
+                Ok(callee) => callee,
+                // Not callable: the Error php's dynamic call raises.
+                Err(_) => self.resolve_dynamic_call(&c)?,
+            }
+        };
+        // zend_call_function: a value for a by-reference parameter.
+        let args = if dynamic {
+            args
+        } else {
+            self.callee_by_ref_args(&callee, args)?
+        };
+        // A dynamic call's arguments come raw: whatever does not bind
+        // parameters itself gets plain values.
+        let args = if dynamic && matches!(callee, Callee::Magic(..) | Callee::EnumStatic(..)) {
+            args.iter().map(deref).collect()
+        } else {
+            args
         };
         match callee {
             Callee::Closure(cd) => self.run_closure_sync(&cd, Args::Slice(&args), caller),
             Callee::Function(f) => self.run_proto_sync(f, None, None, None, args, caller),
-            Callee::Builtin(name) => self.invoke_builtin(&name, args, caller == Some(true)),
+            Callee::Builtin(name) => {
+                self.dyn_raw_args = dynamic;
+                let r = self.invoke_builtin(&name, args, caller == Some(true));
+                self.dyn_raw_args = false;
+                r
+            }
             Callee::Method(m, this, called) => self.call_sync_mode(&m, this, called, args, caller),
             Callee::Magic(m, this, called, name) => {
                 let mut arr = PhpArray::new();
@@ -1496,107 +1353,117 @@ impl Vm {
         }
     }
 
-    /// The Error a dynamic call of a non-callable value raises
-    /// (ZEND_INIT_DYNAMIC_CALL).
-    fn dynamic_call_error(&self, c: &Value) -> Thrown {
-        let err = |m: String| Thrown::error("Error", m);
-        let method_err = |cls: ClassId, m: &[u8]| -> Thrown {
-            match self.lookup_method(cls, m) {
-                Some(rm) if !rm.is_static => err(format!(
-                    "Non-static method {}::{}() cannot be called statically",
-                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                    String::from_utf8_lossy(rm.proto.name.as_bytes())
-                )),
-                Some(rm) => {
-                    let v = match rm.visibility {
-                        rhp_values::Visibility::Private => "private",
-                        rhp_values::Visibility::Protected => "protected",
-                        rhp_values::Visibility::Public => "public",
+    /// [`Vm::wrap_by_ref_args`] for a resolved callee.
+    fn callee_by_ref_args(
+        &mut self,
+        callee: &Callee,
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if args.iter().all(|a| matches!(a, Value::Ref(_))) {
+            return Ok(args);
+        }
+        let has_ref = |p: &FunctionProto| p.params.iter().any(|p| p.by_ref);
+        match callee {
+            Callee::Closure(cd) => {
+                let proto = &self.closures[cd.fnidx as usize].proto;
+                if !has_ref(proto) {
+                    return Ok(args);
+                }
+                let proto = proto.clone();
+                let name = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                self.wrap_by_ref_args(&proto, &name, args)
+            }
+            Callee::Function(f) => {
+                if !has_ref(&f.proto) {
+                    return Ok(args);
+                }
+                let proto = f.proto.clone();
+                let name = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
+                self.wrap_by_ref_args(&proto, &name, args)
+            }
+            Callee::Method(m, ..) => {
+                if !has_ref(&m.proto) {
+                    return Ok(args);
+                }
+                let proto = m.proto.clone();
+                let name = format!(
+                    "{}::{}",
+                    String::from_utf8_lossy(self.class(m.defining_class).name.as_bytes()),
+                    String::from_utf8_lossy(proto.name.as_bytes())
+                );
+                self.wrap_by_ref_args(&proto, &name, args)
+            }
+            Callee::Builtin(name) => {
+                let Some(sig) = rhp_bytecode::signatures::function(name.as_bytes()) else {
+                    return Ok(args);
+                };
+                let mut args = args;
+                for (i, a) in args.iter_mut().enumerate() {
+                    let p = sig
+                        .params
+                        .get(i)
+                        .or_else(|| sig.params.last().filter(|p| p.variadic()));
+                    let Some(p) = p else { break };
+                    if !p.by_ref() || p.prefer_ref() || matches!(a, Value::Ref(_)) {
+                        continue;
+                    }
+                    let label = if p.variadic() {
+                        String::new()
+                    } else {
+                        format!(" (${})", p.name)
                     };
-                    let scope = match self.callable_scope().0 {
-                        Some(c) => format!(
-                            "scope {}",
-                            String::from_utf8_lossy(self.class(c).name.as_bytes())
+                    self.diag(
+                        builtins::E_WARNING,
+                        &format!(
+                            "{}(): Argument #{}{label} must be passed by reference, value given",
+                            sig.name,
+                            i + 1
                         ),
-                        None => "global scope".to_string(),
-                    };
-                    err(format!(
-                        "Call to {v} method {}::{}() from {scope}",
-                        String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                        String::from_utf8_lossy(rm.proto.name.as_bytes())
-                    ))
+                    )?;
+                    let v = std::mem::replace(a, Value::Null);
+                    *a = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
                 }
-                None => err(format!(
-                    "Call to undefined method {}::{}()",
-                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                    String::from_utf8_lossy(m)
-                )),
+                Ok(args)
             }
-        };
-        let class_err = |n: &[u8]| {
-            err(format!(
-                "Class \"{}\" not found",
-                String::from_utf8_lossy(n.strip_prefix(b"\\").unwrap_or(n))
-            ))
-        };
-        match c {
-            Value::Str(s) => {
-                let b = s.as_bytes();
-                match (1..b.len())
-                    .rev()
-                    .find(|&i| b[i] == b':' && b[i - 1] == b':')
-                {
-                    Some(i) => match self.callable_class(&b[..i - 1]) {
-                        Ok((cls, _)) => method_err(cls, &b[i + 1..]),
-                        Err(_) => class_err(&b[..i - 1]),
-                    },
-                    None => err(format!(
-                        "Call to undefined function {}()",
-                        String::from_utf8_lossy(b)
-                    )),
-                }
-            }
-            Value::Array(a) if a.len() == 2 => {
-                let item0 = a.get(&ArrayKey::Int(0)).map(deref);
-                let item1 = a.get(&ArrayKey::Int(1)).map(deref);
-                match (item0, item1) {
-                    (Some(Value::Object(h)), Some(Value::Str(m))) => {
-                        method_err(h.borrow().class, m.as_bytes())
-                    }
-                    (Some(Value::Str(cn)), Some(Value::Str(m))) => {
-                        match self.callable_class(cn.as_bytes()) {
-                            Ok((cls, _)) => method_err(cls, m.as_bytes()),
-                            Err(_) => class_err(cn.as_bytes()),
-                        }
-                    }
-                    (Some(Value::Object(_) | Value::Str(_)), Some(_)) => {
-                        err("Second array member is not a valid method".to_string())
-                    }
-                    (Some(_), Some(_)) => {
-                        err("First array member is not a valid class name or object".to_string())
-                    }
-                    _ => err("Array callback must have exactly two elements".to_string()),
-                }
-            }
-            Value::Array(_) => err("Array callback must have exactly two elements".to_string()),
-            Value::Object(_) => err(format!(
-                "Object of type {} is not callable",
-                self.debug_class(c)
-            )),
-            v => err(format!(
-                "Value of type {} is not callable",
-                rhp_builtins::zval_type_name(self, v)
-            )),
+            Callee::Magic(..) | Callee::EnumStatic(..) => Ok(args),
         }
     }
 
-    fn debug_class(&self, v: &Value) -> String {
-        match v {
-            Value::Object(h) => {
-                String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()).into_owned()
-            }
-            _ => String::new(),
+    /// zend_call_function's by-reference parameters: a plain value passed
+    /// to one is "f(): Argument #N ($x) must be passed by reference, value
+    /// given", then passed in a fresh reference.
+    pub(crate) fn wrap_by_ref_args(
+        &mut self,
+        proto: &FunctionProto,
+        name: &str,
+        mut args: Vec<Value>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if !proto.params.iter().any(|p| p.by_ref) {
+            return Ok(args);
         }
+        for i in 0..args.len() {
+            if matches!(args[i], Value::Ref(_)) || !param_is_ref(proto, i as u16) {
+                continue;
+            }
+            // get_function_arg_name: a variadic position has no name.
+            let label = match proto.params.get(i) {
+                Some(p) if !p.variadic => format!(
+                    " (${})",
+                    String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                ),
+                _ => String::new(),
+            };
+            self.diag(
+                builtins::E_WARNING,
+                &format!(
+                    "{name}(): Argument #{}{label} must be passed by reference, value given",
+                    i + 1
+                ),
+            )?;
+            let v = std::mem::replace(&mut args[i], Value::Null);
+            args[i] = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
+        }
+        Ok(args)
     }
 
     /// Pop the current frame and deliver `value`. Returns `Some(value)` when the
@@ -1962,6 +1829,15 @@ impl Vm {
         }
         // php's zpp runs in the builtin's frame: a count or parse error is
         // raised as the call's, with the arguments as converted so far.
+        self.zpp_fcc = None;
+        if std::mem::take(&mut self.dyn_raw_args) {
+            use rhp_bytecode::signatures::Signature;
+            for (i, a) in args.iter_mut().enumerate() {
+                if matches!(a, Value::Ref(_)) && !sig.is_some_and(|s| s.by_ref(i)) {
+                    *a = deref(a);
+                }
+            }
+        }
         let (zpp_error, shown_str) = match builtin_arg_count_error(builtin, args.len()) {
             Some(e) => (Some(e), 0),
             None => {
@@ -1978,6 +1854,7 @@ impl Vm {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),
             };
+            self.zpp_fcc = None;
             // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
             let r = match r {
                 Err(Thrown::Error {
@@ -2013,6 +1890,7 @@ impl Vm {
             Some(e) => Err(e),
             None => (builtin.func)(self, &args),
         };
+        self.zpp_fcc = None;
         // What a stream operation queued without reaching a host.
         self.flush_stream_diags(builtin.name);
         let r = match r {
@@ -2308,7 +2186,7 @@ fn bind_params(
             // Collect the remaining args into an array (by value).
             let mut arr = PhpArray::new();
             for j in i..n {
-                arr.push(arg(j, false));
+                arr.push(arg(j, p.by_ref));
             }
             regs[p.cv as usize] = Value::Array(arr);
             return Ok(()); // variadic is always the last parameter

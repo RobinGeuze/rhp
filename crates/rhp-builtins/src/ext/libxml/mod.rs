@@ -431,7 +431,8 @@ fn fn_set_streams_context(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
 fn fn_set_external_entity_loader(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let cb = args.first().map(deref).unwrap_or(Value::Null);
     if !matches!(cb, Value::Null) {
-        if let Some(why) = host.check_callable(&cb)? {
+        // Checked by the engine's zpp already.
+        if let Some(why) = host.callable_error(&cb) {
             return Err(Thrown::type_error(format!(
                 "libxml_set_external_entity_loader(): Argument #1 ($resolver_function) must be a valid callback or null, {why}"
             )));

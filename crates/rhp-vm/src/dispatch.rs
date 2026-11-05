@@ -780,7 +780,10 @@ impl Vm {
                     let arr = self.reg_get(top, args);
                     let (argvec, named) = self.split_call_args(&arr)?;
                     let strict = self.caller_strict();
-                    let out = self.call_named(&c, argvec, named, Some(strict))?;
+                    self.dyn_call = true;
+                    let out = self.call_named(&c, argvec, named, Some(strict));
+                    self.dyn_call = false;
+                    let out = out?;
                     self.reg_set(top, dst, out);
                 }
 
@@ -1489,7 +1492,8 @@ impl Vm {
                     ..
                 } => {
                     let mname = proto.names[name as usize].as_bytes();
-                    self.do_call_static(top, class, mname, dst, base, argc)?;
+                    let ctor = mname.eq_ignore_ascii_case(b"__construct");
+                    self.do_call_static(top, class, mname, dst, base, argc, ctor)?;
                 }
                 Instr::CallParentHook {
                     dst,
@@ -1509,12 +1513,13 @@ impl Vm {
                     argc,
                 } => {
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
-                    self.do_call_static(top, class, &mname, dst, base, argc)?;
+                    self.do_call_static(top, class, &mname, dst, base, argc, false)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_get(top, val);
                     let result = match v {
-                        Value::Object(h) => match self.resolve_class_autoload(top, class) {
+                        // ZEND_INSTANCEOF never autoloads.
+                        Value::Object(h) => match self.resolve_class(top, class) {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
                             Err(_) => false,
                         },
@@ -1637,7 +1642,8 @@ impl Vm {
                     args,
                 } => {
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    self.call_static_args(top, class, mname, args, dst)?;
+                    let ctor = mname.eq_ignore_ascii_case(b"__construct");
+                    self.call_static_args(top, class, mname, args, dst, ctor)?;
                 }
                 Instr::CallStaticDynV {
                     dst,
@@ -1646,7 +1652,7 @@ impl Vm {
                     args,
                 } => {
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
-                    self.call_static_args(top, class, mname, args, dst)?;
+                    self.call_static_args(top, class, mname, args, dst, false)?;
                 }
 
                 Instr::FetchConst {
@@ -2778,8 +2784,15 @@ impl Vm {
                 return Ok(());
             }
         }
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-        let out = self.call_callable_value_mode(&c, args, Some(strict))?;
+        // Passed raw (the window's references kept): the callee's
+        // by-reference parameters bind them, by-value ones dereference.
+        let args: Vec<Value> = (0..argc)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
+        self.dyn_call = true;
+        let out = self.call_callable_value_mode(&c, args, Some(strict));
+        self.dyn_call = false;
+        let out = out?;
         self.reg_set(top, dst, out);
         Ok(())
     }

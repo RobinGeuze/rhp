@@ -65,7 +65,7 @@ pub(crate) fn compile_method(
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
     for ((p, info), ty) in m.parameter_list.parameters.iter().zip(&params).zip(&types) {
-        if p.modifiers.is_empty() {
+        if p.modifiers.is_empty() && p.hooks.is_none() {
             continue;
         }
         let var = strip_dollar(p.variable.name);
@@ -83,7 +83,28 @@ pub(crate) fn compile_method(
         }
         let vis = modifiers_visibility(&p.modifiers);
         let ro = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Readonly(_)));
+        let is_final = has_modifier(&p.modifiers, |md| matches!(md, Modifier::Final(_)));
         let (pstart, pend) = span_of(p);
+        let (hooks, is_virtual) = match &p.hooks {
+            Some(list) => {
+                let hcx = crate::hooks::HookCtx {
+                    class_name,
+                    prop_name: var,
+                    hint: p.hint.as_ref(),
+                    visibility: vis,
+                    is_abstract: false,
+                    is_static: false,
+                    is_readonly: ro || cx.in_readonly_class.get(),
+                    in_interface: false,
+                    offset: pstart,
+                };
+                *cx.cur_property.borrow_mut() = Some(var.to_vec());
+                let hooks = crate::hooks::compile_hooks(cx, &hcx, list);
+                *cx.cur_property.borrow_mut() = None;
+                (hooks?, crate::hooks::property_is_virtual(var, list, false))
+            }
+            None => ([None, None], false),
+        };
         promoted.push(PropProto {
             name: PhpStr::from_bytes(var.to_vec()),
             visibility: vis,
@@ -99,6 +120,10 @@ pub(crate) fn compile_method(
                 end_line: cx.line_of(pend),
             },
             promoted: true,
+            hooks,
+            is_virtual,
+            is_abstract: false,
+            is_final,
         });
         promo_stores.push((c.intern_name(var), info.cv, p.ampersand.is_some()));
     }
@@ -524,7 +549,7 @@ impl ProtoBuilder<'_> {
             let name = self.intern_name(var);
             let at = p.span().start.offset;
             let line = cx.line_of(at);
-            let promoted = !p.modifiers.is_empty();
+            let promoted = !p.modifiers.is_empty() || p.hooks.is_some();
             let mut folded = p
                 .default_value
                 .as_ref()
@@ -584,7 +609,15 @@ impl ProtoBuilder<'_> {
                 default,
                 type_hint,
                 line,
-                attributes: compile_attributes(cx, &p.attribute_lists, class_name)?,
+                attributes: {
+                    // `__PROPERTY__` in a promoted parameter's attributes.
+                    if promoted {
+                        *cx.cur_property.borrow_mut() = Some(var.to_vec());
+                    }
+                    let a = compile_attributes(cx, &p.attribute_lists, class_name);
+                    *cx.cur_property.borrow_mut() = None;
+                    a?
+                },
                 promoted,
                 default_thunk: dmeta.0,
                 default_const: dmeta.1,

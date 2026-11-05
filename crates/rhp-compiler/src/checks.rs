@@ -18,6 +18,7 @@ use rhp_values::{PhpStr, Visibility, E_COMPILE_WARNING, E_DEPRECATED, E_WARNING}
 
 use crate::decl::{has_modifier, modifiers_visibility};
 use crate::file::FileCtx;
+use crate::hints::type_hint;
 use crate::names::identifier_raw;
 use crate::util::strip_dollar;
 
@@ -602,13 +603,6 @@ const ANY: u32 = NULL | BOOL | LONG | DOUBLE | STRING | ARRAY | OBJECT | RESOURC
 
 /// ZEND_TYPE_PURE_MASK of a declared type, and whether it names classes
 /// (ZEND_TYPE_IS_COMPLEX).
-/// The lowered type of `h`, without raising its compile errors (the type
-/// itself is compiled, with its errors, later). `None` if it has one.
-fn type_hint(cx: &FileCtx, h: &Hint) -> Option<TypeHint> {
-    cx.quietly(|| crate::hints::compile_type(cx, h, false))
-        .map(|t| t.hint)
-}
-
 fn type_mask(t: &TypeHint) -> (u32, bool) {
     let mut mask = if t.nullable { NULL } else { 0 };
     let mut complex = !t.groups.is_empty();

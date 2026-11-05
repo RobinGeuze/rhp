@@ -18,6 +18,8 @@ foreach (array_merge(get_declared_classes(), get_declared_interfaces(), get_decl
     if (!$r->isInternal()) { continue; }
     echo "C ", $r->getName(), "\n";
     foreach ($r->getMethods() as $m) {
+        // An enum's cases/from/tryFrom come from the engine, not a stub.
+        if ($r->isEnum() && in_array(strtolower($m->getName()), ['cases', 'from', 'tryfrom'], true)) { continue; }
         if ($m->getDeclaringClass()->getName() === $r->getName()) { echo "M ", $r->getName(), " ", $m->getName(), "\n"; }
     }
 }

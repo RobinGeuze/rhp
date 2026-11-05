@@ -1,0 +1,48 @@
+object(A)#1 (1) {
+  ["backed"]=>
+  uninitialized(int)
+  ["nb"]=>
+  NULL
+}
+array(1) {
+  ["nb"]=>
+  NULL
+}
+A Object
+(
+    [nb] => 
+)
+
+array(4) {
+  ["u"]=>
+  int(1)
+  ["t"]=>
+  int(2)
+  ["backed"]=>
+  NULL
+  ["nb"]=>
+  NULL
+}
+{"u":1,"t":2,"backed":null,"nb":null}
+\A::__set_state(array(
+   'u' => 1,
+   't' => 2,
+   'backed' => NULL,
+   'nb' => NULL,
+))
+object(A)#1 (2) {
+  ["backed"]=>
+  int(6)
+  ["nb"]=>
+  NULL
+}
+array(4) {
+  ["u"]=>
+  int(1)
+  ["t"]=>
+  int(2)
+  ["backed"]=>
+  int(6)
+  ["nb"]=>
+  NULL
+}

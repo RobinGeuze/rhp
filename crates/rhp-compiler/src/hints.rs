@@ -285,6 +285,12 @@ pub(crate) fn compile_type(cx: &FileCtx, h: &Hint, closure: bool) -> Option<Comp
     compile_type_ex(cx, h, closure, false).map(|(t, _)| t)
 }
 
+/// The lowered type of `h`, without raising its compile errors (the type
+/// itself is compiled, with its errors, elsewhere). `None` if it has one.
+pub(crate) fn type_hint(cx: &FileCtx, h: &Hint) -> Option<rhp_bytecode::TypeHint> {
+    cx.quietly(|| compile_type(cx, h, false)).map(|t| t.hint)
+}
+
 /// [`compile_type`] with php's `force_allow_null` (a parameter defaulting
 /// to null); the flag is whether that made the type nullable.
 pub(crate) fn compile_type_ex(

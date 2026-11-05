@@ -1,0 +1,5 @@
+start
+
+Fatal error: Class Square contains 2 abstract methods and must therefore be declared abstract or implement the remaining methods (Base::sides, Shape::$name::get) in F on line 14
+Stack trace:
+#0 {main}

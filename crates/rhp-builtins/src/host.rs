@@ -1,7 +1,7 @@
 //! The interpreter surface builtins call back into: the [`Host`] trait,
 //! which the VM implements, and the types its methods take.
 
-use rhp_values::{PhpArray, Value};
+use rhp_values::{ObjectHandle, PhpArray, Value};
 
 use crate::main::streams::{ops, plain_wrapper};
 use crate::main::{ini, rfc1867, sapi};
@@ -227,6 +227,18 @@ pub trait Host {
     /// ([`object_handlers::registered`]) or an ancestor's.
     fn object_handlers(&self, class_id: u32) -> Option<&'static object_handlers::ObjectHandlers>;
 
+    /// php's zend_hooked_object_build_properties: the table a class with
+    /// property hooks shows for `purpose` (`get_object_vars`, `json_encode`,
+    /// `var_export`), its hooked properties read through their get hooks;
+    /// `None` for other classes and purposes.
+    fn hooked_properties_for(
+        &mut self,
+        _obj: &ObjectHandle,
+        _purpose: object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        Ok(None)
+    }
+
     /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
     /// string, true for bool, FAILURE (`Ok(None)`) otherwise; what a
     /// `cast_object` handler defers to.
@@ -412,6 +424,13 @@ pub trait Host {
     /// storage key); any other name is kept as is. Returns false for a
     /// malformed mangled name (a leading NUL without a second one).
     fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool;
+
+    /// php's object_set_property check: the declared property `key` names
+    /// (resolved as [`Host::unserialize_set_prop`] does) is virtual; returns
+    /// `Class::$name` for the warning.
+    fn unserialize_virtual_prop(&self, _obj: &Value, _key: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
 
     /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
     /// of the properties accessible there, in slot order). `None` = the host has

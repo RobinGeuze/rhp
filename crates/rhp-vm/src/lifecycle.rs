@@ -108,6 +108,7 @@ impl Vm {
             main_script_path: None,
             streams: StreamTable::default(),
             readonly_reinit: Default::default(),
+            hook_bypass: false,
             last_dir: None,
             default_context: None,
             next_resource_id: 1,

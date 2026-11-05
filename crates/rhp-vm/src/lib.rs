@@ -17,6 +17,7 @@ mod const_link;
 mod dispatch;
 mod errors;
 mod generators;
+mod hooks;
 mod host;
 mod include;
 mod inherit;
@@ -184,6 +185,9 @@ pub struct Vm {
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
     readonly_reinit: std::collections::HashSet<(u32, PhpStr)>,
+    /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
+    /// parent hook): property access uses the backing value.
+    hook_bypass: bool,
     next_resource_id: u32,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds

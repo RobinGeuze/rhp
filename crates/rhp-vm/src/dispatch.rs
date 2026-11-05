@@ -1495,6 +1495,16 @@ impl Vm {
                     let mname = proto.names[name as usize].as_bytes();
                     self.do_call_static(top, class, mname, dst, base, argc)?;
                 }
+                Instr::CallParentHook {
+                    dst,
+                    name,
+                    kind,
+                    base,
+                    argc,
+                } => {
+                    let pname = proto.names[name as usize].clone();
+                    self.exec_parent_hook(top, dst, pname, kind, base, argc)?;
+                }
                 Instr::CallStaticDyn {
                     dst,
                     class,
@@ -2066,6 +2076,11 @@ impl Vm {
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
+                } else if self.classes[ocls as usize].hooked {
+                    let scope = self.stack[top].defining_class;
+                    let st = self.hooked_iter_state(&obj, scope);
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, st);
                 } else {
                     let arr = self.object_prop_array(&obj, top);
                     if arr.is_empty() {
@@ -2113,6 +2128,20 @@ impl Vm {
                         self.cv_assign(top, key_cv, k);
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
+                }
+                return Ok(());
+            }
+            // A hooked plain object (see FeReset).
+            if let st @ Value::Array(_) = self.reg_get(top, pos_reg) {
+                match self.hooked_iter_next(&h, &st, false)? {
+                    Some((st, k, v)) => {
+                        self.cv_assign(top, val_cv, v);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
+                        }
+                        self.reg_set(top, pos_reg, st);
+                    }
+                    None => self.stack[top].pc = end as usize,
                 }
                 return Ok(());
             }
@@ -2246,6 +2275,14 @@ impl Vm {
             Value::Object(_) => true,
             _ => false,
         };
+        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            if self.classes[h.borrow().class as usize].hooked {
+                let scope = self.stack[top].defining_class;
+                let st = self.hooked_iter_state(&h, scope);
+                self.reg_set(top, pos_reg, st);
+                return Ok(());
+            }
+        }
         if nonempty {
             self.reg_set(top, pos_reg, Value::Int(0));
         } else {
@@ -2269,6 +2306,24 @@ impl Vm {
         // top of each iteration but the first, then alias the loop
         // variable to the yielded reference.
         if let Value::Array(st) = self.reg_get(top, pos_reg) {
+            // A hooked plain object: `[position, plan]` (see FeResetRef).
+            if let Some(Value::Int(_)) = st.get_index(0).map(|e| e.1.clone()) {
+                let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) else {
+                    self.stack[top].pc = end as usize;
+                    return Ok(());
+                };
+                match self.hooked_iter_next(&h, &Value::Array(st), true)? {
+                    Some((st, k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
+                        }
+                        self.reg_set(top, pos_reg, st);
+                    }
+                    _ => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
             // ArrayObject / ArrayIterator storage (see FeResetRef).
             if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
                 st.get_index(0).map(|e| e.1.clone()),

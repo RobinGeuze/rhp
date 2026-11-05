@@ -1377,6 +1377,18 @@ impl<'a> Parser<'a, '_> {
                 Value::Str(s) => s.as_bytes().to_vec(),
                 _ => return malformed(),
             };
+            if let Some(shown) = self.host.unserialize_virtual_prop(&obj, &key) {
+                crate::warn(
+                    self.host,
+                    "unserialize",
+                    &format!(
+                        "Cannot unserialize value for virtual property {}",
+                        String::from_utf8_lossy(&shown)
+                    ),
+                )
+                .map_err(Fail::Thrown)?;
+                return self.fail_at(self.pos);
+            }
             let val = self.parse_slot()?;
             if !self.host.unserialize_set_prop(&obj, &key, val) {
                 return malformed();

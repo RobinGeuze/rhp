@@ -43,8 +43,8 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 2,918 | 5,396 | 54.1% | no Fiber (0/113) or lazy objects (1/229); property hooks and the pipe operator `\|>` are refused |
-| tests | 585 | 895 | 65.4% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 3,122 | 5,396 | 57.9% | no Fiber (0/113) or lazy objects (1/229); property hooks and the pipe operator `\|>` are refused |
+| tests | 589 | 895 | 65.8% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | most tests run the php binary or `-S`, which rhp lacks |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
 | ext/standard | 2,380 | 3,880 | 61.3% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
@@ -59,7 +59,7 @@ passing, so the percentages are of all php-src tests.
 | ext/hash | 58 | 83 | 69.9% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 74 | 82 | 90.2% | the system iconv |
 | ext/intl | 36 | 511 | 7.0% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
-| ext/json | 72 | 94 | 76.6% | |
+| ext/json | 73 | 94 | 77.7% | |
 | ext/libxml | 17 | 32 | 53.1% | on libxml2 |
 | ext/mbstring | 193 | 446 | 43.3% | on php-src's libmbfl (rhp-mbfl-sys) |
 | ext/opcache | 628 | 876 | 71.7% | the compiled-script cache only; no optimizer, JIT or file cache |
@@ -70,7 +70,7 @@ passing, so the percentages are of all php-src tests.
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 17 | 69 | 24.6% | the functions only; no `Random\Randomizer` or engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
-| ext/reflection | 318 | 540 | 58.9% | |
+| ext/reflection | 326 | 540 | 60.4% | |
 | ext/simplexml | 145 | 165 | 87.9% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
 | ext/spl | 495 | 796 | 62.2% | |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 78 | 161 | 48.4% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **10,321** | **22,219** | **46.5%** | |
+| **total** | **10,538** | **22,219** | **47.4%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

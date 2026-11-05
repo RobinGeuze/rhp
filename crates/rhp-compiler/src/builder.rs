@@ -70,6 +70,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
     /// Pending `goto`s: placeholder position, label, scope path, line.
     pub(crate) gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
+    /// In a property hook: the property's name and the hook (php's
+    /// `active_property_info_name` / `active_property_hook_kind`).
+    pub(crate) hook: Option<(Vec<u8>, rhp_bytecode::HookKind)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -111,6 +114,7 @@ impl<'c> ProtoBuilder<'c> {
             goto_serial: 0,
             labels: HashMap::new(),
             gotos: Vec::new(),
+            hook: None,
         }
     }
 
@@ -218,6 +222,7 @@ impl<'c> ProtoBuilder<'c> {
                 | Instr::CallMethodV { .. }
                 | Instr::CallMethodDyn { .. }
                 | Instr::CallStatic { .. }
+                | Instr::CallParentHook { .. }
                 | Instr::CallStaticV { .. }
                 | Instr::CallStaticDyn { .. }
                 | Instr::CallMethodDynV { .. }

@@ -164,6 +164,24 @@ impl Host for Vm {
         self.classes.get(class_id as usize)?.handlers
     }
 
+    fn hooked_properties_for(
+        &mut self,
+        obj: &ObjectHandle,
+        purpose: builtins::zend::object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        use builtins::zend::object_handlers::PropPurpose as P;
+        let cls = obj.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return Ok(None);
+        }
+        let scope = match purpose {
+            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
+            P::Json | P::VarExport => None,
+            _ => return Ok(None),
+        };
+        self.hooked_props_table(obj, scope).map(Some)
+    }
+
     fn std_cast_object(
         &mut self,
         obj: &ObjectHandle,
@@ -1710,7 +1728,8 @@ impl Host for Vm {
         let mut out = Vec::new();
         let mut before = 0usize;
         for (key, pe) in &entry.props {
-            if self.internal_slot(o.class, key) {
+            // A virtual property has no slot to dump.
+            if self.internal_slot(o.class, key) || pe.virt {
                 continue;
             }
             if o.properties.contains_key(key) {
@@ -2056,6 +2075,36 @@ impl Host for Vm {
         let mut od = h.borrow_mut();
         *classes::prop_slot_mut(&self.classes, &mut od, storage) = val;
         true
+    }
+
+    fn unserialize_virtual_prop(&self, obj: &Value, key: &[u8]) -> Option<Vec<u8>> {
+        let Value::Object(h) = deref(obj) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        let entry = &self.classes[cls as usize];
+        if !entry.hooked {
+            return None;
+        }
+        let name: &[u8] = if key.first() == Some(&0) {
+            let end = key[1..].iter().position(|&b| b == 0)?;
+            let (owner, name) = (&key[1..end + 1], &key[end + 2..]);
+            if !(owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes())) {
+                return None;
+            }
+            name
+        } else {
+            key
+        };
+        let k = entry.prop_visible.get(&PhpStr::from_bytes(name.to_vec()))?;
+        let pe = entry.props.get(k).filter(|pe| pe.virt)?;
+        let mut out = self.classes[pe.declaring_class as usize]
+            .name
+            .as_bytes()
+            .to_vec();
+        out.extend_from_slice(b"::$");
+        out.extend_from_slice(key);
+        Some(out)
     }
 
     fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {

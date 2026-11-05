@@ -101,6 +101,7 @@ fn prelude_classes_isolated(builtins: &Builtins, src: &str) -> Result<PreludePar
             match stmt {
                 Statement::Class(c) => classes.push(compile_class(&cx, c)?),
                 Statement::Interface(i) => classes.push(compile_interface(&cx, i)?),
+                Statement::Enum(e) => classes.push(crate::decl::compile_enum(&cx, e)?),
                 Statement::Function(f) => functions.push(Rc::new(compile_function(&cx, f)?)),
                 _ => {}
             }

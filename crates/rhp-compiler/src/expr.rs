@@ -139,10 +139,16 @@ impl ProtoBuilder<'_> {
             return Ok(dst);
         }
         if let MagicConstant::Property(_) = mc {
-            return Err(Thrown::unsupported(
-                "__PROPERTY__",
-                "only valid in property hooks",
-            ));
+            let name = match (&self.hook, self.scope_kind) {
+                (Some(h), _) => h.0.clone(),
+                (None, ScopeKind::Init) => {
+                    self.cx.cur_property.borrow().clone().unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
+            let k = self.intern_const(Value::str(name));
+            self.emit(Instr::LoadConst { dst, k });
+            return Ok(dst);
         }
         let s: Vec<u8> = match mc {
             MagicConstant::File(_) => self.cx.file_name(),
@@ -441,6 +447,17 @@ impl ProtoBuilder<'_> {
                 let dst = self.alloc_temp();
                 self.emit(Instr::IncDecLval { dst, pre, delta });
                 Ok(dst)
+            }
+            // zend_ensure_writable_variable.
+            Expression::Call(c) => {
+                use crate::parse::cst::Call;
+                use mago_span::HasSpan;
+                let msg = match c {
+                    Call::Function(_) => "Can't use function return value in write context",
+                    _ => "Can't use method return value in write context",
+                };
+                self.cx.fatal(target.span().start.offset, msg.into());
+                Ok(self.alloc_temp())
             }
             _ => Err(Thrown::unsupported(
                 "++/-- target",

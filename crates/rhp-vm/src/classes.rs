@@ -80,6 +80,9 @@ pub struct ClassEntry {
     /// php's `ce->create_object` is set (see
     /// [`rhp_builtins::zend::object_handlers::ClassHandlers::create_object`]).
     pub create_object: bool,
+    /// Some property has hooks (php's `ce->num_hooked_props`): property
+    /// access takes the hook-aware path only for such classes.
+    pub hooked: bool,
 }
 
 #[derive(Clone)]
@@ -121,7 +124,17 @@ pub struct PropEntry {
     /// Declared without a default: a typed one starts uninitialized (its
     /// slot is absent from a new object).
     pub no_default: bool,
+    /// The `get` / `set` hooks (php's `prop_info->hooks`); `None` for a
+    /// property without hooks.
+    pub hooks: Option<Rc<PropHooks>>,
+    /// A virtual (unbacked) hooked property: objects have no slot for it.
+    pub virt: bool,
+    pub is_final: bool,
+    pub is_abstract: bool,
 }
+
+/// A property's hooks, indexed by [`rhp_bytecode::HookKind`].
+pub type PropHooks = [Option<ResolvedMethod>; 2];
 
 impl PropEntry {
     /// A typed property without a default starts uninitialized.
@@ -291,6 +304,167 @@ fn dynamic_or_bad(name: &PhpStr) -> PropRes {
     } else {
         PropRes::Dynamic
     }
+}
+
+fn cname(classes: &[ClassEntry], id: ClassId) -> String {
+    String::from_utf8_lossy(classes[id as usize].name.as_bytes()).into_owned()
+}
+
+/// php's do_inherit_property for a property the class redeclares: the
+/// prototype, `final`, and the hooks (inherit_property_hook). `inh` is the
+/// parent's (or a trait's / earlier) entry under the same name.
+fn inherit_prop(
+    classes: &[ClassEntry],
+    class_name: &PhpStr,
+    inh: &PropEntry,
+    pe: &mut PropEntry,
+) -> Result<(), String> {
+    let from_interface = classes
+        .get(inh.declaring_class as usize)
+        .is_some_and(|c| c.kind == ClassKind::Interface);
+    if inh.is_final {
+        return Err(format!(
+            "Cannot override final property {}::${}",
+            cname(classes, inh.declaring_class),
+            String::from_utf8_lossy(pe.name.as_bytes())
+        ));
+    }
+    if inh.visibility == Visibility::Private {
+        return Ok(());
+    }
+    if !from_interface {
+        pe.prototype = inh.prototype;
+    }
+    // The set visibility may not narrow (a get-only virtual parent has
+    // none).
+    let set_flag = |p: &PropEntry| {
+        p.set_visibility.or_else(|| {
+            (p.readonly && p.visibility == Visibility::Public).then_some(Visibility::Protected)
+        })
+    };
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    let get_only_virtual = inh.virt
+        && inh
+            .hooks
+            .as_ref()
+            .is_some_and(|h| h[rhp_bytecode::HookKind::Set as usize].is_none());
+    if let (Some(child_set), false) = (set_flag(pe), get_only_virtual) {
+        let parent_set = set_flag(inh);
+        if rank(child_set) > rank(parent_set.unwrap_or(inh.visibility)) {
+            let shown = match parent_set {
+                Some(Visibility::Private) => "private(set)",
+                Some(Visibility::Protected) => "protected(set)",
+                _ => "omitted",
+            };
+            return Err(format!(
+                "Set access level of {}::${} must be {shown} (as in class {}){}",
+                String::from_utf8_lossy(class_name.as_bytes()),
+                String::from_utf8_lossy(pe.name.as_bytes()),
+                cname(classes, inh.declaring_class),
+                if parent_set.is_some() {
+                    " or weaker"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    if !inh.virt {
+        // A backed parent keeps the child backed (its slot holds the value).
+        pe.virt = false;
+    }
+    if inh.hooks.is_none() && pe.hooks.is_none() {
+        return Ok(());
+    }
+    let mut hooks: PropHooks = pe.hooks.as_deref().cloned().unwrap_or_default();
+    for kind in 0..2 {
+        let Some(parent) = inh.hooks.as_ref().and_then(|h| h[kind].as_ref()) else {
+            continue;
+        };
+        match &hooks[kind] {
+            None => {
+                // An abstract parent hook a backed property implements.
+                let has_op = !pe.virt && (kind == 0 || !pe.readonly);
+                if parent.is_abstract && has_op {
+                    continue;
+                }
+                hooks[kind] = Some(parent.clone());
+            }
+            Some(_) if parent.visibility == Visibility::Private => {}
+            Some(_) if parent.is_final => {
+                return Err(format!(
+                    "Cannot override final property hook {}::{}()",
+                    cname(classes, parent.defining_class),
+                    String::from_utf8_lossy(parent.proto.name.as_bytes())
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    pe.hooks = hooks.iter().any(Option::is_some).then(|| Rc::new(hooks));
+    Ok(())
+}
+
+/// php's zend_verify_hooked_property for the class's own hooked
+/// properties, once inheritance settled whether each is virtual.
+fn verify_hooked_props(
+    classes: &[ClassEntry],
+    class_name: &PhpStr,
+    id: ClassId,
+    props: &mut IndexMap<PhpStr, PropEntry>,
+) -> Result<(), String> {
+    let _ = classes;
+    let cn = String::from_utf8_lossy(class_name.as_bytes()).into_owned();
+    for pe in props.values_mut() {
+        if pe.declaring_class != id {
+            continue;
+        }
+        let Some(hooks) = pe.hooks.clone() else {
+            continue;
+        };
+        let pn = String::from_utf8_lossy(pe.name.as_bytes()).into_owned();
+        if pe.virt && (!pe.no_default || pe.init.is_some()) {
+            return Err(format!(
+                "Cannot specify default value for virtual hooked property {cn}::${pn}"
+            ));
+        }
+        if !pe.virt && pe.ty.is_none() && pe.no_default {
+            // A backed untyped property defaults to null.
+            pe.no_default = false;
+        }
+        let mut abstract_error = pe.is_abstract;
+        for (kind, h) in hooks.iter().enumerate() {
+            let Some(h) = h else { continue };
+            if kind == 0 && h.proto.returns_ref && !pe.virt && hooks[1].is_some() {
+                return Err(format!(
+                    "Get hook of backed property {cn}::{pn} with set hook may not return by reference"
+                ));
+            }
+            if h.is_abstract {
+                abstract_error = false;
+            }
+        }
+        if abstract_error {
+            return Err(format!(
+                "Abstract property {cn}::${pn} must specify at least one abstract hook"
+            ));
+        }
+        if pe.virt && pe.set_visibility.is_some() && (hooks[0].is_none() || hooks[1].is_none()) {
+            let prefix = if hooks[0].is_none() {
+                "Write-only"
+            } else {
+                "Read-only"
+            };
+            return Err(format!(
+                "{prefix} virtual property {cn}::${pn} must not specify asymmetric visibility"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// php's `zend_asymmetric_property_has_set_access`: may `scope` write the
@@ -584,7 +758,6 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
     };
     let mut out = Vec::with_capacity(capacity.max(classes.len()));
     for e in classes {
-        debug_assert!(e.enum_cases.is_empty());
         let mut static_props = IndexMap::with_capacity(e.static_props.len());
         for (k, sp) in &e.static_props {
             let sp = StaticProp {
@@ -617,6 +790,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             decl_line: e.decl_line,
             handlers: e.handlers,
             create_object: e.create_object,
+            hooked: e.hooked,
         });
     }
     out
@@ -639,12 +813,18 @@ impl Vm {
             self.class_ids = p.class_ids.clone();
             self.class_order = Vec::with_capacity(p.capacity.1);
             self.class_order.extend_from_slice(&p.class_order);
+            // Each request gets its own enum case objects.
+            for id in 0..self.classes.len() {
+                if self.classes[id].kind == ClassKind::Enum {
+                    let proto = self.classes[id].proto.clone();
+                    let unit = self.classes[id].unit;
+                    self.materialize_enum_cases(id as ClassId, &proto, unit);
+                }
+            }
             return Ok(());
         }
         self.install_classes(protos, 0)?;
-        if PRELUDE_LINKED_ONCE.with(|l| l.replace(true))
-            && self.classes.iter().all(|e| e.enum_cases.is_empty())
-        {
+        if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
                 classes: copy_classes(&self.classes, 0),
@@ -769,7 +949,8 @@ impl Vm {
                     .parent
                     .as_ref()
                     .is_none_or(|p| self.class_ids.contains_key(&lc(p.as_bytes())))
-                && self.const_types_resolvable(&proto);
+                && self.const_types_resolvable(&proto)
+                && !self.hook_variance_unresolved(&proto);
             if !early || self.class_ids.contains_key(&lc(proto.name.as_bytes())) {
                 continue;
             }
@@ -913,6 +1094,32 @@ impl Vm {
         Ok(true)
     }
 
+    /// php's num_hooked_prop_variance_checks: a set hook whose value type
+    /// names a class not declared yet blocks early binding.
+    fn hook_variance_unresolved(&self, p: &ClassProto) -> bool {
+        use rhp_bytecode::TypeKind as K;
+        let unknown = |t: &TypeHint| {
+            t.kinds
+                .iter()
+                .filter_map(|k| match k {
+                    K::Named(n) => Some(n),
+                    _ => None,
+                })
+                .chain(t.groups.iter().flatten())
+                .any(|n| !self.class_ids.contains_key(&lc(n.as_bytes())))
+        };
+        p.props.iter().any(|pp| {
+            let Some(set) = &pp.hooks[1] else {
+                return false;
+            };
+            let vt = set.proto.params.first().and_then(|p| p.type_hint.as_ref());
+            match (vt, &pp.type_hint) {
+                (Some(vt), Some(pt)) => vt != pt && (unknown(vt) || unknown(pt)),
+                _ => false,
+            }
+        })
+    }
+
     pub(crate) fn deps_ready(&self, p: &ClassProto) -> bool {
         let known = |n: &PhpStr| self.class_ids.contains_key(&lc(n.as_bytes()));
         p.parent.as_ref().is_none_or(known)
@@ -1046,21 +1253,23 @@ impl Vm {
             .map(|p| self.classes[p as usize].prop_visible.clone())
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
-        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| {
-            // Redeclaring an inherited public/protected property keeps its
-            // root declaration as the prototype.
-            if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
-                if inh.visibility != Visibility::Private {
-                    pe.prototype = inh.prototype;
+        let classes = &self.classes;
+        let mut declare =
+            |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| -> Result<(), String> {
+                // Redeclaring an inherited public/protected property keeps its
+                // root declaration as the prototype.
+                if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                    inherit_prop(classes, &proto.name, inh, &mut pe)?;
                 }
-            }
-            let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
-            prop_visible.insert(pe.name.clone(), key.clone());
-            if pe.visibility == Visibility::Private {
-                own_private.insert(pe.name.clone(), key.clone());
-            }
-            props.insert(key, pe);
-        };
+                let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+                prop_visible.insert(pe.name.clone(), key.clone());
+                if pe.visibility == Visibility::Private {
+                    own_private.insert(pe.name.clone(), key.clone());
+                }
+                props.insert(key, pe);
+                Ok(())
+            };
+        let mut link_err: Option<String> = None;
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),
@@ -1068,7 +1277,25 @@ impl Vm {
                 // Placeholder until update_class_constants evaluates it.
                 PropDefaultProto::Init(thunk) => (Value::Null, Some(unit_fn(thunk, unit))),
             };
-            declare(
+            let hooks = pp.has_hooks().then(|| {
+                Rc::new(pp.hooks.clone().map(|h| {
+                    h.map(|h| ResolvedMethod {
+                        proto: h.proto,
+                        unit,
+                        defining_class: id,
+                        visibility: if pp.visibility == Visibility::Private {
+                            Visibility::Private
+                        } else {
+                            Visibility::Public
+                        },
+                        is_static: false,
+                        is_abstract: h.is_abstract,
+                        is_final: h.is_final,
+                        prototype: None,
+                    })
+                }))
+            });
+            let r = declare(
                 &mut props,
                 PropEntry {
                     name: pp.name.clone(),
@@ -1081,27 +1308,94 @@ impl Vm {
                     ty: pp.type_hint.clone().map(Rc::new),
                     readonly: pp.is_readonly || proto.flags.is_readonly,
                     no_default: matches!(pp.default, PropDefaultProto::None),
+                    hooks,
+                    virt: pp.is_virtual,
+                    is_final: pp.is_final,
+                    is_abstract: pp.is_abstract,
                 },
             );
+            if let Err(e) = r {
+                link_err.get_or_insert(e);
+            }
         }
         // Trait properties follow the class's own (php binds traits after
         // compiling the class body); one the class declares itself is skipped.
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for pe in self.classes[tid as usize].props.values().cloned() {
-                if proto.props.iter().any(|pp| pp.name == pe.name) {
+                if let Some(own) = proto.props.iter().find(|pp| pp.name == pe.name) {
+                    if own.has_hooks() || pe.hooks.is_some() {
+                        link_err.get_or_insert(format!(
+                            "{} and {} define the same hooked property (${}) in the composition of {}. \
+                             Conflict resolution between hooked properties is currently not supported. \
+                             Class was composed",
+                            String::from_utf8_lossy(proto.name.as_bytes()),
+                            String::from_utf8_lossy(self.classes[tid as usize].name.as_bytes()),
+                            String::from_utf8_lossy(pe.name.as_bytes()),
+                            String::from_utf8_lossy(proto.name.as_bytes()),
+                        ));
+                    }
                     continue;
                 }
-                declare(
+                let hooks = pe.hooks.as_ref().map(|h| {
+                    Rc::new(h.as_ref().clone().map(|m| {
+                        m.map(|m| ResolvedMethod {
+                            defining_class: id,
+                            ..m
+                        })
+                    }))
+                });
+                let r = declare(
                     &mut props,
                     PropEntry {
                         declaring_class: id,
                         prototype: id,
+                        hooks,
                         ..pe
                     },
                 );
+                if let Err(e) = r {
+                    link_err.get_or_insert(e);
+                }
             }
         }
+        drop(declare);
+        // Interface properties (do_interface_implementation): a property the
+        // class declares is checked against it, any other one is added.
+        for iname in &proto.interfaces {
+            let iid = self.class_ids[&lc(iname.as_bytes())];
+            for ipe in self.classes[iid as usize].props.values() {
+                match prop_visible
+                    .get(&ipe.name)
+                    .and_then(|k| props.get_index_of(k))
+                {
+                    Some(i) => {
+                        let mut pe = props[i].clone();
+                        if pe.declaring_class == ipe.declaring_class {
+                            continue;
+                        }
+                        let r = inherit_prop(&self.classes, &proto.name, ipe, &mut pe);
+                        match r {
+                            Ok(()) => props[i] = pe,
+                            Err(e) => {
+                                link_err.get_or_insert(e);
+                            }
+                        }
+                    }
+                    None => {
+                        prop_visible.insert(ipe.name.clone(), ipe.name.clone());
+                        props.insert(ipe.name.clone(), ipe.clone());
+                    }
+                }
+            }
+        }
+        if link_err.is_none() {
+            link_err = verify_hooked_props(&self.classes, &proto.name, id, &mut props).err();
+        }
+        if let Some(msg) = link_err {
+            return Err(self.link_fatal(proto, 64, &msg));
+        }
+        let hooked = props.values().any(|pe| pe.hooks.is_some());
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
         let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
@@ -1364,35 +1658,20 @@ impl Vm {
             decl_line: proto.decl_line,
             handlers,
             create_object,
+            hooked,
         });
-
-        // Enum cases: materialize one singleton object per case and expose it as
-        // a public class constant, so `E::Case` resolves through `FetchClassConst`.
+        let inherits_hooks = {
+            let e = &self.classes[id as usize];
+            e.parent
+                .into_iter()
+                .chain(e.interfaces.iter().copied())
+                .any(|c| self.classes[c as usize].hooked)
+        };
+        if (hooked || inherits_hooks) && self.internal_classes > 0 {
+            self.verify_hook_types(id)?;
+        }
         if proto.kind == ClassKind::Enum {
-            for case in &proto.enum_cases {
-                let (value, init) = match &case.value {
-                    None => (None, None),
-                    Some(ConstInitProto::Const(v)) => (Some(v.clone()), None),
-                    // The backing value is filled in on first access.
-                    Some(ConstInitProto::Thunk(t)) => (
-                        Some(Value::Null),
-                        Some(ConstInit::EnumCase(unit_fn(t, unit))),
-                    ),
-                };
-                let obj = self.new_enum_case(id, &case.name, value);
-                self.classes[id as usize].constants.insert(
-                    case.name.as_bytes().to_vec(),
-                    ClassConst {
-                        value: Value::Object(obj.clone()),
-                        visibility: Visibility::Public,
-                        declaring_class: id,
-                        init,
-                        visited: false,
-                        ty: None,
-                    },
-                );
-                self.classes[id as usize].enum_cases.push(obj);
-            }
+            self.materialize_enum_cases(id, proto, unit);
         }
         if self.internal_classes > 0
             && !proto.decl_file.is_empty()
@@ -1403,7 +1682,109 @@ impl Vm {
             self.class_order.pop();
             return Ok(false);
         }
+        // php verifies abstractness last, after the inheritance checks.
+        if proto.kind == ClassKind::Class && self.internal_classes > 0 {
+            self.verify_abstract_class(id)?;
+        }
         Ok(true)
+    }
+
+    /// Enum cases: one singleton object per case, exposed as a public class
+    /// constant, so `E::Case` resolves through `FetchClassConst`.
+    fn materialize_enum_cases(&mut self, id: ClassId, proto: &ClassProto, unit: UnitId) {
+        self.classes[id as usize].enum_cases.clear();
+        for case in &proto.enum_cases {
+            let (value, init) = match &case.value {
+                None => (None, None),
+                Some(ConstInitProto::Const(v)) => (Some(v.clone()), None),
+                // The backing value is filled in on first access.
+                Some(ConstInitProto::Thunk(t)) => (
+                    Some(Value::Null),
+                    Some(ConstInit::EnumCase(unit_fn(t, unit))),
+                ),
+            };
+            let obj = self.new_enum_case(id, &case.name, value);
+            self.classes[id as usize].constants.insert(
+                case.name.as_bytes().to_vec(),
+                ClassConst {
+                    value: Value::Object(obj.clone()),
+                    visibility: Visibility::Public,
+                    declaring_class: id,
+                    init,
+                    visited: false,
+                    ty: None,
+                },
+            );
+            self.classes[id as usize].enum_cases.push(obj);
+        }
+    }
+
+    /// An E_COMPILE_ERROR (64) / E_ERROR (1) raised while linking `proto`,
+    /// reported at its declaration.
+    pub(crate) fn link_fatal(&mut self, proto: &ClassProto, level: i64, msg: &str) -> Thrown {
+        use rhp_builtins::Host;
+        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
+        let trace = if crate::ini_bool(&backtraces) {
+            let trace = Value::Array(self.build_trace_ex(false, false));
+            rhp_builtins::zend::exceptions::trace_to_string(self, &trace)
+        } else {
+            Vec::new()
+        };
+        let file = proto.decl_file.as_bytes().to_vec();
+        let line = proto.decl_line as i64;
+        self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
+        self.display_error_trace(level, "Fatal error", msg.as_bytes(), &file, line, &trace);
+        self.destructibles.clear();
+        Thrown::Exit(255)
+    }
+
+    /// php's zend_verify_abstract_class: a class that is not declared
+    /// abstract must implement every abstract method and property hook.
+    fn verify_abstract_class(&mut self, id: ClassId) -> Result<(), Thrown> {
+        let e = &self.classes[id as usize];
+        let explicit = e.flags.is_abstract;
+        let mut names: Vec<String> = Vec::new();
+        for m in e.methods.values() {
+            if m.is_abstract && (!explicit || m.visibility == Visibility::Private) {
+                names.push(format!(
+                    "{}::{}",
+                    cname(&self.classes, m.defining_class),
+                    String::from_utf8_lossy(m.proto.name.as_bytes())
+                ));
+            }
+        }
+        if !explicit {
+            for pe in e.props.values() {
+                for h in pe.hooks.iter().flat_map(|h| h.iter().flatten()) {
+                    if h.is_abstract {
+                        names.push(format!(
+                            "{}::{}",
+                            cname(&self.classes, h.defining_class),
+                            String::from_utf8_lossy(h.proto.name.as_bytes())
+                        ));
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            return Ok(());
+        }
+        let cnt = names.len();
+        let s = if cnt > 1 { "s" } else { "" };
+        let mut list = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        if cnt > 3 {
+            list.push_str(", ...");
+        }
+        let n = cname(&self.classes, id);
+        let msg = if !explicit && !is_anon_name(e.name.as_bytes()) {
+            format!(
+                "Class {n} contains {cnt} abstract method{s} and must therefore be declared abstract or implement the remaining method{s} ({list})"
+            )
+        } else {
+            format!("Class {n} must implement {cnt} abstract method{s} ({list})")
+        };
+        let proto = e.proto.clone();
+        Err(self.link_fatal(&proto, 1, &msg))
     }
 
     /// Build an enum case's singleton object: an instance of the enum class with
@@ -1641,8 +2022,8 @@ impl Vm {
         let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
             IndexMap::with_hasher(FxBuildHasher);
         for (name, pe) in &self.classes[class_id as usize].props {
-            if pe.starts_uninit() {
-                continue; // uninitialized typed property: no slot yet
+            if pe.starts_uninit() || pe.virt {
+                continue; // uninitialized typed / virtual property: no slot
             }
             properties.insert(name.clone(), pe.default.clone());
         }

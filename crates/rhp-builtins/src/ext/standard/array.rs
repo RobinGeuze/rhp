@@ -2607,7 +2607,13 @@ pub(crate) fn reset_state() {
 
 /// Forget a freed object's internal pointer.
 pub(crate) fn object_freed(id: u32) {
-    let _ = OBJECT_POS.try_with(|m| m.borrow_mut().remove(&id));
+    // Runs for every object freed: an empty table is not hashed into.
+    let _ = OBJECT_POS.try_with(|m| {
+        let mut m = m.borrow_mut();
+        if !m.is_empty() {
+            m.remove(&id);
+        }
+    });
 }
 
 /// The table php's Z_OBJPROP gives the internal-pointer functions: the

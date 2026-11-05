@@ -390,7 +390,12 @@ pub(super) fn csr_of(v: &Value) -> Option<*mut sys::X509_REQ> {
 /// The object free hook.
 pub(crate) fn object_freed(id: u32) {
     let old = NATIVES
-        .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+        .try_with(|m| {
+            // Runs for every object freed: an empty table is not hashed into.
+            m.try_borrow_mut()
+                .ok()
+                .and_then(|mut m| (!m.is_empty()).then(|| m.remove(&id)).flatten())
+        })
         .ok()
         .flatten();
     drop(old);

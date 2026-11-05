@@ -242,7 +242,9 @@ pub(crate) enum Deny {
 /// parent method sees the parent's private slot even when a child redeclares
 /// the name); otherwise the most-derived declaration applies, where a parent's
 /// private is invisible (treated as dynamic) and an own private / protected is
-/// an access error.
+/// an access error. Inlined into the property paths, so that its map lookups
+/// stay inlined whichever codegen unit this module lands in.
+#[inline]
 pub(crate) fn resolve_prop(
     classes: &[ClassEntry],
     cls: ClassId,

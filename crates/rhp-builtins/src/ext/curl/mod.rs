@@ -68,17 +68,25 @@ pub(crate) fn reset_state() {
 /// The object free hook: php's `curl_free_obj`, `curl_multi_free_obj` and
 /// `curl_share_free_obj`.
 pub(crate) fn object_freed(id: u32) {
+    // Runs for every object freed: an empty table is not hashed into.
+    fn remove<T>(m: &mut HashMap<u32, T>, id: u32) -> Option<T> {
+        if m.is_empty() {
+            None
+        } else {
+            m.remove(&id)
+        }
+    }
     let take = |id: u32| {
         let e = EASY
-            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| remove(&mut m, id)))
             .ok()
             .flatten();
         let mh = MULTI
-            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| remove(&mut m, id)))
             .ok()
             .flatten();
         let s = SHARE
-            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&id)))
+            .try_with(|m| m.try_borrow_mut().ok().and_then(|mut m| remove(&mut m, id)))
             .ok()
             .flatten();
         (e, mh, s)

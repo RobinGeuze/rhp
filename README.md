@@ -43,8 +43,8 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 2,439 | 5,396 | 45.2% | no Fiber (0/113) or lazy objects (0/229); property hooks and the pipe operator `\|>` are refused |
-| tests | 530 | 895 | 59.2% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 2,638 | 5,396 | 48.9% | no Fiber (0/113) or lazy objects (1/229); property hooks and the pipe operator `\|>` are refused |
+| tests | 550 | 895 | 61.5% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 6 | 117 | 5.1% | most tests run the php binary or `-S`, which rhp lacks |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
 | ext/standard | 2,298 | 3,880 | 59.2% | no user stream wrappers, stream filters, `dns_*`, `mail`, `getimagesize` |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 78 | 161 | 48.4% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **9,692** | **22,219** | **43.6%** | |
+| **total** | **9,911** | **22,219** | **44.6%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

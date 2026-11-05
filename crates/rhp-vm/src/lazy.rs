@@ -717,18 +717,20 @@ impl Vm {
         let Some(inst) = h.borrow().lazy_instance() else {
             return self.clone_members(h);
         };
+        let (cls, flags) = {
+            let b = h.borrow();
+            (b.class, b.lazy().map_or(0, |l| l.flags))
+        };
+        // The new proxy is allocated before the instance's clone, as in php
+        // (object ids).
+        let id = self.alloc_object_id();
+        let props: IndexMap<PhpStr, Value, FxBuildHasher> = IndexMap::with_hasher(FxBuildHasher);
+        let p: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         let new_inst = self.clone_members(&inst)?;
         let icls = new_inst.borrow().class;
         if let Some(m) = self.lookup_method(icls, b"__clone") {
             self.call_sync(&m, Some(new_inst.clone()), icls, Vec::new())?;
         }
-        let (cls, flags) = {
-            let b = h.borrow();
-            (b.class, b.lazy().map_or(0, |l| l.flags))
-        };
-        let id = self.alloc_object_id();
-        let props: IndexMap<PhpStr, Value, FxBuildHasher> = IndexMap::with_hasher(FxBuildHasher);
-        let p: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         p.borrow_mut().set_lazy(LazyInfo {
             obj_flags: LazyInfo::PROXY,
             flags,

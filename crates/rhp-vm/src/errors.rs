@@ -49,11 +49,67 @@ impl Vm {
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
         self.last_error = Some((64, msg.to_vec(), file.clone(), line));
-        let trace = Value::Array(self.build_trace_ex(false, false));
-        let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
+        let trace = self.fatal_trace();
         self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
         self.destructed_below = self.next_object_id;
         Thrown::Exit(255)
+    }
+
+    /// The backtrace a fatal error shows (`fatal_error_backtraces`).
+    fn fatal_trace(&self) -> Vec<u8> {
+        if !ini_bool(&self.ini_get(b"fatal_error_backtraces").unwrap_or_default()) {
+            return Vec::new();
+        }
+        let trace = Value::Array(self.build_trace_ex(false, false));
+        builtins::zend::exceptions::trace_to_string(self, &trace)
+    }
+
+    /// [`Vm::fatal_compile_error`] reported at `file`:`line` (zend_error_at).
+    pub(crate) fn fatal_compile_error_at(
+        &mut self,
+        msg: &[u8],
+        file: Vec<u8>,
+        line: i64,
+    ) -> Thrown {
+        self.last_error = Some((64, msg.to_vec(), file.clone(), line));
+        let trace = self.fatal_trace();
+        self.display_error_trace(64, "Fatal error", msg, &file, line, &trace);
+        self.destructed_below = self.next_object_id;
+        Thrown::Exit(255)
+    }
+
+    /// A fatal error of type `ty` at the innermost user frame, with the
+    /// backtrace; the request bails out.
+    pub(crate) fn fatal_error_here(&mut self, ty: i64, msg: &[u8]) -> Thrown {
+        let (file, line) = match (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.stack[i].proto.is_internal())
+        {
+            None => (Vec::new(), 0),
+            Some(i) => (self.current_file(i), self.current_line(i) as i64),
+        };
+        self.last_error = Some((ty, msg.to_vec(), file.clone(), line));
+        let trace = self.fatal_trace();
+        self.display_error_trace(ty, "Fatal error", msg, &file, line, &trace);
+        self.destructed_below = self.next_object_id;
+        Thrown::Exit(255)
+    }
+
+    /// A throwable as `zval_get_string` makes it (its `__toString()`).
+    pub(crate) fn throwable_string(&mut self, thrown: Thrown) -> Vec<u8> {
+        let thrown = self.materialize(thrown, None);
+        let Thrown::Object(h) = thrown else {
+            return Vec::new();
+        };
+        let cls = h.borrow().class;
+        let obj = Value::Object(h.clone());
+        match self.lookup_method(cls, b"__tostring") {
+            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
+                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+                _ => builtins::zend::exceptions::throwable_to_string(self, &obj),
+            },
+            None => builtins::zend::exceptions::throwable_to_string(self, &obj),
+        }
     }
 
     /// Raise a php diagnostic (`E_WARNING`, `E_NOTICE`, …): record it for

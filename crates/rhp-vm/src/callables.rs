@@ -174,26 +174,26 @@ impl Vm {
         let Some(mut fbc) = found else {
             return Ok(self.lookup_method(cls, b"__call").map(Found::Call));
         };
-        if fbc.visibility != Visibility::Public || fbc.changed {
-            if Some(fbc.defining_class) != scope {
-                let mut done = false;
-                if fbc.changed {
-                    if let Some(p) = self.parent_private_method(scope, cls, name) {
-                        fbc = p;
-                        done = true;
-                    } else if fbc.visibility == Visibility::Public {
-                        done = true;
-                    }
+        if (fbc.visibility != Visibility::Public || fbc.changed)
+            && Some(fbc.defining_class) != scope
+        {
+            let mut done = false;
+            if fbc.changed {
+                if let Some(p) = self.parent_private_method(scope, cls, name) {
+                    fbc = p;
+                    done = true;
+                } else if fbc.visibility == Visibility::Public {
+                    done = true;
                 }
-                if !done
-                    && (fbc.visibility == Visibility::Private
-                        || !self.check_protected(self.method_root(&fbc), scope))
-                {
-                    return match self.lookup_method(cls, b"__call") {
-                        Some(c) => Ok(Some(Found::Call(c))),
-                        None => Err(self.bad_method_call(&fbc, name, scope)),
-                    };
-                }
+            }
+            if !done
+                && (fbc.visibility == Visibility::Private
+                    || !self.check_protected(self.method_root(&fbc), scope))
+            {
+                return match self.lookup_method(cls, b"__call") {
+                    Some(c) => Ok(Some(Found::Call(c))),
+                    None => Err(self.bad_method_call(&fbc, name, scope)),
+                };
             }
         }
         if fbc.is_abstract {
@@ -392,12 +392,13 @@ impl Vm {
             let calling = fcc.calling.expect("class resolved");
             if let Some(org) = ce_org {
                 if !self.instance_of(org, calling) {
-                    return Err(format!(
-                        "class {} is not a subclass of {}",
-                        self.class_name_lossy(org),
-                        self.class_name_lossy(calling)
-                    )
-                    .into_bytes());
+                    return Err([
+                        b"class ",
+                        self.class(org).name.as_bytes(),
+                        b" is not a subclass of ",
+                        self.class(calling).name.as_bytes(),
+                    ]
+                    .concat());
                 }
                 if !suppress {
                     deps.push(format!(
@@ -503,46 +504,41 @@ impl Vm {
         }
         let Some(fbc) = fbc else {
             return Err(match calling {
-                Some(c) => format!(
-                    "class {} does not have a method \"{}\"",
-                    self.class_name_lossy(c),
-                    String::from_utf8_lossy(mname)
-                )
-                .into_bytes(),
-                None => format!(
-                    "function {}() does not exist",
-                    String::from_utf8_lossy(mname)
-                )
-                .into_bytes(),
+                Some(c) => [
+                    b"class ",
+                    self.class(c).name.as_bytes(),
+                    b" does not have a method \"",
+                    mname,
+                    b"\"",
+                ]
+                .concat(),
+                None => [b"function ", mname, b"() does not exist"].concat(),
             });
         };
         if let (Some(c), Found::Method(m)) = (calling, &fbc) {
             if !via_handler {
-                let fname = || String::from_utf8_lossy(m.proto.name.as_bytes());
+                let msg = |pre: &[u8], post: &[u8]| {
+                    [
+                        pre,
+                        self.class(c).name.as_bytes(),
+                        b"::",
+                        m.proto.name.as_bytes(),
+                        post,
+                    ]
+                    .concat()
+                };
                 if m.is_abstract {
-                    return Err(format!(
-                        "cannot call abstract method {}::{}()",
-                        self.class_name_lossy(c),
-                        fname()
-                    )
-                    .into_bytes());
+                    return Err(msg(b"cannot call abstract method ", b"()"));
                 }
                 if fcc.object.is_none() && !m.is_static {
-                    return Err(format!(
-                        "non-static method {}::{}() cannot be called statically",
-                        self.class_name_lossy(c),
-                        fname()
-                    )
-                    .into_bytes());
+                    return Err(msg(
+                        b"non-static method ",
+                        b"() cannot be called statically",
+                    ));
                 }
                 if !self.method_accessible(m, frame.scope) {
-                    return Err(format!(
-                        "cannot access {} method {}::{}()",
-                        vis_word(m.visibility),
-                        self.class_name_lossy(c),
-                        fname()
-                    )
-                    .into_bytes());
+                    let pre = format!("cannot access {} method ", vis_word(m.visibility));
+                    return Err(msg(pre.as_bytes(), b"()"));
                 }
             }
         }

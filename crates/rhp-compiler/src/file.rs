@@ -79,6 +79,9 @@ pub(crate) struct FileCtx<'s> {
     /// Diagnostics php raises while compiling (level, message, line):
     /// `Program::compile_diags`.
     pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
+    /// The leading run of top-level `declare`s (zend_is_first_statement):
+    /// each one's offset, and whether an empty statement came before it.
+    pub(crate) first_declares: Vec<(u32, bool)>,
 }
 
 /// The class-like a declaration sits in, as type compilation needs it.
@@ -123,6 +126,7 @@ impl<'s> FileCtx<'s> {
             num_top_classes: 0,
             fatal: RefCell::new(None),
             compile_diags: RefCell::new(Vec::new()),
+            first_declares: Vec::new(),
         }
     }
 
@@ -137,6 +141,7 @@ impl<'s> FileCtx<'s> {
         let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
+        cx.first_declares = first_declares(program);
         cx.line_starts = build_line_starts(src);
         // Keyed by fully qualified name (lowercased), as call sites resolve.
         for (ns, stmt) in flat {
@@ -327,6 +332,22 @@ fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
         }
     }
     false
+}
+
+/// The top-level `declare`s before any other statement, with whether an
+/// empty statement (`;`, `?>`) came before each.
+fn first_declares(program: &AstProgram) -> Vec<(u32, bool)> {
+    let mut out = Vec::new();
+    let mut nop = false;
+    for stmt in program.statements.iter() {
+        match stmt {
+            Statement::OpeningTag(_) => {}
+            Statement::Noop(_) | Statement::ClosingTag(_) => nop = true,
+            Statement::Declare(d) => out.push((d.declare.span.start.offset, nop)),
+            _ => break,
+        }
+    }
+    out
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').

@@ -22,6 +22,82 @@ pub struct ParseFailure {
     pub line: u32,
 }
 
+thread_local! {
+    /// The E_COMPILE_WARNINGs the grammar actions raised (message, line).
+    static PARSE_WARNINGS: std::cell::RefCell<Vec<(String, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The E_COMPILE_WARNINGs (message, line) the last [`syntax_error`] run
+/// raised: zend_handle_encoding_declaration's, which php raises while
+/// parsing, before any compile diagnostic.
+pub fn take_parse_warnings() -> Vec<(String, u32)> {
+    PARSE_WARNINGS.with(|w| w.take())
+}
+
+/// zend_multibyte_fetch_encoding: mbstring's mbfl_name2encoding (none
+/// without mbstring).
+fn encoding_known(name: &[u8]) -> bool {
+    #[cfg(feature = "mbstring-libmbfl")]
+    return rhp_mbfl_sys::Encoding::by_name(name).is_some();
+    #[cfg(not(feature = "mbstring-libmbfl"))]
+    return {
+        let _ = name;
+        false
+    };
+}
+
+/// `zval_get_string` of a literal declare value (its first token): a number
+/// as php prints it, a quoted string without its quotes.
+fn literal_string(src: &[u8], t: Option<&Tok>) -> Vec<u8> {
+    let Some(t) = t else {
+        return Vec::new();
+    };
+    let text = t.text(src);
+    match t.id {
+        T_LNUMBER | T_DNUMBER => {
+            let digits: Vec<u8> = text.iter().copied().filter(|&c| c != b'_').collect();
+            let d = String::from_utf8_lossy(&digits).to_ascii_lowercase();
+            let int = if t.id == T_DNUMBER {
+                None
+            } else if let Some(h) = d.strip_prefix("0x") {
+                i64::from_str_radix(h, 16).ok()
+            } else if let Some(b) = d.strip_prefix("0b") {
+                i64::from_str_radix(b, 2).ok()
+            } else if let Some(o) = d.strip_prefix("0o") {
+                i64::from_str_radix(o, 8).ok()
+            } else if d.len() > 1 && d.starts_with('0') {
+                i64::from_str_radix(&d[1..], 8).ok()
+            } else {
+                d.parse().ok()
+            };
+            let v = match int {
+                Some(i) => rhp_values::Value::Int(i),
+                None => rhp_values::Value::Float(rhp_values::conv::to_float(
+                    &rhp_values::Value::str(digits.clone()),
+                )),
+            };
+            rhp_values::conv::to_string_bytes(&v)
+        }
+        T_CONSTANT_ENCAPSED_STRING if text.len() >= 2 => {
+            let inner = &text[1..text.len() - 1];
+            if text[0] != b'\'' {
+                return inner.to_vec();
+            }
+            let mut out = Vec::with_capacity(inner.len());
+            let mut i = 0;
+            while i < inner.len() {
+                if inner[i] == b'\\' && matches!(inner.get(i + 1), Some(b'\'' | b'\\')) {
+                    i += 1;
+                }
+                out.push(inner[i]);
+                i += 1;
+            }
+            out
+        }
+        _ => text.to_vec(),
+    }
+}
+
 const PARSE_ERROR: &str = "ParseError";
 const COMPILE_ERROR: &str = "CompileError";
 
@@ -30,6 +106,7 @@ const COMPILE_ERROR: &str = "CompileError";
 /// `None` when php's parser accepts the file.
 pub fn syntax_error(src: &[u8]) -> Option<ParseFailure> {
     let toks = lexer::tokenize(src);
+    PARSE_WARNINGS.with(|w| w.borrow_mut().clear());
     let mut feed = Feed {
         src,
         toks: &toks,
@@ -263,6 +340,19 @@ impl Feed<'_> {
                 .eq_ignore_ascii_case(b"encoding");
             if named && !is_literal(&ids) {
                 return Err("Encoding must be a literal".into());
+            }
+            if named {
+                let line = self.last.map_or(0, |l| self.toks[l].line as u32);
+                let msg = if super::multibyte::enabled() {
+                    let name = literal_string(self.src, value.first().map(|&k| &self.toks[k]));
+                    if encoding_known(&name) {
+                        continue;
+                    }
+                    format!("Unsupported encoding [{}]", String::from_utf8_lossy(&name))
+                } else {
+                    "declare(encoding=...) ignored because Zend multibyte feature is turned off by settings".to_string()
+                };
+                PARSE_WARNINGS.with(|w| w.borrow_mut().push((msg, line)));
             }
         }
         Ok(0)

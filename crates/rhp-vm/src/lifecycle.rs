@@ -271,7 +271,9 @@ impl Vm {
         let script = self.argv.first().cloned().unwrap_or_default();
 
         // variables_order: $_SERVER needs 'S', $_ENV 'E'.
-        let order = builtins::ini_value(b"variables_order").flatten().unwrap_or_default();
+        let order = builtins::ini_value(b"variables_order")
+            .flatten()
+            .unwrap_or_default();
         let has = |c: u8| order.iter().any(|b| b.eq_ignore_ascii_case(&c));
         // sapi_cli_register_variables: the environment, then the script
         // names, then the request time; argv/argc come last.
@@ -301,7 +303,10 @@ impl Vm {
             ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"),
             Value::Float(now),
         );
-        server.insert(ArrayKey::from_bytes(b"REQUEST_TIME"), Value::Int(now as i64));
+        server.insert(
+            ArrayKey::from_bytes(b"REQUEST_TIME"),
+            Value::Int(now as i64),
+        );
         server.insert(
             ArrayKey::from_bytes(b"argv"),
             Value::Array(argv_arr.clone()),

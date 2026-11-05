@@ -225,6 +225,17 @@ fn memory_hard_limit_percent_check(v: &[u8]) -> (Vec<String>, bool) {
 /// once: (level, message).
 pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
     let mut diags = STARTUP_DIAGS.with(|d| std::mem::take(&mut d.borrow_mut().startup));
+    // mbstring's MINIT, once its directives are in.
+    #[cfg(feature = "mbstring-libmbfl")]
+    if module_loaded("mbstring") {
+        let pos = INI_TABLE
+            .iter()
+            .position(|e| e.1 == "mbstring.detect_order")
+            .unwrap_or(0);
+        for (level, msg) in crate::ext::mbstring::startup() {
+            diags.push((pos, String::new(), level, format!("PHP Startup: {msg}")));
+        }
+    }
     diags.sort_by_key(|d| d.0);
     diags.into_iter().map(|d| (d.2, d.3)).collect()
 }
@@ -566,6 +577,15 @@ pub(crate) fn alter_ini_entry(
         return Ok(None);
     }
     crate::ext::iconv::ini_runtime_update(host, name, func)?;
+    #[cfg(feature = "mbstring-libmbfl")]
+    let mb_changed = matches!(
+        name,
+        b"internal_encoding"
+            | b"input_encoding"
+            | b"output_encoding"
+            | b"default_charset"
+            | b"mbstring.internal_encoding"
+    );
     if name == b"date.timezone" && !tz_valid(&newv) {
         let func = format!("{func}()");
         host.emit_diagnostic(crate::E_WARNING, invalid_timezone(&newv, &func).as_bytes())?;
@@ -578,6 +598,13 @@ pub(crate) fn alter_ini_entry(
     let old = ini_value(name).flatten().unwrap_or_default();
     ini_apply(name, Some(&newv));
     ini_store(name, newv);
+    #[cfg(feature = "mbstring-libmbfl")]
+    if mb_changed {
+        for (level, msg) in crate::ext::mbstring::ini_changed(name) {
+            let msg = format!("{func}(): {msg}");
+            host.emit_diagnostic(level, msg.as_bytes())?;
+        }
+    }
     Ok(Some(old))
 }
 

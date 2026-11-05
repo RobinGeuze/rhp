@@ -33,6 +33,9 @@ pub enum IncludeError {
         class: &'static str,
         message: String,
         line: u32,
+        /// The diagnostics the parser raised before it (level, message,
+        /// line).
+        diags: Vec<(i64, String, u32)>,
     },
     /// A compile error (E_COMPILE_ERROR) at `line`: a fatal error, not an
     /// exception — the request bails out (shutdown functions still run).
@@ -132,16 +135,26 @@ impl Vm {
             IncludeError::Parse {
                 class,
                 message,
-                line: 0,
-            } => Thrown::error(class, message),
-            IncludeError::Parse {
-                class,
-                message,
                 line,
-            } => self.materialize(
-                Thrown::error(class, message),
-                Some((file.as_bytes().to_vec(), line)),
-            ),
+                diags,
+            } => {
+                self.emit_parse_diags(file.as_bytes(), &diags);
+                if line == 0 {
+                    // raised outside the file: where the include/eval runs
+                    return Thrown::error(class, message);
+                }
+                self.materialize(
+                    Thrown::error(class, message),
+                    Some((file.as_bytes().to_vec(), line)),
+                )
+            }
+        }
+    }
+
+    /// The diagnostics the parser raised in `file` before it failed.
+    pub fn emit_parse_diags(&mut self, file: &[u8], diags: &[(i64, String, u32)]) {
+        for (level, msg, l) in diags {
+            self.raise_error_at(*level, msg.as_bytes(), file.to_vec(), *l as i64);
         }
     }
 

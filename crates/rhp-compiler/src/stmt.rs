@@ -217,6 +217,7 @@ impl ProtoBuilder<'_> {
             // no-ops for this engine; compile the body (usually just `;`).
             Statement::Declare(d) => {
                 use crate::parse::cst::DeclareBody;
+                self.check_declare(d);
                 match &d.body {
                     DeclareBody::Statement(s) => self.compile_stmt(s)?,
                     DeclareBody::ColonDelimited(c) => {
@@ -264,6 +265,76 @@ impl ProtoBuilder<'_> {
         }
         self.reset_temps();
         Ok(())
+    }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_declare's checks: literal values, where encoding and
+    /// strict_types may appear, strict_types' value and form, unknown
+    /// directives.
+    fn check_declare(&mut self, d: &crate::parse::cst::Declare) {
+        use crate::parse::cst::DeclareBody;
+        use mago_span::HasSpan;
+        let cx = self.cx;
+        let at = d.declare.span.start.offset;
+        let first = cx
+            .first_declares
+            .iter()
+            .find(|(o, _)| *o == at)
+            .map(|&(_, nop)| nop);
+        for item in d.items.iter() {
+            let name = item.name.value;
+            let shown = String::from_utf8_lossy(name);
+            let off = item.span().start.offset;
+            let literal = matches!(
+                item.value,
+                Expression::Literal(_) | Expression::MagicConstant(_)
+            );
+            if !literal {
+                cx.fatal(off, format!("declare({shown}) value must be a literal"));
+                return;
+            }
+            if name.eq_ignore_ascii_case(b"ticks") {
+            } else if name.eq_ignore_ascii_case(b"encoding") {
+                if first != Some(false) {
+                    cx.fatal(
+                        off,
+                        "Encoding declaration pragma must be the very first statement in the script".into(),
+                    );
+                    return;
+                }
+            } else if name.eq_ignore_ascii_case(b"strict_types") {
+                if first.is_none() {
+                    cx.fatal(
+                        off,
+                        "strict_types declaration must be the very first statement in the script"
+                            .into(),
+                    );
+                    return;
+                }
+                let block = !matches!(&d.body, DeclareBody::Statement(Statement::Noop(_)));
+                if block {
+                    cx.fatal(
+                        off,
+                        "strict_types declaration must not use block mode".into(),
+                    );
+                    return;
+                }
+                if !matches!(fold_const(cx, item.value), Ok(Value::Int(0 | 1))) {
+                    cx.fatal(
+                        off,
+                        "strict_types declaration must have 0 or 1 as its value".into(),
+                    );
+                    return;
+                }
+            } else {
+                cx.diag(
+                    rhp_values::E_COMPILE_WARNING,
+                    off,
+                    format!("Unsupported declare '{shown}'"),
+                );
+            }
+        }
     }
 }
 

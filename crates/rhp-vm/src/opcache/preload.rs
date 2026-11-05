@@ -170,7 +170,9 @@ impl Vm {
                 class,
                 message,
                 line,
+                diags,
             }) => {
+                self.emit_parse_diags(file.as_bytes(), &diags);
                 self.report_parse_error(class, &message, &file, line);
                 return false;
             }

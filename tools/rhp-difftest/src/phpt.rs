@@ -214,6 +214,9 @@ const RHP_INI: &[&str] = &[
     "input_encoding",
     "internal_encoding",
     "max_memory_limit",
+    "mbstring.http_input",
+    "mbstring.http_output",
+    "mbstring.internal_encoding",
     "memory_hard_limit_percent",
     "memory_limit",
     "output_encoding",
@@ -224,6 +227,9 @@ const RHP_INI: &[&str] = &[
     "register_argc_argv",
     "serialize_precision",
     "variables_order",
+    "zend.detect_unicode",
+    "zend.multibyte",
+    "zend.script_encoding",
     // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
     // rhp both ignore them.
     "iconv.http_input",

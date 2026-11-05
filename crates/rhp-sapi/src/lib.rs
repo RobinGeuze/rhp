@@ -173,13 +173,23 @@ fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
     })
 }
 
-/// [`parse_error`] as the includer reports it.
-fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
-    parse_error(parsed, src).map(|f| IncludeError::Parse {
-        class: f.class,
-        message: f.message,
-        line: f.line,
-    })
+/// [`parse_error`] as the includer reports it, with the warnings php's
+/// parser raised before it.
+fn parse_failure(parsed: &Parsed, src: &[u8]) -> Result<Vec<(i64, String, u32)>, IncludeError> {
+    let failure = parse_error(parsed, src);
+    let diags = rhp_builtins::zend::take_parse_warnings()
+        .into_iter()
+        .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
+        .collect();
+    match failure {
+        Some(f) => Err(IncludeError::Parse {
+            class: f.class,
+            message: f.message,
+            line: f.line,
+            diags,
+        }),
+        None => Ok(diags),
+    }
 }
 
 /// rhp-builtins as the compiler sees it.
@@ -195,12 +205,71 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
 /// compiler. Every script, include, eval and preload goes through here, and
 /// `rhp-difftest lint` too.
 pub fn compile_file(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
+    // zend.multibyte: the scanner reads the script converted.
+    let filtered = rhp_builtins::zend::multibyte::filter(src);
+    let src = filtered
+        .as_ref()
+        .and_then(|f| f.source.as_deref())
+        .unwrap_or(src);
+    let mut r = compile_source(file, src, mode);
+    if let (Ok(p), Some(out)) = (&mut r, filtered.and_then(|f| f.output)) {
+        output_filter(p, &out);
+    }
+    r
+}
+
+/// The scanner's output filter (zend.multibyte) over a compiled program:
+/// its string constants converted to the internal encoding.
+fn output_filter(p: &mut Program, f: &rhp_builtins::zend::multibyte::OutputFilter) {
+    let proto = |rc: &mut std::rc::Rc<rhp_bytecode::FunctionProto>| {
+        if let Some(proto) = std::rc::Rc::get_mut(rc) {
+            for c in &mut proto.consts {
+                if let Value::Str(s) = c {
+                    *c = Value::str(f.apply(s.as_bytes()));
+                }
+            }
+        }
+    };
+    proto(&mut p.main);
+    p.functions.iter_mut().for_each(proto);
+    p.closures.iter_mut().for_each(proto);
+    for class in p.classes.iter_mut().chain(p.cond_classes.iter_mut()) {
+        if let Some(class) = std::rc::Rc::get_mut(class) {
+            for m in &mut class.methods {
+                proto(&mut m.proto);
+            }
+        }
+    }
+}
+
+fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
     let arena = Arena::new();
     let parsed = arena.parse(file.as_bytes(), src);
-    if let Some(e) = parse_failure(&parsed, src) {
-        return Err(e);
+    let parse_diags = parse_failure(&parsed, src)?;
+    let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
+    if parse_diags.is_empty() {
+        return r.map_err(include_error);
     }
-    rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode).map_err(include_error)
+    // The parser's warnings come before the compiler's diagnostics.
+    match r.map_err(include_error) {
+        Ok(mut p) => {
+            p.compile_diags.splice(0..0, parse_diags);
+            Ok(p)
+        }
+        Err(IncludeError::Compile {
+            message,
+            line,
+            mut diags,
+        }) => {
+            diags.splice(0..0, parse_diags);
+            Err(IncludeError::Compile {
+                message,
+                line,
+                diags,
+            })
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The includer every SAPI installs: compile an included or eval'd file.
@@ -304,7 +373,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             class,
             message,
             line,
+            diags,
         }) => {
+            vm.emit_parse_diags(file.as_bytes(), &diags);
             // line 0: php raised it outside any file
             let at = if line == 0 { "[no active file]" } else { &file };
             vm.report_parse_error(class, &message, at, line);

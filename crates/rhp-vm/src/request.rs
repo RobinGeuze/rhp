@@ -146,16 +146,15 @@ impl Vm {
             crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
         if level != rhp_builtins::E_ERROR {
-            if shown {
-                self.display_error(
-                    rhp_builtins::E_WARNING,
-                    "Warning",
-                    msg.as_bytes(),
-                    b"Unknown",
-                    0,
-                );
+            let (level, label) = if level == rhp_builtins::E_DEPRECATED {
+                (level, "Deprecated")
             } else {
-                let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
+                (rhp_builtins::E_WARNING, "Warning")
+            };
+            if shown {
+                self.display_error(level, label, msg.as_bytes(), b"Unknown", 0);
+            } else {
+                let line = format!("PHP {label}:  {msg} in Unknown on line 0\n");
                 self.write_stderr(line.as_bytes());
             }
             return;

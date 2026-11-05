@@ -179,7 +179,7 @@ impl Vm {
                 line,
                 diags,
             }) => {
-                self.compile_failed(&message, file.as_bytes(), line, &diags);
+                self.compile_failed(&message, file.as_bytes(), line, &diags, false);
                 return false;
             }
             Err(IncludeError::Thrown(_)) => return false,

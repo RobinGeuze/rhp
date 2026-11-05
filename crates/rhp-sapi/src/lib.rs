@@ -316,7 +316,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             line,
             diags,
         }) => {
-            vm.compile_failed(&message, file.as_bytes(), line, &diags);
+            vm.compile_failed(&message, file.as_bytes(), line, &diags, false);
             vm.finish_request();
             return Outcome::Exit(255);
         }

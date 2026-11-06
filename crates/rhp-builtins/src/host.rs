@@ -392,6 +392,13 @@ pub trait Host {
     /// (`zend_get_executed_scope`), if any.
     fn caller_scope(&self) -> Option<u32>;
 
+    /// clone(): copy `obj` (running `__clone`), then write `with` to the
+    /// copy from the calling scope.
+    fn clone_object(&mut self, obj: &Value, with: &PhpArray) -> Result<Value, Thrown> {
+        let _ = (obj, with);
+        Err(Thrown::error("Error", "clone() needs the engine"))
+    }
+
     /// The late-static-binding class of the code calling the builtin
     /// (`zend_get_called_scope`), if any.
     fn caller_called_scope(&self) -> Option<u32>;

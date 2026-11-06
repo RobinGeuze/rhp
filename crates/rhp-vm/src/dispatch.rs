@@ -1079,8 +1079,10 @@ impl Vm {
                     dst,
                     callee,
                     ns_name,
+                    const_expr,
+                    static_call,
                 } => {
-                    self.make_fcc(top, &proto, dst, callee, ns_name)?;
+                    self.make_fcc(top, &proto, dst, callee, ns_name, const_expr, static_call)?;
                 }
                 Instr::CallDyn {
                     dst,
@@ -2075,6 +2077,22 @@ impl Vm {
                     self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
                 Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
+                Instr::NewObj { dst, class } => {
+                    // The temporaries from `dst` up are dead: what they held
+                    // is released first, as the arguments' window would
+                    // (php has freed it by now), so the new object can
+                    // take a freed id.
+                    let n = proto.num_registers as usize;
+                    for r in dst as usize..n {
+                        if matches!(self.stack[top].regs[r], Value::Object(_) | Value::Array(_)) {
+                            self.reg_set(top, r as Reg, Value::Null);
+                        }
+                    }
+                    let obj = self.new_alloc(top, class)?;
+                    self.reg_set(top, dst, Value::Object(obj));
+                }
+                Instr::NewCall { dst, base, argc } => self.exec_new_call(top, dst, base, argc)?,
+                Instr::NewCallV { dst, args } => self.exec_new_call_v(top, dst, args)?,
                 Instr::CallMethodV {
                     dst,
                     obj,
@@ -3309,6 +3327,7 @@ impl Vm {
 
     /// `MakeFcc`: a first-class callable Closure over `callee`.
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn make_fcc(
         &mut self,
         top: usize,
@@ -3316,6 +3335,8 @@ impl Vm {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        const_expr: bool,
+        static_call: bool,
     ) -> Result<(), Thrown> {
         // A callee built in a temporary (`[$o, 'm']`) is dead
         // after this: the closure owns it.
@@ -3333,9 +3354,54 @@ impl Vm {
             self.reg_set(top, dst, cl);
             return Ok(());
         }
+        // zend_closure_from_frame: a Closure is its own first-class callable.
+        if let Value::Closure(_) = &c {
+            self.reg_set(top, dst, c);
+            return Ok(());
+        }
         if let Value::Str(name) = &c {
             if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
                 c = Value::Str(n);
+            }
+        }
+        // The INIT_*_CALL opcode before ZEND_CALLABLE_CONVERT resolves the
+        // callee: its errors are raised now.
+        match &c {
+            Value::Str(name) if !name.as_bytes().windows(2).any(|w| w == b"::") => {
+                let ns = (ns_name != rhp_bytecode::NO_NAME)
+                    .then(|| proto.names[ns_name as usize].clone());
+                let known = |vm: &Self, n: &[u8]| {
+                    let n = n.strip_prefix(b"\\").unwrap_or(n);
+                    vm.fn_names.contains_key(&n.to_ascii_lowercase())
+                        || crate::calls::user_visible_builtin(n)
+                };
+                // (Like php's per-site cache, a later namespaced function
+                // does not replace the global one found.)
+                match ns {
+                    _ if known(self, name.as_bytes()) => {}
+                    Some(ns) if known(self, ns.as_bytes()) => c = Value::Str(ns),
+                    ns => {
+                        return Err(crate::calls::undefined_function(
+                            ns.as_ref().unwrap_or(name),
+                        ))
+                    }
+                }
+            }
+            _ => {
+                // ZEND_INIT_STATIC_METHOD_CALL for static-call syntax;
+                // an array callable (INIT_DYNAMIC_CALL) has no scope or $this.
+                let named = static_call.then(|| self.fcc_class_named(top, &c)).flatten();
+                let named = named.as_ref().unwrap_or(&c);
+                let on_this = static_call.then(|| self.fcc_on_this(top, named)).flatten();
+                let checked = on_this.as_ref().unwrap_or(named);
+                let callee = self.resolve_dynamic_call(checked)?;
+                // zend_ast_evaluate's ZEND_AST_CALLABLE_CONVERT.
+                if const_expr && matches!(callee, crate::calls::Callee::Magic(_, None, ..)) {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Creating a callable for the magic __callStatic() method is not supported in constant expressions",
+                    ));
+                }
             }
         }
         // ZEND_CALLABLE_CONVERT keeps the call's object.
@@ -3357,6 +3423,62 @@ impl Vm {
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
+    }
+
+    /// `[self|parent|static, m]` of a first-class callable with the class
+    /// it means in frame `top` (None for any other callable).
+    fn fcc_class_named(&self, top: usize, c: &Value) -> Option<Value> {
+        let Value::Array(a) = c else { return None };
+        let Some(Value::Str(cn)) = a.get(&rhp_values::ArrayKey::Int(0)) else {
+            return None;
+        };
+        let f = &self.stack[top];
+        let cls = match cn.as_bytes().to_ascii_lowercase().as_slice() {
+            b"self" => f.defining_class?,
+            b"static" => f.called_class.or(f.defining_class)?,
+            b"parent" => self.class(f.defining_class?).parent?,
+            _ => return None,
+        };
+        let mut a = a.clone();
+        a.insert(
+            rhp_values::ArrayKey::Int(0),
+            Value::Str(self.class(cls).name.clone()),
+        );
+        Some(Value::Array(a))
+    }
+
+    /// ZEND_INIT_STATIC_METHOD_CALL calls a non-static method on `$this`
+    /// when it is an instance of the class: `[C, m]` checked as
+    /// `[$this, m]` then.
+    fn fcc_on_this(&self, top: usize, c: &Value) -> Option<Value> {
+        let (cn, m) = match c {
+            Value::Array(a) => match (
+                a.get(&rhp_values::ArrayKey::Int(0)),
+                a.get(&rhp_values::ArrayKey::Int(1)),
+            ) {
+                (Some(Value::Str(cn)), Some(m)) => (cn.as_bytes().to_vec(), m.clone()),
+                _ => return None,
+            },
+            // `'C::m'(...)`.
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                let at = b.windows(2).position(|w| w == b"::")?;
+                (
+                    b[..at].to_vec(),
+                    Value::Str(PhpStr::from_bytes(b[at + 2..].to_vec())),
+                )
+            }
+            _ => return None,
+        };
+        let this = self.current_this(top)?;
+        let cls = self.resolve_class_by_name(&cn).ok()?;
+        if !self.instance_of(this.borrow().class, cls) {
+            return None;
+        }
+        let mut a = PhpArray::new();
+        a.push(Value::Object(this));
+        a.push(m);
+        Some(Value::Array(a))
     }
 
     /// `CallDyn`: `$f(...)` with the arguments in a window.

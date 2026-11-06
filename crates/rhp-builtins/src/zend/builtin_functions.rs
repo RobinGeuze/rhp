@@ -1272,10 +1272,20 @@ fn fn_exit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// ZEND_FUNCTION(clone): zpp gave an object and an array.
+fn fn_clone(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let with = match args.get(1).map(deref) {
+        Some(Value::Array(a)) => a,
+        _ => PhpArray::new(),
+    };
+    host.clone_object(&deref(&args[0]), &with)
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("clone", fn_clone),
             ("exit", fn_exit),
             ("die", fn_exit),
             ("get_declared_classes", fn_get_declared_classes),

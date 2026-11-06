@@ -500,6 +500,12 @@ pub enum Instr {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        /// In a constant expression (no `__callStatic` callables there).
+        const_expr: bool,
+        /// Static-call syntax (`C::m(...)`, `'C::m'(...)`): `self`/`parent`/
+        /// `static` mean the scope's classes and `$this` is kept
+        /// (ZEND_INIT_STATIC_METHOD_CALL), unlike an array callable.
+        static_call: bool,
     },
     Ret {
         src: Reg,
@@ -584,6 +590,24 @@ pub enum Instr {
         class: ClassRef,
         base: Reg,
         argc: u16,
+    },
+    /// ZEND_NEW for a `new` with arguments: create the object in `dst`;
+    /// the arguments are evaluated next, then `NewCall` / `NewCallV`
+    /// runs the constructor.
+    NewObj {
+        dst: Reg,
+        class: ClassRef,
+    },
+    /// Run the constructor of the object `NewObj` put in `dst`.
+    NewCall {
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    },
+    /// `NewCall` with the arguments in a `PhpArray` (spread / named).
+    NewCallV {
+        dst: Reg,
+        args: Reg,
     },
     /// Variadic `new` / method / static calls: `args` holds a `PhpArray`.
     NewV {
@@ -1385,6 +1409,10 @@ pub struct FunctionProto {
     /// zend_do_free), ascending: a `#[\NoDiscard]` callee warns when called
     /// from one.
     pub discard_calls: Vec<Pc>,
+    /// Each `NewObj` pc, its `NewCall`/`NewCallV` pc and register: an
+    /// exception thrown in between releases the object without its
+    /// destructor (php's live range of a NEW result).
+    pub new_ranges: Vec<(Pc, Pc, Reg)>,
 }
 
 impl FunctionProto {
@@ -1428,6 +1456,7 @@ impl FunctionProto {
             flags: ProtoFlags::default(),
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            new_ranges: Vec::new(),
         }
     }
 }

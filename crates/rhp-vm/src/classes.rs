@@ -614,7 +614,8 @@ pub(crate) fn set_access_ok(
     let Some(sv) = pe.set_visibility else {
         return Ok(());
     };
-    if scope == Some(pe.declaring_class)
+    if sv == Visibility::Public
+        || scope == Some(pe.declaring_class)
         || (sv == Visibility::Protected && protected_ok(classes, scope, pe.prototype))
     {
         return Ok(());

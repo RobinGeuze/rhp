@@ -2227,6 +2227,10 @@ impl Host for Vm {
         Some((parents, ifaces, traits))
     }
 
+    fn clone_object(&mut self, obj: &Value, with: &rhp_values::PhpArray) -> Result<Value, Thrown> {
+        self.clone_with(obj, with)
+    }
+
     fn caller_scope(&self) -> Option<u32> {
         // A builtin runs on its caller's frame.
         self.stack.last().and_then(|f| f.defining_class)

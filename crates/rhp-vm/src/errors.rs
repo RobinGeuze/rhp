@@ -551,10 +551,12 @@ impl Vm {
         // execution point, when it differs, as a `[constant expression]`
         // frame.
         if let Some((ofile, oline)) = self.const_expr_site() {
-            if let Some(i) = (0..self.stack.len())
+            // (None when an internal function evaluates it.)
+            let user = (0..self.stack.len())
                 .rev()
-                .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
-            {
+                .find(|&i| !self.is_const_expr_frame(i))
+                .filter(|&i| !self.is_internal_frame(i));
+            if let Some(i) = user {
                 let (file, line) = (self.current_file(i), self.current_line(i));
                 if file != ofile || line != oline {
                     let mut e = PhpArray::new();
@@ -1130,10 +1132,24 @@ impl Vm {
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
             // The live range of NEW's result: an object whose constructor
             // threw is released before the handler runs.
-            if let Some(Instr::New { dst, .. } | Instr::NewV { dst, .. }) =
-                proto.code.get(throw_pc as usize)
+            if let Some(
+                Instr::New { dst, .. }
+                | Instr::NewV { dst, .. }
+                | Instr::NewCall { dst, .. }
+                | Instr::NewCallV { dst, .. },
+            ) = proto.code.get(throw_pc as usize)
             {
                 self.reg_set(top, *dst, Value::Null);
+            }
+            // Thrown while its arguments ran: the object is released
+            // without its destructor (zend_cleanup_unfinished_calls).
+            for &(start, end, dst) in &proto.new_ranges {
+                if throw_pc > start && throw_pc < end {
+                    if let Value::Object(h) = self.reg_get(top, dst) {
+                        self.destructibles.retain(|d| !Rc::ptr_eq(d, &h));
+                    }
+                    self.reg_set(top, dst, Value::Null);
+                }
             }
             let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
             let handler = proto.exception_table.iter().find(in_try).cloned();

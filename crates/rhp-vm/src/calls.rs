@@ -678,7 +678,9 @@ impl Vm {
         };
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
+            // php's RECV opcodes check each passed argument's type before
+            // the first missing one fails.
+            Err(missing) => Some(self.missing_arg_error(&proto, frame, caller, missing, argc)),
             Ok(()) => {
                 if let Some((holes, extra)) = named {
                     bind_named_extra(&proto, frame, holes, extra);
@@ -706,6 +708,27 @@ impl Vm {
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
+    }
+
+    /// The error of a call missing argument `missing`: php's RECV opcodes
+    /// check each passed argument's type before the first missing one.
+    #[cold]
+    #[inline(never)]
+    fn missing_arg_error(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        caller: Option<bool>,
+        missing: usize,
+        argc: usize,
+    ) -> (usize, Thrown) {
+        if !proto.is_internal() {
+            let scope = frame.defining_class;
+            if let Err(e) = self.check_arg_types(proto, frame, caller, scope) {
+                return e;
+            }
+        }
+        (missing, self.arg_count_error(proto, frame, argc))
     }
 
     /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a
@@ -2069,21 +2092,22 @@ impl Vm {
         class: ClassRef,
         args: Reg,
     ) -> Result<(), Thrown> {
-        let cls = self.resolve_class_autoload(top, class)?;
-        let entry = self.class(cls);
-        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
-            return Err(Thrown::error(
-                "Error",
-                format!(
-                    "Cannot instantiate {}",
-                    String::from_utf8_lossy(entry.name.as_bytes())
-                ),
-            ));
-        }
-        self.check_ctor_access(top, cls)?;
-        self.update_class_constants(cls)?;
-        let obj = self.new_object(cls);
-        self.reg_set(top, dst, Value::Object(obj.clone()));
+        let obj = self.new_alloc(top, class)?;
+        self.reg_set(top, dst, Value::Object(obj));
+        self.exec_new_call_v(top, dst, args)
+    }
+
+    /// `NewCallV`: [`Vm::exec_new_call`] with the arguments in an array.
+    pub(crate) fn exec_new_call_v(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        args: Reg,
+    ) -> Result<(), Thrown> {
+        let Value::Object(obj) = self.reg_get(top, dst) else {
+            return Ok(());
+        };
+        let cls = obj.borrow().class;
         if let Some(m) = self.lookup_method(cls, b"__construct") {
             let arr = self.reg_get(top, args);
             let (argv, named) = self.split_call_args(&arr)?;
@@ -2463,15 +2487,13 @@ impl Vm {
         Some(self.fatal_error_here(1, msg.as_bytes()))
     }
 
-    /// `New`: instantiate `class` into `dst` and push its constructor frame.
-    pub(crate) fn exec_new(
+    /// ZEND_NEW's half before the constructor: resolve `class`, check it
+    /// can be instantiated, create the object.
+    pub(crate) fn new_alloc(
         &mut self,
         top: usize,
-        dst: Reg,
         class: ClassRef,
-        base: Reg,
-        argc: u16,
-    ) -> Result<(), Thrown> {
+    ) -> Result<ObjectHandle, Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
         let entry = self.class(cls);
         if entry.kind != ClassKind::Class || entry.flags.is_abstract {
@@ -2510,16 +2532,58 @@ impl Vm {
         }
         self.check_ctor_access(top, cls)?;
         self.update_class_constants(cls)?;
-        let obj = self.new_object(cls);
+        Ok(self.new_object(cls))
+    }
+
+    /// `New`: instantiate `class` into `dst` and push its constructor frame.
+    pub(crate) fn exec_new(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        class: ClassRef,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let obj = self.new_alloc(top, class)?;
         self.reg_set(top, dst, Value::Object(obj.clone()));
-        // Run __construct, discarding its return (into the arg window).
+        let tracked = !self.destructibles.is_empty()
+            && self
+                .destructibles
+                .last()
+                .is_some_and(|d| Rc::ptr_eq(d, &obj));
+        self.new_construct(top, obj, tracked, base, argc)
+    }
+
+    /// `NewCall`: push the constructor frame of the object `NewObj` put in
+    /// `dst`, its arguments in the window.
+    pub(crate) fn exec_new_call(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let Value::Object(obj) = self.reg_get(top, dst) else {
+            return Ok(());
+        };
+        let tracked = !self.destructibles.is_empty()
+            && self.destructibles.iter().rev().any(|d| Rc::ptr_eq(d, &obj));
+        self.new_construct(top, obj, tracked, base, argc)
+    }
+
+    /// Run `obj`'s `__construct`, discarding its return (into the arg
+    /// window); `tracked`: it is destructible.
+    fn new_construct(
+        &mut self,
+        top: usize,
+        obj: ObjectHandle,
+        tracked: bool,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let cls = obj.borrow().class;
         if let Some(m) = self.lookup_method(cls, b"__construct") {
             let ptr = Rc::as_ptr(&obj) as usize;
-            let tracked = !self.destructibles.is_empty()
-                && self
-                    .destructibles
-                    .last()
-                    .is_some_and(|d| Rc::as_ptr(d) as usize == ptr);
             self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
             if tracked {
                 self.ctor_frames.push((self.stack.len() - 1, ptr));

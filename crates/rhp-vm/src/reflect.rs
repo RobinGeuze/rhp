@@ -231,10 +231,29 @@ impl Vm {
                 let name = arg_bytes(args, 1);
                 Ok(self.prop_info(cid, &name))
             }
-            b"fn" => match self.fn_subject(&arg(args, 0))? {
-                Some(sub) => Ok(self.fn_info(&sub)),
-                None => Ok(Value::Null),
-            },
+            b"fn" => {
+                let loc = arg(args, 0);
+                match self.fn_subject(&loc)? {
+                    Some(sub) => {
+                        let mut info = self.fn_info(&sub);
+                        // A method's first-class callable: the method's
+                        // class is its scope, the class it was named on
+                        // the called scope (zend_create_fake_closure).
+                        if let (
+                            Value::Closure(_),
+                            FnSubject::Method { class, m },
+                            Value::Array(a),
+                        ) = (&loc, &sub, &mut info)
+                        {
+                            let name = |c: ClassId| s(self.classes[c as usize].name.as_bytes());
+                            a.insert(ArrayKey::from_bytes(b"scope"), name(m.defining_class));
+                            a.insert(ArrayKey::from_bytes(b"calledScope"), name(*class));
+                        }
+                        Ok(info)
+                    }
+                    None => Ok(Value::Null),
+                }
+            }
             b"attr_args" => self.attr_args(args),
             b"attr_new" => self.attr_new(args),
             // A global constant's attributes (`#[A] const X = 1;`).
@@ -1441,6 +1460,26 @@ impl Vm {
                     // `$closure->__invoke(...)`: the closure's own function.
                     if let Some(inner) = rhp_builtins::zend::closures::closure_invoke_of(&w) {
                         w = inner;
+                    }
+                    // `self::m(...)`: the class the closure was made in.
+                    if let Value::Array(a) = &mut w {
+                        let named = match a.get(&ArrayKey::Int(0)) {
+                            Some(Value::Str(n)) => {
+                                match n.as_bytes().to_ascii_lowercase().as_slice() {
+                                    b"self" => cd.bound_class,
+                                    b"static" => cd.bound_static.or(cd.bound_class),
+                                    b"parent" => {
+                                        cd.bound_class.and_then(|c| self.classes[c as usize].parent)
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(c) = named {
+                            let n = self.classes[c as usize].name.clone();
+                            a.insert(ArrayKey::Int(0), Value::Str(n));
+                        }
                     }
                     // `Closure::fromCallable($invokable)`: its `__invoke`.
                     if let Value::Object(_) = &w {

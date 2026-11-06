@@ -219,6 +219,12 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        if !self.expr_regs.is_empty() {
+            let addr = expr as *const Expression as usize;
+            if let Some(&(_, r)) = self.expr_regs.iter().find(|(a, _)| *a == addr) {
+                return Ok(r);
+            }
+        }
         if matches!(
             expr,
             Expression::ArrayAccess(_) | Expression::Access(Access::Property(_))
@@ -330,6 +336,7 @@ impl ProtoBuilder<'_> {
                 self.call_lines.pop();
                 r
             }
+            Expression::Pipe(p) => self.compile_pipe(p),
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),

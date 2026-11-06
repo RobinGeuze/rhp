@@ -1204,6 +1204,12 @@ fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<
     Ok(ctx)
 }
 
+/// `stream_context_set_default(array $options)`: the default context, with
+/// `$options` applied.
+fn fn_stream_context_set_default(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    fn_stream_context_get_default(host, args)
+}
+
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, kind) = stream_param(host, args, 0, "stream_get_contents", "stream")?;
     let maxlen = int_arg(args, 1, -1);
@@ -1438,6 +1444,7 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_select", fn_stream_select),
             ("stream_isatty", fn_stream_isatty),
             ("stream_context_get_default", fn_stream_context_get_default),
+            ("stream_context_set_default", fn_stream_context_set_default),
             ("stream_get_contents", fn_stream_get_contents),
             ("stream_get_meta_data", fn_stream_get_meta_data),
             ("stream_get_line", fn_stream_get_line),

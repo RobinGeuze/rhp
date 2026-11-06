@@ -136,6 +136,9 @@ impl Vm {
             argv: Vec::new(),
             silence: 0,
             silence_stack: Vec::new(),
+            quiet: 0,
+            rw_null_keys: 0,
+            cursor_null_key: false,
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,
@@ -192,7 +195,7 @@ impl Vm {
         if let Some(c) = self.globals.get(name) {
             return c.clone();
         }
-        let init = self.jit_globals.remove(name).unwrap_or(Value::Null);
+        let init = self.jit_globals.remove(name).unwrap_or(Value::Undef);
         let c = Rc::new(RefCell::new(init));
         self.globals.insert(name.to_vec(), c.clone());
         c
@@ -215,6 +218,18 @@ impl Vm {
         }
     }
 
+    /// `unset($GLOBALS[$name])`: the global becomes undefined, in every live
+    /// global-scope frame too. Its symbol-table entry stays (php keeps the
+    /// bucket of a variable a frame has a slot for), so the order of
+    /// `$GLOBALS` does not change when it is assigned again.
+    pub(crate) fn unset_global(&mut self, name: &[u8]) {
+        if self.globals.contains_key(name) {
+            self.rebind_global(name, Rc::new(RefCell::new(Value::Undef)));
+            self.ref_globals.remove(name);
+            self.dtor_check = true;
+        }
+    }
+
     /// After CV `cv` of frame `top` was overwritten as a slot (unset, `=&`),
     /// keep the global symbol table in step when `top` runs in global scope.
     pub(crate) fn sync_global_cv(&mut self, top: usize, cv: Reg) {
@@ -233,7 +248,7 @@ impl Vm {
             }
             v => {
                 self.ref_globals.remove(&name);
-                Rc::new(RefCell::new(v.clone()))
+                Rc::new(RefCell::new(v.copy_slot()))
             }
         };
         self.rebind_global(&name, cell);
@@ -260,17 +275,37 @@ impl Vm {
     }
 
     /// `$GLOBALS` read: a by-value copy of the global symbol table (php 8.1+).
-    /// Variables never assigned (null cells) are left out, as php skips its
-    /// undefined (IS_UNDEF) entries.
+    /// Undefined variables are left out, as php skips its IS_UNDEF entries;
+    /// a variable that is a PHP reference stays one in the copy
+    /// (zend_array_dup keeps a reference that something else shares).
     pub(crate) fn globals_array(&self) -> Value {
         use rhp_values::{ArrayKey, PhpArray};
+        // A global-scope frame's slot holding a cell is the symbol-table
+        // entry itself in php, not another reference to it.
+        let mut held: HashMap<*const RefCell<Value>, usize> = HashMap::new();
+        if !self.ref_globals.is_empty() {
+            for f in self.stack.iter().filter(|f| f.global_scope) {
+                for v in f.regs.iter().take(f.proto.num_cvs as usize) {
+                    if let Value::Ref(rc) = v {
+                        *held.entry(Rc::as_ptr(rc)).or_default() += 1;
+                    }
+                }
+            }
+        }
         let mut a = PhpArray::new();
         for (k, c) in &self.globals {
             let v = c.borrow();
-            if matches!(*v, Value::Null) {
+            if matches!(*v, Value::Undef) {
                 continue;
             }
-            a.insert(ArrayKey::from_bytes(k), deref(&v));
+            let shared =
+                || Rc::strong_count(c) - held.get(&Rc::as_ptr(c)).copied().unwrap_or(0) > 1;
+            let v = if self.ref_globals.contains(&k[..]) && shared() {
+                Value::Ref(c.clone())
+            } else {
+                deref(&v)
+            };
+            a.insert(ArrayKey::from_bytes(k), v);
         }
         Value::Array(a)
     }

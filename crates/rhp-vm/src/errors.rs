@@ -36,6 +36,13 @@ pub(crate) enum FinallyCont {
 
 pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 
+/// A boolean ini directive (php's OnUpdateBool: "1", "on", "yes", "true").
+fn ini_flag(name: &[u8]) -> bool {
+    builtins::ini_value(name)
+        .flatten()
+        .is_some_and(|v| builtins::ini_parse_bool(&v))
+}
+
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
@@ -173,7 +180,7 @@ impl Vm {
         // C implementation raises none): it only updates error_get_last().
         // (`silence_stack` records the stack depth at each `@`.)
         let prelude_silenced = self.silence > 0
-            && self.silence_stack.last().is_some_and(|&(depth, _)| {
+            && self.silence_stack.last().is_some_and(|&(depth, _, _)| {
                 depth
                     .checked_sub(1)
                     .and_then(|i| self.stack.get(i))
@@ -207,7 +214,9 @@ impl Vm {
             // only if the handler did not install another one.
             let idx = self.error_handlers.len() - 1;
             self.error_handlers[idx].0 = Value::Bool(false);
-            let r = self.call_callable_value(&h, args);
+            // The diagnostic may come from the middle of an lvalue write:
+            // the handler's own writes must not disturb that cursor.
+            let r = self.with_saved_cursor(|vm| vm.call_callable_value(&h, args));
             if self.error_handlers.len() == idx + 1
                 && matches!(self.error_handlers[idx].0, Value::Bool(false))
             {
@@ -222,7 +231,17 @@ impl Vm {
                 }
             }
         }
-        self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        // php_error_cb: ignore_repeated_errors drops a message equal to the
+        // last one (from the same place, unless ignore_repeated_source).
+        let repeated = ini_flag(b"ignore_repeated_errors")
+            && self.last_error.as_ref().is_some_and(|(_, m, f, l)| {
+                m == msg && (ini_flag(b"ignore_repeated_source") || (*l == line && *f == file))
+            });
+        if !repeated {
+            self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        } else if level != builtins::E_USER_ERROR {
+            return;
+        }
         if level == builtins::E_USER_ERROR {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).
@@ -233,7 +252,7 @@ impl Vm {
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }
-        if self.silence > 0 && level & SILENCE_KEEPS == 0 {
+        if self.quiet > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
         use builtins::*;
@@ -834,13 +853,42 @@ impl Vm {
     /// An exception was caught at frame depth `depth`: end every `@` region
     /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
     fn unsilence_frames(&mut self, depth: usize) {
-        while let Some(&(d, lvl)) = self.silence_stack.last() {
+        while let Some(&(d, _, _)) = self.silence_stack.last() {
             if d < depth {
                 break;
             }
-            self.silence = lvl;
-            self.silence_stack.pop();
+            self.end_silence();
         }
+    }
+
+    /// ZEND_BEGIN_SILENCE: error_reporting drops to the fatal types (php
+    /// keeps the old value to put back).
+    pub(crate) fn begin_silence(&mut self) {
+        let saved = builtins::zend::builtin_functions::error_reporting_level(self);
+        self.silence_stack
+            .push((self.stack.len(), self.silence, saved));
+        self.silence += 1;
+        if saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved & SILENCE_KEEPS);
+        }
+    }
+
+    /// ZEND_END_SILENCE (also its live-range cleanup when an exception
+    /// leaves the region): the old error_reporting comes back unless the
+    /// code under `@` set one that shows more than fatal errors.
+    pub(crate) fn end_silence(&mut self) {
+        let Some((_, lvl, saved)) = self.silence_stack.pop() else {
+            return;
+        };
+        self.silence = lvl;
+        let cur = builtins::zend::builtin_functions::error_reporting_level(self);
+        if cur & !SILENCE_KEEPS == 0 && saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved);
+        }
+    }
+
+    fn set_error_reporting(&mut self, v: i64) {
+        builtins::Host::ini_set(self, b"error_reporting", v.to_string().into_bytes());
     }
 
     /// Unwind a thrown exception through the exception table: find a matching

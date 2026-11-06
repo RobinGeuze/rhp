@@ -1117,12 +1117,12 @@ impl Vm {
 
     /// `CloneObj`: `clone` the value in `src` into `dst`, then push `__clone`.
     pub(crate) fn exec_clone(&mut self, top: usize, dst: Reg, src: Reg) -> Result<(), Thrown> {
-        let v = self.reg_get(top, src);
+        let v = self.reg_r(top, src)?;
         if let Value::Closure(cd) = &v {
             // A cloned closure is a new Closure object.
             let copy = rhp_values::ClosureData {
                 fnidx: cd.fnidx,
-                captures: cd.captures.clone(),
+                captures: cd.captures.iter().map(Value::copy_slot).collect(),
                 bound_this: cd.bound_this.clone(),
                 bound_class: cd.bound_class,
                 bound_static: cd.bound_static,

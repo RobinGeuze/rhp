@@ -306,7 +306,7 @@ impl Vm {
     /// a resource, a non-numeric string, an object whose cast fails).
     fn try_get_long(&mut self, v: &Value) -> Result<Option<i64>, Thrown> {
         Ok(Some(match v {
-            Value::Null => 0,
+            Value::Null | Value::Undef => 0,
             Value::Bool(b) => *b as i64,
             Value::Int(n) => *n,
             Value::Float(f) => self.dval_to_lval_safe(*f)?,
@@ -356,7 +356,7 @@ impl Vm {
     /// `v` has no numeric value.
     fn try_number(&mut self, v: &Value) -> Result<Option<Value>, Thrown> {
         Ok(Some(match v {
-            Value::Null | Value::Bool(false) => Value::Int(0),
+            Value::Null | Value::Undef | Value::Bool(false) => Value::Int(0),
             Value::Bool(true) => Value::Int(1),
             Value::Int(_) | Value::Float(_) => v.clone(),
             Value::Str(s) => match self.numeric_operand(s.as_bytes())? {

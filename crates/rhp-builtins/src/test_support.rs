@@ -98,9 +98,6 @@ impl Host for TestHost<'_> {
     fn chain_thrown(&mut self, thrown: Thrown, _previous: Thrown) -> Thrown {
         thrown
     }
-    fn silenced(&self) -> bool {
-        false
-    }
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
         self.emit_diagnostic(level, &[b"Unknown: ", msg].concat())
     }

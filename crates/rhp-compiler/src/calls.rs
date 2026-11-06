@@ -983,7 +983,9 @@ impl ProtoBuilder<'_> {
                     }
                 };
                 if let Expression::Variable(Variable::Direct(d)) = p.value {
-                    if over_approx || ref_mask.get(i).copied().unwrap_or(false) {
+                    if (over_approx || ref_mask.get(i).copied().unwrap_or(false))
+                        && !matches!(strip_dollar(d.name), b"GLOBALS" | b"this")
+                    {
                         slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
                         continue;
                     }
@@ -1018,7 +1020,7 @@ impl ProtoBuilder<'_> {
                     self.emit(Instr::MovTake { dst, src: r })
                 }
                 Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
-                Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                Slot::Ref(cv) => self.emit(Instr::MakeArgRef { dst, cv }),
             }
         }
         Ok((base, argc))

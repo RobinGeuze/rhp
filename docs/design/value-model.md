@@ -74,6 +74,14 @@ Representation rationale, variant by variant:
   variable, pushing an argument) cheap, which is the dominant operation in a
   tree-walker.
 
+> **Today** the enum also has `Closure`, `Resource` and `Undef`. `Undef` is
+> php's IS_UNDEF: the state of a variable slot (a CV, or a symbol-table cell
+> such as a global's) that was never assigned or was unset. It is never a
+> value: `clone()` of `Undef` gives `Null`, so a copy read out of an
+> undefined slot is null and the marker cannot leak into arrays, arguments or
+> returns. `copy_slot()` keeps it (an arrow function's implicit capture, an
+> include's shared cell). See bytecode.md, "Undefined variables".
+
 `Value: Clone` is the engine's workhorse: assigning `$b = $a` is
 `slot_b = value_a.clone()`. For scalars that is a bit-copy; for `Str`/`Array`
 it is an `Rc` bump that shares the buffer until the first write (COW); for

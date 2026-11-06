@@ -5,7 +5,7 @@ use crate::parse::cst::{
     Statement, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use rhp_bytecode::{CmpKind, Instr, Reg};
-use rhp_values::Thrown;
+use rhp_values::{Thrown, Value};
 
 use crate::assign::{check_globals_write, globals_index};
 use crate::builder::{LoopCtx, ProtoBuilder};
@@ -224,6 +224,11 @@ impl ProtoBuilder<'_> {
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new(); // (case idx, jmp pos, cond reg)
         for (idx, case) in cases.iter().enumerate() {
             if let SwitchCase::Expression(c) = case {
+                // The comparison is on the case's line (an undefined subject
+                // warns there).
+                use mago_span::HasSpan;
+                let saved_line = self.cur_line;
+                self.cur_line = self.cx.line_of(c.expression.span().start.offset);
                 let cexpr = self.compile_expr(c.expression)?;
                 let t = self.alloc_temp();
                 self.emit(Instr::Cmp {
@@ -234,6 +239,7 @@ impl ProtoBuilder<'_> {
                 });
                 let pos = self.code.len();
                 self.emit(Instr::Nop); // JmpTrue t -> case body
+                self.cur_line = saved_line;
                 dispatch.push((idx, pos, t));
             }
         }
@@ -535,10 +541,8 @@ impl ProtoBuilder<'_> {
             self.check_write_chain(v, true, self.cur_line)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
-                    // A CV can't be removed; null is observably equivalent to
-                    // unset for isset/??/empty.
                     let cv = self.cv(strip_dollar(d.name));
-                    self.emit(Instr::LoadNull { dst: cv });
+                    self.emit(Instr::UnsetCv { cv });
                 }
                 Expression::Variable(var) => {
                     let name = self.var_name_reg(var)?;
@@ -551,7 +555,7 @@ impl ProtoBuilder<'_> {
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(v, &mut steps)?;
-                    self.emit_cursor(root, &steps);
+                    self.emit_cursor_mode(root, &steps, crate::assign::LvalMode::Unset);
                     self.emit(Instr::UnsetLval);
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
@@ -788,6 +792,23 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// zend_compile_match's jump table (ZEND_MATCH): two or more conditions,
+    /// every one a constant int or string.
+    fn match_uses_jumptable(&self, arms: &[&MatchArm]) -> bool {
+        let mut n = 0;
+        for arm in arms {
+            if let MatchArm::Expression(a) = arm {
+                for cond in a.conditions.iter() {
+                    match crate::fold::fold_const(self.cx, cond) {
+                        Ok(Value::Int(_) | Value::Str(_)) => n += 1,
+                        _ => return false,
+                    }
+                }
+            }
+        }
+        n >= 2
+    }
+
     pub(crate) fn compile_match(&mut self, m: &Match) -> Result<Reg, Thrown> {
         let subject = self.compile_expr(m.expression)?;
         let dst = self.alloc_temp();
@@ -806,6 +827,19 @@ impl ProtoBuilder<'_> {
             }
         }
 
+        // php reads the subject once when it uses a jump table, else in each
+        // comparison: an undefined variable warns that many times.
+        let subject = if subject < self.num_cvs && self.match_uses_jumptable(&arms) {
+            self.emit(Instr::CheckCv { cv: subject });
+            let t = self.alloc_temp();
+            self.emit(Instr::MovIs {
+                dst: t,
+                src: subject,
+            });
+            t
+        } else {
+            subject
+        };
         // Dispatch: strict === against each arm condition, in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new();
         let mut default_idx = None;

@@ -160,8 +160,17 @@ impl ProtoBuilder<'_> {
         match sel {
             ClassLikeMemberSelector::Identifier(li) => Ok(Sel::Static(self.intern_name(li.value))),
             ClassLikeMemberSelector::Variable(Variable::Direct(d)) => {
-                Ok(Sel::Dyn(self.cv(strip_dollar(d.name))))
+                Ok(Sel::Dyn(match strip_dollar(d.name) {
+                    b"GLOBALS" => {
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::FetchGlobals { dst });
+                        dst
+                    }
+                    b"this" => self.this_reg(),
+                    n => self.cv(n),
+                }))
             }
+            ClassLikeMemberSelector::Variable(v) => Ok(Sel::Dyn(self.compile_variable(v)?)),
             ClassLikeMemberSelector::Expression(e) => {
                 Ok(Sel::Dyn(self.compile_expr(e.expression)?))
             }
@@ -317,7 +326,7 @@ impl ProtoBuilder<'_> {
             Expression::Access(Access::NullSafeProperty(npa)) => {
                 let obj = self.compile_quiet(npa.object)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::Mov { dst, src: obj });
+                self.emit(Instr::MovIs { dst, src: obj });
                 let jn = self.code.len();
                 self.emit(Instr::Nop); // JmpNull dst -> end
                 let t = self.alloc_temp();
@@ -350,6 +359,12 @@ impl ProtoBuilder<'_> {
                 }
                 Ok(dst)
             }
+            Expression::Variable(v @ (Variable::Indirect(_) | Variable::Nested(_))) => {
+                let name = self.var_name_reg(v)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::FetchVarVarIs { dst, name });
+                Ok(dst)
+            }
             _ => self.compile_expr(e),
         }
     }
@@ -358,6 +373,17 @@ impl ProtoBuilder<'_> {
     /// element there is php's BP_VAR_W fetch (`$o->a->b = v` fetches
     /// `$o->a` for writing).
     pub(crate) fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        // `$a[]->p = v`: the appended element is null, so the property write
+        // fails ("Attempt to assign property on null"). The append itself is
+        // not made.
+        if let Expression::ArrayAppend(ap) = e {
+            if !is_globals_var(ap.array) {
+                self.compile_write_object(ap.array)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadNull { dst });
+                return Ok(dst);
+            }
+        }
         if let Expression::ArrayAccess(aa) = e {
             if !is_globals_var(aa.array) {
                 let arr = self.compile_write_object(aa.array)?;

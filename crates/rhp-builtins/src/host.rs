@@ -212,9 +212,6 @@ pub trait Host {
     /// new exception's previous one. An `exit` in `previous` wins.
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown;
 
-    /// Inside an `@` region (error_reporting then reads as the fatal mask).
-    fn silenced(&self) -> bool;
-
     /// A directive's current value (the per-request ini store shared with
     /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
     /// module registers it.

@@ -388,7 +388,7 @@ impl Dumper<'_> {
     /// A value that is not a reference; `amp` is var_dump's marker.
     fn plain(&mut self, v: &Value, amp: &str, level: usize) -> Result<(), Thrown> {
         match v {
-            Value::Null => self.put(format!("{amp}NULL\n").as_bytes()),
+            Value::Null | Value::Undef => self.put(format!("{amp}NULL\n").as_bytes()),
             Value::Bool(b) => self.put(format!("{amp}bool({b})\n").as_bytes()),
             Value::Int(n) => self.put(format!("{amp}int({n})\n").as_bytes()),
             Value::Float(f) => {
@@ -897,7 +897,7 @@ fn var_export_value(
         return;
     }
     match &v {
-        Value::Null => out.extend_from_slice(b"NULL"),
+        Value::Null | Value::Undef => out.extend_from_slice(b"NULL"),
         Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
         // i64::MIN as a literal would parse as a float.
         Value::Int(i64::MIN) => out.extend_from_slice(b"-9223372036854775807-1"),
@@ -1232,7 +1232,7 @@ impl Serializer {
             }
         }
         match deref(v) {
-            Value::Null => out.extend_from_slice(b"N;"),
+            Value::Null | Value::Undef => out.extend_from_slice(b"N;"),
             Value::Bool(b) => out.extend_from_slice(if b { b"b:1;" } else { b"b:0;" }),
             Value::Int(n) => out.extend_from_slice(format!("i:{n};").as_bytes()),
             Value::Float(f) => {

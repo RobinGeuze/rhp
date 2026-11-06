@@ -119,10 +119,6 @@ impl Host for Vm {
         self.error_handlers.pop();
     }
 
-    fn silenced(&self) -> bool {
-        self.silence > 0
-    }
-
     fn caller_strict_types(&self) -> bool {
         // The user code calling the builtin: a prelude wrapper is internal.
         self.stack

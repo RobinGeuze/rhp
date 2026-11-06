@@ -2537,7 +2537,13 @@ impl Host for Vm {
             ));
         };
         let place = |vm: &mut Self| -> Result<Vec<Value>, Thrown> {
-            let (argv, named) = vm.split_call_args(&args)?;
+            // zend_call_function's own wording (no unpacking here).
+            let (argv, named) = vm.split_call_args(&args).map_err(|_| {
+                Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                )
+            })?;
             vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)
         };
         if m.is_static {

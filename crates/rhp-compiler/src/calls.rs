@@ -299,7 +299,10 @@ impl ProtoBuilder<'_> {
                 .unwrap_or(false);
             if by_ref {
                 match p.value {
-                    Expression::Variable(Variable::Direct(d)) => {
+                    // `$GLOBALS` is a read-only copy (php 8.1): a temporary.
+                    Expression::Variable(Variable::Direct(d))
+                        if strip_dollar(d.name) != b"GLOBALS" =>
+                    {
                         slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))))
                     }
                     // `sort($a['k'])`, `array_push($this->items, …)`.
@@ -455,6 +458,9 @@ impl ProtoBuilder<'_> {
             }
         }
         let mut flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        if flags.contains(CallFlags::USER_CALL) && ct_bound_callee(self.cx, &fc.argument_list) {
+            flags.insert(CallFlags::CT_BOUND);
+        }
         if result_unused {
             flags.insert(CallFlags::RESULT_UNUSED);
         }
@@ -1584,6 +1590,20 @@ fn call_flags(name: &[u8], fallback: Option<&[u8]>, argc: usize) -> CallFlags {
         flags.insert(CallFlags::ICALL);
     }
     flags
+}
+
+/// zend_try_compile_ct_bound_init_user_func: the first argument of
+/// `call_user_func[_array]` is a string literal naming an internal function.
+fn ct_bound_callee(cx: &FileCtx, list: &crate::parse::cst::ArgumentList) -> bool {
+    match list.arguments.first() {
+        Some(Argument::Positional(p)) => match p.value {
+            Expression::Literal(crate::parse::cst::Literal::String(s)) => s
+                .value
+                .is_some_and(|v| builtin_sig(cx, &v.to_ascii_lowercase()).is_some()),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 pub(crate) fn has_named(list: &crate::parse::cst::ArgumentList) -> bool {

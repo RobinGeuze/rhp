@@ -3964,6 +3964,8 @@ pub fn register(m: &mut crate::Registry) {
             ("array_slice", fn_array_slice),
             ("array_flip", fn_array_flip),
             ("array_fill", fn_array_fill),
+            ("extract", fn_extract),
+            ("compact", fn_compact),
             ("array_fill_keys", fn_array_fill_keys),
             ("array_combine", fn_array_combine),
             ("array_search", fn_array_search),
@@ -4050,3 +4052,302 @@ pub fn register(m: &mut crate::Registry) {
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// extract / compact
+// ---------------------------------------------------------------------------
+
+const EXTR_OVERWRITE: i64 = 0;
+const EXTR_SKIP: i64 = 1;
+const EXTR_PREFIX_SAME: i64 = 2;
+const EXTR_PREFIX_ALL: i64 = 3;
+const EXTR_PREFIX_INVALID: i64 = 4;
+const EXTR_PREFIX_IF_EXISTS: i64 = 5;
+const EXTR_IF_EXISTS: i64 = 6;
+const EXTR_REFS: i64 = 0x100;
+
+/// php_valid_var_name: `[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*`.
+fn valid_var_name(name: &[u8]) -> bool {
+    let first = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c >= 0x7f;
+    match name.split_first() {
+        Some((&c, rest)) => first(c) && rest.iter().all(|&c| first(c) || c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// php_prefix_varname with the underscore.
+fn prefix_varname(prefix: &[u8], name: &[u8]) -> Vec<u8> {
+    [prefix, b"_", name].concat()
+}
+
+fn cannot_reassign_this() -> Thrown {
+    Thrown::error("Error", "Cannot re-assign $this")
+}
+
+/// How extract() finds a name in the scope's symbol table: not there, a
+/// compiled variable that is undefined, or a defined variable.
+#[derive(PartialEq)]
+enum Found {
+    Missing,
+    Undef,
+    Set,
+}
+
+fn find_var(host: &mut dyn Host, name: &[u8]) -> Found {
+    match host.scope_var(name) {
+        crate::ScopeVar::Missing => Found::Missing,
+        crate::ScopeVar::Undef => Found::Undef,
+        crate::ScopeVar::Set(_) => Found::Set,
+    }
+}
+
+/// The array extract() reads, and with EXTR_REFS the caller's variable
+/// holding it, whose elements become references as they are bound.
+struct ExtractSource {
+    arr: PhpArray,
+    cell: Option<std::rc::Rc<std::cell::RefCell<Value>>>,
+}
+
+impl ExtractSource {
+    /// Element `key` as a reference (ZVAL_MAKE_REF on the array element).
+    fn element_ref(&mut self, key: &ArrayKey) -> std::rc::Rc<std::cell::RefCell<Value>> {
+        let make = |slot: &mut Value| match slot {
+            Value::Ref(rc) => rc.clone(),
+            v => {
+                let rc =
+                    std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(v, Value::Null)));
+                *v = Value::Ref(rc.clone());
+                rc
+            }
+        };
+        if let Some(cell) = &self.cell {
+            if let Value::Array(a) = &mut *cell.borrow_mut() {
+                if let Some(slot) = a.get_mut(key) {
+                    return make(slot);
+                }
+            }
+        }
+        match self.arr.get_mut(key) {
+            Some(slot) => make(slot),
+            None => std::rc::Rc::new(std::cell::RefCell::new(Value::Null)),
+        }
+    }
+}
+
+/// Bind or assign `name` from element `key`: a reference to the element
+/// with EXTR_REFS, else a copy of its value.
+fn extract_put(
+    host: &mut dyn Host,
+    src: &mut ExtractSource,
+    refs: bool,
+    name: &[u8],
+    key: &ArrayKey,
+    entry: &Value,
+) -> Result<(), Thrown> {
+    if refs {
+        let rc = src.element_ref(key);
+        host.scope_bind(name, rc);
+        Ok(())
+    } else {
+        host.scope_assign(name, deref(entry))
+    }
+}
+
+/// `extract(array &$array, int $flags = EXTR_OVERWRITE, string $prefix = "")`.
+fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let flags = args
+        .get(1)
+        .map_or(EXTR_OVERWRITE, |v| conv::to_int(&deref(v)));
+    let prefix = args.get(2).map(|v| conv::to_string_bytes(&deref(v)));
+    let refs = flags & EXTR_REFS != 0;
+    let ty = flags & 0xff;
+    if !(EXTR_OVERWRITE..=EXTR_IF_EXISTS).contains(&ty) {
+        return Err(Thrown::error(
+            "ValueError",
+            "extract(): Argument #2 ($flags) must be a valid extract type",
+        ));
+    }
+    if ty > EXTR_SKIP && ty <= EXTR_PREFIX_IF_EXISTS && prefix.is_none() {
+        return Err(Thrown::error(
+            "ValueError",
+            "extract(): Argument #3 ($prefix) is required when using this extract type",
+        ));
+    }
+    let prefix = prefix.unwrap_or_default();
+    if !prefix.is_empty() && !valid_var_name(&prefix) {
+        return Err(Thrown::error(
+            "ValueError",
+            "extract(): Argument #3 ($prefix) must be a valid identifier",
+        ));
+    }
+    zend::builtin_functions::forbid_dynamic_call(host, "extract")?;
+    let cell = match &args[0] {
+        Value::Ref(rc) if refs => Some(rc.clone()),
+        _ => None,
+    };
+    let arr = match deref(&args[0]) {
+        Value::Array(a) => a,
+        _ => PhpArray::new(),
+    };
+    let entries: Vec<(ArrayKey, Value)> = arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut src = ExtractSource { arr, cell };
+    let mut count = 0i64;
+    for (key, entry) in &entries {
+        let name: Option<&[u8]> = match key {
+            ArrayKey::Str(s) => Some(s.as_bytes()),
+            ArrayKey::Int(_) => None,
+        };
+        // The name a prefixed mode binds, when valid.
+        let prefixed = |n: &[u8]| Some(prefix_varname(&prefix, n)).filter(|f| valid_var_name(f));
+        let target: Option<Vec<u8>> = match ty {
+            EXTR_OVERWRITE | EXTR_IF_EXISTS => {
+                let Some(n) = name else { continue };
+                let found = find_var(host, n);
+                if ty == EXTR_IF_EXISTS && found != Found::Set {
+                    continue;
+                }
+                if !valid_var_name(n) {
+                    continue;
+                }
+                if ty == EXTR_IF_EXISTS && n == b"GLOBALS" {
+                    continue;
+                }
+                if n == b"this" {
+                    return Err(cannot_reassign_this());
+                }
+                if found != Found::Missing && n == b"GLOBALS" {
+                    continue;
+                }
+                Some(n.to_vec())
+            }
+            EXTR_SKIP => {
+                let Some(n) = name else { continue };
+                if !valid_var_name(n) || n == b"this" {
+                    continue;
+                }
+                if find_var(host, n) == Found::Set {
+                    continue;
+                }
+                Some(n.to_vec())
+            }
+            EXTR_PREFIX_SAME | EXTR_PREFIX_IF_EXISTS => {
+                let Some(n) = name else { continue };
+                if ty == EXTR_PREFIX_SAME && n.is_empty() {
+                    continue;
+                }
+                match find_var(host, n) {
+                    Found::Undef => Some(n.to_vec()),
+                    Found::Set => match prefixed(n) {
+                        Some(f) if f == b"this" => return Err(cannot_reassign_this()),
+                        f => f,
+                    },
+                    Found::Missing if ty == EXTR_PREFIX_IF_EXISTS => continue,
+                    Found::Missing => {
+                        if !valid_var_name(n) {
+                            continue;
+                        }
+                        if n == b"this" {
+                            match prefixed(n) {
+                                Some(f) if f == b"this" => return Err(cannot_reassign_this()),
+                                f => f,
+                            }
+                        } else {
+                            Some(n.to_vec())
+                        }
+                    }
+                }
+            }
+            EXTR_PREFIX_ALL => {
+                let n = match key {
+                    ArrayKey::Str(s) if s.is_empty() => continue,
+                    ArrayKey::Str(s) => s.as_bytes().to_vec(),
+                    ArrayKey::Int(i) => i.to_string().into_bytes(),
+                };
+                match prefixed(&n) {
+                    Some(f) if f == b"this" => return Err(cannot_reassign_this()),
+                    f => f,
+                }
+            }
+            EXTR_PREFIX_INVALID => {
+                let f = match key {
+                    ArrayKey::Str(s)
+                        if !valid_var_name(s.as_bytes()) || s.as_bytes() == b"this" =>
+                    {
+                        prefixed(s.as_bytes())
+                    }
+                    ArrayKey::Str(s) => Some(s.as_bytes().to_vec()),
+                    ArrayKey::Int(i) => prefixed(i.to_string().as_bytes()),
+                };
+                match f {
+                    Some(f) if f == b"this" => return Err(cannot_reassign_this()),
+                    f => f,
+                }
+            }
+            _ => unreachable!("extract type checked above"),
+        };
+        let Some(target) = target else { continue };
+        extract_put(host, &mut src, refs, &target, key, entry)?;
+        count += 1;
+    }
+    Ok(Value::Int(count))
+}
+
+/// `compact(array|string $var_name, array|string ...$var_names)`.
+fn fn_compact(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    zend::builtin_functions::forbid_dynamic_call(host, "compact")?;
+    let mut out = PhpArray::new();
+    let mut active = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        compact_var(host, &mut out, a, i + 1, &mut active)?;
+    }
+    Ok(Value::Array(out))
+}
+
+/// php_compact_var: a name, or an array of names (nested), into `out`.
+fn compact_var(
+    host: &mut dyn Host,
+    out: &mut PhpArray,
+    entry: &Value,
+    pos: usize,
+    active: &mut Vec<usize>,
+) -> Result<(), Thrown> {
+    match deref(entry) {
+        Value::Str(name) => match host.scope_var(name.as_bytes()) {
+            crate::ScopeVar::Set(v) => out.insert(ArrayKey::from_bytes(name.as_bytes()), v),
+            _ if name.as_bytes() == b"this" => {
+                if let Some(this) = host.scope_this() {
+                    out.insert(ArrayKey::from_bytes(b"this"), this);
+                }
+            }
+            _ => {
+                let msg = [b"Undefined variable $".as_slice(), name.as_bytes()].concat();
+                warn(host, "compact", &msg)?;
+            }
+        },
+        Value::Array(a) => {
+            crate::zend::call_stack::check()?;
+            let p = a.data_ptr();
+            if !a.is_empty() {
+                if active.contains(&p) {
+                    return Err(Thrown::error("Error", "Recursion detected"));
+                }
+                active.push(p);
+            }
+            let r = a
+                .iter()
+                .try_for_each(|(_, v)| compact_var(host, out, v, pos, active));
+            if !a.is_empty() {
+                active.pop();
+            }
+            r?;
+        }
+        v => {
+            let msg = format!(
+                "Argument #{pos} must be string or array of strings, {} given",
+                zval_value_name(host, &v)
+            );
+            warn(host, "compact", &msg)?;
+        }
+    }
+    Ok(())
+}

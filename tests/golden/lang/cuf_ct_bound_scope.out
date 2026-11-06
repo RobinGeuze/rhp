@@ -1,0 +1,21 @@
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(2)
+int(2)
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}
+Cannot call func_get_args() dynamically
+Cannot call func_get_args() dynamically
+Cannot call func_get_args() dynamically
+func_get_args() expects exactly 0 arguments, 1 given
+func_get_args() cannot be called from the global scope

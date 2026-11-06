@@ -2511,24 +2511,29 @@ fn fn_setlocale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut strs: Vec<Option<Vec<u8>>> = Vec::with_capacity(args.len() - 1);
     for (i, a) in args[1..].iter().enumerate() {
         let v = deref(a);
+        if matches!(v, Value::Array(_)) {
+            strs.push(None);
+            continue;
+        }
         let s = match &v {
-            Value::Array(_) => None,
             Value::Null => Some(Vec::new()),
             Value::Str(s) => Some(s.as_bytes().to_vec()),
-            Value::Object(_) => Some(crate::zend::zpp::zval_get_string(host, &v)?),
+            // Without __toString: the TypeError below.
+            Value::Object(_) => crate::zend::object_handlers::to_string(host, &v)?,
             Value::Int(_) | Value::Float(_) | Value::Bool(_) if !strict => {
                 Some(conv::to_string_bytes(&v))
             }
-            _ => {
-                let label = if i == 0 { " ($locales)" } else { "" };
-                return Err(Thrown::type_error(format!(
-                    "setlocale(): Argument #{}{label} must be of type array|string|null, {} given",
-                    i + 2,
-                    crate::zend::zpp::zval_type_name(host, &v)
-                )));
-            }
+            _ => None,
         };
-        strs.push(s);
+        let Some(s) = s else {
+            let label = if i == 0 { " ($locales)" } else { "" };
+            return Err(Thrown::type_error(format!(
+                "setlocale(): Argument #{}{label} must be of type array|string|null, {} given",
+                i + 2,
+                crate::zend::zpp::zval_type_name(host, &v)
+            )));
+        };
+        strs.push(Some(s));
     }
     for (a, s) in args[1..].iter().zip(strs) {
         if let Some(s) = s {

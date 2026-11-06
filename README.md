@@ -60,7 +60,7 @@ passing, so the percentages are of all php-src tests.
 | ext/iconv | 75 | 82 | 91.5% | the system iconv |
 | ext/intl | 42 | 511 | 8.2% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 80 | 94 | 85.1% | |
-| ext/libxml | 17 | 32 | 53.1% | on libxml2 |
+| ext/libxml | 18 | 32 | 56.2% | on libxml2 |
 | ext/mbstring | 223 | 446 | 50.0% | on php-src's libmbfl (rhp-mbfl-sys) |
 | ext/opcache | 702 | 876 | 80.1% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **12,462** | **22,219** | **56.1%** | |
+| **total** | **12,463** | **22,219** | **56.1%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

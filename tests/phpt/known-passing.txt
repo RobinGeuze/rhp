@@ -5903,6 +5903,7 @@ ext/libxml/tests/004.phpt
 ext/libxml/tests/bug42112.phpt
 ext/libxml/tests/bug54138.phpt
 ext/libxml/tests/bug63389.phpt
+ext/libxml/tests/image/imagetype_svg.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt
 ext/libxml/tests/libxml_get_external_entity_loader.phpt

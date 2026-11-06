@@ -2200,12 +2200,14 @@ impl Vm {
         // frame, and php compiles a few calls to opcodes (no frame either).
         // One the engine calls with no frame running (a shutdown function)
         // is.
-        let engine_called = !self.stack.is_empty()
-            && self.stack[caller]
-                .proto
-                .flags
-                .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
-        if frameless || !(user || engine_called) {
+        let engine_called = || {
+            !self.stack.is_empty()
+                && self.stack[caller]
+                    .proto
+                    .flags
+                    .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE)
+        };
+        if frameless || !(user || engine_called()) {
             let r = match zpp_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),

@@ -274,7 +274,9 @@ abstract class ReflectionFunctionAbstract implements Reflector {
         $ret = $i['ret'] ?? null;
         $tent = $i['tentative'] ?? null;
         $params = $this->getParameters();
-        if ($i['internal'] || $params !== [] || $ret !== null || $tent !== null) {
+        // An internal function always has arginfo; the closure invoke
+        // handler has the closure's (none without parameters or a type).
+        if (($i['internal'] && !isset($i['userArgInfo'])) || $params !== [] || $ret !== null || $tent !== null) {
             $s .= "\n" . $pi . '- Parameters [' . count($params) . "] {\n";
             foreach ($params as $p) { $s .= $pi . '  ' . $p . "\n"; }
             $s .= $pi . "}\n";
@@ -338,7 +340,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
             $i = __reflect('fn', $objectOrMethod);
             unset($i['closure'], $i['this'], $i['scope'], $i['calledScope'], $i['used']);
             $i = ['name' => '__invoke', 'short' => '__invoke', 'ns' => '', 'class' => 'Closure', 'internal' => true,
-                  'ext' => 'Core', 'file' => false, 'start' => false, 'end' => false, 'doc' => false, 'attrs' => [],
+                  'ext' => false, 'userArgInfo' => true, 'file' => false, 'start' => false, 'end' => false, 'doc' => false, 'attrs' => [],
                   'vis' => 1, 'modifiers' => 1, 'static' => false, 'abstract' => false, 'final' => false,
                   'prototype' => null] + $i;
             $this->__i = $i;
@@ -579,7 +581,13 @@ class ReflectionClass implements Reflector {
         }
         $s .= $c['internal'] ? '<internal' . ($this->getExtensionName() !== false ? ':' . $this->getExtensionName() : '') : '<user';
         $s .= '> ';
-        if ($kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable')) { $s .= '<iterateable> '; }
+        // ce->get_iterator: a Traversable class, or one with hooked
+        // properties (zend_hooked_object_get_iterator).
+        $iter = $kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable');
+        if (!$iter) {
+            foreach ($this->getProperties() as $rp) { if (!$rp->__dynamic() && $rp->hasHooks()) { $iter = true; break; } }
+        }
+        if ($iter) { $s .= '<iterateable> '; }
         if ($kind === 'interface' || $kind === 'trait' || $kind === 'enum') {
             $s .= $kind . ' ';
         } else {

@@ -3429,8 +3429,10 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Array(removed))
 }
 
-/// php_splice's HashTable iterator updates, on positions (an rhp table has
-/// no holes, so a bucket index is the position). `n` elements, `cut`
+/// php_splice's HashTable iterator updates, on positions: an rhp table has
+/// no holes, so a bucket index is taken to be the position (php tables
+/// with holes, such as packed arrays with sparse keys, can differ). `n`
+/// elements, `cut`
 /// removed at `off`, `repl` inserted; `length` is php's clamped length.
 /// Deleting the last element shrinks the used part and clamps iterators
 /// to it.

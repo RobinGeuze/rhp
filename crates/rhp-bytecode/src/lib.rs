@@ -56,6 +56,11 @@ impl CallFlags {
     /// The call is a whole expression statement: its result is unused
     /// (php's USED_RET() is false).
     pub const RESULT_UNUSED: CallFlags = CallFlags(8);
+    /// A `USER_CALL` whose first argument is a string literal naming an
+    /// internal function: php binds it at compile time
+    /// (zend_try_compile_ct_bound_init_user_func), so the callee's call is
+    /// not dynamic.
+    pub const CT_BOUND: CallFlags = CallFlags(16);
 
     pub const fn contains(self, other: CallFlags) -> bool {
         self.0 & other.0 == other.0

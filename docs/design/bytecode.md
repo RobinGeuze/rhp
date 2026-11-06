@@ -373,7 +373,10 @@ ahead: frames that never look a name up pay nothing. A direct call by name
 sets `Vm::call_direct` for the builtin it runs; any other way in (`$f()`,
 callbacks, call_user_func, `f(...)`) is php's ZEND_CALL_DYNAMIC, which the
 scope functions refuse with "Cannot call f() dynamically"
-(`Host::call_is_dynamic`).
+(`Host::call_is_dynamic`). The exception is `call_user_func[_array]('name', …)`
+with a string literal naming an internal function: php binds that at compile
+time, so the compiler sets `CallFlags::CT_BOUND` and the callee's call is
+direct.
 
 **Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
 IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts

@@ -203,6 +203,9 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// Set with `cuf_caller` when php binds the callback at compile time
+    /// (`CallFlags::CT_BOUND`): its call is a direct one.
+    cuf_direct: bool,
     /// The stack depth of the builtin call whose result is unused
     /// (`CallFlags::RESULT_UNUSED`), else `usize::MAX`.
     unused_call_depth: usize,

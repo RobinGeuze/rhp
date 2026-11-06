@@ -2133,11 +2133,15 @@ impl Host for Vm {
     fn call_callable(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         // `call_user_func[_array]` compiled as a user call (see `cuf_caller`).
         let caller = self.cuf_caller.take();
-        self.call_callable_value_mode(callable, args.to_vec(), caller)
+        self.call_direct = std::mem::take(&mut self.cuf_direct);
+        let r = self.call_callable_value_mode(callable, args.to_vec(), caller);
+        self.call_direct = false;
+        r
     }
 
     fn call_callable_forward(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
         self.cuf_caller.take();
+        self.cuf_direct = false;
         Vm::call_callable_forward(self, callable, args.to_vec())
     }
 
@@ -2148,7 +2152,10 @@ impl Host for Vm {
         named: Vec<(PhpStr, Value)>,
     ) -> Result<Value, Thrown> {
         let caller = self.cuf_caller.take();
-        self.call_named(callable, args.to_vec(), named, caller)
+        self.call_direct = std::mem::take(&mut self.cuf_direct);
+        let r = self.call_named(callable, args.to_vec(), named, caller);
+        self.call_direct = false;
+        r
     }
 
     fn resolve_class(&self, name: &[u8]) -> Option<u32> {

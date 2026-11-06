@@ -1486,6 +1486,9 @@ pub struct ClassProto {
     pub parent: Option<PhpStr>,
     pub interfaces: Vec<PhpStr>,
     pub traits: Vec<PhpStr>,
+    /// The `use T { ... }` adaptation rules, in source order (`None` when
+    /// there are none).
+    pub trait_rules: Option<Box<TraitRules>>,
     pub methods: Vec<MethodProto>,
     pub props: Vec<PropProto>,
     pub static_props: Vec<StaticPropProto>,
@@ -1503,6 +1506,34 @@ pub struct ClassProto {
     /// built-in prelude class.
     pub decl_file: PhpStr,
     pub decl_line: u32,
+}
+
+/// A class's trait adaptations: php's `trait_precedences` and
+/// `trait_aliases`. Trait names are resolved, as written otherwise.
+#[derive(Clone, Default)]
+pub struct TraitRules {
+    pub precedences: Vec<TraitPrecedence>,
+    pub aliases: Vec<TraitAlias>,
+}
+
+/// `T::m insteadof A, B;`
+#[derive(Clone)]
+pub struct TraitPrecedence {
+    pub trait_name: PhpStr,
+    pub method: PhpStr,
+    pub excludes: Vec<PhpStr>,
+}
+
+/// `[T::]m as [modifier] [alias];`
+#[derive(Clone)]
+pub struct TraitAlias {
+    pub trait_name: Option<PhpStr>,
+    pub method: PhpStr,
+    pub alias: Option<PhpStr>,
+    /// A new visibility (`as protected`).
+    pub visibility: Option<Visibility>,
+    /// `as final`.
+    pub is_final: bool,
 }
 
 /// One compiled enum case.

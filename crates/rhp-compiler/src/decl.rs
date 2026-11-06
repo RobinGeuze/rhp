@@ -470,6 +470,7 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         flags,
         parent,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -586,6 +587,7 @@ pub(crate) fn compile_anon_class(
         flags,
         parent,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -680,6 +682,7 @@ pub(crate) fn compile_enum(
         },
         parent: None,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -849,7 +852,15 @@ struct CompiledMembers {
     static_props: Vec<StaticPropProto>,
     constants: Vec<ConstProto>,
     traits: Vec<PhpStr>,
+    trait_rules: rhp_bytecode::TraitRules,
     enum_cases: Vec<rhp_bytecode::EnumCaseProto>,
+}
+
+impl CompiledMembers {
+    fn trait_rules(&self) -> Option<Box<rhp_bytecode::TraitRules>> {
+        let r = &self.trait_rules;
+        (!r.precedences.is_empty() || !r.aliases.is_empty()).then(|| Box::new(r.clone()))
+    }
 }
 
 fn compile_members(
@@ -952,9 +963,57 @@ fn compile_member(
             }
         }
         ClassLikeMember::TraitUse(tu) => {
+            use crate::parse::cst::{
+                TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
+            };
             for t in tu.trait_names.iter() {
                 out.traits
                     .push(PhpStr::from_bytes(cx.resolve_class_name(t)));
+            }
+            // zend_compile_trait_precedence / zend_compile_trait_alias.
+            if let TraitUseSpecification::Concrete(c) = &tu.specification {
+                let name = |t| PhpStr::from_bytes(cx.resolve_class_name(t));
+                for a in c.adaptations.iter() {
+                    match a {
+                        TraitUseAdaptation::Precedence(p) => {
+                            let r = &p.method_reference;
+                            out.trait_rules
+                                .precedences
+                                .push(rhp_bytecode::TraitPrecedence {
+                                    trait_name: name(&r.trait_name),
+                                    method: PhpStr::from_bytes(r.method_name.value.to_vec()),
+                                    excludes: p.trait_names.iter().map(name).collect(),
+                                });
+                        }
+                        TraitUseAdaptation::Alias(al) => {
+                            let (trait_name, method) = match &al.method_reference {
+                                TraitUseMethodReference::Identifier(m) => (None, m.value),
+                                TraitUseMethodReference::Absolute(r) => {
+                                    (Some(name(&r.trait_name)), r.method_name.value)
+                                }
+                            };
+                            let (visibility, is_final) = match &al.modifier {
+                                Some(Modifier::Public(_)) => (Some(Visibility::Public), false),
+                                Some(Modifier::Protected(_)) => {
+                                    (Some(Visibility::Protected), false)
+                                }
+                                Some(Modifier::Private(_)) => (Some(Visibility::Private), false),
+                                Some(Modifier::Final(_)) => (None, true),
+                                _ => (None, false),
+                            };
+                            out.trait_rules.aliases.push(rhp_bytecode::TraitAlias {
+                                trait_name,
+                                method: PhpStr::from_bytes(method.to_vec()),
+                                alias: al
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| PhpStr::from_bytes(a.value.to_vec())),
+                                visibility,
+                                is_final,
+                            });
+                        }
+                    }
+                }
             }
         }
         ClassLikeMember::EnumCase(ec) => {
@@ -1239,6 +1298,7 @@ pub(crate) fn compile_trait(
         flags: ClassFlags::default(),
         parent: None,
         interfaces: Vec::new(),
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -1323,6 +1383,7 @@ pub(crate) fn compile_interface(
         parent: None,
         interfaces,
         traits: Vec::new(),
+        trait_rules: None,
         methods,
         props: m.props,
         static_props: Vec::new(),

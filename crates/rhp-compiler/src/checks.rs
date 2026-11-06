@@ -226,6 +226,34 @@ fn check_members(cx: &FileCtx, d: &Decl, cname: &str, backed: bool) {
                                 if let TraitUseMethodReference::Absolute(r) = &al.method_reference {
                                     check_class_ref(cx, &r.trait_name, "trait name");
                                 }
+                                // zend_modifier_token_to_flag, then
+                                // zend_check_trait_alias_modifiers.
+                                let at = al.span().start.offset;
+                                match &al.modifier {
+                                    Some(Modifier::Static(_)) => cx.fatal(
+                                        at,
+                                        "Cannot use \"static\" as method modifier in trait alias"
+                                            .into(),
+                                    ),
+                                    Some(Modifier::Abstract(_)) => cx.fatal(
+                                        at,
+                                        "Cannot use \"abstract\" as method modifier in trait alias"
+                                            .into(),
+                                    ),
+                                    Some(
+                                        m @ (Modifier::Readonly(_)
+                                        | Modifier::PublicSet(_)
+                                        | Modifier::ProtectedSet(_)
+                                        | Modifier::PrivateSet(_)),
+                                    ) => cx.fatal(
+                                        at,
+                                        format!(
+                                            "Cannot use the {} modifier on a method",
+                                            s(m.get_keyword().value)
+                                        ),
+                                    ),
+                                    _ => {}
+                                }
                             }
                         }
                     }

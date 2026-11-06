@@ -427,6 +427,8 @@ BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot
 RefFuncResult { src }                 `=& f()`: notice when the call's result is no reference (then assigned)
 FetchListW { dst, src, key }          `[&$a] = $src`: element `key` of the container `src` references, as a reference
 RetRef     { src, kind }              by-ref return; `kind` (RET_REF_*) says when php notices
+SetPendingRetRef { src, kind }        RetRef crossing finally: type checked now and again after it, notice at the end
+ArgSpreadRef { arr, src, sig }        `f(...$a)` for by-ref params: their elements become references in `$a`
 ```
 The value-model's §4 ("Non-variables where php wants a reference") has the
 rules these follow.

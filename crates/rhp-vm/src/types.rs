@@ -176,11 +176,19 @@ impl Vm {
                 frame.regs[p.cv as usize] = Value::Array(a);
                 continue;
             }
-            if p.by_ref
-                || p.variadic
-                || i >= frame.argc
-                || (i < 64 && frame.holes & (1u64 << i) != 0)
-            {
+            if p.variadic || i >= frame.argc || (i < 64 && frame.holes & (1u64 << i) != 0) {
+                continue;
+            }
+            if p.by_ref {
+                // the referenced value is converted in place
+                if let Value::Ref(rc) = &frame.regs[p.cv as usize] {
+                    let rc = rc.clone();
+                    let cur = rc.borrow().clone();
+                    if matches!(cur, Value::Object(_)) {
+                        let v = self.coerce_stringable(cur, ty, false, ctx)?;
+                        *rc.borrow_mut() = v;
+                    }
+                }
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
@@ -364,6 +372,11 @@ impl Vm {
         let strict = caller.unwrap_or(false);
         let items: Vec<(ArrayKey, Value)> =
             arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        // php numbers a named extra after the positional ones, all alike
+        let positional = items
+            .iter()
+            .filter(|(k, _)| matches!(k, ArrayKey::Int(_)))
+            .count();
         for (n, (k, v)) in items.into_iter().enumerate() {
             let cur = deref(&v);
             match self.check_one(&cur, ty, strict, ctx) {
@@ -384,22 +397,12 @@ impl Vm {
                     }
                 }
                 Err(()) => {
-                    // A named extra argument is labelled by its name.
-                    let label = match &k {
-                        ArrayKey::Str(s) => {
-                            format!(" (${})", String::from_utf8_lossy(s.as_bytes()))
-                        }
-                        ArrayKey::Int(_) => String::new(),
+                    // zend_verify_variadic_arg_type: no parameter name
+                    let at = match &k {
+                        ArrayKey::Str(_) => i + positional,
+                        ArrayKey::Int(_) => i + n,
                     };
-                    return Err(self.arg_type_error(
-                        proto,
-                        frame,
-                        i + n,
-                        &label,
-                        &cur,
-                        caller,
-                        ctx,
-                    ));
+                    return Err(self.arg_type_error(proto, frame, at, "", &cur, caller, ctx));
                 }
             }
         }
@@ -493,21 +496,38 @@ impl Vm {
         src: rhp_bytecode::Reg,
         kind: u8,
     ) -> Result<Value, Thrown> {
-        use rhp_bytecode::{RET_REF_FUNC, RET_REF_IMPLICIT, RET_REF_VALUE};
+        let raw = self.ret_ref_checked(top, proto, src, kind)?;
+        self.ret_ref_wrap(raw, kind)
+    }
+
+    /// The type-checked value of a by-reference `return` (ZEND_VERIFY_RETURN_TYPE),
+    /// before RETURN_BY_REF.
+    pub(crate) fn ret_ref_checked(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        src: rhp_bytecode::Reg,
+        kind: u8,
+    ) -> Result<Value, Thrown> {
         let typed = proto.return_type.is_some() && !proto.is_generator;
-        let raw = if kind == RET_REF_IMPLICIT {
+        if kind == rhp_bytecode::RET_REF_IMPLICIT {
             if typed {
                 self.check_implicit_return(proto, top)?;
             }
-            Value::Null
+            return Ok(Value::Null);
+        }
+        let raw = self.stack[top].regs[src as usize].clone();
+        if typed {
+            self.recheck_ref_return(top, proto, &raw)
         } else {
-            let raw = self.stack[top].regs[src as usize].clone();
-            if typed {
-                self.recheck_ref_return(top, proto, &raw)?
-            } else {
-                raw
-            }
-        };
+            Ok(raw)
+        }
+    }
+
+    /// RETURN_BY_REF on a checked value: a value that is no reference
+    /// notices and is returned in a new one.
+    pub(crate) fn ret_ref_wrap(&mut self, raw: Value, kind: u8) -> Result<Value, Thrown> {
+        use rhp_bytecode::{RET_REF_FUNC, RET_REF_IMPLICIT, RET_REF_VALUE};
         let is_ref = matches!(raw, Value::Ref(_));
         if kind == RET_REF_VALUE || kind == RET_REF_IMPLICIT || (kind == RET_REF_FUNC && !is_ref) {
             self.diag(

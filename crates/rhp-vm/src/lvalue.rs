@@ -1114,7 +1114,7 @@ impl Vm {
         })
     }
 
-    fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
+    pub(crate) fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
         let cls = h.borrow().class;
         let msg = format!(
             "Indirect modification of overloaded element of {} has no effect",
@@ -1148,6 +1148,23 @@ impl Vm {
         make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
     }
 
+    /// The storage key of offset `key` of the built-in ArrayObject /
+    /// ArrayIterator `h` (spl_array_get_dimension_ptr's conversion).
+    pub(crate) fn spl_array_key(
+        &mut self,
+        h: &ObjectHandle,
+        key: &Value,
+    ) -> Result<rhp_values::ArrayKey, Thrown> {
+        let akey = self.dim_key(&deref(key), false)?;
+        akey.ok_or_else(|| {
+            Thrown::type_error(format!(
+                "Cannot access offset of type {} on {}",
+                rhp_builtins::zval_type_name(self, key),
+                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
+            ))
+        })
+    }
+
     /// php's spl_array_get_dimension_ptr for a built-in ArrayObject /
     /// ArrayIterator whose `offsetGet` is not overridden: the storage element
     /// itself (created as null for a write; "Undefined array key" first for a
@@ -1168,23 +1185,7 @@ impl Vm {
             return Ok(Some(Rc::new(RefCell::new(Value::Null))));
         }
         let storage = self.spl_array_storage(h, owner)?;
-        let akey = match deref(key) {
-            Value::Null => {
-                self.diag(
-                    builtins::E_DEPRECATED,
-                    "Using null as an array offset is deprecated, use an empty string instead",
-                )?;
-                Some(rhp_values::ArrayKey::from_bytes(b""))
-            }
-            k => rhp_values::ArrayKey::from_value(&k),
-        };
-        let Some(akey) = akey else {
-            return Err(Thrown::type_error(format!(
-                "Cannot access offset of type {} on {}",
-                rhp_builtins::zval_type_name(self, key),
-                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
-            )));
-        };
+        let akey = self.spl_array_key(h, key)?;
         let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());
         if !exists {
             match mode {
@@ -1860,10 +1861,14 @@ fn assign_path(
                 "[] operator not supported for strings",
             ));
         };
-        if rest.is_empty() {
+        if rest.is_empty() && !matches!(value, Value::Ref(_)) {
             return assign_string_offset(slot, k, &value, cx);
         }
         string_offset(k, false, cx)?;
+        // `$str[k] =& $v`
+        if rest.is_empty() {
+            return Err(string_offset_misuse(rest, true));
+        }
         return Err(string_offset_misuse(rest, false));
     }
     autovivify(slot, cx)?;

@@ -1369,19 +1369,20 @@ impl Vm {
                             let cell = self.spl_array_storage(&h, owner);
                             self.cursor_release();
                             let cell = cell?;
+                            // `$ao[] =& $v`: no slot (php's uninitialized_zval)
+                            let CursorStep::Key(k) = &steps[i] else {
+                                self.indirect_overloaded_notice(&h)?;
+                                return Err(Thrown::error(
+                                    "Error",
+                                    "Cannot assign by reference to an array dimension of an object",
+                                ));
+                            };
+                            let key = self.spl_array_key(&h, k)?;
                             let mut st = cell.borrow_mut();
                             if let Value::Array(a) = &mut *st {
-                                match &steps[i] {
-                                    CursorStep::Key(k) if !matches!(k, Value::Null) => {
-                                        a.insert(self.init_array_key(k)?, v);
-                                    }
-                                    _ => {
-                                        a.push(v);
-                                    }
-                                }
+                                a.insert(key, v);
                                 continue;
                             }
-                            drop(st);
                         }
                         if i + 1 == steps.len() && owner.is_none() {
                             let key = crate::lvalue::aa_key(&steps[i]).unwrap_or(Value::Null);
@@ -1589,15 +1590,20 @@ impl Vm {
                                 return Ok(done);
                             }
                         }
-                        Some(FinallyCont::ReturnRef(v, ret_pc)) => {
+                        Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
                             if let Some(f2) = enclosing_finally(&proto, pc, None) {
-                                self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc));
+                                self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
                                 self.stack[top].pc = f2 as usize;
                             } else {
                                 // php checks the type again at the return,
                                 // whose finally runs again when it fails.
                                 self.stack[top].pc = ret_pc as usize + 1;
-                                self.recheck_ref_return(top, &proto, &v)?;
+                                let v = if kind == rhp_bytecode::RET_REF_IMPLICIT {
+                                    v
+                                } else {
+                                    self.recheck_ref_return(top, &proto, &v)?
+                                };
+                                let v = self.ret_ref_wrap(v, kind)?;
                                 if let Some(done) = self.do_return(v) {
                                     return Ok(done);
                                 }
@@ -1623,11 +1629,12 @@ impl Vm {
                     }
                 }
                 Instr::SetPendingRetRef { src, kind } => {
-                    let v = self.ret_ref_value(top, &proto, src, kind)?;
+                    // the notice comes with the return, after the finally
+                    let v = self.ret_ref_checked(top, &proto, src, kind)?;
                     let pc = self.stack[top].pc as u32 - 1;
                     self.drop_left_finallies(top, &proto, pc);
                     if let Some(f) = enclosing_finally(&proto, pc, None) {
-                        self.push_pending(top, f, FinallyCont::ReturnRef(v, pc));
+                        self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
@@ -2465,7 +2472,9 @@ impl Vm {
                             ),
                         ));
                     }
+                    // an unknown name lands in a variadic parameter
                     named_pos(s.as_bytes())
+                        .or_else(|| variadic.then(|| flags.len().saturating_sub(1)))
                 }
             };
             let mut v = iv;

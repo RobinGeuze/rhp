@@ -808,9 +808,11 @@ impl ProtoBuilder<'_> {
                     {
                         unpacked = true;
                         let k = known.expect("checked");
+                        // Only a plain variable is changed in place (php
+                        // separates a fetched element or property's copy).
                         let v = unparen(p.value);
-                        let src = if crate::assign::is_variable(v)
-                            && !crate::assign::is_short_circuited(v)
+                        let src = if matches!(v, Expression::Variable(Variable::Direct(d))
+                            if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this"))
                         {
                             self.compile_ref_source(v)?
                         } else {
@@ -990,6 +992,15 @@ impl ProtoBuilder<'_> {
         let b = unparen(e);
         if crate::assign::is_globals_var(b) {
             return Some(SEND_VAL);
+        }
+        // `@expr` keeps a call's (VAR) result; a silenced variable is a value
+        if let Expression::UnaryPrefix(u) = b {
+            if matches!(
+                u.operator,
+                crate::parse::cst::UnaryPrefixOperator::ErrorControl(_)
+            ) {
+                return Some(self.send_kind(u.operand).unwrap_or(SEND_VAL));
+            }
         }
         if is_call(b) {
             return Some(if self.is_builtin_call(b) {
@@ -1536,8 +1547,18 @@ use crate::util::unparen;
 /// `new`, `$a =& $b`, a destructuring that binds references.
 pub(crate) fn produces_var(e: &Expression) -> bool {
     use crate::parse::cst::AssignmentOperator;
+    use crate::parse::cst::{CompositeString, Construct};
     match unparen(e) {
         Expression::Instantiation(_) => true,
+        // INCLUDE_OR_EVAL, and a backtick's shell_exec() call
+        Expression::Construct(
+            Construct::Eval(_)
+            | Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_),
+        ) => true,
+        Expression::CompositeString(CompositeString::ShellExecute(_)) => true,
         Expression::Assignment(a) if matches!(a.operator, AssignmentOperator::Assign(_)) => {
             crate::assign::as_reference(a.rhs).is_some()
                 || match a.lhs {

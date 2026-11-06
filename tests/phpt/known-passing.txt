@@ -7895,6 +7895,7 @@ ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_empty.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_error.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fpassthru_basic.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fputcsv_002.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation1.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation10.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation11.phpt

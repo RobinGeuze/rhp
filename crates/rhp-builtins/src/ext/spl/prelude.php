@@ -107,7 +107,9 @@ class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
     public function offsetExists($i): bool { return isset($this->__d[$i]); }
     public function offsetGet($i): mixed { return $this->__d[$i]; }
     public function offsetSet($i, $v): void { if ($i === null) { $this->__d[] = $v; } else { $this->__d[$i] = $v; } }
-    public function offsetUnset($i): void { array_splice($this->__d, $i, 1); }
+    // The removed element is kept until the splice is done (a destructor may
+    // use the list).
+    public function offsetUnset($i): void { $gone = array_splice($this->__d, $i, 1); }
     public function setIteratorMode($mode): void { $this->__lifo = (bool)($mode & 2); $this->__del = (bool)($mode & 1); }
     protected $__del = false;
     public function __debugInfo(): array {

@@ -1054,8 +1054,28 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         let path = self.compile_expr(path_expr)?;
         let dst = self.alloc_temp();
-        self.emit(Instr::Include { dst, path, kind });
+        self.emit_at_operand_line(path_expr, Instr::Include { dst, path, kind });
         Ok(dst)
+    }
+
+    /// Emit an include/eval opcode at its operand's line: php's
+    /// ZEND_AST_INCLUDE_OR_EVAL takes its child's lineno (a heredoc's is
+    /// the line its body starts on).
+    fn emit_at_operand_line(&mut self, operand: &Expression, instr: Instr) {
+        use crate::parse::cst::{CompositeString, Literal};
+        use mago_span::HasSpan;
+        let mut line = self.cx.line_of(operand.span().start.offset);
+        let doc = match operand {
+            Expression::CompositeString(CompositeString::Document(_)) => true,
+            Expression::Literal(Literal::String(s)) => s.raw.starts_with(b"<<<"),
+            _ => false,
+        };
+        if doc {
+            line += 1;
+        }
+        let saved = std::mem::replace(&mut self.cur_line, line);
+        self.emit(instr);
+        self.cur_line = saved;
     }
 
     fn compile_construct(&mut self, c: &Construct) -> Result<Reg, Thrown> {
@@ -1069,7 +1089,7 @@ impl ProtoBuilder<'_> {
             Construct::Eval(e) => {
                 let src = self.compile_expr(e.value)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::Eval { dst, src });
+                self.emit_at_operand_line(e.value, Instr::Eval { dst, src });
                 Ok(dst)
             }
             Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),

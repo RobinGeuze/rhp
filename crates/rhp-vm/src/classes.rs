@@ -313,8 +313,11 @@ fn dynamic_or_bad(name: &PhpStr) -> PropRes {
     }
 }
 
+/// A class name as php's `%s` prints it (an anonymous one stops at NUL).
 fn cname(classes: &[ClassEntry], id: ClassId) -> String {
-    String::from_utf8_lossy(classes[id as usize].name.as_bytes()).into_owned()
+    let b = classes[id as usize].name.as_bytes();
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    String::from_utf8_lossy(&b[..end]).into_owned()
 }
 
 /// php's do_inherit_property for a property the class redeclares: the
@@ -1719,7 +1722,10 @@ impl Vm {
             return Ok(false);
         }
         // php verifies abstractness last, after the inheritance checks.
-        if proto.kind == ClassKind::Class && self.internal_classes > 0 {
+        if self.internal_classes > 0 {
+            self.interface_handlers(id)?;
+        }
+        if matches!(proto.kind, ClassKind::Class | ClassKind::Enum) && self.internal_classes > 0 {
             self.verify_abstract_class(id)?;
         }
         if self.internal_classes > 0 {
@@ -1815,12 +1821,13 @@ impl Vm {
             list.push_str(", ...");
         }
         let n = cname(&self.classes, id);
-        let msg = if !explicit && !is_anon_name(e.name.as_bytes()) {
+        let kind = crate::link_checks::kind_uc(e.kind);
+        let msg = if !explicit && !is_anon_name(e.name.as_bytes()) && e.kind != ClassKind::Enum {
             format!(
-                "Class {n} contains {cnt} abstract method{s} and must therefore be declared abstract or implement the remaining method{s} ({list})"
+                "{kind} {n} contains {cnt} abstract method{s} and must therefore be declared abstract or implement the remaining method{s} ({list})"
             )
         } else {
-            format!("Class {n} must implement {cnt} abstract method{s} ({list})")
+            format!("{kind} {n} must implement {cnt} abstract method{s} ({list})")
         };
         let proto = e.proto.clone();
         Err(self.link_fatal(&proto, 1, &msg))

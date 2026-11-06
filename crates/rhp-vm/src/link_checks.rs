@@ -23,6 +23,16 @@ fn shown(name: &PhpStr) -> String {
     String::from_utf8_lossy(&b[..end]).into_owned()
 }
 
+/// zend_get_object_type_uc.
+pub(crate) fn kind_uc(k: ClassKind) -> &'static str {
+    match k {
+        ClassKind::Class => "Class",
+        ClassKind::Interface => "Interface",
+        ClassKind::Trait => "Trait",
+        ClassKind::Enum => "Enum",
+    }
+}
+
 /// php's property_has_operation.
 fn has_operation(p: &PropEntry, kind: usize) -> bool {
     (!p.virt && (kind == HookKind::Get as usize || !p.readonly))
@@ -203,6 +213,39 @@ impl Vm {
                     },
                 );
                 return fail(self, 64, msg);
+            }
+        }
+        // zend_do_implement_interfaces: each declared interface must be one,
+        // and not one listed before (an inherited one is skipped).
+        let parent_ifaces: Vec<ClassId> = proto
+            .parent
+            .as_ref()
+            .and_then(|p| class_of(self, p))
+            .map(|p| self.classes[p].interfaces.clone())
+            .unwrap_or_default();
+        let mut listed: Vec<ClassId> = Vec::new();
+        for i in &proto.interfaces {
+            let Some(iid) = class_of(self, i) else {
+                continue;
+            };
+            let iname = shown(&self.classes[iid].name);
+            if self.classes[iid].kind != ClassKind::Interface {
+                return fail(
+                    self,
+                    1,
+                    format!("{name} cannot implement {iname} - it is not an interface"),
+                );
+            }
+            let iid = iid as ClassId;
+            if listed.contains(&iid) {
+                let msg = format!(
+                    "{} {name} cannot implement previously implemented interface {iname}",
+                    kind_uc(proto.kind)
+                );
+                return fail(self, 64, msg);
+            }
+            if !parent_ifaces.contains(&iid) {
+                listed.push(iid);
             }
         }
         // interface_gets_implemented of UnitEnum / BackedEnum, for every
@@ -405,5 +448,103 @@ impl Vm {
         );
         let proto = self.classes[ce as usize].proto.clone();
         self.link_fatal(&proto, 64, &msg)
+    }
+
+    /// The interface_gets_implemented handlers (Traversable, Iterator,
+    /// IteratorAggregate, Throwable, DateTimeInterface) for each interface
+    /// the just-linked user class `ce` implements, in its interface order.
+    pub(crate) fn interface_handlers(&mut self, ce: ClassId) -> Result<(), Thrown> {
+        let e = &self.classes[ce as usize];
+        if e.kind == ClassKind::Interface || e.decl_file.is_empty() {
+            return Ok(());
+        }
+        let name = shown(&e.name);
+        let has = |n: &[u8]| {
+            e.interfaces
+                .iter()
+                .any(|&i| self.classes[i as usize].name.as_bytes().eq_ignore_ascii_case(n))
+        };
+        let extends = |n: &[u8]| {
+            let mut c = Some(ce);
+            while let Some(id) = c {
+                if self.classes[id as usize].name.as_bytes().eq_ignore_ascii_case(n) {
+                    return true;
+                }
+                c = self.classes[id as usize].parent;
+            }
+            false
+        };
+        let mut err: Option<(i64, String)> = None;
+        for &i in &e.interfaces {
+            let iname = self.classes[i as usize].name.as_bytes().to_ascii_lowercase();
+            match iname.as_slice() {
+                b"traversable" => {
+                    if !e.flags.is_abstract && !has(b"Iterator") && !has(b"IteratorAggregate") {
+                        err = Some((
+                            16,
+                            format!(
+                                "{} {name} must implement interface Traversable as part of either Iterator or IteratorAggregate",
+                                kind_uc(e.kind)
+                            ),
+                        ));
+                    }
+                }
+                b"iterator" | b"iteratoraggregate" => {
+                    let other: &[u8] = if iname == b"iterator" {
+                        b"IteratorAggregate"
+                    } else {
+                        b"Iterator"
+                    };
+                    if has(other) {
+                        err = Some((
+                            1,
+                            format!("Class {name} cannot implement both Iterator and IteratorAggregate at the same time"),
+                        ));
+                    }
+                }
+                b"throwable" => {
+                    let mut root = ce;
+                    while let Some(p) = self.classes[root as usize].parent {
+                        root = p;
+                    }
+                    let rn = self.classes[root as usize].name.as_bytes();
+                    if rn != b"Exception" && rn != b"Error" {
+                        let tail = if e.kind == ClassKind::Enum {
+                            ""
+                        } else {
+                            ", extend Exception or Error instead"
+                        };
+                        err = Some((
+                            1,
+                            format!(
+                                "{} {name} cannot implement interface Throwable{tail}",
+                                kind_uc(e.kind)
+                            ),
+                        ));
+                    }
+                }
+                b"datetimeinterface" => {
+                    if !extends(b"DateTime") && !extends(b"DateTimeImmutable") {
+                        err = Some((
+                            1,
+                            "DateTimeInterface can't be implemented by user classes".to_string(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            if err.is_some() {
+                break;
+            }
+        }
+        let Some((level, msg)) = err else {
+            return Ok(());
+        };
+        if level == 16 {
+            // E_CORE_ERROR: no file or line.
+            return Err(self.fatal_error_at(16, msg.as_bytes(), b"Unknown".to_vec(), 0));
+        }
+        let proto = e.proto.clone();
+        Err(self.link_fatal(&proto, level, &msg))
     }
 }

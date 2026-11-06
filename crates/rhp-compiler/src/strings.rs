@@ -5,7 +5,7 @@
 /// The `${` interpolations: the scanner's T_STRING_VARNAME form (a label
 /// right after `${`, then `}` or `[`) reads `$name` / `$name[...]`;
 /// anything else is a variable variable. The name, when it is the first.
-pub(crate) fn dollar_brace_varname<'s>(src: &'s [u8], after_brace: usize) -> Option<&'s [u8]> {
+pub(crate) fn dollar_brace_varname(src: &[u8], after_brace: usize) -> Option<&[u8]> {
     let rest = src.get(after_brace..)?;
     let first = *rest.first()?;
     if !(first.is_ascii_alphabetic() || first == b'_' || first >= 0x80) {

@@ -280,9 +280,7 @@ fn swc(s: &mut Stream) -> Option<GfxInfo> {
         let mut cap = 0usize;
         loop {
             factor <<= 1;
-            let Some(len) = rest.len().checked_mul(factor) else {
-                return None;
-            };
+            let len = rest.len().checked_mul(factor)?;
             // php's fallible safe_ferealloc of its buffer.
             if !rhp_values::mem::reserve_realloc(cap, len) {
                 return None;
@@ -543,7 +541,7 @@ fn tiff(s: &mut Stream, mm: bool) -> Option<GfxInfo> {
         return None;
     }
     let (mut width, mut height) = (0usize, 0usize);
-    for e in dir.chunks_exact(12).take(num_entries) {
+    for e in dir.as_chunks::<12>().0.iter().take(num_entries) {
         let tag = ifd16(&e[0..], mm);
         let value = match ifd16(&e[2..], mm) {
             1 | 6 => e[8] as usize,
@@ -864,7 +862,7 @@ fn from_stream(
     fname: &str,
     data: &[u8],
     input: &[u8],
-    mut info: Option<&mut PhpArray>,
+    info: Option<&mut PhpArray>,
 ) -> Result<Value, Thrown> {
     let s = &mut Stream {
         d: data,
@@ -874,7 +872,7 @@ fn from_stream(
     let itype = image_type(host, fname, s, input)?;
     let result = match itype {
         GIF => gif(s),
-        JPEG => jpeg(host, fname, s, info.as_deref_mut())?,
+        JPEG => jpeg(host, fname, s, info)?,
         PNG => png(s),
         SWF => swf(s),
         SWC => swc(s),

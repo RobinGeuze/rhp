@@ -292,6 +292,12 @@ pub enum Instr {
         src: Reg,
         target: Pc,
     },
+    /// ZEND_ASSERT_CHECK: with zend.assertions <= 0, store true in `dst`
+    /// and jump to `target`, past the `assert()` call.
+    AssertCheck {
+        dst: Reg,
+        target: Pc,
+    },
 
     // -- arrays --
     NewArray {

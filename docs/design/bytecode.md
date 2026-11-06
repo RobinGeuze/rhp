@@ -331,7 +331,12 @@ JmpTrue    { cond, target }    if conv::to_bool(deref(cond))
 JmpFalse   { cond, target }    if !conv::to_bool(deref(cond))
 JmpNull    { src, target }     if deref(src) is Null          (for ?? / nullsafe)
 JmpNotNull { src, target }
+AssertCheck { dst, target }    if zend.assertions <= 0: dst = true, jump (ZEND_ASSERT_CHECK)
 ```
+`assert(...)` (zend_compile_assert): `AssertCheck` jumps over the call when
+assertions are off at run time; with zend.assertions=-1 the compiler emits
+only `true`. A one-argument call gets `assert(<expr>)` as its description,
+printed by `ast_export.rs`, a port of zend_ast_export over the CST.
 `switch` → chain of `Cmp Eq; JmpTrue` (loose). `match` → `Cmp Identical; JmpTrue`
 (strict) ending in `ThrowMatchError`.
 

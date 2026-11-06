@@ -119,3 +119,21 @@ pub(crate) fn heredoc_value(raw: &[u8], value: &[u8]) -> Option<Vec<u8>> {
     }
     Some(ours[..ours.len() - cut].to_vec())
 }
+
+/// A backtick string's literal part: the parser keeps `\`` as written,
+/// php's scanner reads a backtick. (A backtick in the value always comes
+/// from that escape.)
+pub(crate) fn shell_exec_value(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut i = 0;
+    while i < value.len() {
+        if value[i] == b'\\' && value.get(i + 1) == Some(&b'`') {
+            out.push(b'`');
+            i += 2;
+        } else {
+            out.push(value[i]);
+            i += 1;
+        }
+    }
+    out
+}

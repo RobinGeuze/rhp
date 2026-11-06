@@ -826,6 +826,12 @@ impl Vm {
                         self.stack[top].pc = target as usize;
                     }
                 }
+                Instr::AssertCheck { dst, target } => {
+                    if builtins::zend::assertions() <= 0 {
+                        self.reg_set(top, dst, Value::Bool(true));
+                        self.stack[top].pc = target as usize;
+                    }
+                }
                 Instr::JmpNotNull { src, target } => {
                     if !matches!(self.reg_get(top, src), Value::Null) {
                         self.stack[top].pc = target as usize;

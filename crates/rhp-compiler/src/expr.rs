@@ -519,6 +519,15 @@ impl ProtoBuilder<'_> {
         b: &crate::parse::cst::Binary,
         is_and: bool,
     ) -> Result<Reg, Thrown> {
+        // zend_compile_short_circuiting: a constant left side that decides
+        // the result leaves the right side uncompiled (no diagnostics).
+        if let Some(v) = literal_bool(b.lhs) {
+            if v != is_and {
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadBool { dst, b: v });
+                return Ok(dst);
+            }
+        }
         let dst = self.alloc_temp();
         let a = self.compile_expr(b.lhs)?;
         let jcond = self.code.len();
@@ -912,6 +921,9 @@ impl ProtoBuilder<'_> {
                         self.octal_overflow_warnings(l.raw, l.span.start.offset);
                     }
                     let mut v = l.value.unwrap_or(l.raw).to_vec();
+                    if matches!(cs, CompositeString::ShellExecute(_)) {
+                        v = crate::strings::shell_exec_value(&v);
+                    }
                     // A heredoc keeps `\"` as written.
                     if heredoc && flat {
                         if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
@@ -1506,4 +1518,28 @@ fn expr_kind(e: &Expression) -> &'static str {
 /// array element `&$this` is not a reference.
 fn is_this_var(e: &Expression) -> bool {
     matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == b"$this")
+}
+
+/// The truth value of a literal (`0`, `'x'`, `true`, `null`, ...), which
+/// php's compiler knows as a constant.
+fn literal_bool(e: &Expression) -> Option<bool> {
+    let mut e = e;
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    match e {
+        Expression::Literal(l) => Some(rhp_values::conv::to_bool(&crate::fold::literal_value(l))),
+        Expression::ConstantAccess(ca) => {
+            let n = ca.name.value();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if n.eq_ignore_ascii_case(b"true") {
+                Some(true)
+            } else if n.eq_ignore_ascii_case(b"false") || n.eq_ignore_ascii_case(b"null") {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }

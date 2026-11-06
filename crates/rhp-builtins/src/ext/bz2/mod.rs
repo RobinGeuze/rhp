@@ -171,6 +171,12 @@ fn fn_bzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     url.extend_from_slice(&path);
     let fmode: &[u8] = if mode == b"r" { b"rb" } else { b"wb" };
     let rel = inner(&path).to_vec();
+    // _php_stream_bz2open's open_basedir check (no open warning after it)
+    if !rel.windows(3).any(|w| w == b"://")
+        && !crate::main::fopen_wrappers::check(host, "bzopen", &rel, true)?
+    {
+        return Ok(Value::Bool(false));
+    }
     if mode == b"r" && !rel.windows(3).any(|w| w == b"://") {
         // libbz2 opens lazily: a readable file that isn't bzip2 still opens,
         // and the first read fails with BZ_DATA_ERROR_MAGIC.

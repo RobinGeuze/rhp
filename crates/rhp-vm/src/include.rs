@@ -258,6 +258,32 @@ impl Vm {
                     .map(|real| (real, IncludeSource::Cached))
             })
         };
+        // The plain-files opener's open_basedir check of the resolved path.
+        let mut shown = path_str.clone();
+        let found = match found {
+            Some((real, IncludeSource::File(_)))
+                if builtins::main::fopen_wrappers::active()
+                    && !builtins::main::fopen_wrappers::check_queued(&real, true) =>
+            {
+                self.flush_stream_diags(kind.name());
+                shown = String::from_utf8_lossy(&real).into_owned();
+                None
+            }
+            // Not found: the plain opener still checks the name as given.
+            None if reason_override.is_none()
+                && !path_str.is_empty()
+                && builtins::main::fopen_wrappers::active()
+                && builtins::main::streams::split_scheme(&raw_path).0 == b"file"
+                && !builtins::main::fopen_wrappers::check_queued(
+                    builtins::main::streams::file_path(&raw_path),
+                    true,
+                ) =>
+            {
+                self.flush_stream_diags(kind.name());
+                None
+            }
+            f => f,
+        };
         let (realpath, source) = match found {
             Some(found) => found,
             None => {
@@ -277,7 +303,7 @@ impl Vm {
                     })
                 };
                 if let Some(reason) = reason {
-                    let msg = format!("{fname}({path_str}): Failed to open stream: {reason}");
+                    let msg = format!("{fname}({shown}): Failed to open stream: {reason}");
                     let msg = self.docref_html(msg.as_bytes()).into_owned();
                     self.diag(builtins::E_WARNING, &msg)?;
                 }

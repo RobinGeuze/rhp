@@ -95,6 +95,9 @@ fn fn_iptcembed(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut iptc = conv::to_string_bytes(&deref(&args[0]));
     let path = crate::zend::zpp::path_param(host, args, 1, "iptcembed", "filename")?;
     let spool = args.get(2).map_or(0, |v| conv::to_int(&deref(v)));
+    if !crate::main::fopen_wrappers::check(host, "iptcembed", &path, true)? {
+        return Ok(Value::Bool(false));
+    }
     let Ok(data) = std::fs::read(crate::zend::virtual_cwd::os_path(&path)) else {
         let msg = [b"Unable to open ".as_slice(), &path].concat();
         crate::warn(host, "iptcembed", &msg)?;

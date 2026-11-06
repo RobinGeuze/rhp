@@ -225,6 +225,16 @@ fn include_path_arg(host: &dyn Host, args: &[Value], i: usize, path: Vec<u8>) ->
     crate::ext::standard::file::resolve_include_path(host, inner(&path)).unwrap_or(path)
 }
 
+/// The plain-files opener's open_basedir check of a gz function's file
+/// (its warning, then the "Failed to open stream" one).
+fn basedir_allowed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<bool, Thrown> {
+    let rel = inner(path);
+    if !crate::main::fopen_wrappers::active() || streams::split_scheme(rel).0 != b"file" {
+        return Ok(true);
+    }
+    crate::main::fopen_wrappers::check_open(host, fname, streams::file_path(rel), rel)
+}
+
 fn zlib_url(path: &[u8]) -> Vec<u8> {
     if path.starts_with(SCHEME_PREFIX) {
         path.to_vec()
@@ -299,6 +309,9 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .copied()
         .filter(|c| matches!(c, b'r' | b'w' | b'a' | b'x' | b'c' | b'b' | b't'))
         .collect();
+    if !basedir_allowed(host, "gzopen", &path)? {
+        return Ok(Value::Bool(false));
+    }
     // php opens (creating/truncating) the underlying file right away.
     let rel = inner(&path);
     if mode[0] != b'r' && !rel.windows(3).any(|w| w == b"://") {
@@ -325,6 +338,9 @@ fn fn_gzopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_gzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = include_path_arg(host, args, 1, bytes_arg(args, 0));
+    if !basedir_allowed(host, "gzfile", &path)? {
+        return Ok(Value::Bool(false));
+    }
     let Some(data) = host.stream_get_contents(&zlib_url(&path)) else {
         warn_open_failed(host, "gzfile", inner(&path), b"rb");
         return Ok(Value::Bool(false));
@@ -345,6 +361,9 @@ fn fn_gzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_readgzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = include_path_arg(host, args, 1, bytes_arg(args, 0));
+    if !basedir_allowed(host, "readgzfile", &path)? {
+        return Ok(Value::Bool(false));
+    }
     let Some(data) = host.stream_get_contents(&zlib_url(&path)) else {
         warn_open_failed(host, "readgzfile", inner(&path), b"rb");
         return Ok(Value::Bool(false));

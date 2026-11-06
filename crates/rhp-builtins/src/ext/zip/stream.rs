@@ -202,6 +202,9 @@ impl ZipWrapper {
         }
         let dirname = &path[..hash];
         let fragment = &path[hash + 1..];
+        if !crate::main::fopen_wrappers::check_queued(dirname, true) {
+            return None;
+        }
         // libzip opens the file itself: relative to the process directory,
         // which is rhp's.
         let dirname = expand_filepath(dirname).unwrap_or_else(|| dirname.to_vec());

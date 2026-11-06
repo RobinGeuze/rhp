@@ -44,14 +44,14 @@ passing, so the percentages are of all php-src tests.
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
 | Zend/tests | 4,847 | 5,396 | 89.8% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 777 | 895 | 86.8% | php-src's tests of the language, functions, classes and output |
+| tests | 824 | 895 | 92.1% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 21 | 117 | 17.9% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,240 | 3,880 | 83.5% | no user stream wrappers or stream filters |
+| ext/standard | 3,252 | 3,880 | 83.8% | no user stream wrappers or stream filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 8 | 27 | 29.6% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
-| ext/curl | 153 | 180 | 85.0% | on libcurl |
+| ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 685 | 705 | 97.2% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
 | ext/filter | 40 | 129 | 31.0% | `filter_var` only |
@@ -73,7 +73,7 @@ passing, so the percentages are of all php-src tests.
 | ext/reflection | 416 | 540 | 77.0% | |
 | ext/simplexml | 152 | 165 | 92.1% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
-| ext/spl | 549 | 796 | 69.0% | |
+| ext/spl | 550 | 796 | 69.1% | |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **13,798** | **22,219** | **62.1%** | |
+| **total** | **13,862** | **22,219** | **62.4%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

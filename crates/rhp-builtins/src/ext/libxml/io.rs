@@ -134,6 +134,16 @@ fn open_wrapper(
     };
     // Only fail quietly when a stat says the file is not there: libxml2
     // probes for files (DTDs) whose absence is no error.
+    // The plain url_stat (quiet) and opener both run open_basedir.
+    if plain && crate::main::fopen_wrappers::active() {
+        if read_only {
+            if !crate::main::fopen_wrappers::check(h, &fname, &path, false)? {
+                return Ok(None);
+            }
+        } else if !crate::main::fopen_wrappers::check_open(h, &fname, &path, &path)? {
+            return Ok(None);
+        }
+    }
     if read_only && plain && h.stream_stat(&path).is_none() {
         return Ok(None);
     }

@@ -723,6 +723,9 @@ impl Host for Vm {
                 // plain file right away: a resource of its own.
                 let inner = &path[b"compress.zlib://".len()..];
                 if !inner.windows(3).any(|w| w == b"://") {
+                    if !builtins::main::fopen_wrappers::check_queued(inner, true) {
+                        return None;
+                    }
                     let fmode: &[u8] = if append { b"ab" } else { b"wb" };
                     let (flags, _, _) = builtins::main::streams::parse_fopen_mode(fmode)?;
                     builtins::zend::virtual_cwd::open(inner, flags, 0o666).ok()?;

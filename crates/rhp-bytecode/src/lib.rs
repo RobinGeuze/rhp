@@ -1244,11 +1244,24 @@ pub struct AttributeProto {
     /// An internal attribute's validator error that
     /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
     pub validation_error: Option<PhpStr>,
+    /// Each argument as `ReflectionAttribute::__toString()` prints it: its
+    /// name (named arguments) and its folded value or exported expression.
+    pub arg_show: Vec<(Option<PhpStr>, AttrArgShow)>,
     /// Where it is written and its file's `strict_types`: `newInstance()`
     /// runs the constructor as if called from there.
     pub file: PhpStr,
     pub line: u32,
     pub strict_types: bool,
+}
+
+/// An attribute argument for `ReflectionAttribute::__toString()`
+/// (format_default_value).
+#[derive(Clone)]
+pub enum AttrArgShow {
+    /// Folded at compile time.
+    Value(Value),
+    /// A constant expression left unevaluated, as zend_ast_export prints it.
+    Ast(PhpStr),
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment

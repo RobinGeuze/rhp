@@ -81,6 +81,7 @@ pub(crate) fn compile_method(
         MethodBody::Abstract(_) => false,
     };
     c.check_void_by_ref(&display, m.return_type_hint.as_ref().map(|r| &r.hint));
+    let _attr_scope = cx.attr_scope(format!("{display}()").into_bytes());
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
     c.check_generator_type(cx.line_of(m.function.span.start.offset))?;
@@ -259,6 +260,7 @@ pub(crate) fn compile_function(
     c.is_generator = block_has_yield(&func.body.statements);
     let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
     c.check_void_by_ref(&display, func.return_type_hint.as_ref().map(|r| &r.hint));
+    let _attr_scope = cx.attr_scope(format!("{display}()").into_bytes());
     let (params, nonconst_defaults, _) =
         c.lower_params(&func.parameter_list, &display, false, None)?;
     c.check_generator_type(cx.line_of(func.function.span.start.offset))?;
@@ -313,6 +315,7 @@ impl ProtoBuilder<'_> {
     fn closure_magic_name(&self, offset: u32) -> PhpStr {
         let line = self.cx.line_of(offset);
         let qual: Vec<u8> = match self.scope_kind {
+            _ if self.closure_qual.is_some() => self.closure_qual.clone().unwrap_or_default(),
             ScopeKind::Method => {
                 let mut v = self
                     .class_name

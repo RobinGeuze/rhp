@@ -88,7 +88,7 @@ class Reflection {
     public static function __fmt($v) {
         if ($v === null) { return 'NULL'; }
         if (is_bool($v)) { return $v ? 'true' : 'false'; }
-        if (is_string($v)) { return "'" . addcslashes($v, "\\'") . "'"; }
+        if (is_string($v)) { return "'" . self::__esc($v) . "'"; }
         if (is_float($v)) {
             // smart_str_append_double with zero_frac
             $s = (string) $v;
@@ -97,12 +97,22 @@ class Reflection {
         if (is_array($v)) {
             $list = array_is_list($v);
             $p = [];
-            foreach ($v as $k => $x) { $p[] = ($list ? '' : (is_int($k) ? $k : "'" . $k . "'") . ' => ') . self::__fmt($x); }
+            foreach ($v as $k => $x) { $p[] = ($list ? '' : (is_int($k) ? $k : "'" . self::__esc($k) . "'") . ' => ') . self::__fmt($x); }
             return '[' . implode(', ', $p) . ']';
         }
         if ($v instanceof UnitEnum) { return get_class($v) . '::' . $v->name; }
         if (is_object($v)) { return 'object(' . get_class($v) . ')'; }
         return (string) $v;
+    }
+    // smart_str_append_escaped: control bytes, `\\` and bytes above 126.
+    public static function __esc(string $s): string {
+        $o = '';
+        for ($i = 0, $n = strlen($s); $i < $n; $i++) {
+            $b = ord($s[$i]);
+            if ($b >= 32 && $b !== 92 && $b <= 126) { $o .= $s[$i]; continue; }
+            $o .= match ($b) { 10 => '\n', 13 => '\r', 9 => '\t', 12 => '\f', 11 => '\v', 92 => '\\\\', 27 => '\e', default => sprintf('\x%02X', $b) };
+        }
+        return $o;
     }
     public static function __type($t) {
         if ($t === null) { return null; }
@@ -196,7 +206,16 @@ class ReflectionAttribute implements Reflector {
         foreach ($n as $i => $s) { if ($f & (1 << $i)) { $o[] = $s; } }
         return implode(', ', $o);
     }
-    public function __toString(): string { return 'Attribute [ ' . $this->__d[0] . " ]\n"; }
+    public function __toString(): string {
+        $s = 'Attribute [ ' . $this->__d[0] . ' ]';
+        $a = __reflect('attr_show', $this->__d[3]);
+        if (!$a) { return $s . "\n"; }
+        $s .= " {\n  - Arguments [" . count($a) . "] {\n";
+        foreach ($a as $i => [$n, $ast, $v]) {
+            $s .= '    Argument #' . $i . ' [ ' . ($n === null ? '' : $n . ' = ') . ($ast ? $v : Reflection::__fmt($v)) . " ]\n";
+        }
+        return $s . "  }\n}\n";
+    }
 }
 
 abstract class ReflectionFunctionAbstract implements Reflector {

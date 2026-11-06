@@ -5,11 +5,12 @@ use std::rc::Rc;
 use mago_span::HasSpan;
 
 use crate::parse::cst::{
-    Access, Class, ClassLikeMember, Expression, Hint, Modifier, Node, Property, PropertyItem,
+    Access, Class, ClassLikeMember, Expression, Hint, Identifier, Modifier, Node, Property,
+    PropertyItem,
 };
 use rhp_bytecode::{
-    ClassProto, ConstInitProto, ConstProto, FunctionProto, Instr, MethodProto, PropDefaultProto,
-    PropProto, StaticPropProto,
+    AttrArgShow, ClassProto, ConstInitProto, ConstProto, FunctionProto, Instr, MethodProto,
+    PropDefaultProto, PropProto, StaticPropProto,
 };
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 use rhp_values::{ClassFlags, ClassKind, Visibility};
@@ -170,6 +171,7 @@ pub(crate) fn compile_attributes(
             if crate::attrs::skip_promoted(&name.as_bytes().to_ascii_lowercase(), target) {
                 continue;
             }
+            let mut arg_show = Vec::new();
             let args = match &a.argument_list {
                 None => None,
                 Some(al) => {
@@ -229,6 +231,17 @@ pub(crate) fn compile_attributes(
                             break;
                         }
                     }
+                    let names = AttrNames { cx, class_name };
+                    for (n, e) in &items {
+                        use crate::ast_export::ConstExprNames;
+                        let show = match names.fold(e) {
+                            Some(v) => AttrArgShow::Value(v),
+                            None => AttrArgShow::Ast(PhpStr::from_bytes(
+                                crate::ast_export::const_expr(cx.src, e, &names),
+                            )),
+                        };
+                        arg_show.push((n.map(|n| PhpStr::from_bytes(n.to_vec())), show));
+                    }
                     let folded: Result<Vec<Value>, Thrown> =
                         items.iter().map(|(_, e)| fold_const(cx, e)).collect();
                     match folded {
@@ -246,6 +259,7 @@ pub(crate) fn compile_attributes(
                             let mut c = ProtoBuilder::new(cx, PhpStr::from("{init}"));
                             c.class_name = class_name.cloned();
                             c.scope_kind = ScopeKind::Init;
+                            c.closure_qual = cx.attr_fn_scope.borrow().clone();
                             for (_, e) in &items {
                                 c.scan_expr_vars(e);
                             }
@@ -284,6 +298,7 @@ pub(crate) fn compile_attributes(
                 name,
                 args,
                 validation_error: None,
+                arg_show,
                 file: cx.file.clone(),
                 line: cx.line_of(a.name.span().start.offset),
                 strict_types: cx.strict_types,
@@ -292,6 +307,140 @@ pub(crate) fn compile_attributes(
     }
     crate::attrs::validate(cx, &mut out, target);
     Ok(out)
+}
+
+/// How zend_compile_const_expr leaves the names in an attribute argument.
+struct AttrNames<'c, 's> {
+    cx: &'c FileCtx<'s>,
+    class_name: Option<&'c PhpStr>,
+}
+
+impl AttrNames<'_, '_> {
+    /// `self`, `parent` or `static`, which stay as written.
+    fn special(raw: &[u8]) -> bool {
+        [&b"self"[..], b"parent", b"static"]
+            .iter()
+            .any(|k| raw.eq_ignore_ascii_case(k))
+    }
+
+    fn fq(name: Vec<u8>) -> Vec<u8> {
+        let mut v = b"\\".to_vec();
+        v.extend(name);
+        v
+    }
+}
+
+impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
+    fn fold(&self, e: &Expression) -> Option<Value> {
+        use crate::parse::cst::{ClassLikeConstantSelector as Sel, MagicConstant};
+        // The class names zend_eval_const_expr resolves at compile time:
+        // `X::class`, and `self::class` / `__CLASS__` outside a trait.
+        let own = || match self.class_name {
+            Some(c) if !self.cx.in_trait.get() => Some(Value::Str(c.clone())),
+            _ => None,
+        };
+        match crate::util::unparen(e) {
+            Expression::Access(Access::ClassConstant(c)) if matches!(&c.constant, Sel::Identifier(id) if id.value.eq_ignore_ascii_case(b"class")) =>
+            {
+                return match crate::util::unparen(c.class) {
+                    Expression::Identifier(id) if !Self::special(identifier_raw(id)) => Some(
+                        Value::Str(PhpStr::from_bytes(self.cx.resolve_class_name(id))),
+                    ),
+                    Expression::Self_(_) => own(),
+                    Expression::Identifier(id)
+                        if identifier_raw(id).eq_ignore_ascii_case(b"self") =>
+                    {
+                        own()
+                    }
+                    _ => None,
+                };
+            }
+            Expression::MagicConstant(MagicConstant::Class(_)) => {
+                return match self.class_name {
+                    None => Some(Value::str(Vec::new())),
+                    Some(_) => own(),
+                };
+            }
+            _ => {}
+        }
+        fold_const(self.cx, e).ok()
+    }
+
+    fn class_ref(&self, id: &Identifier) -> Vec<u8> {
+        let raw = identifier_raw(id);
+        if Self::special(raw) {
+            return raw.to_vec();
+        }
+        Self::fq(self.cx.resolve_class_name(id))
+    }
+
+    fn class_const_class(&self, id: &Identifier) -> Vec<u8> {
+        let raw = identifier_raw(id);
+        if Self::special(raw) {
+            return raw.to_vec();
+        }
+        // ZEND_NAME_FQ only when resolution produced a new name.
+        let ns = self.cx.ns();
+        let first = raw.split(|&b| b == b'\\').next().unwrap_or_default();
+        let unchanged = match id {
+            Identifier::FullyQualified(_) => false,
+            _ => {
+                ns.ns.is_empty()
+                    && !ns.use_class.contains_key(&first.to_ascii_lowercase())
+                    && !crate::names::starts_with_ci(raw, b"namespace\\")
+            }
+        };
+        drop(ns);
+        if unchanged {
+            raw.to_vec()
+        } else {
+            Self::fq(self.cx.resolve_class_name(id))
+        }
+    }
+
+    fn function(&self, id: &Identifier) -> Vec<u8> {
+        let (name, fallback) = self.cx.resolve_name(id, crate::names::NameKind::Func);
+        let fully_qualified = match id {
+            Identifier::Local(l) => {
+                fallback.is_none()
+                    && self
+                        .cx
+                        .ns()
+                        .use_func
+                        .contains_key(&l.value.to_ascii_lowercase())
+            }
+            _ => true,
+        };
+        if fully_qualified {
+            Self::fq(name)
+        } else {
+            name
+        }
+    }
+
+    fn constant(&self, id: &Identifier) -> Vec<u8> {
+        self.cx.resolve_name(id, crate::names::NameKind::Const).0
+    }
+
+    fn closure_name(&self, c: &crate::parse::cst::Closure) -> Vec<u8> {
+        let qual = self
+            .cx
+            .attr_fn_scope
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| self.cx.file_name());
+        let mut s = b"{closure:".to_vec();
+        s.extend(qual);
+        s.push(b':');
+        s.extend(
+            self.cx
+                .line_of(c.span().start.offset)
+                .to_string()
+                .into_bytes(),
+        );
+        s.push(b'}');
+        s
+    }
 }
 
 /// The attribute target of a class-like declaration.

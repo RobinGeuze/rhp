@@ -72,6 +72,9 @@ pub(crate) struct FileCtx<'s> {
     /// The property whose declaration is being compiled (`__PROPERTY__` in
     /// its default value and attributes).
     pub(crate) cur_property: RefCell<Option<Vec<u8>>>,
+    /// The function or method (`f()`, `C::m()`) whose attributes are being
+    /// compiled: a closure in them is named after it (else the file).
+    pub(crate) attr_fn_scope: RefCell<Option<Vec<u8>>>,
     /// Closure and arrow-function protos, and functions declared in control
     /// flow, from anywhere in the file: `Program::closures`. A closure's
     /// `fnidx` is its position here.
@@ -143,6 +146,7 @@ impl<'s> FileCtx<'s> {
             class_scope: RefCell::new(None),
             in_readonly_class: Cell::new(false),
             cur_property: RefCell::new(None),
+            attr_fn_scope: RefCell::new(None),
             closures: RefCell::new(Vec::new()),
             anon_classes: RefCell::new(Vec::new()),
             cond_classes: RefCell::new(Vec::new()),
@@ -375,6 +379,13 @@ impl<'s> FileCtx<'s> {
         *self.ns.borrow_mut() = ctx.clone();
     }
 
+    /// Name closures in attributes after function `qual` until the guard
+    /// drops.
+    pub(crate) fn attr_scope(&self, qual: Vec<u8>) -> AttrScope<'_, 's> {
+        let outer = self.attr_fn_scope.replace(Some(qual));
+        AttrScope { cx: self, outer }
+    }
+
     /// The namespace context of the statement being compiled.
     pub(crate) fn ns(&self) -> std::cell::Ref<'_, Rc<NsContext>> {
         self.ns.borrow()
@@ -554,4 +565,16 @@ fn collect_method_refs(flat: &[(Rc<NsContext>, &Statement)]) -> HashMap<Vec<u8>,
         }
     }
     map
+}
+
+/// See [`FileCtx::attr_scope`].
+pub(crate) struct AttrScope<'c, 's> {
+    cx: &'c FileCtx<'s>,
+    outer: Option<Vec<u8>>,
+}
+
+impl Drop for AttrScope<'_, '_> {
+    fn drop(&mut self) {
+        *self.cx.attr_fn_scope.borrow_mut() = self.outer.take();
+    }
 }

@@ -18,15 +18,15 @@ use crate::{ext, host_compare, host_loose_eq, warn, zend, Host, Thrown, E_WARNIN
 // shared helpers
 // ---------------------------------------------------------------------------
 
-/// The "string-cast" key coercion used by `array_fill_keys` / `array_combine`:
-/// integers stay integers; everything else is `(string)`-cast and then run
-/// through the canonical-integer-string rule. Notably floats become string
-/// keys (e.g. `2.9` -> `"2.9"`), unlike normal `$a[$f]` coercion.
-fn key_strcast(v: &Value) -> ArrayKey {
-    match deref(v) {
+/// The key `array_fill_keys` / `array_combine` make of a value: an int
+/// stays an int, anything else goes through zval_get_string (Array to
+/// string conversion, `__toString`) and zend_symtable_update's numeric
+/// string rule. Floats become string keys (`2.9` -> `"2.9"`).
+fn key_strcast(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
+    Ok(match deref(v) {
         Value::Int(n) => ArrayKey::Int(n),
-        other => ArrayKey::from_bytes(&conv::to_string_bytes(&other)),
-    }
+        other => ArrayKey::from_bytes(&crate::zend::zpp::zval_get_string(host, &other)?),
+    })
 }
 
 /// The "int-or-string only" key coercion used by `array_flip` /
@@ -116,10 +116,14 @@ fn fn_array_flip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = array_param(host, args, 0, "array_flip")?;
     let mut out = PhpArray::new();
     for (k, v) in a.iter() {
-        if let Some(nk) = key_intstr(v) {
-            out.insert(nk, k.to_value());
+        match key_intstr(v) {
+            Some(nk) => out.insert(nk, k.to_value()),
+            None => warn(
+                host,
+                "array_flip",
+                "Can only flip string and integer values, entry skipped",
+            )?,
         }
-        // non int/string values are skipped (php: warning to stderr)
     }
     Ok(Value::Array(out))
 }
@@ -174,7 +178,7 @@ fn fn_array_fill_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     let val = deref(&args[1]);
     let mut out = PhpArray::new();
     for (_, kv) in keys.iter() {
-        out.insert(key_strcast(kv), val.clone());
+        out.insert(key_strcast(host, kv)?, val.clone());
     }
     Ok(Value::Array(out))
 }
@@ -194,7 +198,7 @@ fn fn_array_combine(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     }
     let mut out = PhpArray::new();
     for ((_, kv), (_, vv)) in keys.iter().zip(values.iter()) {
-        out.insert(key_strcast(kv), vv.clone());
+        out.insert(key_strcast(host, kv)?, copy_elem(vv));
     }
     Ok(Value::Array(out))
 }
@@ -229,44 +233,54 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 
 fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = array_param(host, args, 0, "array_unique")?;
-    let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(2);
-    if flags != 2 && a.len() > 1 {
-        // SORT_REGULAR / SORT_NUMERIC / SORT_LOCALE_STRING: php sorts and drops
-        // neighbours that compare equal, keeping the earliest; for a consistent
-        // comparator that is "first occurrence of each equal group".
-        let mut kept: Vec<(ArrayKey, Value)> = Vec::new();
-        for (k, v) in a.iter() {
-            let v = deref(v);
-            let mut dup = false;
-            for (_, kv) in &kept {
-                let eq = match flags & !8 {
-                    1 => conv::to_float(kv) == conv::to_float(&v),
-                    5 => conv::to_string_bytes(kv) == conv::to_string_bytes(&v),
-                    _ => crate::host_loose_eq(host, kv, &v)?,
-                };
-                if eq {
-                    dup = true;
-                    break;
-                }
-            }
-            if !dup {
-                kept.push((k.clone(), v));
-            }
-        }
+    let flags = args
+        .get(1)
+        .map(|v| conv::to_int(&deref(v)))
+        .unwrap_or(SORT_STRING);
+    if flags == SORT_STRING {
+        // The first occurrence of each string form.
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
         let mut out = PhpArray::new();
-        for (k, v) in kept {
-            out.insert(k, v);
+        for (k, v) in a.iter() {
+            if seen.insert(tmp_string(host, v)?) {
+                out.insert(k.clone(), copy_elem(v));
+            }
         }
         return Ok(Value::Array(out));
     }
-    // SORT_STRING (the default): values are compared by their string form.
-    let mut seen: HashSet<Vec<u8>> = HashSet::new();
-    let mut out = PhpArray::new();
-    for (k, v) in a.iter() {
-        let s = conv::to_string_bytes(v);
-        if seen.insert(s) {
-            out.insert(k.clone(), copy_elem(v));
+    // Sort a list of the elements with the unstable comparator, then drop
+    // each neighbour equal to the last kept one, keeping the earliest.
+    let mut items: Vec<(usize, ArrayKey, Value)> = a
+        .iter()
+        .enumerate()
+        .map(|(i, (k, v))| (i, k.clone(), v.clone()))
+        .collect();
+    let mut err = None;
+    zend_sort(&mut items, &mut |x, y| {
+        data_compare(host, &x.2, &y.2, flags, &mut err)
+    });
+    if let Some(t) = err.take().or_else(|| host.take_pending_throw()) {
+        return Err(t);
+    }
+    let mut out = a.clone();
+    out.make_mut();
+    let mut last = 0usize;
+    for c in 1..items.len() {
+        if data_compare(host, &items[last].2, &items[c].2, flags, &mut err) != 0 {
+            last = c;
+        } else {
+            let del = if items[last].0 > items[c].0 {
+                let d = last;
+                last = c;
+                d
+            } else {
+                c
+            };
+            out.remove(&items[del].1);
         }
+    }
+    if let Some(t) = err.or_else(|| host.take_pending_throw()) {
+        return Err(t);
     }
     Ok(Value::Array(out))
 }
@@ -361,40 +375,75 @@ fn fn_array_key_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 // array_diff / array_intersect (string comparison)
 // ---------------------------------------------------------------------------
 
+/// string_compare_function: two strings compare directly, anything else
+/// through zval_get_string (Array to string conversion, `__toString`).
+fn string_compare(host: &mut dyn Host, a: &Value, b: &Value) -> Result<i32, Thrown> {
+    if let (Value::Str(x), Value::Str(y)) = (a, b) {
+        return Ok(ord_i32(x.as_bytes().cmp(y.as_bytes())));
+    }
+    let x = crate::zend::zpp::zval_get_string(host, a)?;
+    let y = crate::zend::zpp::zval_get_string(host, b)?;
+    Ok(ord_i32(x.cmp(&y)))
+}
+
+/// zval_get_tmp_string, borrowing a string value.
+fn tmp_string(host: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> {
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        other => crate::zend::zpp::zval_get_string(host, other),
+    }
+}
+
 fn fn_array_diff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let base = array_param(host, args, 0, "array_diff")?;
-    // Union of the string forms of every subsequent array's values.
-    let mut others: HashSet<Vec<u8>> = HashSet::new();
+    let mut others = Vec::with_capacity(args.len().saturating_sub(1));
     for i in 1..args.len() {
-        let o = array_param(host, args, i, "array_diff")?;
+        others.push(array_param(host, args, i, "array_diff")?);
+    }
+    match base.len() {
+        0 => return Ok(Value::Array(PhpArray::new())),
+        // One element: searched for in the others, stopping at a match.
+        1 => {
+            let search = tmp_string(host, base.get_index(0).expect("one").1)?;
+            for o in &others {
+                for (_, v) in o.iter() {
+                    if tmp_string(host, v)? == search {
+                        return Ok(Value::Array(PhpArray::new()));
+                    }
+                }
+            }
+            return Ok(Value::Array(base));
+        }
+        _ => {}
+    }
+    if others.iter().all(|o| o.is_empty()) {
+        return Ok(Value::Array(base));
+    }
+    // The exclude set: the string forms of every other array's values.
+    let mut exclude: HashSet<Vec<u8>> = HashSet::new();
+    for o in &others {
         for (_, v) in o.iter() {
-            others.insert(conv::to_string_bytes(v));
+            exclude.insert(tmp_string(host, v)?);
         }
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
-        if !others.contains(&conv::to_string_bytes(v)) {
-            out.insert(k.clone(), v.clone());
+        if !exclude.contains(&tmp_string(host, v)?) {
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
 }
 
 fn fn_array_intersect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = array_param(host, args, 0, "array_intersect")?;
-    let mut sets: Vec<HashSet<Vec<u8>>> = Vec::new();
-    for i in 1..args.len() {
-        let o = array_param(host, args, i, "array_intersect")?;
-        sets.push(o.iter().map(|(_, v)| conv::to_string_bytes(v)).collect());
-    }
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        let s = conv::to_string_bytes(v);
-        if sets.iter().all(|set| set.contains(&s)) {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Ok(Value::Array(out))
+    php_array_intersect(
+        host,
+        args,
+        "array_intersect",
+        Behavior::Normal,
+        false,
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -477,14 +526,47 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         };
 
         match idx {
-            Some(iv) => match ArrayKey::from_value(&iv) {
-                Some(k) => out.insert(k, value),
-                None => out.push(value),
-            },
+            Some(iv) => {
+                let k = set_zval_key(host, &deref(&iv))?;
+                out.insert(k, value);
+            }
             None => out.push(value),
         }
     }
     Ok(Value::Array(out))
+}
+
+/// array_set_zval_key: the key a value makes, with php's diagnostics
+/// (resource and null offsets, lossy floats) and the TypeError for an
+/// array or object.
+fn set_zval_key(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
+    Ok(match v {
+        Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+        Value::Resource(r) => {
+            let id = r.id as i64;
+            host.emit_diagnostic(
+                E_WARNING,
+                format!("Resource ID#{id} used as offset, casting to integer ({id})").as_bytes(),
+            )?;
+            ArrayKey::Int(id)
+        }
+        Value::Bool(b) => ArrayKey::Int(*b as i64),
+        Value::Int(n) => ArrayKey::Int(*n),
+        Value::Float(f) => ArrayKey::Int(zend::operators::dval_to_lval_safe(host, *f)?),
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"Using null as an array offset is deprecated, use an empty string instead",
+            )?;
+            ArrayKey::from_bytes(b"")
+        }
+        other => {
+            return Err(Thrown::type_error(format!(
+                "Cannot access offset of type {} on array",
+                zval_value_name(host, other)
+            )))
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +617,14 @@ fn fn_array_count_values(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     let a = array_param(host, args, 0, "array_count_values")?;
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
-        let Some(k) = key_intstr(v) else { continue };
+        let Some(k) = key_intstr(v) else {
+            warn(
+                host,
+                "array_count_values",
+                "Can only count string and integer values, entry skipped",
+            )?;
+            continue;
+        };
         let cur = out.get(&k).map(conv::to_int).unwrap_or(0);
         out.insert(k, Value::Int(cur + 1));
     }
@@ -1636,12 +1725,15 @@ impl Ctx<'_> {
         match self.data_cb.clone() {
             Some(cb) => self.user_sort_cmp(&cb, x.1.clone(), y.1.clone()),
             None => {
-                let a = conv::to_string_bytes(&x.1);
-                let b = conv::to_string_bytes(&y.1);
-                match a.cmp(&b) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
+                if self.err.is_some() {
+                    return 0;
+                }
+                match string_compare(self.host, &x.1, &y.1) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.err = Some(e);
+                        0
+                    }
                 }
             }
         }
@@ -2100,44 +2192,50 @@ fn fn_array_uintersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Valu
 // match).
 // ---------------------------------------------------------------------------
 
-fn fn_array_diff_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = array_param(host, args, 0, "array_diff_assoc")?;
+/// php_array_diff_key / php_array_intersect_key with zval_compare
+/// (string_compare_function) on the values of matching keys.
+fn assoc_string(
+    host: &mut dyn Host,
+    args: &[Value],
+    func: &str,
+    diff: bool,
+) -> Result<Value, Thrown> {
+    let base = array_param(host, args, 0, func)?;
     let mut others = Vec::with_capacity(args.len() - 1);
     for i in 1..args.len() {
-        others.push(array_param(host, args, i, "array_diff_assoc")?);
+        others.push(array_param(host, args, i, func)?);
     }
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
-        let s = conv::to_string_bytes(v);
-        // Keep when no other array holds this key with a matching string value.
-        let present = others
-            .iter()
-            .any(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
-        if !present {
-            out.insert(k.clone(), copy_elem(v));
+        let val = copy_elem(v);
+        let mut keep = true;
+        for o in &others {
+            let matched = match o.get(k) {
+                Some(d) => string_compare(host, &deref(&val), &deref(d))? == 0,
+                None => false,
+            };
+            if diff && matched {
+                keep = false;
+                break;
+            }
+            if !diff && !matched {
+                keep = false;
+                break;
+            }
+        }
+        if keep {
+            out.insert(k.clone(), val);
         }
     }
     Ok(Value::Array(out))
 }
 
+fn fn_array_diff_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    assoc_string(host, args, "array_diff_assoc", true)
+}
+
 fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let base = array_param(host, args, 0, "array_intersect_assoc")?;
-    let mut others = Vec::with_capacity(args.len() - 1);
-    for i in 1..args.len() {
-        others.push(array_param(host, args, i, "array_intersect_assoc")?);
-    }
-    let mut out = PhpArray::new();
-    for (k, v) in base.iter() {
-        let s = conv::to_string_bytes(v);
-        // Keep when every other array holds this key with a matching string value.
-        let in_all = others
-            .iter()
-            .all(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
-        if in_all {
-            out.insert(k.clone(), copy_elem(v));
-        }
-    }
-    Ok(Value::Array(out))
+    assoc_string(host, args, "array_intersect_assoc", false)
 }
 
 // ---------------------------------------------------------------------------
@@ -2349,6 +2447,12 @@ fn data_compare_res(host: &mut dyn Host, a: &Value, b: &Value, flags: i64) -> Re
 /// php_array_data_compare_unstable_i: zend_compare, with enums (which are
 /// uncomparable) grouped by identity and moved after everything else.
 fn regular_compare(host: &mut dyn Host, a: &Value, b: &Value) -> Result<i32, Thrown> {
+    // The common scalar pairs, without the engine context.
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => return Ok(ord_i32(x.cmp(y))),
+        (Value::Float(x), Value::Float(y)) => return Ok(three_way(*x, *y)),
+        _ => {}
+    }
     let r = match host.compare_cx() {
         Some(cx) => ord_i32(ops::compare(a, b, cx)?),
         None => ord_i32(ops::loose_compare(a, b)),
@@ -2436,17 +2540,20 @@ fn sort_by_ref(
     let Value::Ref(rc) = arg else {
         return false;
     };
-    // A shared array is separated first (Z_PARAM_ARRAY_EX): sorted as a
-    // zend_array_dup copy, like php_usort's.
-    let (arr, shared) = match &*rc.borrow() {
-        Value::Array(a) => (a.clone(), a.ref_count() > 1),
+    // Separated first (Z_PARAM_ARRAY_EX), so what the comparisons reach
+    // through references is the array being sorted.
+    let arr = match &mut *rc.borrow_mut() {
+        Value::Array(a) => {
+            a.make_mut();
+            a.clone()
+        }
         _ => return false,
     };
     if dup && arr.is_empty() {
         return true;
     }
     let next_free = arr.next_free();
-    let mut items: Vec<(usize, Elem)> = if dup || shared {
+    let mut items: Vec<(usize, Elem)> = if dup {
         let mut copy = arr.clone();
         std::mem::take(&mut copy.make_mut().entries)
             .into_iter()
@@ -2751,17 +2858,23 @@ fn php_array_walk(
     });
     let mut obj_pos = 0usize;
     // An object walks its own property table (a lazy object initializes).
-    let mut obj = match &*container.borrow() {
+    // `held`: the object in the container; `obj`: the one whose properties
+    // are walked (a lazy object's real instance).
+    let mut held = match &*container.borrow() {
         Value::Array(a) if a.is_empty() => return Ok(()),
         Value::Array(_) => None,
         Value::Object(h) => Some(h.clone()),
         _ => return Ok(()),
     };
-    if let Some(h) = &obj {
-        obj = Some(host.lazy_props_object(h)?);
-    } else if let Value::Array(a) = &mut *container.borrow_mut() {
-        a.make_mut().iter_add(id, 0);
-    }
+    let mut obj = match &held {
+        Some(h) => Some(host.lazy_props_object(h)?),
+        None => {
+            if let Value::Array(a) = &mut *container.borrow_mut() {
+                a.make_mut().iter_add(id, 0);
+            }
+            None
+        }
+    };
     active.push(std::rc::Rc::as_ptr(container));
     let result = (|| -> Result<(), Thrown> {
         loop {
@@ -2792,20 +2905,18 @@ fn php_array_walk(
                 return Err(t);
             }
             // Reload: the callback may have replaced the variable.
-            match &*container.borrow() {
-                Value::Array(_) if obj.is_none() => {}
-                Value::Object(h) if obj.is_some() => {
-                    if !obj.as_ref().is_some_and(|o| std::rc::Rc::ptr_eq(o, h)) {
-                        obj = Some(h.clone());
-                        obj_pos = 0;
-                    }
-                }
+            let now = container.borrow().clone();
+            match now {
                 Value::Array(_) => {
+                    held = None;
                     obj = None;
                 }
                 Value::Object(h) => {
-                    obj = Some(h.clone());
-                    obj_pos = 0;
+                    if !held.as_ref().is_some_and(|o| std::rc::Rc::ptr_eq(o, &h)) {
+                        obj = Some(host.lazy_props_object(&h)?);
+                        held = Some(h);
+                        obj_pos = 0;
+                    }
                 }
                 _ => {
                     return Err(Thrown::type_error(

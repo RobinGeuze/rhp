@@ -1213,7 +1213,8 @@ fn fn_fputcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         if i > 0 {
             line.push(sep);
         }
-        let f = conv::to_string_bytes(&deref(v));
+        // zval_try_get_tmp_string: Array to string conversion, __toString.
+        let f = crate::zend::zpp::zval_get_string(host, v)?;
         let needs = f.iter().any(|&c| {
             c == sep || c == enc || Some(c) == esc || matches!(c, b'\n' | b'\r' | b'\t' | b' ')
         });

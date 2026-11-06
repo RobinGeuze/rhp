@@ -355,7 +355,7 @@ IssetDim   { dst, arr, key }          Bool(present AND not null); no warning; ch
 EmptyCv    { dst, cv }                Bool(!conv::to_bool(deref(cv)))
 EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
 UnsetCv    { cv }                     regs[cv] = Null   (see note)
-UnsetDim   { arr, key }               remove via make_mut; next_int high-water not lowered (value-model §3c)
+UnsetDim   { arr, key }               remove via make_mut; next free key not lowered (value-model §3c)
 ```
 > `unset` vs "never defined": `isset` treats null/absent identically, so storing
 > `Null` on `UnsetCv` is observably correct for isset/??/empty. The only
@@ -492,7 +492,9 @@ compiled, not guessed from debug info:
   `USER_CALL` only for a name resolved at compile time (no namespace
   fallback), `ICALL` also for a namespaced call that falls back to the
   builtin. `CallV` (an unpacked or named argument) has none: php compiles
-  such a call as a plain internal call.
+  such a call as a plain internal call. `RESULT_UNUSED` marks a call that
+  is a whole expression statement; a builtin asks `Host::result_unused()`
+  (php's `!USED_RET()`, which `array_splice` checks).
 
 A call by name is resolved once per call site and request, like php's
 run-time cache slots: `Vm::call_sites` maps (proto address, pc) to the user

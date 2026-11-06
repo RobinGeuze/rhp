@@ -69,6 +69,11 @@ impl CallFlags {
 pub enum Instr {
     // -- move / const / load --
     Nop,
+    /// ZEND_TICKS: after each statement under `declare(ticks=n)`; every
+    /// `n`th one runs the registered tick functions.
+    Ticks {
+        n: u32,
+    },
     Mov {
         dst: Reg,
         src: Reg,

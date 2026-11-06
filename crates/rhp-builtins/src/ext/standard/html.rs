@@ -865,6 +865,14 @@ fn html_entities(host: &mut dyn Host, args: &[Value], all: bool, f: &str) -> Res
     )?))
 }
 
+/// `php_escape_html_entities_ex(s, ENT_QUOTES|ENT_SUBSTITUTE, no double
+/// encoding, quiet)` in the default charset (the URL rewriter's hidden
+/// inputs).
+pub(crate) fn escape_quotes_substitute(host: &mut dyn Host, s: &[u8]) -> Vec<u8> {
+    let flags = ENT_HTML_QUOTE_SINGLE | ENT_HTML_QUOTE_DOUBLE | ENT_HTML_SUBSTITUTE_ERRORS;
+    escape(host, "", s, false, flags, None, false, true).unwrap_or_default()
+}
+
 /// main.c's `escape_html`, for `html_errors`: htmlspecialchars with
 /// ENT_COMPAT in the default charset, quietly; a message that is not valid
 /// in that charset is escaped again with its invalid sequences substituted.

@@ -1257,10 +1257,29 @@ fn fn_get_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Valu
     Ok(h)
 }
 
+/// `exit()` / `die()` called as functions (`'exit'`, `call_user_func`): a
+/// string status is printed, an int is the exit status. The `exit`
+/// construct compiles to the Exit op instead.
+fn fn_exit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first().map(rhp_values::ops::deref) {
+        None => Err(Thrown::Exit(0)),
+        Some(Value::Int(n)) => Err(Thrown::Exit(n as i32)),
+        Some(v) => {
+            let s = rhp_values::conv::to_string_bytes(&v);
+            if !s.is_empty() {
+                host.write_out(&s);
+            }
+            Err(Thrown::Exit(0))
+        }
+    }
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("exit", fn_exit),
+            ("die", fn_exit),
             ("get_declared_classes", fn_get_declared_classes),
             ("get_declared_interfaces", fn_get_declared_interfaces),
             ("get_declared_traits", fn_get_declared_traits),

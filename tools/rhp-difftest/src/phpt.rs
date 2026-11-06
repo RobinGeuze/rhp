@@ -202,6 +202,7 @@ const RHP_INI: &[&str] = &[
     "auto_globals_jit",
     "auto_prepend_file",
     "bcmath.scale",
+    "browscap",
     "date.timezone",
     "default_charset",
     "default_socket_timeout",
@@ -215,6 +216,11 @@ const RHP_INI: &[&str] = &[
     "error_reporting",
     "from",
     "hard_timeout",
+    "highlight.comment",
+    "highlight.default",
+    "highlight.html",
+    "highlight.keyword",
+    "highlight.string",
     "html_errors",
     "iconv.input_encoding",
     "iconv.internal_encoding",
@@ -224,6 +230,11 @@ const RHP_INI: &[&str] = &[
     "input_encoding",
     "internal_encoding",
     "log_errors",
+    "mail.add_x_header",
+    "mail.cr_lf_mode",
+    "mail.force_extra_parameters",
+    "mail.log",
+    "mail.mixed_lf_and_crlf",
     "max_execution_time",
     "max_input_vars",
     "max_memory_limit",
@@ -240,9 +251,12 @@ const RHP_INI: &[&str] = &[
     "precision",
     "register_argc_argv",
     "report_memleaks",
+    "sendmail_path",
     "serialize_precision",
     "short_open_tag",
     "sys_temp_dir",
+    "url_rewriter.hosts",
+    "url_rewriter.tags",
     "variables_order",
     "zend.detect_unicode",
     "zend.max_allowed_stack_size",
@@ -376,14 +390,25 @@ impl IniRules {
 }
 
 /// run-tests.php's `--INI--` substitutions: `{PWD}` (the test's directory),
-/// `{TMP}` (the temp dir) and `{ENV:NAME}` (a test whose variable is unset
-/// is skipped).
+/// `{TMP}` (the temp dir), `{MAIL:file}` (a sendmail_path that writes the
+/// mail to `file`) and `{ENV:NAME}` (a test whose variable is unset is
+/// skipped).
 fn substitute_ini(line: &str, dir: &Path) -> Result<String, String> {
     let tmp = std::env::temp_dir();
     let tmp = tmp.to_string_lossy();
     let mut line = line
         .replace("{PWD}", &dir.to_string_lossy())
         .replace("{TMP}", tmp.trim_end_matches('/'));
+    while let Some(start) = line.find("{MAIL:") {
+        let Some(len) = line[start..].find('}') else {
+            break;
+        };
+        let file = line[start + 6..start + len].to_string();
+        if file.is_empty() || file.contains(char::is_whitespace) {
+            break;
+        }
+        line.replace_range(start..start + len + 1, &format!("tee {file} >/dev/null"));
+    }
     while let Some(start) = line.find("{ENV:") {
         let Some(len) = line[start..].find('}') else {
             break;

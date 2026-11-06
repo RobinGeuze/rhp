@@ -30,15 +30,18 @@ impl ProtoBuilder<'_> {
         let mut end_jumps = Vec::new();
 
         // Emit one (condition, body) clause: returns nothing; leaves a JmpFalse
-        // targeting the next clause's start.
+        // targeting the next clause's start. Like php, the last clause has
+        // no jump to the end (declare(ticks) skips a tick right after one).
         macro_rules! clause {
-            ($cond:expr, $body:block) => {{
+            ($cond:expr, $last:expr, $body:block) => {{
                 let cond = self.compile_expr($cond)?;
                 let jf = self.code.len();
                 self.emit(Instr::Nop); // JmpFalse cond -> next clause
                 $body
-                end_jumps.push(self.code.len());
-                self.emit(Instr::Nop); // Jmp -> end
+                if !$last {
+                    end_jumps.push(self.code.len());
+                    self.emit(Instr::Nop); // Jmp -> end
+                }
                 let next = self.here();
                 self.code[jf] = Instr::JmpFalse { cond, target: next };
             }};
@@ -46,11 +49,13 @@ impl ProtoBuilder<'_> {
 
         match &i.body {
             IfBody::Statement(b) => {
-                clause!(i.condition, {
+                let n = b.else_if_clauses.len();
+                let has_else = b.else_clause.is_some();
+                clause!(i.condition, n == 0 && !has_else, {
                     self.compile_stmt(b.statement)?;
                 });
-                for c in b.else_if_clauses.iter() {
-                    clause!(c.condition, {
+                for (k, c) in b.else_if_clauses.iter().enumerate() {
+                    clause!(c.condition, k + 1 == n && !has_else, {
                         self.compile_stmt(c.statement)?;
                     });
                 }
@@ -59,11 +64,13 @@ impl ProtoBuilder<'_> {
                 }
             }
             IfBody::ColonDelimited(b) => {
-                clause!(i.condition, {
+                let n = b.else_if_clauses.len();
+                let has_else = b.else_clause.is_some();
+                clause!(i.condition, n == 0 && !has_else, {
                     self.compile_stmts(b.statements.iter())?;
                 });
-                for c in b.else_if_clauses.iter() {
-                    clause!(c.condition, {
+                for (k, c) in b.else_if_clauses.iter().enumerate() {
+                    clause!(c.condition, k + 1 == n && !has_else, {
                         self.compile_stmts(c.statements.iter())?;
                     });
                 }
@@ -577,6 +584,7 @@ impl ProtoBuilder<'_> {
                     ))
                 }
             }
+            self.tick_item(v);
         }
         Ok(())
     }
@@ -604,7 +612,8 @@ impl ProtoBuilder<'_> {
 
         let mut catch_arms = Vec::new();
         let mut end_jumps = vec![norm_jmp];
-        for clause in t.catch_clauses.iter() {
+        let n_catches = t.catch_clauses.len();
+        for (ci, clause) in t.catch_clauses.iter().enumerate() {
             let target = self.here();
             let classes = hint_class_names(self.cx, &clause.hint)?;
             if clause
@@ -620,9 +629,12 @@ impl ProtoBuilder<'_> {
                 .as_ref()
                 .map(|v| self.cv(strip_dollar(v.name)));
             self.compile_stmts(clause.block.statements.iter())?;
-            let j = self.code.len();
-            self.emit(Instr::Nop);
-            end_jumps.push(j);
+            // As in php, the last catch without a finally falls through.
+            if ci + 1 < n_catches || has_finally {
+                let j = self.code.len();
+                self.emit(Instr::Nop);
+                end_jumps.push(j);
+            }
             catch_arms.push(CatchArm {
                 classes,
                 var_reg,

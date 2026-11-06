@@ -38,7 +38,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, libavifinfo, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
 | A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
@@ -87,6 +87,7 @@ Today rhp-builtins links:
 | iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
 | bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
+| libavifinfo (via rhp-csrc) | static, compiled from php-8.5.12's ext/standard/libavifinfo | the same |
 | timelib 2022.17 with php's embedded tz database 2026.5 (via rhp-csrc) | static, compiled from php-8.5.12's ext/date/lib | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
@@ -242,8 +243,9 @@ archives, except LGPL C (see [Licences](#licences)):
 - **php-src's own C**, copied unmodified into `vendor/php-src` by
   `crates/rhp-csrc/tools/sync-php-src-c.sh <php-src-dir>` from a checkout at
   the commit `tests/phpt/php-src.ref` pins. Today: ext/standard's
-  crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512, and timelib
-  (ext/date/lib). All php-src C shares one stand-in for the Zend and PHP
+  crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512, timelib
+  (ext/date/lib) and libavifinfo (ext/standard/libavifinfo, plain C99 built
+  without the shim). All php-src C shares one stand-in for the Zend and PHP
   headers, `shim/zend_shim.h`, and builds with php's flags (`php_src()` in
   `build.rs`). timelib needs no Zend: it builds with its own flags from
   ext/date/config0.m4 (`-fwrapv`), and `glue/timelib_config.h` stands in for

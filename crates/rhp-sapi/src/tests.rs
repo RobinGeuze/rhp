@@ -11,6 +11,8 @@ fn ini_define_values_match_php() {
     assert_eq!(v("none"), "");
     assert_eq!(v("\"On\""), "On");
     assert_eq!(v("'On'"), "On");
+    assert_eq!(v(r#""kill \$\$""#), "kill $$");
+    assert_eq!(v(r#""a\"b\\c\nd""#), r#"a"b\c\nd"#);
     assert_eq!(v(""), "");
     assert_eq!(v("-1"), "-1");
     assert_eq!(v("128M"), "128M");

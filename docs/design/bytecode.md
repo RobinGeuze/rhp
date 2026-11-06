@@ -31,7 +31,7 @@ Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
 dropped at compile time (a `FunctionProto` carries **no** `'arena` borrow);
 `eval` / `extract` / `compact` / `create_function` / `include`/`require` /
-backticks / `(unset)`-cast are **refused**, structurally in the compiler for the
+`(unset)`-cast are **refused**, structurally in the compiler for the
 construct nodes and via `is_refused()` for function names (§4). `eval` is
 **never** implemented — no opcode interprets a string as code, by construction.
 
@@ -270,6 +270,7 @@ from isa.md are the disassembly spelling of the same variants.
 **Move / const / load (phase 1–2)**
 ```
 Nop
+Ticks      { n }                  ZEND_TICKS: after each statement under declare(ticks=n); every nth runs the tick functions ?
 Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
 MovTake    { dst, src }           dst = deref(src); src = Null             (a dead temporary into a call window)
 LoadConst  { dst, k }             dst = consts[k].clone()
@@ -831,7 +832,7 @@ can't swallow it):
 |---|---|---|
 | `eval(...)` | `Construct::Eval` | **refuse — no `Eval` opcode exists, ever** |
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
-| backticks `` `…` `` | `CompositeString::ShellExecute` | refuse — never spawn a shell |
+| backticks `` `…` `` | `CompositeString::ShellExecute` | compiled as a `shell_exec()` call with php 8.5's deprecation (no longer refused) |
 | `(real)` cast | `UnaryPrefixOperator::RealCast` | refuse (`(unset)` is php's compile error; `(void)` compiles, §2) |
 | `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 

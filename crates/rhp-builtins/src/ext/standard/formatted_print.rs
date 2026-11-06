@@ -299,7 +299,14 @@ fn append_double(
             } else if always_sign {
                 s.push(b'+');
             }
-            s.extend_from_slice(&conv_fp(f, number, precision.max(0) as usize));
+            let mut fp = conv_fp(f, number, precision.max(0) as usize);
+            if fmt == b'f' {
+                let dp = crate::ext::standard::string::locale_decimal_point();
+                if dp != b'.' {
+                    fp.iter_mut().filter(|c| **c == b'.').for_each(|c| *c = dp);
+                }
+            }
+            s.extend_from_slice(&fp);
         }
         _ => {
             // g G h H
@@ -311,7 +318,13 @@ fn append_double(
             } else {
                 b'e'
             };
-            let g = rhp_values::fmt::zend_gcvt(number, precision, exp_char);
+            let mut g = rhp_values::fmt::zend_gcvt(number, precision, exp_char);
+            if fmt == b'g' || fmt == b'G' {
+                let dp = crate::ext::standard::string::locale_decimal_point();
+                if dp != b'.' {
+                    g.iter_mut().filter(|c| **c == b'.').for_each(|c| *c = dp);
+                }
+            }
             is_negative = g.first() == Some(&b'-');
             if !is_negative && always_sign {
                 s.push(b'+');

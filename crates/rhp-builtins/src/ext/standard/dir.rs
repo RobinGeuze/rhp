@@ -114,6 +114,17 @@ fn fn_closedir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Null)
 }
 
+/// `__directory_handle($dir)`: the Directory's handle, null while it is
+/// uninitialized (php reads the property slot without the typed-property
+/// check, so the op reports an altered stream).
+fn fn_directory_handle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let d = args.first().map(deref).unwrap_or(Value::Null);
+    Ok(host
+        .object_prop(&d, b"handle")
+        .map(|v| deref(&v))
+        .unwrap_or(Value::Null))
+}
+
 /// `__directory_op($handle, $op)` — backs `Directory::read/rewind/close`.
 fn fn_directory_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let h = args.first().map(deref).unwrap_or(Value::Null);
@@ -248,5 +259,11 @@ pub fn register(m: &mut crate::Registry) {
             ("chdir", fn_chdir),
         ],
     );
-    crate::register_helpers(m, &[("__directory_op", fn_directory_op, 2, Some(2))]);
+    crate::register_helpers(
+        m,
+        &[
+            ("__directory_op", fn_directory_op, 2, Some(2)),
+            ("__directory_handle", fn_directory_handle, 1, Some(1)),
+        ],
+    );
 }

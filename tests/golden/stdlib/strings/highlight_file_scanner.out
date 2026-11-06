@@ -1,0 +1,20 @@
+<pre><code style="color: #000000"><span style="color: #0000BB">&lt;?php
+</span><span style="color: #FF8000">/* c */ </span><span style="color: #007700">echo </span><span style="color: #0000BB">1</span><span style="color: #007700">;   </span><span style="color: #FF8000">// x
+</span><span style="color: #007700">__halt_compiler();
+</span><span style="color: #0000BB">rest of the file </span><span style="color: #DD0000">"x
+</span></code></pre>
+<?php
+ echo 1; __halt_compiler(); rest of the file "x
+
+<pre><code style="color: #000000">#!/usr/bin/env php
+<span style="color: #0000BB">&lt;?php
+</span><span style="color: #FF8000">/* c */ </span><span style="color: #007700">echo </span><span style="color: #0000BB">1</span><span style="color: #007700">;   </span><span style="color: #FF8000">// x
+</span><span style="color: #007700">__halt_compiler();
+</span><span style="color: #0000BB">rest of the file </span><span style="color: #DD0000">"x
+</span></code></pre>
+string(0) ""
+string(47) "<pre><code style="color: #000000"></code></pre>"
+string(0) ""
+string(47) "<pre><code style="color: #000000"></code></pre>"
+string(8) "<?php 2;"
+string(130) "<pre><code style="color: #000000"><span style="color: #0000BB">&lt;?php 2</span><span style="color: #007700">;</span></code></pre>"

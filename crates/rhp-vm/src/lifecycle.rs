@@ -86,6 +86,7 @@ impl Vm {
             const_guard: Vec::new(),
             max_depth: 1 << 16,
             timeout_prev: None,
+            ticks_count: 0,
             timeout_wait: None,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),

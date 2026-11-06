@@ -1,0 +1,41 @@
+array(7) {
+  [0]=>
+  int(100)
+  [1]=>
+  int(20)
+  [2]=>
+  int(4)
+  [3]=>
+  string(23) "width="100" height="20""
+  ["mime"]=>
+  string(29) "application/x-shockwave-flash"
+  ["width_unit"]=>
+  string(2) "px"
+  ["height_unit"]=>
+  string(2) "px"
+}
+array(7) {
+  [0]=>
+  int(3435973831)
+  [1]=>
+  int(2)
+  [2]=>
+  int(4)
+  [3]=>
+  string(29) "width="-858993465" height="2""
+  ["mime"]=>
+  string(29) "application/x-shockwave-flash"
+  ["width_unit"]=>
+  string(2) "px"
+  ["height_unit"]=>
+  string(2) "px"
+}
+
+Notice: getimagesizefromstring(): Error reading from ab! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 18
+bool(false)
+
+Notice: getimagesizefromstring(): Error reading from a! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 19
+bool(false)
+
+Notice: getimagesizefromstring(): Error reading from ! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 20
+bool(false)

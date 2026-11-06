@@ -2237,6 +2237,7 @@ fn fn_key_exists(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // fold ASCII case.
 const SORT_NUMERIC: i64 = 1;
 const SORT_STRING: i64 = 2;
+const SORT_LOCALE_STRING: i64 = 5;
 const SORT_NATURAL: i64 = 6;
 const SORT_FLAG_CASE: i64 = 8;
 
@@ -2286,6 +2287,11 @@ fn cmp_flagged(a: &Value, b: &Value, flags: i64) -> Ordering {
             }
             sa.cmp(&sb)
         }
+        SORT_LOCALE_STRING => crate::ext::standard::string::strcoll(
+            &conv::to_string_bytes(a),
+            &conv::to_string_bytes(b),
+        )
+        .cmp(&0),
         SORT_NATURAL => crate::ext::standard::string::strnatcmp_ex(
             &conv::to_string_bytes(a),
             &conv::to_string_bytes(b),
@@ -3253,7 +3259,7 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
         ("SORT_STRING", Value::Int(SORT_STRING)),
         ("SORT_DESC", Value::Int(SORT_DESC)),
         ("SORT_ASC", Value::Int(SORT_ASC)),
-        ("SORT_LOCALE_STRING", Value::Int(5)),
+        ("SORT_LOCALE_STRING", Value::Int(SORT_LOCALE_STRING)),
         ("SORT_NATURAL", Value::Int(SORT_NATURAL)),
         ("SORT_FLAG_CASE", Value::Int(SORT_FLAG_CASE)),
         ("CASE_LOWER", Value::Int(0)),

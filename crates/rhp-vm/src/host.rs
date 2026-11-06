@@ -560,6 +560,21 @@ impl Host for Vm {
             .or_else(|| self.main_script_path.clone())
     }
 
+    fn global_var(&mut self, name: &[u8]) -> Option<Value> {
+        let v = match self.globals.get(name) {
+            Some(c) => crate::deref(&c.borrow()),
+            None => self.jit_globals.get(name).cloned()?,
+        };
+        (!matches!(v, Value::Null)).then_some(v)
+    }
+
+    fn executing_line(&self) -> u32 {
+        (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+            .map_or(0, |i| self.current_line(i))
+    }
+
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
         self.stream_open_ctx(path, mode, &Value::Null)
     }

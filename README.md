@@ -18,8 +18,8 @@ The crates are in `crates/`, the test tooling in `tools/`.
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv.
-- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the Argon2 reference
-  code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
+- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libavifinfo, the Argon2
+  reference code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
   statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 4,271 | 5,396 | 79.2% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 726 | 895 | 81.1% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 4,292 | 5,396 | 79.5% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| tests | 731 | 895 | 81.7% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 21 | 117 | 17.9% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,958 | 3,880 | 76.2% | no user stream wrappers, stream filters, `mail`, `getimagesize` |
+| ext/standard | 3,062 | 3,880 | 78.9% | no user stream wrappers, stream filters, `ob_gzhandler`; locales are process-wide, as in php |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 8 | 27 | 29.6% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -60,7 +60,7 @@ passing, so the percentages are of all php-src tests.
 | ext/iconv | 75 | 82 | 91.5% | the system iconv |
 | ext/intl | 42 | 511 | 8.2% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 80 | 94 | 85.1% | |
-| ext/libxml | 17 | 32 | 53.1% | on libxml2 |
+| ext/libxml | 18 | 32 | 56.2% | on libxml2 |
 | ext/mbstring | 223 | 446 | 50.0% | on php-src's libmbfl (rhp-mbfl-sys) |
 | ext/opcache | 702 | 876 | 80.1% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **12,732** | **22,219** | **57.3%** | |
+| **total** | **12,863** | **22,219** | **57.9%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

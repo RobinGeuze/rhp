@@ -11,6 +11,7 @@ fn main() {
     let crypt = std::env::var_os("CARGO_FEATURE_CRYPT").is_some();
     let argon2 = std::env::var_os("CARGO_FEATURE_ARGON2").is_some();
     let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
+    let avifinfo = std::env::var_os("CARGO_FEATURE_AVIFINFO").is_some();
     println!("cargo:rerun-if-changed=build.rs");
 
     // The shim, for every crate that compiles php-src C (rhp-mbfl-sys reads
@@ -68,6 +69,22 @@ fn main() {
             b.file(lib.join(f));
         }
         b.file("glue/timelib.c").compile("rhp_csrc_timelib");
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
+    if avifinfo {
+        // libavifinfo, which ext/standard/image.c bundles: plain C99 with
+        // no php headers.
+        let dir = Path::new("vendor/php-src/ext/standard/libavifinfo");
+        let mut b = cc::Build::new();
+        b.include(dir)
+            .opt_level(2)
+            .warnings(false)
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_avifinfo.h"))
+            .file(dir.join("avifinfo.c"))
+            .compile("rhp_csrc_avifinfo");
         rerun(&["glue", "vendor/php-src"]);
     }
 

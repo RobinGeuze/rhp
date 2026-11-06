@@ -1347,12 +1347,16 @@ impl Vm {
                             }
                         }
                     };
-                    let v = match self.cursor_static_check(top, &steps, StaticOp::Assign, v) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            self.cursor_release();
-                            return Err(e);
+                    let v = if self.cursor_static.is_some() {
+                        match self.cursor_static_check(top, &steps, StaticOp::Assign, v) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.cursor_release();
+                                return Err(e);
+                            }
                         }
+                    } else {
+                        v
                     };
                     let r = if dst == src {
                         let r = self.cursor_write(top, &steps, v);
@@ -1483,7 +1487,10 @@ impl Vm {
                         self.incdec_typed_overflow(top, &steps, delta)?;
                     }
                     self.typed_write_result = None;
-                    crate::lvalue::as_incdec_write(|| self.cursor_write(top, &steps, new.clone()))?;
+                    self.incdec_write = true;
+                    let r = self.cursor_write(top, &steps, new.clone());
+                    self.incdec_write = false;
+                    r?;
                     let new = self.typed_write_result.take().unwrap_or(new);
                     self.cursor_release();
                     self.reg_set(top, dst, if pre { new } else { old });
@@ -1709,6 +1716,11 @@ impl Vm {
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_set(top, dst, Value::Null);
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
                     self.reg_set(top, dst, v);
@@ -1855,12 +1867,22 @@ impl Vm {
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_set(top, dst, Value::Bool(true));
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_set(top, dst, Value::Bool(false));
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));

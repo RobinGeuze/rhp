@@ -83,6 +83,9 @@ pub struct ClassEntry {
     /// Some property has hooks (php's `ce->num_hooked_props`): property
     /// access takes the hook-aware path only for such classes.
     pub hooked: bool,
+    /// Some static property has a type or a set visibility: static
+    /// property writes take the checked path only for such classes.
+    pub checked_statics: bool,
 }
 
 #[derive(Clone)]
@@ -985,6 +988,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             handlers: e.handlers,
             create_object: e.create_object,
             hooked: e.hooked,
+            checked_statics: e.checked_statics,
         });
     }
     out
@@ -1750,6 +1754,10 @@ impl Vm {
             );
         }
 
+        let checked_statics = static_props
+            .values()
+            .any(|sp| sp.ty.is_some() || sp.set_visibility.is_some());
+
         // Class constants.
         self.check_const_inheritance(proto, parent)?;
         self.check_const_types(proto, parent)?;
@@ -1965,6 +1973,7 @@ impl Vm {
             handlers,
             create_object,
             hooked,
+            checked_statics,
         });
         let inherits_hooks = {
             let e = &self.classes[id as usize];

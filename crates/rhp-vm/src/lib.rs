@@ -269,6 +269,8 @@ pub struct Vm {
     typed_write_result: Option<Value>,
     // `StoreProp` wants `typed_write_result` from the write it runs.
     want_typed_result: bool,
+    // The running cursor write is a `++`/`--`.
+    incdec_write: bool,
     // The static property an open cursor is rooted at: its cell, the class
     // it was reached through and its name (valid while the root is that cell).
     cursor_static: Option<lvalue::StaticRoot>,

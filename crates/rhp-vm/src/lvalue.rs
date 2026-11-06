@@ -121,6 +121,8 @@ struct PropCtx<'a> {
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
+    /// The write is a `++`/`--` (zend_throw_non_object_error names it).
+    incdec: bool,
 }
 
 impl PropCtx<'_> {
@@ -214,17 +216,6 @@ thread_local! {
     /// The value of the last string offset assignment: the byte written,
     /// or null when none was ([`assign_string_offset`]).
     static STRING_OFFSET_RESULT: RefCell<Option<Value>> = const { RefCell::new(None) };
-    /// The running cursor write is a `++`/`--` (zend_throw_non_object_error
-    /// names the opcode).
-    static INCDEC_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` (a cursor write) as the write of a `++`/`--`.
-pub(crate) fn as_incdec_write<T>(f: impl FnOnce() -> T) -> T {
-    INCDEC_WRITE.with(|c| c.set(true));
-    let r = f();
-    INCDEC_WRITE.with(|c| c.set(false));
-    r
 }
 
 /// The value of the string offset assignment the last cursor write made,
@@ -296,6 +287,7 @@ impl Vm {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    incdec: false,
                 };
                 Ok(read_path(&got, rest, &cx))
             }
@@ -355,6 +347,7 @@ impl Vm {
                         classes: &self.classes,
                         scope: self.stack[top].defining_class,
                         called: self.stack[top].called_class,
+                        incdec: false,
                     };
                     let checked = string_offset(k, false, &cx);
                     self.flush_path_diags()?;
@@ -448,6 +441,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         illegal_offset_on_array(&deref(k), &cx)
     }
@@ -665,6 +659,7 @@ impl Vm {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    incdec: false,
                 };
                 let r = match &self.cursor_root {
                     CursorRoot::Cv(r) => {
@@ -709,6 +704,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps, &cx),
@@ -739,8 +735,11 @@ impl Vm {
         make_ref: bool,
         unset: bool,
     ) -> Result<Through, Thrown> {
-        let scope = self.stack[top].defining_class;
         self.cursor_leaf = None;
+        if steps.is_empty() {
+            return Ok(Through::Plain);
+        }
+        let scope = self.stack[top].defining_class;
         let mut cur = self.cursor_root_value(top);
         for (i, step) in steps.iter().enumerate() {
             let next = match (deref(&cur), step) {
@@ -949,6 +948,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
@@ -988,6 +988,9 @@ impl Vm {
         cls: ClassId,
         name: &[u8],
     ) {
+        if !self.class(cls).checked_statics {
+            return;
+        }
         let Some(sp) = self.class(cls).static_props.get(name) else {
             return;
         };
@@ -1219,6 +1222,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
@@ -1243,6 +1247,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         let checked = string_offset(k, false, &cx);
         if let Err(t) = self.flush_path_diags() {
@@ -1506,6 +1511,7 @@ impl Vm {
             classes: &self.classes,
             scope: Some(owner),
             called: Some(owner),
+            incdec: false,
         };
         let mut obj = Value::Object(h.clone());
         make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
@@ -1572,6 +1578,7 @@ impl Vm {
             classes: &self.classes,
             scope: Some(owner),
             called: Some(owner),
+            incdec: false,
         };
         let mut slot = storage.borrow_mut();
         make_ref_path(&mut slot, &[CursorStep::Key(akey.to_value())], &cx).map(Some)
@@ -2206,7 +2213,7 @@ fn assign_path(
                 let shown = cx.value_name(other);
                 let op = if !rest.is_empty() || matches!(value, Value::Ref(_)) {
                     "modify"
-                } else if INCDEC_WRITE.with(|c| c.get()) {
+                } else if cx.incdec {
                     "increment/decrement"
                 } else {
                     "assign"

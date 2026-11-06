@@ -142,6 +142,7 @@ impl Vm {
             rw_null_keys: 0,
             typed_write_result: None,
             want_typed_result: false,
+            incdec_write: false,
             cursor_static: None,
             deferred_undef_src: None,
             cursor_leaf: None,

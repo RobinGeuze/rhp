@@ -359,7 +359,8 @@ impl Vm {
             if r < f.proto.num_cvs && !f.proto.is_internal() {
                 rhp_values::gc::possible_root(slot);
             }
-            if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_)) {
+            if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_))
+            {
                 self.dtor_check = true;
             }
         }
@@ -500,14 +501,8 @@ impl Vm {
             if pc < proto.code.len() && !self.mem.tick() {
                 frame.pc = pc + 1;
             } else {
-                if self.mem.gc_is_due() {
-                    // The automatic cycle collection (php runs it where the
-                    // root buffer filled up).
-                    self.gc_auto()?;
-                    continue;
-                }
                 // The frame's pc is still `pc` here (oom_tick reports at it).
-                if self.mem.attention() {
+                if self.mem.tick() {
                     self.oom_tick(top, pc)?;
                 }
                 if pc >= proto.code.len() {
@@ -3704,6 +3699,7 @@ impl Vm {
             wrapped: None,
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            gc_buffered: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
@@ -3804,6 +3800,7 @@ impl Vm {
             wrapped: Some(Box::new(c)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            gc_buffered: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())

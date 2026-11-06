@@ -1580,6 +1580,7 @@ fn clone_closure(cd: &rhp_values::ClosureData) -> Value {
         wrapped: cd.wrapped.clone(),
         id: rhp_values::alloc_object_id(),
         statics: cd.statics_copy(),
+        gc_buffered: Default::default(),
     }))
 }
 

@@ -1055,6 +1055,7 @@ impl Host for Vm {
                     // Not an object php makes: no handle.
                     id: 0,
                     statics: Default::default(),
+                    gc_buffered: Default::default(),
                 }))
             }
             _ => callback,
@@ -2677,6 +2678,7 @@ impl Host for Vm {
             wrapped: Some(Box::new(callable)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 }

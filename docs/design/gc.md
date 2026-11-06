@@ -15,7 +15,11 @@ count stays above zero (`gc_check_possible_root`). rhp calls
 dropped:
 
 - a variable overwritten (`cv_assign`, `reg_set` of a CV, `=&`), unset, or
-  freed with its frame (`Frame::drop`: the CVs, then `$this`);
+  freed with its frame (`Frame::drop`: the CVs, then the call's object:
+  a closure call releases the Closure, a method call its `$this`; a
+  method called from prelude code has no call in php and releases none);
+- a lazy object's initializer when its info goes (php holds it twice, so
+  it is a root just before it is freed);
 - a property overwritten or unset, an array element replaced or removed
   (`PhpArray::insert` / `remove`, the cursor writes in lvalue.rs);
 - the values an object, array or closure holds when it is freed
@@ -23,9 +27,13 @@ dropped:
 - `unserialize()`'s result (php roots it explicitly).
 
 A temporary's release adds no root, as php's `zval_ptr_dtor_nogc`. A
-reference adds the value it holds. The check is a tag test inline; the
-slow path compares `Rc::strong_count` with 1 (minus the reference the VM's
-destructor list holds, see the `TRACKED` flag).
+reference adds the value it holds. The check is a tag test and
+`Rc::strong_count > 1` inline, plus a `gc_buffered` flag on objects and
+closures (php's GC_INFO), so releasing an object already in the buffer
+(a `$this` call after call) stays out of the slow path. The slow path
+subtracts the reference the VM's destructor list holds (the `TRACKED`
+flag). A free looks at the buffer only when some thread has something
+buffered (one relaxed atomic load).
 
 The buffer keeps php's layout: slots from 1, a LIFO list of free slots,
 `first_unused`, php's two-finger compaction, the adaptive threshold
@@ -40,6 +48,10 @@ the next instruction boundary: `MemState::tick` is the one flag the VM
 loop reads per instruction (`attention || gc_due`). Roots added
 meanwhile wait and enter the buffer after the run, and are held during it,
 as php holds the value whose release triggered it.
+
+Roots that waited for the due run enter the buffer after it without
+checking the threshold again (php adds the triggering value directly), so
+destructors that make new cycles cannot chain runs.
 
 ## The run (rhp-vm `gc.rs`)
 
@@ -60,6 +72,11 @@ The counts are `Rc::strong_count`s, read but never changed. A run:
    white ones are collected in php's depth-first order (gc_add_garbage
    appends the nested garbage), the count is objects and arrays (not
    references).
+
+A prelude class keeps its native storage in private `__*` array
+properties; the walk goes through such an array to its elements (php's
+get_gc lists them, and the C storage is not a counted zend_array) when
+the property is its only holder and it is not buffered itself.
 
 An edge the walk cannot see counts as an outside reference: the value is
 kept, never freed early. Native payloads that hold values must list them
@@ -83,6 +100,15 @@ goes with it; garbage references are emptied; arrays go when the last
 holder does.
 
 ## Not done
+
+- "Lazy object was released during initialization": php notices that the
+  initializer dropped the last reference; rhp's callers hold their own
+  `Rc`, so the count cannot tell (gh15999_001).
+- foreach by reference iterates the variable live, without holding the
+  reference php's iterator holds, so a loop over a cycle can be
+  collected early (gc_047; foreach-semantics changes this).
+- Live temporaries are not taken out of the buffer during a run and put
+  back after (zend_gc_remove_root_tmpvars / check_root_tmpvars).
 
 - Generators: php's generator destructor runs pending `finally` blocks;
   rhp's only drops the frame.

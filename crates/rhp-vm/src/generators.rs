@@ -14,14 +14,16 @@ thread_local! {
     /// Handles freed while generators exist: a freed generator's state is
     /// dropped at the next [`Vm::drop_freed_generators`].
     static FREED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
-    static WATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+
+/// Set once any engine made a generator: until then a free notes nothing.
+static WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The engine's object free hook: the builtins' per-handle state, and the
 /// handle noted for the generator table.
 pub(crate) fn object_freed(id: u32) {
     rhp_builtins::object_freed(id);
-    if WATCH.try_with(|w| w.get()).unwrap_or(false) {
+    if WATCH.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = FREED.try_with(|f| {
             if let Ok(mut f) = f.try_borrow_mut() {
                 f.push(id);
@@ -32,7 +34,6 @@ pub(crate) fn object_freed(id: u32) {
 
 /// A new engine: nothing noted.
 pub(crate) fn reset_freed() {
-    let _ = WATCH.try_with(|w| w.set(false));
     let _ = FREED.try_with(|f| f.borrow_mut().clear());
 }
 
@@ -79,7 +80,7 @@ impl Vm {
             id,
             indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
         )));
-        WATCH.with(|w| w.set(true));
+        WATCH.store(true, std::sync::atomic::Ordering::Relaxed);
         self.generators.insert(
             id,
             GenState {

@@ -515,6 +515,7 @@ impl Vm {
             wrapped,
             id,
             statics,
+            gc_buffered: Default::default(),
         })))
     }
 

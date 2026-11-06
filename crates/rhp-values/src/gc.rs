@@ -28,7 +28,30 @@ use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::rc::{Rc, Weak};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use rustc_hash::FxHashMap;
+
+/// Threads with buffered values or flagged handles: a free takes the
+/// thread-local path only when some thread has some. Changed only when a
+/// thread's state turns empty or non-empty.
+static ANY: AtomicUsize = AtomicUsize::new(0);
+
+/// Run `f` on this thread's counters, keeping [`ANY`] in step.
+fn counted(st: &State, f: impl FnOnce()) {
+    let live = |st: &State| st.arrays.get() != 0 || st.handles.get() != 0 || st.flagged.get();
+    let before = live(st);
+    f();
+    match (before, live(st)) {
+        (false, true) => {
+            ANY.fetch_add(1, Ordering::Relaxed);
+        }
+        (true, false) => {
+            ANY.fetch_sub(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+}
 
 use crate::{ArrayData, ClosureData, ObjectData, Value};
 
@@ -58,6 +81,27 @@ impl Node {
             Node::Closure(w) => Value::Closure(w.upgrade()?),
             Node::Arr(w) => Value::Array(crate::PhpArray(w.upgrade()?)),
         })
+    }
+
+    /// Note an object entering or leaving the buffer on the object (the
+    /// release fast path reads it). The buffer is changed between
+    /// instructions, when no object is borrowed.
+    fn set_buffered(&self, on: bool) {
+        match self {
+            Node::Obj(w) => {
+                if let Some(h) = w.upgrade() {
+                    if let Ok(o) = h.try_borrow() {
+                        o.gc_buffered.set(on);
+                    }
+                }
+            }
+            Node::Closure(w) => {
+                if let Some(c) = w.upgrade() {
+                    c.gc_buffered.set(on);
+                }
+            }
+            Node::Arr(_) => {}
+        }
     }
 
     /// The allocation's address (stable while the `Weak` lives).
@@ -107,7 +151,7 @@ struct Buf {
     /// The slot of each buffered array, by address.
     by_addr: FxHashMap<usize, u32>,
     /// Roots added once the buffer filled, before the due run.
-    deferred: Vec<Node>,
+    deferred: Vec<(Node, Key)>,
 }
 
 /// Per-thread collector state outside the buffer (cheap to read in hooks).
@@ -125,6 +169,10 @@ struct State {
     free_time: Cell<u64>,
     /// Arrays in the buffer: `array_freed` looks only when there are some.
     arrays: Cell<u32>,
+    /// Objects and closures in the buffer, and whether any handle has
+    /// flags: `object_freed` looks only when there are some.
+    handles: Cell<u32>,
+    flagged: Cell<bool>,
     /// Handles whose object has one reference more than php counts (the
     /// VM's destructor tracking list holds it), and handles whose
     /// destructor a collection called.
@@ -146,6 +194,8 @@ thread_local! {
             dtor_time: Cell::new(0),
             free_time: Cell::new(0),
             arrays: Cell::new(0),
+            handles: Cell::new(0),
+            flagged: Cell::new(false),
             flags: ManuallyDrop::new(RefCell::new(Vec::new())),
             buf: ManuallyDrop::new(RefCell::new(Buf {
                 slots: Vec::new(),
@@ -178,7 +228,11 @@ fn reserve<T>(v: &mut Vec<T>, n: usize) {
 impl Buf {
     fn slot_of(&self, node: &Node) -> u32 {
         match node {
-            Node::Arr(w) => self.by_addr.get(&(w.as_ptr() as usize)).copied().unwrap_or(0),
+            Node::Arr(w) => self
+                .by_addr
+                .get(&(w.as_ptr() as usize))
+                .copied()
+                .unwrap_or(0),
             Node::Obj(w) => match w.upgrade() {
                 Some(h) => match h.try_borrow() {
                     Ok(o) => self.by_handle.get(o.id as usize).copied().unwrap_or(0),
@@ -190,6 +244,13 @@ impl Buf {
                 Some(c) => self.by_handle.get(c.id as usize).copied().unwrap_or(0),
                 None => 0,
             },
+        }
+    }
+
+    fn index_of(&self, key: Key) -> u32 {
+        match key {
+            Key::Handle(id) => self.by_handle.get(id as usize).copied().unwrap_or(0),
+            Key::Addr(a) => self.by_addr.get(&a).copied().unwrap_or(0),
         }
     }
 
@@ -238,15 +299,13 @@ impl Buf {
 
     /// gc_grow_root_buffer.
     fn grow(&mut self, st: &State) {
-        if self.buf_size >= MAX_BUF_SIZE {
-            if !st.full.get() {
-                // php warns "GC buffer overflow (GC disabled)" here; a
-                // billion roots does not fit in a test.
-                st.active.set(true);
-                st.protected.set(true);
-                st.full.set(true);
-                return;
-            }
+        if self.buf_size >= MAX_BUF_SIZE && !st.full.get() {
+            // php warns "GC buffer overflow (GC disabled)" here; a billion
+            // roots does not fit in a test.
+            st.active.set(true);
+            st.protected.set(true);
+            st.full.set(true);
+            return;
         }
         let new = if self.buf_size < BUF_GROW_STEP {
             self.buf_size * 2
@@ -271,9 +330,14 @@ impl Buf {
         let Some(idx) = self.fetch_slot(st) else {
             return 0;
         };
-        if matches!(node, Node::Arr(_)) {
-            st.arrays.set(st.arrays.get() + 1);
-        }
+        counted(st, || {
+            if matches!(node, Node::Arr(_)) {
+                st.arrays.set(st.arrays.get() + 1);
+            } else {
+                st.handles.set(st.handles.get() + 1);
+            }
+        });
+        node.set_buffered(true);
         self.put(
             idx,
             if garbage {
@@ -289,11 +353,18 @@ impl Buf {
 
     /// gc_remove_from_roots: slot `idx` goes on the unused list.
     fn remove(&mut self, st: &State, idx: u32) -> Option<Node> {
-        let slot = std::mem::replace(self.slots.get_mut(idx as usize)?, Slot::Unused);
-        let node = slot.node()?.clone();
-        if let Node::Arr(_) = node {
-            st.arrays.set(st.arrays.get().saturating_sub(1));
-        }
+        let node = match std::mem::replace(self.slots.get_mut(idx as usize)?, Slot::Unused) {
+            Slot::Unused => return None,
+            Slot::Root(n) | Slot::Garbage(n) | Slot::DtorGarbage(n) => n,
+        };
+        counted(st, || {
+            if let Node::Arr(_) = node {
+                st.arrays.set(st.arrays.get().saturating_sub(1));
+            } else {
+                st.handles.set(st.handles.get().saturating_sub(1));
+            }
+        });
+        node.set_buffered(false);
         reserve(&mut self.unused, 1);
         self.unused.push(idx);
         self.num_roots -= 1;
@@ -322,7 +393,17 @@ fn key_of(node: &Node) -> Option<Key> {
 /// possible root. A reference adds the value it holds.
 #[inline]
 pub fn possible_root(v: &Value) {
-    if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = v {
+    let shared = match v {
+        // A buffered object stays buffered (php's GC_INFO test).
+        Value::Object(h) => {
+            Rc::strong_count(h) > 1 && h.try_borrow().map_or(true, |o| !o.gc_buffered.get())
+        }
+        Value::Array(a) => Rc::strong_count(&a.0) > 1,
+        Value::Ref(r) => Rc::strong_count(r) > 1,
+        Value::Closure(c) => Rc::strong_count(c) > 1 && !c.gc_buffered.get(),
+        _ => false,
+    };
+    if shared {
         possible_root_slow(v);
     }
 }
@@ -332,28 +413,26 @@ pub fn possible_root(v: &Value) {
 fn possible_root_slow(v: &Value) {
     match v {
         Value::Object(h) => {
-            let Ok(o) = h.try_borrow() else { return };
-            let id = o.id;
-            drop(o);
-            if Rc::strong_count(h) - extra_refs(id) > 1 {
-                add_root(Node::Obj(Rc::downgrade(h)), Key::Handle(id));
-            }
-        }
-        Value::Closure(c) => {
-            if Rc::strong_count(c) > 1 {
-                add_root(Node::Closure(Rc::downgrade(c)), Key::Handle(c.id));
-            }
-        }
-        Value::Array(a) => {
-            if Rc::strong_count(&a.0) > 1 {
-                add_array_root(a);
-            }
-        }
-        Value::Ref(r) => {
-            if Rc::strong_count(r) > 1 {
-                if let Ok(inner) = r.try_borrow() {
-                    check_possible_root(&inner);
+            let _ = STATE.try_with(|st| {
+                let Ok(o) = h.try_borrow() else { return };
+                let id = o.id;
+                drop(o);
+                // The destructor list's reference is not php's.
+                let extra = st.flagged.get()
+                    && st.flags.try_borrow().is_ok_and(|f| {
+                        f.get(id as usize)
+                            .is_some_and(|x| x & (TRACKED | HELD) != 0)
+                    });
+                if Rc::strong_count(h) - usize::from(extra) > 1 {
+                    add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id));
                 }
+            });
+        }
+        Value::Closure(c) => add_root(|| Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
+        Value::Array(a) => add_array_root(a),
+        Value::Ref(r) => {
+            if let Ok(inner) = r.try_borrow() {
+                check_possible_root(&inner);
             }
         }
         _ => {}
@@ -368,10 +447,10 @@ pub fn check_possible_root(v: &Value) {
             if let Ok(o) = h.try_borrow() {
                 let id = o.id;
                 drop(o);
-                add_root(Node::Obj(Rc::downgrade(h)), Key::Handle(id));
+                add_root(|| Node::Obj(Rc::downgrade(h)), Key::Handle(id));
             }
         }
-        Value::Closure(c) => add_root(Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
+        Value::Closure(c) => add_root(|| Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
         Value::Array(a) => add_array_root(a),
         _ => {}
     }
@@ -379,32 +458,38 @@ pub fn check_possible_root(v: &Value) {
 
 fn add_array_root(a: &crate::PhpArray) {
     let addr = Rc::as_ptr(&a.0) as usize;
-    add_root(Node::Arr(Rc::downgrade(&a.0)), Key::Addr(addr));
+    add_root(|| Node::Arr(Rc::downgrade(&a.0)), Key::Addr(addr));
 }
 
 /// gc_possible_root: buffer `node` unless it is already.
-fn add_root(node: Node, key: Key) {
-    let _ = STATE.try_with(|st| {
+fn add_root(node: impl FnOnce() -> Node, key: Key) {
+    let _ = STATE.try_with(|st| add_root_in(st, node, key));
+}
+
+/// [`add_root`] on this thread's state: whether the value is in the
+/// buffer now.
+fn add_root_in(st: &State, node: impl FnOnce() -> Node, key: Key) -> bool {
+    {
         if st.protected.get() {
-            return;
+            return false;
         }
         let Ok(mut b) = st.buf.try_borrow_mut() else {
-            return;
+            return false;
         };
-        let buffered = match key {
-            Key::Handle(0) => return,
-            Key::Handle(id) => b.by_handle.get(id as usize).is_some_and(|&s| s != 0),
-            Key::Addr(a) => b.by_addr.contains_key(&a),
+        let idx = match key {
+            Key::Handle(0) => return false,
+            Key::Handle(id) => b.by_handle.get(id as usize).copied().unwrap_or(0),
+            Key::Addr(a) => b.by_addr.get(&a).copied().unwrap_or(0),
         };
-        if buffered {
-            return;
+        if idx != 0 {
+            return idx < DEFERRED;
         }
+        let node = node();
         if st.due.get() {
-            if !b.deferred.iter().any(|n| n.addr() == node.addr()) {
-                reserve(&mut b.deferred, 1);
-                b.deferred.push(node);
-            }
-            return;
+            b.set_index(key, DEFERRED);
+            reserve(&mut b.deferred, 1);
+            b.deferred.push((node, key));
+            return false;
         }
         let full = b.unused.is_empty() && b.first_unused >= b.threshold;
         if full && st.enabled.get() && !st.active.get() {
@@ -412,12 +497,13 @@ fn add_root(node: Node, key: Key) {
             // the value afterwards.
             st.due.set(true);
             crate::mem::state().gc_due(true);
+            b.set_index(key, DEFERRED);
             reserve(&mut b.deferred, 1);
-            b.deferred.push(node);
-            return;
+            b.deferred.push((node, key));
+            return false;
         }
-        b.insert(st, node, key, false);
-    });
+        b.insert(st, node, key, false) != 0
+    }
 }
 
 /// A collection is due ([`add_root`] found the buffer full).
@@ -437,7 +523,7 @@ pub fn clear_due() {
 /// release filled the buffer during the run).
 pub fn deferred_values() -> Vec<Value> {
     with(|st| match st.buf.try_borrow() {
-        Ok(b) => b.deferred.iter().filter_map(Node::upgrade).collect(),
+        Ok(b) => b.deferred.iter().filter_map(|(n, _)| n.upgrade()).collect(),
         Err(_) => Vec::new(),
     })
 }
@@ -445,14 +531,27 @@ pub fn deferred_values() -> Vec<Value> {
 /// After the due run: buffer the roots that waited for it.
 pub fn flush_deferred() {
     let nodes = with(|st| match st.buf.try_borrow_mut() {
-        Ok(mut b) => std::mem::take(&mut b.deferred),
+        Ok(mut b) => {
+            let nodes = std::mem::take(&mut b.deferred);
+            for &(_, key) in &nodes {
+                if b.index_of(key) == DEFERRED {
+                    b.set_index(key, 0);
+                }
+            }
+            nodes
+        }
         Err(_) => Vec::new(),
     });
-    for n in &nodes {
+    // php adds them after the run without checking the threshold again
+    // (gc_possible_root_when_full): no run is due from these.
+    let was = active();
+    set_active(true);
+    for (n, _) in &nodes {
         if let Some(v) = n.upgrade() {
             check_possible_root(&v);
         }
     }
+    set_active(was);
 }
 
 /// gc_adjust_threshold, after an automatic run that collected `count`.
@@ -481,11 +580,22 @@ pub fn adjust_threshold(count: u32) {
 /// buffer (php's `GC_REMOVE_FROM_BUFFER` in `zend_objects_store_del`).
 #[inline]
 pub fn object_freed(id: u32) {
+    if ANY.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     let _ = STATE.try_with(|st| {
-        if let Ok(mut f) = st.flags.try_borrow_mut() {
-            if let Some(x) = f.get_mut(id as usize) {
-                *x = 0;
+        if st.handles.get() == 0 && !st.flagged.get() {
+            return;
+        }
+        if st.flagged.get() {
+            if let Ok(mut f) = st.flags.try_borrow_mut() {
+                if let Some(x) = f.get_mut(id as usize) {
+                    *x = 0;
+                }
             }
+        }
+        if st.handles.get() == 0 {
+            return;
         }
         let Ok(mut b) = st.buf.try_borrow_mut() else {
             return;
@@ -495,14 +605,53 @@ pub fn object_freed(id: u32) {
         };
         if idx != 0 {
             b.by_handle[id as usize] = 0;
-            drop(b.remove(st, idx));
+            if idx < DEFERRED {
+                drop(b.remove(st, idx));
+            }
         }
+    });
+}
+
+/// The `by_addr` mark of an immutable array.
+const IMMUTABLE: u32 = u32::MAX;
+/// The index mark of a root waiting for the due run.
+const DEFERRED: u32 = u32::MAX - 1;
+
+/// `v` is a literal array (a constant of compiled code, a property's
+/// default): php's immutable arrays are never possible roots. It and the
+/// arrays inside it are marked as if buffered.
+pub fn mark_immutable(v: &Value) {
+    let Value::Array(a) = v else {
+        return;
+    };
+    let _ = STATE.try_with(|st| {
+        crate::mem::uncounted(|| {
+            let Ok(mut b) = st.buf.try_borrow_mut() else {
+                return;
+            };
+            let mut todo = vec![a.clone()];
+            while let Some(a) = todo.pop() {
+                let addr = Rc::as_ptr(&a.0) as usize;
+                if b.by_addr.contains_key(&addr) {
+                    continue;
+                }
+                b.set_index(Key::Addr(addr), IMMUTABLE);
+                for (_, e) in a.iter() {
+                    if let Value::Array(inner) = e {
+                        todo.push(inner.clone());
+                    }
+                }
+            }
+        })
     });
 }
 
 /// An array at `addr` is being freed (see [`object_freed`]).
 #[inline]
 pub fn array_freed(addr: usize) {
+    if ANY.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     let _ = STATE.try_with(|st| {
         if st.arrays.get() == 0 {
             return;
@@ -511,7 +660,9 @@ pub fn array_freed(addr: usize) {
             return;
         };
         if let Some(idx) = b.by_addr.remove(&addr) {
-            drop(b.remove(st, idx));
+            if idx < DEFERRED {
+                drop(b.remove(st, idx));
+            }
         }
     });
 }
@@ -522,6 +673,9 @@ pub const TRACKED: u8 = 1;
 /// Handle `id`'s object is kept by the VM after a fatal error (one
 /// reference php does not count; its destructor never runs).
 pub const HELD: u8 = 2;
+/// The cycle collector called handle `id`'s destructor; the object is
+/// still on the VM's destructor list until the collection ends.
+pub const CALLED: u8 = 4;
 
 /// Set or clear `flag` ([`TRACKED`], [`HELD`]) on handle `id`.
 pub fn set_flag(id: u32, flag: u8, on: bool) {
@@ -539,6 +693,9 @@ pub fn set_flag(id: u32, flag: u8, on: bool) {
             f.resize(i + 1, 0);
         }
         if on {
+            if !st.flagged.get() {
+                counted(st, || st.flagged.set(true));
+            }
             f[i] |= flag;
         } else {
             f[i] &= !flag;
@@ -568,7 +725,10 @@ pub fn slots() -> Vec<Slot> {
     with(|st| match st.buf.try_borrow() {
         Ok(b) => {
             let end = (b.first_unused as usize).min(b.slots.len());
-            b.slots.get(FIRST_ROOT as usize..end).map(<[Slot]>::to_vec).unwrap_or_default()
+            b.slots
+                .get(FIRST_ROOT as usize..end)
+                .map(<[Slot]>::to_vec)
+                .unwrap_or_default()
         }
         Err(_) => Vec::new(),
     })
@@ -576,7 +736,12 @@ pub fn slots() -> Vec<Slot> {
 
 /// php's `first_unused`.
 pub fn first_unused() -> u32 {
-    with(|st| st.buf.try_borrow().map(|b| b.first_unused).unwrap_or(FIRST_ROOT))
+    with(|st| {
+        st.buf
+            .try_borrow()
+            .map(|b| b.first_unused)
+            .unwrap_or(FIRST_ROOT)
+    })
 }
 
 /// The slot at `idx`.
@@ -634,7 +799,10 @@ pub fn add_garbage(v: &Value) -> u32 {
             (Node::Obj(Rc::downgrade(h)), Key::Handle(o.id))
         }
         Value::Closure(c) => (Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
-        Value::Array(a) => (Node::Arr(Rc::downgrade(&a.0)), Key::Addr(Rc::as_ptr(&a.0) as usize)),
+        Value::Array(a) => (
+            Node::Arr(Rc::downgrade(&a.0)),
+            Key::Addr(Rc::as_ptr(&a.0) as usize),
+        ),
         _ => return 0,
     };
     with(|st| match st.buf.try_borrow_mut() {
@@ -655,7 +823,8 @@ pub fn compact() {
                 let mut free = FIRST_ROOT as usize;
                 let mut scan = b.first_unused as usize - 1;
                 let end = b.num_roots as usize;
-                let unused = |b: &Buf, i: usize| matches!(b.slots.get(i), None | Some(Slot::Unused));
+                let unused =
+                    |b: &Buf, i: usize| matches!(b.slots.get(i), None | Some(Slot::Unused));
                 while free < scan {
                     while !unused(&b, free) {
                         free += 1;
@@ -782,12 +951,19 @@ pub fn reset() {
         st.collector_time.set(0);
         st.dtor_time.set(0);
         st.free_time.set(0);
-        st.arrays.set(0);
+        counted(st, || {
+            st.arrays.set(0);
+            st.handles.set(0);
+            st.flagged.set(false);
+        });
         if let Ok(mut f) = st.flags.try_borrow_mut() {
             f.clear();
         }
         let old = st.buf.try_borrow_mut().ok().map(|mut b| {
             let slots = std::mem::take(&mut b.slots);
+            for n in slots.iter().filter_map(Slot::node) {
+                n.set_buffered(false);
+            }
             let deferred = std::mem::take(&mut b.deferred);
             b.unused.clear();
             b.first_unused = FIRST_ROOT;

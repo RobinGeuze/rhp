@@ -39,7 +39,10 @@ impl GNode {
     fn of(v: &Value) -> Option<(usize, GNode)> {
         Some(match v {
             Value::Object(h) => (Rc::as_ptr(h) as usize, GNode::Obj(Rc::downgrade(h))),
-            Value::Array(a) => (Rc::as_ptr(a.rc()) as usize, GNode::Arr(Rc::downgrade(a.rc()))),
+            Value::Array(a) => (
+                Rc::as_ptr(a.rc()) as usize,
+                GNode::Arr(Rc::downgrade(a.rc())),
+            ),
             Value::Ref(r) => (Rc::as_ptr(r) as usize, GNode::Ref(Rc::downgrade(r))),
             Value::Closure(c) => (Rc::as_ptr(c) as usize, GNode::Clo(Rc::downgrade(c))),
             _ => return None,
@@ -168,6 +171,7 @@ impl Vm {
                     for k in 0..gc::slots().len() as u32 {
                         gc::retag(FIRST_ROOT + k, Slot::Root);
                     }
+                    self.gc_unlist_called();
                     gc::set_active(false);
                     return Err(e);
                 }
@@ -180,12 +184,32 @@ impl Vm {
             }
             break;
         }
+        self.gc_unlist_called();
         drop(zombies);
         let all = start.elapsed().as_nanos() as u64;
         gc::add_times(all, dtor_ns, free_ns);
         match pending {
             Some(e) => Err(e),
             None => Ok(total),
+        }
+    }
+
+    /// Take the objects whose destructor the collection called off the
+    /// destructor list.
+    fn gc_unlist_called(&mut self) {
+        let called = |h: &rhp_values::ObjectHandle| {
+            let id = h.try_borrow().map(|o| o.id).unwrap_or(0);
+            gc::flags(id) & gc::CALLED != 0
+        };
+        if self.destructibles.iter().any(called) {
+            let all = std::mem::take(&mut self.destructibles);
+            let (gone, kept): (Vec<_>, Vec<_>) = all.into_iter().partition(called);
+            self.destructibles = kept;
+            for h in &gone {
+                let id = h.try_borrow().map(|o| o.id).unwrap_or(0);
+                gc::set_flag(id, gc::CALLED, false);
+            }
+            drop(gone);
         }
     }
 
@@ -219,7 +243,34 @@ impl Vm {
                 let Ok(o) = h.try_borrow() else {
                     return;
                 };
-                out.extend(o.properties.values().map(Value::clone));
+                let internal = self.is_internal_class(o.class)
+                    || self
+                        .class(o.class)
+                        .ancestors
+                        .iter()
+                        .any(|&a| self.is_internal_class(a));
+                for (k, p) in o.properties.iter() {
+                    // A prelude class's private `__*` array is its native
+                    // storage (a C array or HashTable php's get_gc walks
+                    // through, not a counted zend_array). Only when nothing
+                    // else reaches it: held once, and not a root itself.
+                    if let Value::Array(a) = p {
+                        let k = k.as_bytes();
+                        if internal
+                            && a.ref_count() == 1
+                            && gc::slot_of(p) == 0
+                            && k.first() == Some(&0)
+                            && k[1..]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .is_some_and(|i| k[i + 2..].starts_with(b"__"))
+                        {
+                            out.extend(a.iter().map(|(_, v)| v.clone()));
+                            continue;
+                        }
+                    }
+                    out.push(p.clone());
+                }
                 if let Some(l) = o.lazy() {
                     out.push(l.initializer.clone());
                     if let Some(i) = &l.instance {
@@ -267,14 +318,15 @@ impl Vm {
         let Value::Object(h) = v else {
             return false;
         };
-        if tracked.contains(&(Rc::as_ptr(h) as usize)) {
-            return true;
-        }
         let Ok(o) = h.try_borrow() else {
             return false;
         };
         let (cls, id) = (o.class, o.id);
         drop(o);
+        // On the destructor list and not destructed yet.
+        if tracked.contains(&(Rc::as_ptr(h) as usize)) && gc::flags(id) & gc::TRACKED != 0 {
+            return true;
+        }
         self.is_generator_class(cls) && self.gen_has_frame(id)
     }
 
@@ -325,8 +377,11 @@ impl Vm {
             n.len = g.edges.len() as u32 - first;
         }
         // The references php does not count: the destructor list's.
-        let tracked: FxHashSet<usize> =
-            self.destructibles.iter().map(|h| Rc::as_ptr(h) as usize).collect();
+        let tracked: FxHashSet<usize> = self
+            .destructibles
+            .iter()
+            .map(|h| Rc::as_ptr(h) as usize)
+            .collect();
         let held: FxHashSet<usize> = self
             .marked_destructed
             .iter()
@@ -444,10 +499,12 @@ impl Vm {
                     (o.class, o.id)
                 };
                 // Not yet destructed (another destructor may have released
-                // it meanwhile).
-                let r = if let Some(p) = self.destructibles.iter().position(|d| Rc::ptr_eq(d, h)) {
-                    let d = self.destructibles.remove(p);
-                    self.call_destructor(d)
+                // it meanwhile). It stays on the destructor list, marked,
+                // until the collection ends (one pass removes them all).
+                let listed = gc::flags(id) & gc::TRACKED != 0;
+                let r = if listed {
+                    gc::set_flag(id, gc::CALLED, true);
+                    self.call_destructor(h.clone())
                 } else {
                     if self.is_generator_class(cls) && self.gen_has_frame(id) {
                         self.gen_gc_close(id);
@@ -466,12 +523,12 @@ impl Vm {
                         }
                     });
                 }
-                self.collect_released_now()?;
-                let listed = self.destructibles.iter().any(|d| Rc::ptr_eq(d, h));
+                self.collect_released()?;
                 if Rc::strong_count(h) - usize::from(listed) == 1 {
                     zombies.push(v);
                 }
             }
+            self.gc_unlist_called();
             *dtor_ns += t.elapsed().as_nanos() as u64;
         }
 

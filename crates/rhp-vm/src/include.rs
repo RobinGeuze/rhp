@@ -550,6 +550,7 @@ impl Vm {
     /// no class declarations, its base is this one's and `prog` shares it,
     /// so a file included in a loop does not grow the table.
     pub(crate) fn add_unit(&mut self, prog: &Program) -> UnitId {
+        mark_literal_arrays(prog);
         let base = UnitBase {
             closures: self.closures.len() as u32,
             classes: self.decl_classes.len() as u32,
@@ -754,4 +755,20 @@ fn normalize_url(url: &[u8]) -> Vec<u8> {
     }
     out.extend_from_slice(&segs.join(&b"/"[..]));
     out
+}
+
+/// The array constants of `prog`'s code are php's immutable arrays: never
+/// possible roots of a cycle (rhp_values::gc).
+fn mark_literal_arrays(prog: &Program) {
+    let mark = |p: &rhp_bytecode::FunctionProto| {
+        for c in &p.consts {
+            rhp_values::gc::mark_immutable(c);
+        }
+    };
+    mark(&prog.main);
+    prog.functions.iter().for_each(|p| mark(p));
+    prog.closures.iter().for_each(|p| mark(p));
+    for c in prog.classes.iter().chain(&prog.cond_classes) {
+        c.methods.iter().for_each(|m| mark(&m.proto));
+    }
 }

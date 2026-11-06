@@ -431,33 +431,49 @@ struct Frame {
     /// The Closure object this frame runs (`Closure::getCurrent()`, the
     /// closure's own static variables).
     closure: Option<Rc<rhp_values::ClosureData>>,
+    /// Called by a prelude function: php has no such call, so its `$this`
+    /// is no possible root when the frame ends.
+    internal_caller: bool,
 }
 
 impl Drop for Frame {
     fn drop(&mut self) {
         // php frees a frame's variables, then its `$this`: the handles come
-        // back in that order. Each may become a possible root of a cycle.
-        // A prelude function is internal in php: no variables to release.
-        let n = if self.proto.is_internal() {
-            0
-        } else {
-            (self.proto.num_cvs as usize).min(self.regs.len())
+        // back in that order. Each variable may become a possible root of
+        // a cycle as it goes (a prelude function is internal in php: it
+        // has none). Scalars and temporaries go with the register file.
+        let proto = &*self.proto;
+        let this = match proto.this_cv {
+            Some(cv) => self
+                .regs
+                .get_mut(cv as usize)
+                .map(|s| std::mem::replace(s, Value::Null)),
+            None => None,
         };
-        let this = self.proto.this_cv.map_or(usize::MAX, usize::from);
-        for (i, v) in self.regs[..n].iter().enumerate() {
-            if i != this {
-                rhp_values::gc::possible_root(v);
+        if !proto.is_internal() {
+            let n = (proto.num_cvs as usize).min(self.regs.len());
+            for slot in &mut self.regs[..n] {
+                if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot
+                {
+                    let v = std::mem::replace(slot, Value::Undef);
+                    rhp_values::gc::possible_root(&v);
+                    drop(v);
+                }
             }
         }
-        if let Some(v) = self.regs.get(this) {
-            rhp_values::gc::possible_root(v);
-        }
-        if let Some(cv) = self.proto.this_cv {
-            if let Some(slot) = self.regs.get_mut(cv as usize) {
-                let this = std::mem::replace(slot, Value::Null);
-                self.regs.clear();
-                drop(this);
+        if let Some(this) = this {
+            // A prelude method's variables go before its `$this` too.
+            self.regs.clear();
+            if self.closure.is_none() && !self.internal_caller {
+                rhp_values::gc::possible_root(&this);
             }
+            drop(this);
+        }
+        // A closure call releases the Closure (not its bound `$this`).
+        if let Some(c) = self.closure.take() {
+            let c = Value::Closure(c);
+            rhp_values::gc::possible_root(&c);
+            drop(c);
         }
     }
 }
@@ -489,6 +505,7 @@ impl Frame {
             dyn_vars: indexmap::IndexMap::new(),
             global_scope: false,
             closure: None,
+            internal_caller: false,
         }
     }
 }

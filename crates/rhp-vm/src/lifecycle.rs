@@ -579,6 +579,12 @@ impl Vm {
             self.destructibles = kept;
             let mut it = released.into_iter();
             while let Some(h) = it.next() {
+                // The cycle collector destructed it already (it leaves the
+                // list when the collection ends).
+                let id = h.borrow().id;
+                if rhp_values::gc::flags(id) & rhp_values::gc::CALLED != 0 {
+                    continue;
+                }
                 if let Err(e) = self.call_destructor(h) {
                     // Keep the not-yet-destructed ones tracked.
                     let rest: Vec<_> = it.collect();

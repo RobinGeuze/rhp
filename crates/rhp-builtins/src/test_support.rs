@@ -242,6 +242,7 @@ impl Host for TestHost<'_> {
             wrapped: Some(Box::new(callable)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
     fn closure_name(&self, _closure: &Value) -> Option<Vec<u8>> {

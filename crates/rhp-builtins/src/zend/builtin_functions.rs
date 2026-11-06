@@ -1051,11 +1051,16 @@ fn fn_gc_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
     let n = |f: fn(&rhp_values::gc::Status) -> u32| Value::Int(st.as_ref().map_or(0, f) as i64);
-    let secs = |f: fn(&rhp_values::gc::Status) -> u64| {
-        Value::Float(st.as_ref().map_or(0, f) as f64 / 1e9)
-    };
-    put("running", Value::Bool(st.as_ref().is_some_and(|s| s.running)));
-    put("protected", Value::Bool(st.as_ref().is_some_and(|s| s.protected)));
+    let secs =
+        |f: fn(&rhp_values::gc::Status) -> u64| Value::Float(st.as_ref().map_or(0, f) as f64 / 1e9);
+    put(
+        "running",
+        Value::Bool(st.as_ref().is_some_and(|s| s.running)),
+    );
+    put(
+        "protected",
+        Value::Bool(st.as_ref().is_some_and(|s| s.protected)),
+    );
     put("full", Value::Bool(st.as_ref().is_some_and(|s| s.full)));
     put("runs", n(|s| s.runs));
     put("collected", n(|s| s.collected));

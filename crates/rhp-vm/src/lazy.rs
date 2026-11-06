@@ -355,6 +355,7 @@ impl Vm {
         let id = h.borrow().id;
         self.unset_typed_props.remove(&id);
         drop(old_props);
+        rhp_values::LazyInfo::release_initializer(&old_init);
         drop(old_init);
         Ok(inst)
     }

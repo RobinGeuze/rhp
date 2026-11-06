@@ -171,6 +171,8 @@ pub struct ClosureData {
     /// them (php copies a closure's static variables into each Closure
     /// object). Unbound ones still have their declared initial value.
     pub statics: RefCell<Vec<(PhpStr, PhpRef)>>,
+    /// In the cycle collector's root buffer (see [`ObjectData`]).
+    pub gc_buffered: std::cell::Cell<bool>,
 }
 
 impl ClosureData {
@@ -230,6 +232,9 @@ pub struct ObjectData {
     /// Rarely used state: the native payload and the lazy object info.
     /// Boxed so that objects with neither pay a pointer.
     extra: Option<Box<ObjectExtra>>,
+    /// In the cycle collector's root buffer (php's GC_INFO): a release of
+    /// a buffered object skips the buffer lookup.
+    pub(crate) gc_buffered: std::cell::Cell<bool>,
 }
 
 /// See [`ObjectData::payload`] and [`ObjectData::lazy`].
@@ -269,6 +274,27 @@ impl LazyInfo {
     pub const INITIALIZED: u8 = 1 << 2;
     pub const SKIP_INITIALIZATION_ON_SERIALIZE: u8 = 1 << 3;
     pub const SKIP_DESTRUCTOR: u8 = 1 << 4;
+
+    /// php keeps the initializer twice (the callable and its call info):
+    /// releasing the first leaves a count, so the callable becomes a
+    /// possible root just before it is freed (zend_lazy_object_info_dtor).
+    pub fn release_initializer(init: &Value) {
+        match init {
+            Value::Closure(_) | Value::Object(_) => gc::check_possible_root(init),
+            Value::Array(a) => {
+                if let Some(o @ Value::Object(_)) = a.get(&ArrayKey::Int(0)) {
+                    gc::possible_root(o);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for LazyInfo {
+    fn drop(&mut self) {
+        LazyInfo::release_initializer(&self.initializer);
+    }
 }
 
 /// The native state an internal class keeps with each of its objects: what
@@ -308,6 +334,7 @@ impl ObjectData {
             id,
             properties,
             extra: None,
+            gc_buffered: std::cell::Cell::new(false),
         }
     }
 

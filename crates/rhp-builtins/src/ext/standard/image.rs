@@ -228,9 +228,9 @@ fn swf_bits(buf: &[u8], pos: u32, count: u32) -> u64 {
 /// The SWF header's frame rectangle, in pixels.
 fn swf_rect(b: &[u8]) -> (u32, u32) {
     let bits = swf_bits(b, 0, 5) as u32;
-    let w = swf_bits(b, 5 + bits, bits).wrapping_sub(swf_bits(b, 5, bits)) as i64 / 20;
-    let h =
-        swf_bits(b, 5 + 3 * bits, bits).wrapping_sub(swf_bits(b, 5 + 2 * bits, bits)) as i64 / 20;
+    // Unsigned long arithmetic, as in C: a negative extent wraps.
+    let w = swf_bits(b, 5 + bits, bits).wrapping_sub(swf_bits(b, 5, bits)) / 20;
+    let h = swf_bits(b, 5 + 3 * bits, bits).wrapping_sub(swf_bits(b, 5 + 2 * bits, bits)) / 20;
     (w as u32, h as u32)
 }
 
@@ -786,7 +786,9 @@ fn image_type(
 ) -> Result<i64, Thrown> {
     let read_error = |host: &mut dyn Host| -> Result<i64, Thrown> {
         let mut m = b"Error reading from ".to_vec();
-        m.extend_from_slice(input);
+        // A C string: getimagesizefromstring's data ends at its first NUL.
+        let end = input.iter().position(|&c| c == 0).unwrap_or(input.len());
+        m.extend_from_slice(&input[..end]);
         m.push(b'!');
         crate::notice(host, fname, &m)?;
         Ok(0)

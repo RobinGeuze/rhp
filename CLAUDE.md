@@ -30,6 +30,10 @@ describes updates it in the same PR.
     with `cargo build --release -p rhp-cli -p rhp-difftest` first. Also run
     the app's console (`bin/console`, `artisan`) under php and under
     `target/release/rhp`.
+  - The dev tools (PHPUnit, PHPStan, Psalm, PHP-CS-Fixer, Rector):
+    `python3 tests/apps/tools.py setup`, then `python3 tests/apps/tools.py diff`
+    (commands that print what php prints, per tool), with
+    `cargo build --release -p rhp-cli` first.
 
 ## Licences
 

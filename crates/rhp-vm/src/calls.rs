@@ -1605,6 +1605,36 @@ impl Vm {
         }
     }
 
+    /// zend_call_function's by-reference check for named arguments to a
+    /// builtin, numbered by the parameter each one names.
+    fn named_by_ref_args(
+        &mut self,
+        sig: &rhp_bytecode::signatures::Func,
+        mut named: Vec<(PhpStr, Value)>,
+    ) -> Result<Vec<(PhpStr, Value)>, Thrown> {
+        for (name, a) in named.iter_mut() {
+            let Some(i) = sig.params.iter().position(|p| p.name.as_bytes() == name.as_bytes()) else {
+                continue;
+            };
+            let p = &sig.params[i];
+            if !p.by_ref() || p.prefer_ref() || p.variadic() || matches!(a, Value::Ref(_)) {
+                continue;
+            }
+            self.diag(
+                builtins::E_WARNING,
+                &format!(
+                    "{}(): Argument #{} (${}) must be passed by reference, value given",
+                    sig.name,
+                    i + 1,
+                    p.name
+                ),
+            )?;
+            let v = std::mem::replace(a, Value::Null);
+            *a = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
+        }
+        Ok(named)
+    }
+
     /// zend_call_function's by-reference parameters: a plain value passed
     /// to one is "f(): Argument #N ($x) must be passed by reference, value
     /// given", then passed in a fresh reference.
@@ -2108,6 +2138,8 @@ impl Vm {
                 Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,
                 None => match self.callable_builtin(c) {
                     Some((b, sig)) => {
+                        let args = self.callee_by_ref_args(&Callee::Builtin(b.name.to_string()), args)?;
+                        let named = self.named_by_ref_args(sig, named)?;
                         let (args, extra) = self.place_builtin_named_args(sig, args, named)?;
                         // Z_PARAM_VARIADIC_WITH_NAMED: forwarded.
                         if b.name == "call_user_func" && !args.is_empty() {

@@ -44,9 +44,9 @@ fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let class = str_arg(args, 1);
     let method = str_arg(args, 2);
-    let argv: Vec<Value> = match deref(&args[3]) {
-        Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
-        _ => Vec::new(),
+    let argv = match deref(&args[3]) {
+        a @ Value::Array(_) => a,
+        _ => Value::Array(rhp_values::PhpArray::new()),
     };
     host.reflect_invoke(&obj, &class, &method, argv)
 }

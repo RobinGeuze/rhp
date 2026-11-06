@@ -2520,7 +2520,7 @@ impl Host for Vm {
         obj: &Value,
         class: &[u8],
         method: &[u8],
-        args: Vec<Value>,
+        args: Value,
     ) -> Result<Value, Thrown> {
         let cls = self.resolve_class_by_name(class)?;
         let shown = || {
@@ -2536,7 +2536,12 @@ impl Host for Vm {
                 format!("Method {}() does not exist", shown()),
             ));
         };
+        let place = |vm: &mut Self| -> Result<Vec<Value>, Thrown> {
+            let (argv, named) = vm.split_call_args(&args)?;
+            vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)
+        };
         if m.is_static {
+            let args = place(self)?;
             return self.call_sync(&m, None, cls, args);
         }
         match deref(obj) {
@@ -2548,6 +2553,7 @@ impl Host for Vm {
                         "Given object is not an instance of the class this method was declared in",
                     ));
                 }
+                let args = place(self)?;
                 self.call_sync(&m, Some(h), oc, args)
             }
             _ => Err(Thrown::error(

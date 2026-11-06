@@ -414,8 +414,12 @@ impl Host for TestHost<'_> {
         obj: &Value,
         class: &[u8],
         method: &[u8],
-        args: Vec<Value>,
+        args: Value,
     ) -> Result<Value, Thrown> {
+        let args: Vec<Value> = match args {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            _ => Vec::new(),
+        };
         let mut cb = PhpArray::new();
         cb.push(match obj {
             Value::Null => Value::str(class.to_vec()),

@@ -56,6 +56,7 @@ pub mod syslog;
 pub mod r#type;
 pub mod uniqid;
 pub mod url;
+pub mod url_scanner_ex;
 pub mod uuencode;
 pub mod var;
 pub mod versioning;
@@ -93,6 +94,7 @@ fn register(m: &mut crate::Registry) {
     r#type::register(m);
     password::register(m);
     url::register(m);
+    url_scanner_ex::register(m);
     head::register(m);
     html::register(m);
     var::register(m);
@@ -174,4 +176,5 @@ fn reset_state() {
     array::reset_state();
     string::reset_state();
     basic_functions::reset_state();
+    url_scanner_ex::reset_state();
 }

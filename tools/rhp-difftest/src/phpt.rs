@@ -254,6 +254,8 @@ const RHP_INI: &[&str] = &[
     "serialize_precision",
     "short_open_tag",
     "sys_temp_dir",
+    "url_rewriter.hosts",
+    "url_rewriter.tags",
     "variables_order",
     "zend.detect_unicode",
     "zend.max_allowed_stack_size",

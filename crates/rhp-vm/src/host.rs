@@ -519,6 +519,14 @@ impl Host for Vm {
             .or_else(|| self.main_script_path.clone())
     }
 
+    fn global_var(&mut self, name: &[u8]) -> Option<Value> {
+        let v = match self.globals.get(name) {
+            Some(c) => crate::deref(&c.borrow()),
+            None => self.jit_globals.get(name).cloned()?,
+        };
+        (!matches!(v, Value::Null)).then_some(v)
+    }
+
     fn executing_line(&self) -> u32 {
         (0..self.stack.len())
             .rev()

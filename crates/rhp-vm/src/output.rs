@@ -903,6 +903,15 @@ impl Vm {
     /// The userland functions (output.c's PHP_FUNCTIONs).
     pub(crate) fn output_control_call(&mut self, call: ObCall) -> Result<Value, Thrown> {
         Ok(match call {
+            ObCall::StartInternal { name, func } => {
+                let h = Handler::new(
+                    name.as_bytes().to_vec(),
+                    Func::Internal(func),
+                    0,
+                    H_STDFLAGS,
+                );
+                Value::Bool(self.handler_start(h))
+            }
             ObCall::Start {
                 callback,
                 chunk_size,

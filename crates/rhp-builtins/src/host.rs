@@ -72,6 +72,12 @@ pub enum ObCall {
         chunk_size: i64,
         flags: i64,
     },
+    /// php_output_start_internal: an extension's handler `func` under
+    /// `name`, with the standard flags and no chunk size.
+    StartInternal {
+        name: &'static str,
+        func: crate::OutputHandlerFn,
+    },
     Flush,
     Clean,
     EndFlush,
@@ -584,6 +590,11 @@ pub trait Host {
     /// The file of the innermost user-code frame (php's
     /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
     fn executing_file(&self) -> Option<Vec<u8>>;
+    /// Global variable `name` from the global symbol table (an
+    /// auto-global is armed first), None when unset.
+    fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
+        None
+    }
     /// The line of the innermost user-code frame (php's
     /// `zend_get_executed_lineno`), 0 outside one.
     fn executing_line(&self) -> u32 {

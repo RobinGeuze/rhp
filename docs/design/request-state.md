@@ -43,6 +43,8 @@ Kinds:
 | `ext/standard/var.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `var::clear_views` |
 | `ext/standard/var.rs` | `DUMPING` (the arrays and objects `var_dump` / `debug_zval_dump` are inside of: php's recursion guards) | call | emptied as each dump returns |
 | `ext/standard/array.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `array::reset_state` |
+| `main/streams/filter.rs` | `VOLATILE` (the filter patterns `stream_filter_register` added: php's volatile filter hash) | request | `filter::reset_state` via `user_filters::reset_state` |
+| `ext/standard/user_filters.rs` | `USER_FILTERS` (registered filter names and their classes) | request | `user_filters::reset_state` |
 | `main/streams/xp_socket.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `xp_socket::reset_state` |
 | `ext/json/mod.rs` | `LAST_ERROR` | request | `json::reset_state` |
 | `ext/json/mod.rs` | `SERIALIZING` (objects whose `jsonSerialize()` runs: php's JSON guard) | call | emptied as each call returns |

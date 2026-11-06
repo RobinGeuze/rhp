@@ -10,6 +10,7 @@
 //! through C zlib with php's exact parameters (see `zraw`), so compressed bytes
 //! are identical to php's.
 
+pub(crate) mod zlib_filter;
 pub(crate) mod zraw;
 
 use std::any::Any;
@@ -34,7 +35,7 @@ fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
 }
 
 /// zlib's `zError(status)` message (its `z_errmsg` table).
-fn z_error(status: i32) -> String {
+pub(crate) fn z_error(status: i32) -> String {
     match status {
         2 => "need dictionary",
         1 => "stream end",

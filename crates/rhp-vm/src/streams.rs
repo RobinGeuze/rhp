@@ -1,7 +1,7 @@
 //! Stream resources: the open-stream table and the helpers behind the stream
 //! builtins.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
@@ -20,7 +20,7 @@ pub(crate) enum MemMode {
 /// The open stream resources by resource id, one [`Stream`] record each:
 /// closing a stream drops everything known about it.
 #[derive(Default)]
-pub(crate) struct StreamTable(HashMap<u32, Stream>);
+pub(crate) struct StreamTable(FxHashMap<u32, Stream>);
 
 /// An open stream resource: its backing state and what php keeps on the
 /// `php_stream` beside it.
@@ -42,6 +42,13 @@ pub(crate) struct Stream {
     pub(crate) output: bool,
     /// Switched to non-blocking mode (stream_get_meta_data's `blocked`).
     pub(crate) nonblocking: bool,
+    /// The filter chains and php's read buffer, once a filter was added.
+    pub(crate) filters: Option<Box<crate::stream_filters::FilterLayer>>,
+    /// Where php's read buffer of a memory stream would end after a line
+    /// read (what a read filter added next gets to filter first).
+    pub(crate) mem_buffered: Option<usize>,
+    /// A filter callback is running (PHP_STREAM_FLAG_NO_FCLOSE).
+    pub(crate) no_fclose: bool,
 }
 
 impl StreamTable {
@@ -55,6 +62,9 @@ impl StreamTable {
             ctx: None,
             output: false,
             nonblocking: false,
+            filters: None,
+            mem_buffered: None,
+            no_fclose: false,
         };
         self.0.insert(id, s);
     }
@@ -69,6 +79,10 @@ impl StreamTable {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub(crate) fn ids(&self) -> Vec<u32> {
+        self.0.keys().copied().collect()
     }
 
     /// The backing state of stream `id`.
@@ -144,6 +158,27 @@ impl Vm {
     /// `fgets` over any readable stream, optionally capped at `max` bytes.
     pub(crate) fn stream_gets_impl(&mut self, res: &Value, max: Option<usize>) -> Option<Vec<u8>> {
         let id = res_id(res)?;
+        let rec = self.streams.record_mut(id)?;
+        if rec.filters.is_some() {
+            return self.gets_layered(res, id, max);
+        }
+        if !rec.note_mem_line_read() {
+            return self.stream_gets_unlayered(res, max);
+        }
+        let r = self.stream_gets_unlayered(res, max);
+        if let Some(rec) = self.streams.record_mut(id) {
+            rec.extend_mem_line_read();
+        }
+        r
+    }
+
+    /// `fgets` without the filter layer.
+    pub(crate) fn stream_gets_unlayered(
+        &mut self,
+        res: &Value,
+        max: Option<usize>,
+    ) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
         match self.streams.get_mut(&id)? {
             StreamState::Mem {
                 buf,
@@ -195,7 +230,27 @@ impl Vm {
     /// closes the descriptor (releasing flock locks) and flushes buffered
     /// wrapper writes. An extension's close may call PHP and throw.
     pub(crate) fn free_stream(&mut self, id: u32) -> Result<bool, Thrown> {
-        Ok(match self.streams.remove(&id).map(|s| s.state) {
+        // php_stream_free: the write chain is flushed first, the filters
+        // are freed after the stream closed.
+        let had_throw = self.pending_throw.is_some();
+        self.close_flush_filters(id);
+        let rec = self.streams.remove(&id);
+        let (state, layer) = match rec {
+            Some(r) => (Some(r.state), r.filters),
+            None => (None, None),
+        };
+        let r = self.free_stream_state(state);
+        self.free_filters(layer);
+        if !had_throw && r.is_ok() {
+            if let Some(t) = self.pending_throw.take() {
+                return Err(t);
+            }
+        }
+        r
+    }
+
+    fn free_stream_state(&mut self, state: Option<StreamState>) -> Result<bool, Thrown> {
+        Ok(match state {
             Some(StreamState::FileWrite { buf, url }) => self
                 .wrapper_for(&url)
                 .map(|w| w.put_contents(&url, &buf))
@@ -214,11 +269,16 @@ impl Vm {
     pub(crate) fn reap_dropped_streams(&mut self) -> Result<(), Thrown> {
         let mut thrown = None;
         for id in rhp_values::take_dropped_streams() {
-            // The CLI std streams live for the whole request.
+            // The CLI std streams live for the whole request, unless filters
+            // have to run as they close.
             if matches!(
                 self.streams.get(&id),
                 Some(StreamState::Stdin | StreamState::Stdout | StreamState::Stderr)
-            ) {
+            ) && self
+                .streams
+                .record_mut(id)
+                .is_some_and(|r| r.filters.is_none())
+            {
                 continue;
             }
             if self.streams.contains_key(&id) {

@@ -1,0 +1,4 @@
+caught close-throw t.a
+caught close-throw t.b
+caught close-throw t.c
+end

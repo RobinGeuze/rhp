@@ -666,7 +666,7 @@ pub(crate) fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
 
 /// `__zpp_arg($fn, $n, $name, $type, $value)`: coerce one argument of a
 /// prelude-implemented internal method the way php's zpp does in coercive
-/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`), or raise its
+/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`, `resource`), or raise its
 /// TypeError ("Fn(): Argument #n ($name) must be of type T, X given").
 fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let func = arg_bytes(args, 0);
@@ -699,6 +699,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 conv::Num::Float(f) => f as i64,
             })
         }),
+        (Value::Resource(_), b"resource") => Some(v.clone()),
         (Value::Object(_), b"Throwable") => {
             let cls = host.object_class_name(&v).unwrap_or_default();
             host.reflect_is_a(&cls, b"Throwable").then(|| v.clone())

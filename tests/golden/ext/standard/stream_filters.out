@@ -1,0 +1,143 @@
+bool(true)
+bool(true)
+-- 0
+create trace.x
+  filter(8192, open, 8192)
+string(4) "ABC
+"
+int(4)
+  filter(3808, open, 3808)
+int(10000)
+int(10004)
+bool(false)
+  filter(0, closing, NULL)
+int(1996)
+bool(true)
+  filter(0, closing, NULL)
+close trace.x
+bool(true)
+int(0)
+string(4) "abc
+"
+int(8)
+-- 1
+create trace.x
+  filter(8192, open, 8192)
+string(4) "ABC
+"
+int(4)
+  filter(3808, closing, 3808)
+int(10000)
+int(10004)
+bool(false)
+int(1996)
+bool(true)
+  filter(0, closing, NULL)
+close trace.x
+bool(true)
+int(0)
+string(4) "abc
+"
+int(8)
+-- 2
+create trace.x
+  filter(8192, open, 8192)
+string(4) "ABC
+"
+int(4)
+  filter(3808, open, 3808)
+int(10000)
+int(10004)
+bool(false)
+  filter(0, closing, NULL)
+int(1996)
+bool(true)
+  filter(0, closing, NULL)
+close trace.x
+bool(true)
+int(0)
+string(4) "abc
+"
+int(8)
+-- write chain
+create trace.w
+  filter(6, open, 6)
+int(6)
+int(6)
+  filter(0, open, NULL)
+bool(true)
+  filter(0, closing, NULL)
+close trace.w
+string(6) "URYYB
+"
+-- php://filter
+int(3)
+string(3) "NOP"
+string(3) "ABC"
+array(2) {
+  [0]=>
+  string(2) "a
+"
+  [1]=>
+  string(1) "b"
+}
+E2: file_get_contents(): Unable to locate filter "nope"
+E2: file_get_contents(): Unable to create filter (nope)
+string(1) "X"
+-- convert
+bool(true)
+string(40) "=C3=BCber=
+ caf=C3=
+=A9	end =
+=0Anext"
+bool(true)
+string(11) "=46rom here"
+bool(true)
+string(11) "a	b =0D=0Ac"
+bool(true)
+string(5) "Hello"
+bool(true)
+string(5) "Hello"
+bool(true)
+string(4) "a=bc"
+bool(true)
+string(2) "xy"
+E2: stream_filter_append(): Unable to create or locate filter "convert.unknown"
+bool(false)
+string(1) "x"
+E2: stream_filter_append(): Stream filter (convert.base64-encode): invalid filter parameter
+E2: stream_filter_append(): Unable to create or locate filter "convert.base64-encode"
+bool(false)
+string(1) "x"
+-- zlib / bzip2
+E2: stream_filter_append(): Invalid filter parameter, ignored
+E2: stream_filter_append(): Invalid filter parameter, ignored
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+E2: stream_filter_append(): Invalid compression level specified. (12)
+bool(true)
+E2: stream_filter_append(): Unable to create or locate filter "zlib.bogus"
+bool(false)
+-- iconv
+string(8) "636166e9"
+-- errors
+E2: stream_filter_append(): Unable to locate filter "no.such.filter"
+bool(false)
+stream_bucket_make_writeable(): supplied resource is not a valid userfilter.bucket brigade resource
+stream_filter_remove(): supplied resource is not a valid stream filter resource
+E2: stream_filter_append(): User-filter "missing" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): Unable to create or locate filter "missing"
+bool(false)
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): Unable to locate filter "wild.b.c"
+bool(false)
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): Unable to create or locate filter "wild.b.c"
+bool(false)
+php_user_filter::filter(): Argument #1 ($in) must be of type resource, int given
+done

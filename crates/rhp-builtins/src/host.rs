@@ -866,6 +866,55 @@ pub trait Host {
     fn stream_is_open(&self, res: &Value) -> bool;
     /// The mode a stream was opened with (`"r"`, `"w+b"`, ...), when known.
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>>;
+    /// Attach `filter` to stream `res`'s write (else read) chain, at the end
+    /// (else the front), as `stream_filter_append` / `_prepend` do; with
+    /// `register` it gets a `stream filter` resource. `None` when appending
+    /// to the read chain failed on the buffered data (the filter is freed).
+    fn stream_filter_add(
+        &mut self,
+        _res: &Value,
+        _filter: crate::main::streams::filter::Filter,
+        _write: bool,
+        _append: bool,
+        _register: bool,
+    ) -> Option<Value> {
+        None
+    }
+    /// `stream_filter_remove`: flush the filter, take it off its chain and
+    /// free it. Err for a resource that is not a live stream filter.
+    fn stream_filter_remove(&mut self, _filter: &Value) -> Result<bool, Thrown> {
+        Ok(false)
+    }
+    /// A line read (`stream_get_line`) starts (`done` false) or ended on
+    /// `res`: php's read buffer of a memory stream fills by chunks then.
+    fn stream_note_line_read(&mut self, _res: &Value, _done: bool) {}
+    /// `php_stream_get_record` where the host runs it itself (a filtered
+    /// stream): `Some(None)` is false; `None` leaves it to the caller.
+    fn stream_get_record(
+        &mut self,
+        _res: &Value,
+        _maxlen: usize,
+        _delim: &[u8],
+    ) -> Option<Option<Vec<u8>>> {
+        None
+    }
+    /// The name php's docref messages use for the running function
+    /// (`get_active_function_name`, or the include kind while an include
+    /// opens its file).
+    fn active_function_name(&self) -> String {
+        "Unknown".to_string()
+    }
+    /// Hold `t` as php's EG(exception), thrown once the builtin returns.
+    fn set_pending_throw(&mut self, _t: Thrown) {}
+    /// Whether an exception is held (EG(exception)).
+    fn has_pending_throw(&self) -> bool {
+        false
+    }
+    /// `has_property(ZEND_PROPERTY_EXISTS)` with the object's own class as
+    /// scope (a set, possibly null, declared or dynamic property).
+    fn object_prop_exists_as(&self, obj: &Value, name: &[u8]) -> bool {
+        self.object_prop_exists(obj, name)
+    }
 
     // --- classes and reflection ---------------------------------------------
 

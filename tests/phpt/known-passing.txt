@@ -327,6 +327,7 @@ Zend/tests/bug46241.phpt
 Zend/tests/bug46308.phpt
 Zend/tests/bug46381.phpt
 Zend/tests/bug46811.phpt
+Zend/tests/bug47054.phpt
 Zend/tests/bug47596.phpt
 Zend/tests/bug48899-deprecated.phpt
 Zend/tests/bug48899.phpt
@@ -384,6 +385,7 @@ Zend/tests/bug65051.phpt
 Zend/tests/bug65108.phpt
 Zend/tests/bug65911.phpt
 Zend/tests/bug66015.phpt
+Zend/tests/bug66218.phpt
 Zend/tests/bug66252.phpt
 Zend/tests/bug66608.phpt
 Zend/tests/bug66660.phpt
@@ -399,6 +401,7 @@ Zend/tests/bug68148.phpt
 Zend/tests/bug68163.phpt
 Zend/tests/bug68191.phpt
 Zend/tests/bug68797.phpt
+Zend/tests/bug68887.phpt
 Zend/tests/bug69201.phpt
 Zend/tests/bug69221.phpt
 Zend/tests/bug69221_2.phpt
@@ -477,6 +480,7 @@ Zend/tests/bug72543_4.phpt
 Zend/tests/bug72543_5.phpt
 Zend/tests/bug72594.phpt
 Zend/tests/bug72598.phpt
+Zend/tests/bug72598_2.phpt
 Zend/tests/bug72767.phpt
 Zend/tests/bug72918.phpt
 Zend/tests/bug72943.phpt
@@ -547,6 +551,7 @@ Zend/tests/by_ref_optimization.phpt
 Zend/tests/call_to_abstract_method_args.phpt
 Zend/tests/call_user_functions/bug32290.phpt
 Zend/tests/call_user_functions/bug43426.phpt
+Zend/tests/call_user_functions/bug66719.phpt
 Zend/tests/call_user_functions/call_user_func_001.phpt
 Zend/tests/call_user_functions/call_user_func_003.phpt
 Zend/tests/call_user_functions/call_user_func_005.phpt
@@ -776,6 +781,7 @@ Zend/tests/const_dereference_001.phpt
 Zend/tests/const_dereference_002.phpt
 Zend/tests/const_dereference_003.phpt
 Zend/tests/const_eval_and.phpt
+Zend/tests/constant_arrays.phpt
 Zend/tests/constants/008.phpt
 Zend/tests/constants/018.phpt
 Zend/tests/constants/bug24699.phpt
@@ -1470,6 +1476,7 @@ Zend/tests/generators/generator_return_return_type.phpt
 Zend/tests/generators/generator_return_without_value.phpt
 Zend/tests/generators/generator_returns_generator.phpt
 Zend/tests/generators/generator_send.phpt
+Zend/tests/generators/generator_static_method.phpt
 Zend/tests/generators/generator_symtable_leak.phpt
 Zend/tests/generators/generator_throwing_in_foreach.phpt
 Zend/tests/generators/generator_trampoline.phpt
@@ -1604,6 +1611,7 @@ Zend/tests/gh19044.phpt
 Zend/tests/gh19053.phpt
 Zend/tests/gh19305-001.phpt
 Zend/tests/gh19305-002.phpt
+Zend/tests/gh19305-003.phpt
 Zend/tests/gh19679.phpt
 Zend/tests/gh19719.phpt
 Zend/tests/gh19839.phpt
@@ -1915,6 +1923,7 @@ Zend/tests/lazy_objects/fetch_coalesce_non_existing_initializes.phpt
 Zend/tests/lazy_objects/fetch_declared_prop_initializes.phpt
 Zend/tests/lazy_objects/fetch_dynamic_prop_initializes.phpt
 Zend/tests/lazy_objects/fetch_hook_may_not_initialize.phpt
+Zend/tests/lazy_objects/fetch_hook_virtual_may_initialize.phpt
 Zend/tests/lazy_objects/fetch_hook_virtual_may_not_initialize.phpt
 Zend/tests/lazy_objects/fetch_magic_prop_may_initialize.phpt
 Zend/tests/lazy_objects/fetch_magic_prop_may_not_initialize.phpt
@@ -1924,6 +1933,8 @@ Zend/tests/lazy_objects/fetch_op_dynamic_prop_initializes.phpt
 Zend/tests/lazy_objects/fetch_op_error.phpt
 Zend/tests/lazy_objects/fetch_op_initializes.phpt
 Zend/tests/lazy_objects/fetch_op_skipped_prop_does_not_initialize.phpt
+Zend/tests/lazy_objects/fetch_ref_initializes.phpt
+Zend/tests/lazy_objects/fetch_ref_skipped_prop_does_not_initialize.phpt
 Zend/tests/lazy_objects/fetch_skipped_prop_does_not_initialize.phpt
 Zend/tests/lazy_objects/final_classes_can_be_initialized_lazily.phpt
 Zend/tests/lazy_objects/gc_001.phpt
@@ -1982,6 +1993,7 @@ Zend/tests/lazy_objects/init_preserves_proxy_class.phpt
 Zend/tests/lazy_objects/init_sets_prop_default_values.phpt
 Zend/tests/lazy_objects/init_trigger_array_cast.phpt
 Zend/tests/lazy_objects/init_trigger_compare.phpt
+Zend/tests/lazy_objects/init_trigger_debug_zval_dump.phpt
 Zend/tests/lazy_objects/init_trigger_foreach.phpt
 Zend/tests/lazy_objects/init_trigger_foreach_hooks.phpt
 Zend/tests/lazy_objects/init_trigger_get_mangled_object_vars.phpt
@@ -2179,6 +2191,7 @@ Zend/tests/lsb/lsb_017.phpt
 Zend/tests/lsb/lsb_018.phpt
 Zend/tests/lsb/lsb_019.phpt
 Zend/tests/lsb/lsb_020.phpt
+Zend/tests/lsb/lsb_021.phpt
 Zend/tests/lsb/lsb_022.phpt
 Zend/tests/lsb/lsb_023.phpt
 Zend/tests/lsb/lsb_024.phpt
@@ -2357,6 +2370,7 @@ Zend/tests/match/unmatched_enum.phpt
 Zend/tests/memory_get_peak_usage.phpt
 Zend/tests/memory_reset_peak_usage.phpt
 Zend/tests/method_exists.phpt
+Zend/tests/method_exists_002.phpt
 Zend/tests/method_static_var.phpt
 Zend/tests/methods-on-non-objects-call-user-func.phpt
 Zend/tests/methods-on-non-objects-catch.phpt
@@ -2465,10 +2479,15 @@ Zend/tests/namespaces/ns_040.phpt
 Zend/tests/namespaces/ns_041.phpt
 Zend/tests/namespaces/ns_042.phpt
 Zend/tests/namespaces/ns_043.phpt
+Zend/tests/namespaces/ns_044.phpt
+Zend/tests/namespaces/ns_045.phpt
 Zend/tests/namespaces/ns_046.phpt
+Zend/tests/namespaces/ns_047.phpt
 Zend/tests/namespaces/ns_048.phpt
 Zend/tests/namespaces/ns_049.phpt
 Zend/tests/namespaces/ns_050.phpt
+Zend/tests/namespaces/ns_051.phpt
+Zend/tests/namespaces/ns_052.phpt
 Zend/tests/namespaces/ns_053.phpt
 Zend/tests/namespaces/ns_054.phpt
 Zend/tests/namespaces/ns_055.phpt
@@ -2560,6 +2579,7 @@ Zend/tests/nullsafe_operator/009.phpt
 Zend/tests/nullsafe_operator/010.phpt
 Zend/tests/nullsafe_operator/011.phpt
 Zend/tests/nullsafe_operator/012.phpt
+Zend/tests/nullsafe_operator/013.phpt
 Zend/tests/nullsafe_operator/014.phpt
 Zend/tests/nullsafe_operator/015.phpt
 Zend/tests/nullsafe_operator/017.phpt
@@ -2726,6 +2746,7 @@ Zend/tests/optimizer/nan_warning_switch.phpt
 Zend/tests/or_001.phpt
 Zend/tests/oss-fuzz-403816122.phpt
 Zend/tests/oss-fuzz-465488618.phpt
+Zend/tests/oss-fuzz-471486164-001.phpt
 Zend/tests/oss-fuzz-471486164-002.phpt
 Zend/tests/oss-fuzz-474613951.phpt
 Zend/tests/oss-fuzz-478009707.phpt
@@ -3498,6 +3519,7 @@ Zend/tests/type_coercion/type_casts/string_cast_reference_tostring.phpt
 Zend/tests/type_declarations/add_return_type.phpt
 Zend/tests/type_declarations/array_001.phpt
 Zend/tests/type_declarations/callable/callable_001.phpt
+Zend/tests/type_declarations/callable/callable_002.phpt
 Zend/tests/type_declarations/callable/callable_003.phpt
 Zend/tests/type_declarations/callable/callable_004.phpt
 Zend/tests/type_declarations/callable/callable_variance_closure.phpt
@@ -4104,6 +4126,7 @@ ext/bcmath/tests/str2num_formatting.phpt
 ext/bz2/tests/005.phpt
 ext/bz2/tests/bug51997.phpt
 ext/bz2/tests/bug72613.phpt
+ext/bz2/tests/bzcompress_programming_errors.phpt
 ext/bz2/tests/oom_bzcompress.phpt
 ext/bz2/tests/oom_bzdecompress.phpt
 ext/bz2/tests/with_files.phpt
@@ -5634,6 +5657,7 @@ ext/hash/tests/md4.phpt
 ext/hash/tests/md5.phpt
 ext/hash/tests/murmur_seed_deprecation.phpt
 ext/hash/tests/murmurhash3.phpt
+ext/hash/tests/murmurhash3_seed.phpt
 ext/hash/tests/new-context.phpt
 ext/hash/tests/reuse.phpt
 ext/hash/tests/ripemd128.phpt
@@ -5652,6 +5676,7 @@ ext/hash/tests/snefru.phpt
 ext/hash/tests/tiger.phpt
 ext/hash/tests/whirlpool.phpt
 ext/hash/tests/xxh3_convert_secret_to_string.phpt
+ext/hash/tests/xxhash_seed.phpt
 ext/hash/tests/xxhash_seed_deprecation.phpt
 ext/iconv/tests/bug37176.phpt
 ext/iconv/tests/bug37773.phpt
@@ -5743,9 +5768,14 @@ ext/intl/tests/bug74433.phpt
 ext/intl/tests/grapheme2.phpt
 ext/intl/tests/grapheme_empty.phpt
 ext/intl/tests/grapheme_empty_offset_multibyte.phpt
+ext/intl/tests/grapheme_levenshtein.phpt
 ext/intl/tests/grapheme_out_of_bounds.phpt
 ext/intl/tests/grapheme_search_empty_haystack.phpt
 ext/intl/tests/grapheme_str_split.phpt
+ext/intl/tests/grapheme_stripos_locale_dependency.phpt
+ext/intl/tests/grapheme_stristr_locale_dependency.phpt
+ext/intl/tests/grapheme_strpos_locale_dependency.phpt
+ext/intl/tests/grapheme_strripos_locale_dependency.phpt
 ext/intl/tests/grapheme_strrpos_negative_offset_overlap.phpt
 ext/intl/tests/grapheme_strstr_canonical_match.phpt
 ext/intl/tests/grapheme_strstr_supplementary_prefix.phpt
@@ -5786,6 +5816,7 @@ ext/json/tests/bug46944.phpt
 ext/json/tests/bug47644.phpt
 ext/json/tests/bug50224.phpt
 ext/json/tests/bug53946.phpt
+ext/json/tests/bug54058.phpt
 ext/json/tests/bug54484.phpt
 ext/json/tests/bug55543.phpt
 ext/json/tests/bug61978.phpt
@@ -5809,6 +5840,7 @@ ext/json/tests/bug73991.phpt
 ext/json/tests/bug77843.phpt
 ext/json/tests/bug81532.phpt
 ext/json/tests/fail001.phpt
+ext/json/tests/gh15168.phpt
 ext/json/tests/inf_nan_error.phpt
 ext/json/tests/json_decode_basic.phpt
 ext/json/tests/json_decode_exceptions.phpt
@@ -5862,6 +5894,7 @@ ext/libxml/tests/libxml_set_external_entity_loader_variation2.phpt
 ext/libxml/tests/null_returned_by_resolver.phpt
 ext/mbstring/tests/base64_encoding.phpt
 ext/mbstring/tests/bug25140.phpt
+ext/mbstring/tests/bug26639.phpt
 ext/mbstring/tests/bug30549.phpt
 ext/mbstring/tests/bug40685.phpt
 ext/mbstring/tests/bug43840.phpt
@@ -5965,6 +5998,7 @@ ext/mbstring/tests/mb_list_encodings_gc_uaf.phpt
 ext/mbstring/tests/mb_ord.phpt
 ext/mbstring/tests/mb_scrub.phpt
 ext/mbstring/tests/mb_str_functions_opt-parameter.phpt
+ext/mbstring/tests/mb_str_pad.phpt
 ext/mbstring/tests/mb_str_split_error_conditions.phpt
 ext/mbstring/tests/mb_str_split_jp.phpt
 ext/mbstring/tests/mb_str_split_other.phpt
@@ -6078,6 +6112,7 @@ ext/mbstring/tests/zend_multibyte-09.phpt
 ext/mbstring/tests/zend_multibyte-10.phpt
 ext/mbstring/tests/zend_multibyte-11.phpt
 ext/mbstring/tests/zend_multibyte-12.phpt
+ext/mbstring/tests/zend_multibyte-14.phpt
 ext/mbstring/tests/zend_multibyte-15.phpt
 ext/mbstring/tests/zend_multibyte-16.phpt
 ext/opcache/tests/001_cli.phpt
@@ -6088,16 +6123,19 @@ ext/opcache/tests/blacklist.phpt
 ext/opcache/tests/block_removal_with_duplicate_successors.phpt
 ext/opcache/tests/bool_cp_in_pass1.phpt
 ext/opcache/tests/bu69838.phpt
+ext/opcache/tests/bug65510.phpt
 ext/opcache/tests/bug65559.phpt
 ext/opcache/tests/bug65665.phpt
 ext/opcache/tests/bug65845.phpt
 ext/opcache/tests/bug65915.phpt
 ext/opcache/tests/bug66176.phpt
 ext/opcache/tests/bug66251.phpt
+ext/opcache/tests/bug66334.phpt
 ext/opcache/tests/bug66440.phpt
 ext/opcache/tests/bug66461.phpt
 ext/opcache/tests/bug66474.phpt
 ext/opcache/tests/bug67215.phpt
+ext/opcache/tests/bug68104.phpt
 ext/opcache/tests/bug69038.phpt
 ext/opcache/tests/bug69125.phpt
 ext/opcache/tests/bug69159.phpt
@@ -6143,6 +6181,7 @@ ext/opcache/tests/bug76463.phpt
 ext/opcache/tests/bug76466.phpt
 ext/opcache/tests/bug76477.phpt
 ext/opcache/tests/bug76711.phpt
+ext/opcache/tests/bug76796.phpt
 ext/opcache/tests/bug77092.phpt
 ext/opcache/tests/bug77191.phpt
 ext/opcache/tests/bug77215.phpt
@@ -6192,12 +6231,16 @@ ext/opcache/tests/gh16186_001.phpt
 ext/opcache/tests/gh16186_002.phpt
 ext/opcache/tests/gh16577.phpt
 ext/opcache/tests/gh17106.phpt
+ext/opcache/tests/gh17422/001.phpt
+ext/opcache/tests/gh17422/005.phpt
+ext/opcache/tests/gh17422/007.phpt
 ext/opcache/tests/gh17422/008.phpt
 ext/opcache/tests/gh17422/009.phpt
 ext/opcache/tests/gh17422/010.phpt
 ext/opcache/tests/gh17422/011.phpt
 ext/opcache/tests/gh18534.phpt
 ext/opcache/tests/gh18639.phpt
+ext/opcache/tests/gh19984.phpt
 ext/opcache/tests/gh20469_inheritance_cache_cleanup.phpt
 ext/opcache/tests/gh21227.phpt
 ext/opcache/tests/gh21770.phpt
@@ -6437,6 +6480,7 @@ ext/opcache/tests/jit/gh17966.phpt
 ext/opcache/tests/jit/gh18037.phpt
 ext/opcache/tests/jit/gh18113.phpt
 ext/opcache/tests/jit/gh18136.phpt
+ext/opcache/tests/jit/gh18262-001.phpt
 ext/opcache/tests/jit/gh18262-002.phpt
 ext/opcache/tests/jit/gh18262-003.phpt
 ext/opcache/tests/jit/gh18294.phpt
@@ -6465,6 +6509,8 @@ ext/opcache/tests/jit/gh22763.phpt
 ext/opcache/tests/jit/gh22857.phpt
 ext/opcache/tests/jit/gh22857_002.phpt
 ext/opcache/tests/jit/gh22915.phpt
+ext/opcache/tests/jit/gh23628_001.phpt
+ext/opcache/tests/jit/gh23628_002.phpt
 ext/opcache/tests/jit/gh23628_003.phpt
 ext/opcache/tests/jit/gh23679.phpt
 ext/opcache/tests/jit/gh23693.phpt
@@ -6600,6 +6646,7 @@ ext/opcache/tests/jit/rope_001.phpt
 ext/opcache/tests/jit/rope_002.phpt
 ext/opcache/tests/jit/send_ref_001.phpt
 ext/opcache/tests/jit/send_val_001.phpt
+ext/opcache/tests/jit/send_var_ex_002.phpt
 ext/opcache/tests/jit/shift_left_001.phpt
 ext/opcache/tests/jit/shift_left_002.phpt
 ext/opcache/tests/jit/shift_right_001.phpt
@@ -6645,6 +6692,7 @@ ext/opcache/tests/opt/dce_016.phpt
 ext/opcache/tests/opt/dce_017.phpt
 ext/opcache/tests/opt/fe_fetch_001.phpt
 ext/opcache/tests/opt/gh10008.phpt
+ext/opcache/tests/opt/gh10801.phpt
 ext/opcache/tests/opt/gh21972.phpt
 ext/opcache/tests/opt/gh23644.phpt
 ext/opcache/tests/opt/gh24063.phpt
@@ -6654,6 +6702,7 @@ ext/opcache/tests/opt/gh8140b.phpt
 ext/opcache/tests/opt/inference_002.phpt
 ext/opcache/tests/opt/inference_003.phpt
 ext/opcache/tests/opt/inference_006.phpt
+ext/opcache/tests/opt/inference_007.phpt
 ext/opcache/tests/opt/inference_008.phpt
 ext/opcache/tests/opt/inference_009.phpt
 ext/opcache/tests/opt/inference_010.phpt
@@ -6698,6 +6747,8 @@ ext/opcache/tests/opt/sccp_exception.phpt
 ext/opcache/tests/opt/sccp_exception3.phpt
 ext/opcache/tests/opt/sccp_in_array.phpt
 ext/opcache/tests/opt/sccp_isset_dim_partial_object.phpt
+ext/opcache/tests/optimize_func_calls.phpt
+ext/opcache/tests/optimize_func_calls_001.phpt
 ext/opcache/tests/optimize_static_001.phpt
 ext/opcache/tests/oss-fuzz-472563272.phpt
 ext/opcache/tests/oss_fuzz_66519.phpt
@@ -6738,11 +6789,13 @@ ext/opcache/tests/preload_unresolved_prop_type.phpt
 ext/opcache/tests/preload_user_001.phpt
 ext/opcache/tests/preload_user_004.phpt
 ext/opcache/tests/preload_user_005.phpt
+ext/opcache/tests/preloading_no_auto_globals_jit.phpt
 ext/opcache/tests/qm_assign_unlink_use_chain.phpt
 ext/opcache/tests/range_inference_hang.phpt
 ext/opcache/tests/ref_range_1.phpt
 ext/opcache/tests/ref_range_2.phpt
 ext/opcache/tests/sccp_loop_var_free.phpt
+ext/opcache/tests/send_unpack_empty_array.phpt
 ext/opcache/tests/ssa_bug_001.phpt
 ext/opcache/tests/ssa_bug_002.phpt
 ext/opcache/tests/ssa_bug_003.phpt
@@ -6759,6 +6812,7 @@ ext/opcache/tests/switch_with_coinciding_targets.phpt
 ext/opcache/tests/type_001.phpt
 ext/opcache/tests/verify_return_dfg.phpt
 ext/opcache/tests/verify_return_instanceof.phpt
+ext/opcache/tests/warning_replay.phpt
 ext/opcache/tests/wrong_inlining_002.phpt
 ext/opcache/tests/wrong_inlining_004.phpt
 ext/opcache/tests/wrong_inlining_005.phpt
@@ -6854,7 +6908,10 @@ ext/openssl/tests/openssl_cipher_iv_length_basic.phpt
 ext/openssl/tests/openssl_cipher_iv_length_error.phpt
 ext/openssl/tests/openssl_cipher_key_length_basic.phpt
 ext/openssl/tests/openssl_cipher_key_length_error.phpt
+ext/openssl/tests/openssl_cms_decrypt_basic.phpt
 ext/openssl/tests/openssl_cms_decrypt_error.phpt
+ext/openssl/tests/openssl_cms_encrypt_auth_env.phpt
+ext/openssl/tests/openssl_cms_encrypt_basic.phpt
 ext/openssl/tests/openssl_cms_encrypt_der.phpt
 ext/openssl/tests/openssl_cms_encrypt_pem.phpt
 ext/openssl/tests/openssl_cms_read_basic.phpt
@@ -6874,6 +6931,8 @@ ext/openssl/tests/openssl_csr_new_array_dn_entry.phpt
 ext/openssl/tests/openssl_csr_new_basic.phpt
 ext/openssl/tests/openssl_csr_new_with_attribs.phpt
 ext/openssl/tests/openssl_csr_sign_basic.phpt
+ext/openssl/tests/openssl_csr_sign_with_serial_hex.phpt
+ext/openssl/tests/openssl_decrypt_basic.phpt
 ext/openssl/tests/openssl_decrypt_ccm.phpt
 ext/openssl/tests/openssl_decrypt_error.phpt
 ext/openssl/tests/openssl_decrypt_gcm.phpt
@@ -6911,6 +6970,8 @@ ext/openssl/tests/openssl_pkey_derive-x25519.phpt
 ext/openssl/tests/openssl_pkey_derive-x448.phpt
 ext/openssl/tests/openssl_pkey_derive_deprecated_key_length_param.phpt
 ext/openssl/tests/openssl_pkey_export_basic.phpt
+ext/openssl/tests/openssl_pkey_export_to_file_leak.phpt
+ext/openssl/tests/openssl_pkey_export_to_file_object_to_string.phpt
 ext/openssl/tests/openssl_pkey_get_details_basic.phpt
 ext/openssl/tests/openssl_pkey_new_basic.phpt
 ext/openssl/tests/openssl_pkey_new_error.phpt
@@ -7170,6 +7231,7 @@ ext/phar/tests/bug74154.phpt
 ext/phar/tests/bug74383.phpt
 ext/phar/tests/tar/bug64343.phpt
 ext/phar/tests/tar/bug67761.phpt
+ext/phar/tests/tar/bug70417.phpt
 ext/phar/tests/tar/bug71317-duplicate-filename.phpt
 ext/phar/tests/tar/bug71504.phpt
 ext/phar/tests/tar/gh21986.phpt
@@ -7294,6 +7356,7 @@ ext/reflection/tests/ReflectionClass_hasProperty_002.phpt
 ext/reflection/tests/ReflectionClass_hasProperty_basic.phpt
 ext/reflection/tests/ReflectionClass_isAbstract_basic.phpt
 ext/reflection/tests/ReflectionClass_isAnonymous.phpt
+ext/reflection/tests/ReflectionClass_isArray.phpt
 ext/reflection/tests/ReflectionClass_isCloneable_001.phpt
 ext/reflection/tests/ReflectionClass_isCloneable_002.phpt
 ext/reflection/tests/ReflectionClass_isEnum.phpt
@@ -7372,6 +7435,7 @@ ext/reflection/tests/ReflectionMethod_hasPrototype_basic.phpt
 ext/reflection/tests/ReflectionMethod_invokeArgs_basic.phpt
 ext/reflection/tests/ReflectionMethod_invokeArgs_error1.phpt
 ext/reflection/tests/ReflectionMethod_invokeArgs_error2.phpt
+ext/reflection/tests/ReflectionMethod_invoke_basic.phpt
 ext/reflection/tests/ReflectionMethod_invoke_error2.phpt
 ext/reflection/tests/ReflectionMethod_invoke_on_abstract_method_after_setAccessible.phpt
 ext/reflection/tests/ReflectionMethod_isDeprecated_interface.phpt
@@ -7434,6 +7498,8 @@ ext/reflection/tests/ReflectionReference_errors.phpt
 ext/reflection/tests/Reflection_getModifierNames_001.phpt
 ext/reflection/tests/asymmetric_visibility_write.phpt
 ext/reflection/tests/bug26640.phpt
+ext/reflection/tests/bug26695.phpt
+ext/reflection/tests/bug29268.phpt
 ext/reflection/tests/bug29523.phpt
 ext/reflection/tests/bug29828.phpt
 ext/reflection/tests/bug30146.phpt
@@ -7473,6 +7539,7 @@ ext/reflection/tests/bug52854.phpt
 ext/reflection/tests/bug53366.phpt
 ext/reflection/tests/bug53915.phpt
 ext/reflection/tests/bug61388.phpt
+ext/reflection/tests/bug62715.phpt
 ext/reflection/tests/bug64936.phpt
 ext/reflection/tests/bug70674.phpt
 ext/reflection/tests/bug70960.phpt
@@ -7546,6 +7613,7 @@ ext/reflection/tests/internal_parameter_default_value/ReflectionParameter_isDefa
 ext/reflection/tests/internal_parameter_default_value/ReflectionParameter_toString_Internal.phpt
 ext/reflection/tests/iterable_Reflection.phpt
 ext/reflection/tests/new_in_attributes.phpt
+ext/reflection/tests/parameters_002.phpt
 ext/reflection/tests/property_exists.phpt
 ext/reflection/tests/property_hooks/ReflectionClass_getMethods.phpt
 ext/reflection/tests/property_hooks/ReflectionProperty_getHooks.phpt
@@ -7623,6 +7691,7 @@ ext/simplexml/tests/SimpleXMLElement_getDocNamespaces.phpt
 ext/simplexml/tests/SimpleXMLElement_xpath.phpt
 ext/simplexml/tests/addChild_ns_filter_returned_element.phpt
 ext/simplexml/tests/attributes_dimension_write.phpt
+ext/simplexml/tests/bug12170.phpt
 ext/simplexml/tests/bug24392.phpt
 ext/simplexml/tests/bug26976.phpt
 ext/simplexml/tests/bug27010.phpt
@@ -7649,11 +7718,13 @@ ext/simplexml/tests/bug46047.phpt
 ext/simplexml/tests/bug46048.phpt
 ext/simplexml/tests/bug48601.phpt
 ext/simplexml/tests/bug51615.phpt
+ext/simplexml/tests/bug52751.phpt
 ext/simplexml/tests/bug53033.phpt
 ext/simplexml/tests/bug54973.phpt
 ext/simplexml/tests/bug61335.phpt
 ext/simplexml/tests/bug62328.phpt
 ext/simplexml/tests/bug63575.phpt
+ext/simplexml/tests/bug66084_0.phpt
 ext/simplexml/tests/bug66084_1.phpt
 ext/simplexml/tests/bug67116.phpt
 ext/simplexml/tests/bug67572.phpt
@@ -7717,6 +7788,7 @@ ext/simplexml/tests/sxe_002.phpt
 ext/simplexml/tests/sxe_004.phpt
 ext/simplexml/tests/sxe_005.phpt
 ext/simplexml/tests/sxe_int_offset_no_alias.phpt
+ext/simplexml/tests/xml_parsing_LIBXML_RECOVER.phpt
 ext/sockets/tests/bug46360.phpt
 ext/sockets/tests/bug49341.phpt
 ext/sockets/tests/gh16267.phpt
@@ -7801,11 +7873,17 @@ ext/spl/tests/SplFileInfo_setInfoClass_basic.phpt
 ext/spl/tests/SplFileInfo_setInfoClass_error.phpt
 ext/spl/tests/SplFileObject/SplFileObject_current_basic.phpt
 ext/spl/tests/SplFileObject/SplFileObject_current_variation001.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_basic.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_delimiter_basic.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_delimiter_error.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_enclosure_basic.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_enclosure_error.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_basic.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_default.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_empty.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fgetcsv_escape_error.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fpassthru_basic.phpt
+ext/spl/tests/SplFileObject/SplFileObject_fputcsv.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation1.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation10.phpt
 ext/spl/tests/SplFileObject/SplFileObject_fputcsv_variation11.phpt
@@ -8502,6 +8580,7 @@ ext/standard/tests/array/array_product_variation5.phpt
 ext/standard/tests/array/array_product_variation6.phpt
 ext/standard/tests/array/array_push.phpt
 ext/standard/tests/array/array_push_basic.phpt
+ext/standard/tests/array/array_push_empty.phpt
 ext/standard/tests/array/array_push_variation2.phpt
 ext/standard/tests/array/array_push_variation3.phpt
 ext/standard/tests/array/array_push_variation5.phpt
@@ -8598,6 +8677,7 @@ ext/standard/tests/array/array_unique_variation9.phpt
 ext/standard/tests/array/array_unshift.phpt
 ext/standard/tests/array/array_unshift_basic1.phpt
 ext/standard/tests/array/array_unshift_basic2.phpt
+ext/standard/tests/array/array_unshift_empty.phpt
 ext/standard/tests/array/array_unshift_object.phpt
 ext/standard/tests/array/array_unshift_variation2.phpt
 ext/standard/tests/array/array_unshift_variation3.phpt
@@ -8962,7 +9042,9 @@ ext/standard/tests/class_object/bug71442.phpt
 ext/standard/tests/class_object/bug78638.phpt
 ext/standard/tests/class_object/class_exists_basic_001.phpt
 ext/standard/tests/class_object/class_exists_variation_003.phpt
+ext/standard/tests/class_object/forward_static_call_001.phpt
 ext/standard/tests/class_object/forward_static_call_002.phpt
+ext/standard/tests/class_object/forward_static_call_003.phpt
 ext/standard/tests/class_object/get_class_methods_basic_001.phpt
 ext/standard/tests/class_object/get_class_methods_basic_002.phpt
 ext/standard/tests/class_object/get_class_methods_basic_003.phpt
@@ -9625,6 +9707,7 @@ ext/standard/tests/file/windows_mb_path/test_cp1256_1.phpt
 ext/standard/tests/file/windows_mb_path/test_cp1256_2.phpt
 ext/standard/tests/file/windows_mb_path/test_cp874_0.phpt
 ext/standard/tests/file/windows_mb_path/test_cp874_1.phpt
+ext/standard/tests/forward_static_call_array.phpt
 ext/standard/tests/general_functions/001.phpt
 ext/standard/tests/general_functions/002.phpt
 ext/standard/tests/general_functions/003.phpt
@@ -9684,6 +9767,7 @@ ext/standard/tests/general_functions/bug76717.phpt
 ext/standard/tests/general_functions/bug77844.phpt
 ext/standard/tests/general_functions/bug79254.phpt
 ext/standard/tests/general_functions/bug80771.phpt
+ext/standard/tests/general_functions/call_user_func_array_variation_001.phpt
 ext/standard/tests/general_functions/call_user_func_return.phpt
 ext/standard/tests/general_functions/callbacks_001.phpt
 ext/standard/tests/general_functions/callbacks_002.phpt
@@ -11100,6 +11184,7 @@ ext/standard/tests/url/bug68917.phpt
 ext/standard/tests/url/bug69976.phpt
 ext/standard/tests/url/bug73192.phpt
 ext/standard/tests/url/bug74780.phpt
+ext/standard/tests/url/get_headers_error_003.phpt
 ext/standard/tests/url/parse_url_basic_001.phpt
 ext/standard/tests/url/parse_url_basic_002.phpt
 ext/standard/tests/url/parse_url_basic_003.phpt
@@ -11143,7 +11228,9 @@ ext/tokenizer/tests/bug81342.phpt
 ext/tokenizer/tests/invalid_large_octal_with_underscores.phpt
 ext/tokenizer/tests/invalid_octal_dnumber.phpt
 ext/tokenizer/tests/namespaced_names.phpt
+ext/tokenizer/tests/no_inline_html_split.phpt
 ext/tokenizer/tests/parse_errors.phpt
+ext/tokenizer/tests/php_tag_only.phpt
 ext/tokenizer/tests/php_tag_only_2.phpt
 ext/tokenizer/tests/token_get_all_TOKEN_PARSE_000.phpt
 ext/tokenizer/tests/token_get_all_TOKEN_PARSE_001.phpt
@@ -11551,6 +11638,7 @@ sapi/cli/tests/bug61546.phpt
 sapi/cli/tests/bug62294.phpt
 sapi/cli/tests/bug64544.phpt
 sapi/cli/tests/bug65275.phpt
+sapi/cli/tests/bug67741.phpt
 sapi/cli/tests/bug70006.phpt
 sapi/cli/tests/bug74600.phpt
 sapi/cli/tests/bug77561.phpt

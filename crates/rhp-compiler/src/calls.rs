@@ -1175,6 +1175,27 @@ impl ProtoBuilder<'_> {
                 callee,
                 idx,
             }),
+            // `$o->$m(...)`: asked as the callable `[$o, $m]`.
+            ArgRefTarget::MethodDyn(obj, name) => {
+                let callee = self.alloc_temp();
+                self.emit(Instr::NewArray {
+                    dst: callee,
+                    cap: 2,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: obj,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: name,
+                });
+                self.emit(Instr::ValueArgIsRef {
+                    dst: flag,
+                    callee,
+                    idx,
+                });
+            }
         }
         let t = self.alloc_temp();
         let jf = self.code.len();
@@ -1297,7 +1318,12 @@ impl ProtoBuilder<'_> {
                         });
                         return Ok(dst);
                     }
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &[],
+                        true,
+                        Some(ArgRefTarget::MethodDyn(obj, name)),
+                    )?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallMethodDyn {
                         dst,
@@ -1625,6 +1651,8 @@ pub(crate) enum ArgRefTarget {
     Func(Reg),
     /// A callable value (`$f(...)`).
     Value(Reg),
+    /// A method named at run time (`$o->$m(...)`).
+    MethodDyn(Reg, Reg),
 }
 
 /// The variable name (without `$`) of a plain-variable argument php sends

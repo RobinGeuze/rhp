@@ -389,6 +389,7 @@ impl ProtoBuilder<'_> {
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
 
+            let prologue = self.next_temp;
             match ref_target {
                 Some(Expression::Array(arr)) => {
                     self.destructure_into(arr.elements.iter(), val_cv, false)?
@@ -403,6 +404,20 @@ impl ProtoBuilder<'_> {
             }
             if let Some(k) = key_target {
                 self.store_to_target(k, key_cv)?;
+            }
+            if ref_target.is_some() {
+                // FE_FETCH_RW's result and the pattern's fetches are freed
+                // once bound.
+                self.emit(Instr::ClearTemps {
+                    from: val_cv,
+                    to: val_cv + 1,
+                });
+                if self.next_temp > prologue {
+                    self.emit(Instr::ClearTemps {
+                        from: prologue,
+                        to: self.next_temp,
+                    });
+                }
             }
 
             self.loops.push(LoopCtx {

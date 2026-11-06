@@ -1363,7 +1363,27 @@ impl Vm {
                     // `$obj[k] =& $v` on a user ArrayAccess: php fetches the
                     // offset for writing (offsetGet), which yields no slot.
                     if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
-                        if i + 1 == steps.len() && self.spl_array_owner(&h, b"offsetget").is_none() {
+                        // ArrayObject: its storage holds the reference.
+                        let owner = self.spl_array_owner(&h, b"offsetget");
+                        if let (true, Some(owner)) = (i + 1 == steps.len(), owner) {
+                            let cell = self.spl_array_storage(&h, owner);
+                            self.cursor_release();
+                            let cell = cell?;
+                            let mut st = cell.borrow_mut();
+                            if let Value::Array(a) = &mut *st {
+                                match &steps[i] {
+                                    CursorStep::Key(k) if !matches!(k, Value::Null) => {
+                                        a.insert(self.init_array_key(k)?, v);
+                                    }
+                                    _ => {
+                                        a.push(v);
+                                    }
+                                }
+                                continue;
+                            }
+                            drop(st);
+                        }
+                        if i + 1 == steps.len() && owner.is_none() {
                             let key = crate::lvalue::aa_key(&steps[i]).unwrap_or(Value::Null);
                             let r = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W);
                             self.cursor_release();

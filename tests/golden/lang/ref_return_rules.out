@@ -1,0 +1,30 @@
+E8: Only variables should be assigned by reference (line 22)
+string(1) "v"
+string(1) "v"
+E8: Only variables should be assigned by reference (line 26)
+string(1) "v"
+E8: Only variables should be assigned by reference (line 30)
+array(1) {
+  ["k"]=>
+  string(1) "v"
+}
+E8: Only variables should be assigned by reference (line 33)
+string(1) "v"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+E8: Only variable references should be returned by reference (line 15)
+NULL
+E8: Only variable references should be returned by reference (line 16)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(5)
+int(6)
+int(3)

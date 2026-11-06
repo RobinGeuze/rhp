@@ -1848,7 +1848,7 @@ impl Vm {
                 Instr::Include { dst, path, kind } => {
                     let pv = self.reg_get(top, path);
                     let raw = match deref(&pv) {
-                        Value::Object(_) => self.to_string_vm(&pv)?,
+                        Value::Object(_) | Value::Array(_) => self.to_string_vm(&pv)?,
                         v => conv::to_string_bytes(&v),
                     };
                     let v = self.do_include(top, raw, kind)?;

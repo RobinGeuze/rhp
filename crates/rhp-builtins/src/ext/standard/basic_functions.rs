@@ -210,6 +210,7 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
 
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+    restore_process_tz();
     TICK_FUNCS.with(|t| t.borrow_mut().clear());
 }
 
@@ -425,9 +426,51 @@ fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
         return Ok(Value::Bool(false));
     }
+    if name == b"TZ" {
+        set_process_tz(value);
+    }
     let entry = (name.to_vec(), value.map(|v| v.to_vec()));
     ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
     Ok(Value::Bool(true))
+}
+
+/// TZ as the process started with it, once putenv() changed it.
+static ORIG_TZ: std::sync::Mutex<Option<Option<Vec<u8>>>> = std::sync::Mutex::new(None);
+
+/// putenv("TZ=…") changes the C library's time zone, as in php (putenv(3)
+/// then tzset()): strptime() and friends read it. The process environment
+/// is shared, as it is in php.
+fn set_process_tz(value: Option<&[u8]>) {
+    let mut orig = ORIG_TZ.lock().unwrap_or_else(|e| e.into_inner());
+    if orig.is_none() {
+        *orig = Some(std::env::var_os("TZ").map(|v| {
+            use std::os::unix::ffi::OsStrExt;
+            v.as_bytes().to_vec()
+        }));
+    }
+    apply_tz(value);
+}
+
+fn apply_tz(value: Option<&[u8]>) {
+    extern "C" {
+        fn tzset();
+    }
+    // SAFETY: valid C strings; php changes the environment the same way.
+    unsafe {
+        match value.and_then(|v| std::ffi::CString::new(v).ok()) {
+            Some(v) => libc::setenv(c"TZ".as_ptr(), v.as_ptr(), 1),
+            None => libc::unsetenv(c"TZ".as_ptr()),
+        };
+        tzset();
+    }
+}
+
+/// php restores the environment putenv() changed at request end.
+fn restore_process_tz() {
+    let mut orig = ORIG_TZ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tz) = orig.take() {
+        apply_tz(tz.as_deref());
+    }
 }
 
 fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {

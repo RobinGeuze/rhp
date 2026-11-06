@@ -1246,6 +1246,7 @@ thread_local! {
 }
 
 pub(crate) fn reset_state() {
+    reset_locale();
     STRTOK.with(|t| {
         *t.borrow_mut() = TokState {
             string: None,
@@ -2407,9 +2408,217 @@ fn fn_stdext_warning(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     Ok(Value::Null)
 }
 
-fn fn_setlocale(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    // We don't model locales; report the C locale.
-    Ok(Value::str("C"))
+// ---------------------------------------------------------------------------
+// locales: setlocale, localeconv, nl_langinfo, strcoll
+// ---------------------------------------------------------------------------
+//
+// The C library's locale is process-wide, as in php (ZTS builds too).
+
+/// BG(locale_changed): a setlocale() call changed the locale this request.
+static LOCALE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LOCALE_STARTUP: std::sync::Once = std::sync::Once::new();
+
+/// zend_reset_lc_ctype_locale: LC_CTYPE is C.UTF-8 where it exists.
+fn reset_lc_ctype() {
+    // SAFETY: setlocale with valid C strings.
+    unsafe {
+        if libc::setlocale(libc::LC_CTYPE, c"C.UTF-8".as_ptr()).is_null() {
+            libc::setlocale(libc::LC_CTYPE, c"C".as_ptr());
+        }
+    }
+}
+
+/// The locale php starts a request in: "C", with LC_CTYPE C.UTF-8, set at
+/// startup and again after a request that changed it.
+pub(crate) fn reset_locale() {
+    LOCALE_STARTUP.call_once(reset_lc_ctype);
+    if LOCALE_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // SAFETY: as above.
+        unsafe { libc::setlocale(libc::LC_ALL, c"C".as_ptr()) };
+        reset_lc_ctype();
+    }
+}
+
+/// LC_NUMERIC's decimal point (`*localeconv()->decimal_point`), for
+/// printf's `%f` / `%g`.
+pub(crate) fn locale_decimal_point() -> u8 {
+    if !LOCALE_CHANGED.load(std::sync::atomic::Ordering::Relaxed) {
+        return b'.';
+    }
+    // SAFETY: localeconv returns a valid struct with C strings.
+    unsafe {
+        let l = libc::localeconv();
+        if l.is_null() || (*l).decimal_point.is_null() {
+            return b'.';
+        }
+        *(*l).decimal_point as u8
+    }
+}
+
+/// strcoll() on the strings as C strings.
+pub(crate) fn strcoll(a: &[u8], b: &[u8]) -> i32 {
+    let c = |s: &[u8]| {
+        std::ffi::CString::new(&s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())])
+            .unwrap_or_default()
+    };
+    let (a, b) = (c(a), c(b));
+    // SAFETY: two valid C strings.
+    unsafe { libc::strcoll(a.as_ptr(), b.as_ptr()) }
+}
+
+/// try_setlocale_str: the new (or, for "0", current) locale name.
+fn try_setlocale(host: &mut dyn Host, cat: i64, loc: &[u8]) -> Result<Option<Vec<u8>>, Thrown> {
+    let query = loc == b"0";
+    if !query && loc.len() >= 255 {
+        crate::warn(host, "setlocale", "Specified locale name is too long")?;
+        return Ok(None);
+    }
+    let cloc =
+        std::ffi::CString::new(&loc[..loc.iter().position(|&c| c == 0).unwrap_or(loc.len())])
+            .unwrap_or_default();
+    // SAFETY: setlocale with a valid category check by libc and a C string
+    // (or NULL to query); the result is copied before the next call.
+    let ret = unsafe {
+        let r = libc::setlocale(
+            cat as libc::c_int,
+            if query {
+                std::ptr::null()
+            } else {
+                cloc.as_ptr()
+            },
+        );
+        if r.is_null() {
+            return Ok(None);
+        }
+        std::ffi::CStr::from_ptr(r).to_bytes().to_vec()
+    };
+    if !query {
+        LOCALE_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
+        if (cat == libc::LC_CTYPE as i64 || cat == libc::LC_ALL as i64) && ret == b"C" {
+            return Ok(Some(b"C".to_vec()));
+        }
+        if ret == loc {
+            return Ok(Some(loc.to_vec()));
+        }
+    }
+    Ok(Some(ret))
+}
+
+fn fn_setlocale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let cat = conv::to_int(&deref(&args[0]));
+    let strict = host.arg_uses_strict_types();
+    // zend_parse_arg_str(.., check_null) for each non-array argument first.
+    let mut strs: Vec<Option<Vec<u8>>> = Vec::with_capacity(args.len() - 1);
+    for (i, a) in args[1..].iter().enumerate() {
+        let v = deref(a);
+        let s = match &v {
+            Value::Array(_) => None,
+            Value::Null => Some(Vec::new()),
+            Value::Str(s) => Some(s.as_bytes().to_vec()),
+            Value::Object(_) => Some(crate::zend::zpp::zval_get_string(host, &v)?),
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) if !strict => {
+                Some(conv::to_string_bytes(&v))
+            }
+            _ => {
+                let label = if i == 0 { " ($locales)" } else { "" };
+                return Err(Thrown::type_error(format!(
+                    "setlocale(): Argument #{}{label} must be of type array|string|null, {} given",
+                    i + 2,
+                    crate::zend::zpp::zval_type_name(host, &v)
+                )));
+            }
+        };
+        strs.push(s);
+    }
+    for (a, s) in args[1..].iter().zip(strs) {
+        if let Some(s) = s {
+            if let Some(r) = try_setlocale(host, cat, &s)? {
+                return Ok(Value::str(r));
+            }
+            continue;
+        }
+        let Value::Array(arr) = deref(a) else {
+            continue;
+        };
+        for (_, e) in arr.iter() {
+            let s = crate::zend::zpp::zval_get_string(host, &deref(e))?;
+            if let Some(r) = try_setlocale(host, cat, &s)? {
+                return Ok(Value::str(r));
+            }
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+fn fn_localeconv(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    // SAFETY: localeconv returns a valid struct of C strings and chars,
+    // copied out before anything else runs.
+    unsafe {
+        let l = &*libc::localeconv();
+        let s = |p: *const libc::c_char| -> Value {
+            if p.is_null() {
+                Value::str("")
+            } else {
+                Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec())
+            }
+        };
+        let grouping = |p: *const libc::c_char| -> Value {
+            let mut a = PhpArray::new();
+            if !p.is_null() {
+                for &b in std::ffi::CStr::from_ptr(p).to_bytes() {
+                    a.push(Value::Int(b as libc::c_char as i64));
+                }
+            }
+            Value::Array(a)
+        };
+        let n = |c: libc::c_char| Value::Int(c as i64);
+        let mut a = PhpArray::new();
+        let mut set = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+        set("decimal_point", s(l.decimal_point));
+        set("thousands_sep", s(l.thousands_sep));
+        set("int_curr_symbol", s(l.int_curr_symbol));
+        set("currency_symbol", s(l.currency_symbol));
+        set("mon_decimal_point", s(l.mon_decimal_point));
+        set("mon_thousands_sep", s(l.mon_thousands_sep));
+        set("positive_sign", s(l.positive_sign));
+        set("negative_sign", s(l.negative_sign));
+        set("int_frac_digits", n(l.int_frac_digits));
+        set("frac_digits", n(l.frac_digits));
+        set("p_cs_precedes", n(l.p_cs_precedes));
+        set("p_sep_by_space", n(l.p_sep_by_space));
+        set("n_cs_precedes", n(l.n_cs_precedes));
+        set("n_sep_by_space", n(l.n_sep_by_space));
+        set("p_sign_posn", n(l.p_sign_posn));
+        set("n_sign_posn", n(l.n_sign_posn));
+        set("grouping", grouping(l.grouping));
+        set("mon_grouping", grouping(l.mon_grouping));
+        Ok(Value::Array(a))
+    }
+}
+
+fn fn_nl_langinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let item = conv::to_int(&deref(&args[0]));
+    let valid = langinfo_constants()
+        .iter()
+        .any(|(n, v)| *n != "CHAR_MAX" && matches!(v, Value::Int(i) if *i == item));
+    if !valid {
+        crate::warn(host, "nl_langinfo", &format!("Item '{item}' is not valid"))?;
+        return Ok(Value::Bool(false));
+    }
+    // SAFETY: nl_langinfo returns a C string (copied at once) or NULL.
+    unsafe {
+        let p = libc::nl_langinfo(item as libc::nl_item);
+        if p.is_null() {
+            return Ok(Value::Bool(false));
+        }
+        Ok(Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec()))
+    }
+}
+
+fn fn_strcoll(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let a = conv::to_string_bytes(&deref(&args[0]));
+    let b = conv::to_string_bytes(&deref(&args[1]));
+    Ok(Value::Int(strcoll(&a, &b) as i64))
 }
 
 fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2707,6 +2916,9 @@ pub fn register(m: &mut crate::Registry) {
             ("str_decrement", fn_str_decrement),
             ("str_shuffle", fn_str_shuffle),
             ("setlocale", fn_setlocale),
+            ("localeconv", fn_localeconv),
+            ("nl_langinfo", fn_nl_langinfo),
+            ("strcoll", fn_strcoll),
             ("parse_str", fn_parse_str),
             ("basename", fn_basename),
             ("dirname", fn_dirname),

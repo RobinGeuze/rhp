@@ -2470,9 +2470,9 @@ states:
 24. Mt19937
 ------------------------------------------------------------------------------
 
-mt_srand(), mt_rand() and the functions built on them in crates/rhp-builtins
-port the Mt19937 engine of php-src's ext/random/engine_mt19937.c, which
-states:
+mt_srand(), mt_rand(), Random\Engine\Mt19937 and the functions built on
+them in crates/rhp-builtins port the Mt19937 engine of php-src's
+ext/random/engine_mt19937.c, which states:
 
   The following mt19937 algorithms are based on a C++ class MTRand by
   Richard J. Wagner. For more information see the web page at

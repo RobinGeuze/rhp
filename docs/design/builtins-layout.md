@@ -19,6 +19,8 @@ where rhp implements a function, look up where php-src defines it.
   none) and its object-freed hook (`None` when it keeps nothing by object
   id). The function table, the constants, the prelude, the wrappers, the
   reset and the object free hook are all built from that list.
+  The preludes are concatenated into one file; a module whose classes are
+  namespaced puts them in `namespace X { ... }` blocks (ext/random).
 - A constant is defined once, by the module and file that register it in
   php-src, next to the Rust constant its code uses.
 - Helpers stay with their callers. A helper several files call lives where
@@ -149,7 +151,7 @@ One directory per php-src extension, `ext/<name>/`:
 | `ext/pcre/` | ext/pcre: `mod.rs` is the PCRE2 binding with php_pcre.c's per-thread state, `php_pcre.rs` php_pcre.c's functions |
 | `ext/filter/` | ext/filter |
 | `ext/opcache/` | ext/opcache's zend_accelerator_module.c; the cache itself is in rhp-vm (`opcache/`) |
-| `ext/random/` | ext/random: random.c and engine_mt19937.c |
+| `ext/random/` | ext/random: random.c (`mod.rs`), the engines (`engine.rs`), randomizer.c, gammasection.c and the engines' methods (`randomizer.rs`); the classes in `prelude.php` |
 | `ext/readline/` | ext/readline/readline.c |
 | `ext/spl/` | ext/spl: php_spl.c, spl_iterators.c's `iterator_to_array`, the prelude classes |
 | `ext/date/` | ext/date: php_date.c over timelib |

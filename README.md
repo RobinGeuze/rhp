@@ -68,7 +68,7 @@ passing, so the percentages are of all php-src tests.
 | ext/pcre | 164 | 174 | 94.3% | PCRE2, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
-| ext/random | 17 | 69 | 24.6% | the functions only; no `Random\Randomizer` or engines |
+| ext/random | 17 | 69 | 24.6% | functions, `Random\Randomizer` and the engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
 | ext/reflection | 353 | 540 | 65.4% | |
 | ext/simplexml | 149 | 165 | 90.3% | on libxml2 |

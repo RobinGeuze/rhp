@@ -1,0 +1,51 @@
+int(1)
+int(8314211559172357555)
+int(393923207)
+float(0.7796909976126611)
+float(1.103476336176898)
+float(5.907187894870804E-301)
+float(2.64873430821802E-301)
+float(5.6260619100843E-301)
+float(4.79613238209784E-301)
+string(22) "63ace29967eb9224973e44"
+string(9) "zxxzyzyyx"
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(3)
+  [2]=>
+  int(2)
+}
+string(5) "hlleo"
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  int(7)
+}
+bool(true)
+string(16) "34b709e730e23df2"
+string(16) "77dee1004d6fc43a"
+bool(true)
+Array
+(
+    [0] => 8a74b81a
+    [1] => 0
+    [2] => 0
+)
+
+string(10) "0001020304"
+int(5)
+int(4)
+array(1) {
+  [0]=>
+  int(6)
+}
+Random\Randomizer::getInt(): Argument #2 ($max) must be greater than or equal to argument #1 ($min)
+Random\Randomizer::getBytes(): Argument #1 ($length) must be greater than 0
+Random\Randomizer::getFloat(): Argument #2 ($max) must be finite
+Random\Randomizer::getFloat(): Argument #2 ($max) must be greater than argument #1 ($min)
+Trying to clone an uncloneable object of class Random\Randomizer

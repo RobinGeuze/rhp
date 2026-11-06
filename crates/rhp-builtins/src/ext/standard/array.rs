@@ -3057,15 +3057,7 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         _ => return Ok(Value::Bool(true)),
     };
     let mut vals: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
-    let n = vals.len();
-    if n > 1 {
-        let mut left = n - 1;
-        while left > 0 {
-            let j = mt_range(0, left as i64) as usize;
-            vals.swap(left, j);
-            left -= 1;
-        }
-    }
+    crate::ext::random::shuffle(&mut vals, &mut |lo, hi| Ok(mt_range(lo, hi)))?;
     let mut out = PhpArray::new();
     for v in vals {
         out.push(v);
@@ -3078,43 +3070,17 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_array_rand(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let arr = crate::zend::zpp::array_param(host, args, 0, "array_rand")?;
     let num = int_param(host, args, 1, "array_rand", "num", 1)?;
-    let avail = arr.len() as i64;
-    if avail == 0 {
-        return Err(Thrown::error(
+    match crate::ext::random::pick_keys(&arr, num, &mut |lo, hi| Ok(mt_range(lo, hi)))? {
+        Ok(v) => Ok(v),
+        Err(crate::ext::random::PickError::Empty) => Err(Thrown::error(
             "ValueError",
             "array_rand(): Argument #1 ($array) must not be empty",
-        ));
-    }
-    if num == 1 {
-        let i = mt_range(0, avail - 1) as usize;
-        return Ok(arr.get_index(i).map(|(k, _)| k.to_value()).unwrap());
-    }
-    if num <= 0 || num > avail {
-        return Err(Thrown::error(
+        )),
+        Err(crate::ext::random::PickError::Num) => Err(Thrown::error(
             "ValueError",
             "array_rand(): Argument #2 ($num) must be between 1 and the number of elements in argument #1 ($array)",
-        ));
+        )),
     }
-    let (mut want, negative) = if num > (avail >> 1) {
-        (avail - num, true)
-    } else {
-        (num, false)
-    };
-    let mut bits = vec![false; avail as usize];
-    while want > 0 {
-        let r = mt_range(0, avail - 1) as usize;
-        if !bits[r] {
-            bits[r] = true;
-            want -= 1;
-        }
-    }
-    let mut out = PhpArray::new();
-    for (i, (k, _)) in arr.iter().enumerate() {
-        if bits[i] ^ negative {
-            out.push(k.to_value());
-        }
-    }
-    Ok(Value::Array(out))
 }
 
 // --- arrays ------------------------------------------------------------------

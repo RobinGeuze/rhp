@@ -2279,15 +2279,7 @@ fn fn_str_decrement(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 
 fn fn_str_shuffle(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut s = str_param(host, args, 0, "str_shuffle", "string")?;
-    let n = s.len();
-    if n > 1 {
-        let mut left = n - 1;
-        while left > 0 {
-            let j = mt_range(0, left as i64) as usize;
-            s.swap(left, j);
-            left -= 1;
-        }
-    }
+    crate::ext::random::shuffle(&mut s, &mut |lo, hi| Ok(mt_range(lo, hi)))?;
     Ok(Value::str(s))
 }
 

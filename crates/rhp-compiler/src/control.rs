@@ -5,7 +5,7 @@ use crate::parse::cst::{
     Statement, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
 use rhp_bytecode::{CmpKind, Instr, Reg};
-use rhp_values::Thrown;
+use rhp_values::{Thrown, Value};
 
 use crate::assign::{check_globals_write, globals_index};
 use crate::builder::{LoopCtx, ProtoBuilder};
@@ -30,15 +30,18 @@ impl ProtoBuilder<'_> {
         let mut end_jumps = Vec::new();
 
         // Emit one (condition, body) clause: returns nothing; leaves a JmpFalse
-        // targeting the next clause's start.
+        // targeting the next clause's start. Like php, the last clause has
+        // no jump to the end (declare(ticks) skips a tick right after one).
         macro_rules! clause {
-            ($cond:expr, $body:block) => {{
+            ($cond:expr, $last:expr, $body:block) => {{
                 let cond = self.compile_expr($cond)?;
                 let jf = self.code.len();
                 self.emit(Instr::Nop); // JmpFalse cond -> next clause
                 $body
-                end_jumps.push(self.code.len());
-                self.emit(Instr::Nop); // Jmp -> end
+                if !$last {
+                    end_jumps.push(self.code.len());
+                    self.emit(Instr::Nop); // Jmp -> end
+                }
                 let next = self.here();
                 self.code[jf] = Instr::JmpFalse { cond, target: next };
             }};
@@ -46,11 +49,13 @@ impl ProtoBuilder<'_> {
 
         match &i.body {
             IfBody::Statement(b) => {
-                clause!(i.condition, {
+                let n = b.else_if_clauses.len();
+                let has_else = b.else_clause.is_some();
+                clause!(i.condition, n == 0 && !has_else, {
                     self.compile_stmt(b.statement)?;
                 });
-                for c in b.else_if_clauses.iter() {
-                    clause!(c.condition, {
+                for (k, c) in b.else_if_clauses.iter().enumerate() {
+                    clause!(c.condition, k + 1 == n && !has_else, {
                         self.compile_stmt(c.statement)?;
                     });
                 }
@@ -59,11 +64,13 @@ impl ProtoBuilder<'_> {
                 }
             }
             IfBody::ColonDelimited(b) => {
-                clause!(i.condition, {
+                let n = b.else_if_clauses.len();
+                let has_else = b.else_clause.is_some();
+                clause!(i.condition, n == 0 && !has_else, {
                     self.compile_stmts(b.statements.iter())?;
                 });
-                for c in b.else_if_clauses.iter() {
-                    clause!(c.condition, {
+                for (k, c) in b.else_if_clauses.iter().enumerate() {
+                    clause!(c.condition, k + 1 == n && !has_else, {
                         self.compile_stmts(c.statements.iter())?;
                     });
                 }
@@ -132,7 +139,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_for(&mut self, f: &crate::parse::cst::For) -> Result<(), Thrown> {
         for e in f.initializations.iter() {
-            self.compile_expr(e)?;
+            self.compile_discarded(e)?;
         }
         self.emit_loop_entry();
         let top = self.here();
@@ -141,8 +148,13 @@ impl ProtoBuilder<'_> {
             None
         } else {
             let mut last = None;
-            for e in f.conditions.iter() {
-                last = Some(self.compile_expr(e)?);
+            let n = f.conditions.len();
+            for (i, e) in f.conditions.iter().enumerate() {
+                last = Some(if i + 1 < n {
+                    self.compile_discarded(e)?
+                } else {
+                    self.compile_expr(e)?
+                });
             }
             let pos = self.code.len();
             self.emit(Instr::Nop); // JmpFalse last -> end
@@ -158,7 +170,7 @@ impl ProtoBuilder<'_> {
         self.goto_scope.pop();
         let cont = self.here(); // continue -> increments
         for e in f.increments.iter() {
-            self.compile_expr(e)?;
+            self.compile_discarded(e)?;
         }
         self.emit(Instr::Jmp { target: top });
         let end = self.here();
@@ -212,6 +224,11 @@ impl ProtoBuilder<'_> {
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new(); // (case idx, jmp pos, cond reg)
         for (idx, case) in cases.iter().enumerate() {
             if let SwitchCase::Expression(c) = case {
+                // The comparison is on the case's line (an undefined subject
+                // warns there).
+                use mago_span::HasSpan;
+                let saved_line = self.cur_line;
+                self.cur_line = self.cx.line_of(c.expression.span().start.offset);
                 let cexpr = self.compile_expr(c.expression)?;
                 let t = self.alloc_temp();
                 self.emit(Instr::Cmp {
@@ -222,6 +239,7 @@ impl ProtoBuilder<'_> {
                 });
                 let pos = self.code.len();
                 self.emit(Instr::Nop); // JmpTrue t -> case body
+                self.cur_line = saved_line;
                 dispatch.push((idx, pos, t));
             }
         }
@@ -523,10 +541,8 @@ impl ProtoBuilder<'_> {
             self.check_write_chain(v, true, self.cur_line)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
-                    // A CV can't be removed; null is observably equivalent to
-                    // unset for isset/??/empty.
                     let cv = self.cv(strip_dollar(d.name));
-                    self.emit(Instr::LoadNull { dst: cv });
+                    self.emit(Instr::UnsetCv { cv });
                 }
                 Expression::Variable(var) => {
                     let name = self.var_name_reg(var)?;
@@ -539,7 +555,7 @@ impl ProtoBuilder<'_> {
                 Expression::ArrayAccess(_) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(v, &mut steps)?;
-                    self.emit_cursor(root, &steps);
+                    self.emit_cursor_mode(root, &steps, crate::assign::LvalMode::Unset);
                     self.emit(Instr::UnsetLval);
                 }
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
@@ -572,6 +588,7 @@ impl ProtoBuilder<'_> {
                     ))
                 }
             }
+            self.tick_item(v);
         }
         Ok(())
     }
@@ -599,7 +616,8 @@ impl ProtoBuilder<'_> {
 
         let mut catch_arms = Vec::new();
         let mut end_jumps = vec![norm_jmp];
-        for clause in t.catch_clauses.iter() {
+        let n_catches = t.catch_clauses.len();
+        for (ci, clause) in t.catch_clauses.iter().enumerate() {
             let target = self.here();
             let classes = hint_class_names(self.cx, &clause.hint)?;
             if clause
@@ -615,9 +633,12 @@ impl ProtoBuilder<'_> {
                 .as_ref()
                 .map(|v| self.cv(strip_dollar(v.name)));
             self.compile_stmts(clause.block.statements.iter())?;
-            let j = self.code.len();
-            self.emit(Instr::Nop);
-            end_jumps.push(j);
+            // As in php, the last catch without a finally falls through.
+            if ci + 1 < n_catches || has_finally {
+                let j = self.code.len();
+                self.emit(Instr::Nop);
+                end_jumps.push(j);
+            }
             catch_arms.push(CatchArm {
                 classes,
                 var_reg,
@@ -771,6 +792,23 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// zend_compile_match's jump table (ZEND_MATCH): two or more conditions,
+    /// every one a constant int or string.
+    fn match_uses_jumptable(&self, arms: &[&MatchArm]) -> bool {
+        let mut n = 0;
+        for arm in arms {
+            if let MatchArm::Expression(a) = arm {
+                for cond in a.conditions.iter() {
+                    match crate::fold::fold_const(self.cx, cond) {
+                        Ok(Value::Int(_) | Value::Str(_)) => n += 1,
+                        _ => return false,
+                    }
+                }
+            }
+        }
+        n >= 2
+    }
+
     pub(crate) fn compile_match(&mut self, m: &Match) -> Result<Reg, Thrown> {
         let subject = self.compile_expr(m.expression)?;
         let dst = self.alloc_temp();
@@ -789,6 +827,19 @@ impl ProtoBuilder<'_> {
             }
         }
 
+        // php reads the subject once when it uses a jump table, else in each
+        // comparison: an undefined variable warns that many times.
+        let subject = if subject < self.num_cvs && self.match_uses_jumptable(&arms) {
+            self.emit(Instr::CheckCv { cv: subject });
+            let t = self.alloc_temp();
+            self.emit(Instr::MovIs {
+                dst: t,
+                src: subject,
+            });
+            t
+        } else {
+            subject
+        };
         // Dispatch: strict === against each arm condition, in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new();
         let mut default_idx = None;

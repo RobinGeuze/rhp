@@ -1,0 +1,8 @@
+T 
+if:T T T T T 
+echo:T aT bT cT 
+global:T T T T T T 
+unset:T T T T T 
+try:T T T T T T 
+loop:T T T T T T T 
+T 

@@ -1,0 +1,19 @@
+string(5) "Foo\C"
+string(5) "Foo\C"
+string(10) "Foo\Bar::X"
+string(10) "Foo\Bar::X"
+string(5) "Foo\C"
+string(7) "self::X"
+string(11) "Foo\PHP_EOL"
+string(10) "Foo\Baz::X"
+Cannot redeclare class Foo\A
+bool(false)
+Cannot redeclare class stdclass (previously declared in F:5)
+bool(false)
+Class "NoSuchClass" not found
+bool(false)
+Foo\P::__destruct
+after
+dtor 28
+int(1)
+string(1) "a"

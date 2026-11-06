@@ -1,0 +1,48 @@
+dtor 1
+dtor 2
+after statement
+dtor 3
+after used
+dtor 5
+end
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}
+array(3) {
+  ["x"]=>
+  int(1)
+  [0]=>
+  string(1) "z"
+  ["y"]=>
+  int(4)
+}
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+W1
+Array was modified during array_splice operation
+array(3) {
+  [0]=>
+  string(4) "over"
+  [2]=>
+  object(W)#3 (1) {
+    ["n"]=>
+    int(2)
+  }
+  [3]=>
+  string(1) "x"
+}
+done
+W2
+dtor 4
+dtor 6

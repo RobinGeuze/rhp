@@ -50,6 +50,7 @@ impl ProtoBuilder<'_> {
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.call_result_unused);
         let callee_id: &Identifier = match fc.function {
             Expression::Identifier(id) => id,
             Expression::ConstantAccess(ca) => &ca.name,
@@ -334,7 +335,10 @@ impl ProtoBuilder<'_> {
                 ArgSlot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
             }
         }
-        let flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        let mut flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        if result_unused {
+            flags.insert(CallFlags::RESULT_UNUSED);
+        }
         let name = self.intern_name(&name_bytes);
         let fb = self.intern_fallback(&fallback);
         let dst = self.alloc_temp();
@@ -601,10 +605,19 @@ impl ProtoBuilder<'_> {
         let callee = match pa {
             Pa::Function(f) => match f.function {
                 // Named function: the callable is its (resolved) name string.
+                // `die` is the exit keyword (T_EXIT): `die(...)` is exit's.
+                Expression::Identifier(Identifier::Local(l))
+                    if l.value.eq_ignore_ascii_case(b"die") =>
+                {
+                    self.load_string_const(b"exit")
+                }
                 Expression::Identifier(id) => {
                     let (n, ns) = self.resolve_callable_name(id);
                     ns_name = ns;
                     self.load_string_const(&n)
+                }
+                Expression::ConstantAccess(ca) if matches!(&ca.name, Identifier::Local(l) if l.value.eq_ignore_ascii_case(b"die")) => {
+                    self.load_string_const(b"exit")
                 }
                 Expression::ConstantAccess(ca) => {
                     let (n, ns) = self.resolve_callable_name(&ca.name);
@@ -970,7 +983,9 @@ impl ProtoBuilder<'_> {
                     }
                 };
                 if let Expression::Variable(Variable::Direct(d)) = p.value {
-                    if over_approx || ref_mask.get(i).copied().unwrap_or(false) {
+                    if (over_approx || ref_mask.get(i).copied().unwrap_or(false))
+                        && !matches!(strip_dollar(d.name), b"GLOBALS" | b"this")
+                    {
                         slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
                         continue;
                     }
@@ -1005,7 +1020,7 @@ impl ProtoBuilder<'_> {
                     self.emit(Instr::MovTake { dst, src: r })
                 }
                 Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
-                Slot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
+                Slot::Ref(cv) => self.emit(Instr::MakeArgRef { dst, cv }),
             }
         }
         Ok((base, argc))

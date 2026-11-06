@@ -47,8 +47,14 @@ pub const E_ALL: i64 = 30719;
 /// Two sharing disciplines, kept strictly separate:
 /// - value types with copy-on-write (`Str`, `Array`): `Rc<T>` + `make_mut`.
 /// - handle/reference types (`Object`, `Ref`): `Rc<RefCell<T>>` (aliasing).
-#[derive(Clone)]
 pub enum Value {
+    /// An undefined variable slot (php's IS_UNDEF): a CV never assigned or
+    /// unset, or a symbol-table cell in that state. Only variable slots hold
+    /// it; it is never a value. Cloning gives `Null`, so a copy read out of
+    /// an undefined slot is null and the marker cannot escape into values;
+    /// the reads that warn check the slot itself (see `rhp_vm` `reg_r`).
+    /// First, so that it and the scalars are one range of tags.
+    Undef,
     Null,
     Bool(bool),
     Int(i64),
@@ -66,6 +72,24 @@ pub enum Value {
     /// (buffers, file handles, the stdout/stderr target) lives in the VM, keyed
     /// by this id, so this crate stays I/O-free.
     Resource(ResourceHandle),
+}
+
+impl Clone for Value {
+    #[inline(always)]
+    fn clone(&self) -> Value {
+        match self {
+            Value::Null | Value::Undef => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(n) => Value::Int(*n),
+            Value::Float(f) => Value::Float(*f),
+            Value::Str(s) => Value::Str(s.clone()),
+            Value::Array(a) => Value::Array(a.clone()),
+            Value::Object(o) => Value::Object(o.clone()),
+            Value::Ref(r) => Value::Ref(r.clone()),
+            Value::Closure(c) => Value::Closure(c.clone()),
+            Value::Resource(r) => Value::Resource(r.clone()),
+        }
+    }
 }
 
 /// A resource value's identity: an id (shared with the VM's resource table) and
@@ -542,7 +566,7 @@ impl ArrayKey {
         Some(match v {
             Value::Int(n) => ArrayKey::Int(*n),
             Value::Bool(b) => ArrayKey::Int(if *b { 1 } else { 0 }),
-            Value::Null => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
+            Value::Null | Value::Undef => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
             Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
             Value::Resource(r) => ArrayKey::Int(r.id as i64),
@@ -645,13 +669,20 @@ fn float_to_int_wrapping(t: f64) -> i64 {
 /// The array buffer; insertion order preserved by IndexMap.
 pub struct ArrayData {
     pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
-    /// Next integer index for `$a[] = ...`. `None` = no int key ever inserted
-    /// (fresh append is 0). High-water mark; never lowered by `unset`.
-    next_int: Option<i64>,
-    /// True once an append would overflow i64 (next element already occupied).
-    append_disabled: bool,
+    /// php's nNextFreeElement: the key `$a[] = ...` uses. `i64::MIN` until an
+    /// integer key is inserted (a fresh append then uses 0). Saturates at
+    /// `i64::MAX`; an append fails while that key is occupied.
+    next_free: i64,
     /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
+    /// `entries.len()` (or more) is past the end. A removal before it moves
+    /// it back, so it keeps pointing at the same element (php's bucket
+    /// position; a removed current element leaves it on the next one).
     pub pos: usize,
+    /// Positions of the active HashTable iterators (array_walk), by id,
+    /// updated on removal like `pos`. Copied along with the array, as
+    /// zend_array_dup copies iterators. Boxed: one word in every array.
+    #[allow(clippy::box_collection)]
+    iters: Option<Box<Vec<(u32, usize)>>>,
 }
 
 /// php's `zend_array_dup`: a reference held only by the source array
@@ -679,9 +710,14 @@ impl Clone for ArrayData {
         }
         ArrayData {
             entries,
-            next_int: self.next_int,
-            append_disabled: self.append_disabled,
-            pos: self.pos,
+            next_free: self.next_free,
+            // zend_array_dup: a pointer past the end restarts at 0.
+            pos: if self.pos < self.entries.len() {
+                self.pos
+            } else {
+                0
+            },
+            iters: self.iters.clone(),
         }
     }
 }
@@ -690,25 +726,108 @@ impl ArrayData {
     fn new() -> Self {
         ArrayData {
             entries: IndexMap::with_hasher(FxBuildHasher),
-            next_int: None,
-            append_disabled: false,
+            next_free: i64::MIN,
             pos: 0,
+            iters: None,
         }
     }
 
-    /// Update `next_int` after inserting integer key `k` (append or explicit).
+    /// Update `next_free` after inserting integer key `k` (append or explicit).
+    #[inline]
     fn bump_next_int(&mut self, k: i64) {
-        match k.checked_add(1) {
-            Some(k1) => {
-                self.next_int = Some(match self.next_int {
-                    None => k1,
-                    Some(n) => n.max(k1),
-                });
+        if k >= self.next_free {
+            self.next_free = if k < i64::MAX { k + 1 } else { i64::MAX };
+        }
+    }
+
+    /// The key the next append uses, or `None` when it is occupied
+    /// (zend_hash_next_index_insert failing).
+    #[inline]
+    pub fn next_append_key(&self) -> Option<i64> {
+        let k = if self.next_free == i64::MIN {
+            0
+        } else {
+            self.next_free
+        };
+        if k == i64::MAX && self.entries.contains_key(&ArrayKey::Int(k)) {
+            return None;
+        }
+        Some(k)
+    }
+
+    /// php's nNextFreeElement as array functions see it (`i64::MIN` when no
+    /// integer key was ever inserted).
+    pub fn next_free(&self) -> i64 {
+        self.next_free
+    }
+
+    /// Set nNextFreeElement (array_pop / array_shift / renumbering).
+    pub fn set_next_free(&mut self, n: i64) {
+        self.next_free = n;
+    }
+
+    /// Remove the entry at index `i`, keeping the internal pointer and the
+    /// iterators on the same elements.
+    pub fn remove_index(&mut self, i: usize) -> Option<(ArrayKey, Value)> {
+        let r = self.entries.shift_remove_index(i)?;
+        self.removed_at(i);
+        Some(r)
+    }
+
+    #[inline]
+    fn removed_at(&mut self, i: usize) {
+        if self.pos > i && self.pos != usize::MAX {
+            self.pos -= 1;
+        }
+        if let Some(it) = &mut self.iters {
+            for (_, p) in it.iter_mut() {
+                if *p > i {
+                    *p -= 1;
+                }
             }
-            None => {
-                // k == i64::MAX: future appends overflow.
-                self.next_int = Some(i64::MAX);
-                self.append_disabled = true;
+        }
+    }
+
+    /// Register iterator `id` at position `pos` (zend_hash_iterator_add).
+    pub fn iter_add(&mut self, id: u32, pos: usize) {
+        let it = self.iters.get_or_insert_with(Default::default);
+        match it.iter_mut().find(|(i, _)| *i == id) {
+            Some(e) => e.1 = pos,
+            None => it.push((id, pos)),
+        }
+    }
+
+    /// The position of iterator `id`, if this array (or the array it was
+    /// copied from) has it.
+    pub fn iter_pos(&self, id: u32) -> Option<usize> {
+        self.iters
+            .as_ref()?
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|e| e.1)
+    }
+
+    /// Move every iterator `n` places on (zend_hash_iterators_advance).
+    pub fn iters_advance(&mut self, n: usize) {
+        if let Some(it) = &mut self.iters {
+            for (_, p) in it.iter_mut() {
+                *p += n;
+            }
+        }
+    }
+
+    /// Hand this array's iterators to `to`, positions unchanged (a table
+    /// rebuilt in place, as zend_hash_sort and php_splice do).
+    pub fn move_iters_to(&mut self, to: &mut ArrayData) {
+        to.iters = self.iters.take();
+    }
+
+    /// Drop iterator `id` (zend_hash_iterator_del).
+    pub fn iter_del(&mut self, id: u32) {
+        if let Some(it) = &mut self.iters {
+            it.retain(|(i, _)| *i != id);
+            if it.is_empty() {
+                self.iters = None;
             }
         }
     }
@@ -723,6 +842,13 @@ impl PhpArray {
         PhpArray(Rc::new(ArrayData::new()))
     }
 
+    /// An empty array with room for `n` elements (array_init_size).
+    pub fn with_capacity(n: usize) -> Self {
+        let mut d = ArrayData::new();
+        d.entries.reserve_exact(n);
+        PhpArray(Rc::new(d))
+    }
+
     /// Identity of the shared array storage (php's `zend_array *`): equal for
     /// copies that have not been written since, so a recursive array reached
     /// through a reference is recognized (`*RECURSION*` / circular-reference
@@ -733,6 +859,27 @@ impl PhpArray {
 
     pub fn len(&self) -> usize {
         self.0.entries.len()
+    }
+
+    /// Whether HashTable iterators are registered on this array.
+    pub fn has_iters(&self) -> bool {
+        self.0.iters.is_some()
+    }
+
+    /// The registered HashTable iterators: (id, position).
+    pub fn iters(&self) -> Vec<(u32, usize)> {
+        self.0.iters.as_deref().cloned().unwrap_or_default()
+    }
+
+    /// php's nNextFreeElement (see [`ArrayData::next_free`]).
+    pub fn next_free(&self) -> i64 {
+        self.0.next_free
+    }
+
+    /// The internal pointer (see [`ArrayData::pos`]), read without
+    /// separating.
+    pub fn pos(&self) -> usize {
+        self.0.pos
     }
 
     /// How many values share this storage (debug_zval_dump's refcount).
@@ -771,15 +918,24 @@ impl PhpArray {
         data.entries.insert(key, value);
     }
 
-    /// Append `$a[] = value` (COW). No-op insert if append is disabled.
+    /// Append `$a[] = value` (COW); nothing is inserted when the next
+    /// element is already occupied (see [`PhpArray::try_push`]).
+    #[inline]
     pub fn push(&mut self, value: Value) {
+        self.try_push(value);
+    }
+
+    /// Append `$a[] = value` (COW). Returns false (and inserts nothing) when
+    /// the next element is already occupied.
+    #[inline]
+    pub fn try_push(&mut self, value: Value) -> bool {
         let data = self.make_mut();
-        if data.append_disabled {
-            return;
-        }
-        let k = data.next_int.unwrap_or(0);
+        let Some(k) = data.next_append_key() else {
+            return false;
+        };
         data.bump_next_int(k);
         data.entries.insert(ArrayKey::Int(k), value);
+        true
     }
 
     /// COW mutable access to the slot at `key`, inserting `Null` if absent.
@@ -792,12 +948,13 @@ impl PhpArray {
         data.entries.entry(key).or_insert(Value::Null)
     }
 
-    /// COW mutable access to a freshly appended slot (`$a[]`).
-    pub fn append_mut(&mut self) -> &mut Value {
+    /// COW mutable access to a freshly appended slot (`$a[]`); `None` when
+    /// the next element is already occupied.
+    pub fn append_mut(&mut self) -> Option<&mut Value> {
         let data = self.make_mut();
-        let k = data.next_int.unwrap_or(0);
+        let k = data.next_append_key()?;
         data.bump_next_int(k);
-        data.entries.entry(ArrayKey::Int(k)).or_insert(Value::Null)
+        Some(data.entries.entry(ArrayKey::Int(k)).or_insert(Value::Null))
     }
 
     /// COW mutable access to an existing slot (no insert).
@@ -805,9 +962,12 @@ impl PhpArray {
         self.make_mut().entries.get_mut(key)
     }
 
-    /// COW remove, preserving insertion order. `next_int` is not lowered.
+    /// COW remove, preserving insertion order. `next_free` is not lowered.
     pub fn remove(&mut self, key: &ArrayKey) -> Option<Value> {
-        self.make_mut().entries.shift_remove(key)
+        let data = self.make_mut();
+        let (i, _, v) = data.entries.shift_remove_full(key)?;
+        data.removed_at(i);
+        Some(v)
     }
 }
 
@@ -836,10 +996,31 @@ impl Value {
         Value::Str(PhpStr::from_bytes(b))
     }
 
+    /// A copy of a variable slot that keeps it undefined (`clone` reads an
+    /// undefined slot as null).
+    #[inline]
+    pub fn copy_slot(&self) -> Value {
+        match self {
+            Value::Undef => Value::Undef,
+            v => v.clone(),
+        }
+    }
+
+    /// An undefined variable slot (see [`Value::Undef`]), also behind a
+    /// symbol-table cell.
+    #[inline]
+    pub fn is_undef(&self) -> bool {
+        match self {
+            Value::Undef => true,
+            Value::Ref(r) => matches!(r.try_borrow().as_deref(), Ok(Value::Undef)),
+            _ => false,
+        }
+    }
+
     /// The PHP type name as reported by `gettype()`.
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Null => "NULL",
+            Value::Null | Value::Undef => "NULL",
             Value::Bool(_) => "boolean",
             Value::Int(_) => "integer",
             Value::Float(_) => "double",

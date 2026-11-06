@@ -48,7 +48,7 @@ pub fn zval_type_name_by(v: &Value, class_name: impl FnOnce(&Value) -> Option<Ve
 /// object.
 fn type_by_const(v: &Value) -> &'static str {
     match v {
-        Value::Null => "null",
+        Value::Null | Value::Undef => "null",
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",

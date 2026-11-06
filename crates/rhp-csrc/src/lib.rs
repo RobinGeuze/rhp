@@ -12,6 +12,8 @@
 
 #[cfg(feature = "argon2")]
 pub mod argon2;
+#[cfg(feature = "avifinfo")]
+pub mod avifinfo;
 #[cfg(feature = "crypt")]
 pub mod crypt;
 #[cfg(feature = "timelib")]

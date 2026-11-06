@@ -206,7 +206,12 @@ pub(crate) fn resolve_const(
         return host.class_constant_eval(&name[..i - 1], &name[i + 1..], silent);
     }
     match host.get_const(name) {
-        Some(v) => Ok(Some(v)),
+        Some(v) => {
+            if !silent {
+                host.const_fetch_deprecation(name)?;
+            }
+            Ok(Some(v))
+        }
         None if silent => Ok(None),
         None => Err(Thrown::error(
             "Error",
@@ -303,8 +308,12 @@ fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         .unwrap_or(true);
     match subject_class(host, &subject, allow_string)? {
         Some(n) => {
-            // Subtype but NOT the same class (is_subclass_of is exclusive).
-            let same = norm_class(&n) == norm_class(&target);
+            // Subtype but NOT the same class (is_subclass_of is exclusive;
+            // an alias names the same class).
+            let same = norm_class(&n) == norm_class(&target)
+                || host
+                    .resolve_class(&n)
+                    .is_some_and(|a| host.resolve_class(&target) == Some(a));
             Ok(Value::Bool(!same && host.reflect_is_a(&n, &target)))
         }
         None => Ok(Value::Bool(false)),
@@ -417,19 +426,26 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             // An object matches on a declared member (instance or static) OR a
             // property reachable and set from the calling scope.
             host.class_has_property(cid, &prop)
-                || ext::date::has_virtual_property(host, cid, &prop)
+                || internal_declared_property(host, cid, &prop)
                 || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
             .resolve_class_autoload(s.as_bytes())?
             .map(|cid| {
-                host.class_has_property(cid, &prop)
-                    || ext::date::has_virtual_property(host, cid, &prop)
+                host.class_has_property(cid, &prop) || internal_declared_property(host, cid, &prop)
             })
             .unwrap_or(false),
         _ => false,
     };
     Ok(Value::Bool(found))
+}
+
+/// A property an internal class declares but rhp serves from a handler
+/// (DatePeriod, DOM, XMLReader).
+fn internal_declared_property(host: &dyn Host, cid: u32, prop: &[u8]) -> bool {
+    ext::date::has_virtual_property(host, cid, prop)
+        || ext::dom::has_declared_property(host, cid, prop)
+        || ext::xmlreader::has_declared_property(host, cid, prop)
 }
 
 /// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve
@@ -820,18 +836,13 @@ fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value
     Ok(Value::Null)
 }
 
-/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
-/// Under `@` php 8 lowers it to the fatal types only.
+/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset
+/// (`@` lowers it to the fatal types while it runs).
 pub fn error_reporting_level(host: &dyn Host) -> i64 {
-    let level = match host.ini_get(b"error_reporting") {
+    match host.ini_get(b"error_reporting") {
         // OnUpdateErrorReporting: atoi.
         Some(v) if !v.is_empty() => i64::from(crate::c_atoi(&v)),
         _ => crate::E_ALL,
-    };
-    if host.silenced() {
-        level & SILENCE_MASK
-    } else {
-        level
     }
 }
 
@@ -952,10 +963,13 @@ fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         host.resolve_class(&class)
     };
     match id {
-        // php: Warning "Cannot declare class X, because the name is already in use"
+        // The host warns when the alias name is taken.
         Some(id) => Ok(Value::Bool(host.class_alias(id, &alias)?)),
-        // php: Warning "Class "X" not found"
-        None => Ok(Value::Bool(false)),
+        None => {
+            let msg = format!("Class \"{}\" not found", String::from_utf8_lossy(&class));
+            host.emit_diagnostic(E_WARNING, msg.as_bytes())?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 
@@ -1238,10 +1252,29 @@ fn fn_get_exception_handler(host: &mut dyn Host, _args: &[Value]) -> Result<Valu
     Ok(h)
 }
 
+/// `exit()` / `die()` called as functions (`'exit'`, `call_user_func`): a
+/// string status is printed, an int is the exit status. The `exit`
+/// construct compiles to the Exit op instead.
+fn fn_exit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    match args.first().map(rhp_values::ops::deref) {
+        None => Err(Thrown::Exit(0)),
+        Some(Value::Int(n)) => Err(Thrown::Exit(n as i32)),
+        Some(v) => {
+            let s = rhp_values::conv::to_string_bytes(&v);
+            if !s.is_empty() {
+                host.write_out(&s);
+            }
+            Err(Thrown::Exit(0))
+        }
+    }
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("exit", fn_exit),
+            ("die", fn_exit),
             ("get_declared_classes", fn_get_declared_classes),
             ("get_declared_interfaces", fn_get_declared_interfaces),
             ("get_declared_traits", fn_get_declared_traits),

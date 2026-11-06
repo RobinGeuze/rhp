@@ -305,6 +305,7 @@ impl Vm {
                 self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
             }
             Some(Found::Call(magic) | Found::CallStatic(magic)) => {
+                self.bind_undef_args(top, base, argc, |_| false)?;
                 let mut arr = rhp_values::PhpArray::new();
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
@@ -312,6 +313,9 @@ impl Vm {
                 let args = vec![Value::str(trampoline_name(mname)), Value::Array(arr)];
                 let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
                 self.reg_set(top, dst, r);
+            }
+            None if Some(cls) == self.incomplete_class => {
+                return Err(self.incomplete_error(&h, "call a method"))
             }
             None => return Err(self.undefined_method(cls, mname)),
         }
@@ -460,6 +464,7 @@ impl Vm {
                 Ok(())
             }
             StaticTarget::Magic(m, this, called) => {
+                self.bind_undef_args(top, base, argc, |_| false)?;
                 let mut arr = rhp_values::PhpArray::new();
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
@@ -487,7 +492,7 @@ impl Vm {
         args: Reg,
         dst: Reg,
     ) -> Result<(), Thrown> {
-        let o = self.reg_get(top, obj);
+        let o = self.reg_r(top, obj)?;
         let arr = self.reg_get(top, args);
         if let Value::Closure(_) = o {
             let (argv, named) = self.split_call_args(&arr)?;
@@ -624,10 +629,21 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
-        let argc = args.len();
-        frame.argc = argc;
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
+        if proto.flags.intersects(
+            rhp_bytecode::ProtoFlags::DEPRECATED.union(rhp_bytecode::ProtoFlags::NODISCARD),
+        ) {
+            let first = match &args {
+                Args::Slice(s) => s.first().cloned(),
+                Args::Window { top, base, argc } => {
+                    (*argc > 0).then(|| self.stack[*top].regs[*base as usize].clone())
+                }
+            };
+            self.call_attr_checks(frame, first.as_ref())?;
+        }
+        let argc = args.len();
+        frame.argc = argc;
         let count_error = self.internal_arg_count_error(&proto, frame, argc);
         let bound = match args {
             Args::Slice(s) => bind_params(
@@ -637,6 +653,7 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
+                self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
                 // The window's temporaries move into the callee (php moves
                 // arguments into the callee's frame, so they die with it).
                 let f = &mut self.stack[top];
@@ -651,6 +668,7 @@ impl Vm {
                         }
                         match std::mem::replace(&mut w[i], Value::Null) {
                             Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                            Value::Undef => Value::Null,
                             v => v,
                         }
                     },
@@ -688,6 +706,43 @@ impl Vm {
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
+    }
+
+    /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a
+    /// by-reference parameter creates it as null, a by-value one reads it
+    /// ("Undefined variable $x", in the caller, before the call).
+    #[inline]
+    fn bind_undef_args(
+        &mut self,
+        top: usize,
+        base: Reg,
+        argc: u16,
+        by_ref: impl Fn(u16) -> bool,
+    ) -> Result<(), Thrown> {
+        let w = &self.stack[top].regs[base as usize..(base + argc) as usize];
+        if !w.iter().any(|v| v.is_undef()) {
+            return Ok(());
+        }
+        for i in 0..argc {
+            let Value::Ref(rc) = &self.stack[top].regs[(base + i) as usize] else {
+                continue;
+            };
+            if !matches!(*rc.borrow(), Value::Undef) {
+                continue;
+            }
+            let rc = rc.clone();
+            if by_ref(i) {
+                crate::dispatch::cell_define(&rc);
+                continue;
+            }
+            let f = &self.stack[top];
+            let cv = (0..f.proto.num_cvs)
+                .find(|&r| matches!(&f.regs[r as usize], Value::Ref(c) if Rc::ptr_eq(c, &rc)));
+            if let Some(cv) = cv {
+                self.undef_cv(top, cv)?;
+            }
+        }
+        Ok(())
     }
 
     /// zend_std_get_constructor's visibility check for `new C` run by frame
@@ -791,6 +846,7 @@ impl Vm {
         };
         let name = self.func_display_name(proto, frame.defining_class);
         if proto.is_internal() {
+            let name = self.func_c_name(proto, frame.defining_class);
             // A built-in implemented in the PHP prelude reports like an
             // internal function (zend_wrong_parameters_count_error).
             let which = if proto.params.iter().any(|p| p.variadic) {
@@ -961,7 +1017,7 @@ impl Vm {
         let proto = f.proto.clone();
         let mut frame = Frame::new(proto.clone(), f.unit, 0);
         for (i, cap) in cd.captures.iter().enumerate() {
-            frame.regs[i] = cap.clone();
+            frame.regs[i] = cap.copy_slot();
         }
         // A rebound closure (`Closure::bind`/`bindTo`) overrides the captured
         // `$this` with the new object.
@@ -1293,6 +1349,7 @@ impl Vm {
                 let saved_this = self.fcc_this.replace(cd.bound_this.clone());
                 // A dynamic call's raw arguments, as plain values.
                 let args = if dynamic {
+                    let args = self.settle_undef_args(args, |_| false)?;
                     args.iter().map(deref).collect()
                 } else {
                     args
@@ -1328,7 +1385,7 @@ impl Vm {
         };
         // zend_call_function: a value for a by-reference parameter.
         let args = if dynamic {
-            args
+            self.settle_dyn_undef_args(&callee, args)?
         } else {
             self.callee_by_ref_args(&callee, args)?
         };
@@ -1405,6 +1462,71 @@ impl Vm {
             }
         }
         self.call_callable_value_mode(callable, args, None)
+    }
+
+    /// A dynamic call's raw arguments (`$f($x)`): an undefined variable
+    /// sent to a by-reference parameter is created, to a by-value one it
+    /// warns (php's SEND_VAR_EX, which knows the callee).
+    fn settle_dyn_undef_args(
+        &mut self,
+        callee: &Callee,
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if !args.iter().any(|a| a.is_undef()) {
+            return Ok(args);
+        }
+        match callee {
+            Callee::Closure(cd) => {
+                let proto = self.closures[cd.fnidx as usize].proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Function(f) => {
+                let proto = f.proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Method(m, ..) => {
+                let proto = m.proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Builtin(name) => {
+                use rhp_bytecode::signatures::Signature;
+                let sig = rhp_bytecode::signatures::function(name.as_bytes());
+                self.settle_undef_args(args, |i| sig.is_some_and(|s| s.by_ref(i)))
+            }
+            Callee::Magic(..) | Callee::EnumStatic(..) => self.settle_undef_args(args, |_| false),
+        }
+    }
+
+    /// Arguments that are a reference to an undefined variable of the
+    /// calling frame: a by-reference parameter creates it as null, a
+    /// by-value one gets null after "Undefined variable $x".
+    fn settle_undef_args(
+        &mut self,
+        mut args: Vec<Value>,
+        by_ref: impl Fn(usize) -> bool,
+    ) -> Result<Vec<Value>, Thrown> {
+        let Some(top) = self.stack.len().checked_sub(1) else {
+            return Ok(args);
+        };
+        for (i, a) in args.iter_mut().enumerate() {
+            let Value::Ref(rc) = a else { continue };
+            if !matches!(*rc.borrow(), Value::Undef) {
+                continue;
+            }
+            if by_ref(i) {
+                crate::dispatch::cell_define(rc);
+                continue;
+            }
+            let rc = rc.clone();
+            *a = Value::Null;
+            let f = &self.stack[top];
+            let cv = (0..f.proto.num_cvs)
+                .find(|&r| matches!(&f.regs[r as usize], Value::Ref(c) if Rc::ptr_eq(c, &rc)));
+            if let Some(cv) = cv {
+                self.undef_cv(top, cv)?;
+            }
+        }
+        Ok(args)
     }
 
     /// [`Vm::wrap_by_ref_args`] for a resolved callee.
@@ -1966,6 +2088,21 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if !named.is_empty() {
+            // `[$closure, '__invoke']` of a builtin's closure: the
+            // arguments bind as Closure::__invoke's.
+            if let Some(cl) = builtins::zend::closures::closure_invoke_of(c) {
+                if let Some((b, sig)) = self.callable_builtin(&cl) {
+                    use rhp_bytecode::signatures::Signature;
+                    let (args, extra) = self.place_stub_named_args(
+                        "Closure::__invoke",
+                        sig.params,
+                        sig.min_args(),
+                        args,
+                        named,
+                    )?;
+                    return self.run_builtin_sig(b, Some(sig), args, &extra, false, false, false);
+                }
+            }
             self.autoload_callable_class(c)?;
             match self.callable_proto(c) {
                 Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,
@@ -2067,6 +2204,7 @@ impl Vm {
                     let v = std::mem::replace(&mut self.stack[top].regs[r], Value::Null);
                     match v {
                         Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                        Value::Undef => Value::Null,
                         v => v,
                     }
                 } else if by_ref {
@@ -2197,7 +2335,16 @@ impl Vm {
         };
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
-        if frameless || !user {
+        // One the engine calls with no frame running (a shutdown function)
+        // is.
+        let engine_called = || {
+            !self.stack.is_empty()
+                && self.stack[caller]
+                    .proto
+                    .flags
+                    .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE)
+        };
+        if frameless || !(user || engine_called()) {
             let r = match zpp_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),

@@ -41,6 +41,9 @@ pub(crate) enum MagicSplit {
     /// Step `.0` reaches a lazy slot (or an undefined property) of this
     /// lazy object: it initializes, and the path continues on the instance.
     Lazy(usize, ObjectHandle),
+    /// A property of this `__PHP_Incomplete_Class` object: writing through
+    /// it throws.
+    Incomplete(ObjectHandle),
 }
 
 /// How an ArrayAccess element is fetched below a nested write (php's
@@ -180,6 +183,7 @@ impl Vm {
         incdec: bool,
     ) -> Result<Value, Thrown> {
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))
@@ -228,6 +232,7 @@ impl Vm {
     /// Drop the cursor's hold on a by-name / static-property cell once the
     /// write is done, so a value released later (`unset($$n)`) is freed then.
     pub(crate) fn cursor_release(&mut self) {
+        self.rw_null_keys = 0;
         if matches!(self.cursor_root, CursorRoot::Cell(_)) {
             self.cursor_root = CursorRoot::Cv(0);
         }
@@ -248,7 +253,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         // `None`: the slot does not exist yet (the write creates it as null).
         let mut cur = Some(deref(&self.cursor_root_value(top)));
-        let mut warnings: Vec<String> = Vec::new();
+        let mut warnings: Vec<(i64, String)> = Vec::new();
         for (i, step) in steps.iter().enumerate() {
             cur = match (cur, step) {
                 // A string container: no read-modify-write through its offsets.
@@ -282,8 +287,9 @@ impl Vm {
                     });
                 }
                 (None | Some(Value::Null), CursorStep::Key(k)) => {
+                    self.rw_null_key(k, &mut warnings);
                     match ArrayKey::from_value(&deref(k)) {
-                        Some(key) => warnings.push(undefined_key_msg(&key)),
+                        Some(key) => warnings.push((builtins::E_WARNING, undefined_key_msg(&key))),
                         None => {
                             self.flush_rw_warnings(warnings)?;
                             return Err(self.illegal_array_offset(top, k));
@@ -292,6 +298,7 @@ impl Vm {
                     None
                 }
                 (Some(Value::Array(a)), CursorStep::Key(k)) => {
+                    self.rw_null_key(k, &mut warnings);
                     let Some(key) = ArrayKey::from_value(&deref(k)) else {
                         // The fetch for read-write rejects the key before
                         // the operator runs.
@@ -301,7 +308,7 @@ impl Vm {
                     match a.get(&key) {
                         Some(v) => Some(deref(v)),
                         None => {
-                            warnings.push(undefined_key_msg(&key));
+                            warnings.push((builtins::E_WARNING, undefined_key_msg(&key)));
                             None
                         }
                     }
@@ -333,10 +340,13 @@ impl Vm {
                                 self.check_dynamic_prop(top, cls, name)?;
                                 h.borrow_mut().properties.insert(key, Value::Null);
                             }
-                            warnings.push(format!(
-                                "Undefined property: {}::${}",
-                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
-                                String::from_utf8_lossy(name.as_bytes())
+                            warnings.push((
+                                builtins::E_WARNING,
+                                format!(
+                                    "Undefined property: {}::${}",
+                                    String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                    String::from_utf8_lossy(name.as_bytes())
+                                ),
                             ));
                             None
                         }
@@ -357,11 +367,53 @@ impl Vm {
         illegal_offset_on_array(&deref(k), &cx)
     }
 
-    fn flush_rw_warnings(&mut self, warnings: Vec<String>) -> Result<(), Thrown> {
-        for w in warnings {
-            self.diag(builtins::E_WARNING, &w)?;
+    fn flush_rw_warnings(&mut self, warnings: Vec<(i64, String)>) -> Result<(), Thrown> {
+        for (level, w) in warnings {
+            self.diag(level, &w)?;
         }
         Ok(())
+    }
+
+    /// The null keys of an assignment's path: php's write fetches convert
+    /// them (with the deprecation) before the assigned value is read; the
+    /// write then converts them quietly.
+    #[cold]
+    pub(crate) fn w_null_key_diags(&mut self, top: usize) -> Result<(), Thrown> {
+        let mut cur = Some(deref(&self.cursor_root_value(top)));
+        let mut n = 0;
+        for step in self.cursor_steps.iter() {
+            let CursorStep::Key(k) = step else { break };
+            cur = match cur {
+                Some(Value::Array(a)) => {
+                    if matches!(k, Value::Null) {
+                        n += 1;
+                    }
+                    ArrayKey::from_value(k).and_then(|key| a.get(&key).map(deref))
+                }
+                None | Some(Value::Null) => {
+                    if matches!(k, Value::Null) {
+                        n += 1;
+                    }
+                    None
+                }
+                _ => break,
+            };
+        }
+        for _ in 0..n {
+            self.diag(builtins::E_DEPRECATED, NULL_OFFSET_DEPRECATION)?;
+            self.rw_null_keys += 1;
+        }
+        Ok(())
+    }
+
+    /// A null key on a read-modify-write path: php converts it (with the
+    /// deprecation) when it fetches the element, before the undefined-key
+    /// warning; the write then converts it quietly.
+    fn rw_null_key(&mut self, k: &Value, warnings: &mut Vec<(i64, String)>) {
+        if matches!(deref(k), Value::Null) {
+            warnings.push((builtins::E_DEPRECATED, NULL_OFFSET_DEPRECATION.into()));
+            self.rw_null_keys += 1;
+        }
     }
 
     /// The cursor root's current value.
@@ -387,6 +439,9 @@ impl Vm {
                     }
                 }
                 (Value::Object(h), CursorStep::Prop(name)) => {
+                    if self.incomplete_class == Some(h.borrow().class) {
+                        return MagicSplit::Incomplete(h);
+                    }
                     if self.cursor_hooked(top, &h, name) {
                         return if i + 1 == steps.len() {
                             MagicSplit::Leaf(h, name.clone())
@@ -515,6 +570,7 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         self.cursor_readonly_check(top, steps, true)?;
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_dyn_check(top, steps, true)?;
                 let cx = PropCtx {
@@ -687,6 +743,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         self.cursor_readonly_check(top, steps, false)?;
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
             // the write fetch runs the get hook, then the reference cannot be
@@ -745,6 +802,7 @@ impl Vm {
                 r
             }
         };
+        flush_deferred_writes();
         self.flush_path_diags()?;
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
@@ -756,6 +814,7 @@ impl Vm {
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain | MagicSplit::Leaf(..) => {}
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
@@ -825,6 +884,10 @@ impl Vm {
     fn flush_path_diags(&mut self) -> Result<(), Thrown> {
         let diags = PATH_DIAGS.with(|d| std::mem::take(&mut *d.borrow_mut()));
         for (level, msg) in diags {
+            if self.rw_null_keys > 0 && msg == NULL_OFFSET_DEPRECATION.as_bytes() {
+                self.rw_null_keys -= 1;
+                continue;
+            }
             self.diag(level, &msg)?;
         }
         Ok(())
@@ -944,16 +1007,10 @@ impl Vm {
     }
 
     /// `unset($$n)`: drop frame `top`'s variable `name` (a compiled slot
-    /// becomes null, as `unset($x)` does; a by-name variable is removed).
+    /// becomes undefined, as `unset($x)` does; a by-name variable is removed).
     pub(crate) fn var_var_unset(&mut self, top: usize, name: &[u8]) {
         if self.stack[top].global_scope {
-            if self.globals.contains_key(name) {
-                // Live global-scope frames lose the variable too.
-                self.rebind_global(name, Rc::new(RefCell::new(Value::Null)));
-                self.globals.shift_remove(name);
-                self.ref_globals.remove(name);
-                self.dtor_check = true;
-            }
+            self.unset_global(name);
             return;
         }
         let proto = &self.stack[top].proto;
@@ -963,7 +1020,7 @@ impl Vm {
             .take(proto.num_cvs as usize)
             .position(|n| n.as_bytes() == name)
         {
-            self.reg_set(top, i as Reg, Value::Null);
+            self.unset_cv(top, i as Reg);
         } else if let Some(caller) = self.stack[top].include_caller {
             self.var_var_unset(caller, name);
         } else if let Some(c) = self.stack[top].dyn_vars.remove(name) {
@@ -1002,14 +1059,14 @@ impl Vm {
         }
         if let Some(caller) = self.stack[top].include_caller {
             return Err(match self.var_var_slot(caller, name) {
-                Ok(cv) => self.promote(caller, cv),
+                Ok(cv) => self.promote_slot(caller, cv),
                 Err(cell) => cell,
             });
         }
         Err(self.stack[top]
             .dyn_vars
             .entry(name.to_vec())
-            .or_insert_with(|| Rc::new(RefCell::new(Value::Null)))
+            .or_insert_with(|| Rc::new(RefCell::new(Value::Undef)))
             .clone())
     }
 
@@ -1147,8 +1204,18 @@ impl Vm {
     }
 
     /// Promote a CV slot to a shared reference cell, returning the cell. If the
-    /// slot already holds a `Ref`, its cell is reused.
+    /// slot already holds a `Ref`, its cell is reused. An undefined variable
+    /// becomes null: a PHP reference always holds a value.
     pub(crate) fn promote(&mut self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
+        let rc = self.promote_slot(top, cv);
+        crate::dispatch::cell_define(&rc);
+        rc
+    }
+
+    /// [`Vm::promote`] keeping an undefined variable undefined: the cell is
+    /// the variable's storage shared by name (an include's scope), not a PHP
+    /// reference.
+    pub(crate) fn promote_slot(&mut self, top: usize, cv: Reg) -> Rc<RefCell<Value>> {
         let f = &self.stack[top];
         if f.global_scope {
             if let Some(n) = f.proto.cv_var_names.get(cv as usize) {
@@ -1161,7 +1228,7 @@ impl Vm {
         match slot {
             Value::Ref(rc) => rc.clone(),
             other => {
-                let v = std::mem::replace(other, Value::Null);
+                let v = std::mem::replace(other, Value::Undef);
                 let rc = Rc::new(RefCell::new(v));
                 *other = Value::Ref(rc.clone());
                 rc
@@ -1532,6 +1599,9 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
     }
 }
 
+const NULL_OFFSET_DEPRECATION: &str =
+    "Using null as an array offset is deprecated, use an empty string instead";
+
 fn path_diag(level: i64, msg: impl Into<Vec<u8>>) {
     PATH_DIAGS.with(|d| d.borrow_mut().push((level, msg.into())));
 }
@@ -1541,10 +1611,7 @@ fn path_diag(level: i64, msg: impl Into<Vec<u8>>) {
 /// whether null is deprecated here (not for a final unset).
 fn key_diags(k: &Value, null_dep: bool) {
     match k {
-        Value::Null if null_dep => path_diag(
-            builtins::E_DEPRECATED,
-            "Using null as an array offset is deprecated, use an empty string instead",
-        ),
+        Value::Null if null_dep => path_diag(builtins::E_DEPRECATED, NULL_OFFSET_DEPRECATION),
         Value::Float(f) => {
             for (level, msg) in builtins::zend::operators::dval_to_lval_safe_msgs(*f) {
                 path_diag(level, msg);
@@ -1693,6 +1760,26 @@ fn assign_string_offset(
     Ok(())
 }
 
+thread_local! {
+    /// Leaf writes [`assign_path`] could not make while the target cell was
+    /// borrowed by the path itself.
+    static DEFERRED_WRITE: RefCell<Vec<(Rc<RefCell<Value>>, Value)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Store the writes [`assign_path`] deferred.
+#[inline]
+fn flush_deferred_writes() {
+    if DEFERRED_WRITE.with(|d| d.borrow().is_empty()) {
+        return;
+    }
+    let pending = DEFERRED_WRITE.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    for (rc, v) in pending {
+        let old = std::mem::replace(&mut *rc.borrow_mut(), v);
+        drop(old);
+    }
+}
+
 /// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
 fn assign_path(
     slot: &mut Value,
@@ -1700,6 +1787,10 @@ fn assign_path(
     value: Value,
     cx: &PropCtx,
 ) -> Result<(), Thrown> {
+    // An undefined variable at the root is created by the write.
+    if let Value::Undef = slot {
+        *slot = Value::Null;
+    }
     // `lval = &$x` (a `Ref` value at the leaf) rebinds the slot itself: it
     // does not write through a reference the slot already held.
     if steps.is_empty() && matches!(value, Value::Ref(_)) {
@@ -1708,7 +1799,19 @@ fn assign_path(
     }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
-        let mut inner = rc.borrow_mut();
+        let Ok(mut inner) = rc.try_borrow_mut() else {
+            // The reference is to a container this write is inside (an array
+            // holding a reference to itself): the value is stored once the
+            // path is released.
+            if steps.is_empty() {
+                DEFERRED_WRITE.with(|d| d.borrow_mut().push((rc.clone(), value)));
+                return Ok(());
+            }
+            return Err(Thrown::error(
+                "Error",
+                "Cannot write into an array through a reference to itself",
+            ));
+        };
         return assign_path(&mut inner, steps, value, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
@@ -1758,10 +1861,18 @@ fn assign_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value, cx)
+}
+
+/// zend_cannot_add_element: an append past PHP_INT_MAX.
+pub(crate) fn cannot_add_element() -> Thrown {
+    Thrown::error(
+        "Error",
+        "Cannot add element to the array as the next element is already occupied",
+    )
 }
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
@@ -1782,6 +1893,9 @@ fn make_ref_path(
     steps: &[CursorStep],
     cx: &PropCtx,
 ) -> Result<Rc<RefCell<Value>>, Thrown> {
+    if let Value::Undef = slot {
+        *slot = Value::Null;
+    }
     // Follow an existing reference: reuse it if this is the target, else descend.
     if let Value::Ref(rc) = slot {
         if steps.is_empty() {
@@ -1859,7 +1973,7 @@ fn make_ref_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     make_ref_path(child, rest, cx)

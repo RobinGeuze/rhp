@@ -118,6 +118,9 @@ impl Vm {
                         }
                         continue;
                     }
+                    if matches!(v, Value::Undef) {
+                        continue;
+                    }
                     if let Some(n) = p.cv_var_names.get(i) {
                         // zend_array_dup of the static variables.
                         st.insert(rhp_values::ArrayKey::Str(n.clone()), copy_elem(v));
@@ -493,7 +496,7 @@ impl Vm {
         };
         // A nested arrow function's `$this` is captured: it follows the
         // new binding (gone when unbound).
-        let mut captures = cd.captures.clone();
+        let mut captures: Vec<Value> = cd.captures.iter().map(Value::copy_slot).collect();
         if cd.wrapped.is_none() {
             let this_cv = self
                 .closures

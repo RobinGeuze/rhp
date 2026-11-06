@@ -72,6 +72,12 @@ pub(crate) fn module_loaded(name: &str) -> bool {
 /// The E_DEPRECATED message for reading a `#[\Deprecated]` extension
 /// constant, if `name` is one.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {
+    if let b"FILE_BINARY" | b"FILE_TEXT" = name {
+        return Some(format!(
+            "Constant {} is deprecated since 8.1, as the constant has no effect",
+            String::from_utf8_lossy(name)
+        ));
+    }
     ext::curl::constant_deprecation(name)
         .or_else(|| ext::date::constant_deprecation(name))
         .or_else(|| ext::dom::constant_deprecation(name))

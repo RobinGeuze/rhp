@@ -29,7 +29,6 @@ If you did not receive a copy of the PHP license, or have any
 questions about PHP licensing, please contact license@php.net.
 bool(true)
 bool(true)
-bool(false)
 string(9) "phpinfo()"
 bool(true)
 string(0) ""

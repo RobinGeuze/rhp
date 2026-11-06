@@ -77,14 +77,23 @@ class DateTimeImmutable implements DateTimeInterface {
     public function getTimestamp() { return __date('getTimestamp', $this); }
     public function getMicrosecond(): int { return __date('getMicrosecond', $this); }
     public function diff(DateTimeInterface $targetObject, bool $absolute = false) { return __date('diff', $this, $targetObject, $absolute); }
+    #[\NoDiscard(message: "as DateTimeImmutable::modify() does not modify the object itself")]
     public function modify(string $modifier) { return __date('modify', clone $this, $modifier, 'DateTimeImmutable::modify'); }
+    #[\NoDiscard(message: "as DateTimeImmutable::add() does not modify the object itself")]
     public function add(DateInterval $interval) { return __date('add', clone $this, $interval); }
+    #[\NoDiscard(message: "as DateTimeImmutable::sub() does not modify the object itself")]
     public function sub(DateInterval $interval) { return __date('sub', clone $this, $interval, 'DateTimeImmutable::sub'); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setTimezone() does not modify the object itself")]
     public function setTimezone(DateTimeZone $timezone) { return __date('setTimezone', clone $this, $timezone); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setTime() does not modify the object itself")]
     public function setTime(int $hour, int $minute, int $second = 0, int $microsecond = 0) { return __date('setTime', clone $this, $hour, $minute, $second, $microsecond); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setDate() does not modify the object itself")]
     public function setDate(int $year, int $month, int $day) { return __date('setDate', clone $this, $year, $month, $day); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setISODate() does not modify the object itself")]
     public function setISODate(int $year, int $week, int $dayOfWeek = 1) { return __date('setISODate', clone $this, $year, $week, $dayOfWeek); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setTimestamp() does not modify the object itself")]
     public function setTimestamp(int $timestamp) { return __date('setTimestamp', clone $this, $timestamp); }
+    #[\NoDiscard(message: "as DateTimeImmutable::setMicrosecond() does not modify the object itself")]
     public function setMicrosecond(int $microsecond): static { __date('usCheck', $this, $microsecond); return __date('setMicrosecond', clone $this, $microsecond); }
     public static function createFromMutable(DateTime $object) { return __date('createFrom', static::class, $object); }
     public static function createFromInterface(DateTimeInterface $object) { return __date('createFrom', static::class, $object); }

@@ -24,6 +24,7 @@ use crate::prelude::prelude_classes;
 use crate::shrink::shrink_program;
 
 mod assign;
+mod attrs;
 mod builder;
 mod calls;
 mod checks;

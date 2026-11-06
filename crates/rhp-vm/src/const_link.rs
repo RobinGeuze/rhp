@@ -469,6 +469,137 @@ impl Vm {
             St::Err
         }
     }
+    /// do_inherit_constant_check's final, ambiguity and visibility rules
+    /// for the constants `proto` (not linked yet) inherits from its parent,
+    /// then from the interfaces it lists.
+    pub(crate) fn check_const_inheritance(
+        &mut self,
+        proto: &ClassProto,
+        parent: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        use rhp_values::Visibility as V;
+        // (declaring class, visibility, final); `None` is the class itself.
+        type Entry = (Option<ClassId>, V, bool);
+        let mut table: indexmap::IndexMap<Vec<u8>, Entry> = indexmap::IndexMap::new();
+        for c in &proto.constants {
+            table.insert(c.name.as_bytes().to_vec(), (None, c.visibility, c.is_final));
+        }
+        for c in &proto.enum_cases {
+            table.insert(c.name.as_bytes().to_vec(), (None, V::Public, false));
+        }
+        for t in &proto.traits {
+            if let Some(&tid) = self.class_ids.get(&lc(t.as_bytes())) {
+                for (k, c) in &self.classes[tid as usize].constants {
+                    table
+                        .entry(k.clone())
+                        .or_insert((None, c.visibility, c.is_final));
+                }
+            }
+        }
+        let rank = |v: V| match v {
+            V::Public => 0,
+            V::Protected => 1,
+            V::Private => 2,
+        };
+        let cname = String::from_utf8_lossy(proto.name.as_bytes());
+        let cname = cname.split('\0').next().unwrap_or_default().to_string();
+        let shown = |vm: &Vm, c: Option<ClassId>| match c {
+            None => cname.clone(),
+            Some(id) => {
+                let n = String::from_utf8_lossy(vm.classes[id as usize].name.as_bytes());
+                n.split('\0').next().unwrap_or_default().to_string()
+            }
+        };
+        let check = |vm: &Vm, k: &[u8], child: Entry, p: Entry| -> Option<String> {
+            let kn = String::from_utf8_lossy(k);
+            if p.0 != child.0 && p.2 {
+                return Some(format!(
+                    "{}::{kn} cannot override final constant {}::{kn}",
+                    shown(vm, child.0),
+                    shown(vm, p.0)
+                ));
+            }
+            if child.0 != p.0 && child.0.is_some() {
+                return Some(format!(
+                    "{} {cname} inherits both {}::{kn} and {}::{kn}, which is ambiguous",
+                    crate::link_checks::kind_uc(proto.kind),
+                    shown(vm, child.0),
+                    shown(vm, p.0)
+                ));
+            }
+            if rank(child.1) > rank(p.1) {
+                let pk = p.0.map_or(proto.kind, |id| vm.classes[id as usize].kind);
+                let word = match p.1 {
+                    V::Public => "public",
+                    V::Protected => "protected",
+                    V::Private => "private",
+                };
+                return Some(format!(
+                    "Access level to {cname}::{kn} must be {word} (as in {} {}){}",
+                    crate::link_checks::kind_uc(pk).to_ascii_lowercase(),
+                    shown(vm, p.0),
+                    if p.1 == V::Public { "" } else { " or weaker" }
+                ));
+            }
+            None
+        };
+        let entries = |vm: &Vm, id: ClassId| -> Vec<(Vec<u8>, Entry)> {
+            vm.classes[id as usize]
+                .constants
+                .iter()
+                .map(|(k, c)| {
+                    (
+                        k.clone(),
+                        (Some(c.declaring_class), c.visibility, c.is_final),
+                    )
+                })
+                .collect()
+        };
+        let mut err = None;
+        if let Some(p) = parent {
+            for (k, pc) in entries(self, p) {
+                match table.get(&k) {
+                    Some(&child) => {
+                        err = err.or_else(|| check(self, &k, child, pc));
+                    }
+                    None if pc.1 != V::Private => {
+                        table.insert(k, pc);
+                    }
+                    None => {}
+                }
+            }
+        }
+        let parent_ifaces: Vec<ClassId> = parent
+            .map(|p| self.classes[p as usize].interfaces.clone())
+            .unwrap_or_default();
+        let ifaces: Vec<ClassId> = proto
+            .interfaces
+            .iter()
+            .filter_map(|i| self.class_ids.get(&lc(i.as_bytes())).copied())
+            .collect();
+        // Interfaces the parent implements are only checked; then the new
+        // ones add theirs.
+        for pass in [true, false] {
+            for &iid in &ifaces {
+                if parent_ifaces.contains(&iid) != pass {
+                    continue;
+                }
+                for (k, ic) in entries(self, iid) {
+                    match table.get(&k) {
+                        Some(&child) => err = err.or_else(|| check(self, &k, child, ic)),
+                        None if !pass => {
+                            table.insert(k, ic);
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        match err {
+            Some(msg) => Err(self.link_fatal(proto, 64, &msg)),
+            None => Ok(()),
+        }
+    }
 }
 
 /// inheritance_status

@@ -228,7 +228,7 @@ fn escape_shell_arg(s: &[u8]) -> Vec<u8> {
     out
 }
 
-fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
+pub(crate) fn escape_shell_cmd(s: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 2);
     // Position of the matching closing quote while inside a quoted span.
     let mut p: Option<usize> = None;

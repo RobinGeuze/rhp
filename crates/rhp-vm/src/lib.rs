@@ -10,6 +10,7 @@
 //! diagnostics and unwinds exceptions; `lifecycle` builds the engine and runs
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
+mod attributes;
 mod callables;
 mod calls;
 mod classes;
@@ -108,11 +109,19 @@ pub struct Vm {
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
+    /// Attributed global constants' attributes, by constant name.
+    const_attrs: HashMap<Vec<u8>, attributes::ConstAttrs>,
+    /// The `#[\Deprecated]` global constants whose deprecation is being
+    /// raised (php's CONST_PROTECT_RECURSION).
+    const_guard: Vec<Vec<u8>>,
     max_depth: usize,
     /// After max_execution_time ran out: the (frame, pc) of the last user
     /// instruction run. php raises the timeout where a jump lands or a
     /// function starts (its VM interrupt checks).
     timeout_prev: Option<(usize, usize)>,
+    /// EG(ticks_count): statements run under `declare(ticks)` since the
+    /// tick functions last ran.
+    ticks_count: u32,
     /// A jump landed on a loop head: php's layout tests the condition at
     /// the bottom, so its landing is the body start, here (frame, pc).
     timeout_wait: Option<(usize, usize)>,
@@ -181,6 +190,9 @@ pub struct Vm {
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
     in_autoload: std::collections::HashSet<Vec<u8>>,
+    /// Stack depth at each running autoload: php's zend_lookup_class clears
+    /// the constant-expression file/line override for the loader.
+    autoload_depths: Vec<usize>,
     /// Inheritance-check state while classes link (see `inherit`).
     inherit: inherit::LinkState,
     /// Named-argument binding for the frame about to be pushed: the skipped
@@ -190,6 +202,9 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// The stack depth of the builtin call whose result is unused
+    /// (`CallFlags::RESULT_UNUSED`), else `usize::MAX`.
+    unused_call_depth: usize,
     /// Set by `$f(...)` right before its callable dispatch, which then
     /// resolves the value as a dynamic call (zend_init_dynamic_call_*).
     dyn_call: bool,
@@ -206,6 +221,9 @@ pub struct Vm {
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
+    // Built-in wrappers `stream_wrapper_unregister` took out, kept for
+    // `stream_wrapper_restore` (None: one served outside `wrappers`).
+    wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for
@@ -235,12 +253,23 @@ pub struct Vm {
     stream_notifiers: HashMap<u32, Value>,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
-    // `@` nesting depth: diagnostics are recorded but not displayed while > 0.
+    // `@` nesting depth (the error_reporting mask itself is in the ini
+    // value, as php's EG(error_reporting)).
     silence: u32,
-    // Active `@` regions: (frame depth, silence level to restore).
-    silence_stack: Vec<(usize, u32)>,
+    // Active `@` regions: (frame depth, silence level to restore, the
+    // error_reporting value before it).
+    silence_stack: Vec<(usize, u32, i64)>,
+    // Engine-internal quiet regions (preloading): nothing is displayed.
+    quiet: u32,
+    // Null-key deprecations a read-modify-write path already raised (its
+    // write converts those keys quietly).
+    rw_null_keys: u32,
+    // The open cursor has a null key (set by `LvalKey`).
+    cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
+    /// EG(last_fatal_error_backtrace): `error_get_last()['trace']`.
+    last_fatal_trace: Option<rhp_values::PhpArray>,
     /// `set_error_handler` stack (innermost last): (callback or null, mask).
     error_handlers: Vec<(Value, i64)>,
     /// A user error handler is running (php unsets the handler meanwhile).
@@ -262,6 +291,9 @@ pub struct Vm {
     // (zend_objects_store_mark_destructed): kept, never destructed, until
     // shutdown ends.
     marked_destructed: Vec<ObjectHandle>,
+    // `__PHP_Incomplete_Class`, once linked: its objects take
+    // incomplete_class.c's property and method handlers.
+    incomplete_class: Option<ClassId>,
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,
@@ -389,7 +421,13 @@ impl Drop for Frame {
 
 impl Frame {
     fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
-        let regs = vec![Value::Null; proto.num_registers as usize];
+        // Every register starts undefined (a zero tag, so this is a fill
+        // of zeroes): a variable must be, and a temporary is written before
+        // it is read (a copy reads `Undef` as null, a move turns it into
+        // null, and `undef_cv` never warns for one).
+        let n = proto.num_registers as usize;
+        let mut regs = Vec::with_capacity(n);
+        regs.resize_with(n, || Value::Undef);
         Frame {
             proto,
             unit,

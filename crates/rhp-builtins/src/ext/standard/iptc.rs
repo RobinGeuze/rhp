@@ -18,25 +18,33 @@ struct Embed<'a> {
     pos: usize,
     spool: i64,
     buf: Option<Vec<u8>>,
+    /// The result buffer's size: php allocates the IPTC data, the header
+    /// and 1025 bytes more than the file's fstat size.
+    cap: usize,
 }
 
 impl Embed<'_> {
-    /// php_iptc_put1.
-    fn put1(&mut self, host: &mut dyn Host, c: u8) {
+    /// php_iptc_put1: false when the result buffer is full.
+    fn put1(&mut self, host: &mut dyn Host, c: u8) -> bool {
         if self.spool > 0 {
             host.write_out(&[c]);
         }
         if let Some(b) = &mut self.buf {
+            if b.len() >= self.cap {
+                return false;
+            }
             b.push(c);
         }
+        true
     }
 
     /// php_iptc_get1 (`copy`: false is php's spool 0 without a buffer).
     fn get1(&mut self, host: &mut dyn Host, copy: bool) -> Option<u8> {
         let c = *self.data.get(self.pos)?;
         self.pos += 1;
-        if copy {
-            self.put1(host, c);
+        // A full result buffer reads as EOF (the byte is still spooled).
+        if copy && !self.put1(host, c) {
+            return None;
         }
         Some(c)
     }
@@ -74,7 +82,9 @@ impl Embed<'_> {
         loop {
             match self.get1(host, false) {
                 None => return M_EOI,
-                Some(0xff) => self.put1(host, 0xff),
+                Some(0xff) => {
+                    self.put1(host, 0xff);
+                }
                 Some(m) => return m as u32,
             }
         }
@@ -90,11 +100,14 @@ fn fn_iptcembed(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::warn(host, "iptcembed", &msg)?;
         return Ok(Value::Bool(false));
     };
+    let st_size =
+        std::fs::metadata(crate::zend::virtual_cwd::os_path(&path)).map_or(0, |m| m.len() as usize);
     let mut e = Embed {
         data: &data,
         pos: 0,
         spool,
         buf: (spool < 2).then(Vec::new),
+        cap: iptc.len() + 29 + 1025 + st_size,
     };
     if e.get1(host, true) != Some(0xff) || e.get1(host, true) != Some(M_SOI as u8) {
         return Ok(Value::Bool(false));
@@ -105,8 +118,8 @@ fn fn_iptcembed(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         if marker == M_EOI {
             break;
         }
-        if marker != M_APP13 {
-            e.put1(host, marker as u8);
+        if marker != M_APP13 && !e.put1(host, marker as u8) {
+            return Ok(Value::Bool(false));
         }
         match marker {
             M_APP13 => {
@@ -128,13 +141,11 @@ fn fn_iptcembed(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 let mut ps = *b"\xFF\xED\0\0Photoshop 3.0\x008BIM\x04\x04\0\0\0\0";
                 ps[2] = ((n + 28) >> 8) as u8;
                 ps[3] = ((n + 28) & 0xff) as u8;
-                for c in ps {
-                    e.put1(host, c);
-                }
-                e.put1(host, (n >> 8) as u8);
-                e.put1(host, (n & 0xff) as u8);
-                for &c in &iptc {
-                    e.put1(host, c);
+                let bytes = ps.iter().copied().chain([(n >> 8) as u8, (n & 0xff) as u8]);
+                for c in bytes.chain(iptc.iter().copied()) {
+                    if !e.put1(host, c) {
+                        return Ok(Value::Bool(false));
+                    }
                 }
             }
             M_APP0 | M_APP1 => {}

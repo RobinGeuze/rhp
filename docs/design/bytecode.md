@@ -31,7 +31,7 @@ Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
 dropped at compile time (a `FunctionProto` carries **no** `'arena` borrow);
 `eval` / `extract` / `compact` / `create_function` / `include`/`require` /
-backticks / `(unset)`-cast are **refused**, structurally in the compiler for the
+`(unset)`-cast are **refused**, structurally in the compiler for the
 construct nodes and via `is_refused()` for function names (§4). `eval` is
 **never** implemented — no opcode interprets a string as code, by construction.
 
@@ -270,6 +270,7 @@ from isa.md are the disassembly spelling of the same variants.
 **Move / const / load (phase 1–2)**
 ```
 Nop
+Ticks      { n }                  ZEND_TICKS: after each statement under declare(ticks=n); every nth runs the tick functions ?
 Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
 MovTake    { dst, src }           dst = deref(src); src = Null             (a dead temporary into a call window)
 LoadConst  { dst, k }             dst = consts[k].clone()
@@ -301,7 +302,9 @@ CastInt    { dst,a } → Int(conv::to_int)       CastFloat  { dst,a } → Float(
 CastString { dst,a } → Str(conv::to_string_bytes)   CastBool { dst,a } → Bool(conv::to_bool)
 CastArray  { dst,a } → cast_to_array(a)        // (object) is phase 7
 ```
-`(unset)`/`(real)`/`(void)` have **no opcode** — refused in the compiler (§4).
+`(unset)`/`(real)` have **no opcode** — refused in the compiler (§4). `(void) expr`
+(a statement only, as php's grammar has it) compiles its operand and frees it,
+without the unused-result mark below.
 
 **Compare (phase 2) — route to `ops::`** (one op, `kind` selects)
 ```
@@ -354,13 +357,56 @@ IssetCv    { dst, cv }                Bool(!is_null(deref(cv)))           (unset
 IssetDim   { dst, arr, key }          Bool(present AND not null); no warning; chains via DimFetchIs
 EmptyCv    { dst, cv }                Bool(!conv::to_bool(deref(cv)))
 EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
-UnsetCv    { cv }                     regs[cv] = Null   (see note)
-UnsetDim   { arr, key }               remove via make_mut; next_int high-water not lowered (value-model §3c)
+UnsetCv    { cv }                     regs[cv] = Undef  (see "Undefined variables")
+UnsetDim   { arr, key }               remove via make_mut; next free key not lowered (value-model §3c)
 ```
-> `unset` vs "never defined": `isset` treats null/absent identically, so storing
-> `Null` on `UnsetCv` is observably correct for isset/??/empty. The only
-> divergence is the undefined-variable *warning* on a later read; if a golden
-> needs it, add an `Undef` CV sentinel. Baseline accepts `Null`.
+
+**Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
+IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts
+every register undefined (temporaries are written before they are read). In the global scope a CV is a `Ref` to the symbol-table
+cell, and the cell holds `Undef` instead. There is no compile-time analysis:
+as in php, each instruction decides how it fetches its operands.
+
+- R (a plain read, php's BP_VAR_R): `Vm::reg_r` raises "Undefined variable
+  $x" (the name from `cv_var_names`) and reads null. The handlers that read
+  an operand that may be a CV use it: arithmetic and concat, comparisons,
+  casts, `echo`, `Mov`/`Assign`, array literal elements, dimension and
+  property containers and keys, dynamic names, call targets, `return`,
+  `throw`, `yield`, … A temporary never warns (`undef_cv` checks
+  `r < num_cvs`).
+- IS (`isset`, `empty`, `??`, `??=`, the `?->` under isset): `MovIs`,
+  `FetchVarVarIs` and the `*Is` fetches read quietly (`reg_get`: `clone()`
+  gives null).
+- W (assignment, `$a[] = v`, `global`, `static`, by-ref binding): writes
+  replace `Undef`; `LvalCv` leaves the root alone until the write lands, so
+  `$a[0] = $a` reads (and warns about) `$a` first. A PHP reference never
+  holds `Undef`: `promote` turns it into null.
+- RW (`$x .= v`, `$x++`, `$a[$k] += v`): `IncDec` and `LvalCvRw` warn, then
+  the variable is null; `LvalGlobalRw` / `LvalVarVarRw` do the same for
+  `$GLOBALS['x']` ("Undefined global variable") and `$$n`.
+- UNSET (`unset($a[$k])`): `LvalCvUnset` warns and unsets nothing.
+- A method's argument window passes variables as `MakeArgRef` (the callee
+  is only known when the call runs): an undefined one stays undefined in a
+  shared cell, and binding decides (`bind_undef_args`): a by-reference
+  parameter creates it as null, a by-value one (or `__call`) warns. A
+  dynamic call (`$f($x)`) to a function, builtin or method by name does the
+  same once it has resolved the callee (`settle_dyn_undef_args`).
+- A user error handler run in the middle of an lvalue write keeps the open
+  cursor (`with_saved_cursor`); when the handler replaces the variable under
+  an undefined key, the write goes to the container php had fetched
+  (`lval_undef_key`).
+- `CheckCv` warns once where php reads once but rhp fetches several times
+  (a `list()` source, a `match` subject php puts in a jump table, the
+  operand of a `?->` guard).
+- `$GLOBALS` (`globals_array`) and a closure's static variables leave
+  undefined entries out; `$GLOBALS` keeps a global that is a PHP reference
+  shared with something else (not a global-scope frame's own slot) as a
+  reference; `unset($GLOBALS['x'])` keeps the symbol-table entry
+  (an `Undef` cell), as php keeps the bucket of an IS_INDIRECT slot.
+- An include shares the including function's variables by name through cells
+  (`promote_slot`), which keep `Undef`; an arrow function's implicit capture
+  copies the slot with `copy_slot`, so an undefined outer variable is
+  undefined inside (`use ($x)` reads it, with the warning).
 
 **foreach (phase 4)** — by-value iterates a COW snapshot (Rc bump into a hidden
 reg); by-ref operates on the live CV array. Position is a hidden `Int` reg via
@@ -391,6 +437,28 @@ reads each function's C body for the parameters php parses as any value, a
 resource or an open stream, so the VM checks those too and parses the
 scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
 before any of this, from the stub's `since` and `message`.)
+
+**Attributes the engine acts on.** The compiler runs php's internal
+attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed
+targets, repetition and the validators, with `#[\DelayedTargetValidation]`
+leaving the error to `ReflectionAttribute::newInstance()`
+(`AttributeProto::validation_error`). `#[\Deprecated]` and `#[\NoDiscard]`
+set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
+once per call and, only when one is set, raises the deprecation and the
+unused-result warning before the frame is entered
+(`rhp-vm/src/attributes.rs`, zend_execute.c's zend_deprecated_function /
+zend_nodiscard_function). "Unused" is php's zend_do_free rule: the compiler
+records in `FunctionProto::discard_calls` the pcs of calls compiled last in
+a freed expression (an expression statement, a `for` list entry), and the
+VM looks the caller's pc up there. The message suffix comes from building the
+attribute object (its constructor checks the arguments). Class constants and
+enum cases carry `ClassConst::deprecated`; attributed global constants are
+declared by `DeclareAttrConst { name, src, attrs }`, which keeps
+`FunctionProto::const_attrs[attrs]` for the constant (fetch deprecation,
+`ReflectionConstant::getAttributes()`). A trait's `#[\Deprecated]` is raised
+when a class using it is linked. Trace arguments of `#[\SensitiveParameter]`
+parameters (user ones, and builtins' through the stub flag `SENS`) become
+`SensitiveParameterValue` objects.
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
@@ -492,7 +560,9 @@ compiled, not guessed from debug info:
   `USER_CALL` only for a name resolved at compile time (no namespace
   fallback), `ICALL` also for a namespaced call that falls back to the
   builtin. `CallV` (an unpacked or named argument) has none: php compiles
-  such a call as a plain internal call.
+  such a call as a plain internal call. `RESULT_UNUSED` marks a call that
+  is a whole expression statement; a builtin asks `Host::result_unused()`
+  (php's `!USED_RET()`, which `array_splice` checks).
 
 A call by name is resolved once per call site and request, like php's
 run-time cache slots: `Vm::call_sites` maps (proto address, pc) to the user
@@ -807,8 +877,8 @@ can't swallow it):
 |---|---|---|
 | `eval(...)` | `Construct::Eval` | **refuse — no `Eval` opcode exists, ever** |
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
-| backticks `` `…` `` | `CompositeString::ShellExecute` | refuse — never spawn a shell |
-| `(real)`/`(void)` cast | `UnaryPrefixOperator::{RealCast,VoidCast}` | refuse (`(unset)` is php's compile error) |
+| backticks `` `…` `` | `CompositeString::ShellExecute` | compiled as a `shell_exec()` call with php 8.5's deprecation (no longer refused) |
+| `(real)` cast | `UnaryPrefixOperator::RealCast` | refuse (`(unset)` is php's compile error; `(void)` compiles, §2) |
 | `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 
 ### 4.2 Function-name refusals — `is_refused()`

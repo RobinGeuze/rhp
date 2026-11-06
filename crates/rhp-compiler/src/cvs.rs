@@ -201,11 +201,32 @@ impl ProtoBuilder<'_> {
                 let parts = match cs {
                     CompositeString::Interpolated(i) => Some(&i.parts),
                     CompositeString::Document(d) => Some(&d.parts),
-                    CompositeString::ShellExecute(_) => None,
+                    CompositeString::ShellExecute(s) => Some(&s.parts),
                 };
                 if let Some(parts) = parts {
                     for part in parts.iter() {
                         match part {
+                            StringPart::Expression(Expression::Variable(Variable::Indirect(
+                                iv,
+                            ))) => {
+                                let src = self.cx.src;
+                                match crate::strings::dollar_brace_varname(
+                                    src,
+                                    iv.dollar_left_brace.end.offset as usize,
+                                ) {
+                                    Some(name) => {
+                                        if name != b"this" && name != b"GLOBALS" {
+                                            self.cv(name);
+                                        }
+                                        if let Expression::ArrayAccess(aa) = iv.expression {
+                                            self.scan_expr_vars(aa.index);
+                                        }
+                                    }
+                                    None => self.scan_expr_vars(&Expression::Variable(
+                                        Variable::Indirect(iv.clone()),
+                                    )),
+                                }
+                            }
                             StringPart::Expression(e) => self.scan_expr_vars(e),
                             StringPart::BracedExpression(b) => self.scan_expr_vars(b.expression),
                             StringPart::Literal(_) => {}
@@ -325,7 +346,7 @@ impl ProtoBuilder<'_> {
             // superglobals.
             Expression::ArrowFunction(af) => {
                 let mut used = Vec::new();
-                collect_vars(af.expression, &mut used);
+                collect_vars(af.expression, self.cx.src, &mut used);
                 for name in used {
                     let param = af
                         .parameter_list
@@ -441,7 +462,8 @@ impl ProtoBuilder<'_> {
     /// Completeness backstop for the CV pre-pass: give each `$name` of the
     /// body still missing a slot one (see [`visit_vars`]).
     pub(crate) fn scan_node_vars(&mut self, node: Node) {
-        visit_vars(node, false, &mut |name| {
+        let src = self.cx.src;
+        visit_vars(node, false, src, &mut |name| {
             self.cv(name);
         });
     }
@@ -474,8 +496,8 @@ fn literal_var_name<'a>(iv: &IndirectVariable<'a>) -> Option<&'a [u8]> {
 /// Every `$var` name an arrow function's body uses (deduplicated, in source
 /// order): nested arrow functions' bodies included, so their free variables
 /// propagate upward.
-pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
-    visit_vars(Node::Expression(expr), true, &mut |name| {
+pub(crate) fn collect_vars(expr: &Expression, src: &[u8], out: &mut Vec<Vec<u8>>) {
+    visit_vars(Node::Expression(expr), true, src, &mut |name| {
         if !out.iter().any(|n| n == name) {
             out.push(name.to_vec());
         }
@@ -486,9 +508,23 @@ pub(crate) fn collect_vars(expr: &Expression, out: &mut Vec<Vec<u8>>) {
 /// entering the scopes that own their variables (functions, classes,
 /// attributes, arrow functions): a closure contributes its `use` variables,
 /// an anonymous class its constructor arguments, and with `arrows` a nested
-/// arrow function its body.
-fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
+/// arrow function its body. `src` spots `"${name}"` (the scanner's
+/// T_STRING_VARNAME, which the tree keeps as `${name}`).
+fn visit_vars(node: Node, arrows: bool, src: &[u8], f: &mut impl FnMut(&[u8])) {
     match node {
+        Node::StringPart(StringPart::Expression(Expression::Variable(Variable::Indirect(iv)))) => {
+            if let Some(name) =
+                crate::strings::dollar_brace_varname(src, iv.dollar_left_brace.end.offset as usize)
+            {
+                if name != b"this" && name != b"GLOBALS" {
+                    f(name);
+                }
+                if let Expression::ArrayAccess(aa) = iv.expression {
+                    visit_vars(Node::Expression(aa.index), arrows, src, f);
+                }
+                return;
+            }
+        }
         Node::DirectVariable(d) => {
             f(strip_dollar(d.name));
             return;
@@ -503,7 +539,7 @@ fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
         }
         Node::AnonymousClass(ac) => {
             if let Some(args) = &ac.argument_list {
-                visit_vars(Node::PartialArgumentList(args), arrows, f);
+                visit_vars(Node::PartialArgumentList(args), arrows, src, f);
             }
             return;
         }
@@ -516,16 +552,16 @@ fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
         // `C::$p`: the `$p` is the property name, not a variable; `C::$$p`
         // reads `$p`.
         Node::StaticPropertyAccess(spa) => {
-            visit_vars(Node::Expression(spa.class), arrows, f);
+            visit_vars(Node::Expression(spa.class), arrows, src, f);
             if !matches!(spa.property, Variable::Direct(_)) {
-                visit_vars(Node::Variable(&spa.property), arrows, f);
+                visit_vars(Node::Variable(&spa.property), arrows, src, f);
             }
             return;
         }
         // php's find_implicit_binds: a nested arrow function's body.
         Node::ArrowFunction(af) => {
             if arrows {
-                visit_vars(Node::Expression(af.expression), arrows, f);
+                visit_vars(Node::Expression(af.expression), arrows, src, f);
             }
             return;
         }
@@ -537,5 +573,5 @@ fn visit_vars(node: Node, arrows: bool, f: &mut impl FnMut(&[u8])) {
         | Node::AttributeList(_) => return,
         _ => {}
     }
-    node.visit_children(|ch| visit_vars(ch, arrows, f));
+    node.visit_children(|ch| visit_vars(ch, arrows, src, f));
 }

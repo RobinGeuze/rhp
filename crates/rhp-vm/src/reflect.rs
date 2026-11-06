@@ -57,6 +57,7 @@ pub(crate) const T_METHOD: i64 = 4;
 pub(crate) const T_PROPERTY: i64 = 8;
 pub(crate) const T_CLASS_CONST: i64 = 16;
 pub(crate) const T_PARAMETER: i64 = 32;
+pub(crate) const T_CONST: i64 = 64;
 
 /// A resolved function-like reflection subject.
 #[derive(Clone)]
@@ -235,6 +236,22 @@ impl Vm {
                 None => Ok(Value::Null),
             },
             b"attr_args" => self.attr_args(args),
+            // A global constant's attributes (`#[A] const X = 1;`).
+            b"gconst_attrs" => {
+                let name = arg_bytes(args, 0);
+                let key = rhp_builtins::zend::builtin_functions::const_key(&name).into_owned();
+                let attrs = self.const_attrs.get(&key).map(|c| c.attrs.clone());
+                Ok(match attrs {
+                    Some(a) => self.attrs_desc(&a, T_CONST, |i| {
+                        let mut k = PhpArray::new();
+                        k.push(s(b"gconst"));
+                        k.push(s(&key));
+                        k.push(Value::Int(i as i64));
+                        Value::Array(k)
+                    }),
+                    None => Value::Array(PhpArray::new()),
+                })
+            }
             b"deprecated" => {
                 let msg = arg_bytes(args, 0);
                 self.raise_error(rhp_builtins::E_DEPRECATED, &msg);
@@ -315,14 +332,7 @@ impl Vm {
             }
             b"included" => {
                 let mut out = PhpArray::new();
-                // The main script counts when it is a real file (not `-r`
-                // code or a script read from stdin).
-                let main = self.main_script_path.clone().or_else(|| {
-                    let f = self.stack.first()?.proto.debug.file.as_bytes();
-                    rhp_builtins::zend::virtual_cwd::os_path(f)
-                        .is_file()
-                        .then(|| f.to_vec())
-                });
+                let main = self.main_included_path();
                 if let Some(m) = &main {
                     out.push(s(m));
                 }
@@ -1144,6 +1154,10 @@ impl Vm {
             d.push(Value::Int(target));
             d.push(Value::Bool(repeated));
             d.push(key(i));
+            d.push(match &at.validation_error {
+                Some(e) => Value::Str(e.clone()),
+                None => Value::Null,
+            });
             out.push(Value::Array(d));
         }
         Value::Array(out)
@@ -1189,6 +1203,13 @@ impl Vm {
                     Some((a, Some(cid), self.classes[owner as usize].unit))
                 })
             }
+            b"gconst" => {
+                let name = rhp_values::conv::to_string_bytes(&k[1]);
+                self.const_attrs.get(&name).and_then(|c| {
+                    let a = c.attrs.get(idx_of(&k[2])).cloned()?;
+                    Some((a, None, c.unit))
+                })
+            }
             b"fn" | b"param" => {
                 let sub = self.fn_subject(&k[1])?;
                 let scope = match &sub {
@@ -1229,6 +1250,15 @@ impl Vm {
     /// `[class|object, method]` pair.
     fn fn_subject(&mut self, loc: &Value) -> Result<Option<FnSubject>, Thrown> {
         Ok(match loc {
+            // A `Class::method` string (a Closure::fromCallable() target).
+            Value::Str(n) if n.as_bytes().windows(2).any(|w| w == b"::") => {
+                let b = n.as_bytes();
+                let at = b.windows(2).position(|w| w == b"::").unwrap_or(0);
+                let mut pair = PhpArray::new();
+                pair.push(Value::str(b[..at].to_vec()));
+                pair.push(Value::str(b[at + 2..].to_vec()));
+                self.fn_subject(&Value::Array(pair))?
+            }
             Value::Str(n) => {
                 let name = n.as_bytes();
                 let name = name.strip_prefix(b"\\").unwrap_or(name);
@@ -1243,7 +1273,18 @@ impl Vm {
             }
             Value::Closure(cd) => match &cd.wrapped {
                 Some(w) => {
-                    let w = (**w).clone();
+                    let mut w = (**w).clone();
+                    // `$closure->__invoke(...)`: the closure's own function.
+                    if let Some(inner) = rhp_builtins::zend::closures::closure_invoke_of(&w) {
+                        w = inner;
+                    }
+                    // `Closure::fromCallable($invokable)`: its `__invoke`.
+                    if let Value::Object(_) = &w {
+                        let mut pair = PhpArray::new();
+                        pair.push(w);
+                        pair.push(Value::str("__invoke"));
+                        w = Value::Array(pair);
+                    }
                     self.fn_subject(&w)?
                 }
                 None => self
@@ -1574,34 +1615,8 @@ impl Vm {
                 put(&mut a, "modifiers", Value::Int(mods));
                 put(&mut a, "abstract", Value::Bool(m.is_abstract));
                 put(&mut a, "final", Value::Bool(m.is_final));
-                // The prototype: the same-named method of an ancestor
-                // (parent chain first, then interfaces).
                 let lname = lc(proto.name.as_bytes());
-                let e = &self.classes[m.defining_class as usize];
-                let mut proto_cls: Option<ClassId> = None;
-                let mut cur = e.parent;
-                while let Some(pc) = cur {
-                    if let Some(pm) = self.classes[pc as usize].methods.get(&lname) {
-                        if pm.visibility != Visibility::Private {
-                            proto_cls = Some(pm.defining_class);
-                            // Keep walking to the root declaration.
-                            cur = self.classes[pm.defining_class as usize].parent;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-                if proto_cls.is_none() {
-                    for &i in &e.interfaces {
-                        if i != m.defining_class
-                            && self.classes[i as usize].methods.contains_key(&lname)
-                        {
-                            proto_cls =
-                                Some(self.classes[i as usize].methods[&lname].defining_class);
-                            break;
-                        }
-                    }
-                }
+                let proto_cls = self.method_prototype(*class, &lname);
                 put(
                     &mut a,
                     "prototype",
@@ -1655,7 +1670,7 @@ impl Vm {
                         .get(i)
                         .map(|n| n.as_bytes().to_vec())
                         .unwrap_or_default();
-                    if n == b"this" {
+                    if n == b"this" || matches!(cd.captures.get(i), Some(Value::Undef)) {
                         continue;
                     }
                     let v = cd.captures.get(i).map(deref).unwrap_or(Value::Null);
@@ -1773,10 +1788,66 @@ impl Vm {
     }
 
     /// `Enum::cases()` / `from()` / `tryFrom()`.
+    /// php's `common.prototype` of method `lname` as class `r` holds it
+    /// (do_inheritance_check_on_method, do_interface_implementation): the
+    /// parent's prototype (or the parent's method) for an override, the
+    /// shared function's for an inherited one, then the last interface `r`
+    /// itself declares (not one inherited through another) that has the
+    /// method. Interface methods never get one, nor do inherited ones.
+    fn method_prototype(&self, r: ClassId, lname: &[u8]) -> Option<ClassId> {
+        let e = &self.classes[r as usize];
+        if e.kind == ClassKind::Interface {
+            return None;
+        }
+        let m = e.methods.get(lname)?;
+        if self.classes[m.defining_class as usize].kind == ClassKind::Interface {
+            return None; // the interface's own function, shared
+        }
+        let mut p = None;
+        if let Some(pc) = e.parent {
+            if let Some(pm) = self.classes[pc as usize].methods.get(lname) {
+                if m.defining_class != r {
+                    p = self.method_prototype(pc, lname);
+                } else if pm.visibility != Visibility::Private {
+                    let proto = self
+                        .method_prototype(pc, lname)
+                        .unwrap_or(pm.defining_class);
+                    // A constructor only has an abstract one as prototype.
+                    let abstract_proto = self.classes[proto as usize]
+                        .methods
+                        .get(lname)
+                        .is_some_and(|m| m.is_abstract);
+                    if lname != b"__construct" || abstract_proto {
+                        p = Some(proto);
+                    }
+                }
+            }
+        }
+        // zend_do_implement_interfaces: only the declared interfaces, minus
+        // the parent's, get do_interface_implementation.
+        let inherited: &[ClassId] = match e.parent {
+            Some(pc) => &self.classes[pc as usize].interfaces,
+            None => &[],
+        };
+        for iname in &e.proto.interfaces {
+            let Some(&i) = self.class_ids.get(&lc(iname.as_bytes())[..]) else {
+                continue;
+            };
+            if inherited.contains(&i) {
+                continue;
+            }
+            if let Some(im) = self.classes[i as usize].methods.get(lname) {
+                p = Some(im.defining_class);
+            }
+        }
+        p
+    }
+
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();
-        put(&mut a, "ext", s(b"Core"));
+        // Registered with no module (zend_enum_register_funcs).
+        put(&mut a, "ext", Value::Bool(false));
         put(&mut a, "name", s(name.as_bytes()));
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));
@@ -1795,7 +1866,12 @@ impl Vm {
         put(&mut a, "modifiers", Value::Int(17));
         put(&mut a, "abstract", Value::Bool(false));
         put(&mut a, "final", Value::Bool(false));
-        put(&mut a, "prototype", Value::Null);
+        let iface: &[u8] = if name == "cases" {
+            b"UnitEnum"
+        } else {
+            b"BackedEnum"
+        };
+        put(&mut a, "prototype", s(iface));
         put(&mut a, "attrs", Value::Array(PhpArray::new()));
         put(&mut a, "tentative", Value::Null);
         let ret = match name {

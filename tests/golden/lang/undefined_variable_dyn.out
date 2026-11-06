@@ -1,0 +1,21 @@
+[2] Undefined variable $a (line 19)
+NULL
+[2] Undefined variable $c (line 21)
+NULL
+[2] Undefined variable $e (line 23)
+[2] Undefined variable $g (line 24)
+[8192] strlen(): Passing null to parameter #1 ($string) of type string is deprecated (line 24)
+int(0)
+sort(): Argument #1 ($array) must be of type array, null given
+NULL
+int(0)
+[2] Undefined variable $k (line 29)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 29)
+bool(false)
+int(1)
+int(1)
+int(2)
+int(3)
+int(10)
+int(2)
+int(3)

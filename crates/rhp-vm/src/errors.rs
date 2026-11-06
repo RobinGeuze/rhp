@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
-use rhp_bytecode::FunctionProto;
+use rhp_bytecode::{FunctionProto, Instr};
 use rhp_values::{conv, ArrayKey, ClassId, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, is_handler_accessor};
@@ -36,6 +36,19 @@ pub(crate) enum FinallyCont {
 
 pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 
+/// A boolean ini directive (php's OnUpdateBool: "1", "on", "yes", "true").
+fn ini_flag(name: &[u8]) -> bool {
+    builtins::ini_value(name)
+        .flatten()
+        .is_some_and(|v| builtins::ini_parse_bool(&v))
+}
+
+/// A name as php's `%s` prints it: up to the first NUL (an anonymous class
+/// `X@anonymous\0file:line$n` shows as `X@anonymous`).
+pub(crate) fn c_name(name: &[u8]) -> &[u8] {
+    &name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())]
+}
+
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
@@ -53,12 +66,15 @@ impl Vm {
     }
 
     /// The backtrace a fatal error shows (`fatal_error_backtraces`).
-    fn fatal_trace(&self) -> Vec<u8> {
+    pub(crate) fn fatal_trace(&mut self) -> Vec<u8> {
+        self.last_fatal_trace = None;
         if !ini_bool(&self.ini_get(b"fatal_error_backtraces").unwrap_or_default()) {
             return Vec::new();
         }
-        let trace = Value::Array(self.build_trace_ex(false, false));
-        builtins::zend::exceptions::trace_to_string(self, &trace)
+        let arr = self.build_trace();
+        let s = builtins::zend::exceptions::trace_to_string(self, &Value::Array(arr.clone()));
+        self.last_fatal_trace = Some(arr);
+        s
     }
 
     /// [`Vm::fatal_compile_error`] reported at `file`:`line` (php's
@@ -107,14 +123,23 @@ impl Vm {
         let Thrown::Object(h) = thrown else {
             return Vec::new();
         };
+        match self.call_to_string(&h) {
+            Ok(Value::Str(s)) => s.as_bytes().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `$throwable->__toString()`, its result dereferenced.
+    fn call_to_string(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
         let cls = h.borrow().class;
-        let obj = Value::Object(h.clone());
         match self.lookup_method(cls, b"__tostring") {
-            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
-                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
-                _ => builtins::zend::exceptions::throwable_to_string(self, &obj),
-            },
-            None => builtins::zend::exceptions::throwable_to_string(self, &obj),
+            Some(m) => self
+                .call_sync(&m, Some(h.clone()), cls, Vec::new())
+                .map(|v| deref(&v)),
+            None => {
+                let obj = Value::Object(h.clone());
+                builtins::zend::exceptions::throwable_to_string(self, &obj).map(Value::str)
+            }
         }
     }
 
@@ -129,14 +154,26 @@ impl Vm {
     /// exception from the handler becomes `pending_throw`.
     pub(crate) fn raise_error(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
         let msg = msg.as_ref();
+        if let Some((file, line)) = self.const_expr_site() {
+            return self.raise_error_at(level, msg, file, line as i64);
+        }
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !self.stack[i].proto.is_internal())
+            .find(|&i| !self.stack[i].proto.is_internal() && !self.is_const_expr_frame(i))
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
             None => (Vec::new(), 0),
+            // The user exception handler's call: php has no frame there.
+            Some(i)
+                if self.stack[i]
+                    .proto
+                    .flags
+                    .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE) =>
+            {
+                (b"Unknown".to_vec(), 0)
+            }
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
         self.raise_error_at(level, msg, file, line);
@@ -160,11 +197,12 @@ impl Vm {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
+        self.last_fatal_trace = None;
         // A diagnostic prelude code silenced with `@` is engine plumbing (php's
         // C implementation raises none): it only updates error_get_last().
         // (`silence_stack` records the stack depth at each `@`.)
         let prelude_silenced = self.silence > 0
-            && self.silence_stack.last().is_some_and(|&(depth, _)| {
+            && self.silence_stack.last().is_some_and(|&(depth, _, _)| {
                 depth
                     .checked_sub(1)
                     .and_then(|i| self.stack.get(i))
@@ -198,7 +236,9 @@ impl Vm {
             // only if the handler did not install another one.
             let idx = self.error_handlers.len() - 1;
             self.error_handlers[idx].0 = Value::Bool(false);
-            let r = self.call_callable_value(&h, args);
+            // The diagnostic may come from the middle of an lvalue write:
+            // the handler's own writes must not disturb that cursor.
+            let r = self.with_saved_cursor(|vm| vm.call_callable_value(&h, args));
             if self.error_handlers.len() == idx + 1
                 && matches!(self.error_handlers[idx].0, Value::Bool(false))
             {
@@ -213,18 +253,27 @@ impl Vm {
                 }
             }
         }
-        self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        // php_error_cb: ignore_repeated_errors drops a message equal to the
+        // last one (from the same place, unless ignore_repeated_source).
+        let repeated = ini_flag(b"ignore_repeated_errors")
+            && self.last_error.as_ref().is_some_and(|(_, m, f, l)| {
+                m == msg && (ini_flag(b"ignore_repeated_source") || (*l == line && *f == file))
+            });
+        if !repeated {
+            self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        } else if level != builtins::E_USER_ERROR {
+            return;
+        }
         if level == builtins::E_USER_ERROR {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            let trace = builtins::zend::exceptions::trace_to_string(self, &trace);
+            let trace = self.fatal_trace();
             self.display_error_trace(level, "Fatal error", msg, &file, line, &trace);
             self.mark_objects_destructed();
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }
-        if self.silence > 0 && level & SILENCE_KEEPS == 0 {
+        if self.quiet > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
         use builtins::*;
@@ -328,22 +377,49 @@ impl Vm {
 
     /// A builtin called from frame `i` is still running (so a frame above `i`
     /// was invoked by it, i.e. from `[internal function]`).
-    fn native_active_from(&self, i: usize) -> bool {
+    pub(crate) fn native_active_from(&self, i: usize) -> bool {
         self.native_calls.iter().any(|n| n.caller == i)
+    }
+
+    /// Frame `i` runs a constant-expression thunk (a class constant,
+    /// property default or attribute argument): php evaluates those without
+    /// a frame of its own.
+    pub(crate) fn is_const_expr_frame(&self, i: usize) -> bool {
+        self.stack[i]
+            .proto
+            .flags
+            .contains(rhp_bytecode::ProtoFlags::CONST_EXPR)
+    }
+
+    /// EG(filename_override)/EG(lineno_override) while a constant expression
+    /// is evaluated (zend_ast_evaluate_ex): the innermost thunk's file and
+    /// current line (a plain constant name sets none).
+    pub(crate) fn const_expr_site(&self) -> Option<(Vec<u8>, u32)> {
+        use rhp_bytecode::ProtoFlags as F;
+        let i = (0..self.stack.len()).rev().find(|&i| {
+            let flags = self.stack[i].proto.flags;
+            flags.contains(F::CONST_EXPR) && !flags.contains(F::CONST_EXPR_PLAIN)
+        })?;
+        if self.autoload_depths.last().is_some_and(|&d| d > i) {
+            return None;
+        }
+        Some((self.current_file(i), self.current_line(i)))
     }
 
     /// Where php's `zend_get_executed_filename/lineno` point: the innermost
     /// user-code frame's current file and line.
     pub(crate) fn throw_site(&self) -> (Vec<u8>, u32) {
-        let n = self.stack.len();
-        let Some(i) = (0..n)
+        if let Some(site) = self.const_expr_site() {
+            return site;
+        }
+        // zend_get_executed_filename: "[no active file]" with no user frame.
+        match (0..self.stack.len())
             .rev()
-            .find(|&i| !self.is_internal_frame(i))
-            .or(n.checked_sub(1))
-        else {
-            return (Vec::new(), 0);
-        };
-        (self.current_file(i), self.current_line(i))
+            .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
+        {
+            Some(i) => (self.current_file(i), self.current_line(i)),
+            None => (b"[no active file]".to_vec(), 0),
+        }
     }
 
     /// The call site of a frame about to be pushed by the current top frame,
@@ -374,18 +450,36 @@ impl Vm {
         }
     }
 
+    /// php's get_function_or_method_name printed with `%s`: the joined
+    /// `Class::fn` cut at a NUL, so an anonymous class's method shows as
+    /// just `class@anonymous`.
+    pub(crate) fn func_c_name(&self, proto: &FunctionProto, scope: Option<ClassId>) -> String {
+        let mut s = self.func_display_name(proto, scope);
+        if let Some(i) = s.find('\0') {
+            s.truncate(i);
+        }
+        s
+    }
+
     /// The trace `args` of frame `i`: the passed arguments' current values.
     fn frame_args(&self, i: usize) -> PhpArray {
         let f = &self.stack[i];
         let mut args = PhpArray::new();
+        let shown = |k: usize, v: Value| {
+            if crate::attributes::param_is_sensitive(&f.proto, k) {
+                self.sensitive_value(v)
+            } else {
+                v
+            }
+        };
         for (k, p) in f.proto.params.iter().enumerate() {
             if p.variadic {
                 if let Value::Array(a) = deref(&f.regs[p.cv as usize]) {
                     for (key, v) in a.iter() {
                         match key {
-                            ArrayKey::Int(_) => args.push(deref(v)),
+                            ArrayKey::Int(_) => args.push(shown(k, deref(v))),
                             ArrayKey::Str(_) => {
-                                args.insert(key.clone(), deref(v));
+                                args.insert(key.clone(), shown(k, deref(v)));
                             }
                         }
                     }
@@ -395,7 +489,7 @@ impl Vm {
             if k >= f.argc {
                 break;
             }
-            args.push(deref(&f.regs[p.cv as usize]));
+            args.push(shown(k, deref(&f.regs[p.cv as usize])));
         }
         for v in &f.extra_args {
             args.push(deref(v));
@@ -408,12 +502,25 @@ impl Vm {
     /// call made by a builtin: `[internal function]`), each running builtin as
     /// its own frame, `include`/`require`/`eval` as pseudo-frames.
     fn build_trace(&self) -> PhpArray {
-        self.build_trace_ex(false, false)
+        self.build_trace_ex(false, builtins::zend::exceptions::ignore_args())
     }
 
     /// [`Vm::build_trace`] with debug_backtrace's options: `$trace['object']` for
     /// frames with a `$this`, and no `args`.
     pub(crate) fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
+        self.build_trace_skip(provide_object, ignore_args, false)
+    }
+
+    /// [`Vm::build_trace_ex`]; `skip_last` leaves out the innermost running
+    /// builtin (debug_backtrace() itself, zend_fetch_debug_backtrace's
+    /// `skip_last`).
+    pub(crate) fn build_trace_skip(
+        &self,
+        provide_object: bool,
+        ignore_args: bool,
+        skip_last: bool,
+    ) -> PhpArray {
+        let mut skip_native = skip_last;
         // Keys and file names are shared (Rc) rather than re-allocated per
         // frame: a trace is built at every Throwable creation.
         let key = |s: &str| ArrayKey::Str(rhp_values::PhpStr::from(s));
@@ -440,20 +547,59 @@ impl Vm {
         };
         let file_of = |i: usize| Value::Str(self.stack[i].proto.debug.file.clone());
         let mut out = PhpArray::new();
-        for i in (0..self.stack.len()).rev() {
-            if !self.is_internal_frame(i) {
-                for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
+        // zend_fetch_debug_backtrace under a filename override: the real
+        // execution point, when it differs, as a `[constant expression]`
+        // frame.
+        if let Some((ofile, oline)) = self.const_expr_site() {
+            if let Some(i) = (0..self.stack.len())
+                .rev()
+                .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
+            {
+                let (file, line) = (self.current_file(i), self.current_line(i));
+                if file != ofile || line != oline {
                     let mut e = PhpArray::new();
-                    e.insert(k(b"file"), file_of(i));
-                    e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    e.insert(k(b"file"), Value::str(file));
+                    e.insert(k(b"line"), Value::Int(line as i64));
+                    e.insert(k(b"function"), Value::str("[constant expression]"));
+                    out.push(Value::Array(e));
+                }
+            }
+        }
+        // php's `include_filename`: the call-site file of the last frame
+        // added, the argument an include frame shows.
+        let mut include_file: Option<Value> = None;
+        for i in (0..self.stack.len()).rev() {
+            // A builtin the engine called with no frame running (a shutdown
+            // function) shows as `[internal function]`.
+            let no_frame = self.stack[i]
+                .proto
+                .flags
+                .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
+            if !self.is_internal_frame(i) || no_frame {
+                for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
+                    if std::mem::take(&mut skip_native) {
+                        continue;
+                    }
+                    let mut e = PhpArray::new();
+                    if no_frame {
+                        include_file = None;
+                    } else {
+                        include_file = Some(file_of(i));
+                        e.insert(k(b"file"), file_of(i));
+                        e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    }
                     e.insert(k(b"function"), Value::str(n.name));
                     if !ignore_args {
                         let mut a = PhpArray::new();
                         // SAFETY: see `NativeCall::args` — every entry
                         // still in `native_calls` points at a live slice.
                         let call_args = unsafe { &*n.args };
+                        let sig = rhp_bytecode::signatures::function(n.name.as_bytes());
                         for (j, v) in call_args.iter().enumerate() {
-                            if j < 64 && n.shown_str >> j & 1 != 0 {
+                            use rhp_bytecode::signatures::Signature;
+                            if sig.and_then(|s| s.param(j)).is_some_and(|p| p.sensitive()) {
+                                a.push(self.sensitive_value(deref(v)));
+                            } else if j < 64 && n.shown_str >> j & 1 != 0 {
                                 a.push(Value::str(rhp_values::conv::to_string_bytes(&deref(v))));
                             } else {
                                 a.push(deref(v));
@@ -468,10 +614,14 @@ impl Vm {
                     out.push(Value::Array(e));
                 }
             }
+            skip_native = false;
             if i == 0 {
                 break;
             }
             let f = &self.stack[i];
+            if self.is_const_expr_frame(i) {
+                continue;
+            }
             let shown_as = if self.is_plumbing_frame(i) {
                 match self.dispatched_method(i) {
                     Some(m) => Some(m),
@@ -483,8 +633,8 @@ impl Vm {
             // The call site is the nearest frame below that a trace shows.
             let mut caller = i - 1;
             while caller > 0
-                && self.is_plumbing_frame(caller)
-                && self.dispatched_method(caller).is_none()
+                && (self.is_const_expr_frame(caller)
+                    || self.is_plumbing_frame(caller) && self.dispatched_method(caller).is_none())
             {
                 caller -= 1;
             }
@@ -494,6 +644,13 @@ impl Vm {
                 e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
             if let Some(kind) = f.include_kind {
+                if kind != "eval" {
+                    if let Some(file) = &include_file {
+                        let mut a = PhpArray::new();
+                        a.push(file.clone());
+                        e.insert(k(b"args"), Value::Array(a));
+                    }
+                }
                 e.insert(k(b"function"), Value::str(kind));
             } else if let Some((name, args)) = shown_as {
                 let c = f.defining_class.expect("a method frame");
@@ -523,7 +680,28 @@ impl Vm {
                     e.insert(k(b"args"), Value::Array(self.frame_args(i)));
                 }
             }
+            let file = e.get(&k(b"file")).cloned();
             out.push(Value::Array(e));
+            // A frame the engine called (an error handler, an autoloader)
+            // while its caller runs an include that has not started a frame
+            // yet: php adds the include as a frame of its own.
+            if f.include_kind.is_none() && !self.is_internal_frame(caller) {
+                let cf = &self.stack[caller];
+                let at = cf.pc.checked_sub(1).and_then(|pc| cf.proto.code.get(pc));
+                if let Some(rhp_bytecode::Instr::Include { kind, .. }) = at {
+                    let mut e = PhpArray::new();
+                    e.insert(k(b"file"), file_of(caller));
+                    e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
+                    if let Some(file) = &include_file {
+                        let mut a = PhpArray::new();
+                        a.push(file.clone());
+                        e.insert(k(b"args"), Value::Array(a));
+                    }
+                    e.insert(k(b"function"), Value::str(kind.name()));
+                    out.push(Value::Array(e));
+                }
+            }
+            include_file = file;
         }
         out
     }
@@ -554,13 +732,12 @@ impl Vm {
         let Ok(cls) = self.resolve_class_by_name(class.as_bytes()) else {
             return thrown;
         };
+        let message = self.cut_anon_names(message.as_bytes());
         let obj = self.new_object(cls);
         {
             let mut b = obj.borrow_mut();
-            b.properties.insert(
-                rhp_values::PhpStr::from("message"),
-                Value::str(message.clone()),
-            );
+            b.properties
+                .insert(rhp_values::PhpStr::from("message"), Value::str(message));
             if let Some((file, line)) = at {
                 b.properties
                     .insert(rhp_values::PhpStr::from("file"), Value::str(file));
@@ -569,6 +746,44 @@ impl Vm {
             }
         }
         Thrown::Object(obj)
+    }
+
+    /// An engine message with each anonymous class name cut at its NUL, as
+    /// php's `%s` prints `ZSTR_VAL(ce->name)`.
+    pub(crate) fn cut_anon_names(&self, msg: &[u8]) -> Vec<u8> {
+        const MARK: &[u8] = b"@anonymous\0";
+        if !msg.windows(MARK.len()).any(|w| w == MARK) {
+            return msg.to_vec();
+        }
+        // The `\0file:line$n` tails of the anonymous classes declared so far.
+        let tails: Vec<&[u8]> = self
+            .classes
+            .iter()
+            .filter_map(|c| {
+                let n = c.name.as_bytes();
+                let at = n.windows(MARK.len()).position(|w| w == MARK)?;
+                Some(&n[at + MARK.len() - 1..])
+            })
+            .collect();
+        let mut out = Vec::with_capacity(msg.len());
+        let mut i = 0;
+        while i < msg.len() {
+            if msg[i..].starts_with(MARK) {
+                out.extend_from_slice(&MARK[..MARK.len() - 1]);
+                i += MARK.len() - 1;
+                if let Some(t) = tails
+                    .iter()
+                    .filter(|t| msg[i..].starts_with(t))
+                    .max_by_key(|t| t.len())
+                {
+                    i += t.len();
+                }
+                continue;
+            }
+            out.push(msg[i]);
+            i += 1;
+        }
+        out
     }
 
     /// Give an uncaught throwable to the user exception handler, if one is set
@@ -591,9 +806,16 @@ impl Vm {
         // (its globals are still reachable via `global`, and its objects are
         // destructed only after the shutdown functions).
         self.enter_shutdown_scope();
+        let before = self.exception_handlers.len();
         let r = self.call_callable_value(&handler, vec![arg]);
         self.stack.truncate(1);
-        r.err()
+        match r {
+            Ok(_) => None,
+            // zend_throw_exception_internal with no frame running: a handler
+            // the failed one installed gets the new throwable.
+            Err(t) if self.exception_handlers.len() > before => self.handle_uncaught(t),
+            Err(t) => Some(t),
+        }
     }
 
     /// Write to the SAPI's error stream.
@@ -743,6 +965,7 @@ impl Vm {
     }
 
     pub(crate) fn report_uncaught(&mut self, thrown: Thrown) {
+        self.last_fatal_trace = None;
         let thrown = self.materialize(thrown, None);
         let h = match thrown {
             Thrown::Object(h) => h,
@@ -762,12 +985,20 @@ impl Vm {
                 .map(deref)
                 .unwrap_or(Value::Null)
         };
-        let file = conv::to_string_bytes(&prop("file"));
-        let line = conv::to_int(&prop("line"));
         // An emptied `file` makes php report the location as "Unknown".
-        let file: &[u8] = if file.is_empty() { b"Unknown" } else { &file };
+        let location = || {
+            let file = conv::to_string_bytes(&prop("file"));
+            let file = if file.is_empty() {
+                b"Unknown".to_vec()
+            } else {
+                file
+            };
+            (file, conv::to_int(&prop("line")))
+        };
         let cname = self.class(cls).name.as_bytes().to_ascii_lowercase();
         if cname == b"parseerror" || cname == b"compileerror" {
+            let (file, line) = location();
+            let file = &file[..];
             let msg = conv::to_string_bytes(&prop("message"));
             let (ty, label) = if cname == b"parseerror" {
                 (4, "Parse error")
@@ -777,18 +1008,39 @@ impl Vm {
             self.fatal_error(ty, label, &msg, file, line);
             return;
         }
-        let obj = Value::Object(h.clone());
-        let s = match self.lookup_method(cls, b"__tostring") {
-            Some(m) => match self.call_sync(&m, Some(h.clone()), cls, Vec::new()) {
-                Ok(Value::Str(s)) => s.as_bytes().to_vec(),
-                _ => builtins::zend::exceptions::throwable_to_string(self, &obj),
-            },
-            None => builtins::zend::exceptions::throwable_to_string(self, &obj),
-        };
+        // zend_exception_error: `__toString()` caches its result in the
+        // private `string`, which is what the message shows. A throwable
+        // it throws is reported instead (php's zend_throw_exception_internal
+        // with no frame running).
+        match self.call_to_string(&h) {
+            Ok(Value::Str(s)) => {
+                let key = self.declared_prop_key(&h, b"string");
+                h.borrow_mut().properties.insert(key, Value::Str(s));
+            }
+            Ok(_) => {
+                let name = self.class(cls).name.clone();
+                let mut m = String::from_utf8_lossy(c_name(name.as_bytes())).into_owned();
+                m.push_str("::__toString() must return a string");
+                self.raise_error(builtins::E_WARNING, &m);
+            }
+            Err(t) if t.is_catchable() => {
+                self.report_uncaught(t);
+                return;
+            }
+            Err(_) => return,
+        }
+        let key = self.declared_prop_key(&h, b"string");
+        let s = h
+            .borrow()
+            .properties
+            .get(&key)
+            .map(|v| conv::to_string_bytes(&deref(v)))
+            .unwrap_or_default();
         let mut msg = b"Uncaught ".to_vec();
         msg.extend_from_slice(&s);
         msg.extend_from_slice(b"\n  thrown");
-        self.fatal_error(1, "Fatal error", &msg, file, line);
+        let (file, line) = location();
+        self.fatal_error(1, "Fatal error", &msg, &file, line);
     }
 
     /// An exception that escaped to the top level: the user handler gets it
@@ -814,13 +1066,42 @@ impl Vm {
     /// An exception was caught at frame depth `depth`: end every `@` region
     /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
     fn unsilence_frames(&mut self, depth: usize) {
-        while let Some(&(d, lvl)) = self.silence_stack.last() {
+        while let Some(&(d, _, _)) = self.silence_stack.last() {
             if d < depth {
                 break;
             }
-            self.silence = lvl;
-            self.silence_stack.pop();
+            self.end_silence();
         }
+    }
+
+    /// ZEND_BEGIN_SILENCE: error_reporting drops to the fatal types (php
+    /// keeps the old value to put back).
+    pub(crate) fn begin_silence(&mut self) {
+        let saved = builtins::zend::builtin_functions::error_reporting_level(self);
+        self.silence_stack
+            .push((self.stack.len(), self.silence, saved));
+        self.silence += 1;
+        if saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved & SILENCE_KEEPS);
+        }
+    }
+
+    /// ZEND_END_SILENCE (also its live-range cleanup when an exception
+    /// leaves the region): the old error_reporting comes back unless the
+    /// code under `@` set one that shows more than fatal errors.
+    pub(crate) fn end_silence(&mut self) {
+        let Some((_, lvl, saved)) = self.silence_stack.pop() else {
+            return;
+        };
+        self.silence = lvl;
+        let cur = builtins::zend::builtin_functions::error_reporting_level(self);
+        if cur & !SILENCE_KEEPS == 0 && saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved);
+        }
+    }
+
+    fn set_error_reporting(&mut self, v: i64) {
+        builtins::Host::ini_set(self, b"error_reporting", v.to_string().into_bytes());
     }
 
     /// Unwind a thrown exception through the exception table: find a matching
@@ -839,6 +1120,13 @@ impl Vm {
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
+            // The live range of NEW's result: an object whose constructor
+            // threw is released before the handler runs.
+            if let Some(Instr::New { dst, .. } | Instr::NewV { dst, .. }) =
+                proto.code.get(throw_pc as usize)
+            {
+                self.reg_set(top, *dst, Value::Null);
+            }
             let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
             let handler = proto.exception_table.iter().find(in_try).cloned();
             // Thrown from inside a running finally block and not handled

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_bytecode::{FunctionProto, Program, Reg};
-use rhp_values::{ObjectHandle, Thrown, Value};
+use rhp_values::{ObjectHandle, Thrown, Value, Visibility};
 
 use crate::lvalue::CursorRoot;
 use crate::streams::{StreamState, StreamTable};
@@ -82,8 +82,11 @@ impl Vm {
             class_aliases: Vec::new(),
             constants,
             user_const_order: Vec::new(),
+            const_attrs: HashMap::new(),
+            const_guard: Vec::new(),
             max_depth: 1 << 16,
             timeout_prev: None,
+            ticks_count: 0,
             timeout_wait: None,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
@@ -108,15 +111,18 @@ impl Vm {
             included_files: indexmap::IndexSet::new(),
             internal_classes: 0,
             autoloaders: Vec::new(),
+            autoload_depths: Vec::new(),
             in_autoload: Default::default(),
             inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
+            unused_call_depth: usize::MAX,
             dyn_call: false,
             dyn_raw_args: false,
             callable_dep_thrown: false,
             zpp_fcc: None,
             wrappers,
+            wrappers_off: HashMap::new(),
             main_script_path: None,
             auto_prepend: true,
             streams: StreamTable::default(),
@@ -130,7 +136,11 @@ impl Vm {
             stream_notifiers: HashMap::new(),
             argv: Vec::new(),
             silence: 0,
+            last_fatal_trace: None,
             silence_stack: Vec::new(),
+            quiet: 0,
+            rw_null_keys: 0,
+            cursor_null_key: false,
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,
@@ -138,6 +148,7 @@ impl Vm {
             stdin_reader: None,
             destructibles: Vec::new(),
             marked_destructed: Vec::new(),
+            incomplete_class: None,
             dtor_check: false,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
@@ -186,7 +197,7 @@ impl Vm {
         if let Some(c) = self.globals.get(name) {
             return c.clone();
         }
-        let init = self.jit_globals.remove(name).unwrap_or(Value::Null);
+        let init = self.jit_globals.remove(name).unwrap_or(Value::Undef);
         let c = Rc::new(RefCell::new(init));
         self.globals.insert(name.to_vec(), c.clone());
         c
@@ -209,6 +220,18 @@ impl Vm {
         }
     }
 
+    /// `unset($GLOBALS[$name])`: the global becomes undefined, in every live
+    /// global-scope frame too. Its symbol-table entry stays (php keeps the
+    /// bucket of a variable a frame has a slot for), so the order of
+    /// `$GLOBALS` does not change when it is assigned again.
+    pub(crate) fn unset_global(&mut self, name: &[u8]) {
+        if self.globals.contains_key(name) {
+            self.rebind_global(name, Rc::new(RefCell::new(Value::Undef)));
+            self.ref_globals.remove(name);
+            self.dtor_check = true;
+        }
+    }
+
     /// After CV `cv` of frame `top` was overwritten as a slot (unset, `=&`),
     /// keep the global symbol table in step when `top` runs in global scope.
     pub(crate) fn sync_global_cv(&mut self, top: usize, cv: Reg) {
@@ -227,7 +250,7 @@ impl Vm {
             }
             v => {
                 self.ref_globals.remove(&name);
-                Rc::new(RefCell::new(v.clone()))
+                Rc::new(RefCell::new(v.copy_slot()))
             }
         };
         self.rebind_global(&name, cell);
@@ -254,17 +277,37 @@ impl Vm {
     }
 
     /// `$GLOBALS` read: a by-value copy of the global symbol table (php 8.1+).
-    /// Variables never assigned (null cells) are left out, as php skips its
-    /// undefined (IS_UNDEF) entries.
+    /// Undefined variables are left out, as php skips its IS_UNDEF entries;
+    /// a variable that is a PHP reference stays one in the copy
+    /// (zend_array_dup keeps a reference that something else shares).
     pub(crate) fn globals_array(&self) -> Value {
         use rhp_values::{ArrayKey, PhpArray};
+        // A global-scope frame's slot holding a cell is the symbol-table
+        // entry itself in php, not another reference to it.
+        let mut held: HashMap<*const RefCell<Value>, usize> = HashMap::new();
+        if !self.ref_globals.is_empty() {
+            for f in self.stack.iter().filter(|f| f.global_scope) {
+                for v in f.regs.iter().take(f.proto.num_cvs as usize) {
+                    if let Value::Ref(rc) = v {
+                        *held.entry(Rc::as_ptr(rc)).or_default() += 1;
+                    }
+                }
+            }
+        }
         let mut a = PhpArray::new();
         for (k, c) in &self.globals {
             let v = c.borrow();
-            if matches!(*v, Value::Null) {
+            if matches!(*v, Value::Undef) {
                 continue;
             }
-            a.insert(ArrayKey::from_bytes(k), deref(&v));
+            let shared =
+                || Rc::strong_count(c) - held.get(&Rc::as_ptr(c)).copied().unwrap_or(0) > 1;
+            let v = if self.ref_globals.contains(&k[..]) && shared() {
+                Value::Ref(c.clone())
+            } else {
+                deref(&v)
+            };
+            a.insert(ArrayKey::from_bytes(k), v);
         }
         Value::Array(a)
     }
@@ -421,7 +464,43 @@ impl Vm {
         let mut kept = false;
         // zend_objects_destroy_object: a lazy object is not destructed.
         let lazy = h.borrow().is_lazy();
-        if let Some(m) = self.lookup_method(cls, b"__destruct").filter(|_| !lazy) {
+        let mut dtor = self.lookup_method(cls, b"__destruct").filter(|_| !lazy);
+        if let Some(m) = &dtor {
+            if m.visibility != Visibility::Public {
+                // The destructor's visibility against the releasing scope.
+                let vis = if m.visibility == Visibility::Private {
+                    "private"
+                } else {
+                    "protected"
+                };
+                let cname = self.class_name_lossy(cls);
+                if self.no_code_running() {
+                    let msg = format!(
+                        "Call to {vis} {cname}::__destruct() from global scope during shutdown ignored"
+                    );
+                    self.raise_error_at(
+                        rhp_values::E_WARNING,
+                        msg.as_bytes(),
+                        b"Unknown".to_vec(),
+                        0,
+                    );
+                    dtor = None;
+                } else {
+                    let scope = self.stack.last().and_then(|f| f.defining_class);
+                    if !self.method_accessible(m, scope) {
+                        let from = match scope {
+                            Some(c) => format!("scope {}", self.class_name_lossy(c)),
+                            None => "global scope".to_string(),
+                        };
+                        return Err(Thrown::error(
+                            "Error",
+                            format!("Call to {vis} {cname}::__destruct() from {from}"),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(m) = dtor {
             let before = Rc::strong_count(&h);
             self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
             kept = Rc::strong_count(&h) > before;
@@ -751,6 +830,7 @@ impl Vm {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
         main.flags.insert(rhp_bytecode::ProtoFlags::INTERNAL);
+        main.flags.insert(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
         self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 

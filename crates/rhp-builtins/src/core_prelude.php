@@ -46,12 +46,12 @@ final class Closure {
 }
 class Exception implements Throwable {
     protected $message = "";
-    private $string = "";
+    private string $string = "";
     protected $code = 0;
-    protected $file = "";
-    protected $line = 0;
-    private $trace = [];
-    private $previous = null;
+    protected string $file = "";
+    protected int $line = 0;
+    private array $trace = [];
+    private ?Throwable $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
@@ -65,19 +65,19 @@ class Exception implements Throwable {
     final public function getLine() { return $this->line; }
     final public function getTrace() { return $this->trace; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
-    public function __toString() { return __throwable_string($this); }
+    public function __toString() { return $this->string = __throwable_string($this); }
     // ErrorException's constructor sets the private `previous` (php writes
     // it in Exception's scope).
     protected function __setPrevious($p) { $this->previous = $p; }
 }
 class Error implements Throwable {
     protected $message = "";
-    private $string = "";
+    private string $string = "";
     protected $code = 0;
-    protected $file = "";
-    protected $line = 0;
-    private $trace = [];
-    private $previous = null;
+    protected string $file = "";
+    protected int $line = 0;
+    private array $trace = [];
+    private ?Throwable $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }
@@ -91,7 +91,7 @@ class Error implements Throwable {
     final public function getLine() { return $this->line; }
     final public function getTrace() { return $this->trace; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
-    public function __toString() { return __throwable_string($this); }
+    public function __toString() { return $this->string = __throwable_string($this); }
 }
 class ErrorException extends Exception {
     protected $severity = 1;

@@ -603,10 +603,20 @@ then switch the check on — but the metadata must be stored from step 1.)*
    must link first). A dependency cycle (`class A extends A`, mutual `extends`) →
    fatal `Error`. A missing name → `Error "Class \"X\" not found"`.
 2. **Declaration errors** (`link_checks.rs`, zend_do_link_class's order):
-   extending an enum / final class / interface / trait, readonly mismatches,
-   UnitEnum/BackedEnum on a non-enum, trait constants against enum cases,
-   enum properties and magic methods. Each is a fatal error at the class
-   declaration's line. The checks php makes while compiling a declaration
+   using a non-trait (an `Error`), extending an enum / final class /
+   interface / trait, readonly mismatches, implementing a non-interface or
+   an interface listed before, UnitEnum/BackedEnum on a non-enum, trait
+   constants against enum cases, enum properties and magic methods. Each is
+   a fatal error at the class declaration's line. While flattening come
+   do_inherit_property's rules (static vs non-static, readonly, access
+   level, final) and do_inherit_constant_check's (final constants,
+   ambiguous constants from two parents, access level); after the
+   inheritance checks the interface_gets_implemented handlers (Traversable,
+   Iterator vs IteratorAggregate, Throwable, DateTimeInterface), the
+   abstract-method check, then `#[\Override]` (`check_override`: a marked
+   method, property or hook must override a non-private parent member, an
+   interface member or a trait's abstract method; a parent constructor
+   counts only with an abstract prototype). The checks php makes while compiling a declaration
    (reserved names, member redeclaration, magic method signatures, promotion,
    interface and readonly rules) live in the compiler's `checks.rs`.
 3. **Assign `ClassId`** = index in `Vm.classes`; record `class_ids[lc(name)] = id`.
@@ -630,7 +640,8 @@ then switch the check on — but the metadata must be stored from step 1.)*
    / visibility rules and the signature check (zend_do_perform_implementation_check:
    arity, by-ref, variadics, contravariant parameters, covariant returns,
    `static`/`self`, `never`, `mixed`), with php's declaration text in the
-   message. Internal parent methods are checked against their stub
+   message. Property hooks overriding a parent or interface hook get the
+   same method checks, before the property type check. Internal parent methods are checked against their stub
    signature (`rhp_bytecode::signatures`); a tentative return type gives the
    `#[\ReturnTypeWillChange]` deprecation, recorded and raised after linking
    (php's record_errors). A constructor carries its abstract / interface

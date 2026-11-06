@@ -101,23 +101,80 @@ fn fn_php_uname(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(php_get_uname(mode).into_bytes()))
 }
 
-/// Text-mode table/row printer mirroring info.c's helpers.
-struct Info(Vec<u8>);
+/// info.c's printing helpers, in text (`phpinfo_as_text`, the CLI) or
+/// HTML (php-cgi) mode.
+pub(crate) struct Info(pub(crate) Vec<u8>, pub(crate) bool);
+
+/// php_info_print_html_esc (htmlspecialchars, ENT_QUOTES).
+fn html_esc(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => o.push_str("&amp;"),
+            '<' => o.push_str("&lt;"),
+            '>' => o.push_str("&gt;"),
+            '"' => o.push_str("&quot;"),
+            '\'' => o.push_str("&#039;"),
+            _ => o.push(c),
+        }
+    }
+    o
+}
 
 impl Info {
-    fn print(&mut self, s: &str) {
+    /// A printer for the running SAPI: HTML unless it is the CLI.
+    pub(crate) fn for_sapi() -> Info {
+        Info(Vec::new(), crate::main::sapi::sapi_name() != "cli")
+    }
+    pub(crate) fn print(&mut self, s: &str) {
         self.0.extend_from_slice(s.as_bytes());
     }
-    fn table_start(&mut self) {
-        self.print("\n");
+    pub(crate) fn table_start(&mut self) {
+        self.print(if self.1 { "<table>\n" } else { "\n" });
     }
-    fn header(&mut self, cols: &[&str]) {
+    pub(crate) fn table_end(&mut self) {
+        if self.1 {
+            self.print("</table>\n");
+        }
+    }
+    /// php_info_print_table_header.
+    pub(crate) fn header(&mut self, cols: &[&str]) {
+        if self.1 {
+            self.print("<tr class=\"h\">");
+            for c in cols {
+                self.print("<th>");
+                self.print(if c.is_empty() { " " } else { c });
+                self.print("</th>");
+            }
+            self.print("</tr>\n");
+            return;
+        }
         for (i, c) in cols.iter().enumerate() {
             self.print(if c.is_empty() { " " } else { c });
             self.print(if i + 1 < cols.len() { " => " } else { "\n" });
         }
     }
-    fn row(&mut self, cols: &[&str]) {
+    /// php_info_print_table_row.
+    pub(crate) fn row(&mut self, cols: &[&str]) {
+        if self.1 {
+            self.print("<tr>");
+            for (i, c) in cols.iter().enumerate() {
+                self.print(if i == 0 {
+                    "<td class=\"e\">"
+                } else {
+                    "<td class=\"v\">"
+                });
+                if c.is_empty() {
+                    self.print("<i>no value</i>");
+                } else {
+                    let e = html_esc(c);
+                    self.print(&e);
+                }
+                self.print(" </td>");
+            }
+            self.print("</tr>\n");
+            return;
+        }
         for (i, c) in cols.iter().enumerate() {
             if c.is_empty() {
                 self.print(" ");
@@ -132,16 +189,113 @@ impl Info {
             }
         }
     }
-    fn section(&mut self, name: &str) {
+    /// php_info_print_table_colspan_header.
+    pub(crate) fn colspan_header(&mut self, n: usize, header: &str) {
+        if self.1 {
+            self.print(&format!(
+                "<tr class=\"h\"><th colspan=\"{n}\">{header}</th></tr>\n"
+            ));
+        } else {
+            let spaces = (74 - header.len() as i32) / 2;
+            let pad = " ".repeat(spaces.max(1) as usize);
+            self.print(&format!("{pad}{header}{pad}\n"));
+        }
+    }
+    /// The SECTION macro.
+    pub(crate) fn section(&mut self, name: &str) {
+        if self.1 {
+            self.print(&format!("<h2>{name}</h2>\n"));
+        } else {
+            self.table_start();
+            self.header(&[name]);
+            self.table_end();
+        }
+    }
+    /// php_info_print_module's heading.
+    fn module_section(&mut self, name: &str) {
+        if self.1 {
+            let url = name.to_ascii_lowercase().replace(' ', "+");
+            self.print(&format!(
+                "<h2><a name=\"module_{url}\" href=\"#module_{url}\">{name}</a></h2>\n"
+            ));
+        } else {
+            self.section(name);
+        }
+    }
+    fn box_start(&mut self, head: bool) {
         self.table_start();
-        self.header(&[name]);
+        if self.1 {
+            self.print(if head {
+                "<tr class=\"h\"><td>\n"
+            } else {
+                "<tr class=\"v\"><td>\n"
+            });
+        } else if !head {
+            self.print("\n");
+        }
+    }
+    fn box_end(&mut self) {
+        if self.1 {
+            self.print("</td></tr>\n");
+        }
+        self.table_end();
     }
     fn hr(&mut self) {
-        self.print(
-            "\n\n _______________________________________________________________________\n\n",
-        );
+        self.print(if self.1 {
+            "<hr />\n"
+        } else {
+            "\n\n _______________________________________________________________________\n\n"
+        });
     }
 }
+
+/// php_print_info_htmlhead.
+pub(crate) fn print_htmlhead(o: &mut Info) {
+    o.print("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"DTD/xhtml1-transitional.dtd\">\n");
+    o.print("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head>\n");
+    o.print("<style type=\"text/css\">\n");
+    o.print(CSS);
+    o.print("</style>\n");
+    o.print(&format!(
+        "<title>PHP {} - phpinfo()</title>",
+        version::PHP_VERSION
+    ));
+    o.print("<meta name=\"ROBOTS\" content=\"NOINDEX,NOFOLLOW,NOARCHIVE\" /></head>\n");
+    o.print("<body><div class=\"center\">\n");
+}
+
+/// ext/standard/css.c.
+const CSS: &str = "body {background-color: #fff; color: #222; font-family: sans-serif;}
+pre {margin: 0; font-family: monospace;}
+a {color: inherit;}
+a:hover {text-decoration: none;}
+table {border-collapse: collapse; border: 0; width: 934px; box-shadow: 1px 2px 3px rgba(0, 0, 0, 0.2);}
+.center {text-align: center;}
+.center table {margin: 1em auto; text-align: left;}
+.center th {text-align: center !important;}
+td, th {border: 1px solid #666; font-size: 75%; vertical-align: baseline; padding: 4px 5px;}
+th {position: sticky; top: 0; background: inherit;}
+h1 {font-size: 150%;}
+h2 {font-size: 125%;}
+h2 > a {text-decoration: none;}
+h2 > a:hover {text-decoration: underline;}
+.p {text-align: left;}
+.e {background-color: #ccf; width: 300px; font-weight: bold;}
+.h {background-color: #99c; font-weight: bold;}
+.v {background-color: #ddd; max-width: 300px; overflow-x: auto; word-wrap: break-word;}
+.v i {color: #999;}
+img {float: right; border: 0;}
+hr {width: 934px; background-color: #ccc; border: 0; height: 1px;}
+:root {--php-dark-grey: #333; --php-dark-blue: #4F5B93; --php-medium-blue: #8892BF; --php-light-blue: #E2E4EF; --php-accent-purple: #793862}@media (prefers-color-scheme: dark) {
+  body {background: var(--php-dark-grey); color: var(--php-light-blue)}
+  .h td, td.e, th {border-color: #606A90}
+  td {border-color: #505153}
+  .e {background-color: #404A77}
+  .h {background-color: var(--php-dark-blue)}
+  .v {background-color: var(--php-dark-grey)}
+  hr {background-color: #505153}
+}
+";
 
 /// ini directives shown under "PHP Core" (name, value as php displays it).
 const CORE_INI: &[(&str, &str)] = &[
@@ -159,18 +313,87 @@ const CORE_INI: &[(&str, &str)] = &[
     ("short_open_tag", "On"),
 ];
 
-fn print_info(flag: i64) -> Vec<u8> {
-    let mut o = Info(Vec::new());
-    o.print("phpinfo()\n");
+/// php_print_gpcse_array in text mode: each element of superglobal `name`
+/// as it is now, arrays print_r'd.
+fn print_gpcse_array(host: &mut dyn Host, o: &mut Info, name: &str) {
+    let Some(Value::Array(a)) = host.global_var(name.as_bytes()) else {
+        return;
+    };
+    let html = o.1;
+    for (k, v) in a.iter() {
+        if html {
+            o.print("<tr><td class=\"e\">");
+        }
+        o.print("$");
+        o.print(name);
+        o.print("['");
+        let key = conv::to_string_bytes(&k.to_value());
+        if html {
+            o.print(&html_esc(&String::from_utf8_lossy(&key)));
+        } else {
+            o.0.extend_from_slice(&key);
+        }
+        o.print(if html {
+            "']</td><td class=\"v\">"
+        } else {
+            "'] => "
+        });
+        let v = deref(v);
+        let mut val = Vec::new();
+        if matches!(v, Value::Array(_)) {
+            crate::ext::standard::var::print_r(host, &mut val, &v, 0);
+        } else {
+            val = conv::to_string_bytes(&v);
+        }
+        if !html {
+            o.0.extend_from_slice(&val);
+            o.print("\n");
+            continue;
+        }
+        let esc = html_esc(&String::from_utf8_lossy(&val));
+        if matches!(v, Value::Array(_)) {
+            o.print(&format!("<pre>{esc}</pre>"));
+        } else if val.is_empty() {
+            o.print("<i>no value</i>");
+        } else {
+            o.print(&esc);
+        }
+        o.print("</td></tr>\n");
+    }
+}
+
+fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
+    let mut o = Info::for_sapi();
+    if o.1 {
+        print_htmlhead(&mut o);
+    } else {
+        o.print("phpinfo()\n");
+    }
     if flag & INFO_GENERAL != 0 {
-        o.row(&["PHP Version", version::PHP_VERSION]);
+        if o.1 {
+            o.box_start(true);
+            o.print(&format!(
+                "<h1 class=\"p\">PHP Version {}</h1>\n",
+                version::PHP_VERSION
+            ));
+            o.box_end();
+        } else {
+            o.row(&["PHP Version", version::PHP_VERSION]);
+        }
         o.table_start();
         o.row(&["System", &php_get_uname(b'a')]);
         o.row(&["Build Date", version::BUILD_DATE]);
         o.row(&["Build System", version::BUILD_SYSTEM]);
         o.row(&["Build Provider", version::BUILD_PROVIDER]);
-        o.row(&["Configure Command", " './configure' "]);
-        o.row(&["Server API", "Command Line Interface"]);
+        if version::HAS_CONFIGURE_COMMAND {
+            o.row(&["Configure Command", " './configure' "]);
+        }
+        let api = if o.1 {
+            "CGI/FastCGI"
+        } else {
+            "Command Line Interface"
+        };
+        o.row(&["Server API", api]);
         o.row(&["Virtual Directory Support", "disabled"]);
         o.row(&[
             "Configuration File (php.ini) Path",
@@ -204,35 +427,62 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.row(&["Zend Max Execution Timers", "disabled"]);
         o.row(&["IPv6 Support", "enabled"]);
         o.row(&["DTrace Support", "disabled"]);
-        o.print("\nRegistered PHP Streams => https, compress.zlib, compress.bzip2, php, file, glob, data, http, phar, zip");
-        o.print("\nRegistered Stream Socket Transports => tcp, udp, unix, ssl, tls");
-        o.print("\nRegistered Stream Filters => zlib.*, bzip2.*, string.rot13, string.toupper, string.tolower, convert.*");
-        o.print("\n");
+        for (name, list) in [
+            (
+                "PHP Streams",
+                "https, compress.zlib, compress.bzip2, php, file, glob, data, http, phar, zip",
+            ),
+            ("Stream Socket Transports", "tcp, udp, unix, ssl, tls"),
+            (
+                "Stream Filters",
+                "zlib.*, bzip2.*, string.rot13, string.toupper, string.tolower, convert.*",
+            ),
+        ] {
+            if o.1 {
+                o.print(&format!(
+                    "<tr><td class=\"e\">Registered {name}</td><td class=\"v\">{list}</td></tr>\n"
+                ));
+            } else {
+                o.print(&format!("\nRegistered {name} => {list}"));
+            }
+        }
+        o.table_end();
         // Zend Engine box
-        o.table_start();
-        o.print("\n");
-        o.print("This program makes use of the Zend Scripting Language Engine:\n");
+        o.box_start(false);
+        o.print("This program makes use of the Zend Scripting Language Engine:");
+        o.print(if o.1 { "<br />" } else { "\n" });
         o.print(&format!(
             "Zend Engine v{}, Copyright (c) Zend Technologies\n",
             version::ZEND_VERSION
         ));
+        o.print(&format!(
+            "    with Zend OPcache v{}, Copyright (c), by Zend Technologies\n",
+            version::PHP_VERSION
+        ));
+        o.box_end();
     }
     if flag & INFO_CONFIGURATION != 0 {
         o.hr();
-        o.print("Configuration\n");
+        if o.1 {
+            o.print("<h1>Configuration</h1>\n");
+        } else {
+            o.section("Configuration");
+        }
         if flag & INFO_MODULES == 0 {
             o.section("PHP Core");
             print_core_ini(&mut o);
+            o.table_end();
         }
     }
     if flag & INFO_MODULES != 0 {
         let mut exts: Vec<&str> = crate::zend::builtin_functions::loaded_extension_names();
         exts.sort_by_key(|e| e.to_ascii_lowercase());
         for e in &exts {
-            o.section(e);
+            o.module_section(e);
             o.table_start();
             if e.eq_ignore_ascii_case("core") {
                 o.row(&["PHP Version", version::PHP_VERSION]);
+                o.table_end();
                 print_core_ini(&mut o);
             } else if *e == "pcre" {
                 print_pcre(&mut o);
@@ -256,10 +506,12 @@ fn print_info(flag: i64) -> Vec<u8> {
             } else {
                 o.row(&[&format!("{e} support"), "enabled"]);
             }
+            o.table_end();
         }
         o.section("Additional Modules");
         o.table_start();
         o.header(&["Module Name"]);
+        o.table_end();
     }
     if flag & INFO_ENVIRONMENT != 0 {
         o.section("Environment");
@@ -268,23 +520,48 @@ fn print_info(flag: i64) -> Vec<u8> {
         for (k, v) in std::env::vars_os() {
             o.row(&[&k.to_string_lossy(), &v.to_string_lossy()]);
         }
+        o.table_end();
     }
     if flag & INFO_VARIABLES != 0 {
         o.section("PHP Variables");
         o.table_start();
         o.header(&["Variable", "Value"]);
-        for (k, v) in std::env::vars_os() {
-            o.row(&[
-                &format!("$_SERVER['{}']", k.to_string_lossy()),
-                &v.to_string_lossy(),
-            ]);
+        for name in ["PHP_SELF", "PHP_AUTH_TYPE", "PHP_AUTH_USER", "PHP_AUTH_PW"] {
+            if let Some(Value::Str(v)) = host.global_var(name.as_bytes()) {
+                o.row(&[name, &String::from_utf8_lossy(v.as_bytes())]);
+            }
         }
+        for name in [
+            "_REQUEST", "_GET", "_POST", "_FILES", "_COOKIE", "_SERVER", "_ENV",
+        ] {
+            print_gpcse_array(host, &mut o, name);
+        }
+        o.table_end();
     }
     if flag & INFO_CREDITS != 0 {
         o.hr();
-        o.print("PHP Credits\n");
+        use crate::ext::standard::credits;
+        credits::print_credits(&mut o, credits::CREDITS_ALL & !credits::CREDITS_FULLPAGE);
     }
-    if flag & INFO_LICENSE != 0 {
+    if flag & INFO_LICENSE != 0 && o.1 {
+        o.section("PHP License");
+        o.box_start(false);
+        o.print("<p>\n");
+        o.print("This program is free software; you can redistribute it and/or modify ");
+        o.print("it under the terms of the PHP License as published by the PHP Group ");
+        o.print("and included in the distribution in the file:  LICENSE\n");
+        o.print("</p>\n");
+        o.print("<p>");
+        o.print("This program is distributed in the hope that it will be useful, ");
+        o.print("but WITHOUT ANY WARRANTY; without even the implied warranty of ");
+        o.print("MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n");
+        o.print("</p>\n");
+        o.print("<p>");
+        o.print("If you did not receive a copy of the PHP license, or have any questions about ");
+        o.print("PHP licensing, please contact license@php.net.\n");
+        o.print("</p>\n");
+        o.box_end();
+    } else if flag & INFO_LICENSE != 0 {
         o.print("\nPHP License\n");
         o.print("This program is free software; you can redistribute it and/or modify\n");
         o.print("it under the terms of the PHP License as published by the PHP Group\n");
@@ -296,6 +573,9 @@ fn print_info(flag: i64) -> Vec<u8> {
         o.print("\n");
         o.print("If you did not receive a copy of the PHP license, or have any\n");
         o.print("questions about PHP licensing, please contact license@php.net.\n");
+    }
+    if o.1 {
+        o.print("</div></body></html>");
     }
     o.0
 }
@@ -475,13 +755,8 @@ fn fn_phpinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         None => INFO_ALL,
         Some(v) => conv::to_int(&v),
     };
-    let out = print_info(flag);
+    let out = print_info(host, flag);
     host.write_out(&out);
-    Ok(Value::Bool(true))
-}
-
-fn fn_phpcredits(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    host.write_out(b"PHP Credits\n");
     Ok(Value::Bool(true))
 }
 
@@ -520,7 +795,6 @@ pub fn register(m: &mut crate::Registry) {
         m,
         &[
             ("phpinfo", fn_phpinfo),
-            ("phpcredits", fn_phpcredits),
             ("php_uname", fn_php_uname),
             ("phpversion", fn_phpversion),
             ("php_sapi_name", fn_php_sapi_name),

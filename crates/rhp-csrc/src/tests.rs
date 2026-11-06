@@ -106,6 +106,9 @@ fn archives_define_only_prefixed_symbols() {
     if cfg!(feature = "argon2") {
         want.push("librhp_csrc_argon2.a");
     }
+    if cfg!(feature = "avifinfo") {
+        want.push("librhp_csrc_avifinfo.a");
+    }
     if cfg!(feature = "crypt") {
         want.push("librhp_csrc_crypt.a");
     }

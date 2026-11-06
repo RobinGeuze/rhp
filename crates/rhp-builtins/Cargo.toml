@@ -24,6 +24,7 @@ rhp-values = { path = "../rhp-values" }
 rhp-bytecode = { path = "../rhp-bytecode" }
 libc = "0.2"
 indexmap = { workspace = true }
+rustc-hash = { workspace = true }
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see
 # docs/design/libraries.md) and src/ext/pcre/sys.rs declares what rhp calls.
 # pcre2-sys would silently build its bundled copy instead.
@@ -53,7 +54,7 @@ num-integer = "0.1"
 
 # crypt() and password_*: php-src's crypt C and the argon2 reference C php
 # links, compiled from source and linked statically.
-rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2", "timelib"] }
+rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2", "timelib", "avifinfo"] }
 rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,

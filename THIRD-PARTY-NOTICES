@@ -45,6 +45,7 @@ shared library and include the GPL-3.0 and LGPL-3.0 texts.
 25. Email regexes  keep-the-notice permission (Michael Rushton)
 26. Tcl scanf      TCL
 27. BSD uuencode   BSD-4-Clause (UC Berkeley)
+28. libavifinfo    BSD-2-Clause; AOMedia Patent License 1.0
 
 
 ------------------------------------------------------------------------------
@@ -2470,9 +2471,9 @@ states:
 24. Mt19937
 ------------------------------------------------------------------------------
 
-mt_srand(), mt_rand() and the functions built on them in crates/rhp-builtins
-port the Mt19937 engine of php-src's ext/random/engine_mt19937.c, which
-states:
+mt_srand(), mt_rand(), Random\Engine\Mt19937 and the functions built on
+them in crates/rhp-builtins port the Mt19937 engine of php-src's
+ext/random/engine_mt19937.c, which states:
 
   The following mt19937 algorithms are based on a C++ class MTRand by
   Richard J. Wagner. For more information see the web page at
@@ -2628,3 +2629,40 @@ section 4):
   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
   OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
   SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+28. libavifinfo
+------------------------------------------------------------------------------
+
+libavifinfo (https://aomedia.googlesource.com/libavifinfo), the copy php-src
+bundles in ext/standard/libavifinfo for getimagesize(). Compiled unmodified by
+crates/rhp-csrc from vendor/php-src/ext/standard/libavifinfo, which also
+holds the Alliance for Open Media Patent License 1.0 (PATENTS). LICENSE:
+
+  Copyright (c) 2021, Alliance for Open Media. All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+
+  1. Redistributions of source code must retain the above copyright
+     notice, this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright
+     notice, this list of conditions and the following disclaimer in
+     the documentation and/or other materials provided with the
+     distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.

@@ -634,12 +634,32 @@ pub fn ini_define_value(raw: &str) -> String {
         return raw.to_string();
     }
     let v = raw.trim_end();
-    if first == '"' || first == '\'' {
+    if first == '\'' {
         let inner = &v[1..];
         return match inner.find(first) {
             Some(end) => inner[..end].to_string(),
             None => inner.to_string(),
         };
+    }
+    if first == '"' {
+        // Up to the first unescaped quote, then zend_ini_escape_string:
+        // `\"`, `\\` and `\$` lose their backslash.
+        let b = &v.as_bytes()[1..];
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() && b[i] != b'"' {
+            if b[i] == b'\\' && i + 1 < b.len() {
+                if !matches!(b[i + 1], b'"' | b'\\' | b'$') {
+                    out.push(b'\\');
+                }
+                out.push(b[i + 1]);
+                i += 2;
+                continue;
+            }
+            out.push(b[i]);
+            i += 1;
+        }
+        return String::from_utf8_lossy(&out).into_owned();
     }
     let v = v.split(';').next().unwrap_or("").trim_end();
     match v.to_ascii_lowercase().as_str() {

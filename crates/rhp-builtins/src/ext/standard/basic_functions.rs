@@ -6,7 +6,6 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::standard::array::as_array;
-use crate::ext::standard::file::path_arg;
 use crate::ext::standard::pageinfo::script_stat;
 use crate::main::ini::{
     alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,
@@ -211,6 +210,130 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
 
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+    restore_process_tz();
+    TICK_FUNCS.with(|t| t.borrow_mut().clear());
+}
+
+/// One register_tick_function() entry (user_tick_function_entry).
+struct TickFn {
+    id: u64,
+    callback: Value,
+    params: Vec<Value>,
+    /// Running now: not called again from its own ticks.
+    calling: bool,
+}
+
+thread_local! {
+    /// BG(user_tick_functions), in registration order.
+    static TICK_FUNCS: std::cell::RefCell<Vec<TickFn>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TICK_NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// php_run_ticks: call every registered tick function (the engine's
+/// ZEND_TICKS when its count is reached). A function already running is
+/// skipped.
+pub fn run_tick_functions(host: &mut dyn Host) -> Result<(), Thrown> {
+    let ids: Vec<u64> = TICK_FUNCS.with(|t| t.borrow().iter().map(|f| f.id).collect());
+    for id in ids {
+        let call = TICK_FUNCS.with(|t| {
+            let mut t = t.borrow_mut();
+            let f = t.iter_mut().find(|f| f.id == id && !f.calling)?;
+            f.calling = true;
+            Some((f.callback.clone(), f.params.clone()))
+        });
+        let Some((cb, params)) = call else {
+            continue;
+        };
+        let r = host.call_callable(&cb, &params);
+        TICK_FUNCS.with(|t| {
+            if let Some(f) = t.borrow_mut().iter_mut().find(|f| f.id == id) {
+                f.calling = false;
+            }
+        });
+        r?;
+    }
+    Ok(())
+}
+
+/// What zend_fcc_equals compares of a callable: the bound object (by
+/// identity) or closure, and the lowercased class and function names.
+#[derive(PartialEq)]
+enum CallableKey {
+    Closure(usize),
+    Func(Vec<u8>),
+    Method(Option<usize>, Vec<u8>, Vec<u8>),
+}
+
+fn callable_key(host: &dyn Host, v: &Value) -> Option<CallableKey> {
+    let name = |b: &[u8]| {
+        let b = b.strip_prefix(b"\\").unwrap_or(b);
+        b.to_ascii_lowercase()
+    };
+    match deref(v) {
+        Value::Closure(c) => Some(CallableKey::Closure(
+            std::rc::Rc::as_ptr(&c) as *const u8 as usize
+        )),
+        Value::Str(s) => {
+            let s = s.as_bytes();
+            match s.windows(2).position(|w| w == b"::") {
+                Some(i) => Some(CallableKey::Method(None, name(&s[..i]), name(&s[i + 2..]))),
+                None => Some(CallableKey::Func(name(s))),
+            }
+        }
+        Value::Array(a) if a.len() == 2 => {
+            let target = deref(a.get(&ArrayKey::Int(0))?);
+            let method = conv::to_string_bytes(&deref(a.get(&ArrayKey::Int(1))?));
+            match target {
+                Value::Object(o) => {
+                    let class = host.object_class_name(&Value::Object(o.clone()))?;
+                    let id = std::rc::Rc::as_ptr(&o) as *const u8 as usize;
+                    Some(CallableKey::Method(Some(id), name(&class), name(&method)))
+                }
+                Value::Str(c) => Some(CallableKey::Method(None, name(c.as_bytes()), name(&method))),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn fn_register_tick_function(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let id = TICK_NEXT_ID.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    let f = TickFn {
+        id,
+        callback: deref(&args[0]),
+        params: args[1..].iter().map(deref).collect(),
+        calling: false,
+    };
+    TICK_FUNCS.with(|t| t.borrow_mut().push(f));
+    Ok(Value::Bool(true))
+}
+
+fn fn_unregister_tick_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let key = callable_key(host, &args[0]);
+    let funcs: Vec<(u64, Value, bool)> = TICK_FUNCS.with(|t| {
+        t.borrow()
+            .iter()
+            .map(|f| (f.id, f.callback.clone(), f.calling))
+            .collect()
+    });
+    // zend_llist_del_element: the first equal entry.
+    for (id, cb, calling) in funcs {
+        if key.is_some() && callable_key(host, &cb) == key {
+            if calling {
+                return Err(Thrown::error(
+                    "Error",
+                    "Registered tick function cannot be unregistered while it is being executed",
+                ));
+            }
+            TICK_FUNCS.with(|t| t.borrow_mut().retain(|f| f.id != id));
+            break;
+        }
+    }
+    Ok(Value::Null)
 }
 
 /// The request's `putenv` changes in order (`None` = unset). A spawner of
@@ -303,9 +426,51 @@ fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if name.contains(&0) || value.is_some_and(|v| v.contains(&0)) {
         return Ok(Value::Bool(false));
     }
+    if name == b"TZ" {
+        set_process_tz(value);
+    }
     let entry = (name.to_vec(), value.map(|v| v.to_vec()));
     ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
     Ok(Value::Bool(true))
+}
+
+/// TZ as the process started with it, once putenv() changed it.
+static ORIG_TZ: std::sync::Mutex<Option<Option<Vec<u8>>>> = std::sync::Mutex::new(None);
+
+/// putenv("TZ=…") changes the C library's time zone, as in php (putenv(3)
+/// then tzset()): strptime() and friends read it. The process environment
+/// is shared, as it is in php.
+fn set_process_tz(value: Option<&[u8]>) {
+    let mut orig = ORIG_TZ.lock().unwrap_or_else(|e| e.into_inner());
+    if orig.is_none() {
+        *orig = Some(std::env::var_os("TZ").map(|v| {
+            use std::os::unix::ffi::OsStrExt;
+            v.as_bytes().to_vec()
+        }));
+    }
+    apply_tz(value);
+}
+
+fn apply_tz(value: Option<&[u8]>) {
+    extern "C" {
+        fn tzset();
+    }
+    // SAFETY: valid C strings; php changes the environment the same way.
+    unsafe {
+        match value.and_then(|v| std::ffi::CString::new(v).ok()) {
+            Some(v) => libc::setenv(c"TZ".as_ptr(), v.as_ptr(), 1),
+            None => libc::unsetenv(c"TZ".as_ptr()),
+        };
+        tzset();
+    }
+}
+
+/// php restores the environment putenv() changed at request end.
+fn restore_process_tz() {
+    let mut orig = ORIG_TZ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tz) = orig.take() {
+        apply_tz(tz.as_deref());
+    }
 }
 
 fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -329,6 +494,9 @@ fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thro
                 rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
                 Value::Int(line),
             );
+            if let Some(t) = host.last_error_trace() {
+                a.insert(rhp_values::ArrayKey::from_bytes(b"trace"), t);
+            }
             Value::Array(a)
         }
     })
@@ -348,6 +516,41 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
             "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
         )));
     }
+    // php keeps the resolved zend_fcall_info_cache: `self` / `static` mean
+    // the registering scope, not the (absent) one at shutdown.
+    let cb = match &cb {
+        Value::Array(a) if a.len() == 2 => {
+            let mut it = a.iter();
+            let (Some((k0, Value::Str(c))), Some((_, m))) = (it.next(), it.next()) else {
+                return finish_shutdown_registration(host, cb.clone(), args);
+            };
+            let scope = if c.as_bytes().eq_ignore_ascii_case(b"self") {
+                host.caller_scope()
+            } else if c.as_bytes().eq_ignore_ascii_case(b"static") {
+                host.caller_called_scope()
+            } else {
+                None
+            };
+            match scope.and_then(|id| host.class_name(id)) {
+                Some(name) if matches!(k0, rhp_values::ArrayKey::Int(0)) => {
+                    let mut r = rhp_values::PhpArray::new();
+                    r.push(Value::str(name));
+                    r.push(m.clone());
+                    Value::Array(r)
+                }
+                _ => cb.clone(),
+            }
+        }
+        _ => cb,
+    };
+    finish_shutdown_registration(host, cb, args)
+}
+
+fn finish_shutdown_registration(
+    host: &mut dyn Host,
+    cb: Value,
+    args: &[Value],
+) -> Result<Value, Thrown> {
     host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
     Ok(Value::Null)
 }
@@ -1105,17 +1308,6 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Bool(ok))
 }
 
-/// `php_strip_whitespace($filename)` — php returns the source with comments and
-/// whitespace removed (via the tokenizer). Composer only uses it to feed its own
-/// comment-stripping classmap scanner, so returning the raw source is correct
-/// for that purpose (and `''` only for a missing/empty file).
-fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match host.stream_get_contents(&path_arg(args, 0)) {
-        Some(bytes) => Ok(Value::str(bytes)),
-        None => Ok(Value::str("")),
-    }
-}
-
 /// symtable key: canonical decimal ints become int keys.
 fn sym_key(k: &[u8]) -> ArrayKey {
     ArrayKey::from_bytes(k)
@@ -1322,10 +1514,84 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     })
 }
 
+/// The source behind `path` for highlighting / stripping
+/// (php_stream_open_for_zend: include_path, open errors reported).
+fn read_source(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Option<Vec<u8>>, Thrown> {
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
+    let target = ext::standard::file::include_path_target(host, path);
+    ext::standard::md5::read_file_for_hash(host, fname, &target)
+}
+
+fn fn_highlight_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    highlight_file(host, args, "highlight_file")
+}
+
+fn fn_show_source(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    highlight_file(host, args, "show_source")
+}
+
+/// highlight_file() and its alias show_source().
+fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
+    let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    let failed = |host: &mut dyn Host| {
+        let mut m = b"Failed opening '".to_vec();
+        m.extend_from_slice(&path);
+        m.extend_from_slice(b"' for highlighting");
+        crate::warn(host, fname, &m)
+    };
+    if path.is_empty() {
+        failed(host)?;
+    }
+    let Some(src) = read_source(host, fname, &path)? else {
+        failed(host)?;
+        return Ok(Value::Bool(false));
+    };
+    let html = zend::highlight::highlight(
+        zend::highlight::skip_shebang(&src),
+        &zend::highlight::Colors::from_ini(),
+    );
+    if ret {
+        return Ok(Value::str(html));
+    }
+    host.write_out(&html);
+    Ok(Value::Bool(true))
+}
+
+fn fn_highlight_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let src = conv::to_string_bytes(&deref(&args[0]));
+    let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    let html = zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
+    if ret {
+        return Ok(Value::str(html));
+    }
+    host.write_out(&html);
+    Ok(Value::Bool(true))
+}
+
+fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "php_strip_whitespace";
+    let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
+    let Some(src) = read_source(host, fname, &path)? else {
+        return Ok(Value::str(""));
+    };
+    Ok(Value::str(zend::highlight::strip(
+        zend::highlight::skip_shebang(&src),
+    )))
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("highlight_file", fn_highlight_file),
+            ("register_tick_function", fn_register_tick_function),
+            ("unregister_tick_function", fn_unregister_tick_function),
+            ("show_source", fn_show_source),
+            ("highlight_string", fn_highlight_string),
+            ("php_strip_whitespace", fn_php_strip_whitespace),
             ("print_r", fn_print_r),
             ("constant", fn_constant),
             ("call_user_func", fn_call_user_func),
@@ -1368,7 +1634,6 @@ pub fn register(m: &mut crate::Registry) {
             ("connection_aborted", fn_connection_status),
             ("is_uploaded_file", fn_is_uploaded_file),
             ("move_uploaded_file", fn_move_uploaded_file),
-            ("php_strip_whitespace", fn_php_strip_whitespace),
             ("parse_ini_string", fn_parse_ini_string),
             ("parse_ini_file", fn_parse_ini_file),
         ],

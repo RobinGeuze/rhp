@@ -180,6 +180,33 @@ pub struct ClassConst {
     pub visited: bool,
     /// Declared type of a typed constant (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    pub is_final: bool,
+    /// A `#[\Deprecated]` constant or enum case (ZEND_ACC_DEPRECATED).
+    pub deprecated: Option<Rc<DeprecatedConst>>,
+}
+
+/// What a deprecated class constant's fetch needs to raise its deprecation.
+pub struct DeprecatedConst {
+    pub attrs: Vec<rhp_bytecode::AttributeProto>,
+    pub is_case: bool,
+    pub unit: UnitId,
+}
+
+fn deprecated_const(
+    attrs: &[rhp_bytecode::AttributeProto],
+    is_case: bool,
+    unit: UnitId,
+) -> Option<Rc<DeprecatedConst>> {
+    attrs
+        .iter()
+        .any(|a| a.name.as_bytes().eq_ignore_ascii_case(b"Deprecated"))
+        .then(|| {
+            Rc::new(DeprecatedConst {
+                attrs: attrs.to_vec(),
+                is_case,
+                unit,
+            })
+        })
 }
 
 /// A deferred class-constant initializer.
@@ -313,8 +340,11 @@ fn dynamic_or_bad(name: &PhpStr) -> PropRes {
     }
 }
 
+/// A class name as php's `%s` prints it (an anonymous one stops at NUL).
 fn cname(classes: &[ClassEntry], id: ClassId) -> String {
-    String::from_utf8_lossy(classes[id as usize].name.as_bytes()).into_owned()
+    let b = classes[id as usize].name.as_bytes();
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    String::from_utf8_lossy(&b[..end]).into_owned()
 }
 
 /// php's do_inherit_property for a property the class redeclares: the
@@ -346,6 +376,18 @@ fn inherit_prop(
     }
     if !from_interface {
         pe.prototype = inh.prototype;
+    }
+    let pname = String::from_utf8_lossy(pe.name.as_bytes());
+    let cn = String::from_utf8_lossy(class_name.as_bytes());
+    let cn = cn.split('\0').next().unwrap_or_default();
+    if pe.readonly != inh.readonly && !inh.is_abstract {
+        let word = |r: bool| if r { "readonly" } else { "non-readonly" };
+        return Err(format!(
+            "Cannot redeclare {} property {}::${pname} as {} {cn}::${pname}",
+            word(inh.readonly),
+            cname(classes, inh.declaring_class),
+            word(pe.readonly),
+        ));
     }
     // The set visibility may not narrow (a get-only virtual parent has
     // none).
@@ -385,6 +427,14 @@ fn inherit_prop(
             ));
         }
     }
+    if rank(pe.visibility) > rank(inh.visibility) {
+        return Err(access_level_error(
+            cn,
+            &pname,
+            inh.visibility,
+            &cname(classes, inh.declaring_class),
+        ));
+    }
     if !inh.virt {
         // A backed parent keeps the child backed (its slot holds the value).
         pe.virt = false;
@@ -419,6 +469,77 @@ fn inherit_prop(
     }
     pe.hooks = hooks.iter().any(Option::is_some).then(|| Rc::new(hooks));
     Ok(())
+}
+
+/// do_inherit_property's "Access level to C::$p must be ..." error.
+fn access_level_error(class: &str, prop: &str, parent_vis: Visibility, parent: &str) -> String {
+    let (word, tail) = match parent_vis {
+        Visibility::Public => ("public", ""),
+        Visibility::Protected => ("protected", " or weaker"),
+        Visibility::Private => ("private", " or weaker"),
+    };
+    format!("Access level to {class}::${prop} must be {word} (as in class {parent}){tail}")
+}
+
+/// do_inherit_property's static rules for `proto`'s properties against
+/// the parent's: static and non-static may not redeclare each other, and a
+/// static may not narrow its access level.
+fn static_prop_errors(
+    classes: &[ClassEntry],
+    proto: &ClassProto,
+    parent: &ClassEntry,
+) -> Option<String> {
+    let cn = String::from_utf8_lossy(proto.name.as_bytes());
+    let cn = cn.split('\0').next().unwrap_or_default().to_string();
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    let redeclare = |pstatic: bool, pcls: ClassId, name: &[u8]| {
+        let word = |s: bool| if s { "static " } else { "non static " };
+        let n = String::from_utf8_lossy(name);
+        format!(
+            "Cannot redeclare {}{}::${n} as {}{cn}::${n}",
+            word(pstatic),
+            cname(classes, pcls),
+            word(!pstatic)
+        )
+    };
+    for pp in &proto.props {
+        if let Some(ps) = parent
+            .static_props
+            .get(pp.name.as_bytes())
+            .filter(|ps| ps.visibility != Visibility::Private)
+        {
+            return Some(redeclare(true, ps.declaring_class, pp.name.as_bytes()));
+        }
+    }
+    for sp in &proto.static_props {
+        let inst = parent
+            .prop_visible
+            .get(&sp.name)
+            .and_then(|k| parent.props.get(k))
+            .filter(|p| p.visibility != Visibility::Private);
+        if let Some(p) = inst {
+            return Some(redeclare(false, p.declaring_class, sp.name.as_bytes()));
+        }
+        if let Some(ps) = parent
+            .static_props
+            .get(sp.name.as_bytes())
+            .filter(|ps| ps.visibility != Visibility::Private)
+        {
+            if rank(sp.visibility) > rank(ps.visibility) {
+                return Some(access_level_error(
+                    &cn,
+                    &String::from_utf8_lossy(sp.name.as_bytes()),
+                    ps.visibility,
+                    &cname(classes, ps.declaring_class),
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// php's zend_verify_hooked_property for the class's own hooked
@@ -833,9 +954,11 @@ impl Vm {
                     self.materialize_enum_cases(id as ClassId, &proto, unit);
                 }
             }
+            self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
             return Ok(());
         }
         self.install_classes(protos, 0)?;
+        self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
@@ -1164,6 +1287,16 @@ impl Vm {
         early: bool,
     ) -> Result<bool, Thrown> {
         self.check_link(proto)?;
+        // zend_do_link_class: a `#[\Deprecated]` trait's use.
+        for (i, tname) in proto.traits.iter().enumerate() {
+            let tid = self.class_ids[&lc(tname.as_bytes())];
+            let dup = proto.traits[..i]
+                .iter()
+                .any(|t| t.as_bytes().eq_ignore_ascii_case(tname.as_bytes()));
+            if !dup {
+                self.deprecated_trait_use(tid, proto.name.as_bytes())?;
+            }
+        }
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -1204,6 +1337,14 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {
+                // An enum's engine methods (zend_enum_register_funcs) come
+                // first: the class's own members win over a trait's.
+                let engine = matches!(k.as_slice(), b"cases")
+                    || (proto.enum_backing.is_some()
+                        && matches!(k.as_slice(), b"from" | b"tryfrom"));
+                if proto.kind == ClassKind::Enum && engine {
+                    continue;
+                }
                 // Trait methods adopt the using class as their defining class.
                 insert_method(
                     &mut methods,
@@ -1295,7 +1436,8 @@ impl Vm {
                 props.insert(key, pe);
                 Ok(())
             };
-        let mut link_err: Option<String> = None;
+        let mut link_err: Option<String> = parent
+            .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),
@@ -1484,6 +1626,7 @@ impl Vm {
         }
 
         // Class constants.
+        self.check_const_inheritance(proto, parent)?;
         self.check_const_types(proto, parent)?;
         // A parent's private constants are not inherited (do_inherit_constant).
         let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
@@ -1534,6 +1677,8 @@ impl Vm {
                     init,
                     visited: false,
                     ty: c.type_hint.clone().map(Rc::new),
+                    is_final: c.is_final,
+                    deprecated: deprecated_const(&c.meta.attributes, false, unit),
                 },
             );
         }
@@ -1719,8 +1864,14 @@ impl Vm {
             return Ok(false);
         }
         // php verifies abstractness last, after the inheritance checks.
-        if proto.kind == ClassKind::Class && self.internal_classes > 0 {
+        if self.internal_classes > 0 {
+            self.interface_handlers(id)?;
+        }
+        if matches!(proto.kind, ClassKind::Class | ClassKind::Enum) && self.internal_classes > 0 {
             self.verify_abstract_class(id)?;
+        }
+        if self.internal_classes > 0 {
+            self.check_override(id)?;
         }
         Ok(true)
     }
@@ -1749,6 +1900,8 @@ impl Vm {
                     init,
                     visited: false,
                     ty: None,
+                    is_final: false,
+                    deprecated: deprecated_const(&case.meta.attributes, true, unit),
                 },
             );
             self.classes[id as usize].enum_cases.push(obj);
@@ -1758,14 +1911,7 @@ impl Vm {
     /// An E_COMPILE_ERROR (64) / E_ERROR (1) raised while linking `proto`,
     /// reported at its declaration.
     pub(crate) fn link_fatal(&mut self, proto: &ClassProto, level: i64, msg: &str) -> Thrown {
-        use rhp_builtins::Host;
-        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
-        let trace = if crate::ini_bool(&backtraces) {
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            rhp_builtins::zend::exceptions::trace_to_string(self, &trace)
-        } else {
-            Vec::new()
-        };
+        let trace = self.fatal_trace();
         let file = proto.decl_file.as_bytes().to_vec();
         let line = proto.decl_line as i64;
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
@@ -1812,12 +1958,13 @@ impl Vm {
             list.push_str(", ...");
         }
         let n = cname(&self.classes, id);
-        let msg = if !explicit && !is_anon_name(e.name.as_bytes()) {
+        let kind = crate::link_checks::kind_uc(e.kind);
+        let msg = if !explicit && !is_anon_name(e.name.as_bytes()) && e.kind != ClassKind::Enum {
             format!(
-                "Class {n} contains {cnt} abstract method{s} and must therefore be declared abstract or implement the remaining method{s} ({list})"
+                "{kind} {n} contains {cnt} abstract method{s} and must therefore be declared abstract or implement the remaining method{s} ({list})"
             )
         } else {
-            format!("Class {n} must implement {cnt} abstract method{s} ({list})")
+            format!("{kind} {n} must implement {cnt} abstract method{s} ({list})")
         };
         let proto = e.proto.clone();
         Err(self.link_fatal(&proto, 1, &msg))
@@ -1876,11 +2023,15 @@ impl Vm {
                 )
             }),
             ClassRef::Dynamic(reg) => {
-                let v = self.reg_get(top, reg);
+                let v = crate::deref(&self.reg_get(top, reg));
                 match v {
                     Value::Str(s) => self.resolve_class_by_name(s.as_bytes()),
                     Value::Object(h) => Ok(h.borrow().class),
-                    _ => Err(Thrown::type_error("Class name must be a string or object")),
+                    Value::Closure(_) => self.resolve_class_by_name(b"Closure"),
+                    _ => Err(Thrown::error(
+                        "Error",
+                        "Class name must be a valid object or a string",
+                    )),
                 }
             }
         }
@@ -1903,7 +2054,7 @@ impl Vm {
                             .as_bytes()
                             .to_vec(),
                     ),
-                    ClassRef::Dynamic(reg) => match self.reg_get(top, reg) {
+                    ClassRef::Dynamic(reg) => match self.reg_r(top, reg)? {
                         crate::Value::Str(s) => Some(s.as_bytes().to_vec()),
                         _ => None,
                     },
@@ -1950,6 +2101,7 @@ impl Vm {
         if !self.in_autoload.insert(key.clone()) {
             return Ok(false); // already being autoloaded further up the stack
         }
+        self.autoload_depths.push(self.stack.len());
         let r = (|| {
             for loader in self.autoloaders.clone() {
                 self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
@@ -1959,6 +2111,7 @@ impl Vm {
             }
             Ok(false)
         })();
+        self.autoload_depths.pop();
         self.in_autoload.remove(&key);
         r
     }
@@ -2189,7 +2342,7 @@ impl Vm {
                 rhp_builtins::zval_value_name(self, &v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
-                self.type_string_resolved(ty, Some(decl), None),
+                self.prop_type_string(ty, decl, None),
             ))),
         }
     }

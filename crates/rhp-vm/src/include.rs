@@ -88,7 +88,7 @@ impl Vm {
     /// `eval($code)`: compile the PHP source at runtime and run it in the current
     /// variable scope (`top`). Returns the script's return value (Null if none).
     pub(crate) fn do_eval(&mut self, top: usize, src: Reg) -> Result<Value, Thrown> {
-        let code = conv::to_string_bytes(&self.reg_get(top, src));
+        let code = conv::to_string_bytes(&self.reg_r(top, src)?);
         // eval() code is already in PHP mode; prepend an open tag so the parser
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();
@@ -187,13 +187,7 @@ impl Vm {
     /// running the include/eval, `#0 {main}` for the main script), and
     /// objects are no longer destructed. The caller bails out (exit 255).
     pub fn compile_error(&mut self, message: &str, file: &[u8], line: u32) {
-        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
-        let trace = if ini_bool(&backtraces) {
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            builtins::zend::exceptions::trace_to_string(self, &trace)
-        } else {
-            Vec::new()
-        };
+        let trace = self.fatal_trace();
         let line = line as i64;
         self.last_error = Some((64, message.as_bytes().to_vec(), file.to_vec(), line));
         self.display_error_trace(64, "Fatal error", message.as_bytes(), file, line, &trace);
@@ -305,7 +299,10 @@ impl Vm {
 
         // `_once`: skip a file already included (count it as included before
         // running the body, so recursive `_once` includes terminate).
-        if kind.is_once() && self.included_files.contains(&realpath) {
+        if kind.is_once()
+            && (self.included_files.contains(&realpath)
+                || self.main_included_path().as_ref() == Some(&realpath))
+        {
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
@@ -321,6 +318,32 @@ impl Vm {
         Ok(match ret {
             Value::Null => Value::Int(1),
             v => v,
+        })
+    }
+
+    /// do_bind_function_error's message for redeclaring user function
+    /// `lc` (lowercase) as `name`.
+    pub(crate) fn redeclare_function_msg(&self, lc: &[u8], name: &rhp_values::PhpStr) -> String {
+        let name = String::from_utf8_lossy(name.as_bytes());
+        match self.fn_names.get(lc).map(|&i| &self.functions[i].proto) {
+            Some(old) => format!(
+                "Cannot redeclare function {name}() (previously declared in {}:{})",
+                String::from_utf8_lossy(old.debug.file.as_bytes()),
+                old.meta.start_line
+            ),
+            None => format!("Cannot redeclare function {name}()"),
+        }
+    }
+
+    /// The main script as an included file (`get_included_files()`, the
+    /// `_once` check): when it is a real file, not `-r` code or a script
+    /// read from stdin.
+    pub(crate) fn main_included_path(&self) -> Option<Vec<u8>> {
+        self.main_script_path.clone().or_else(|| {
+            let f = self.stack.first()?.proto.debug.file.as_bytes();
+            builtins::zend::virtual_cwd::os_path(f)
+                .is_file()
+                .then(|| f.to_vec())
         })
     }
 
@@ -536,13 +559,12 @@ impl Vm {
                 if preloaded {
                     continue;
                 }
-                return Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Cannot redeclare function {}()",
-                        String::from_utf8_lossy(proto.name.as_bytes())
-                    ),
-                ));
+                // do_bind_function_error at compile time: E_COMPILE_ERROR at
+                // the new declaration.
+                let msg = self.redeclare_function_msg(&lc, &proto.name);
+                let line = proto.meta.start_line as i64;
+                let file = proto.debug.file.as_bytes().to_vec();
+                return Err(self.fatal_compile_error_at(msg.as_bytes(), file, line));
             }
             let idx = self.functions.len();
             self.functions.push(UnitFn {
@@ -596,7 +618,7 @@ impl Vm {
             }
             let name = &main.cv_var_names[ci];
             if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
-                let rc = self.promote(caller_top, caller_ci as Reg);
+                let rc = self.promote_slot(caller_top, caller_ci as Reg);
                 frame.regs[ci] = Value::Ref(rc);
             } else if name.as_bytes() != b"this"
                 && !main.superglobals.iter().any(|(r, _)| *r as usize == ci)
@@ -671,7 +693,7 @@ impl Vm {
                         self.var_var_bind(caller, name.as_bytes(), rc.clone());
                     }
                 }
-                Value::Null => self.var_var_unset(caller, name.as_bytes()),
+                Value::Undef => self.var_var_unset(caller, name.as_bytes()),
                 v => {
                     let cell = Rc::new(RefCell::new(v.clone()));
                     self.var_var_bind(caller, name.as_bytes(), cell);

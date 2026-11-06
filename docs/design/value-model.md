@@ -74,6 +74,14 @@ Representation rationale, variant by variant:
   variable, pushing an argument) cheap, which is the dominant operation in a
   tree-walker.
 
+> **Today** the enum also has `Closure`, `Resource` and `Undef`. `Undef` is
+> php's IS_UNDEF: the state of a variable slot (a CV, or a symbol-table cell
+> such as a global's) that was never assigned or was unset. It is never a
+> value: `clone()` of `Undef` gives `Null`, so a copy read out of an
+> undefined slot is null and the marker cannot leak into arrays, arguments or
+> returns. `copy_slot()` keeps it (an arrow function's implicit capture, an
+> include's shared cell). See bytecode.md, "Undefined variables".
+
 `Value: Clone` is the engine's workhorse: assigning `$b = $a` is
 `slot_b = value_a.clone()`. For scalars that is a bit-copy; for `Str`/`Array`
 it is an `Rc` bump that shares the buffer until the first write (COW); for
@@ -161,10 +169,13 @@ pub struct ArrayData {
     /// Ordered entries. FxBuildHasher: fast, non-DoS-resistant hashing — fine
     /// for a single request (PHP itself is not collision-hardened by default).
     pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
-    /// Next integer index used by `$a[] = ...`.
-    /// `None` = no integer key has ever been inserted (fresh array appends at 0).
-    /// High-water mark: never lowered by `unset`.
-    pub next_int: Option<i64>,
+    /// php's nNextFreeElement: the key `$a[] = ...` uses. `i64::MIN` until
+    /// an integer key is inserted (a fresh array appends at 0).
+    next_free: i64,
+    /// Internal pointer (`current`/`next`/...); `entries.len()` is past the end.
+    pub pos: usize,
+    /// Positions of array_walk's HashTable iterators, by id.
+    iters: Option<Box<Vec<(u32, usize)>>>,
 }
 
 /// A PHP array value. Clone is O(1) (Rc bump); mutation is COW via `make_mut`.
@@ -242,17 +253,12 @@ observed result rather than Rust's `as i64` saturation; a shared
 
 ### 3c. Next-free-index counter
 
-`$a[] = v` appends at `next_int.unwrap_or(0)`. After inserting **any** integer
-key `k` (append or explicit), update:
-
-```
-next_int = Some(match next_int {
-    None    => k + 1,          // first integer key sets it unconditionally
-    Some(n) => n.max(k + 1),   // otherwise high-water max
-});
-```
-
-`unset` never lowers `next_int`. Verified (php 8.5.8):
+`next_free` follows php's nNextFreeElement. It starts at `i64::MIN` (a
+fresh array appends at 0). Inserting integer key `k` (append or explicit)
+sets `next_free = k + 1` when `k >= next_free`, saturating at `i64::MAX`.
+`unset` never lowers it; `array_pop` lowers it by one when it removes the
+key `next_free - 1`, and `array_shift`/the sorts that renumber set it to
+the new count. Verified (php 8.5):
 
 ```
 [10=>x][]      -> keys 10,11
@@ -260,13 +266,30 @@ next_int = Some(match next_int {
 [-5=>a,-3=>c][] -> keys -5,-3,-2
 ["z"][]; [-5]=m; []  -> keys 0,1,-5,2 // -5 (<next) doesn't move next
 [0,1,2]; unset(2); [] -> keys 0,1,3   // high-water survives unset
+[-1=>0]; array_pop; []  -> key -1
 ```
 
-Overflow edge: if `k == i64::MAX`, the next append would overflow; PHP emits
-`Warning: Cannot add element to the array as the next element is already
-occupied` and skips the insert. We model this by treating `k.checked_add(1)`
-`None` as "append disabled" (the `Option`/overflow flag lives in `ArrayData`;
-reads and keyed writes still work).
+An append when `next_free` is `i64::MAX` and that key is taken fails
+(`PhpArray::try_push` / `append_mut` return false / `None`): `$a[] = v`,
+array literals, unpacking and `array_push` throw `Error: Cannot add
+element to the array as the next element is already occupied`.
+
+### 3d. Internal pointer and iterators
+
+php's internal pointer and HashTable iterators are bucket positions; a
+deleted bucket leaves a hole, so a position keeps pointing at the same
+element. IndexMap compacts on removal instead, so `PhpArray::remove` (and
+`ArrayData::remove_index`) move `pos` and every registered iterator back
+by one when the removed entry was before them. A removed current element
+leaves the pointer on the next one, and the past-the-end position
+(`entries.len()`) picks up a later append, as php's `nNumUsed` does. A
+copy-on-write separation restarts a past-the-end pointer at 0, as
+`zend_array_dup` does.
+`array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
+is copied along with the array, so the walk survives a copy-on-write
+separation, and a different array (the variable reassigned) is walked
+from its internal pointer. The sorts keep iterator positions, and
+`array_splice` moves them the way `php_splice` does (`splice_iterators`).
 
 ## 4. Reference semantics (PHP `&`)
 

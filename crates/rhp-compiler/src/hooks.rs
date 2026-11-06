@@ -277,7 +277,15 @@ fn compile_hook_body(
                     vp.hint
                         .as_ref()
                         .and_then(|h| crate::hints::compile_type(cx, h, false).map(|t| t.hint)),
-                    compile_attributes(cx, &vp.attribute_lists, Some(p.class_name))?,
+                    compile_attributes(
+                        cx,
+                        &vp.attribute_lists,
+                        Some(p.class_name),
+                        &crate::attrs::AttrTarget::new(
+                            crate::attrs::TARGET_PARAMETER,
+                            vp.variable.span.start.offset,
+                        ),
+                    )?,
                     cx.line_of(vp.span().start.offset),
                 )
             }
@@ -380,9 +388,19 @@ fn compile_hook_body(
         cx,
         &hook.attribute_lists,
         Some(p.class_name),
+        &crate::attrs::AttrTarget {
+            hook: true,
+            ..crate::attrs::AttrTarget::new(
+                crate::attrs::TARGET_METHOD,
+                hook.name.span.start.offset,
+            )
+        },
         hook.name.span.start.offset,
         start,
         end,
     )?;
+    // php's line_start for a hook: its name's line (after attributes).
+    proto.meta.start_line = cx.line_of(hook.name.span.start.offset);
+    crate::attrs::apply_fn_flags(cx, &mut proto, true, true, start);
     Ok(proto)
 }

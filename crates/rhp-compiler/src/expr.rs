@@ -18,6 +18,20 @@ use crate::util::{compile_error, dirname, strip_dollar};
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
+        if self.scope_kind == ScopeKind::Init {
+            // A constant expression reports at the line of the node being
+            // evaluated (zend_ast_evaluate_ex's EG(lineno_override)).
+            let line = self.cx.line_of(expr.span().start.offset);
+            let saved = std::mem::replace(&mut self.cur_line, line);
+            let r = self.compile_expr_at(expr);
+            self.cur_line = saved;
+            return r;
+        }
+        self.compile_expr_at(expr)
+    }
+
+    fn compile_expr_at(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
         let addr = expr as *const Expression as usize;
         let inner = self.sc_inner == addr;
         let link = chain_object(expr);
@@ -64,14 +78,101 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// A read of a chain of dimensions and properties on a variable
+    /// (`$a->$b->{$c[1]}`, `$a[f()][g()]`) as php's delayed compilation
+    /// orders it: every key and name first, then the fetches, so a key's
+    /// side effects and warnings come before an inner fetch's. `None` when
+    /// the chain has nothing to reorder (or a form this does not handle).
+    fn compile_delayed_chain(&mut self, expr: &Expression) -> Result<Option<Reg>, Thrown> {
+        enum Link<'a> {
+            Dim(&'a Expression<'a>),
+            Prop(&'a crate::parse::cst::ClassLikeMemberSelector<'a>),
+        }
+        let simple = |e: &Expression| {
+            matches!(
+                e,
+                Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+            )
+        };
+        let mut links = Vec::new();
+        let mut complex = false;
+        let mut e = expr;
+        loop {
+            match e {
+                Expression::ArrayAccess(aa) if !is_globals_var(aa.array) => {
+                    complex |= !simple(aa.index);
+                    links.push(Link::Dim(aa.index));
+                    e = aa.array;
+                }
+                Expression::Access(Access::Property(pa)) => {
+                    use crate::parse::cst::ClassLikeMemberSelector as S;
+                    complex |= matches!(&pa.property, S::Expression(x) if !simple(x.expression));
+                    links.push(Link::Prop(&pa.property));
+                    e = pa.object;
+                }
+                _ => break,
+            }
+        }
+        let base = match e {
+            Expression::Variable(Variable::Direct(d))
+                if !matches!(strip_dollar(d.name), b"this" | b"GLOBALS") =>
+            {
+                strip_dollar(d.name)
+            }
+            _ => return Ok(None),
+        };
+        if links.len() < 2 || !complex || self.in_const_expr() {
+            return Ok(None);
+        }
+        links.reverse();
+        let mut keys = Vec::with_capacity(links.len());
+        for link in &links {
+            keys.push(match link {
+                Link::Dim(k) => Sel::Dyn(self.compile_expr(k)?),
+                Link::Prop(s) => self.compile_selector(s)?,
+            });
+        }
+        let mut cur = self.cv(base);
+        for (link, key) in links.iter().zip(keys) {
+            let dst = self.alloc_temp();
+            self.emit(match (link, key) {
+                (Link::Dim(_), Sel::Dyn(key)) => Instr::DimFetch { dst, arr: cur, key },
+                (Link::Prop(_), Sel::Dyn(name)) => Instr::FetchPropDyn {
+                    dst,
+                    obj: cur,
+                    name,
+                },
+                (_, Sel::Static(name)) => Instr::FetchProp {
+                    dst,
+                    obj: cur,
+                    name,
+                },
+            });
+            cur = dst;
+        }
+        Ok(Some(cur))
+    }
+
     /// A nullsafe guard on `src` for the open chain.
     pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
+        // JMP_NULL reads its operand (an undefined variable warns).
+        if src < self.num_cvs {
+            self.emit(Instr::CheckCv { cv: src });
+        }
         let pos = self.code.len();
         self.emit(Instr::Nop);
         self.sc_jumps.push((pos, src));
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        if matches!(
+            expr,
+            Expression::ArrayAccess(_) | Expression::Access(Access::Property(_))
+        ) {
+            if let Some(r) = self.compile_delayed_chain(expr)? {
+                return Ok(r);
+            }
+        }
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),
@@ -114,8 +215,9 @@ impl ProtoBuilder<'_> {
             Expression::Match(m) => self.compile_match(m),
             Expression::Instantiation(inst) => {
                 use mago_span::HasSpan;
+                // ZEND_AST_NEW takes its class name's line.
                 self.call_lines
-                    .push(self.cx.line_of(inst.span().start.offset));
+                    .push(self.cx.line_of(inst.class.span().start.offset));
                 let r = self.compile_new(inst);
                 self.call_lines.pop();
                 r
@@ -147,6 +249,11 @@ impl ProtoBuilder<'_> {
                 use crate::parse::cst::Call;
                 use mago_span::HasSpan;
                 let at = match call {
+                    // php's `callable_expr argument_list`: the line the
+                    // argument list starts on (a plain name keeps its own).
+                    Call::Function(fc) if !matches!(fc.function, Expression::Identifier(_)) => {
+                        fc.argument_list.left_parenthesis
+                    }
                     Call::Function(fc) => fc.function.span(),
                     Call::Method(mc) => mc.method.span(),
                     Call::NullSafeMethod(mc) => mc.method.span(),
@@ -441,7 +548,7 @@ impl ProtoBuilder<'_> {
     fn compile_coalesce(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         let a = self.compile_quiet(b.lhs)?;
-        self.emit(Instr::Mov { dst, src: a });
+        self.emit(Instr::MovIs { dst, src: a });
         let jnn = self.code.len();
         self.emit(Instr::Nop); // JmpNotNull dst -> end
         let r = self.compile_expr(b.rhs)?;
@@ -482,9 +589,12 @@ impl ProtoBuilder<'_> {
                     ),
                 );
             }
-            Op::VoidCast(..) | Op::RealCast(..) => {
+            // Only a statement (php's grammar refuses it elsewhere): see
+            // `compile_discarded`.
+            Op::VoidCast(..) => return self.compile_expr(u.operand),
+            Op::RealCast(..) => {
                 return Err(Thrown::unsupported(
-                    "(unset)/(void)/(real) cast",
+                    "(real) cast",
                     "removed/refused in PHP 8",
                 ))
             }
@@ -564,7 +674,7 @@ impl ProtoBuilder<'_> {
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(target, &mut steps)?;
-                self.emit_cursor(root, &steps);
+                self.emit_cursor_mode(root, &steps, crate::assign::LvalMode::Rw);
                 let dst = self.alloc_temp();
                 self.emit(Instr::IncDecLval { dst, pre, delta });
                 Ok(dst)
@@ -736,19 +846,51 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
+    /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls the
+    /// global `shell_exec()` (a fully qualified name) with the string.
+    fn compile_shell_exec(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            cs.span().start.offset,
+            "The backtick (`) operator is deprecated, use shell_exec() instead".into(),
+        );
+        let cmd = self.compile_composite_parts(cs)?;
+        let (name, fallback) = (b"shell_exec".to_vec(), None);
+        let base = self.alloc_temps(1);
+        self.emit(Instr::MovTake {
+            dst: base,
+            src: cmd,
+        });
+        let name = self.intern_name(&name);
+        let fallback = self.intern_fallback(&fallback);
+        let dst = self.alloc_temp();
+        self.emit(Instr::Call {
+            dst,
+            name,
+            base,
+            argc: 1,
+            fallback,
+            flags: rhp_bytecode::CallFlags::default(),
+        });
+        Ok(dst)
+    }
+
     /// Interpolated (`"...$x..."`) and heredoc strings: concatenate the parts,
     /// stringifying each via `Concat` (which routes to `ops::concat` →
-    /// `conv::to_string_bytes`). Backticks (`ShellExecute`) are refused.
+    /// `conv::to_string_bytes`).
     fn compile_composite(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
+        if matches!(cs, CompositeString::ShellExecute(_)) {
+            return self.compile_shell_exec(cs);
+        }
+        self.compile_composite_parts(cs)
+    }
+
+    fn compile_composite_parts(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
         let parts = match cs {
             CompositeString::Interpolated(i) => &i.parts,
             CompositeString::Document(d) => &d.parts,
-            CompositeString::ShellExecute(_) => {
-                return Err(Thrown::unsupported(
-                    "backtick shell execution",
-                    "never spawns a shell; refused by design",
-                ))
-            }
+            CompositeString::ShellExecute(s) => &s.parts,
         };
         // Start from "" so every part is stringified uniformly.
         let dst = self.alloc_temp();
@@ -801,12 +943,62 @@ impl ProtoBuilder<'_> {
                     }
                     r
                 }
+                StringPart::Expression(Expression::Variable(Variable::Indirect(iv))) => {
+                    self.compile_dollar_brace(iv)?
+                }
                 StringPart::Expression(e) => self.compile_expr(e)?,
                 StringPart::BracedExpression(b) => self.compile_expr(b.expression)?,
             };
             self.emit(Instr::Concat { dst, a: dst, b: pr });
         }
         Ok(dst)
+    }
+
+    /// `"${name}"`, `"${name[expr]}"` (php 8.2: "Using ${var} in strings is
+    /// deprecated") and `"${expr}"` (a variable variable, deprecated too).
+    fn compile_dollar_brace(
+        &mut self,
+        iv: &crate::parse::cst::IndirectVariable,
+    ) -> Result<Reg, Thrown> {
+        let at = iv.dollar_left_brace.start.offset;
+        let src = self.cx.src;
+        let name =
+            crate::strings::dollar_brace_varname(src, iv.dollar_left_brace.end.offset as usize);
+        let Some(name) = name else {
+            self.cx.diag(
+                rhp_values::E_DEPRECATED,
+                at,
+                "Using ${expr} (variable variables) in strings is deprecated, use {${expr}} instead".into(),
+            );
+            return self.compile_variable(&Variable::Indirect(iv.clone()));
+        };
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            at,
+            "Using ${var} in strings is deprecated, use {$var} instead".into(),
+        );
+        let var = |this: &mut Self| -> Reg {
+            if name == b"this" || name == b"GLOBALS" {
+                let k = this.intern_const(Value::str(name.to_vec()));
+                let n = this.alloc_temp();
+                this.emit(Instr::LoadConst { dst: n, k });
+                let dst = this.alloc_temp();
+                this.emit(Instr::FetchVarVar { dst, name: n });
+                dst
+            } else {
+                this.cv(name)
+            }
+        };
+        match iv.expression {
+            Expression::ArrayAccess(aa) => {
+                let arr = var(self);
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
+            _ => Ok(var(self)),
+        }
     }
 
     fn compile_constant(&mut self, id: &Identifier) -> Result<Reg, Thrown> {
@@ -1001,6 +1193,14 @@ impl ProtoBuilder<'_> {
                     self.cv(b"this")
                 } else {
                     self.compile_quiet(e.value)?
+                };
+                // A variable is read quietly (ZEND_ISSET_ISEMPTY_CV / _THIS).
+                let r = if r < self.num_cvs {
+                    let t = self.alloc_temp();
+                    self.emit(Instr::MovIs { dst: t, src: r });
+                    t
+                } else {
+                    r
                 };
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });

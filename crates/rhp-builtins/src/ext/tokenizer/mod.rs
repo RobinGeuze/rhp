@@ -10,7 +10,7 @@ pub(crate) mod ids;
 pub(crate) mod lexer;
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, PhpArray, PhpStr, Value};
 
 use crate::{Host, Thrown};
 use ids::*;
@@ -105,19 +105,62 @@ fn parse_error(host: &mut dyn Host, f: crate::zend::ParseFailure) -> Thrown {
 fn fn_token_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let code = conv::to_string_bytes(&deref(&args[0]));
     let flags = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    let mut out = PhpArray::new();
-    for t in lex(host, &code, flags)? {
+    let mut toks = lex(host, &code, flags)?;
+    // the doubling slack would stay allocated while the array is built
+    toks.shrink_to_fit();
+    let mut texts = TextCache::default();
+    // Equal short tokens on one line (the spaces between tokens) share one
+    // array: copy-on-write keeps them apart, only refcounts differ.
+    let mut same_line: rustc_hash::FxHashMap<(i64, &[u8]), PhpArray> = Default::default();
+    let mut line = 0;
+    let mut out = PhpArray::with_capacity(toks.len());
+    for t in &toks {
+        let src = t.text(&code);
         if t.id < 256 {
-            out.push(Value::str(t.text(&code).to_vec()));
-        } else {
-            let mut a = PhpArray::new();
-            a.push(Value::Int(t.id));
-            a.push(Value::str(t.text(&code).to_vec()));
-            a.push(Value::Int(t.line));
-            out.push(Value::Array(a));
+            out.push(Value::Str(texts.get(src)));
+            continue;
         }
+        if t.line != line {
+            same_line.clear();
+            line = t.line;
+        }
+        let shared = src.len() <= SHORT_TEXT;
+        if shared {
+            if let Some(a) = same_line.get(&(t.id, src)) {
+                out.push(Value::Array(a.clone()));
+                continue;
+            }
+        }
+        let mut a = PhpArray::with_capacity(3);
+        a.push(Value::Int(t.id));
+        a.push(Value::Str(texts.get(src)));
+        a.push(Value::Int(t.line));
+        if shared {
+            same_line.insert((t.id, src), a.clone());
+        }
+        out.push(Value::Array(a));
     }
     Ok(Value::Array(out))
+}
+
+/// Token texts up to this length are shared.
+const SHORT_TEXT: usize = 32;
+
+/// One string per distinct short token text (whitespace, names, operators),
+/// so a big file's tokens share them; php interns one-character strings.
+#[derive(Default)]
+struct TextCache<'a>(rustc_hash::FxHashMap<&'a [u8], PhpStr>);
+
+impl<'a> TextCache<'a> {
+    fn get(&mut self, text: &'a [u8]) -> PhpStr {
+        if text.len() > SHORT_TEXT {
+            return PhpStr::from_bytes(text);
+        }
+        self.0
+            .entry(text)
+            .or_insert_with(|| PhpStr::from_bytes(text))
+            .clone()
+    }
 }
 
 /// `[id, text, line, pos]` for every token (single chars get their byte as id);

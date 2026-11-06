@@ -63,6 +63,15 @@ pub fn float_serialize(f: f64) -> Vec<u8> {
     gcvt(f, mode_for(SERIALIZE_PRECISION.with(|c| c.get())), b'E')
 }
 
+/// serialize()'s `d:` value: zend_gcvt called directly, so precision 0
+/// keeps 1 digit but switches to the exponential form at once (3.0E+0).
+pub fn float_serialize_gcvt(f: f64) -> Vec<u8> {
+    match SERIALIZE_PRECISION.with(|c| c.get()) {
+        0 => gcvt(f, Mode::Zero, b'E'),
+        p => gcvt(f, mode_for(p), b'E'),
+    }
+}
+
 /// `zend_gcvt(value, ndigit, '.', exponent, buf)`: `ndigit < 0` is the
 /// shortest round trip (mode 0), else `ndigit` significant digits.
 pub fn zend_gcvt(f: f64, ndigit: i64, exponent: u8) -> Vec<u8> {
@@ -79,6 +88,8 @@ enum Mode {
     Precision(usize),
     /// Shortest string that round-trips (serialize_precision = -1).
     Shortest,
+    /// zend_gcvt with ndigit 0: one digit, always exponential.
+    Zero,
 }
 
 /// PHP's `zend_gcvt`-equivalent: produce the significant digits + decimal
@@ -112,6 +123,7 @@ fn gcvt(f: f64, mode: Mode, exponent: u8) -> Vec<u8> {
             let s = format!("{:.*e}", p - 1, abs);
             split_exp(&s)
         }
+        Mode::Zero => split_exp(&format!("{:.0e}", abs)),
         Mode::Shortest => shortest_digits(abs),
     };
 
@@ -121,6 +133,7 @@ fn gcvt(f: f64, mode: Mode, exponent: u8) -> Vec<u8> {
     let cutoff: i32 = match mode {
         Mode::Precision(p) => p as i32,
         Mode::Shortest => 17,
+        Mode::Zero => 0,
     };
 
     let trimmed = trim_trailing_zeros(&digits); // keep >= 1 digit

@@ -277,7 +277,7 @@ impl Vm {
                     frame.regs[p.cv as usize] = zero;
                 }
                 Err(()) => {
-                    let fname = self.func_display_name(proto, ctx);
+                    let fname = self.func_c_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                         .into_owned();
                     // php appends the call site when the caller is user code (the
@@ -335,7 +335,7 @@ impl Vm {
                 Ok(())
             }
             Err(()) => {
-                let fname = self.func_display_name(&proto, ctx);
+                let fname = self.func_c_name(&proto, ctx);
                 let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes());
                 let site = if from_user && !self.is_internal_frame(top - 1) {
                     format!(
@@ -376,10 +376,13 @@ impl Vm {
             return Ok(());
         }
         let ctx = self.stack[top].defining_class;
-        let fname = self.func_display_name(proto, ctx);
         let msg = if ty.kinds.contains(&K::Never) {
-            format!("{fname}(): never-returning function must not implicitly return")
+            // zend_verify_never_error.
+            let fname = self.func_c_name(proto, ctx);
+            let what = if ctx.is_some() { "method" } else { "function" };
+            format!("{fname}(): never-returning {what} must not implicitly return")
         } else {
+            let fname = self.func_display_name(proto, ctx);
             let called = self.stack[top].called_class;
             format!(
                 "{fname}(): Return value must be of type {}, none returned",
@@ -409,7 +412,35 @@ impl Vm {
         }
         let ctx = self.stack[top].defining_class;
         let strict = proto.strict_types;
-        match self.check_one(&v, ty, strict, ctx) {
+        // `static` is the called scope (zend_value_instanceof_static), not
+        // the declaring class.
+        let resolved;
+        let checked = if ty.kinds.contains(&K::StaticType) {
+            let called = self.stack[top]
+                .called_class
+                .or_else(|| self.current_this(top).map(|o| o.borrow().class));
+            // Fast path (fluent `: static` methods): an instance of the
+            // called scope passes without building the resolved type.
+            if let (Some(c), Value::Object(h)) = (called, &deref(&v)) {
+                if self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&c)
+                {
+                    return Ok(v);
+                }
+            }
+            let mut t = ty.clone();
+            t.kinds.retain(|k| *k != K::StaticType);
+            t.kinds.push(match called {
+                Some(c) => K::Named(self.class(c).name.clone()),
+                None => K::Never, // matches nothing
+            });
+            resolved = t;
+            &resolved
+        } else {
+            ty
+        };
+        match self.check_one(&v, checked, strict, ctx) {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => {
                 self.coercion_diag(&v, &coerced)?;
@@ -429,6 +460,21 @@ impl Vm {
                 ))
             }
         }
+    }
+
+    /// A property's type as zend_verify_property_type_error prints it: php
+    /// resolves `self`/`parent` when compiling a named class, but an
+    /// anonymous class keeps them as written.
+    pub(crate) fn prop_type_string(
+        &self,
+        ty: &rhp_bytecode::TypeHint,
+        decl: ClassId,
+        called: Option<ClassId>,
+    ) -> String {
+        if crate::classes::is_anon_name(self.class(decl).name.as_bytes()) {
+            return self.type_string_resolved(ty, None, None);
+        }
+        self.type_string_resolved(ty, Some(decl), called)
     }
 
     /// zend_type_to_string(_resolved): a declared type as php prints it in
@@ -557,7 +603,7 @@ impl Vm {
         top: usize,
         name: rhp_bytecode::Reg,
     ) -> Result<PhpStr, Thrown> {
-        let v = self.reg_get(top, name);
+        let v = self.reg_r(top, name)?;
         match &v {
             Value::Str(s) => Ok(s.clone()),
             Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),

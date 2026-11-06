@@ -32,7 +32,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::run_main` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
 | 7 | `gc_*` — no-ops (~~`set_time_limit`~~ **done**: max_execution_time, `zend/timeout.rs`) | `php_fns.rs:445` | none observable (cosmetic) | low | low |
-| 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
+| 8 | ~~`setlocale` — always `"C"`~~ **done**: the C library's setlocale (process-wide, as in php); PCRE does not follow LC_CTYPE yet | `ext/standard/string.rs` | `/\w/` under a non-C LC_CTYPE | low | low |
 | 9 | `php_uname` — hardcoded Darwin/arm64 strings | `php_fns.rs:81` | platform probes on non-macOS hosts | low | low |
 | 10 | `extension_loaded('reflection')` → true, **no Reflection class exists** | `php_fns.rs:42` | `class_exists`/Reflection-gated code paths lie | med | high |
 | 11 | `PHP_BINARY` constant — hardcoded `/usr/bin/php` | `builtins/lib.rs:402` | re-exec / proc-spawn of "self" | low | med |
@@ -135,7 +135,10 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed
   at the next instruction boundary (frame return, overwritten/unset variable, end
-  of an expression statement via `ClearTemps`). Gap: an object freed while only a
+  of an expression statement via `ClearTemps`), reporting the line of the
+  instruction before that boundary; a non-public `__destruct` the releasing
+  scope may not call throws php's "Call to private X::__destruct()" (a
+  warning during shutdown). Gap: an object freed while only a
   non-tracked container held it is destructed late (at the next check) rather than
   exactly at release, and cycles are destructed at shutdown (php's GC may run
   earlier).
@@ -176,17 +179,16 @@ The original notes:
 - **Effort/priority:** low / low (likely never).
 
 ### 1.8 `setlocale`
-- **Now:** always returns `"C"`, models nothing (`php_fns.rs:187-190`).
-- **OK because:** rhp's number/string formatting is locale-independent (C locale),
-  which matches php's default.
-- **Full impl:** only needed if locale-sensitive functions (`strcoll`,
-  locale-aware `printf`, `strftime`) are implemented; defer until then.
-  PCRE depends on it too: under a non-C `LC_CTYPE` php compiles patterns
+- **Now:** calls the C library's setlocale (process-wide, as php does, ZTS
+  builds too). A request starts in "C" with LC_CTYPE "C.UTF-8"
+  (zend_reset_lc_ctype_locale) and returns to it after a request that
+  changed it. printf's `%f`/`%g`, `localeconv`, `nl_langinfo`, `strcoll`
+  and SORT_LOCALE_STRING follow it.
+- **Still missing:** PCRE. Under a non-C `LC_CTYPE` php compiles patterns
   with `pcre2_maketables` and keys its pattern cache on the locale, so
   `/\w/` and `/i` see the locale's letters (`preg_match('/^\w$/', "\xE4")`
-  is 1 under `de_DE.ISO8859-1`). rhp's cache key needs the locale once
-  `setlocale` switches `LC_CTYPE`; while it is always `"C"` there is
-  nothing to key on.
+  is 1 under `de_DE.ISO8859-1`). The ctype functions also keep their
+  C.UTF-8 table.
 - **Effort/priority:** low / low.
 
 ### 1.9 `php_uname`
@@ -285,8 +287,8 @@ The original notes:
   errno=..." notices. Still missing: open_basedir, stream filters on plain
   files, `php://fd` outside the CLI check.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
-  php uses `mblen()` there, which is the same in the "C" locale rhp always
-  runs in (see 1.8).
+  php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
+  starts in (see 1.8).
 
 ### 2.2 `stream_set_blocking` / `_timeout` / write-buffer knobs
 - **Now:** no-ops (`stream_fns.rs:124-127`), explicitly labelled "accepted so
@@ -696,6 +698,16 @@ The module is deliberately "READ-ONLY, native format only"
 - **Effort/priority:** low / low.
 
 ---
+
+### 9.3 Attributes the engine acts on — gaps
+- `#[\Deprecated]` on a `__call` / `__callStatic` reached directly
+  (`$o->__call('x', [])`) names the method after the first argument, as
+  the trampoline does; php names `__call` there.
+- `ReflectionConstant::getValue()` of a `#[\Deprecated]` constant raises
+  the deprecation (it reads through `constant()`); php's does not.
+- `#[\NoDiscard]` on an internal function is honoured only where the
+  prelude declares it (DateTimeImmutable); natively implemented methods
+  carry no attributes.
 
 ## 10. Prioritized roadmap
 

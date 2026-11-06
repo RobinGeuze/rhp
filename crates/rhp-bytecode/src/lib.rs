@@ -53,6 +53,9 @@ impl CallFlags {
     /// `call_user_func()` / `call_user_func_array()` compiled to a user call
     /// (ZEND_INIT_USER_CALL): the callback sees the caller's `strict_types`.
     pub const USER_CALL: CallFlags = CallFlags(4);
+    /// The call is a whole expression statement: its result is unused
+    /// (php's USED_RET() is false).
+    pub const RESULT_UNUSED: CallFlags = CallFlags(8);
 
     pub const fn contains(self, other: CallFlags) -> bool {
         self.0 & other.0 == other.0
@@ -69,6 +72,11 @@ impl CallFlags {
 pub enum Instr {
     // -- move / const / load --
     Nop,
+    /// ZEND_TICKS: after each statement under `declare(ticks=n)`; every
+    /// `n`th one runs the registered tick functions.
+    Ticks {
+        n: u32,
+    },
     Mov {
         dst: Reg,
         src: Reg,
@@ -86,6 +94,22 @@ pub enum Instr {
     },
     LoadNull {
         dst: Reg,
+    },
+    /// `unset($x)`: CV `cv` becomes undefined (a reference it held is
+    /// dropped, not written through).
+    UnsetCv {
+        cv: Reg,
+    },
+    /// Warn when CV `cv` is undefined ("Undefined variable $x"), once for a
+    /// read that several instructions make quietly (a `list()` source).
+    CheckCv {
+        cv: Reg,
+    },
+    /// `Mov` for a quiet read (`??`, `??=`, `?->` under isset): an undefined
+    /// CV reads as null without the warning (php's BP_VAR_IS).
+    MovIs {
+        dst: Reg,
+        src: Reg,
     },
     LoadBool {
         dst: Reg,
@@ -210,10 +234,11 @@ pub enum Instr {
         a: Reg,
     },
 
-    /// `@expr` begin: diagnostics raised until the matching `EndSilence` are
-    /// recorded but not displayed (ZEND_BEGIN_SILENCE).
+    /// `@expr` begin (ZEND_BEGIN_SILENCE): error_reporting drops to the
+    /// fatal types; the old value is kept for `EndSilence`.
     BeginSilence,
-    /// `@expr` end: restore the display state saved by `BeginSilence`.
+    /// `@expr` end (ZEND_END_SILENCE): the old error_reporting comes back,
+    /// unless the code under `@` set one that shows more than fatal errors.
     EndSilence,
 
     // -- compare — route to ops:: --
@@ -343,9 +368,21 @@ pub enum Instr {
 
     // -- lvalue cursor: descend a root CV by keys/appends, then commit --
     // Emitted contiguously (no interleaving); the VM holds the cursor between them.
+    /// Begin a cursor rooted at CV `cv` for a write (php's BP_VAR_W fetch:
+    /// an undefined variable becomes null, silently).
     LvalCv {
         cv: Reg,
-    }, // begin a cursor rooted at CV `cv`
+    },
+    /// [`Instr::LvalCv`] for a read-modify-write (`$a[$k] .= v`, `$a[0]++`):
+    /// an undefined variable warns, then becomes null.
+    LvalCvRw {
+        cv: Reg,
+    },
+    /// [`Instr::LvalCv`] for `unset($a[...])`: an undefined variable warns
+    /// and stays undefined (the unset does nothing).
+    LvalCvUnset {
+        cv: Reg,
+    },
     LvalKey {
         key: Reg,
     }, // descend into element `key` (autovivify on write)
@@ -858,6 +895,14 @@ pub enum Instr {
         name: NIdx,
         src: Reg,
     },
+    /// `#[A] const NAME = <expr>;` (ZEND_DECLARE_ATTRIBUTED_CONST):
+    /// `DeclareConst` that also attaches `const_attrs[attrs]` to the new
+    /// constant.
+    DeclareAttrConst {
+        name: NIdx,
+        src: Reg,
+        attrs: u32,
+    },
     /// `$val instanceof C` (never throws).
     InstanceOf {
         dst: Reg,
@@ -907,14 +952,24 @@ pub enum Instr {
         name: Reg,
     },
     /// `$$name` / `${expr}` read: the current scope's variable of that name
-    /// (null when it does not exist).
+    /// ("Undefined variable" warning and null when it does not exist).
     FetchVarVar {
+        dst: Reg,
+        name: Reg,
+    },
+    /// [`Instr::FetchVarVar`] for isset/empty/`??`: no warning.
+    FetchVarVarIs {
         dst: Reg,
         name: Reg,
     },
     /// Cursor root: the current scope's variable named by register `name`
     /// (created on write), for `$$name = v`, `${expr}[] = v`, ….
     LvalVarVar {
+        name: Reg,
+    },
+    /// [`Instr::LvalVarVar`] for a read-modify-write: an undefined variable
+    /// warns first.
+    LvalVarVarRw {
         name: Reg,
     },
     /// `$$name = &<src>`: make the current scope's variable named by register
@@ -931,6 +986,11 @@ pub enum Instr {
     /// register), i.e. `$GLOBALS[$name]...` as an lvalue (php 8.1+: element
     /// writes through `$GLOBALS` go to the global symbol table).
     LvalGlobal {
+        name: Reg,
+    },
+    /// [`Instr::LvalGlobal`] for a read-modify-write (`$GLOBALS['x'] .= v`):
+    /// an undefined global warns first ("Undefined global variable $x").
+    LvalGlobalRw {
         name: Reg,
     },
     /// `$GLOBALS[$name]` read: the global variable's value ("Undefined global
@@ -981,6 +1041,14 @@ pub enum Instr {
     },
     /// Materialize CV `cv` as a Ref and place `Value::Ref` in `dst` (by-ref arg).
     MakeRef {
+        dst: Reg,
+        cv: Reg,
+    },
+    /// [`Instr::MakeRef`] for an argument whose by-reference-ness the callee
+    /// decides when it binds it (a method's window): an undefined variable
+    /// stays undefined until then (php's SEND_VAR_EX): a by-reference
+    /// parameter creates it, a by-value one warns.
+    MakeArgRef {
         dst: Reg,
         cv: Reg,
     },
@@ -1090,6 +1158,9 @@ pub struct AttributeProto {
     /// the declaring scope (`ReflectionAttribute::getArguments()`); `None`
     /// when the attribute has no argument list.
     pub args: Option<ConstInitProto>,
+    /// An internal attribute's validator error that
+    /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
+    pub validation_error: Option<PhpStr>,
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment
@@ -1208,6 +1279,20 @@ impl ProtoFlags {
     /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
     /// refuses to unbind it.
     pub const USES_THIS: ProtoFlags = ProtoFlags(8);
+    /// `#[\Deprecated]` (ZEND_ACC_DEPRECATED): calling it raises
+    /// E_USER_DEPRECATED first.
+    pub const DEPRECATED: ProtoFlags = ProtoFlags(16);
+    /// `#[\NoDiscard]` (ZEND_ACC_NODISCARD): a call whose result is unused
+    /// warns first.
+    pub const NODISCARD: ProtoFlags = ProtoFlags(32);
+    /// A constant-expression thunk (`{init}`: a class constant, property
+    /// default or attribute argument). php evaluates those with no frame
+    /// (zend_ast_evaluate), reporting at the expression's line.
+    pub const CONST_EXPR: ProtoFlags = ProtoFlags(64);
+    /// A [`ProtoFlags::CONST_EXPR`] thunk that sets no file/line override:
+    /// just a global constant name (php looks it up directly), or one with
+    /// no class scope (zend_ast_evaluate_ex overrides only with a scope).
+    pub const CONST_EXPR_PLAIN: ProtoFlags = ProtoFlags(128);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0
@@ -1275,6 +1360,13 @@ pub struct FunctionProto {
     /// Reflection metadata (attributes, doc comment, line span).
     pub meta: DeclMeta,
     pub flags: ProtoFlags,
+    /// The attribute lists of the attributed global constants this body
+    /// declares (`DeclareAttrConst`).
+    pub const_attrs: Vec<Rc<Vec<AttributeProto>>>,
+    /// The calls whose result is unused (php's IS_UNUSED result after
+    /// zend_do_free), ascending: a `#[\NoDiscard]` callee warns when called
+    /// from one.
+    pub discard_calls: Vec<Pc>,
 }
 
 impl FunctionProto {
@@ -1316,6 +1408,8 @@ impl FunctionProto {
             cv_var_names: Vec::new(),
             meta: DeclMeta::default(),
             flags: ProtoFlags::default(),
+            const_attrs: Vec::new(),
+            discard_calls: Vec::new(),
         }
     }
 }

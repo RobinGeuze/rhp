@@ -107,6 +107,10 @@ pub const BUILD_SYSTEM: &str =
 #[cfg(not(target_os = "macos"))]
 pub const BUILD_SYSTEM: &str = "Linux";
 
+/// Whether phpinfo() shows a "Configure Command" row (CONFIGURE_COMMAND:
+/// Homebrew's build defines it, the Ubuntu packages CI uses do not).
+pub const HAS_CONFIGURE_COMMAND: bool = cfg!(target_os = "macos");
+
 /// A decimal literal as an integer, at compile time.
 pub(crate) const fn parse_int(s: &str) -> i64 {
     let b = s.as_bytes();

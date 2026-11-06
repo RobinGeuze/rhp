@@ -6,8 +6,9 @@ ob_start();
 phpinfo(INFO_GENERAL);
 $s = ob_get_clean();
 // composer's DiagnoseCommand parse
-var_dump((bool) preg_match('{Configure Command(?: *</td><td class="v">| *=> *)(.*?)(?:</td>|$)}m', $s, $m));
-var_dump(str_contains($m[1], '--enable-sigchild'));
+// (Homebrew's php has the row, Ubuntu's does not.)
+$has = (bool) preg_match('{Configure Command(?: *</td><td class="v">| *=> *)(.*?)(?:</td>|$)}m', $s, $m);
+var_dump(!$has || !str_contains($m[1], '--enable-sigchild'));
 $lines = explode("\n", $s);
 var_dump($lines[0], $lines[1] === 'PHP Version => ' . PHP_VERSION, $lines[2]);
 var_dump(str_contains($s, "\nPHP Integer Size => 64 bits\n"), str_contains($s, "\nServer API => Command Line Interface\n"));

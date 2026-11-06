@@ -1,0 +1,202 @@
+Method [ <internal, prototype UnitEnum> static public method cases ] {
+
+  - Parameters [0] {
+  }
+  - Return [ array ]
+}
+
+Constant [ public E X ] { Object }
+
+Interface [ <user> interface I ] {
+  @@ F 6-9
+
+  - Constants [1] {
+    Constant [ public int C ] { 1 }
+  }
+
+  - Static properties [0] {
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [0] {
+  }
+
+  - Methods [1] {
+    Method [ <user> abstract public method m ] {
+      @@ F 8 - 8
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> int $a = 5 ]
+      }
+      - Return [ string ]
+    }
+  }
+}
+
+/** Doc for AB. */
+Class [ <user> abstract class AB ] {
+  @@ F 22-29
+
+  - Constants [2] {
+    Constant [ final public float F ] { 1.5 }
+    Constant [ private string P ] { p }
+  }
+
+  - Static properties [1] {
+    Property [ public static $sp = [1, 2] ]
+  }
+
+  - Static methods [1] {
+    Method [ <user> static private method ps ] {
+      @@ F 28 - 28
+
+      - Parameters [2] {
+        Parameter #0 [ <required> &$r ]
+        Parameter #1 [ <optional> ...$rest ]
+      }
+    }
+  }
+
+  - Properties [1] {
+    Property [ protected ?int $x = NULL ]
+  }
+
+  - Methods [1] {
+    Method [ <user> abstract protected method am ] {
+      @@ F 27 - 27
+    }
+  }
+}
+
+Class [ <user> final class CC extends AB ] {
+  @@ F 31-35
+
+  - Constants [1] {
+    Constant [ final public float F ] { 1.5 }
+  }
+
+  - Static properties [1] {
+    Property [ public static $sp = [1, 2] ]
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [3] {
+    Property [ public protected(set) readonly string $ro ]
+    Property [ public int $promoted ]
+    Property [ protected ?int $x = NULL ]
+  }
+
+  - Methods [2] {
+    Method [ <user, overwrites AB, prototype AB> protected method am ] {
+      @@ F 33 - 33
+    }
+
+    Method [ <user, ctor> public method __construct ] {
+      @@ F 34 - 34
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> int $promoted = 3 ]
+      }
+    }
+  }
+}
+
+Trait [ <user> trait T ] {
+  @@ F 39-39
+
+  - Constants [0] {
+  }
+
+  - Static properties [0] {
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [0] {
+  }
+
+  - Methods [1] {
+    Method [ <user> public method tm ] {
+      @@ F 39 - 39
+    }
+  }
+}
+
+Object of class [ <user> final class CC extends AB ] {
+  @@ F 31-35
+
+  - Constants [1] {
+    Constant [ final public float F ] { 1.5 }
+  }
+
+  - Static properties [1] {
+    Property [ public static $sp = [1, 2] ]
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [3] {
+    Property [ public protected(set) readonly string $ro ]
+    Property [ public int $promoted ]
+    Property [ protected ?int $x = NULL ]
+  }
+
+  - Dynamic properties [1] {
+    Property [ <dynamic> public $dyn ]
+  }
+
+  - Methods [2] {
+    Method [ <user, overwrites AB, prototype AB> protected method am ] {
+      @@ F 33 - 33
+    }
+
+    Method [ <user, ctor> public method __construct ] {
+      @@ F 34 - 34
+
+      - Parameters [1] {
+        Parameter #0 [ <optional> int $promoted = 3 ]
+      }
+    }
+  }
+}
+
+Closure [ <user> function &{closure:F:47} ] {
+  @@ F 47 - 47
+
+  - Bound Variables [1] {
+      Variable #0 [ $v ]
+  }
+
+  - Parameters [1] {
+    Parameter #0 [ <optional> int ...$a ]
+  }
+  - Return [ ?array ]
+}
+
+Closure [ <internal:Core> function strlen ] {
+
+  - Parameters [1] {
+    Parameter #0 [ <required> string $string ]
+  }
+  - Return [ int ]
+}
+
+Method [ <user, overwrites AB, prototype AB> protected method am ] {
+  @@ F 33 - 33
+}
+
+Method [ <user, prototype I> public method m ] {
+  @@ F 14 - 14
+
+  - Parameters [1] {
+    Parameter #0 [ <optional> int $a = 5 ]
+  }
+  - Return [ string ]
+}
+

@@ -41,7 +41,7 @@ fn is_ws(b: u8) -> bool {
 /// `(bool)` / truthiness.
 pub fn to_bool(v: &Value) -> bool {
     match v {
-        Value::Null => false,
+        Value::Null | Value::Undef => false,
         Value::Bool(b) => *b,
         Value::Int(n) => *n != 0,
         Value::Float(f) => *f != 0.0, // NaN is truthy; -0.0 is falsy
@@ -61,7 +61,7 @@ pub fn to_bool(v: &Value) -> bool {
 /// a phase-7 concern and render as a placeholder until then.
 pub fn to_string_bytes(v: &Value) -> Vec<u8> {
     match v {
-        Value::Null => Vec::new(),
+        Value::Null | Value::Undef => Vec::new(),
         Value::Bool(true) => b"1".to_vec(),
         Value::Bool(false) => Vec::new(),
         Value::Int(n) => n.to_string().into_bytes(),
@@ -80,7 +80,7 @@ pub fn to_string_bytes(v: &Value) -> Vec<u8> {
 /// `(int)` cast.
 pub fn to_int(v: &Value) -> i64 {
     match v {
-        Value::Null => 0,
+        Value::Null | Value::Undef => 0,
         Value::Bool(b) => *b as i64,
         Value::Int(n) => *n,
         Value::Float(f) => crate::float_to_int(*f),
@@ -112,7 +112,7 @@ pub fn float_to_int_cap(f: f64) -> i64 {
 /// `(float)` cast.
 pub fn to_float(v: &Value) -> f64 {
     match v {
-        Value::Null => 0.0,
+        Value::Null | Value::Undef => 0.0,
         Value::Bool(b) => *b as i64 as f64,
         Value::Int(n) => *n as f64,
         Value::Float(f) => *f,
@@ -139,7 +139,7 @@ pub fn to_float(v: &Value) -> f64 {
 /// trailing non-numeric bytes (PHP would emit a warning) or was non-numeric.
 pub fn to_number(v: &Value) -> (Num, bool) {
     match v {
-        Value::Null => (Num::Int(0), true),
+        Value::Null | Value::Undef => (Num::Int(0), true),
         Value::Bool(b) => (Num::Int(*b as i64), true),
         Value::Int(n) => (Num::Int(*n), true),
         Value::Float(f) => (Num::Float(*f), true),

@@ -23,6 +23,7 @@ mod util;
 mod xpath;
 
 pub(crate) use document::valid_file_path;
+pub(crate) use props::has_declared_property;
 
 use std::cell::{Cell, RefCell};
 use std::ptr;

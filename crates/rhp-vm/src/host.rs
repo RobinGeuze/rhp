@@ -4,7 +4,9 @@ use std::rc::Rc;
 
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::{self as builtins, Host};
-use rhp_values::{ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{
+    ArrayKey, ClassId, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value, Visibility,
+};
 
 use crate::calls::{is_engine_helper_name, user_visible_builtin};
 use crate::classes::PropRes;
@@ -92,6 +94,10 @@ impl Host for Vm {
         self.pending_throw.take()
     }
 
+    fn result_unused(&self) -> bool {
+        self.unused_call_depth == self.stack.len()
+    }
+
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
         self.ob_diag(level, msg);
         match self.pending_throw.take() {
@@ -111,10 +117,6 @@ impl Host for Vm {
 
     fn restore_error_handler(&mut self) {
         self.error_handlers.pop();
-    }
-
-    fn silenced(&self) -> bool {
-        self.silence > 0
     }
 
     fn caller_strict_types(&self) -> bool {
@@ -174,7 +176,12 @@ impl Host for Vm {
         self.last_error.clone()
     }
 
+    fn last_error_trace(&self) -> Option<Value> {
+        self.last_fatal_trace.clone().map(Value::Array)
+    }
+
     fn clear_last_error(&mut self) {
+        self.last_fatal_trace = None;
         self.last_error = None;
     }
 
@@ -308,6 +315,17 @@ impl Host for Vm {
             })
     }
 
+    fn const_fetch_deprecation(&mut self, name: &[u8]) -> Result<(), Thrown> {
+        let key = builtins::zend::builtin_functions::const_key(name).into_owned();
+        if let Some(msg) = self.internal_const_deprecation(&key) {
+            self.diag(builtins::E_DEPRECATED, &msg)?;
+        }
+        if !self.const_attrs.is_empty() {
+            self.deprecated_user_constant(&key)?;
+        }
+        Ok(())
+    }
+
     fn register_autoloader(&mut self, callback: Value, prepend: bool) {
         if prepend {
             self.autoloaders.insert(0, callback);
@@ -393,7 +411,7 @@ impl Host for Vm {
             b"phar",
             b"zip",
         ];
-        let builtin = |s: &[u8]| matches!(s, b"php" | b"data" | b"http" | b"https");
+        let builtin = |s: &[u8]| outside_map_wrapper(s) && !self.wrappers_off.contains_key(s);
         let mut v: Vec<Vec<u8>> = ORDER
             .iter()
             .filter(|s| builtin(s) || self.wrappers.contains_key(**s))
@@ -408,6 +426,34 @@ impl Host for Vm {
         rest.sort();
         v.extend(rest);
         v
+    }
+
+    fn stream_wrapper_unregister(&mut self, scheme: &[u8]) -> bool {
+        if let Some(w) = self.wrappers.remove(scheme) {
+            // the original stays the one restore brings back
+            self.wrappers_off.entry(scheme.to_vec()).or_insert(Some(w));
+            return true;
+        }
+        if outside_map_wrapper(scheme) && !self.wrappers_off.contains_key(scheme) {
+            self.wrappers_off.insert(scheme.to_vec(), None);
+            return true;
+        }
+        false
+    }
+
+    fn stream_wrapper_restore(&mut self, scheme: &[u8]) -> builtins::WrapperRestore {
+        match self.wrappers_off.remove(scheme) {
+            Some(w) => {
+                if let Some(w) = w {
+                    self.wrappers.insert(scheme.to_vec(), w);
+                }
+                builtins::WrapperRestore::Restored
+            }
+            None if self.wrappers.contains_key(scheme) || outside_map_wrapper(scheme) => {
+                builtins::WrapperRestore::Unchanged
+            }
+            None => builtins::WrapperRestore::NeverExisted,
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -517,6 +563,21 @@ impl Host for Vm {
             .find(|&i| !self.is_internal_frame(i))
             .map(|i| self.stack[i].proto.debug.file.as_bytes().to_vec())
             .or_else(|| self.main_script_path.clone())
+    }
+
+    fn global_var(&mut self, name: &[u8]) -> Option<Value> {
+        let v = match self.globals.get(name) {
+            Some(c) => crate::deref(&c.borrow()),
+            None => self.jit_globals.get(name).cloned()?,
+        };
+        (!matches!(v, Value::Null)).then_some(v)
+    }
+
+    fn executing_line(&self) -> u32 {
+        (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+            .map_or(0, |i| self.current_line(i))
     }
 
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
@@ -929,18 +990,16 @@ impl Host for Vm {
     }
 
     fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
-        let full = self.build_trace_ex(provide_object, ignore_args);
-        // Drop the running debug_backtrace()/debug_print_backtrace() frame itself.
-        let skip = usize::from(
-            self.native_calls
-                .last()
-                .is_some_and(|n| n.caller + 1 == self.stack.len()),
-        );
-        let mut out = PhpArray::new();
-        for (_, v) in full.iter().skip(skip) {
-            out.push(v.clone());
-        }
-        Some(Value::Array(out))
+        // Leave out the running debug_backtrace()/debug_print_backtrace().
+        let skip = self
+            .native_calls
+            .last()
+            .is_some_and(|n| n.caller + 1 == self.stack.len());
+        Some(Value::Array(self.build_trace_skip(
+            provide_object,
+            ignore_args,
+            skip,
+        )))
     }
 
     fn set_exception_handler(&mut self, handler: Value) -> Value {
@@ -1824,6 +1883,7 @@ impl Host for Vm {
             return fail(format!("Undefined constant {}::{}", s(class), s(name)));
         };
         let (vis, decl) = (c.visibility, c.declaring_class);
+        let deprecated = c.deprecated.clone();
         if !self.check_access(scope, decl, vis) {
             let v = match vis {
                 rhp_values::Visibility::Private => "private",
@@ -1842,6 +1902,9 @@ impl Host for Vm {
                 s(class),
                 s(name)
             ));
+        }
+        if let (Some(d), false) = (deprecated, silent) {
+            self.class_const_deprecation(decl, name, &d)?;
         }
         if self.classes[cid as usize].enum_backing.is_some() {
             self.update_class_constants(cid)?;
@@ -2119,6 +2182,20 @@ impl Host for Vm {
             );
         }
         if self.class_ids.contains_key(&key) {
+            // zend_class_redeclaration_error_ex(E_WARNING, alias, ce)
+            let ce = &self.classes[class_id as usize];
+            let kind = crate::link_checks::kind_uc(ce.kind).to_ascii_lowercase();
+            let alias = String::from_utf8_lossy(alias);
+            let msg = if ce.decl_file.is_empty() {
+                format!("Cannot redeclare {kind} {alias}")
+            } else {
+                format!(
+                    "Cannot redeclare {kind} {alias} (previously declared in {}:{})",
+                    String::from_utf8_lossy(ce.decl_file.as_bytes()),
+                    ce.decl_line
+                )
+            };
+            self.diag(rhp_values::E_WARNING, &msg)?;
             return Ok(false);
         }
         self.class_aliases
@@ -2269,63 +2346,156 @@ impl Host for Vm {
         Some(Value::Object(obj))
     }
 
-    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool {
-        let Value::Object(h) = deref(obj) else {
-            return false;
-        };
-        let cls = h.borrow().class;
+    fn unserialize_prop(
+        &mut self,
+        obj: &ObjectHandle,
+        key: &[u8],
+    ) -> Result<builtins::UnserProp, Thrown> {
+        use builtins::UnserProp;
+        let cls = obj.borrow().class;
         let entry = &self.classes[cls as usize];
-        let declared = |name: &[u8]| {
-            entry
-                .prop_visible
-                .get(&PhpStr::from_bytes(name.to_vec()))
-                .cloned()
-        };
-        let storage = if key.first() == Some(&0) {
-            let Some(end) = key[1..].iter().position(|&b| b == 0) else {
-                return false;
-            };
-            let (owner, name) = (&key[1..end + 1], &key[end + 2..]);
-            let own = owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes());
-            own.then(|| declared(name))
-                .flatten()
-                .unwrap_or_else(|| PhpStr::from_bytes(key.to_vec()))
-        } else {
-            declared(key).unwrap_or_else(|| PhpStr::from_bytes(key.to_vec()))
-        };
-        let mut od = h.borrow_mut();
-        *classes::prop_slot_mut(&self.classes, &mut od, storage) = val;
-        true
-    }
-
-    fn unserialize_virtual_prop(&self, obj: &Value, key: &[u8]) -> Option<Vec<u8>> {
-        let Value::Object(h) = deref(obj) else {
-            return None;
-        };
-        let cls = h.borrow().class;
-        let entry = &self.classes[cls as usize];
-        if !entry.hooked {
-            return None;
-        }
-        let name: &[u8] = if key.first() == Some(&0) {
-            let end = key[1..].iter().position(|&b| b == 0)?;
-            let (owner, name) = (&key[1..end + 1], &key[end + 2..]);
-            if !(owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes())) {
-                return None;
+        // The declared slot php's property table has under `key`.
+        let declared = |storage: &PhpStr| {
+            let pe = &entry.props[storage];
+            UnserProp::Declared {
+                storage: storage.clone(),
+                typed: pe.ty.is_some(),
             }
-            name
+        };
+        // Storage keys are php's names, but for protected properties.
+        let k = PhpStr::from_bytes(key);
+        if let Some(pe) = entry.props.get(&k) {
+            if !pe.virt && pe.visibility != Visibility::Protected && !self.internal_slot(cls, &k) {
+                return Ok(declared(&k));
+            }
+        }
+        // is_property_visibility_changed
+        if !entry.props.is_empty() {
+            let name: &[u8] = if key.first() == Some(&0) {
+                let bad = if key.len() < 3 || key[1] == 0 {
+                    Some("Illegal member variable name")
+                } else {
+                    match key[1..key.len() - 1].iter().position(|&b| b == 0) {
+                        Some(_) => None,
+                        None => Some("Corrupt member variable name"),
+                    }
+                };
+                if let Some(msg) = bad {
+                    self.diag(builtins::E_NOTICE, msg)?;
+                    return Ok(UnserProp::Fail);
+                }
+                let end = 1 + key[1..].iter().position(|&b| b == 0).unwrap_or(0);
+                let owner = &key[1..end];
+                if owner == b"*" || owner.eq_ignore_ascii_case(entry.name.as_bytes()) {
+                    &key[end + 1..]
+                } else {
+                    b""
+                }
+            } else {
+                key
+            };
+            let found = (!name.is_empty() || key.first() != Some(&0))
+                .then(|| entry.prop_visible.get(&PhpStr::from_bytes(name)))
+                .flatten()
+                .filter(|k| !self.internal_slot(cls, k));
+            if let Some(k) = found {
+                let pe = &entry.props[k];
+                if !pe.virt {
+                    return Ok(declared(&k.clone()));
+                }
+                let mut msg =
+                    b"unserialize(): Cannot unserialize value for virtual property ".to_vec();
+                msg.extend_from_slice(self.classes[pe.declaring_class as usize].name.as_bytes());
+                msg.extend_from_slice(b"::$");
+                msg.extend_from_slice(key.split(|&b| b == 0).next().unwrap_or_default());
+                self.emit_diagnostic(builtins::E_WARNING, &msg)?;
+                return Ok(UnserProp::Fail);
+            }
+        }
+        if obj.borrow().properties.contains_key(&k) {
+            return Ok(UnserProp::Dynamic(k));
+        }
+        // A new dynamic property.
+        let entry = &self.classes[cls as usize];
+        let shown = if key.first() == Some(&0) {
+            match key[1..].iter().position(|&b| b == 0) {
+                Some(e) => &key[e + 2..],
+                None => key,
+            }
         } else {
             key
         };
-        let k = entry.prop_visible.get(&PhpStr::from_bytes(name.to_vec()))?;
-        let pe = entry.props.get(k).filter(|pe| pe.virt)?;
-        let mut out = self.classes[pe.declaring_class as usize]
-            .name
-            .as_bytes()
-            .to_vec();
-        out.extend_from_slice(b"::$");
-        out.extend_from_slice(key);
-        Some(out)
+        let cname = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
+        let p = String::from_utf8_lossy(shown).into_owned();
+        if entry.kind == ClassKind::Enum || entry.flags.is_readonly || entry.flags.no_dynamic {
+            return Err(Thrown::error(
+                "Error",
+                format!("Cannot create dynamic property {cname}::${p}"),
+            ));
+        }
+        if !entry.flags.allow_dynamic {
+            self.diag(
+                builtins::E_DEPRECATED,
+                &format!("Creation of dynamic property {cname}::${p} is deprecated"),
+            )?;
+        }
+        Ok(UnserProp::Dynamic(k))
+    }
+
+    fn unserialize_prop_type(
+        &mut self,
+        obj: &ObjectHandle,
+        storage: &PhpStr,
+        val: &Value,
+        source: Option<(&ObjectHandle, &PhpStr)>,
+    ) -> Result<Option<Value>, Thrown> {
+        let cls = obj.borrow().class;
+        let v = deref(val);
+        let out = self.verify_prop_type(cls, storage, v.clone(), true)?;
+        let converted = matches!((&v, &out), (Value::Int(_), Value::Float(_)));
+        if !converted {
+            return Ok(None);
+        }
+        let Some((src, skey)) = source else {
+            return Ok(Some(out));
+        };
+        // zend_throw_ref_type_error_type: a typed reference cannot coerce.
+        let pinfo = |vm: &Vm, c: ClassId, k: &PhpStr| {
+            let pe = &vm.classes[c as usize].props[k];
+            let ty = pe
+                .ty
+                .as_ref()
+                .map(|t| vm.type_string_resolved(t, Some(pe.declaring_class), Some(c)))
+                .unwrap_or_default();
+            (
+                String::from_utf8_lossy(vm.classes[pe.declaring_class as usize].name.as_bytes())
+                    .into_owned(),
+                String::from_utf8_lossy(pe.name.as_bytes()).into_owned(),
+                ty,
+            )
+        };
+        let scls = src.borrow().class;
+        let (sc, sp, st) = pinfo(self, scls, skey);
+        let (c, p, t) = pinfo(self, cls, storage);
+        Err(Thrown::type_error(format!(
+            "Reference with value of type {} held by property {sc}::${sp} of type {st} is not compatible with property {c}::${p} of type {t}",
+            builtins::zval_value_name(self, &v)
+        )))
+    }
+
+    fn prop_store(&mut self, obj: &ObjectHandle, storage: &PhpStr, val: Option<Value>) {
+        let mut od = obj.borrow_mut();
+        match val {
+            Some(v) => *classes::prop_slot_mut(&self.classes, &mut od, storage.clone()) = v,
+            None => {
+                od.properties.shift_remove(storage);
+            }
+        }
+    }
+
+    fn mark_destructor_called(&mut self, obj: &ObjectHandle) {
+        let ptr = Rc::as_ptr(obj) as usize;
+        self.destructibles.retain(|d| Rc::as_ptr(d) as usize != ptr);
     }
 
     fn object_prop(&self, obj: &Value, name: &[u8]) -> Option<Value> {
@@ -2445,4 +2615,10 @@ fn kind_word(kind: ClassKind) -> &'static str {
         ClassKind::Enum => "enum",
         ClassKind::Class => "abstract class",
     }
+}
+
+/// Built-in wrappers served outside the `wrappers` table (`php://`, `data:`,
+/// `http(s)://`).
+fn outside_map_wrapper(scheme: &[u8]) -> bool {
+    matches!(scheme, b"php" | b"data" | b"http" | b"https")
 }

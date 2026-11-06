@@ -3,6 +3,19 @@
 
 use rhp_values::{ObjectHandle, PhpArray, Value};
 
+/// See [`Host::unserialize_prop`].
+pub enum UnserProp {
+    /// A declared property's storage key; `typed`: it has a type.
+    Declared {
+        storage: rhp_values::PhpStr,
+        typed: bool,
+    },
+    /// A dynamic property's key.
+    Dynamic(rhp_values::PhpStr),
+    /// Unserialization fails.
+    Fail,
+}
+
 use crate::main::streams::{ops, plain_wrapper};
 use crate::main::{ini, rfc1867, sapi};
 use crate::zend::object_handlers;
@@ -72,6 +85,12 @@ pub enum ObCall {
         chunk_size: i64,
         flags: i64,
     },
+    /// php_output_start_internal: an extension's handler `func` under
+    /// `name`, with the standard flags and no chunk size.
+    StartInternal {
+        name: &'static str,
+        func: crate::OutputHandlerFn,
+    },
     Flush,
     Clean,
     EndFlush,
@@ -132,12 +151,24 @@ pub trait Host {
     /// [`Host::raise_diagnostic`], if any.
     fn take_pending_throw(&mut self) -> Option<Thrown>;
 
+    /// Whether the running builtin was called as a whole expression
+    /// statement, its result unused (php's `!USED_RET()`).
+    fn result_unused(&self) -> bool {
+        false
+    }
+
     /// The last raised diagnostic for `error_get_last()`: (type, message, file,
     /// line).
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)>;
 
     /// `error_clear_last()`.
     fn clear_last_error(&mut self);
+
+    /// The backtrace of the last fatal error (`fatal_error_backtraces`),
+    /// `error_get_last()['trace']`.
+    fn last_error_trace(&self) -> Option<Value> {
+        None
+    }
 
     /// The engine's comparison context (`__toString`, internal compare
     /// handlers, notices) for loose comparisons inside builtins.
@@ -186,9 +217,6 @@ pub trait Host {
     /// `thrown` raised while `previous` is pending: php makes `previous` the
     /// new exception's previous one. An `exit` in `previous` wins.
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown;
-
-    /// Inside an `@` region (error_reporting then reads as the fatal mask).
-    fn silenced(&self) -> bool;
 
     /// A directive's current value (the per-request ini store shared with
     /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
@@ -278,6 +306,12 @@ pub trait Host {
 
     /// Look up a constant by name (`constant`), or None if undefined.
     fn get_const(&self, name: &[u8]) -> Option<Value>;
+
+    /// Raise the deprecation of fetching constant `name` (CONST_DEPRECATED),
+    /// when it has one.
+    fn const_fetch_deprecation(&mut self, _name: &[u8]) -> Result<(), Thrown> {
+        Ok(())
+    }
 
     /// A class constant's value (`defined`/`constant` with `Class::CONST`, incl.
     /// enum cases), or None if the class or constant does not exist.
@@ -453,19 +487,50 @@ pub trait Host {
     /// properties under their mangled key already.
     fn mangled_prop_name(&self, class_id: u32, key: &rhp_values::PhpStr) -> rhp_values::PhpStr;
 
-    /// Store a property read by `unserialize` on `obj` like php's
-    /// `process_nested_object_data`: a plain name, or one mangled for `*` / the
-    /// object's own class, lands on the declared property of that name (at its
-    /// storage key); any other name is kept as is. Returns false for a
-    /// malformed mangled name (a leading NUL without a second one).
-    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool;
-
-    /// php's object_set_property check: the declared property `key` names
-    /// (resolved as [`Host::unserialize_set_prop`] does) is virtual; returns
-    /// `Class::$name` for the warning.
-    fn unserialize_virtual_prop(&self, _obj: &Value, _key: &[u8]) -> Option<Vec<u8>> {
-        None
+    /// process_nested_object_data's lookup of property `key` read by
+    /// `unserialize` for `obj`: a declared property (also through a plain or
+    /// `*` / own-class mangled name), else a dynamic one (creating it raises
+    /// php's deprecation, or throws for classes without dynamic properties).
+    /// `UnserProp::Fail` after a malformed mangled name or the virtual
+    /// property warning.
+    fn unserialize_prop(&mut self, obj: &ObjectHandle, key: &[u8]) -> Result<UnserProp, Thrown> {
+        let _ = obj;
+        Ok(UnserProp::Dynamic(rhp_values::PhpStr::from_bytes(
+            key.to_vec(),
+        )))
     }
+
+    /// zend_verify_prop_assignable_by_ref (strict) for the declared property
+    /// `storage` of `obj`. `source`: the value is a reference already bound
+    /// to that typed property, so it must match exactly. Returns the value
+    /// converted (int to float), if it changed.
+    fn unserialize_prop_type(
+        &mut self,
+        obj: &ObjectHandle,
+        storage: &rhp_values::PhpStr,
+        val: &Value,
+        source: Option<(&ObjectHandle, &rhp_values::PhpStr)>,
+    ) -> Result<Option<Value>, Thrown> {
+        let _ = (obj, storage, val, source);
+        Ok(None)
+    }
+
+    /// Write (`Some`) or remove (`None`) the property slot `storage` of
+    /// `obj`, keeping declared slots in declaration order.
+    fn prop_store(&mut self, obj: &ObjectHandle, storage: &rhp_values::PhpStr, val: Option<Value>) {
+        let mut o = obj.borrow_mut();
+        match val {
+            Some(v) => {
+                o.properties.insert(storage.clone(), v);
+            }
+            None => {
+                o.properties.shift_remove(storage);
+            }
+        }
+    }
+
+    /// GC_ADD_FLAGS(obj, IS_OBJ_DESTRUCTOR_CALLED): its destructor never runs.
+    fn mark_destructor_called(&mut self, _obj: &ObjectHandle) {}
 
     /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
     /// of the properties accessible there, in slot order). `None` = the host has
@@ -531,6 +596,17 @@ pub trait Host {
     /// Registered stream-wrapper scheme names (for `stream_get_wrappers`).
     fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>>;
 
+    /// `stream_wrapper_unregister`: drop `scheme` from this request's
+    /// wrapper table; false when it is not registered.
+    fn stream_wrapper_unregister(&mut self, _scheme: &[u8]) -> bool {
+        false
+    }
+
+    /// `stream_wrapper_restore`: put the built-in wrapper for `scheme` back.
+    fn stream_wrapper_restore(&mut self, _scheme: &[u8]) -> WrapperRestore {
+        WrapperRestore::NeverExisted
+    }
+
     /// The current PHP call stack for `debug_backtrace`/`debug_print_backtrace`:
     /// one entry per frame, innermost first, as
     /// `(function, class, file, line, this_object)` where file/line are the call
@@ -584,6 +660,16 @@ pub trait Host {
     /// The file of the innermost user-code frame (php's
     /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
     fn executing_file(&self) -> Option<Vec<u8>>;
+    /// Global variable `name` from the global symbol table (an
+    /// auto-global is armed first), None when unset.
+    fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
+        None
+    }
+    /// The line of the innermost user-code frame (php's
+    /// `zend_get_executed_lineno`), 0 outside one.
+    fn executing_line(&self) -> u32 {
+        0
+    }
 
     // --- stream resources (fopen family) -------------------------------------
     // Streams are resource Values whose state lives in the VM; these are the
@@ -808,4 +894,15 @@ pub trait Host {
         }
         Ok(ops::pow_num(x, y))
     }
+}
+
+/// What [`Host::stream_wrapper_restore`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapperRestore {
+    /// No built-in wrapper has that name.
+    NeverExisted,
+    /// The built-in wrapper is still registered.
+    Unchanged,
+    /// The built-in wrapper is registered again.
+    Restored,
 }

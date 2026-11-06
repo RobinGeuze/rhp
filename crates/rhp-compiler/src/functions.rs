@@ -6,6 +6,7 @@ use crate::parse::cst::{Expression, Hint, MethodBody, Modifier, Node, Statement}
 use rhp_bytecode::{FunctionProto, Instr, MethodProto, NIdx, PropDefaultProto, PropProto, Reg};
 use rhp_values::{PhpStr, Thrown, Value};
 
+use crate::attrs::AttrTarget;
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::cvs::collect_vars;
 use crate::decl::{
@@ -59,10 +60,21 @@ pub(crate) fn compile_method(
         String::from_utf8_lossy(m.name.value)
     );
     // php compiles the return type before the parameters.
-    let return_type = m
+    let mut return_type = m
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    if m.return_type_hint.is_none() && m.name.value.eq_ignore_ascii_case(b"__tostring") {
+        // zend_compile_params' fallback return type: `__toString(): string`.
+        return_type = Some(rhp_bytecode::TypeHint {
+            nullable: false,
+            intersection: false,
+            kinds: vec![rhp_bytecode::TypeKind::String],
+            groups: Vec::new(),
+            group_pos: Vec::new(),
+            explicit_null: false,
+        });
+    }
     c.ret_type = return_type.clone();
     c.is_generator = match &m.body {
         MethodBody::Concrete(block) => block.statements.iter().any(stmt_has_yield),
@@ -112,6 +124,20 @@ pub(crate) fn compile_method(
             }
             None => ([None, None], false),
         };
+        // php compiles the list again for the property: internal attributes
+        // that only fit a property (#[\Override]) are kept here.
+        *cx.cur_property.borrow_mut() = Some(var.to_vec());
+        let attributes = compile_attributes(
+            cx,
+            &p.attribute_lists,
+            Some(class_name),
+            &AttrTarget {
+                promoted: crate::attrs::TARGET_PARAMETER,
+                ..AttrTarget::new(crate::attrs::TARGET_PROPERTY, p.variable.span.start.offset)
+            },
+        );
+        *cx.cur_property.borrow_mut() = None;
+        let attributes = attributes?;
         promoted.push(PropProto {
             name: PhpStr::from_bytes(var.to_vec()),
             visibility: vis,
@@ -120,7 +146,7 @@ pub(crate) fn compile_method(
             default: PropDefaultProto::None,
             type_hint: info.type_hint.clone(),
             meta: rhp_bytecode::DeclMeta {
-                attributes: info.attributes.clone(),
+                attributes,
                 doc_comment: cx.doc_comment_before(p.variable.span.start.offset),
                 start_line: cx.line_of(pstart),
                 offset: pstart,
@@ -191,10 +217,12 @@ pub(crate) fn compile_method(
         cx,
         &m.attribute_lists,
         Some(class_name),
+        &AttrTarget::new(crate::attrs::TARGET_METHOD, m.function.span.start.offset),
         m.name.span.start.offset,
         m.function.span.start.offset,
         span_of(m).1,
     )?;
+    crate::attrs::apply_fn_flags(cx, &mut proto, true, false, m.function.span.start.offset);
 
     let mp = MethodProto {
         name,
@@ -255,10 +283,21 @@ pub(crate) fn compile_function(
         cx,
         &func.attribute_lists,
         None,
+        &AttrTarget::new(
+            crate::attrs::TARGET_FUNCTION,
+            func.function.span.start.offset,
+        ),
         func.name.span.start.offset,
         func.function.span.start.offset,
         span_of(func).1,
     )?;
+    crate::attrs::apply_fn_flags(
+        cx,
+        &mut proto,
+        false,
+        false,
+        func.function.span.start.offset,
+    );
     Ok(proto)
 }
 
@@ -316,7 +355,7 @@ impl ProtoBuilder<'_> {
             .collect();
 
         let mut used = Vec::new();
-        collect_vars(af.expression, &mut used);
+        collect_vars(af.expression, self.cx.src, &mut used);
         let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         for name in used {
             if name == b"this" {
@@ -350,6 +389,7 @@ impl ProtoBuilder<'_> {
                 self.cx,
                 &af.attribute_lists,
                 self.class_name.as_ref(),
+                &AttrTarget::new(crate::attrs::TARGET_FUNCTION, af.r#fn.span.start.offset),
                 af.r#fn.span.end.offset,
                 af.r#fn.span.start.offset,
                 span_of(af).1,
@@ -433,6 +473,7 @@ impl ProtoBuilder<'_> {
                 self.cx,
                 &cl.attribute_lists,
                 self.class_name.as_ref(),
+                &AttrTarget::new(crate::attrs::TARGET_FUNCTION, cl.function.span.start.offset),
                 cl.function.span.end.offset,
                 cl.function.span.start.offset,
                 span_of(cl).1,
@@ -538,6 +579,8 @@ impl ProtoBuilder<'_> {
         proto.is_static = is_static;
         proto.return_type = return_type;
         proto.meta = meta;
+        let at = proto.meta.offset;
+        crate::attrs::apply_fn_flags(self.cx, &mut proto, self.class_name.is_some(), false, at);
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),
@@ -546,6 +589,10 @@ impl ProtoBuilder<'_> {
         let fnidx = self.cx.add_closure(proto);
 
         // --- emit the capture window + MakeClosure in the enclosing frame ---
+        // `use ($x)` reads the variable (php's BIND_LEXICAL warns when it is
+        // undefined); an arrow function's implicit binding leaves it
+        // undefined inside, as does `$this`'s.
+        let implicit = matches!(body, ClosureBody::Arrow(_));
         let base = self.alloc_temps(nc.max(1));
         for (i, (name, by_ref)) in captures.iter().enumerate() {
             let dst = base + i as Reg;
@@ -555,6 +602,10 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::MakeRef { dst, cv });
             } else {
                 match self.cv_map.iter().position(|n| n == name) {
+                    Some(src) if implicit || name == b"this" => self.emit(Instr::MovIs {
+                        dst,
+                        src: src as Reg,
+                    }),
                     Some(src) => self.emit(Instr::Mov {
                         dst,
                         src: src as Reg,
@@ -718,7 +769,22 @@ impl ProtoBuilder<'_> {
                     if promoted {
                         *cx.cur_property.borrow_mut() = Some(var.to_vec());
                     }
-                    let a = compile_attributes(cx, &p.attribute_lists, class_name);
+                    let a = compile_attributes(
+                        cx,
+                        &p.attribute_lists,
+                        class_name,
+                        &AttrTarget {
+                            promoted: if promoted {
+                                crate::attrs::TARGET_PROPERTY
+                            } else {
+                                0
+                            },
+                            ..AttrTarget::new(
+                                crate::attrs::TARGET_PARAMETER,
+                                p.variable.span.start.offset,
+                            )
+                        },
+                    );
                     *cx.cur_property.borrow_mut() = None;
                     a?
                 },

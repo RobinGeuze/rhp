@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
-use rhp_bytecode::FunctionProto;
+use rhp_bytecode::{FunctionProto, Instr};
 use rhp_values::{conv, ArrayKey, ClassId, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, is_handler_accessor};
@@ -859,6 +859,13 @@ impl Vm {
             let proto = self.stack[top].proto.clone();
             // The throwing pc has already been advanced past the faulting instr.
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
+            // The live range of NEW's result: an object whose constructor
+            // threw is released before the handler runs.
+            if let Some(Instr::New { dst, .. } | Instr::NewV { dst, .. }) =
+                proto.code.get(throw_pc as usize)
+            {
+                self.reg_set(top, *dst, Value::Null);
+            }
             let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
             let handler = proto.exception_table.iter().find(in_try).cloned();
             // Thrown from inside a running finally block and not handled

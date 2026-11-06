@@ -400,6 +400,19 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// The source of a destructuring assignment. A plain variable is read
+    /// into a temporary first, as zend_compile_assign does (QM_ASSIGN), so
+    /// `[$a, $b] = $a` reads every element from the old `$a`.
+    fn list_source(&mut self, rhs: &Expression) -> Result<Reg, Thrown> {
+        let src = self.compile_expr(rhs)?;
+        if !matches!(rhs, Expression::Variable(Variable::Direct(_))) {
+            return Ok(src);
+        }
+        let dst = self.alloc_temp();
+        self.emit(Instr::Mov { dst, src });
+        Ok(dst)
+    }
+
     /// Store `src` into a single destructuring target (variable, nested pattern,
     /// array element, or property).
     pub(crate) fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
@@ -593,12 +606,12 @@ impl ProtoBuilder<'_> {
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
-                let rhs = self.compile_expr(a.rhs)?;
+                let rhs = self.list_source(a.rhs)?;
                 self.destructure_into(arr.elements.iter(), rhs, false)?;
                 return Ok(rhs);
             }
             if let Expression::List(lst) = a.lhs {
-                let rhs = self.compile_expr(a.rhs)?;
+                let rhs = self.list_source(a.rhs)?;
                 self.destructure_into(lst.elements.iter(), rhs, true)?;
                 return Ok(rhs);
             }

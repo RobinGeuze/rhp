@@ -581,6 +581,17 @@ pub trait Host {
     /// Registered stream-wrapper scheme names (for `stream_get_wrappers`).
     fn stream_wrapper_schemes(&self) -> Vec<Vec<u8>>;
 
+    /// `stream_wrapper_unregister`: drop `scheme` from this request's
+    /// wrapper table; false when it is not registered.
+    fn stream_wrapper_unregister(&mut self, _scheme: &[u8]) -> bool {
+        false
+    }
+
+    /// `stream_wrapper_restore`: put the built-in wrapper for `scheme` back.
+    fn stream_wrapper_restore(&mut self, _scheme: &[u8]) -> WrapperRestore {
+        WrapperRestore::NeverExisted
+    }
+
     /// The current PHP call stack for `debug_backtrace`/`debug_print_backtrace`:
     /// one entry per frame, innermost first, as
     /// `(function, class, file, line, this_object)` where file/line are the call
@@ -858,4 +869,15 @@ pub trait Host {
         }
         Ok(ops::pow_num(x, y))
     }
+}
+
+/// What [`Host::stream_wrapper_restore`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapperRestore {
+    /// No built-in wrapper has that name.
+    NeverExisted,
+    /// The built-in wrapper is still registered.
+    Unchanged,
+    /// The built-in wrapper is registered again.
+    Restored,
 }

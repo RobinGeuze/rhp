@@ -190,6 +190,15 @@ static PROPS: &[(&str, Prop)] = &[
     ("xmlLang", Prop::Str(sys::xmlTextReaderConstXmlLang)),
 ];
 
+/// Whether `class` is (or extends) XMLReader and `name` one of its declared
+/// properties.
+pub(crate) fn has_declared_property(host: &dyn Host, class: u32, name: &[u8]) -> bool {
+    prop_handler(name).is_some()
+        && host
+            .class_name(class)
+            .is_some_and(|c| host.reflect_is_a(&c, b"XMLReader"))
+}
+
 fn prop_handler(name: &[u8]) -> Option<Prop> {
     PROPS
         .iter()

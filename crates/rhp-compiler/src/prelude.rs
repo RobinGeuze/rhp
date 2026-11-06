@@ -83,12 +83,13 @@ pub(crate) fn prelude_classes(builtins: &Builtins) -> Result<Rc<PreludeParts>, T
 fn prelude_classes_isolated(builtins: &Builtins, src: &str) -> Result<PreludeParts, Thrown> {
     let arena = crate::parse::Arena::new();
     let parsed = arena.parse(b"<prelude>", src.as_bytes());
-    let flat: Vec<(Rc<NsContext>, &Statement)> = parsed
-        .program()
-        .statements
-        .iter()
-        .map(|s| (Rc::new(NsContext::default()), s))
-        .collect();
+    // `namespace X { ... }` blocks declare namespaced classes (ext/random's).
+    let mut flat: Vec<(Rc<NsContext>, &Statement)> = Vec::new();
+    crate::names::flatten_namespaces(
+        &parsed.program().statements,
+        Rc::new(NsContext::default()),
+        &mut flat,
+    );
     // Never strict-typed (coercive calls). No file name: the VM treats the
     // protos as internal code (skipped for exception file/line, `[internal
     // function]` in traces). No line map: prelude line numbers are never
@@ -97,7 +98,8 @@ fn prelude_classes_isolated(builtins: &Builtins, src: &str) -> Result<PreludePar
     let compile = || -> Result<(Vec<ClassProto>, Vec<Rc<FunctionProto>>), Thrown> {
         let mut classes = Vec::new();
         let mut functions = Vec::new();
-        for (_, stmt) in &flat {
+        for (ns, stmt) in &flat {
+            cx.set_ns(ns);
             match stmt {
                 Statement::Class(c) => classes.push(compile_class(&cx, c)?),
                 Statement::Interface(i) => classes.push(compile_interface(&cx, i)?),

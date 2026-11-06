@@ -1,0 +1,13 @@
+T_OPEN_TAG "<?php " 1
+T_VARIABLE "$a" 1
+T_WHITESPACE "\t" 9
+=
+T_WHITESPACE "  " 9
+T_VARIABLE "$b" 1
+T_WHITESPACE " " 9
++
+T_WHITESPACE " " 9
+T_VARIABLE "$c" 1
+;
+int(114997)
+bool(true)

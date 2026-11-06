@@ -30,6 +30,7 @@ fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 pub fn register(m: &mut crate::Registry) {
     crate::register(m, &[("set_time_limit", fn_set_time_limit)]);
+    streams::userspace::register(m);
 }
 
 /// A new request: reset main/'s thread-locals (the stream layer's, the ini

@@ -1,0 +1,38 @@
+[8] stream_wrapper_restore(): file:// was never changed, nothing to restore
+bool(true)
+[2] stream_wrapper_restore(): nope:// never existed, nothing to restore
+bool(false)
+[2] stream_wrapper_unregister(): Unable to unregister protocol nope://
+bool(false)
+bool(true)
+bool(false)
+[2] stream_wrapper_unregister(): Unable to unregister protocol glob://
+bool(false)
+bool(true)
+bool(true)
+[8] stream_wrapper_restore(): glob:// was never changed, nothing to restore
+bool(true)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+[2] stream_wrapper_unregister(): Unable to unregister protocol FILE://
+bool(false)
+bool(true)
+bool(false)
+[2] file_get_contents(): file:// wrapper is disabled in the server configuration
+[2] file_get_contents(FILE): Failed to open stream: no suitable wrapper could be found
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+[2] fopen(): Unable to find the wrapper "file" - did you forget to enable it when you configured PHP?
+[2] fopen(): file:// wrapper is disabled in the server configuration
+[2] fopen(file://FILE): Failed to open stream: no suitable wrapper could be found
+bool(false)
+[2] file(): file:// wrapper is disabled in the server configuration
+[2] file(nonexistent-relative.txt): Failed to open stream: no suitable wrapper could be found
+bool(false)
+bool(true)
+bool(true)

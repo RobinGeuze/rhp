@@ -426,19 +426,26 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             // An object matches on a declared member (instance or static) OR a
             // property reachable and set from the calling scope.
             host.class_has_property(cid, &prop)
-                || ext::date::has_virtual_property(host, cid, &prop)
+                || internal_declared_property(host, cid, &prop)
                 || host.object_prop_exists(&Value::Object(h.clone()), &prop)
         }
         Value::Str(s) => host
             .resolve_class_autoload(s.as_bytes())?
             .map(|cid| {
-                host.class_has_property(cid, &prop)
-                    || ext::date::has_virtual_property(host, cid, &prop)
+                host.class_has_property(cid, &prop) || internal_declared_property(host, cid, &prop)
             })
             .unwrap_or(false),
         _ => false,
     };
     Ok(Value::Bool(found))
+}
+
+/// A property an internal class declares but rhp serves from a handler
+/// (DatePeriod, DOM, XMLReader).
+fn internal_declared_property(host: &dyn Host, cid: u32, prop: &[u8]) -> bool {
+    ext::date::has_virtual_property(host, cid, prop)
+        || ext::dom::has_declared_property(host, cid, prop)
+        || ext::xmlreader::has_declared_property(host, cid, prop)
 }
 
 /// Shared helper for `class_exists` / `interface_exists` / `enum_exists`: resolve

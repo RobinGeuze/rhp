@@ -1,6 +1,7 @@
 //! `ProtoBuilder`: one function body under construction, its registers, pools and line table.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::parse::cst::{Expression, Identifier};
 use rhp_bytecode::{CIdx, FunctionProto, Instr, NIdx, ProtoFlags, Reg};
@@ -49,6 +50,9 @@ pub(crate) struct ProtoBuilder<'c> {
     /// The assignment being compiled is a statement of its own: its value
     /// is not used.
     pub(crate) result_unused: bool,
+    /// See [`FunctionProto::const_attrs`] / [`FunctionProto::discard_calls`].
+    pub(crate) const_attrs: Vec<Rc<Vec<rhp_bytecode::AttributeProto>>>,
+    pub(crate) discard_calls: Vec<rhp_bytecode::Pc>,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
     pub(crate) temp_floor: Reg,
@@ -138,6 +142,8 @@ impl<'c> ProtoBuilder<'c> {
             next_temp: 0,
             high_water: 0,
             result_unused: false,
+            const_attrs: Vec::new(),
+            discard_calls: Vec::new(),
             temp_floor: 0,
             loops: Vec::new(),
             cur_line: 0,
@@ -240,6 +246,9 @@ impl<'c> ProtoBuilder<'c> {
         proto.consts = self.consts;
         proto.names = self.names;
         proto.exception_table = self.exception_table;
+        proto.const_attrs = self.const_attrs;
+        proto.discard_calls = self.discard_calls;
+        proto.discard_calls.shrink_to_fit();
         proto.cv_var_names = self
             .cv_map
             .iter()

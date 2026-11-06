@@ -252,9 +252,11 @@ impl Vm {
             if self.dtor_check {
                 self.dtor_check = false;
                 if !self.destructibles.is_empty() {
-                    // Destructors report at the releasing instruction's line
-                    // (usually the one before `pc`).
-                    self.stack[top].pc = pc;
+                    // Destructors belong to the releasing instruction: they
+                    // report its line and its try catches their exceptions.
+                    if pc > 0 {
+                        self.stack[top].pc = pc;
+                    }
                     self.collect_released()?;
                     self.stack[top].pc = pc;
                     continue;
@@ -796,6 +798,26 @@ impl Vm {
                         let msg = builtins::zend::builtin_functions::const_redefined_message(cname);
                         self.diag(builtins::E_WARNING, &msg)?;
                     } else {
+                        self.constants.insert(key.into_owned(), v);
+                        self.user_const_order.push(cname.to_vec());
+                    }
+                }
+                Instr::DeclareAttrConst { name, src, attrs } => {
+                    let cname = proto.names[name as usize].as_bytes();
+                    let key = builtins::zend::builtin_functions::const_key(cname);
+                    let v = self.reg_get(top, src);
+                    if self.const_taken(&key) {
+                        let msg = builtins::zend::builtin_functions::const_redefined_message(cname);
+                        self.diag(builtins::E_WARNING, &msg)?;
+                    } else {
+                        let unit = self.stack[top].unit;
+                        self.const_attrs.insert(
+                            key.to_vec(),
+                            crate::attributes::ConstAttrs {
+                                attrs: proto.const_attrs[attrs as usize].clone(),
+                                unit,
+                            },
+                        );
                         self.constants.insert(key.into_owned(), v);
                         self.user_const_order.push(cname.to_vec());
                     }
@@ -2664,11 +2686,16 @@ impl Vm {
             match self.class(cls).constants.get(&name_b) {
                 Some(c) => {
                     let (vis, decl) = (c.visibility, c.declaring_class);
+                    let deprecated = c.deprecated.clone();
+                    let ready = c.init.is_none().then(|| c.value.clone());
                     if !self.check_access(self.stack[top].defining_class, decl, vis) {
                         return Err(self.access_err("constant", decl, &name_b, vis));
                     }
-                    let v = if c.init.is_none() {
-                        c.value.clone()
+                    if let Some(d) = deprecated {
+                        self.class_const_deprecation(decl, &name_b, &d)?;
+                    }
+                    let v = if let Some(v) = ready {
+                        v
                     } else {
                         self.class_const_value(cls, &name_b, &display, in_const_expr)?
                             .unwrap_or(Value::Null)
@@ -2700,6 +2727,20 @@ impl Vm {
         Ok(())
     }
 
+    /// The E_DEPRECATED fetching built-in constant `bare` raises (its
+    /// CONST_DEPRECATED flag).
+    pub(crate) fn internal_const_deprecation(&self, bare: &[u8]) -> Option<String> {
+        let msg = match bare {
+            b"E_STRICT" => {
+                "Constant E_STRICT is deprecated since 8.4, the error level was removed".to_string()
+            }
+            b"MT_RAND_PHP" => "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937".to_string(),
+            _ => builtins::constant_deprecation(bare)?,
+        };
+        (self.constants.contains_key(bare) && !self.user_const_order.iter().any(|n| n == bare))
+            .then_some(msg)
+    }
+
     /// `FetchConst`: the global constant `name` (or `fallback`) into `dst`.
     fn fetch_const(
         &mut self,
@@ -2711,33 +2752,23 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let cname = proto.names[name as usize].as_bytes();
         let key = builtins::zend::builtin_functions::const_key(cname);
-        let v = self.constants.get(&*key).cloned().or_else(|| {
-            if fallback != rhp_bytecode::NO_NAME {
-                self.constants
-                    .get(proto.names[fallback as usize].as_bytes())
-                    .cloned()
-            } else {
-                None
+        // The constant found: `name`, else the global `fallback`.
+        let (v, hit): (Option<Value>, &[u8]) = match self.constants.get(&*key) {
+            Some(v) => (Some(v.clone()), &key),
+            None if fallback != rhp_bytecode::NO_NAME => {
+                let f = proto.names[fallback as usize].as_bytes();
+                (self.constants.get(f).cloned(), f)
             }
-        });
+            None => (None, &key),
+        };
         match v {
             Some(v) => {
-                let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(cname);
-                let deprecation = match bare {
-                    b"E_STRICT" => Some(
-                        "Constant E_STRICT is deprecated since 8.4, the error level was removed"
-                            .to_string(),
-                    ),
-                    b"MT_RAND_PHP" => Some(
-                        "Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937"
-                            .to_string(),
-                    ),
-                    _ => builtins::constant_deprecation(bare),
-                };
-                if let Some(msg) = deprecation {
-                    if self.constants.contains_key(bare) {
-                        self.diag(builtins::E_DEPRECATED, &msg)?;
-                    }
+                if let Some(msg) = self.internal_const_deprecation(hit) {
+                    self.diag(builtins::E_DEPRECATED, &msg)?;
+                }
+                if !self.const_attrs.is_empty() {
+                    let hit = hit.to_vec();
+                    self.deprecated_user_constant(&hit)?;
                 }
                 self.reg_set(top, dst, v);
             }

@@ -482,9 +482,12 @@ impl ProtoBuilder<'_> {
                     ),
                 );
             }
-            Op::VoidCast(..) | Op::RealCast(..) => {
+            // Only a statement (php's grammar refuses it elsewhere): see
+            // `compile_discarded`.
+            Op::VoidCast(..) => return self.compile_expr(u.operand),
+            Op::RealCast(..) => {
                 return Err(Thrown::unsupported(
-                    "(unset)/(void)/(real) cast",
+                    "(real) cast",
                     "removed/refused in PHP 8",
                 ))
             }

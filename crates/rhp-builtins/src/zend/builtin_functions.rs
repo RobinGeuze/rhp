@@ -206,7 +206,12 @@ pub(crate) fn resolve_const(
         return host.class_constant_eval(&name[..i - 1], &name[i + 1..], silent);
     }
     match host.get_const(name) {
-        Some(v) => Ok(Some(v)),
+        Some(v) => {
+            if !silent {
+                host.const_fetch_deprecation(name)?;
+            }
+            Ok(Some(v))
+        }
         None if silent => Ok(None),
         None => Err(Thrown::error(
             "Error",

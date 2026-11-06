@@ -310,6 +310,17 @@ impl Host for Vm {
             })
     }
 
+    fn const_fetch_deprecation(&mut self, name: &[u8]) -> Result<(), Thrown> {
+        let key = builtins::zend::builtin_functions::const_key(name).into_owned();
+        if let Some(msg) = self.internal_const_deprecation(&key) {
+            self.diag(builtins::E_DEPRECATED, &msg)?;
+        }
+        if !self.const_attrs.is_empty() {
+            self.deprecated_user_constant(&key)?;
+        }
+        Ok(())
+    }
+
     fn register_autoloader(&mut self, callback: Value, prepend: bool) {
         if prepend {
             self.autoloaders.insert(0, callback);
@@ -1826,6 +1837,7 @@ impl Host for Vm {
             return fail(format!("Undefined constant {}::{}", s(class), s(name)));
         };
         let (vis, decl) = (c.visibility, c.declaring_class);
+        let deprecated = c.deprecated.clone();
         if !self.check_access(scope, decl, vis) {
             let v = match vis {
                 rhp_values::Visibility::Private => "private",
@@ -1844,6 +1856,9 @@ impl Host for Vm {
                 s(class),
                 s(name)
             ));
+        }
+        if let (Some(d), false) = (deprecated, silent) {
+            self.class_const_deprecation(decl, name, &d)?;
         }
         if self.classes[cid as usize].enum_backing.is_some() {
             self.update_class_constants(cid)?;

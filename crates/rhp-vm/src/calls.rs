@@ -627,10 +627,21 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
-        let argc = args.len();
-        frame.argc = argc;
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
+        if proto.flags.intersects(
+            rhp_bytecode::ProtoFlags::DEPRECATED.union(rhp_bytecode::ProtoFlags::NODISCARD),
+        ) {
+            let first = match &args {
+                Args::Slice(s) => s.first().cloned(),
+                Args::Window { top, base, argc } => {
+                    (*argc > 0).then(|| self.stack[*top].regs[*base as usize].clone())
+                }
+            };
+            self.call_attr_checks(frame, first.as_ref())?;
+        }
+        let argc = args.len();
+        frame.argc = argc;
         let count_error = self.internal_arg_count_error(&proto, frame, argc);
         let bound = match args {
             Args::Slice(s) => bind_params(
@@ -1969,6 +1980,21 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<Value, Thrown> {
         if !named.is_empty() {
+            // `[$closure, '__invoke']` of a builtin's closure: the
+            // arguments bind as Closure::__invoke's.
+            if let Some(cl) = builtins::zend::closures::closure_invoke_of(c) {
+                if let Some((b, sig)) = self.callable_builtin(&cl) {
+                    use rhp_bytecode::signatures::Signature;
+                    let (args, extra) = self.place_stub_named_args(
+                        "Closure::__invoke",
+                        sig.params,
+                        sig.min_args(),
+                        args,
+                        named,
+                    )?;
+                    return self.run_builtin_sig(b, Some(sig), args, &extra, false, false, false);
+                }
+            }
             self.autoload_callable_class(c)?;
             match self.callable_proto(c) {
                 Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,

@@ -858,6 +858,14 @@ pub enum Instr {
         name: NIdx,
         src: Reg,
     },
+    /// `#[A] const NAME = <expr>;` (ZEND_DECLARE_ATTRIBUTED_CONST):
+    /// `DeclareConst` that also attaches `const_attrs[attrs]` to the new
+    /// constant.
+    DeclareAttrConst {
+        name: NIdx,
+        src: Reg,
+        attrs: u32,
+    },
     /// `$val instanceof C` (never throws).
     InstanceOf {
         dst: Reg,
@@ -1090,6 +1098,9 @@ pub struct AttributeProto {
     /// the declaring scope (`ReflectionAttribute::getArguments()`); `None`
     /// when the attribute has no argument list.
     pub args: Option<ConstInitProto>,
+    /// An internal attribute's validator error that
+    /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
+    pub validation_error: Option<PhpStr>,
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment
@@ -1208,6 +1219,12 @@ impl ProtoFlags {
     /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
     /// refuses to unbind it.
     pub const USES_THIS: ProtoFlags = ProtoFlags(8);
+    /// `#[\Deprecated]` (ZEND_ACC_DEPRECATED): calling it raises
+    /// E_USER_DEPRECATED first.
+    pub const DEPRECATED: ProtoFlags = ProtoFlags(16);
+    /// `#[\NoDiscard]` (ZEND_ACC_NODISCARD): a call whose result is unused
+    /// warns first.
+    pub const NODISCARD: ProtoFlags = ProtoFlags(32);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0
@@ -1275,6 +1292,13 @@ pub struct FunctionProto {
     /// Reflection metadata (attributes, doc comment, line span).
     pub meta: DeclMeta,
     pub flags: ProtoFlags,
+    /// The attribute lists of the attributed global constants this body
+    /// declares (`DeclareAttrConst`).
+    pub const_attrs: Vec<Rc<Vec<AttributeProto>>>,
+    /// The calls whose result is unused (php's IS_UNUSED result after
+    /// zend_do_free), ascending: a `#[\NoDiscard]` callee warns when called
+    /// from one.
+    pub discard_calls: Vec<Pc>,
 }
 
 impl FunctionProto {
@@ -1316,6 +1340,8 @@ impl FunctionProto {
             cv_var_names: Vec::new(),
             meta: DeclMeta::default(),
             flags: ProtoFlags::default(),
+            const_attrs: Vec::new(),
+            discard_calls: Vec::new(),
         }
     }
 }

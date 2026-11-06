@@ -1,7 +1,7 @@
 //! Statement lowering.
 
 use crate::parse::cst::{Expression, Statement, Variable};
-use rhp_bytecode::{ClassProto, Instr};
+use rhp_bytecode::{ClassProto, Instr, Reg};
 use rhp_values::{Thrown, Value};
 
 use crate::builder::ProtoBuilder;
@@ -81,8 +81,9 @@ impl ProtoBuilder<'_> {
                 let saved_hw = self.high_water;
                 self.high_water = self.next_temp;
                 self.result_unused = matches!(s.expression, Expression::Assignment(_));
-                self.compile_expr(s.expression)?;
+                let r = self.compile_discarded(s.expression);
                 self.result_unused = false;
+                r?;
                 let to = self.high_water;
                 self.high_water = saved_hw.max(to);
                 if to > from {
@@ -122,6 +123,30 @@ impl ProtoBuilder<'_> {
                 self.emit_cond_class(proto);
             }
             Statement::Constant(c) => {
+                // zend_compile_const_decl: attributes take one constant.
+                let attrs = if c.attribute_lists.is_empty() {
+                    None
+                } else {
+                    if c.items.len() > 1 {
+                        self.cx.fatal(
+                            c.r#const.span.start.offset,
+                            "Cannot apply attributes to multiple constants at once".into(),
+                        );
+                    }
+                    let at = c
+                        .items
+                        .iter()
+                        .next()
+                        .map_or(c.r#const.span.start.offset, |i| i.name.span.start.offset);
+                    let list = crate::decl::compile_attributes(
+                        self.cx,
+                        &c.attribute_lists,
+                        self.class_name.as_ref(),
+                        &crate::attrs::AttrTarget::new(crate::attrs::TARGET_CONST, at),
+                    )?;
+                    self.const_attrs.push(std::rc::Rc::new(list));
+                    Some((self.const_attrs.len() - 1) as u32)
+                };
                 for item in c.items.iter() {
                     // zend_compile_const_decl: true/false/null in any case.
                     let short: &[u8] = item.name.value;
@@ -148,7 +173,10 @@ impl ProtoBuilder<'_> {
                     self.in_const_decl = false;
                     let src = src?;
                     let name = self.intern_name(&join_ns(&self.cx.cur_ns(), item.name.value));
-                    self.emit(Instr::DeclareConst { name, src });
+                    match attrs {
+                        Some(attrs) => self.emit(Instr::DeclareAttrConst { name, src, attrs }),
+                        None => self.emit(Instr::DeclareConst { name, src }),
+                    }
                 }
             }
             Statement::If(i) => self.compile_if(i)?,
@@ -492,5 +520,50 @@ fn stmt_kind(s: &Statement) -> &'static str {
         Statement::Expression(_) => "expression",
         Statement::HaltCompiler(_) => "__halt_compiler",
         _ => "this",
+    }
+}
+
+impl ProtoBuilder<'_> {
+    /// Compile an expression whose value is freed (an expression statement,
+    /// a `for` list entry): php's zend_do_free marks a call compiled last
+    /// as having an unused result, which `#[\NoDiscard]` warns about. A
+    /// `(void)` cast frees its operand without that mark.
+    pub(crate) fn compile_discarded(&mut self, e: &Expression) -> Result<Reg, Thrown> {
+        use crate::parse::cst::UnaryPrefixOperator;
+        if let Expression::UnaryPrefix(u) = e {
+            if matches!(u.operator, UnaryPrefixOperator::VoidCast(..)) {
+                return self.compile_expr(u.operand);
+            }
+        }
+        let r = self.compile_expr(e)?;
+        // A nullsafe chain ends `call; Jmp end; LoadNull` (php's call is
+        // still the last opline there).
+        let mut at = self.code.len().wrapping_sub(1);
+        if let [.., Instr::Jmp { target }, Instr::LoadNull { dst }] = self.code[..] {
+            if dst == r && target as usize == self.code.len() {
+                at = self.code.len() - 3;
+            }
+        }
+        let dst = match self.code.get(at) {
+            Some(
+                Instr::Call { dst, .. }
+                | Instr::CallV { dst, .. }
+                | Instr::CallDyn { dst, .. }
+                | Instr::CallDynV { dst, .. }
+                | Instr::CallMethod { dst, .. }
+                | Instr::CallMethodV { dst, .. }
+                | Instr::CallMethodDyn { dst, .. }
+                | Instr::CallMethodDynV { dst, .. }
+                | Instr::CallStatic { dst, .. }
+                | Instr::CallStaticV { dst, .. }
+                | Instr::CallStaticDyn { dst, .. }
+                | Instr::CallStaticDynV { dst, .. },
+            ) => Some(*dst),
+            _ => None,
+        };
+        if dst == Some(r) {
+            self.discard_calls.push(at as rhp_bytecode::Pc);
+        }
+        Ok(r)
     }
 }

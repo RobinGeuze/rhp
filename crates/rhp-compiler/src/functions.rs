@@ -6,6 +6,7 @@ use crate::parse::cst::{Expression, Hint, MethodBody, Modifier, Node, Statement}
 use rhp_bytecode::{FunctionProto, Instr, MethodProto, NIdx, PropDefaultProto, PropProto, Reg};
 use rhp_values::{PhpStr, Thrown, Value};
 
+use crate::attrs::AttrTarget;
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::cvs::collect_vars;
 use crate::decl::{
@@ -191,10 +192,12 @@ pub(crate) fn compile_method(
         cx,
         &m.attribute_lists,
         Some(class_name),
+        &AttrTarget::new(crate::attrs::TARGET_METHOD, m.function.span.start.offset),
         m.name.span.start.offset,
         m.function.span.start.offset,
         span_of(m).1,
     )?;
+    crate::attrs::apply_fn_flags(cx, &mut proto, true, false, m.function.span.start.offset);
 
     let mp = MethodProto {
         name,
@@ -255,10 +258,21 @@ pub(crate) fn compile_function(
         cx,
         &func.attribute_lists,
         None,
+        &AttrTarget::new(
+            crate::attrs::TARGET_FUNCTION,
+            func.function.span.start.offset,
+        ),
         func.name.span.start.offset,
         func.function.span.start.offset,
         span_of(func).1,
     )?;
+    crate::attrs::apply_fn_flags(
+        cx,
+        &mut proto,
+        false,
+        false,
+        func.function.span.start.offset,
+    );
     Ok(proto)
 }
 
@@ -350,6 +364,7 @@ impl ProtoBuilder<'_> {
                 self.cx,
                 &af.attribute_lists,
                 self.class_name.as_ref(),
+                &AttrTarget::new(crate::attrs::TARGET_FUNCTION, af.r#fn.span.start.offset),
                 af.r#fn.span.end.offset,
                 af.r#fn.span.start.offset,
                 span_of(af).1,
@@ -433,6 +448,7 @@ impl ProtoBuilder<'_> {
                 self.cx,
                 &cl.attribute_lists,
                 self.class_name.as_ref(),
+                &AttrTarget::new(crate::attrs::TARGET_FUNCTION, cl.function.span.start.offset),
                 cl.function.span.end.offset,
                 cl.function.span.start.offset,
                 span_of(cl).1,
@@ -538,6 +554,8 @@ impl ProtoBuilder<'_> {
         proto.is_static = is_static;
         proto.return_type = return_type;
         proto.meta = meta;
+        let at = proto.meta.offset;
+        crate::attrs::apply_fn_flags(self.cx, &mut proto, self.class_name.is_some(), false, at);
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),
@@ -718,7 +736,22 @@ impl ProtoBuilder<'_> {
                     if promoted {
                         *cx.cur_property.borrow_mut() = Some(var.to_vec());
                     }
-                    let a = compile_attributes(cx, &p.attribute_lists, class_name);
+                    let a = compile_attributes(
+                        cx,
+                        &p.attribute_lists,
+                        class_name,
+                        &AttrTarget {
+                            promoted: if promoted {
+                                crate::attrs::TARGET_PROPERTY
+                            } else {
+                                0
+                            },
+                            ..AttrTarget::new(
+                                crate::attrs::TARGET_PARAMETER,
+                                p.variable.span.start.offset,
+                            )
+                        },
+                    );
                     *cx.cur_property.borrow_mut() = None;
                     a?
                 },

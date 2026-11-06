@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 
 use crate::parse::cst::{
-    AttributeList, ClassLikeMember, FunctionLikeParameterList, Hint, Identifier, Method,
-    MethodBody, Modifier, Property, PropertyItem, Sequence, TraitUseAdaptation,
-    TraitUseMethodReference, TraitUseSpecification,
+    ClassLikeMember, FunctionLikeParameterList, Hint, Identifier, Method, MethodBody, Modifier,
+    Property, PropertyItem, Sequence, TraitUseAdaptation, TraitUseMethodReference,
+    TraitUseSpecification,
 };
 use mago_span::HasSpan;
 use rhp_bytecode::{TypeHint, TypeKind};
@@ -73,7 +73,6 @@ pub(crate) struct Decl<'a, 'arena> {
     pub at: u32,
     pub extends: Option<&'a crate::parse::cst::Extends<'arena>>,
     pub implements: Option<&'a crate::parse::cst::Implements<'arena>>,
-    pub attributes: &'a Sequence<'arena, AttributeList<'arena>>,
     pub is_abstract: bool,
     pub is_readonly: bool,
     pub backing: Option<&'a Hint<'arena>>,
@@ -149,7 +148,6 @@ fn check_decl_in_scope(cx: &FileCtx, d: &Decl) {
             check_class_ref(cx, id, extends_label);
         }
     }
-    check_class_attributes(cx, d, &cname);
     if let Some(i) = d.implements {
         for id in i.types.iter() {
             check_class_ref(cx, id, "interface name");
@@ -191,36 +189,6 @@ fn check_class_ref(cx: &FileCtx, id: &Identifier, what: &str) {
                 format!("Cannot use \"{}\" as {what}, as it is reserved", s(n)),
             );
         }
-    }
-}
-
-/// The class attributes' validators (zend_attributes.c).
-fn check_class_attributes(cx: &FileCtx, d: &Decl, cname: &str) {
-    let mut delayed = false;
-    let mut dynamic = None;
-    for l in d.attributes.iter() {
-        for a in l.attributes.iter() {
-            let n = cx.resolve_class_name(&a.name).to_ascii_lowercase();
-            match n.as_slice() {
-                b"delayedtargetvalidation" => delayed = true,
-                b"allowdynamicproperties" => dynamic = Some(d.at),
-                _ => {}
-            }
-        }
-    }
-    let Some(at) = dynamic else { return };
-    let what = match d.kind {
-        DeclKind::Trait => "trait",
-        DeclKind::Interface => "interface",
-        _ if d.is_readonly => "readonly class",
-        DeclKind::Enum => "enum",
-        _ => return,
-    };
-    if !delayed {
-        cx.fatal(
-            at,
-            format!("Cannot apply #[\\AllowDynamicProperties] to {what} {cname}"),
-        );
     }
 }
 
@@ -659,6 +627,15 @@ fn magic_method_errors(cx: &FileCtx, cname: &str, m: &Method, lc: &[u8]) -> Vec<
         .return_type_hint
         .as_ref()
         .and_then(|r| type_hint(cx, &r.hint));
+    let nodiscard = m.attribute_lists.iter().any(|l| {
+        l.attributes.iter().any(|a| {
+            cx.resolve_class_name(&a.name)
+                .eq_ignore_ascii_case(b"NoDiscard")
+        })
+    });
+    let nodiscard_err = || {
+        nodiscard.then(|| Magic::Error(format!("Method {cname}::{mname} cannot be #[\\NoDiscard]")))
+    };
 
     let args = |n: usize| -> Option<Magic> {
         if params.len() != n {
@@ -698,6 +675,11 @@ fn magic_method_errors(cx: &FileCtx, cname: &str, m: &Method, lc: &[u8]) -> Vec<
         })
     };
     let ret_type = |want: u32, name: &str| -> Option<Magic> {
+        if want == VOID {
+            if let Some(e) = nodiscard_err() {
+                return Some(e);
+            }
+        }
         let t = ret.as_ref()?;
         let (mask, mut complex) = type_mask(t);
         if mask & NEVER != 0 {
@@ -715,11 +697,13 @@ fn magic_method_errors(cx: &FileCtx, cname: &str, m: &Method, lc: &[u8]) -> Vec<
         })
     };
     let no_ret = || {
-        ret.is_some().then(|| {
-            Magic::Error(format!(
-                "Method {cname}::{mname}() cannot declare a return type"
-            ))
-        })
+        ret.is_some()
+            .then(|| {
+                Magic::Error(format!(
+                    "Method {cname}::{mname}() cannot declare a return type"
+                ))
+            })
+            .or_else(nodiscard_err)
     };
     // Each check raises in order; warnings do not stop the later checks.
     let mut warning = None;

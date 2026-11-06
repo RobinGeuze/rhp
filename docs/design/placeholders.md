@@ -700,6 +700,16 @@ The module is deliberately "READ-ONLY, native format only"
 
 ---
 
+### 9.3 Attributes the engine acts on — gaps
+- `#[\Deprecated]` on a `__call` / `__callStatic` reached directly
+  (`$o->__call('x', [])`) names the method after the first argument, as
+  the trampoline does; php names `__call` there.
+- `ReflectionConstant::getValue()` of a `#[\Deprecated]` constant raises
+  the deprecation (it reads through `constant()`); php's does not.
+- `#[\NoDiscard]` on an internal function is honoured only where the
+  prelude declares it (DateTimeImmutable); natively implemented methods
+  carry no attributes.
+
 ## 10. Prioritized roadmap
 
 Ordered by the north star: first what unblocks **`composer install`** of real

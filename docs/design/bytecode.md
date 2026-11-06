@@ -301,7 +301,9 @@ CastInt    { dst,a } → Int(conv::to_int)       CastFloat  { dst,a } → Float(
 CastString { dst,a } → Str(conv::to_string_bytes)   CastBool { dst,a } → Bool(conv::to_bool)
 CastArray  { dst,a } → cast_to_array(a)        // (object) is phase 7
 ```
-`(unset)`/`(real)`/`(void)` have **no opcode** — refused in the compiler (§4).
+`(unset)`/`(real)` have **no opcode** — refused in the compiler (§4). `(void) expr`
+(a statement only, as php's grammar has it) compiles its operand and frees it,
+without the unused-result mark below.
 
 **Compare (phase 2) — route to `ops::`** (one op, `kind` selects)
 ```
@@ -391,6 +393,28 @@ reads each function's C body for the parameters php parses as any value, a
 resource or an open stream, so the VM checks those too and parses the
 scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
 before any of this, from the stub's `since` and `message`.)
+
+**Attributes the engine acts on.** The compiler runs php's internal
+attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed
+targets, repetition and the validators, with `#[\DelayedTargetValidation]`
+leaving the error to `ReflectionAttribute::newInstance()`
+(`AttributeProto::validation_error`). `#[\Deprecated]` and `#[\NoDiscard]`
+set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
+once per call and, only when one is set, raises the deprecation and the
+unused-result warning before the frame is entered
+(`rhp-vm/src/attributes.rs`, zend_execute.c's zend_deprecated_function /
+zend_nodiscard_function). "Unused" is php's zend_do_free rule: the compiler
+records in `FunctionProto::discard_calls` the pcs of calls compiled last in
+a freed expression (an expression statement, a `for` list entry), and the
+VM looks the caller's pc up there. The message suffix comes from building the
+attribute object (its constructor checks the arguments). Class constants and
+enum cases carry `ClassConst::deprecated`; attributed global constants are
+declared by `DeclareAttrConst { name, src, attrs }`, which keeps
+`FunctionProto::const_attrs[attrs]` for the constant (fetch deprecation,
+`ReflectionConstant::getAttributes()`). A trait's `#[\Deprecated]` is raised
+when a class using it is linked. Trace arguments of `#[\SensitiveParameter]`
+parameters (user ones, and builtins' through the stub flag `SENS`) become
+`SensitiveParameterValue` objects.
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
@@ -808,7 +832,7 @@ can't swallow it):
 | `eval(...)` | `Construct::Eval` | **refuse — no `Eval` opcode exists, ever** |
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
 | backticks `` `…` `` | `CompositeString::ShellExecute` | refuse — never spawn a shell |
-| `(real)`/`(void)` cast | `UnaryPrefixOperator::{RealCast,VoidCast}` | refuse (`(unset)` is php's compile error) |
+| `(real)` cast | `UnaryPrefixOperator::RealCast` | refuse (`(unset)` is php's compile error; `(void)` compiles, §2) |
 | `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 
 ### 4.2 Function-name refusals — `is_refused()`

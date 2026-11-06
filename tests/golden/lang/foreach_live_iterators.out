@@ -2,8 +2,7 @@
 1,3,4 / 1,2,3
 1 20 30 
 1
-
-Warning: foreach() argument must be of type array|object, int given in /Users/robing/gits/rhp/.claude/worktrees/rest/foreach-semantics/tests/golden/lang/foreach_live_iterators.php on line 26
+warning: foreach() argument must be of type array|object, int given
 a=1 e=5 
 a=1 b=2 c=3 e=5 
 a=1 d=back 

@@ -22,9 +22,11 @@ unset($v);
 echo "\n";
 
 // Variable becomes a non-array during a by-reference loop.
+set_error_handler(function ($no, $msg) { echo "warning: $msg\n"; return true; });
 $a = [1, 2];
 foreach ($a as &$v) { echo "$v\n"; $a = 5; }
 unset($v);
+restore_error_handler();
 
 // foreach by value over an object sees properties added and removed.
 #[AllowDynamicProperties]

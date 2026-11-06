@@ -104,6 +104,9 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) this_bound: bool,
     /// The body contains `yield`.
     pub(crate) is_generator: bool,
+    /// Synthetic nodes standing for values already in a register (the
+    /// pipe operator's operand and callee), by node address.
+    pub(crate) expr_regs: Vec<(usize, Reg)>,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -167,6 +170,7 @@ impl<'c> ProtoBuilder<'c> {
             func_arg_read: false,
             static_vars: Vec::new(),
             is_generator: false,
+            expr_regs: Vec::new(),
         }
     }
 

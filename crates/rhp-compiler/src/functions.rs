@@ -10,8 +10,8 @@ use crate::attrs::AttrTarget;
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::cvs::collect_vars;
 use crate::decl::{
-    compile_attributes, decl_meta, has_modifier, modifiers_set_visibility, modifiers_visibility,
-    param_default_meta, span_of,
+    compile_attributes, decl_meta, has_modifier, modifiers_visibility, param_default_meta,
+    readonly_set_visibility, span_of,
 };
 use crate::expr::{block_has_yield, expr_has_yield, stmt_has_yield};
 use crate::file::FileCtx;
@@ -141,7 +141,7 @@ pub(crate) fn compile_method(
         promoted.push(PropProto {
             name: PhpStr::from_bytes(var.to_vec()),
             visibility: vis,
-            set_visibility: modifiers_set_visibility(&p.modifiers),
+            set_visibility: readonly_set_visibility(&p.modifiers, ro || cx.in_readonly_class.get()),
             is_readonly: ro,
             default: PropDefaultProto::None,
             type_hint: info.type_hint.clone(),

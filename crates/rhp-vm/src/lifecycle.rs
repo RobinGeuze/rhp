@@ -127,6 +127,7 @@ impl Vm {
             auto_prepend: true,
             streams: StreamTable::default(),
             readonly_reinit: Default::default(),
+            clone_with_reinit: None,
             hook_bypass: false,
             last_dir: None,
             default_context: None,

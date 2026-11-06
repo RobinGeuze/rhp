@@ -678,7 +678,16 @@ impl Vm {
         };
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
+            // php's RECV opcodes check each passed argument's type before
+            // the first missing one fails.
+            Err(missing) => {
+                let scope = frame.defining_class;
+                let typed = match proto.is_internal() {
+                    false => self.check_arg_types(&proto, frame, caller, scope).err(),
+                    true => None,
+                };
+                typed.or_else(|| Some((missing, self.arg_count_error(&proto, frame, argc))))
+            }
             Ok(()) => {
                 if let Some((holes, extra)) = named {
                     bind_named_extra(&proto, frame, holes, extra);

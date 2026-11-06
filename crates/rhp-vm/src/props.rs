@@ -1040,6 +1040,37 @@ impl Vm {
                     .is_some_and(|spe| spe.declaring_class == s)
         });
         if present {
+            // clone-with unlocks each readonly property once more; the
+            // set visibility still applies.
+            let oid = obj.borrow().id;
+            if let Some((_, done)) = self
+                .clone_with_reinit
+                .as_mut()
+                .filter(|(o, d)| *o == oid && !d.contains(key))
+            {
+                done.push(key.clone());
+                if !pe_public_implicit_set(self, cls, key)
+                    || scope.is_some_and(|s| {
+                        self.class(s).ancestors.contains(&decl)
+                            || self.class(decl).ancestors.contains(&s)
+                    })
+                {
+                    return Ok(());
+                }
+                let from = match scope {
+                    Some(s) => format!(
+                        "scope {}",
+                        String::from_utf8_lossy(self.class(s).name.as_bytes())
+                    ),
+                    None => "global scope".into(),
+                };
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot modify protected(set) readonly property {cname}::${p} from {from}"
+                    ),
+                ));
+            }
             // php 8.3: during __clone each readonly property may be
             // reinitialized once (from the property's scope).
             let oid = obj.borrow().id;
@@ -1066,6 +1097,21 @@ impl Vm {
                 "Error",
                 format!("Cannot modify readonly property {cname}::${p}"),
             ));
+        }
+        // Initializing it during clone-with uses up its reinitialization.
+        let oid = obj.borrow().id;
+        if let Some((_, done)) = self.clone_with_reinit.as_mut().filter(|(o, _)| *o == oid) {
+            done.push(key.clone());
+        }
+        // An explicit public(set): anyone may initialize it.
+        if self
+            .class(cls)
+            .props
+            .get(key)
+            .and_then(|pe| pe.set_visibility)
+            == Some(rhp_values::Visibility::Public)
+        {
+            return Ok(());
         }
         // A public readonly property is implicitly protected(set).
         if pe_public_implicit_set(self, cls, key)
@@ -1115,48 +1161,130 @@ impl Vm {
         pe.name.as_bytes().starts_with(b"__") && self.is_prelude_class(pe.declaring_class)
     }
 
-    /// `CloneObj`: `clone` the value in `src` into `dst`, then push `__clone`.
+    /// `CloneObj` (ZEND_CLONE): `clone` the value in `src` into `dst`, then
+    /// push `__clone`.
     pub(crate) fn exec_clone(&mut self, top: usize, dst: Reg, src: Reg) -> Result<(), Thrown> {
         let v = self.reg_r(top, src)?;
         if let Value::Closure(cd) = &v {
-            // A cloned closure is a new Closure object.
-            let copy = rhp_values::ClosureData {
-                fnidx: cd.fnidx,
-                captures: cd.captures.iter().map(Value::copy_slot).collect(),
-                bound_this: cd.bound_this.clone(),
-                bound_class: cd.bound_class,
-                bound_static: cd.bound_static,
-                wrapped: cd.wrapped.clone(),
-                id: rhp_values::alloc_object_id(),
-                statics: cd.statics_copy(),
-            };
-            self.reg_set(top, dst, Value::Closure(Rc::new(copy)));
+            let copy = clone_closure(cd);
+            self.reg_set(top, dst, copy);
             return Ok(());
         }
-        let Value::Object(h) = v else {
-            return Err(Thrown::error(
-                "Error",
-                "__clone method called on non-object",
-            ));
-        };
-        if h.borrow().is_lazy() {
+        let scope = self.stack[top].defining_class;
+        let (h, clone_m) = self.clone_checks(&v, scope)?;
+        let new_obj = if h.borrow().is_lazy() {
             let new_obj = self.lazy_clone(&h)?;
-            self.reg_set(top, dst, Value::Object(new_obj.clone()));
-            let cls = new_obj.borrow().class;
-            if !new_obj.borrow().is_lazy() {
-                if let Some(m) = self.lookup_method(cls, b"__clone") {
-                    self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
-                }
+            if new_obj.borrow().is_lazy() {
+                self.reg_set(top, dst, Value::Object(new_obj));
+                return Ok(());
             }
-            return Ok(());
-        }
-        let new_obj = self.clone_members(&h)?;
+            new_obj
+        } else {
+            self.clone_members(&h)?
+        };
         self.reg_set(top, dst, Value::Object(new_obj.clone()));
-        let cls = new_obj.borrow().class;
-        if let Some(m) = self.lookup_method(cls, b"__clone") {
+        if let Some(m) = clone_m {
+            let cls = new_obj.borrow().class;
             self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
         }
         Ok(())
+    }
+
+    /// ZEND_CLONE's and clone()'s checks on the object: its type, an
+    /// uncloneable class, `__clone`'s visibility from `scope`. Gives the
+    /// object and its `__clone`.
+    fn clone_checks(
+        &mut self,
+        v: &Value,
+        scope: Option<ClassId>,
+    ) -> Result<(ObjectHandle, Option<classes::ResolvedMethod>), Thrown> {
+        let Value::Object(h) = v else {
+            return Err(Thrown::type_error(format!(
+                "clone(): Argument #1 ($object) must be of type object, {} given",
+                builtins::zval_type_name(self, v)
+            )));
+        };
+        let cls = h.borrow().class;
+        if self.uncloneable_class(cls) {
+            return Err(self.uncloneable_error(cls));
+        }
+        let m = self.lookup_method(cls, b"__clone");
+        if let Some(m) = &m {
+            if !self.method_accessible(m, scope) {
+                return Err(self.bad_method_call(m, b"__clone", scope));
+            }
+        }
+        Ok((h.clone(), m))
+    }
+
+    /// ZEND_FUNCTION(clone): `clone($object, $withProperties)` called as a
+    /// function. `__clone` runs first, then each of `with` is written to
+    /// the copy from the calling scope (zend_objects_clone_obj_with).
+    pub(crate) fn clone_with(&mut self, v: &Value, with: &PhpArray) -> Result<Value, Thrown> {
+        let top = self.stack.len() - 1;
+        let scope = self.stack.get(top).and_then(|f| f.defining_class);
+        let copy = if let Value::Closure(cd) = v {
+            clone_closure(cd)
+        } else {
+            let (h, clone_m) = self.clone_checks(v, scope)?;
+            let new_obj = if h.borrow().is_lazy() {
+                self.lazy_clone(&h)?
+            } else {
+                self.clone_members(&h)?
+            };
+            if let Some(m) = clone_m {
+                if !new_obj.borrow().is_lazy() {
+                    let cls = new_obj.borrow().class;
+                    self.call_sync(&m, Some(new_obj.clone()), cls, Vec::new())?;
+                }
+            }
+            Value::Object(new_obj)
+        };
+        if with.is_empty() {
+            return Ok(copy);
+        }
+        let called = self.stack.get(top).and_then(|f| f.called_class);
+        let strict = self.stack.get(top).is_some_and(|f| f.proto.strict_types);
+        let oid = match &copy {
+            Value::Object(h) => Some(h.borrow().id),
+            _ => None,
+        };
+        let saved = std::mem::replace(&mut self.clone_with_reinit, oid.map(|o| (o, Vec::new())));
+        let mut r = Ok(());
+        for (k, val) in with.iter() {
+            let val = match val {
+                Value::Ref(rc) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
+                Value::Ref(_) => {
+                    r = Err(Thrown::error(
+                        "Error",
+                        "Cannot assign by reference when cloning with updated properties",
+                    ));
+                    break;
+                }
+                v => v.clone(),
+            };
+            let name = match k {
+                ArrayKey::Str(s) => s.clone(),
+                ArrayKey::Int(n) => PhpStr::from_bytes(n.to_string().into_bytes()),
+            };
+            r = self.prop_store_as(top, copy.clone(), name, val, scope, called, strict);
+            if r.is_err() {
+                break;
+            }
+        }
+        self.clone_with_reinit = saved;
+        r.map(|()| copy)
+    }
+
+    /// "Trying to clone an uncloneable object of class C".
+    fn uncloneable_error(&self, cls: ClassId) -> Thrown {
+        Thrown::error(
+            "Error",
+            format!(
+                "Trying to clone an uncloneable object of class {}",
+                String::from_utf8_lossy(self.class(cls).name.as_bytes())
+            ),
+        )
     }
 
     /// zend_objects_clone_obj without `__clone`: a new object with copies
@@ -1181,13 +1309,7 @@ impl Vm {
             (od.class, props)
         };
         if self.uncloneable_class(cls) {
-            return Err(Thrown::error(
-                "Error",
-                format!(
-                    "Trying to clone an uncloneable object of class {}",
-                    String::from_utf8_lossy(self.class(cls).name.as_bytes())
-                ),
-            ));
+            return Err(self.uncloneable_error(cls));
         }
         let id = self.alloc_object_id();
         // The clone keeps the property slots' unset flags.
@@ -1203,6 +1325,20 @@ impl Vm {
         }
         Ok(new_obj)
     }
+}
+
+/// A cloned closure is a new Closure object.
+fn clone_closure(cd: &rhp_values::ClosureData) -> Value {
+    Value::Closure(Rc::new(rhp_values::ClosureData {
+        fnidx: cd.fnidx,
+        captures: cd.captures.iter().map(Value::copy_slot).collect(),
+        bound_this: cd.bound_this.clone(),
+        bound_class: cd.bound_class,
+        bound_static: cd.bound_static,
+        wrapped: cd.wrapped.clone(),
+        id: rhp_values::alloc_object_id(),
+        statics: cd.statics_copy(),
+    }))
 }
 
 /// A public readonly property without an explicit set visibility (php 8.4

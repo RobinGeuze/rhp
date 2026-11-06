@@ -60,6 +60,17 @@ pub(crate) fn modifiers_set_visibility(
     (rank(set) > rank(read)).then_some(set)
 }
 
+/// [`modifiers_set_visibility`], plus an explicit `public(set)` on a
+/// readonly property (which is otherwise implicitly protected(set)).
+pub(crate) fn readonly_set_visibility(
+    mods: &crate::parse::cst::Sequence<Modifier>,
+    readonly: bool,
+) -> Option<Visibility> {
+    let public_set = || mods.iter().any(|m| matches!(m, Modifier::PublicSet(_)));
+    modifiers_set_visibility(mods)
+        .or_else(|| (readonly && public_set()).then_some(Visibility::Public))
+}
+
 pub(crate) fn has_modifier(
     mods: &crate::parse::cst::Sequence<Modifier>,
     want: fn(&Modifier) -> bool,
@@ -1006,9 +1017,10 @@ fn compile_property(
     class_name: &PhpStr,
 ) -> Result<(), Thrown> {
     let visibility = modifiers_visibility(p.modifiers);
-    let set_visibility = modifiers_set_visibility(p.modifiers);
     let is_static = has_modifier(p.modifiers, |m| matches!(m, Modifier::Static(_)));
     let is_readonly = has_modifier(p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+    let set_visibility =
+        readonly_set_visibility(p.modifiers, is_readonly || cx.in_readonly_class.get());
     let is_final = has_modifier(p.modifiers, |m| matches!(m, Modifier::Final(_)));
     let mut is_abstract = has_modifier(p.modifiers, |m| matches!(m, Modifier::Abstract(_)));
     let in_interface = cx.in_interface.get();

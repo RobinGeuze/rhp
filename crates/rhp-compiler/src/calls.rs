@@ -60,7 +60,21 @@ impl ProtoBuilder<'_> {
         };
         // Resolve the (possibly namespaced) callee to a primary name + optional
         // global fallback (PHP's fall-back-to-global for unqualified calls).
-        let (name_bytes, fallback) = self.cx.resolve_name(callee_id, NameKind::Func);
+        // `clone(...)` always names the global clone() (ZEND_NAME_FQ).
+        let (name_bytes, fallback) = if is_clone_name(callee_id) {
+            if let [Argument::Positional(p)] = fc.argument_list.arguments.nodes {
+                if p.ellipsis.is_none() {
+                    // zend_compile_func_clone: ZEND_CLONE.
+                    let src = self.compile_expr(p.value)?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CloneObj { dst, src });
+                    return Ok(dst);
+                }
+            }
+            (b"clone".to_vec(), None)
+        } else {
+            self.cx.resolve_name(callee_id, NameKind::Func)
+        };
 
         // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
         // args into an array, emit CallV (the VM places named arguments).
@@ -611,6 +625,7 @@ impl ProtoBuilder<'_> {
                 {
                     self.load_string_const(b"exit")
                 }
+                Expression::Identifier(id) if is_clone_name(id) => self.load_string_const(b"clone"),
                 Expression::Identifier(id) => {
                     let (n, ns) = self.resolve_callable_name(id);
                     ns_name = ns;
@@ -1598,4 +1613,138 @@ pub(crate) fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
         b"preg_replace" | b"str_replace" => argc == 3,
         _ => false,
     }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_pipe: `$x |> f(...)` is the call `f($x)`, `$x |> $expr`
+    /// is `($expr)($x)`. The operand runs first, copied to a temporary so
+    /// a by-reference parameter refuses it.
+    pub(crate) fn compile_pipe(&mut self, p: &crate::parse::cst::Pipe) -> Result<Reg, Thrown> {
+        use crate::parse::cst::{
+            ArgumentList, Call, FunctionCall, Keyword, MethodCall, PartialApplication as Pa,
+            PositionalArgument, StaticMethodCall, TokenSeparatedSequence,
+        };
+        if let Expression::ArrowFunction(_) = p.callable {
+            return Err(compile_error(
+                "Arrow functions on the right hand side of |> must be parenthesized",
+                self.cur_line,
+            ));
+        }
+        let operand = self.compile_expr(p.input)?;
+        let operand = if operand < self.num_cvs {
+            let t = self.alloc_temp();
+            self.emit(Instr::Mov {
+                dst: t,
+                src: operand,
+            });
+            t
+        } else {
+            operand
+        };
+        // Stand-ins for already computed values: compile_expr hands back
+        // the register bound to the node's address.
+        let span = p.input.span();
+        let arg_expr = Expression::Static(Keyword {
+            span,
+            value: b"static",
+        });
+        let args = [Argument::Positional(PositionalArgument {
+            ellipsis: None,
+            value: &arg_expr,
+        })];
+        let callable = unparen(p.callable);
+        let list = |left_parenthesis, right_parenthesis| ArgumentList {
+            left_parenthesis,
+            arguments: TokenSeparatedSequence {
+                nodes: &args,
+                tokens: &[],
+            },
+            right_parenthesis,
+        };
+        let mark = self.expr_regs.len();
+        self.expr_regs
+            .push((&arg_expr as *const Expression as usize, operand));
+        let callee_expr;
+        let call = match callable {
+            Expression::PartialApplication(Pa::Function(f))
+                if pa_is_fcc(callable)
+                    && !matches!(f.function, Expression::Identifier(id)
+                        if id.value().strip_prefix(b"\\").unwrap_or(id.value()).eq_ignore_ascii_case(b"assert")) =>
+            {
+                Call::Function(FunctionCall {
+                    function: f.function,
+                    argument_list: list(
+                        f.argument_list.left_parenthesis,
+                        f.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            Expression::PartialApplication(Pa::StaticMethod(s)) if pa_is_fcc(callable) => {
+                Call::StaticMethod(StaticMethodCall {
+                    class: s.class,
+                    double_colon: s.double_colon,
+                    method: s.method.clone(),
+                    argument_list: list(
+                        s.argument_list.left_parenthesis,
+                        s.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            Expression::PartialApplication(Pa::Method(m)) if pa_is_fcc(callable) => {
+                Call::Method(MethodCall {
+                    object: m.object,
+                    arrow: m.arrow,
+                    method: m.method.clone(),
+                    argument_list: list(
+                        m.argument_list.left_parenthesis,
+                        m.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            other => {
+                let callee = match self.compile_expr(other) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.expr_regs.truncate(mark);
+                        return Err(e);
+                    }
+                };
+                callee_expr = Expression::Static(Keyword {
+                    span: other.span(),
+                    value: b"static",
+                });
+                self.expr_regs
+                    .push((&callee_expr as *const Expression as usize, callee));
+                Call::Function(FunctionCall {
+                    function: &callee_expr,
+                    argument_list: list(other.span(), other.span()),
+                })
+            }
+        };
+        let at = match &call {
+            Call::Function(fc) => fc.function.span(),
+            Call::Method(mc) => mc.method.span(),
+            Call::NullSafeMethod(mc) => mc.method.span(),
+            Call::StaticMethod(smc) => smc.method.span(),
+        };
+        self.call_lines.push(self.cx.line_of(at.start.offset));
+        let r = self.compile_call(&call);
+        self.call_lines.pop();
+        self.expr_regs.truncate(mark);
+        r
+    }
+}
+
+/// `clone` as mago gives it for `clone(...)` (a local name), or `\clone`.
+fn is_clone_name(id: &Identifier) -> bool {
+    match id {
+        Identifier::Local(l) => l.value.eq_ignore_ascii_case(b"clone"),
+        Identifier::FullyQualified(f) => f.value.eq_ignore_ascii_case(b"\\clone"),
+        Identifier::Qualified(_) => false,
+    }
+}
+
+/// `f(...)`: a partial application with only the variadic placeholder.
+fn pa_is_fcc(e: &Expression) -> bool {
+    matches!(e, Expression::PartialApplication(pa) if pa.is_first_class_callable())
 }

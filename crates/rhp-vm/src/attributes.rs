@@ -108,8 +108,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
         let deprecated = proto.flags.contains(ProtoFlags::DEPRECATED);
-        let nodiscard =
-            proto.flags.contains(ProtoFlags::NODISCARD) && self.caller_discards();
+        let nodiscard = proto.flags.contains(ProtoFlags::NODISCARD) && self.caller_discards();
         if !deprecated && !nodiscard {
             return Ok(());
         }
@@ -207,7 +206,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let mut key = format!("{class}::").into_bytes();
         key.extend_from_slice(name);
-        if self.const_guard.iter().any(|k| *k == key) {
+        if self.const_guard.contains(&key) {
             return Ok(());
         }
         self.const_guard.push(key);

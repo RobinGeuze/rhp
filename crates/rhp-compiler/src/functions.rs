@@ -266,7 +266,13 @@ pub(crate) fn compile_function(
         func.function.span.start.offset,
         span_of(func).1,
     )?;
-    crate::attrs::apply_fn_flags(cx, &mut proto, false, false, func.function.span.start.offset);
+    crate::attrs::apply_fn_flags(
+        cx,
+        &mut proto,
+        false,
+        false,
+        func.function.span.start.offset,
+    );
     Ok(proto)
 }
 

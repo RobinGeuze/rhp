@@ -1,0 +1,23 @@
+1
+[512] The return value of function nd() should either be used or intentionally ignored by casting it as (void), keep it (line 16)
+[512] The return value of function nd() should either be used or intentionally ignored by casting it as (void), keep it (line 18)
+[512] The return value of function nd() should either be used or intentionally ignored by casting it as (void), keep it (line 19)
+[512] The return value of function nd() should either be used or intentionally ignored by casting it as (void), keep it (line 23)
+[2] The return value of method DateTimeImmutable::modify() should either be used or intentionally ignored by casting it as (void), as DateTimeImmutable::modify() does not modify the object itself (line 27)
+2000-01-02
+[16384] Function dep() is deprecated since 1.2 (line 32)
+[16384] Function dep() is deprecated since 1.2 (line 33)
+deprecated
+[16384] Constant OLD is deprecated, use OTHER (line 38)
+1
+defined
+bool(true)
+[8192] Constant FILE_TEXT is deprecated since 8.1, as the constant has no effect (line 41)
+0
+[16384] Constant K::A is deprecated (line 51)
+1
+[16384] Method K::m() is deprecated, named (line 53)
+SensitiveParameterValue
+x
+Exception: Serialization of 'SensitiveParameterValue' is not allowed
+caught dtor

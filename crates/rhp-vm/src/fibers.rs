@@ -508,6 +508,34 @@ impl Vm {
         input.value
     }
 
+    /// zend_get_executed_filename/lineno past the running fiber's bottom
+    /// frame (php links it to the resumer's frame): the innermost user
+    /// frame of the resumers' contexts, its file and line, and whether it
+    /// is the shutdown scope (no user frame in php).
+    pub(crate) fn fiber_resumer_site(&self) -> Option<(Vec<u8>, u32, bool)> {
+        use rhp_bytecode::ProtoFlags as F;
+        let mut cur = self.active_fiber.clone();
+        while let Some(h) = cur {
+            let cell = h.borrow().payload::<FiberCell>()?;
+            let d = cell.borrow();
+            let ctx = d.ctx.as_ref()?;
+            let user = ctx
+                .stack
+                .iter()
+                .rev()
+                .find(|f| !f.proto.is_internal() && !f.proto.flags.contains(F::CONST_EXPR));
+            if let Some(f) = user {
+                return Some((
+                    f.proto.debug.file.as_bytes().to_vec(),
+                    crate::errors::frame_line(f),
+                    f.proto.flags.contains(F::SHUTDOWN_SCOPE),
+                ));
+            }
+            cur = d.prev.clone();
+        }
+        None
+    }
+
     /// The trace frames of the contexts below the running fiber: each
     /// resumer's, innermost first (zend_fetch_debug_backtrace following
     /// the fiber's bottom frame to the resumer).

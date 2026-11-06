@@ -8,7 +8,7 @@ use rhp_bytecode::{FunctionProto, Instr};
 use rhp_values::{conv, ArrayKey, ClassId, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, is_handler_accessor};
-use crate::{deref, ini_bool, Vm};
+use crate::{deref, ini_bool, Frame, Vm};
 
 /// PG(display_errors) (main.c php_get_display_errors_mode).
 pub(crate) enum DisplayErrors {
@@ -168,7 +168,11 @@ impl Vm {
             .find(|&i| !self.stack[i].proto.is_internal() && !self.is_const_expr_frame(i))
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
-            None => (Vec::new(), 0),
+            None => match self.fiber_resumer_site() {
+                Some((_, _, true)) => (b"Unknown".to_vec(), 0),
+                Some((file, line, false)) => (file, line as i64),
+                None => (Vec::new(), 0),
+            },
             // The user exception handler's call: php has no frame there.
             Some(i)
                 if self.stack[i]
@@ -294,16 +298,7 @@ impl Vm {
 
     /// Source line of the instruction currently executing in frame `top`.
     pub(crate) fn current_line(&self, top: usize) -> u32 {
-        let f = &self.stack[top];
-        let pc = f.pc.saturating_sub(1) as u32;
-        let lines = &f.proto.debug.lines;
-        // Largest (pc,line) entry whose pc <= the current pc.
-        let idx = lines.partition_point(|(p, _)| *p <= pc);
-        if idx == 0 {
-            0
-        } else {
-            lines[idx - 1].1
-        }
+        frame_line(&self.stack[top])
     }
 
     /// The source file name of frame `top` (for exception getFile()).
@@ -422,7 +417,10 @@ impl Vm {
             .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
         {
             Some(i) => (self.current_file(i), self.current_line(i)),
-            None => (b"[no active file]".to_vec(), 0),
+            None => match self.fiber_resumer_site() {
+                Some((file, line, false)) => (file, line),
+                _ => (b"[no active file]".to_vec(), 0),
+            },
         }
     }
 
@@ -1538,4 +1536,17 @@ pub(crate) fn enclosing_finally(
         let holds = |p: u32| p >= r.start && p < r.end;
         (holds(pc) && !target.is_some_and(holds)).then_some(f)
     })
+}
+
+/// The current line of frame `f`.
+pub(crate) fn frame_line(f: &Frame) -> u32 {
+    let pc = f.pc.saturating_sub(1) as u32;
+    let lines = &f.proto.debug.lines;
+    // Largest (pc,line) entry whose pc <= the current pc.
+    let idx = lines.partition_point(|(p, _)| *p <= pc);
+    if idx == 0 {
+        0
+    } else {
+        lines[idx - 1].1
+    }
 }

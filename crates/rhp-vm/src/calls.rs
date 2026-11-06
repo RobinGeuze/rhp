@@ -1068,9 +1068,6 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        // zend_call_function's stack limit check (a nested run takes
-        // machine stack).
-        rhp_builtins::zend::call_stack::check()?;
         let proto = f.proto;
         let mut frame = Frame::new(proto.clone(), f.unit, 0);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
@@ -1086,6 +1083,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
@@ -1107,6 +1105,19 @@ impl Vm {
         }
     }
 
+    /// zend_execute_ex's stack limit check for the frame just pushed by a
+    /// nested run (a nested run takes machine stack): the Error is raised
+    /// in that frame before its first instruction, so its trace shows the
+    /// frame and no `catch` in it applies.
+    fn check_stack_limit_entered(&mut self) -> Result<(), Thrown> {
+        if !rhp_builtins::zend::call_stack::overflowed() {
+            return Ok(());
+        }
+        let t = self.materialize(rhp_builtins::zend::call_stack::size_error(), None);
+        self.stack.pop();
+        Err(t)
+    }
+
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
     /// after) and drive it to completion (re-entrant; exceptions handled within).
     pub(crate) fn run_closure_sync(
@@ -1118,9 +1129,6 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
-        // zend_call_function's stack limit check (a nested run takes
-        // machine stack).
-        rhp_builtins::zend::call_stack::check()?;
         let f = &self.closures[cd.fnidx as usize];
         let proto = f.proto.clone();
         let mut frame = Frame::new(proto.clone(), f.unit, 0);
@@ -1143,6 +1151,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),

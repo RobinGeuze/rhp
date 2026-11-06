@@ -1,0 +1,5 @@
+ArgumentCountError line 5: strlen() expects exactly 1 argument, 0 given
+line 7: str_repeat(): Argument #2 ($times) must be greater than or equal to 0
+line 11: {closure}(): Argument #1 ($r) must be passed by reference, value given
+int(1)
+line 18, 2 frames: Maximum call stack size of N bytes (zend.max_allowed_stack_size - zend.reserved_stack_size) reached. Infinite recursion?

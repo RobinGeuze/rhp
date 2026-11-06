@@ -31,7 +31,9 @@ A fiber's stack starts with an internal bottom frame (php's
 zend_fiber_function): what it calls is called from `[internal function]`.
 Backtraces walk the running stack, then each resumer's (`fiber_trace_tail`,
 following `FiberData::prev`), as zend_fetch_debug_backtrace follows the
-fiber's bottom frame to the frame that resumed it.
+fiber's bottom frame to the frame that resumed it. An error raised while the fiber's
+stack has no user frame yet (the callable is a builtin, or its arguments
+fail to bind) is reported at the resumer's line (`fiber_resumer_site`).
 
 ## The switch
 

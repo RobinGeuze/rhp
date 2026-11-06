@@ -1109,13 +1109,20 @@ impl Vm {
     /// nested run (a nested run takes machine stack): the Error is raised
     /// in that frame before its first instruction, so its trace shows the
     /// frame and no `catch` in it applies.
+    #[inline(always)]
     fn check_stack_limit_entered(&mut self) -> Result<(), Thrown> {
-        if !rhp_builtins::zend::call_stack::overflowed() {
-            return Ok(());
+        if rhp_builtins::zend::call_stack::overflowed() {
+            return Err(self.stack_limit_entered_error());
         }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn stack_limit_entered_error(&mut self) -> Thrown {
         let t = self.materialize(rhp_builtins::zend::call_stack::size_error(), None);
         self.stack.pop();
-        Err(t)
+        t
     }
 
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params

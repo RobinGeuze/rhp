@@ -12,3 +12,9 @@
 </span><span style="color: #007700">__halt_compiler();
 </span><span style="color: #0000BB">rest of the file </span><span style="color: #DD0000">"x
 </span></code></pre>
+string(0) ""
+string(47) "<pre><code style="color: #000000"></code></pre>"
+string(0) ""
+string(47) "<pre><code style="color: #000000"></code></pre>"
+string(8) "<?php 2;"
+string(130) "<pre><code style="color: #000000"><span style="color: #0000BB">&lt;?php 2</span><span style="color: #007700">;</span></code></pre>"

@@ -168,12 +168,11 @@ pub fn skip_shebang(src: &[u8]) -> &[u8] {
     if !src.starts_with(b"#!") {
         return src;
     }
-    // `"#!" .* {NEWLINE}`, longest match: `.` is anything but "\n".
+    // `"#!" .* {NEWLINE}`, where `.` is anything but "\n": the scanner
+    // reads on to a "\n", and without one it hits the end (YYFILL) and the
+    // file scans as nothing.
     match src.iter().position(|&c| c == b'\n') {
         Some(i) => &src[i + 1..],
-        None => match src.iter().rposition(|&c| c == b'\r') {
-            Some(i) => &src[i + 1..],
-            None => src,
-        },
+        None => &[],
     }
 }

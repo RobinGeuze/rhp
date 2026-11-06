@@ -15,11 +15,11 @@ var_dump(clone(object: $p, withProperties: ['a' => 'A']));
 var_dump($p->with(['b' => 'B', 'c' => 'C', 'r' => 11]));
 try { clone($p, ['r' => 12]); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 try { clone($p, ['b' => 'x']); } catch (Error $e) { echo $e->getMessage(), "\n"; }
-var_dump(array_map('clone', [new ArrayObject([1])]));
+var_dump(array_map('clone', [new ArrayObject([1])])[0]->count());
 var_dump(call_user_func('clone', $p, ['a' => 'cuf'])->a);
 $f = clone(...);
 var_dump($f($p)->a);
-var_dump(clone($p, [])->a);
+var_dump((clone($p, []))->a);
 
 // integer keys become property names
 var_dump(clone(new stdClass, [5 => 'five', 'x' => 'ex']));

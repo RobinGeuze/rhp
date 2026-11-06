@@ -1,2 +1,56 @@
-
-Parse error: syntax error, unexpected token "->", expecting ")" in /Users/robing/gits/rhp/.claude/worktrees/rest/php85-syntax/tests/golden/oop/clone_function.php on line 22
+__clone
+object(P)#2 (4) {
+  ["a"]=>
+  string(1) "A"
+  ["b":protected]=>
+  int(2)
+  ["c":"P":private]=>
+  int(3)
+  ["r"]=>
+  int(10)
+}
+__clone
+object(P)#2 (4) {
+  ["a"]=>
+  int(1)
+  ["b":protected]=>
+  string(1) "B"
+  ["c":"P":private]=>
+  string(1) "C"
+  ["r"]=>
+  int(11)
+}
+__clone
+Cannot modify protected(set) readonly property P::$r from global scope
+__clone
+Cannot access protected property P::$b
+int(1)
+__clone
+string(3) "cuf"
+__clone
+int(1)
+__clone
+int(1)
+object(stdClass)#5 (2) {
+  ["5"]=>
+  string(4) "five"
+  ["x"]=>
+  string(2) "ex"
+}
+clone(): Argument #1 ($object) must be of type object, null given
+clone(): Argument #1 ($object) must be of type object, int given
+clone(): Argument #1 ($object) must be of type object, string given
+clone(): Argument #1 ($object) must be of type object, array given
+clone(): Argument #2 ($withProperties) must be of type array, string given
+clone() expects at least 1 argument, 0 given
+Call to private method Priv::__clone() from global scope
+Call to private method Priv::__clone() from global scope
+bool(true)
+Cannot create dynamic property Closure::$p
+Cannot modify protected(set) readonly property RO::$y from global scope
+object(RO)#5 (1) {
+  ["x"]=>
+  int(1)
+  ["y"]=>
+  uninitialized(int)
+}

@@ -14,6 +14,7 @@ pub(crate) mod ini_parser;
 #[rustfmt::skip]
 pub mod ini_parser_tables;
 pub(crate) mod ini_scanner;
+pub mod internal_iterator;
 mod language_parser;
 pub mod multibyte;
 #[rustfmt::skip]
@@ -22,6 +23,7 @@ pub mod object_handlers;
 pub mod operators;
 pub mod timeout;
 pub mod virtual_cwd;
+pub mod weakrefs;
 pub(crate) mod zpp;
 
 pub use language_parser::{syntax_error, syntax_error_ex, take_parse_warnings, ParseFailure};

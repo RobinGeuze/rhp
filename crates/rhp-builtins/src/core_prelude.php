@@ -39,6 +39,27 @@ interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
 class stdClass {}
 final class __PHP_Incomplete_Class {}
+final class InternalIterator implements Iterator {
+    private function __construct() {}
+    public function current(): mixed { return __internal_iterator($this, 'current'); }
+    public function key(): mixed { return __internal_iterator($this, 'key'); }
+    public function next(): void { __internal_iterator($this, 'next'); }
+    public function valid(): bool { return __internal_iterator($this, 'valid'); }
+    public function rewind(): void { __internal_iterator($this, 'rewind'); }
+}
+final class WeakReference {
+    public function __construct() { __weakref('construct'); }
+    public static function create(object $object): WeakReference { return __weakref('create', $object); }
+    public function get(): ?object { return __weakref('get', $this); }
+}
+final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
+    public function offsetGet($object): mixed { return __weakmap('get', $this, $object); }
+    public function offsetSet($object, mixed $value): void { __weakmap('set', $this, $object, $value); }
+    public function offsetExists($object): bool { return __weakmap('exists', $this, $object); }
+    public function offsetUnset($object): void { __weakmap('unset', $this, $object); }
+    public function count(): int { return __weakmap('count', $this); }
+    public function getIterator(): Iterator { return __weakmap('iterator', $this); }
+}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
     public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }

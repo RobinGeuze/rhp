@@ -37,6 +37,8 @@ fn core() -> ModuleDef {
             zend::builtin_functions::register(m);
             zend::exceptions::register(m);
             zend::closures::register(m);
+            zend::internal_iterator::register(m);
+            zend::weakrefs::register_functions(m);
             zend::zpp::register(m);
         },
         constants: || {
@@ -52,6 +54,7 @@ fn core() -> ModuleDef {
         wrappers: no_wrappers,
         reset: || {
             zend::virtual_cwd::reset_state();
+            zend::weakrefs::reset();
             main::reset_state();
         },
         object_freed: None,

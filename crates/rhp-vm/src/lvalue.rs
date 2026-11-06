@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
+use rhp_builtins::zend::object_handlers::DimType;
 use rhp_bytecode::{Reg, TypeKind};
 use rhp_values::{
     conv, ArrayKey, ClassId, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -953,6 +954,13 @@ impl Vm {
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    if let Some(d) = self.handlers_of(&h).and_then(|t| t.dimension) {
+                        (d.write)(self, &h, aa_key_opt(&steps[i]).as_ref(), v)?;
+                        if !self.destructibles.is_empty() {
+                            self.dtor_check = true;
+                        }
+                        return Ok(());
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetset") {
                         self.call_sync(&m, Some(h), cls, vec![key, v])?;
@@ -1234,6 +1242,13 @@ impl Vm {
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    if let Some(d) = self.handlers_of(&h).and_then(|t| t.dimension) {
+                        (d.unset)(self, &h, &key)?;
+                        if !self.destructibles.is_empty() {
+                            self.dtor_check = true;
+                        }
+                        return Ok(());
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
                         self.call_sync(&m, Some(h), cls, vec![key])?;
@@ -1342,6 +1357,9 @@ impl Vm {
 
     /// `offsetGet($key)` on an ArrayAccess object.
     pub(crate) fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            return Ok((d.read)(self, h, Some(&key), DimType::R)?.unwrap_or(Value::Null));
+        }
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"offsetget") {
             Some(m) => self.call_sync(&m, Some(h.clone()), cls, vec![key]),
@@ -1355,6 +1373,9 @@ impl Vm {
         h: &ObjectHandle,
         key: Value,
     ) -> Result<bool, Thrown> {
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            return (d.has)(self, h, &key, false);
+        }
         let cls = h.borrow().class;
         let m = self.lookup_method(cls, b"offsetexists").unwrap();
         let r = self.call_sync(&m, Some(h.clone()), cls, vec![key])?;
@@ -1509,6 +1530,24 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
             return Ok(cell);
+        }
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            let ty = match mode {
+                DimFetch::W => DimType::W,
+                DimFetch::Rw => DimType::Rw,
+                DimFetch::Unset => DimType::Unset,
+            };
+            let got = (d.read)(self, h, aa_key_opt(step).as_ref(), ty)?;
+            return Ok(match got {
+                Some(Value::Ref(rc)) => rc,
+                other => {
+                    let other = other.unwrap_or(Value::Null);
+                    if !matches!(other, Value::Object(_) | Value::Closure(_)) {
+                        self.indirect_overloaded_notice(h)?;
+                    }
+                    Rc::new(RefCell::new(other))
+                }
+            });
         }
         let fetch = match mode {
             DimFetch::W | DimFetch::Rw => builtins::MagicFetch::Write,
@@ -2314,6 +2353,15 @@ pub(crate) fn cannot_add_element() -> Thrown {
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
 /// (`$obj[] = v` calls offsetSet(null, v)); `Prop` is not array access.
+/// The offset of an ArrayAccess step for a native dimension handler:
+/// `None` for `[]`.
+pub(crate) fn aa_key_opt(step: &CursorStep) -> Option<Value> {
+    match step {
+        CursorStep::Key(k) => Some(k.clone()),
+        _ => None,
+    }
+}
+
 pub(crate) fn aa_key(step: &CursorStep) -> Option<Value> {
     match step {
         CursorStep::Key(k) => Some(k.clone()),

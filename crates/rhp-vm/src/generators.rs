@@ -53,6 +53,11 @@ impl Vm {
             id,
             indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
         )));
+        // php's generator holds its Closure until the generator object is
+        // freed, also after it finished: the object's payload keeps it.
+        if let Some(c) = frame.closure.clone() {
+            obj.borrow_mut().set_payload(Rc::new(c));
+        }
         self.generators.insert(
             id,
             GenState {

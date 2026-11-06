@@ -64,6 +64,8 @@ impl Vm {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
         rhp_values::set_object_free_hook(builtins::object_freed);
+        rhp_values::set_weak_notify_hook(builtins::zend::weakrefs::notify);
+        builtins::zend::weakrefs::reset();
         Vm {
             prop_guards: Default::default(),
             pending_magic_fetch: Default::default(),

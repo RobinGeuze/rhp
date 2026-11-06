@@ -437,8 +437,19 @@ impl Drop for Frame {
     fn drop(&mut self) {
         // php frees a frame's variables, then its `$this`: the handles come
         // back in that order. Each may become a possible root of a cycle.
-        let n = (self.proto.num_cvs as usize).min(self.regs.len());
-        for v in &self.regs[..n] {
+        // A prelude function is internal in php: no variables to release.
+        let n = if self.proto.is_internal() {
+            0
+        } else {
+            (self.proto.num_cvs as usize).min(self.regs.len())
+        };
+        let this = self.proto.this_cv.map_or(usize::MAX, usize::from);
+        for (i, v) in self.regs[..n].iter().enumerate() {
+            if i != this {
+                rhp_values::gc::possible_root(v);
+            }
+        }
+        if let Some(v) = self.regs.get(this) {
             rhp_values::gc::possible_root(v);
         }
         if let Some(cv) = self.proto.this_cv {

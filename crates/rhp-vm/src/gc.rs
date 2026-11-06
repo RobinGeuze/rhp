@@ -146,6 +146,7 @@ impl Vm {
         if gc::active() {
             return Ok(0);
         }
+        self.drop_freed_generators();
         let mut total = 0;
         let mut did_rerun = false;
         // Objects whose destructor left them unreferenced: php leaves them
@@ -162,6 +163,11 @@ impl Vm {
             let run = match run {
                 Ok(r) => r,
                 Err(e) => {
+                    // An exit from a destructor: what is left stays buffered
+                    // as roots.
+                    for k in 0..gc::slots().len() as u32 {
+                        gc::retag(FIRST_ROOT + k, Slot::Root);
+                    }
                     gc::set_active(false);
                     return Err(e);
                 }

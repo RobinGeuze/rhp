@@ -10,6 +10,32 @@ use crate::calls::native_method_count_error;
 use crate::errors::UnwindResult;
 use crate::{deref, Frame, Vm};
 
+thread_local! {
+    /// Handles freed while generators exist: a freed generator's state is
+    /// dropped at the next [`Vm::drop_freed_generators`].
+    static FREED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static WATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The engine's object free hook: the builtins' per-handle state, and the
+/// handle noted for the generator table.
+pub(crate) fn object_freed(id: u32) {
+    rhp_builtins::object_freed(id);
+    if WATCH.try_with(|w| w.get()).unwrap_or(false) {
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.push(id);
+            }
+        });
+    }
+}
+
+/// A new engine: nothing noted.
+pub(crate) fn reset_freed() {
+    let _ = WATCH.try_with(|w| w.set(false));
+    let _ = FREED.try_with(|f| f.borrow_mut().clear());
+}
+
 /// Status of a generator.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum GenStatus {
@@ -53,6 +79,7 @@ impl Vm {
             id,
             indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
         )));
+        WATCH.with(|w| w.set(true));
         self.generators.insert(
             id,
             GenState {
@@ -309,6 +336,44 @@ impl Vm {
 }
 
 impl Vm {
+    /// Drop the state of generators whose object was freed (php frees the
+    /// frame with the generator; its variables are released then).
+    pub(crate) fn drop_freed_generators(&mut self) {
+        let ids = FREED.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *f)
+            }
+        });
+        for id in ids {
+            if let Some(g) = self.generators.get(&id) {
+                if g.status != GenStatus::Running {
+                    if let Some(g) = self.generators.remove(&id) {
+                        if let Some(f) = &g.frame {
+                            self.forget_unfinished_news(f);
+                        }
+                        drop(g);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A suspended frame is destroyed: objects whose `new` had not called
+    /// the constructor yet are never destructed (zend_cleanup_unfinished_calls).
+    fn forget_unfinished_news(&mut self, f: &Frame) {
+        let pc = f.pc as u32;
+        for &(start, end, dst) in &f.proto.new_ranges {
+            if pc > start && pc < end {
+                if let Some(Value::Object(h)) = f.regs.get(dst as usize) {
+                    self.destructibles.retain(|d| !Rc::ptr_eq(d, h));
+                }
+            }
+        }
+    }
+
     /// The values generator `id`'s state holds (zend_generator_get_gc):
     /// the suspended frame's registers and the current and returned values.
     pub(crate) fn gen_gc_children(&self, id: u32, out: &mut Vec<Value>) {
@@ -340,6 +405,12 @@ impl Vm {
         }
         let frame = g.frame.take();
         g.status = GenStatus::Finished;
+        if let Some(f) = &frame {
+            self.forget_unfinished_news(f);
+        }
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
         let cur = (
             std::mem::replace(&mut g.current_key, Value::Null),
             std::mem::replace(&mut g.current_val, Value::Null),
@@ -355,7 +426,11 @@ impl Vm {
         if g.status == GenStatus::Running {
             return None;
         }
-        self.generators.remove(&id)
+        let g = self.generators.remove(&id)?;
+        if let Some(f) = &g.frame {
+            self.forget_unfinished_news(f);
+        }
+        Some(g)
     }
 }
 

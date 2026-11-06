@@ -35,6 +35,7 @@ fn reset_request_state() {
     builtins::reset_request_state();
     rhp_values::handles::reset_object_ids();
     rhp_values::gc::reset();
+    crate::generators::reset_freed();
     crate::lvalue::reset_path_diags();
 }
 
@@ -64,7 +65,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
-        rhp_values::set_object_free_hook(builtins::object_freed);
+        rhp_values::set_object_free_hook(crate::generators::object_freed);
         Vm {
             prop_guards: Default::default(),
             pending_magic_fetch: Default::default(),
@@ -567,6 +568,7 @@ impl Vm {
     /// Destruct every tracked object nothing references any more (a full
     /// scan, repeated until no destructor releases further objects).
     pub(crate) fn collect_released_now(&mut self) -> Result<(), Thrown> {
+        self.drop_freed_generators();
         loop {
             if !self.destructibles.iter().any(|h| Rc::strong_count(h) == 1) {
                 return Ok(());

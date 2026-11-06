@@ -1372,6 +1372,22 @@ fn fn_mb_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 }
 
 /// `mb_strlen(string $string, ?string $encoding = null)`.
+/// `mb_parse_str($string, &$result)`: parse_str into `$result` (php's
+/// _php_mb_encoding_handler_ex; with mbstring.http_input's default "pass"
+/// the input is not converted). zend_try_array_init empties the result
+/// first.
+fn fn_mb_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = zpp::str_arg(host, args, 0, "mb_parse_str", "string")?;
+    if let Some(Value::Ref(r)) = args.get(1) {
+        let old = std::mem::replace(&mut *r.borrow_mut(), Value::Array(PhpArray::new()));
+        rhp_values::gc::possible_root(&old);
+        drop(old);
+        let out = crate::ext::standard::string::parse_query(host, s, "mb_parse_str")?;
+        *r.borrow_mut() = Value::Array(out);
+    }
+    Ok(Value::Bool(true))
+}
+
 fn fn_mb_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_strlen";
     let s = str_arg(host, args, 0, f)?;
@@ -2679,6 +2695,7 @@ pub fn register(m: &mut crate::Registry) {
             ("mb_substitute_character", fn_mb_substitute_character),
             ("mb_str_split", fn_mb_str_split),
             ("mb_strlen", fn_mb_strlen),
+            ("mb_parse_str", fn_mb_parse_str),
             ("mb_strpos", fn_mb_strpos),
             ("mb_strrpos", fn_mb_strrpos),
             ("mb_stripos", fn_mb_stripos),

@@ -86,8 +86,9 @@ holder does.
 
 - Generators: php's generator destructor runs pending `finally` blocks;
   rhp's only drops the frame.
-- Fibers: no destructor fiber (`gc_status()['running']` is true while
-  destructors run, as in php).
+- Fibers: no destructor fiber. A suspended fiber's frames must be added
+  to `Vm::gc_children` (as a generator's frame is) for a fiber in a cycle
+  to be collectable.
 - WeakMap entries: php's special edges (a WeakMap value kept alive only
   through its key) are not modelled; WeakMap / WeakReference hold strong
   references today.

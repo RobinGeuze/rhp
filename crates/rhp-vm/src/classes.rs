@@ -2354,6 +2354,7 @@ impl Vm {
     /// drops what the engine still keeps under it (a freed generator's
     /// state, a freed object's unset typed property flags).
     pub(crate) fn alloc_object_id(&mut self) -> u32 {
+        self.drop_freed_generators();
         let id = rhp_values::alloc_object_id();
         if !self.generators.is_empty() {
             drop(self.generators.remove(&id));

@@ -356,7 +356,7 @@ impl Vm {
         if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot {
             // A variable's old value (a temporary's goes without, as php's
             // zval_ptr_dtor_nogc).
-            if r < f.proto.num_cvs {
+            if r < f.proto.num_cvs && !f.proto.is_internal() {
                 rhp_values::gc::possible_root(slot);
             }
             if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_)) {
@@ -433,7 +433,9 @@ impl Vm {
         } else {
             std::mem::replace(slot, v)
         };
-        rhp_values::gc::possible_root(&old);
+        if !self.stack[top].proto.is_internal() {
+            rhp_values::gc::possible_root(&old);
+        }
         if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
             self.dtor_check = true;
         }

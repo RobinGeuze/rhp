@@ -114,7 +114,12 @@ fn fn_assert(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 None => return Err(description_type_error(host, &v)),
             }
         }
-        Some(v @ (Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_))) => {
+        Some(Value::Str(s)) => Some(s.as_bytes().to_vec()),
+        // Scalars convert in coercive mode only.
+        Some(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_))) => {
+            if host.caller_strict_types() {
+                return Err(description_type_error(host, &v));
+            }
             Some(conv::to_string_bytes(&v))
         }
         Some(v) => return Err(description_type_error(host, &v)),

@@ -20,3 +20,8 @@ t(function () use (&$v) { $s = new S(['k' => 0]); $s['k'] =& $v; });
 $ao = new ArrayObject([]);
 $ao[2.5]['x'] = 1;
 var_dump($ao->getArrayCopy());
+// an error handler may read the ArrayObject while the key converts
+set_error_handler(function ($no, $msg) use (&$ao2) { echo "handler sees ", count($ao2), "\n"; return true; });
+$ao2 = new ArrayObject([]);
+$ao2[1.5] =& $v;
+var_dump(count($ao2));

@@ -1062,7 +1062,7 @@ class ReflectionClassConstant implements Reflector {
         $s = $i['doc'] !== false ? $indent . $i['doc'] . "\n" : '';
         $type = ($i['type'] ?? null) !== null ? (string) Reflection::__type($i['type']) : match (true) {
             is_null($v) => 'null', is_bool($v) => 'bool', is_int($v) => 'int', is_float($v) => 'float',
-            is_string($v) => 'string', is_array($v) => 'array', default => 'object' };
+            is_string($v) => 'string', is_array($v) => 'array', default => get_class($v) };
         $s .= $indent . 'Constant [ ' . (($m & 32) ? 'final ' : '') . (($m & 4) ? 'private' : (($m & 2) ? 'protected' : 'public')) . ' ' . $type . ' ' . $this->name . ' ] { ';
         $s .= is_array($v) ? 'Array' : (is_object($v) ? 'Object' : (string) $v);
         return $s . " }\n";

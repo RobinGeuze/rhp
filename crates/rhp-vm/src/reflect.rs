@@ -1222,6 +1222,15 @@ impl Vm {
     /// `[class|object, method]` pair.
     fn fn_subject(&mut self, loc: &Value) -> Result<Option<FnSubject>, Thrown> {
         Ok(match loc {
+            // A `Class::method` string (a Closure::fromCallable() target).
+            Value::Str(n) if n.as_bytes().windows(2).any(|w| w == b"::") => {
+                let b = n.as_bytes();
+                let at = b.windows(2).position(|w| w == b"::").unwrap_or(0);
+                let mut pair = PhpArray::new();
+                pair.push(Value::str(b[..at].to_vec()));
+                pair.push(Value::str(b[at + 2..].to_vec()));
+                self.fn_subject(&Value::Array(pair))?
+            }
             Value::Str(n) => {
                 let name = n.as_bytes();
                 let name = name.strip_prefix(b"\\").unwrap_or(name);
@@ -1790,7 +1799,8 @@ impl Vm {
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();
-        put(&mut a, "ext", s(b"Core"));
+        // Registered with no module (zend_enum_register_funcs).
+        put(&mut a, "ext", Value::Bool(false));
         put(&mut a, "name", s(name.as_bytes()));
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));
@@ -1809,7 +1819,12 @@ impl Vm {
         put(&mut a, "modifiers", Value::Int(17));
         put(&mut a, "abstract", Value::Bool(false));
         put(&mut a, "final", Value::Bool(false));
-        put(&mut a, "prototype", Value::Null);
+        let iface: &[u8] = if name == "cases" {
+            b"UnitEnum"
+        } else {
+            b"BackedEnum"
+        };
+        put(&mut a, "prototype", s(iface));
         put(&mut a, "attrs", Value::Array(PhpArray::new()));
         put(&mut a, "tentative", Value::Null);
         let ret = match name {

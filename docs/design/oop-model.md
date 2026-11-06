@@ -524,6 +524,16 @@ are compiled into zero-param `Rc<FunctionProto>` thunks that run on the VM like
 any other proto, so there is **no second evaluator** — property/const/static
 initializers reuse the compiler and VM wholesale.
 
+Thunks (and attribute-argument thunks) carry `ProtoFlags::CONST_EXPR`. php
+evaluates initializers with no frame of its own (`zend_ast_evaluate`), so
+traces leave thunk frames out, and while one runs errors report its current
+line (each sub-expression is compiled with its own line) as php's
+`EG(filename_override)`/`EG(lineno_override)`. A trace built under the
+override starts with a `[constant expression]()` frame at the real execution
+point when that differs. A thunk that is just a global constant name
+(`CONST_EXPR_PLAIN`) sets no override, and an autoloader runs without one
+(`zend_lookup_class`).
+
 ---
 
 ## 6. Linking: compiler → `Vm` (flatten in dependency order)

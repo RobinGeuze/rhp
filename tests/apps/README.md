@@ -3,6 +3,8 @@
 Real, pinned framework applications that rhp is measured against: today a
 compile-only ratchet (`rhp-difftest lint`) and the request diff
 (`rhp-difftest app`: `rhp --cgi` against php-cgi).
+The pinned dev tools (PHPUnit, PHPStan, Psalm, PHP-CS-Fixer, Rector) are
+measured on their own fixture project by `tools.py`; see "Dev tools" below.
 
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|
@@ -36,8 +38,8 @@ line differs):
   "Copyright (c) Fabien Potencier". Its `composer.json` says `"MIT"` like
   upstream's (Flex's create-project had set `"proprietary"`).
 
-The fixture routes, controllers and templates, and the request corpora, are
-rhp's own.
+The fixture routes, controllers and templates, the request corpora and the
+dev-tool fixture project (`tools/project`) are rhp's own.
 
 ## Running
 
@@ -166,6 +168,57 @@ each engine compiles them.
    --candidate "$(command -v php-cgi)"` must report every request `SAME`.
 6. Commit the app files, the lockfile, the lists and the manifest entry. The CI
    matrix picks the new entry up automatically.
+
+## Dev tools (`tools.py`)
+
+PHPUnit, PHPStan, Psalm, PHP-CS-Fixer and Rector, run on a small fixture
+project under php and under rhp.
+
+```sh
+cargo build --release -p rhp-cli
+python3 tests/apps/tools.py setup                  # composer install in tools/project
+python3 tests/apps/tools.py diff                   # every tool; or name some: diff phpstan psalm
+python3 tests/apps/tools.py diff rector --only 5,6 # selected command numbers
+python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # self-check
+```
+
+- `tools/project/` is the fixture: four classes in `src/` with deliberate
+  issues (old array syntax, `strpos() !== false`, missing types, an unused
+  variable, a call to a missing method, a wrong `@return`, a possibly-null
+  call, badly formatted code), PHPUnit tests in `tests/` (12 tests: data
+  provider, expected exception, one skipped and one failing), and each tool's
+  configuration (`phpunit.xml`, `phpstan.neon`, `psalm.xml`,
+  `.php-cs-fixer.dist.php`, `rector.php`, plus `phpstan-parallel.neon`,
+  `.php-cs-fixer.parallel.php` and `rector-parallel.php` for runs with 2
+  parallel workers). All caches are configured into `var/`.
+- The tools are installed together: `composer.json` and `composer.lock` are
+  committed, and the lock pins each version. `vendor/` and `tools/work/` are
+  never committed.
+- `tools.toml` lists the commands per tool: `--version`, `list`/`help`, the
+  main analyse/test/fix commands with common flags, each output format and a
+  parallel run where the tool has one.
+- Each command runs on a fresh copy of the fixture in `tools/work/<tool>/`
+  (a clone of `vendor/` stays there), first under php, then under rhp, with
+  a fixed environment: `HOME` and `TMPDIR` inside the run directory, `TZ=UTC`,
+  `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, no CI variables,
+  stdin closed. A command is `SAME` when the exit code, stdout and stderr are
+  byte-identical after normalisation and the files it left in the project
+  (outside `vendor/` and `var/`) are identical too. Outputs and diffs are kept
+  in `tools/work/<tool>-out/`.
+
+Normalisation only masks what php itself varies from run to run (the
+self-check against php must report every command `SAME`), plus the engine's
+path:
+
+| rule | what it masks |
+|------|---------------|
+| `binary` | The engine binary's path (`PHP_BINARY`), which differs by construction |
+| `phpunit-time` | PHPUnit's `Time: 00:00.047, Memory: 18.00 MB` line |
+| `phpunit-event-time`, `phpunit-event-memory` | The timestamps and memory figures in `--log-events-text` |
+| `report-time`, `xml-time`, `xml-memory`, `json-time`, `json-memory` | Durations and memory figures in JUnit, TeamCity, XML and JSON reports |
+| `teamcity-flow` | TeamCity's `flowId`, the process id |
+| `progress-steps` | The intermediate steps of a Symfony progress bar (it redraws at most every 0.1 s); the first and last step are kept |
+| `elapsed`, `memory` | Any other `<number> s/ms/seconds` and `<number> MB/MiB/...`, as in "in 0.088 seconds, 18.00 MB memory used" |
 
 ## Findings recorded when the fixtures were created
 

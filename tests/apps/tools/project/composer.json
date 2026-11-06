@@ -1,0 +1,29 @@
+{
+    "name": "rhp/tools-fixture",
+    "description": "A small project that rhp runs PHP's dev tools on (tests/apps/tools.py)",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "phpstan/phpstan": "^2.3",
+        "phpunit/phpunit": "^13.4",
+        "rector/rector": "^2.8",
+        "vimeo/psalm": "^7.0"
+    }
+}

@@ -183,7 +183,7 @@ impl ProtoBuilder<'_> {
         for link in &links {
             keys.push(match link {
                 Link::Dim(k) => Sel::Dyn(self.compile_expr(k)?),
-                Link::Prop(s) => self.compile_selector(s)?,
+                Link::Prop(s) => self.compile_prop_selector(s)?,
             });
         }
         let mut cur = self.cv(base);
@@ -1204,7 +1204,7 @@ impl ProtoBuilder<'_> {
                     if let Some((object, property)) = prop {
                         let obj = self.compile_quiet(object)?;
                         let r = self.alloc_temp();
-                        match self.compile_selector(property)? {
+                        match self.compile_prop_selector(property)? {
                             Sel::Static(name) => self.emit(Instr::IssetProp { dst: r, obj, name }),
                             Sel::Dyn(name) => self.emit(Instr::IssetPropDyn { dst: r, obj, name }),
                         }
@@ -1272,7 +1272,7 @@ impl ProtoBuilder<'_> {
                 if let Some((object, property)) = prop {
                     let obj = self.compile_quiet(object)?;
                     let dst = self.alloc_temp();
-                    match self.compile_selector(property)? {
+                    match self.compile_prop_selector(property)? {
                         Sel::Static(name) => self.emit(Instr::EmptyProp { dst, obj, name }),
                         Sel::Dyn(name) => self.emit(Instr::EmptyPropDyn { dst, obj, name }),
                     }

@@ -151,6 +151,26 @@ impl ProtoBuilder<'_> {
         Err(compile_error(msg, self.cur_line))
     }
 
+    /// [`Self::compile_selector`] for a property name: a constant array is
+    /// converted while compiling (zend_delayed_compile_prop), so its "Array
+    /// to string conversion" warning comes once, at compile time.
+    pub(crate) fn compile_prop_selector(
+        &mut self,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
+    ) -> Result<Sel, Thrown> {
+        if let ClassLikeMemberSelector::Expression(e) = sel {
+            if let Ok(Value::Array(_)) = crate::fold::fold_const(self.cx, e.expression) {
+                self.cx.compile_diags.borrow_mut().push((
+                    rhp_values::E_WARNING,
+                    "Array to string conversion".into(),
+                    self.cur_line,
+                ));
+                return Ok(Sel::Static(self.intern_name(b"Array")));
+            }
+        }
+        self.compile_selector(sel)
+    }
+
     /// A member selector as either a static interned name or a runtime name
     /// register (`$o->$x` / `$o->{expr}`).
     pub(crate) fn compile_selector(
@@ -172,23 +192,6 @@ impl ProtoBuilder<'_> {
             }
             ClassLikeMemberSelector::Variable(v) => Ok(Sel::Dyn(self.compile_variable(v)?)),
             ClassLikeMemberSelector::Expression(e) => {
-                // zend_delayed_compile_prop: a constant name is converted to
-                // a string while compiling (an array warns then, once).
-                match crate::fold::fold_const(self.cx, e.expression) {
-                    Ok(Value::Str(s)) => return Ok(Sel::Static(self.intern_name(s.as_bytes()))),
-                    Ok(Value::Int(i)) => {
-                        return Ok(Sel::Static(self.intern_name(i.to_string().as_bytes())))
-                    }
-                    Ok(Value::Array(_)) => {
-                        self.cx.compile_diags.borrow_mut().push((
-                            rhp_values::E_WARNING,
-                            "Array to string conversion".into(),
-                            self.cur_line,
-                        ));
-                        return Ok(Sel::Static(self.intern_name(b"Array")));
-                    }
-                    _ => {}
-                }
                 Ok(Sel::Dyn(self.compile_expr(e.expression)?))
             }
             _ => Err(Thrown::unsupported(
@@ -365,7 +368,7 @@ impl ProtoBuilder<'_> {
             Expression::Access(Access::Property(pa)) => {
                 let obj = self.compile_quiet(pa.object)?;
                 let dst = self.alloc_temp();
-                match self.compile_selector(&pa.property)? {
+                match self.compile_prop_selector(&pa.property)? {
                     Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
                     Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
                 }
@@ -378,7 +381,7 @@ impl ProtoBuilder<'_> {
                 let jn = self.code.len();
                 self.emit(Instr::Nop); // JmpNull dst -> end
                 let t = self.alloc_temp();
-                match self.compile_selector(&npa.property)? {
+                match self.compile_prop_selector(&npa.property)? {
                     Sel::Static(name) => self.emit(Instr::FetchPropIs {
                         dst: t,
                         obj: dst,
@@ -446,7 +449,7 @@ impl ProtoBuilder<'_> {
         };
         let obj = self.compile_write_object(pa.object)?;
         let dst = self.alloc_temp();
-        match self.compile_selector(&pa.property)? {
+        match self.compile_prop_selector(&pa.property)? {
             Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
             Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
         }
@@ -468,7 +471,7 @@ impl ProtoBuilder<'_> {
             Expression::Access(Access::Property(pa)) => {
                 let obj = self.compile_unset_object(pa.object)?;
                 let dst = self.alloc_temp();
-                match self.compile_selector(&pa.property)? {
+                match self.compile_prop_selector(&pa.property)? {
                     Sel::Static(name) => self.emit(Instr::FetchPropUnset { dst, obj, name }),
                     Sel::Dyn(name) => self.emit(Instr::FetchPropDynUnset { dst, obj, name }),
                 }
@@ -489,7 +492,7 @@ impl ProtoBuilder<'_> {
     }
 
     fn fetch_prop(&mut self, obj: Reg, sel: &ClassLikeMemberSelector) -> Result<Reg, Thrown> {
-        let sel = self.compile_selector(sel)?;
+        let sel = self.compile_prop_selector(sel)?;
         if self.in_const_expr() {
             let name = match sel {
                 Sel::Dyn(r) => r,

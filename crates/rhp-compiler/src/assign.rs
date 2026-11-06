@@ -92,6 +92,25 @@ fn verify_list_target(target: &Expression, list_style: bool, line: u32) -> Resul
     }
 }
 
+/// zend_propagate_list_refs: whether a destructuring pattern binds a
+/// reference anywhere (`[&$a]`, `[[&$b]]`).
+pub(crate) fn list_has_refs<'a>(mut elements: impl Iterator<Item = &'a ArrayElement<'a>>) -> bool {
+    elements.any(element_has_refs)
+}
+
+fn element_has_refs(el: &ArrayElement) -> bool {
+    let value = match el {
+        ArrayElement::Value(v) => v.value,
+        ArrayElement::KeyValue(kv) => kv.value,
+        _ => return false,
+    };
+    match value {
+        Expression::Array(a) => list_has_refs(a.elements.iter()),
+        Expression::List(l) => list_has_refs(l.elements.iter()),
+        e => as_reference(e).is_some(),
+    }
+}
+
 impl ProtoBuilder<'_> {
     /// A call php compiles to an opcode with a temporary result in a write
     /// context (zend_try_compile_special_func with BP_VAR_W): no container
@@ -383,26 +402,14 @@ impl ProtoBuilder<'_> {
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
                     verify_list_target(v.value, list_style, line)?;
-                    let val = self.alloc_temp();
-                    self.emit(Instr::DimFetchList {
-                        dst: val,
-                        arr: src,
-                        key,
-                    });
-                    self.store_to_target(v.value, val)?;
+                    self.destructure_element(el, v.value, src, key)?;
                     idx += 1;
                 }
                 ArrayElement::KeyValue(kv) => {
                     has_elems = true;
                     let key = self.compile_expr(kv.key)?;
                     verify_list_target(kv.value, list_style, line)?;
-                    let val = self.alloc_temp();
-                    self.emit(Instr::DimFetchList {
-                        dst: val,
-                        arr: src,
-                        key,
-                    });
-                    self.store_to_target(kv.value, val)?;
+                    self.destructure_element(el, kv.value, src, key)?;
                 }
             }
         }
@@ -410,6 +417,96 @@ impl ProtoBuilder<'_> {
             return Err(compile_error("Cannot use empty list", line));
         }
         Ok(())
+    }
+
+    /// One element of a destructuring pattern: fetched for reading, or
+    /// (php's FETCH_LIST_W) as a reference when it binds one.
+    fn destructure_element(
+        &mut self,
+        el: &ArrayElement,
+        target: &Expression,
+        src: Reg,
+        key: Reg,
+    ) -> Result<(), Thrown> {
+        let val = self.alloc_temp();
+        if !element_has_refs(el) {
+            self.emit(Instr::DimFetchList {
+                dst: val,
+                arr: src,
+                key,
+            });
+            return self.store_to_target(target, val);
+        }
+        self.emit(Instr::FetchListW { dst: val, src, key });
+        match target {
+            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val, false),
+            Expression::List(lst) => self.destructure_into(lst.elements.iter(), val, true),
+            e => {
+                let inner = as_reference(e).expect("a reference element");
+                self.assign_ref_to(inner, val).map(|_| ())
+            }
+        }
+    }
+
+    /// `<target> =& <reference in r>`: bind a variable, element or property
+    /// to the reference (php's ASSIGN_REF / ASSIGN_DIM ref / ASSIGN_OBJ_REF).
+    pub(crate) fn assign_ref_to(&mut self, target: &Expression, r: Reg) -> Result<Reg, Thrown> {
+        let line = self.cur_line;
+        if is_this(target) {
+            return Err(reassign_this(line));
+        }
+        check_globals_write(target, line)?;
+        self.check_write_target(target, line)?;
+        match target {
+            Expression::Parenthesized(p) => self.assign_ref_to(p.expression, r),
+            Expression::Variable(Variable::Direct(dst)) => {
+                let dst_cv = self.cv(strip_dollar(dst.name));
+                self.emit(Instr::RefAssign { dst_cv, src: r });
+                Ok(dst_cv)
+            }
+            Expression::Variable(var) => {
+                let name = self.var_name_reg(var)?;
+                self.emit(Instr::BindVarVarRef { name, src: r });
+                Ok(r)
+            }
+            Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(Access::Property(_))
+            | Expression::Access(Access::StaticProperty(_)) => {
+                let mut steps = Vec::new();
+                let root = self.collect_lvalue_steps(target, &mut steps)?;
+                self.emit_cursor(root, &steps);
+                self.emit(Instr::AssignLvalRef { src: r });
+                Ok(r)
+            }
+            _ => Err(compile_error(
+                "Assignments can only happen to writable values",
+                line,
+            )),
+        }
+    }
+
+    /// The source of a destructuring pattern that binds references: a
+    /// variable or call fetched for writing and made a reference (php's
+    /// zend_compile_var BP_VAR_W + MAKE_REF).
+    fn list_ref_source(&mut self, rhs: &Expression) -> Result<Reg, Thrown> {
+        let bare = crate::util::unparen(rhs);
+        if !is_variable(bare) && !is_call(bare) {
+            return Err(compile_error(
+                "Cannot assign reference to non referenceable value",
+                self.cur_line,
+            ));
+        }
+        if is_short_circuited(bare) {
+            return Err(compile_error(
+                "Cannot take reference of a nullsafe chain",
+                self.cur_line,
+            ));
+        }
+        if is_call(bare) {
+            return self.compile_expr(bare);
+        }
+        self.compile_ref_source(bare)
     }
 
     /// The source of a destructuring assignment. A plain variable is read
@@ -442,10 +539,17 @@ impl ProtoBuilder<'_> {
             }
             Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src, false)?,
             Expression::List(lst) => self.destructure_into(lst.elements.iter(), src, true)?,
+            // `$o->p`: ASSIGN_OBJ (reaches `__set`).
+            Expression::Access(Access::Property(pa)) => {
+                let obj = self.compile_write_object(pa.object)?;
+                match self.compile_selector(&pa.property)? {
+                    Sel::Static(name) => self.emit(Instr::StoreProp { obj, name, src }),
+                    Sel::Dyn(name) => self.emit(Instr::StorePropDyn { obj, name, src }),
+                }
+            }
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Variable(_)
-            | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(target, &mut steps)?;
@@ -563,6 +667,16 @@ impl ProtoBuilder<'_> {
 
     /// Produce a register holding a `Ref` to a reference-assignment source: a
     /// simple variable's slot, or a property / array-element / static-prop lvalue.
+    /// The source of `=&`: [`Self::compile_ref_source`]; a call's result
+    /// that is no reference notices (ZEND_RETURNS_FUNCTION).
+    fn compile_assign_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
+        let r = self.compile_ref_source(src)?;
+        if is_call(crate::util::unparen(src)) {
+            self.emit(Instr::RefFuncResult { src: r });
+        }
+        Ok(r)
+    }
+
     pub(crate) fn compile_ref_source(&mut self, src: &Expression) -> Result<Reg, Thrown> {
         if is_globals_var(src) {
             return Err(compile_error(
@@ -614,9 +728,7 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::MakeRefLval { dst: r });
                 Ok(r)
             }
-            // `$x = &func()` / other non-lvalue source: we don't implement
-            // return-by-reference, so bind by value (matches php's fallback for a
-            // non-ref-returning callee; object handles are shared regardless).
+            Expression::Parenthesized(p) => self.compile_ref_source(p.expression),
             other => self.compile_expr(other),
         }
     }
@@ -641,12 +753,20 @@ impl ProtoBuilder<'_> {
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
-                let rhs = self.list_source(a.rhs)?;
+                let rhs = if list_has_refs(arr.elements.iter()) {
+                    self.list_ref_source(a.rhs)?
+                } else {
+                    self.list_source(a.rhs)?
+                };
                 self.destructure_into(arr.elements.iter(), rhs, false)?;
                 return Ok(rhs);
             }
             if let Expression::List(lst) = a.lhs {
-                let rhs = self.list_source(a.rhs)?;
+                let rhs = if list_has_refs(lst.elements.iter()) {
+                    self.list_ref_source(a.rhs)?
+                } else {
+                    self.list_source(a.rhs)?
+                };
                 self.destructure_into(lst.elements.iter(), rhs, true)?;
                 return Ok(rhs);
             }
@@ -680,15 +800,20 @@ impl ProtoBuilder<'_> {
                 // `$dst =& <lvalue>` (property / array element / static prop): take
                 // a reference to the source lvalue and alias the destination var.
                 if let Expression::Variable(Variable::Direct(dst)) = a.lhs {
-                    let r = self.compile_ref_source(u.operand)?;
+                    let r = self.compile_assign_ref_source(u.operand)?;
                     let dst_cv = self.cv(strip_dollar(dst.name));
                     self.emit(Instr::RefAssign { dst_cv, src: r });
+                    // A call's result is what was assigned (a destructor
+                    // run by the assignment may unset the variable).
+                    if is_call(crate::util::unparen(u.operand)) {
+                        return Ok(r);
+                    }
                     return Ok(dst_cv);
                 }
                 // `$$n =& <src>`: alias the variable named at run time.
                 if let Expression::Variable(var) = a.lhs {
                     let name = self.var_name_reg(var)?;
-                    let r = self.compile_ref_source(u.operand)?;
+                    let r = self.compile_assign_ref_source(u.operand)?;
                     self.emit(Instr::BindVarVarRef { name, src: r });
                     return Ok(r);
                 }
@@ -706,6 +831,11 @@ impl ProtoBuilder<'_> {
                     let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
                     self.emit_cursor(root, &steps);
                     self.emit(Instr::AssignLvalRef { src: r });
+                    // php fetches the target (which may fail) before its
+                    // notice for a by-value call result.
+                    if is_call(crate::util::unparen(u.operand)) {
+                        self.emit(Instr::RefFuncResult { src: r });
+                    }
                     return Ok(r);
                 }
                 return Err(Thrown::unsupported(

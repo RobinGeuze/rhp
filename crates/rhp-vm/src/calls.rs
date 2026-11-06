@@ -653,6 +653,11 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
+                if !self.stack[top].proto.send_kinds.is_empty()
+                    && proto.params.iter().any(|p| p.by_ref)
+                {
+                    self.check_sends(top, &proto, frame.defining_class, base)?;
+                }
                 self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
                 // The window's temporaries move into the callee (php moves
                 // arguments into the callee's frame, so they die with it).
@@ -676,20 +681,28 @@ impl Vm {
                 )
             }
         };
-        let failed = match bound {
-            _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            // php's RECV opcodes check each passed argument's type before
-            // the first missing one fails.
-            Err(missing) => Some(self.missing_arg_error(&proto, frame, caller, missing, argc)),
-            Ok(()) => {
-                if let Some((holes, extra)) = named {
-                    bind_named_extra(&proto, frame, holes, extra);
-                }
+        let failed = if count_error.is_some() {
+            count_error.map(|e| (0, e))
+        } else {
+            if let (Ok(()), Some((holes, extra))) = (&bound, named) {
+                bind_named_extra(&proto, frame, holes, extra);
+            }
+            // php's RECV checks the passed arguments' types in order before
+            // the first missing one raises the count error.
+            let typed = if proto.params.iter().any(|p| p.type_hint.is_some()) {
                 let scope = frame.defining_class;
                 match self.coerce_stringable_args(&proto, frame, caller, scope) {
                     Err(e) => Some((0, e)),
                     Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
                 }
+            } else {
+                None
+            };
+            match bound {
+                Err(missing) if typed.is_none() => {
+                    Some((missing, self.arg_count_error(&proto, frame, argc)))
+                }
+                _ => typed,
             }
         };
         let Some((idx, err)) = failed else {
@@ -710,25 +723,91 @@ impl Vm {
         Err(t)
     }
 
-    /// The error of a call missing argument `missing`: php's RECV opcodes
-    /// check each passed argument's type before the first missing one.
+    /// php's SEND_VAL_EX / SEND_VAR_NO_REF_EX for the call frame `top` is
+    /// making to `proto` (its `send_kinds`): a temporary for a by-reference
+    /// parameter throws, a call result that is no reference notices.
     #[cold]
     #[inline(never)]
-    fn missing_arg_error(
+    pub(crate) fn check_sends(
         &mut self,
+        top: usize,
         proto: &FunctionProto,
-        frame: &mut Frame,
-        caller: Option<bool>,
-        missing: usize,
-        argc: usize,
-    ) -> (usize, Thrown) {
-        if !proto.is_internal() {
-            let scope = frame.defining_class;
-            if let Err(e) = self.check_arg_types(proto, frame, caller, scope) {
-                return e;
+        scope: Option<ClassId>,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let label = |i: u16| match proto.params.get(i as usize) {
+            Some(p) if !p.variadic => format!(
+                " (${})",
+                String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+            ),
+            _ => String::new(),
+        };
+        let fname = self.func_c_name(proto, scope);
+        self.check_sends_with(top, base, &fname, |i| param_is_ref(proto, i), label)
+    }
+
+    /// [`Vm::check_sends`] for a builtin called through a callable value.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn check_sends_builtin(
+        &mut self,
+        top: usize,
+        sig: &rhp_bytecode::signatures::Func,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let param = |i: u16| {
+            sig.params
+                .get(i as usize)
+                .or_else(|| sig.params.last().filter(|p| p.variadic()))
+        };
+        let is_ref = |i: u16| param(i).is_some_and(|p| p.by_ref() && !p.prefer_ref());
+        let label = |i: u16| match param(i) {
+            Some(p) if !p.variadic() => format!(" (${})", p.name),
+            _ => String::new(),
+        };
+        self.check_sends_with(top, base, sig.name, is_ref, label)
+    }
+
+    fn check_sends_with(
+        &mut self,
+        top: usize,
+        base: Reg,
+        fname: &str,
+        is_ref: impl Fn(u16) -> bool,
+        label: impl Fn(u16) -> String,
+    ) -> Result<(), Thrown> {
+        let caller = self.stack[top].proto.clone();
+        let pc = self.stack[top].pc as u32 - 1;
+        let start = caller.send_kinds.partition_point(|e| e.0 < pc);
+        for &(at, idx, kind) in &caller.send_kinds[start..] {
+            if at != pc {
+                break;
             }
+            if !is_ref(idx) || matches!(self.stack[top].regs[(base + idx) as usize], Value::Ref(_))
+            {
+                continue;
+            }
+            if kind == rhp_bytecode::SEND_VAR {
+                self.diag(
+                    builtins::E_NOTICE,
+                    "Only variables should be passed by reference",
+                )?;
+                // sent in a reference of its own
+                let slot = &mut self.stack[top].regs[(base + idx) as usize];
+                let v = std::mem::replace(slot, Value::Null);
+                *slot = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
+                continue;
+            }
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "{fname}(): Argument #{}{} could not be passed by reference",
+                    idx + 1,
+                    label(idx)
+                ),
+            ));
         }
-        (missing, self.arg_count_error(proto, frame, argc))
+        Ok(())
     }
 
     /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a

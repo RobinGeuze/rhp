@@ -956,6 +956,9 @@ impl Vm {
                         }
                     }
                 }
+                Instr::ArgSpreadRef { arr, src, sig } => {
+                    self.arg_spread_ref(top, &proto, arr, src, sig)?
+                }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
                     let Value::Array(mut a) =
@@ -1439,6 +1442,41 @@ impl Vm {
                         self.cursor_release();
                         return Err(e);
                     }
+                    // `$obj[k] =& $v` on a user ArrayAccess: php fetches the
+                    // offset for writing (offsetGet), which yields no slot.
+                    if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
+                        // ArrayObject: its storage holds the reference.
+                        let owner = self.spl_array_owner(&h, b"offsetget");
+                        if let (true, Some(owner)) = (i + 1 == steps.len(), owner) {
+                            let cell = self.spl_array_storage(&h, owner);
+                            self.cursor_release();
+                            let cell = cell?;
+                            // `$ao[] =& $v`: no slot (php's uninitialized_zval)
+                            let CursorStep::Key(k) = &steps[i] else {
+                                self.indirect_overloaded_notice(&h)?;
+                                return Err(Thrown::error(
+                                    "Error",
+                                    "Cannot assign by reference to an array dimension of an object",
+                                ));
+                            };
+                            let key = self.spl_array_key(&h, k)?;
+                            let mut st = cell.borrow_mut();
+                            if let Value::Array(a) = &mut *st {
+                                a.insert(key, v);
+                                continue;
+                            }
+                        }
+                        if i + 1 == steps.len() && owner.is_none() {
+                            let key = crate::lvalue::aa_key(&steps[i]).unwrap_or(Value::Null);
+                            let r = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W);
+                            self.cursor_release();
+                            r?;
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot assign by reference to an array dimension of an object",
+                            ));
+                        }
+                    }
                     let r = self.cursor_write(top, &steps, v);
                     self.cursor_release();
                     r?;
@@ -1610,6 +1648,11 @@ impl Vm {
                     return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
+                    if let Value::Ref(rc) = &self.stack[top].regs[src as usize] {
+                        let v = Value::Ref(rc.clone());
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let v = self.reg_r(top, src)?;
                     self.diag(
                         builtins::E_NOTICE,
@@ -1672,6 +1715,25 @@ impl Vm {
                                 return Ok(done);
                             }
                         }
+                        Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
+                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                                self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
+                                self.stack[top].pc = f2 as usize;
+                            } else {
+                                // php checks the type again at the return,
+                                // whose finally runs again when it fails.
+                                self.stack[top].pc = ret_pc as usize + 1;
+                                let v = if kind == rhp_bytecode::RET_REF_IMPLICIT {
+                                    v
+                                } else {
+                                    self.recheck_ref_return(top, &proto, &v)?
+                                };
+                                let v = self.ret_ref_wrap(v, kind)?;
+                                if let Some(done) = self.do_return(v) {
+                                    return Ok(done);
+                                }
+                            }
+                        }
                         Some(FinallyCont::Jump(target)) => {
                             self.jump_through_finally(top, &proto, pc, target)
                         }
@@ -1689,6 +1751,15 @@ impl Vm {
                     self.drop_left_finallies(top, &proto, pc);
                     if let Some(f) = enclosing_finally(&proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
+                    }
+                }
+                Instr::SetPendingRetRef { src, kind } => {
+                    // the notice comes with the return, after the finally
+                    let v = self.ret_ref_checked(top, &proto, src, kind)?;
+                    let pc = self.stack[top].pc as u32 - 1;
+                    self.drop_left_finallies(top, &proto, pc);
+                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                        self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
@@ -2067,7 +2138,12 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::PassArg { dst, src } => {
-                    let v = self.stack[top].regs[src as usize].clone();
+                    // the temporary moves into the window
+                    let v = if src >= proto.num_cvs {
+                        std::mem::replace(&mut self.stack[top].regs[src as usize], Value::Null)
+                    } else {
+                        self.stack[top].regs[src as usize].clone()
+                    };
                     self.reg_set(top, dst, v);
                 }
                 Instr::StaticArgIsRef {
@@ -2193,10 +2269,47 @@ impl Vm {
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
-                    // `src` already holds a `Ref` (MakeRefLval); alias it raw.
+                    // `src` holds a `Ref` (MakeRefLval): alias it raw. A
+                    // by-value call result is assigned (after its notice).
                     let v = self.stack[top].regs[src as usize].clone();
+                    if !matches!(v, Value::Ref(_)) {
+                        self.cv_assign(top, dst_cv, v);
+                        continue;
+                    }
                     self.stack[top].regs[dst_cv as usize] = v;
                     self.sync_global_cv(top, dst_cv);
+                }
+                Instr::FetchListW { dst, src, key } => {
+                    let k = self.reg_r(top, key)?;
+                    let v = match self.stack[top].regs[src as usize].clone() {
+                        Value::Ref(rc) => {
+                            self.cursor_root = CursorRoot::Cell(rc);
+                            self.cursor_global = None;
+                            self.cursor_steps.clear();
+                            self.rw_null_keys = 0;
+                            self.cursor_null_key = matches!(k, Value::Null);
+                            let cell = self.cursor_make_ref(top, &[CursorStep::Key(k)]);
+                            self.cursor_release();
+                            Value::Ref(cell?)
+                        }
+                        v => {
+                            self.diag(
+                                builtins::E_NOTICE,
+                                "Attempting to set reference to non referenceable value",
+                            )?;
+                            let r = self.dim_read(&deref(&v), &k, DimMode::List)?;
+                            Value::Ref(Rc::new(RefCell::new(r)))
+                        }
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::RefFuncResult { src } => {
+                    if !matches!(self.stack[top].regs[src as usize], Value::Ref(_)) {
+                        self.diag(
+                            builtins::E_NOTICE,
+                            "Only variables should be assigned by reference",
+                        )?;
+                    }
                 }
                 Instr::MakeRef { dst, cv } => {
                     let rc = self.promote(top, cv);
@@ -2306,11 +2419,8 @@ impl Vm {
                         return Ok(done);
                     }
                 }
-                Instr::RetRef { src } => {
-                    // Return-by-reference: deliver the raw slot (a `Value::Ref`
-                    // cell) without dereferencing, so the caller's `$x = &f()`
-                    // aliases the same cell. No return-type coercion.
-                    let v = self.stack[top].regs[src as usize].clone();
+                Instr::RetRef { src, kind } => {
+                    let v = self.ret_ref_value(top, &proto, src, kind)?;
                     if let Some(done) = self.do_return(v) {
                         return Ok(done);
                     }
@@ -2486,6 +2596,111 @@ impl Vm {
     /// The entries `...$src` unpacks (ZEND_SEND_UNPACK when `args`, else
     /// ZEND_ADD_ARRAY_UNPACK): an array's elements as they are, or what a
     /// Traversable yields (numeric-string keys count as positional).
+    /// ZEND_SEND_UNPACK's by-reference parameters (see
+    /// [`Instr::ArgSpreadRef`]); the rest is [`Instr::ArgSpread`]'s.
+    fn arg_spread_ref(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        arr: Reg,
+        src: Reg,
+        sig: u32,
+    ) -> Result<(), Thrown> {
+        let Value::Array(sig) = &proto.consts[sig as usize] else {
+            return Ok(());
+        };
+        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let fname = conv::to_string_bytes(&sig[0]);
+        let variadic = matches!(sig[1], Value::Bool(true));
+        let list = |v: &Value| match v {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            _ => Vec::new(),
+        };
+        let flags: Vec<Value> = list(&sig[2]);
+        let names: Vec<Value> = list(&sig[3]);
+        let by_ref = |p: usize| match flags.get(p) {
+            Some(b) => matches!(b, Value::Bool(true)),
+            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+        };
+        // a named element's position
+        let named_pos = |s: &[u8]| {
+            names
+                .iter()
+                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
+        };
+        let source = match &self.stack[top].regs[src as usize] {
+            Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
+            _ => None,
+        };
+        let traversable = matches!(self.reg_get(top, src), Value::Object(_));
+        let entries = self.unpack_entries(top, src, true)?;
+        let Value::Array(mut a) =
+            std::mem::replace(&mut self.stack[top].regs[arr as usize], Value::Null)
+        else {
+            unreachable!("ArgSpreadRef target is the argument array")
+        };
+        let mut pos = a
+            .iter()
+            .filter(|(k, _)| matches!(k, ArrayKey::Int(_)))
+            .count();
+        for (k, iv) in entries {
+            let at = match &k {
+                ArrayKey::Int(_) => Some(pos),
+                ArrayKey::Str(s) => {
+                    if a.get(&k).is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(s.as_bytes())
+                            ),
+                        ));
+                    }
+                    // an unknown name lands in a variadic parameter
+                    named_pos(s.as_bytes())
+                        .or_else(|| variadic.then(|| flags.len().saturating_sub(1)))
+                }
+            };
+            let mut v = iv;
+            if let Some(at) = at.filter(|&p| by_ref(p)) {
+                if let Some(rc) = &source {
+                    // separated from other holders of the array
+                    if let Value::Array(sa) = &mut *rc.borrow_mut() {
+                        if let Some(slot) = sa.get_mut(&k) {
+                            let cell = match slot {
+                                Value::Ref(c) => c.clone(),
+                                other => {
+                                    let c = Rc::new(RefCell::new(std::mem::replace(
+                                        other,
+                                        Value::Null,
+                                    )));
+                                    *other = Value::Ref(c.clone());
+                                    c
+                                }
+                            };
+                            v = Value::Ref(cell);
+                        }
+                    }
+                } else if traversable {
+                    let msg = format!(
+                        "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
+                        at + 1,
+                        String::from_utf8_lossy(&fname)
+                    );
+                    self.diag(builtins::E_WARNING, &msg)?;
+                }
+            }
+            if let ArrayKey::Int(_) = k {
+                a.push(v);
+                pos += 1;
+            } else {
+                a.insert(k, v);
+            }
+        }
+        self.stack[top].regs[arr as usize] = Value::Array(a);
+        Ok(())
+    }
+
     fn unpack_entries(
         &mut self,
         top: usize,
@@ -3663,6 +3878,21 @@ impl Vm {
                 }
             }
         }
+        // A user function's name: a direct call (by-reference parameters
+        // and return).
+        if let Value::Str(s) = &c {
+            let n = s.as_bytes();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if !n.contains(&b':') {
+                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                    let callee = self.functions[i].clone();
+                    if !callee.proto.is_internal() {
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // An invokable object: a call of its __invoke method, with
         // by-reference parameters and return.
         if let Value::Object(h) = &c {
@@ -3673,6 +3903,17 @@ impl Vm {
             {
                 self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
                 return Ok(());
+            }
+        }
+        if !self.stack[top].proto.send_kinds.is_empty() {
+            if let Some((p, scope)) = self.callable_proto(&c) {
+                if p.params.iter().any(|q| q.by_ref) {
+                    self.check_sends(top, &p, scope, base)?;
+                }
+            } else if let Ok(crate::calls::Callee::Builtin(name)) = self.resolve_callable(&c) {
+                if let Some(sig) = rhp_bytecode::signatures::function(name.as_bytes()) {
+                    self.check_sends_builtin(top, sig, base)?;
+                }
             }
         }
         // Passed raw (the window's references kept): the callee's

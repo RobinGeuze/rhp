@@ -1391,6 +1391,22 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// zend_compile_params: "Returning by reference from a void function
+    /// is deprecated" (`function &f(): void`).
+    pub(crate) fn check_void_by_ref(&self, display: &str, hint: Option<&crate::parse::cst::Hint>) {
+        use mago_span::HasSpan;
+        let (Some(t), Some(h)) = (&self.ret_type, hint) else {
+            return;
+        };
+        if self.returns_ref && t.kinds.contains(&rhp_bytecode::TypeKind::Void) {
+            self.cx.diag(
+                rhp_values::E_DEPRECATED,
+                h.span().start.offset,
+                format!("{display}(): Returning by reference from a void function is deprecated"),
+            );
+        }
+    }
+
     /// zend_mark_function_as_generator's return type check. php runs it
     /// after the parameters, at the declaration's line.
     pub(crate) fn check_generator_type(&self, line: u32) -> Result<(), Thrown> {

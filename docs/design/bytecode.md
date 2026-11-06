@@ -446,7 +446,14 @@ BindRef    { dst_cv, src_cv }         `$dst =& $src`: promote src slot to Ref(rc
 MakeRef    { dst, cv }                materialize cv slot as Ref, place Ref(rc) in dst (for `&$x` as arg/element)
 BindGlobal { cv, name: NIdx }         `global $x`: bind cv to {main} scope slot for name, as a shared Ref
 BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot on first exec; alias cv after
+RefFuncResult { src }                 `=& f()`: notice when the call's result is no reference (then assigned)
+FetchListW { dst, src, key }          `[&$a] = $src`: element `key` of the container `src` references, as a reference
+RetRef     { src, kind }              by-ref return; `kind` (RET_REF_*) says when php notices
+SetPendingRetRef { src, kind }        RetRef crossing finally: type checked now and again after it, notice at the end
+ArgSpreadRef { arr, src, sig }        `f(...$a)` for by-ref params: their elements become references in `$a`
 ```
+The value-model's §4 ("Non-variables where php wants a reference") has the
+rules these follow.
 
 **Calls / return (phase 5)** — positional args evaluated into a contiguous temp
 window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`

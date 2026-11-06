@@ -328,6 +328,16 @@ pub enum Instr {
         arr: Reg,
         src: Reg,
     },
+    /// [`Instr::ArgSpread`] for a callee with by-reference parameters:
+    /// `consts[sig]` is `[name, variadic, [by_ref...], [param names...]]`.
+    /// An element for a
+    /// by-reference position becomes a reference in the array `src`
+    /// references; a Traversable's warns and is passed by value.
+    ArgSpreadRef {
+        arr: Reg,
+        src: Reg,
+        sig: CIdx,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {
@@ -517,8 +527,10 @@ pub enum Instr {
     },
     /// `return` from a by-reference function (`function &f()`): `src` holds a
     /// reference to the returned lvalue; it is delivered raw (not dereferenced).
+    /// `kind` is a `RET_REF_*` constant (php's ZEND_RETURN_BY_REF flags).
     RetRef {
         src: Reg,
+        kind: u8,
     },
     RetNull,
     /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
@@ -580,6 +592,13 @@ pub enum Instr {
     /// return, then `Jmp` to the finally block.
     SetPendingRet {
         src: Reg,
+    },
+    /// [`Instr::SetPendingRet`] in a by-reference function (`kind` as in
+    /// [`Instr::RetRef`]); the return type is checked again after the
+    /// finally blocks ran.
+    SetPendingRetRef {
+        src: Reg,
+        kind: u8,
     },
     /// A `break`/`continue` that leaves a `try` with a `finally`: run the
     /// enclosing finally blocks (innermost first) that do not contain
@@ -790,7 +809,8 @@ pub enum Instr {
         func: Reg,
         idx: u16,
     },
-    /// Copy `src` to `dst` as is: a reference stays a reference.
+    /// Move `src` to `dst` as is (a CV is copied): a reference stays a
+    /// reference.
     PassArg {
         dst: Reg,
         src: Reg,
@@ -1080,6 +1100,21 @@ pub enum Instr {
     /// CV `dst_cv` alias it (raw copy, no deref).
     RefAssign {
         dst_cv: Reg,
+        src: Reg,
+    },
+    /// php's FETCH_LIST_W: element `key` of the container referenced by
+    /// `src`, as a reference (created for writing). When `src` holds no
+    /// reference (a by-value call result): "Attempting to set reference to
+    /// non referenceable value", and the element is read into a new one.
+    FetchListW {
+        dst: Reg,
+        src: Reg,
+        key: Reg,
+    },
+    /// `=& f()`: when call result `src` is not a reference (the function
+    /// returns by value), php's notice "Only variables should be assigned by
+    /// reference"; the bind that follows then assigns the value.
+    RefFuncResult {
         src: Reg,
     },
     /// `<lvalue> =& <src>`: write the raw `Ref` in `src` (not deref'd) to the
@@ -1431,7 +1466,19 @@ pub struct FunctionProto {
     /// exception thrown in between releases the object without its
     /// destructor (php's live range of a NEW result).
     pub new_ranges: Vec<(Pc, Pc, Reg)>,
+    /// Arguments that are no variable, sent to a callee only known at run
+    /// time, as `(call pc, argument index, SEND_*)`, ascending by pc: php's
+    /// SEND_VAL_EX / SEND_VAR_NO_REF_EX checks, made when such an argument
+    /// meets a by-reference parameter.
+    pub send_kinds: Vec<(Pc, u16, u8)>,
 }
+
+/// `FunctionProto::send_kinds`: a temporary value; a by-reference parameter
+/// throws "could not be passed by reference".
+pub const SEND_VAL: u8 = 0;
+/// `FunctionProto::send_kinds`: a call result (or `new`); a value that is no
+/// reference notices "Only variables should be passed by reference".
+pub const SEND_VAR: u8 = 1;
 
 impl FunctionProto {
     /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
@@ -1475,6 +1522,7 @@ impl FunctionProto {
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
             new_ranges: Vec::new(),
+            send_kinds: Vec::new(),
         }
     }
 }
@@ -1727,6 +1775,15 @@ pub enum ConstInitProto {
 
 /// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
 pub const PACKED_ARGS: u16 = u16::MAX;
+
+/// `RetRef::kind`: a variable fetched for writing (always a reference).
+pub const RET_REF_VAR: u8 = 0;
+/// `RetRef::kind`: a call result; a value (not a reference) notices.
+pub const RET_REF_FUNC: u8 = 1;
+/// `RetRef::kind`: any other expression; always notices.
+pub const RET_REF_VALUE: u8 = 2;
+/// `RetRef::kind`: the implicit `return null` at the end of the body.
+pub const RET_REF_IMPLICIT: u8 = 3;
 
 // The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
 // it without decoding a niche.

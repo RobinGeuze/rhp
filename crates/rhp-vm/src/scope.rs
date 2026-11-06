@@ -184,7 +184,21 @@ impl Vm {
         let vname = self.var_name(top, name, false)?;
         let cell = match &self.stack[top].regs[src as usize] {
             Value::Ref(rc) => rc.clone(),
-            v => Rc::new(RefCell::new(v.clone())),
+            // a by-value call result: assigned
+            v => {
+                let v = v.clone();
+                match self.var_var_slot(top, &vname) {
+                    Ok(cv) => self.cv_assign(top, cv, v),
+                    Err(cell) => {
+                        let mut c = cell.borrow_mut();
+                        match &mut *c {
+                            Value::Ref(rc) => *rc.borrow_mut() = v,
+                            slot => *slot = v,
+                        }
+                    }
+                }
+                return Ok(());
+            }
         };
         self.var_var_bind(top, &vname, cell);
         Ok(())

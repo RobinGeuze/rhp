@@ -343,10 +343,7 @@ fn compile_hook_body(
             }
             match kind {
                 // `get => expr` is `return expr;`.
-                HookKind::Get if c.returns_ref => {
-                    let src = c.compile_ref_source(expr)?;
-                    c.emit(Instr::RetRef { src });
-                }
+                HookKind::Get if c.returns_ref => c.compile_arrow_return(expr)?,
                 HookKind::Get => {
                     let src = c.compile_expr(expr)?;
                     c.emit(Instr::Ret { src });

@@ -1,0 +1,84 @@
+int(2)
+int(3)
+Error: C::m(): Argument #1 ($a) could not be passed by reference
+C::sm(): Argument #1 ($a) could not be passed by reference
+E8: Only variables should be passed by reference (line 34)
+string(3) "m:y"
+string(3) "m:z"
+C::m(): Argument #1 ($a) could not be passed by reference
+int(2)
+int(2)
+array(2) {
+  ["a"]=>
+  &int(10)
+  ["b"]=>
+  array(2) {
+    [0]=>
+    int(2)
+    [1]=>
+    &int(30)
+  }
+}
+array(1) {
+  [0]=>
+  int(0)
+}
+array(2) {
+  [0]=>
+  array(1) {
+    [0]=>
+    int(0)
+  }
+  [1]=>
+  array(1) {
+    [0]=>
+    &int(8)
+  }
+}
+string(1) "y"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(1)
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  ["a"]=>
+  int(3)
+  ["b"]=>
+  int(4)
+}
+array(2) {
+  [0]=>
+  array(1) {
+    [0]=>
+    int(10)
+  }
+  [1]=>
+  array(1) {
+    [0]=>
+    int(20)
+  }
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+int(42)
+string(1) "1"
+string(3) "2.5"
+int(99)
+array(2) {
+  ["b"]=>
+  string(3) "hi!"
+  ["a"]=>
+  int(0)
+}
+string(7) "changed"

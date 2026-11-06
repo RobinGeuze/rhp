@@ -522,6 +522,10 @@ pub fn file_wrapper() -> Rc<dyn StreamWrapper> {
 pub fn default_get_contents(url: &[u8]) -> Option<Vec<u8>> {
     let (scheme, _) = split_scheme(url);
     if scheme == b"file" {
+        // the plain-files opener's open_basedir check
+        if !crate::main::fopen_wrappers::check_queued(file_path(url), true) {
+            return None;
+        }
         FileWrapper.get_contents(url)
     } else {
         None
@@ -545,6 +549,9 @@ pub fn default_stat(url: &[u8]) -> Option<StatInfo> {
 pub fn default_put_contents(url: &[u8], data: &[u8]) -> Option<usize> {
     let (scheme, _) = split_scheme(url);
     if scheme == b"file" {
+        if !crate::main::fopen_wrappers::check_queued(file_path(url), true) {
+            return None;
+        }
         FileWrapper.put_contents(url, data)
     } else {
         None

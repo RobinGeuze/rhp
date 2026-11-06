@@ -54,7 +54,7 @@ class SplFileInfo implements Stringable {
         if ($r === false) { throw new RuntimeException('Unable to read link ' . $this->getPathname() . ', error: ' . (is_link($this->getPathname()) ? 'Unknown error' : 'Invalid argument')); }
         return $r;
     }
-    public function getRealPath(): string|false { return realpath($this->getPathname() === '' ? '.' : $this->getPathname()); }
+    public function getRealPath(): string|false { return __spl_realpath($this->getPathname() === '' ? '.' : $this->getPathname()); }
     public function getFileInfo(?string $class = null): SplFileInfo { $c = $class ?? $this->__infoClass; return new $c($this->getPathname()); }
     public function getPathInfo(?string $class = null): ?SplFileInfo {
         $c = $class ?? $this->__infoClass; $p = $this->getPath();

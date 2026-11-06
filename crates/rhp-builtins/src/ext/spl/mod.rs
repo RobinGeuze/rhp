@@ -174,6 +174,12 @@ fn fn_spl_deprecated(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 /// `__spl_user_props($object)`: the object's properties by mangled name,
 /// without the engine slots of SPL prelude classes (for `__debugInfo`).
+/// SplFileInfo::getRealPath's VCWD_REALPATH: no open_basedir check.
+fn fn_spl_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let p = rhp_values::conv::to_string_bytes(&deref(&args[0]));
+    Ok(crate::zend::virtual_cwd::realpath(&p).map_or(Value::Bool(false), Value::str))
+}
+
 fn fn_spl_user_props(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match deref(&args[0]) {
         Value::Object(h) => Ok(Value::Array(host.object_props_mangled(&h))),
@@ -215,6 +221,7 @@ pub fn register(m: &mut crate::Registry) {
         &[
             ("__spl_deprecated", fn_spl_deprecated, 1, Some(1)),
             ("__spl_user_props", fn_spl_user_props, 1, Some(1)),
+            ("__spl_realpath", fn_spl_realpath, 1, Some(1)),
         ],
     );
 }

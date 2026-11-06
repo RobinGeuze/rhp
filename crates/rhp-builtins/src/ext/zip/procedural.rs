@@ -106,6 +106,9 @@ fn zip_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if filename.is_empty() {
         return Err(must_not_be_empty(fname, 1, "filename"));
     }
+    if !crate::main::fopen_wrappers::check(host, fname, &filename, true)? {
+        return Ok(Value::Bool(false));
+    }
     let Some(resolved) = expand_filepath(&filename) else {
         crate::warn(host, fname, "No such file or directory")?;
         return Ok(Value::Bool(false));

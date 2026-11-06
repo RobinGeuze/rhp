@@ -269,6 +269,19 @@ impl Vm {
                 shown = String::from_utf8_lossy(&real).into_owned();
                 None
             }
+            // Not found: the plain opener still checks the name as given.
+            None if reason_override.is_none()
+                && !path_str.is_empty()
+                && builtins::main::fopen_wrappers::active()
+                && builtins::main::streams::split_scheme(&raw_path).0 == b"file"
+                && !builtins::main::fopen_wrappers::check_queued(
+                    builtins::main::streams::file_path(&raw_path),
+                    true,
+                ) =>
+            {
+                self.flush_stream_diags(kind.name());
+                None
+            }
             f => f,
         };
         let (realpath, source) = match found {

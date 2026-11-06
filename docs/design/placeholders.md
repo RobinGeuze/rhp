@@ -285,8 +285,10 @@ The original notes:
   is refused. Plain files open their `expand_filepath()` path. Failed
   `read(2)`/`write(2)` raise php's "Read/Write of N bytes failed with
   errno=..." notices. open_basedir is checked where php checks it
-  (`main::fopen_wrappers`; SplFileInfo/SplFileObject's own checks, which
-  throw, are not there yet). Still missing: stream filters on plain
+  (`main::fopen_wrappers`), including the compress.zlib/bzip2, zip and
+  libxml opens. Not there yet: SplFileInfo/SplFileObject's own checks
+  (which throw), CURLFile uploads, and phar's later checks and messages
+  (only the archive open is refused). Still missing: stream filters on plain
   files, `php://fd` outside the CLI check.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php

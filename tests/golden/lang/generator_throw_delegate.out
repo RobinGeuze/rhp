@@ -1,0 +1,21 @@
+int(1)
+inner caught x
+int(3)
+inner finally
+int(4)
+bool(false)
+string(1) "a"
+l3 caught
+l2 got ret3
+int(2)
+string(1) "b"
+b=2
+c=3
+l2 got 
+Cannot rewind a generator that was already run
+m2: conv prev LogicException
+int(7)
+#0 {main}
+bool(false)
+it caught
+bool(false)

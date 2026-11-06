@@ -158,6 +158,61 @@ impl Vm {
         result
     }
 
+    /// Generator::throw on a started generator: php throws into the
+    /// innermost generator of a `yield from` chain (zend_generator_get_current)
+    /// and the exception travels out through each delegating one.
+    fn gen_throw(&mut self, id: u32, t: Thrown) -> Result<(), Thrown> {
+        let mut t = t;
+        if let Some(inner) = self.gen_delegate(id) {
+            match self.gen_throw(inner, t) {
+                Ok(()) => {
+                    let g = &self.generators[&inner];
+                    if g.status == GenStatus::Finished {
+                        // The delegate returned: the `yield from` ends.
+                        return self.resume_gen(id, Ok(Value::Null));
+                    }
+                    // The delegate yields again: so does this generator.
+                    let (k, v) = (g.current_key.clone(), g.current_val.clone());
+                    let g = self.generators.get_mut(&id).unwrap();
+                    g.current_key = k;
+                    g.current_val = v;
+                    g.at_first_yield = false;
+                    return Ok(());
+                }
+                Err(e) if e.is_catchable() => t = e,
+                Err(e) => return Err(e),
+            }
+        }
+        self.resume_gen(id, Err(t))
+    }
+
+    /// The generator a suspended generator delegates to: it is suspended
+    /// at the `Yield` of a `yield from` (lowered as FeReset{delegate} /
+    /// FeFetch / Yield / Jmp) over a Generator.
+    fn gen_delegate(&self, id: u32) -> Option<u32> {
+        use rhp_bytecode::Instr;
+        let g = self.generators.get(&id)?;
+        if g.status != GenStatus::Suspended {
+            return None;
+        }
+        let f = g.frame.as_ref()?;
+        let code = &f.proto.code;
+        let Some(Instr::Jmp { target }) = code.get(f.pc) else {
+            return None;
+        };
+        let t = *target as usize;
+        let (Some(Instr::FeFetch { arr_reg, .. }), Some(Instr::FeReset { delegate: true, .. })) =
+            (code.get(t), t.checked_sub(1).and_then(|p| code.get(p)))
+        else {
+            return None;
+        };
+        let Value::Object(h) = deref(&f.regs[*arr_reg as usize]) else {
+            return None;
+        };
+        let oid = h.borrow().id;
+        self.generators.contains_key(&oid).then_some(oid)
+    }
+
     /// Ensure a generator has started (run to its first yield).
     pub(crate) fn gen_ensure_started(&mut self, id: u32) -> Result<(), Thrown> {
         if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::NotStarted) {
@@ -277,7 +332,7 @@ impl Vm {
                 if self.generators[&id].status == GenStatus::Finished {
                     return Err(Thrown::Object(e));
                 }
-                self.resume_gen(id, Err(Thrown::Object(e)))?;
+                self.gen_throw(id, Thrown::Object(e))?;
                 Ok(deref(&self.generators[&id].current_val))
             })(),
             b"__debuginfo" => Ok(Value::Array(self.generator_debug_info(id))),

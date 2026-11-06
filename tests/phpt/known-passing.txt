@@ -1952,6 +1952,7 @@ Zend/tests/generators/aborted_yield_during_nested_fcalls.phpt
 Zend/tests/generators/aborted_yield_during_new.phpt
 Zend/tests/generators/aborted_yield_during_switch.phpt
 Zend/tests/generators/auto_incrementing_keys.phpt
+Zend/tests/generators/basic_yield_from_exception_handling.phpt
 Zend/tests/generators/bug63066.phpt
 Zend/tests/generators/bug65035.phpt
 Zend/tests/generators/bug65161.phpt

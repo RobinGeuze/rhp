@@ -96,12 +96,18 @@ pub fn locate_for_open(
     path: &[u8],
 ) -> Result<Option<Vec<u8>>, Thrown> {
     let located = locate_url(host, fname, path)?;
-    if matches!(located, streams::Located::Plain(_) | streams::Located::Unknown(_))
-        && !wrapper_registered(host, b"file")
+    if matches!(
+        located,
+        streams::Located::Plain(_) | streams::Located::Unknown(_)
+    ) && !wrapper_registered(host, b"file")
     {
         // php falls back on the plain-files wrapper, which is unregistered
         UNKNOWN_WRAPPER_WARNED.with(|w| w.set(false));
-        warn(host, fname, "file:// wrapper is disabled in the server configuration")?;
+        warn(
+            host,
+            fname,
+            "file:// wrapper is disabled in the server configuration",
+        )?;
         warn_arg(
             host,
             fname,

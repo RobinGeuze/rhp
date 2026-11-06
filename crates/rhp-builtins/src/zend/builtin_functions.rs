@@ -423,8 +423,7 @@ fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         Value::Str(s) => host
             .resolve_class_autoload(s.as_bytes())?
             .map(|cid| {
-                host.class_has_property(cid, &prop)
-                    || internal_declared_property(host, cid, &prop)
+                host.class_has_property(cid, &prop) || internal_declared_property(host, cid, &prop)
             })
             .unwrap_or(false),
         _ => false,

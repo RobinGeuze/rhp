@@ -370,7 +370,10 @@ pub(crate) fn has_declared_property(host: &dyn crate::Host, class: u32, name: &[
         {
             return find(c, name).is_some();
         }
-        match host.class_parent_name(id).and_then(|p| host.resolve_class(&p)) {
+        match host
+            .class_parent_name(id)
+            .and_then(|p| host.resolve_class(&p))
+        {
             Some(p) => id = p,
             None => return false,
         }

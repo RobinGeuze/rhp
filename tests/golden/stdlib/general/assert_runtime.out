@@ -1,0 +1,41 @@
+bool(true)
+evaluated
+AssertionError: custom
+LogicException: mine line 19
+string(0) ""
+assert(): Argument #2 ($description) must be of type Throwable|string|null, array given
+string(1) "1"
+bool(true)
+bool(true)
+
+Warning: zend.assertions may be completely enabled or disabled only in php.ini in F on line 38
+bool(false)
+string(1) "0"
+string(0) ""
+int(1)
+int(1)
+
+Warning: assert(): assert(1 > 2) failed in F on line 50
+bool(false)
+NULL
+callback: assert_runtime.php:54 NULL assert(1 > 2)
+
+Warning: assert(): assert(1 > 2) failed in F on line 54
+bool(false)
+callback: assert_runtime.php:55 NULL described
+
+Warning: assert(): described failed in F on line 55
+bool(false)
+int(1)
+bool(true)
+string(1) "0"
+callback: assert_runtime.php:61 NULL assert(false)
+bool(false)
+assert_options(): Argument #1 ($option) must be an ASSERT_* constant
+NULL
+string(1) "1"
+
+Warning: assert(): assert(0 && 1) failed in F on line 71
+bool(false)
+
+Warning: assert(): assert(1 + 1 == 3) failed in F on line 76

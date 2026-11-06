@@ -317,8 +317,8 @@ A variable/array/property **slot** normally holds a `Value` *directly*
   rebinds the slot to a different `rc`.)
 - **By-ref parameter `function f(&$p)`:** the caller promotes the argument's
   slot and binds the callee's `$p` slot to the same `Value::Ref(rc)`. Writes to
-  `$p` are visible at the call site. (A non-lvalue argument to a by-ref param is
-  an error, as in PHP.)
+  `$p` are visible at the call site. A non-variable follows php's SEND_* rules
+  (below).
 - **`foreach ($arr as &$v)`:** each iteration promotes the current **array
   element's** slot (the element becomes `Value::Ref(rc)` *inside the array*) and
   binds `$v` to the same `rc`. Writes to `$v` alias the element. Because the
@@ -326,6 +326,37 @@ A variable/array/property **slot** normally holds a `Value` *directly*
   ref — so the reference stays live even if the array is copied, exactly as PHP
   (the well-known "`&` left in an array after foreach" footgun is reproduced
   faithfully).
+
+**Non-variables where php wants a reference.** As in php, the compiler
+classifies the expression (zend_is_variable / zend_is_call) and the VM
+decides when it runs:
+
+- A by-reference function always returns a `Value::Ref` (`RetRef`); a
+  by-value one never does. So "the call returned a reference" is a
+  runtime test on the result register.
+- `$x =& f()` (`RefFuncResult`): a value notices "Only variables should be
+  assigned by reference" and is assigned (through `$x`'s current
+  reference). `return <non-variable>` in a by-reference function (and its
+  implicit `return null`) notices "Only variable references should be
+  returned by reference" and returns a new reference. The return type of a
+  by-reference function is checked on the referenced value, which keeps the
+  coerced value, and again after `finally` blocks ran.
+- By-reference arguments: a call result, `new` or `$a =& $b` (php's VAR
+  results) passes a reference it holds or notices "Only variables should be
+  passed by reference" (`SendNoRef`); any other temporary throws "f():
+  Argument #N ($p) could not be passed by reference". For a callee known
+  only at run time the compiler records the argument's kind in
+  `FunctionProto::send_kinds` (call pc, index, `SEND_VAL`/`SEND_VAR`) and
+  `bind_frame` checks it when a by-reference parameter meets a value, so
+  ordinary calls pay nothing.
+- `[&$a, [&$b]] = $src`: the source is fetched for writing and made a
+  reference, then each element is fetched as one (`FetchListW`, php's
+  FETCH_LIST_W); a by-value call result notices "Attempting to set
+  reference to non referenceable value". `foreach ($a as [&$x])` iterates
+  by reference.
+- `f(...$arr)` for by-reference parameters makes those elements
+  references inside the (separated) array (`ArgSpreadRef`); a Traversable's
+  warn and go by value.
 
 **Normal value vs reference is distinguished structurally by the `Value::Ref`
 variant.** There is no separate "is_ref" flag: an aliased slot *is* a

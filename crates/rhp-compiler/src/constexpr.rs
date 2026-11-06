@@ -255,7 +255,15 @@ fn compile_pass(cx: &FileCtx, e: &Expression, allow_dynamic: bool) -> Result<(),
             }
             match pa {
                 PartialApplication::Function(f) => {
-                    if !matches!(f.function, Expression::Identifier(_)) {
+                    let mut name = f.function;
+                    while let Expression::Parenthesized(p) = name {
+                        name = p.expression;
+                    }
+                    if let Expression::Literal(l) = name {
+                        if !matches!(l, crate::parse::cst::Literal::String(_)) {
+                            return fail(e, "Illegal function name");
+                        }
+                    } else if !matches!(f.function, Expression::Identifier(_)) {
                         return fail(e, "Cannot use dynamic function name in constant expression");
                     }
                 }

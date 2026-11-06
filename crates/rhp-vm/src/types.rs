@@ -176,11 +176,19 @@ impl Vm {
                 frame.regs[p.cv as usize] = Value::Array(a);
                 continue;
             }
-            if p.by_ref
-                || p.variadic
-                || i >= frame.argc
-                || (i < 64 && frame.holes & (1u64 << i) != 0)
-            {
+            if p.variadic || i >= frame.argc || (i < 64 && frame.holes & (1u64 << i) != 0) {
+                continue;
+            }
+            if p.by_ref {
+                // the referenced value is converted in place
+                if let Value::Ref(rc) = &frame.regs[p.cv as usize] {
+                    let rc = rc.clone();
+                    let cur = rc.borrow().clone();
+                    if matches!(cur, Value::Object(_)) {
+                        let v = self.coerce_stringable(cur, ty, false, ctx)?;
+                        *rc.borrow_mut() = v;
+                    }
+                }
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
@@ -205,16 +213,21 @@ impl Vm {
         let strict = caller.unwrap_or(false);
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
-            // by-ref / variadic params aren't coerced here; a defaulted (not
-            // passed) param is trusted.
-            if p.by_ref
-                || p.variadic
-                || i >= frame.argc
-                || (i < 64 && frame.holes & (1u64 << i) != 0)
-            {
+            if p.variadic {
+                self.check_variadic_types(proto, frame, i, caller, ctx)
+                    .map_err(|t| (i, t))?;
                 continue;
             }
-            let cur = frame.regs[p.cv as usize].clone();
+            // A defaulted (not passed) param is trusted.
+            if i >= frame.argc || (i < 64 && frame.holes & (1u64 << i) != 0) {
+                continue;
+            }
+            // A by-reference parameter is checked on the referenced value,
+            // which keeps a coerced one.
+            let cur = match &frame.regs[p.cv as usize] {
+                Value::Ref(rc) if p.by_ref => rc.borrow().clone(),
+                v => v.clone(),
+            };
             // zend_check_type_slow's zend_is_callable runs in the callee's
             // frame (its scope and `$this`), deprecations included.
             let callable = ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
@@ -252,7 +265,10 @@ impl Vm {
                     if let Err(t) = self.coercion_diag_at(&cur, &coerced, at) {
                         return Err((i, t));
                     }
-                    frame.regs[p.cv as usize] = coerced
+                    match &frame.regs[p.cv as usize] {
+                        Value::Ref(rc) if p.by_ref => *rc.borrow_mut() = coerced,
+                        _ => frame.regs[p.cv as usize] = coerced,
+                    }
                 }
                 // A prelude (built-in) function takes null for a scalar
                 // parameter like an internal one in coercive mode: deprecated,
@@ -277,39 +293,116 @@ impl Vm {
                     frame.regs[p.cv as usize] = zero;
                 }
                 Err(()) => {
-                    let fname = self.func_c_name(proto, ctx);
-                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
-                        .into_owned();
-                    // php appends the call site when the caller is user code (the
-                    // new frame has not been pushed yet: the caller is the top);
-                    // a callback invoked by a builtin (`caller == None`) has none.
-                    // Prelude (built-in PHP-source) functions report like
-                    // internal ones: no call site.
-                    let site = caller
-                        .filter(|_| !proto.is_internal())
-                        .and_then(|_| self.user_call_site())
-                        .map(|(file, line)| {
-                            format!(
-                                ", called in {} on line {}",
-                                String::from_utf8_lossy(&file),
-                                line
-                            )
-                        });
+                    let label = format!(
+                        " (${})",
+                        String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                    );
                     return Err((
                         i,
-                        Thrown::error(
-                            "TypeError",
-                            format!(
-                                "{}(): Argument #{} (${}) must be of type {}, {} given{}",
-                                fname,
-                                i + 1,
-                                pname,
-                                self.type_string_resolved(ty, ctx, frame.called_class),
-                                rhp_builtins::zval_value_name(self, &deref(&cur)),
-                                site.unwrap_or_default(),
-                            ),
-                        ),
+                        self.arg_type_error(proto, frame, i, &label, &cur, caller, ctx),
                     ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// zend_verify_arg_error: "f(): Argument #N ($x) must be of type T, U
+    /// given". php appends the call site when the caller is user code (the
+    /// new frame has not been pushed yet: the caller is the top); a callback
+    /// invoked by a builtin (`caller == None`) has none. Prelude (built-in
+    /// PHP-source) functions report like internal ones: no call site.
+    #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
+    fn arg_type_error(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        i: usize,
+        label: &str,
+        cur: &Value,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Thrown {
+        let p = &proto.params[i.min(proto.params.len() - 1)];
+        let ty = p.type_hint.as_ref().expect("typed parameter");
+        let site = caller
+            .filter(|_| !proto.is_internal())
+            .and_then(|_| self.user_call_site())
+            .map(|(file, line)| {
+                format!(
+                    ", called in {} on line {}",
+                    String::from_utf8_lossy(&file),
+                    line
+                )
+            });
+        Thrown::error(
+            "TypeError",
+            format!(
+                "{}(): Argument #{}{label} must be of type {}, {} given{}",
+                self.func_c_name(proto, ctx),
+                i + 1,
+                self.type_string_resolved(ty, ctx, frame.called_class),
+                rhp_builtins::zval_value_name(self, &deref(cur)),
+                site.unwrap_or_default(),
+            ),
+        )
+    }
+
+    /// ZEND_RECV_VARIADIC's checks: each collected argument of the typed
+    /// variadic parameter `i`, in order (a reference's value is coerced in
+    /// place).
+    #[inline(never)]
+    fn check_variadic_types(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        i: usize,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        let p = &proto.params[i];
+        let Some(ty) = &p.type_hint else {
+            return Ok(());
+        };
+        let Value::Array(arr) = &frame.regs[p.cv as usize] else {
+            return Ok(());
+        };
+        let strict = caller.unwrap_or(false);
+        let items: Vec<(ArrayKey, Value)> =
+            arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        // php numbers a named extra after the positional ones, all alike
+        let positional = items
+            .iter()
+            .filter(|(k, _)| matches!(k, ArrayKey::Int(_)))
+            .count();
+        for (n, (k, v)) in items.into_iter().enumerate() {
+            let cur = deref(&v);
+            match self.check_one(&cur, ty, strict, ctx) {
+                Ok(None) => {}
+                Ok(Some(coerced)) => {
+                    let at = || {
+                        (!proto.is_internal())
+                            .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64))
+                    };
+                    self.coercion_diag_at(&cur, &coerced, at)?;
+                    match &v {
+                        Value::Ref(rc) => *rc.borrow_mut() = coerced,
+                        _ => {
+                            if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                                a.insert(k, coerced);
+                            }
+                        }
+                    }
+                }
+                Err(()) => {
+                    // zend_verify_variadic_arg_type: no parameter name
+                    let at = match &k {
+                        ArrayKey::Str(_) => i + positional,
+                        ArrayKey::Int(_) => i + n,
+                    };
+                    return Err(self.arg_type_error(proto, frame, at, "", &cur, caller, ctx));
                 }
             }
         }
@@ -390,6 +483,99 @@ impl Vm {
             )
         };
         Err(Thrown::error("TypeError", msg))
+    }
+
+    /// ZEND_RETURN_BY_REF (after ZEND_VERIFY_RETURN_TYPE): the value a
+    /// by-reference function returns from register `src`. The type is
+    /// checked on the referenced value, which keeps a coerced value; a value
+    /// that is no reference notices and is returned in a new one.
+    pub(crate) fn ret_ref_value(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        src: rhp_bytecode::Reg,
+        kind: u8,
+    ) -> Result<Value, Thrown> {
+        let raw = self.ret_ref_checked(top, proto, src, kind)?;
+        self.ret_ref_wrap(raw, kind)
+    }
+
+    /// The type-checked value of a by-reference `return` (ZEND_VERIFY_RETURN_TYPE),
+    /// before RETURN_BY_REF.
+    pub(crate) fn ret_ref_checked(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        src: rhp_bytecode::Reg,
+        kind: u8,
+    ) -> Result<Value, Thrown> {
+        let typed = proto.return_type.is_some() && !proto.is_generator;
+        if kind == rhp_bytecode::RET_REF_IMPLICIT {
+            if typed {
+                self.check_implicit_return(proto, top)?;
+            }
+            return Ok(Value::Null);
+        }
+        let raw = self.stack[top].regs[src as usize].clone();
+        if typed {
+            self.recheck_ref_return(top, proto, &raw)
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// RETURN_BY_REF on a checked value: a value that is no reference
+    /// notices and is returned in a new one.
+    pub(crate) fn ret_ref_wrap(&mut self, raw: Value, kind: u8) -> Result<Value, Thrown> {
+        use rhp_bytecode::{RET_REF_FUNC, RET_REF_IMPLICIT, RET_REF_VALUE};
+        let is_ref = matches!(raw, Value::Ref(_));
+        if kind == RET_REF_VALUE || kind == RET_REF_IMPLICIT || (kind == RET_REF_FUNC && !is_ref) {
+            self.diag(
+                rhp_builtins::E_NOTICE,
+                "Only variable references should be returned by reference",
+            )?;
+            let v = match raw {
+                Value::Undef => Value::Null,
+                v => deref(&v),
+            };
+            return Ok(Value::Ref(std::rc::Rc::new(std::cell::RefCell::new(v))));
+        }
+        Ok(match raw {
+            Value::Ref(_) => raw,
+            v => Value::Ref(std::rc::Rc::new(std::cell::RefCell::new(v))),
+        })
+    }
+
+    /// The return type check of a by-reference function on `v`: a
+    /// reference's value is coerced in place. A plain value comes back
+    /// coerced.
+    pub(crate) fn recheck_ref_return(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        v: &Value,
+    ) -> Result<Value, Thrown> {
+        let Some(ty) = &proto.return_type else {
+            return Ok(v.clone());
+        };
+        if proto.is_generator {
+            return Ok(v.clone());
+        }
+        let ctx = self.stack[top].defining_class;
+        let cur = match v {
+            Value::Ref(rc) => rc.borrow().clone(),
+            Value::Undef => Value::Null,
+            v => v.clone(),
+        };
+        let nv = self.coerce_stringable(cur, ty, proto.strict_types, ctx)?;
+        let nv = self.check_return_type(proto, top, nv)?;
+        Ok(match v {
+            Value::Ref(rc) => {
+                *rc.borrow_mut() = nv;
+                v.clone()
+            }
+            _ => nv,
+        })
     }
 
     pub(crate) fn check_return_type(
@@ -607,6 +793,15 @@ impl Vm {
         match &v {
             Value::Str(s) => Ok(s.clone()),
             Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),
+            // zval_try_get_string.
+            Value::Array(_) => {
+                self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
+                Ok(PhpStr::from("Array"))
+            }
+            Value::Closure(_) => Err(Thrown::error(
+                "Error",
+                "Object of class Closure could not be converted to string",
+            )),
             _ => Ok(PhpStr::from_bytes(conv::to_string_bytes(&v))),
         }
     }

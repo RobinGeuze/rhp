@@ -50,17 +50,104 @@ impl ProtoBuilder<'_> {
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
-        let result_unused = std::mem::take(&mut self.call_result_unused);
         let callee_id: &Identifier = match fc.function {
             Expression::Identifier(id) => id,
             Expression::ConstantAccess(ca) => &ca.name,
             // `$f(...)`, `($expr)(...)`, `$arr[0](...)`: the callee is a runtime
             // value (closure / string name / `[obj, method]` / __invoke object).
-            _ => return self.compile_dynamic_call(fc),
+            _ => {
+                self.call_result_unused = false;
+                return self.compile_dynamic_call(fc);
+            }
         };
         // Resolve the (possibly namespaced) callee to a primary name + optional
         // global fallback (PHP's fall-back-to-global for unqualified calls).
+        // `clone(...)` always names the global clone() (ZEND_NAME_FQ).
+        if is_clone_name(callee_id) {
+            if let [Argument::Positional(p)] = fc.argument_list.arguments.nodes {
+                if p.ellipsis.is_none() {
+                    // zend_compile_func_clone: ZEND_CLONE.
+                    self.call_result_unused = false;
+                    let src = self.compile_expr(p.value)?;
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::CloneObj { dst, src });
+                    return Ok(dst);
+                }
+            }
+            return self.compile_named_call(fc, b"clone".to_vec(), None, None);
+        }
         let (name_bytes, fallback) = self.cx.resolve_name(callee_id, NameKind::Func);
+        // zend_compile_call: `assert` as written in a namespace, or a name
+        // resolving to the global `assert`.
+        let is_assert = match &fallback {
+            Some(_) => crate::names::identifier_raw(callee_id).eq_ignore_ascii_case(b"assert"),
+            None => name_bytes.eq_ignore_ascii_case(b"assert"),
+        };
+        if is_assert {
+            return self.compile_assert(fc, name_bytes, fallback);
+        }
+        self.compile_named_call(fc, name_bytes, fallback, None)
+    }
+
+    /// zend_compile_assert: nothing at all under zend.assertions=-1;
+    /// otherwise ZEND_ASSERT_CHECK skips the call at run time when
+    /// assertions are off, and a lone argument gets the exported
+    /// expression as its description.
+    fn compile_assert(
+        &mut self,
+        fc: &crate::parse::cst::FunctionCall,
+        name_bytes: Vec<u8>,
+        fallback: Option<Vec<u8>>,
+    ) -> Result<Reg, Thrown> {
+        if (self.cx.builtins.assertions)() < 0 {
+            self.call_result_unused = false;
+            self.scanner_diags(crate::parse::cst::Node::ArgumentList(&fc.argument_list));
+            let dst = self.alloc_temp();
+            self.emit(Instr::LoadBool { dst, b: true });
+            return Ok(dst);
+        }
+        let extra = match fc
+            .argument_list
+            .arguments
+            .iter()
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            // The description goes after the spread: php's argument order check.
+            [Argument::Positional(p)] if p.ellipsis.is_some() => {
+                self.cx.fatal(
+                    p.span().start.offset,
+                    "Cannot use positional argument after argument unpacking".to_string(),
+                );
+                None
+            }
+            [arg] => Some((
+                matches!(arg, Argument::Named(_)),
+                crate::ast_export::assert_message(self.cx.src, arg),
+            )),
+            _ => None,
+        };
+        let res = self.alloc_temp();
+        let check = self.code.len();
+        self.emit(Instr::Nop);
+        let r = self.compile_named_call(fc, name_bytes, fallback, extra)?;
+        self.emit(Instr::Mov { dst: res, src: r });
+        let target = self.here();
+        self.code[check] = Instr::AssertCheck { dst: res, target };
+        Ok(res)
+    }
+
+    /// A call to a function by name; `extra` is an argument the compiler
+    /// adds after the written ones (assert()'s description; named when
+    /// the written one is).
+    fn compile_named_call(
+        &mut self,
+        fc: &crate::parse::cst::FunctionCall,
+        name_bytes: Vec<u8>,
+        fallback: Option<Vec<u8>>,
+        extra: Option<(bool, Vec<u8>)>,
+    ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.call_result_unused);
 
         // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
         // args into an array, emit CallV (the VM places named arguments).
@@ -69,6 +156,32 @@ impl ProtoBuilder<'_> {
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let known = self.known_params(&name_bytes, &fallback);
             let args = self.build_args_array_known(Some(&fc.argument_list), known.as_ref())?;
+            if let Some((named, msg)) = &extra {
+                let k = self.intern_const(Value::str(msg.clone()));
+                let val = self.alloc_temp();
+                self.emit(Instr::LoadConst { dst: val, k });
+                let taken = fc
+                    .argument_list
+                    .arguments
+                    .iter()
+                    .any(|a| matches!(a, Argument::Named(n) if n.name.value == b"description"));
+                if taken {
+                    self.emit_throw_error(
+                        "Named parameter $description overwrites previous argument",
+                    );
+                } else if *named {
+                    let k = self.intern_const(Value::str("description"));
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst: key, k });
+                    self.emit(Instr::ArrSet {
+                        arr: args,
+                        key,
+                        val,
+                    });
+                } else {
+                    self.emit(Instr::ArrPush { arr: args, val });
+                }
+            }
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
@@ -147,10 +260,8 @@ impl ProtoBuilder<'_> {
             Ref(Reg),
             /// A by-ref argument that is a property / array-element lvalue.
             RefLval(&'e Expression<'e>),
-            /// A call result for a by-ref parameter (passed with a notice).
+            /// A call result for a by-ref parameter (a value notices).
             NoRef(Reg),
-            /// The result of a function that returns by reference.
-            RefCall(Reg),
             /// SEND_VAR_EX of a variable to an unresolved function.
             VarEx {
                 cv: Reg,
@@ -167,6 +278,18 @@ impl ProtoBuilder<'_> {
         // argument that needs to ask it about by-reference parameters.
         let mut callee: Option<Reg> = None;
         let mut slots = Vec::new();
+        let mut kinds = Vec::new();
+        // A file function not compiled yet is called by name: php checks
+        // its arguments when the call runs (SEND_FUNC_ARG).
+        let late = builtin.is_none() && {
+            use mago_span::HasSpan;
+            let at = fc.span().start.offset;
+            [Some(&name_lc), global_lc.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|n| self.cx.sig_ends.get(n))
+                .is_some_and(|end| *end > at)
+        };
         for (i, arg) in fc.argument_list.arguments.iter().enumerate() {
             let p = match arg {
                 Argument::Positional(p) if p.ellipsis.is_none() => p,
@@ -185,27 +308,53 @@ impl ProtoBuilder<'_> {
                 .and_then(|s| s.get(i).copied())
                 .unwrap_or(false);
             if by_ref {
-                match p.value {
-                    Expression::Variable(Variable::Direct(d)) => {
+                let value = unparen(p.value);
+                let send = self.send_kind(value);
+                match value {
+                    Expression::Variable(Variable::Direct(d)) if send.is_none() => {
                         slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))))
                     }
                     // `sort($a['k'])`, `array_push($this->items, …)`.
+                    // An element of a temporary: a compile error for a
+                    // known callee, an Error for one php does not know yet.
                     Expression::ArrayAccess(_)
                     | Expression::ArrayAppend(_)
                     | Expression::Access(Access::Property(_))
-                    | Expression::Access(Access::StaticProperty(_)) => {
-                        slots.push(ArgSlot::RefLval(p.value))
+                        if send.is_none() && late && self.func_arg_root(value) == Some(true) =>
+                    {
+                        match value {
+                            Expression::ArrayAccess(a) => {
+                                self.compile_expr(a.array)?;
+                                self.compile_expr(a.index)?;
+                            }
+                            Expression::ArrayAppend(a) => {
+                                self.compile_expr(a.array)?;
+                            }
+                            Expression::Access(Access::Property(p)) => {
+                                self.compile_expr(p.object)?;
+                            }
+                            _ => {}
+                        }
+                        let r = self
+                            .emit_throw_error("Cannot use temporary expression in write context");
+                        slots.push(ArgSlot::Value(r));
                     }
-                    // A call result for a by-ref parameter: php passes it
-                    // anyway with "Only variables should be passed by reference"
-                    // (ZEND_SEND_VAR_NO_REF / SEND_FUNC_ARG). prefer-ref
-                    // parameters accept a temporary silently.
-                    Expression::Call(_) => {
+                    Expression::ArrayAccess(_)
+                    | Expression::ArrayAppend(_)
+                    | Expression::Access(Access::Property(_))
+                    | Expression::Access(Access::StaticProperty(_))
+                        if send.is_none() =>
+                    {
+                        slots.push(ArgSlot::RefLval(value))
+                    }
+                    // A call result (or `new`, `$a =& $b`) for a by-ref
+                    // parameter: php's SEND_VAR_NO_REF passes a reference
+                    // as it is, a value with "Only variables should be passed
+                    // by reference". prefer-ref parameters take it silently.
+                    _ if send == Some(rhp_bytecode::SEND_VAR) => {
                         let r = self.compile_expr(p.value)?;
                         if prefer_ref(i) {
                             slots.push(ArgSlot::Value(r))
-                        } else if self.returns_ref_call(p.value) {
-                            slots.push(ArgSlot::RefCall(r))
                         } else {
                             slots.push(ArgSlot::NoRef(r))
                         }
@@ -280,7 +429,7 @@ impl ProtoBuilder<'_> {
                         | Expression::Access(Access::Property(_))
                         | Expression::Access(Access::StaticProperty(_))
                 )
-                && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
+                && self.func_arg_root(p.value).is_some()
             {
                 // SEND_FUNC_ARG for an element or property of a variable
                 let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
@@ -291,26 +440,37 @@ impl ProtoBuilder<'_> {
                 // (php's SEND_VAR), before later arguments can change it.
                 // A file function not compiled yet is called by name: `[]`
                 // in its argument fails at run time (SEND_FUNC_ARG).
-                let late = builtin.is_none() && {
-                    use mago_span::HasSpan;
-                    let at = fc.span().start.offset;
-                    [Some(&name_lc), global_lc.as_ref()]
-                        .into_iter()
-                        .flatten()
-                        .find_map(|n| self.cx.sig_ends.get(n))
-                        .is_some_and(|end| *end > at)
-                };
+                let mut kind = None;
+                if sig.is_none() && builtin.is_none() {
+                    kind = self.send_kind(p.value);
+                    if let Some(k) = kind {
+                        kinds.push((i as u16, k));
+                    }
+                }
                 let saved = self.func_arg_read;
                 self.func_arg_read |= late;
                 let r = self.compile_expr(p.value);
                 self.func_arg_read = saved;
                 let r = r?;
+                if kind == Some(rhp_bytecode::SEND_VAR) {
+                    slots.push(ArgSlot::Pass(r));
+                    continue;
+                }
                 let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
         }
+        if let Some((_, msg)) = &extra {
+            let k = self.intern_const(Value::str(msg.clone()));
+            let r = self.alloc_temp();
+            self.emit(Instr::LoadConst { dst: r, k });
+            slots.push(ArgSlot::Value(r));
+        }
         let argc = slots.len() as u16;
         let base = self.alloc_temps(argc);
+        if !kinds.is_empty() {
+            self.pending_sends = Some((base, kinds));
+        }
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
@@ -322,7 +482,6 @@ impl ProtoBuilder<'_> {
                 ArgSlot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 ArgSlot::Ref(cv) => self.emit(Instr::MakeRef { dst, cv }),
                 ArgSlot::NoRef(src) => self.emit(Instr::SendNoRef { dst, src }),
-                ArgSlot::RefCall(src) => self.emit(Instr::MakeRefVal { dst, src }),
                 ArgSlot::RefLval(expr) => {
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(expr, &mut steps)?;
@@ -336,6 +495,9 @@ impl ProtoBuilder<'_> {
             }
         }
         let mut flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        if flags.contains(CallFlags::USER_CALL) && ct_bound_callee(self.cx, &fc.argument_list) {
+            flags.insert(CallFlags::CT_BOUND);
+        }
         if result_unused {
             flags.insert(CallFlags::RESULT_UNUSED);
         }
@@ -602,6 +764,19 @@ impl ProtoBuilder<'_> {
         }
         // Build the callable Value into `callee`.
         let mut ns_name = None;
+        let static_call = match pa {
+            Pa::StaticMethod(_) => true,
+            // zend_compile_dynamic_call: a string literal with `::`.
+            Pa::Function(f) => {
+                let mut lit = f.function;
+                while let Expression::Parenthesized(p) = lit {
+                    lit = p.expression;
+                }
+                matches!(lit, Expression::Literal(crate::parse::cst::Literal::String(s))
+                    if s.value.is_some_and(|v| v.windows(2).any(|w| w == b"::")))
+            }
+            Pa::Method(_) => false,
+        };
         let callee = match pa {
             Pa::Function(f) => match f.function {
                 // Named function: the callable is its (resolved) name string.
@@ -611,6 +786,7 @@ impl ProtoBuilder<'_> {
                 {
                     self.load_string_const(b"exit")
                 }
+                Expression::Identifier(id) if is_clone_name(id) => self.load_string_const(b"clone"),
                 Expression::Identifier(id) => {
                     let (n, ns) = self.resolve_callable_name(id);
                     ns_name = ns;
@@ -635,8 +811,7 @@ impl ProtoBuilder<'_> {
                     ));
                 }
                 let obj = self.compile_expr(m.object)?;
-                let name = self.selector_string(&m.method)?;
-                self.build_pair(obj, &name)
+                self.build_pair_sel(obj, &m.method)?
             }
             Pa::StaticMethod(s) if is_parent_hook_call(s.class, &s.method) => {
                 use mago_span::HasSpan;
@@ -662,16 +837,18 @@ impl ProtoBuilder<'_> {
                     Expression::Parent(_) => self.load_string_const(b"parent"),
                     other => self.compile_expr(other)?,
                 };
-                let name = self.selector_string(&s.method)?;
-                self.build_pair(class, &name)
+                self.build_pair_sel(class, &s.method)?
             }
         };
         let ns_name = self.intern_fallback(&ns_name);
         let dst = self.alloc_temp();
+        let const_expr = self.in_const_expr();
         self.emit(Instr::MakeFcc {
             dst,
             callee,
             ns_name,
+            const_expr,
+            static_call,
         });
         Ok(dst)
     }
@@ -759,6 +936,41 @@ impl ProtoBuilder<'_> {
                             }
                         }
                     }
+                    // `...$arr` for a callee with by-reference parameters:
+                    // their elements are sent as references into the array
+                    // (php's SEND_UNPACK).
+                    Argument::Positional(p)
+                        if p.ellipsis.is_some()
+                            && known.is_some_and(|k| k.by_ref.iter().any(|b| *b)) =>
+                    {
+                        unpacked = true;
+                        let k = known.expect("checked");
+                        // Only a plain variable is changed in place (php
+                        // separates a fetched element or property's copy).
+                        let v = unparen(p.value);
+                        let src = if matches!(v, Expression::Variable(Variable::Direct(d))
+                            if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this"))
+                        {
+                            self.compile_ref_source(v)?
+                        } else {
+                            self.compile_expr(p.value)?
+                        };
+                        let mut sig = rhp_values::PhpArray::new();
+                        sig.push(Value::str(k.fname.clone()));
+                        sig.push(Value::Bool(k.variadic));
+                        let mut flags = rhp_values::PhpArray::new();
+                        for b in &k.by_ref {
+                            flags.push(Value::Bool(*b));
+                        }
+                        sig.push(Value::Array(flags));
+                        let mut names = rhp_values::PhpArray::new();
+                        for n in &k.names {
+                            names.push(Value::str(n.clone()));
+                        }
+                        sig.push(Value::Array(names));
+                        let sig = self.intern_const(Value::Array(sig));
+                        self.emit(Instr::ArgSpreadRef { arr: dst, src, sig });
+                    }
                     Argument::Positional(p) => {
                         unpacked |= p.ellipsis.is_some();
                         let r = self.compile_expr(p.value)?;
@@ -842,9 +1054,11 @@ impl ProtoBuilder<'_> {
             return Ok(None);
         };
         let dst = self.alloc_temp();
+        let e = unparen(e);
+        let send = self.send_kind(e);
         match e {
             Expression::Variable(Variable::Direct(d))
-                if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this") =>
+                if send.is_none() && !matches!(strip_dollar(d.name), b"GLOBALS" | b"this") =>
             {
                 let cv = self.cv(strip_dollar(d.name));
                 self.emit(Instr::MakeRef { dst, cv });
@@ -852,20 +1066,18 @@ impl ProtoBuilder<'_> {
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Access(Access::Property(_))
-            | Expression::Access(Access::StaticProperty(_)) => {
+            | Expression::Access(Access::StaticProperty(_))
+                if send.is_none() =>
+            {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(e, &mut steps)?;
                 self.emit_cursor(root, &steps);
                 self.emit(Instr::MakeRefLval { dst });
             }
             _ if k.prefer_ref[i] => return Ok(None),
-            Expression::Call(_) => {
+            _ if send == Some(rhp_bytecode::SEND_VAR) => {
                 let src = self.compile_expr(e)?;
-                if self.returns_ref_call(e) {
-                    self.emit(Instr::MakeRefVal { dst, src });
-                } else {
-                    self.emit(Instr::SendNoRef { dst, src });
-                }
+                self.emit(Instr::SendNoRef { dst, src });
             }
             _ => {
                 self.compile_expr(e)?;
@@ -885,23 +1097,59 @@ impl ProtoBuilder<'_> {
         Ok(Some(dst))
     }
 
-    /// Whether `e` calls a function of this file that returns by reference
-    /// (SEND_VAR_NO_REF finds a reference then: no notice).
-    fn returns_ref_call(&self, e: &Expression) -> bool {
-        let Expression::Call(crate::parse::cst::Call::Function(fc)) = e else {
-            return false;
-        };
-        let id = match fc.function {
-            Expression::Identifier(id) => id,
-            Expression::ConstantAccess(ca) => &ca.name,
-            _ => return false,
-        };
-        let (name, fallback) = self.cx.resolve_name(id, NameKind::Func);
-        let lc = name.to_ascii_lowercase();
-        if self.cx.sigs.contains_key(&lc) {
-            return self.cx.ref_returning.contains(&lc);
+    /// The root of an element / property chain sent to a callee known only
+    /// at run time (php's FETCH_*_FUNC_ARG): `Some(false)` for a variable or
+    /// a call's result (a container to reference), `Some(true)` for a
+    /// temporary (writing to it fails), `None` when php sends it by value.
+    fn func_arg_root(&self, e: &Expression) -> Option<bool> {
+        match e {
+            Expression::Parenthesized(p) => self.func_arg_root(p.expression),
+            Expression::ArrayAccess(a) if is_globals_var(a.array) => None,
+            Expression::ArrayAccess(a) => self.func_arg_root(a.array),
+            Expression::ArrayAppend(a) => self.func_arg_root(a.array),
+            Expression::Access(Access::Property(p)) => self.func_arg_root(p.object),
+            Expression::Variable(Variable::Direct(_)) => (!is_globals_var(e)).then_some(false),
+            Expression::Variable(_) => None,
+            Expression::Access(Access::StaticProperty(_)) => Some(false),
+            Expression::Access(Access::NullSafeProperty(_)) => None,
+            Expression::Call(crate::parse::cst::Call::NullSafeMethod(_)) => None,
+            e if crate::assign::is_short_circuited(e) => None,
+            Expression::Call(_) | Expression::Pipe(_) => Some(self.is_builtin_call(e)),
+            _ => Some(true),
         }
-        fallback.is_some_and(|f| self.cx.ref_returning.contains(&f.to_ascii_lowercase()))
+    }
+
+    /// How zend_compile_args sends argument `e` to a callee it does not
+    /// know: `None` for a variable (by reference if the parameter is),
+    /// else SEND_VAR (a call result, `new`, a reference assignment) or
+    /// SEND_VAL (any other temporary).
+    pub(crate) fn send_kind(&self, e: &Expression) -> Option<u8> {
+        use crate::assign::{is_call, is_short_circuited, is_variable};
+        use rhp_bytecode::{SEND_VAL, SEND_VAR};
+        let b = unparen(e);
+        if crate::assign::is_globals_var(b) {
+            return Some(SEND_VAL);
+        }
+        // `@expr` keeps a call's (VAR) result; a silenced variable is a value
+        if let Expression::UnaryPrefix(u) = b {
+            if matches!(
+                u.operator,
+                crate::parse::cst::UnaryPrefixOperator::ErrorControl(_)
+            ) {
+                return Some(self.send_kind(u.operand).unwrap_or(SEND_VAL));
+            }
+        }
+        if is_call(b) {
+            return Some(if self.is_builtin_call(b) {
+                SEND_VAL
+            } else {
+                SEND_VAR
+            });
+        }
+        if is_variable(b) {
+            return is_short_circuited(b).then_some(SEND_VAL);
+        }
+        Some(if produces_var(b) { SEND_VAR } else { SEND_VAL })
     }
 
     /// zend_compile_args' compile-time order checks: no positional argument
@@ -969,8 +1217,10 @@ impl ProtoBuilder<'_> {
         enum Slot {
             Value(Reg),
             Ref(Reg),
+            Pass(Reg),
         }
         let mut slots = Vec::new();
+        let mut kinds = Vec::new();
         if let Some(list) = args {
             for (i, arg) in list.arguments.iter().enumerate() {
                 let p = match arg {
@@ -997,20 +1247,32 @@ impl ProtoBuilder<'_> {
                             | Expression::ArrayAppend(_)
                             | Expression::Access(Access::Property(_))
                             | Expression::Access(Access::StaticProperty(_))
-                    ) && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
+                    ) && self.func_arg_root(p.value).is_some()
                     {
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
                         slots.push(Slot::Ref(r));
                         continue;
                     }
                 }
+                let kind = self.send_kind(p.value);
+                if let Some(k) = kind {
+                    kinds.push((i as u16, k));
+                }
                 let r = self.compile_expr(p.value)?;
+                if kind == Some(rhp_bytecode::SEND_VAR) {
+                    // a reference the call returned goes on as one
+                    slots.push(Slot::Pass(r));
+                    continue;
+                }
                 let r = self.snapshot_arg(list, i, p.value, r);
                 slots.push(Slot::Value(r));
             }
         }
         let argc = slots.len() as u16;
         let base = self.alloc_temps(argc);
+        if !kinds.is_empty() {
+            self.pending_sends = Some((base, kinds));
+        }
         for (i, slot) in slots.into_iter().enumerate() {
             let dst = base + i as Reg;
             match slot {
@@ -1021,6 +1283,7 @@ impl ProtoBuilder<'_> {
                 }
                 Slot::Value(r) => self.emit(Instr::Mov { dst, src: r }),
                 Slot::Ref(cv) => self.emit(Instr::MakeArgRef { dst, cv }),
+                Slot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
             }
         }
         Ok((base, argc))
@@ -1059,11 +1322,32 @@ impl ProtoBuilder<'_> {
                 callee,
                 idx,
             }),
+            // `$o->$m(...)`: asked as the callable `[$o, $m]`.
+            ArgRefTarget::MethodDyn(obj, name) => {
+                let callee = self.alloc_temp();
+                self.emit(Instr::NewArray {
+                    dst: callee,
+                    cap: 2,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: obj,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: name,
+                });
+                self.emit(Instr::ValueArgIsRef {
+                    dst: flag,
+                    callee,
+                    idx,
+                });
+            }
         }
         let t = self.alloc_temp();
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse flag -> by_value
-        if temp_rooted_lvalue(e) {
+        if self.func_arg_root(e) == Some(true) {
             let k = self.intern_const(Value::str(
                 "Cannot use temporary expression in write context",
             ));
@@ -1181,7 +1465,12 @@ impl ProtoBuilder<'_> {
                         });
                         return Ok(dst);
                     }
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
+                    let (base, argc) = self.compile_arg_window_t(
+                        Some(args),
+                        &[],
+                        true,
+                        Some(ArgRefTarget::MethodDyn(obj, name)),
+                    )?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallMethodDyn {
                         dst,
@@ -1389,11 +1678,34 @@ fn is_parent_hook_call(
             if m.value.eq_ignore_ascii_case(b"get") || m.value.eq_ignore_ascii_case(b"set"))
 }
 
-fn unparen<'a>(mut e: &'a Expression<'a>) -> &'a Expression<'a> {
-    while let Expression::Parenthesized(p) = e {
-        e = p.expression;
+use crate::util::unparen;
+
+/// An expression php compiles to a VAR result that may be a reference:
+/// `new`, `$a =& $b`, a destructuring that binds references.
+pub(crate) fn produces_var(e: &Expression) -> bool {
+    use crate::parse::cst::AssignmentOperator;
+    use crate::parse::cst::{CompositeString, Construct};
+    match unparen(e) {
+        Expression::Instantiation(_) => true,
+        // INCLUDE_OR_EVAL, and a backtick's shell_exec() call
+        Expression::Construct(
+            Construct::Eval(_)
+            | Construct::Include(_)
+            | Construct::IncludeOnce(_)
+            | Construct::Require(_)
+            | Construct::RequireOnce(_),
+        ) => true,
+        Expression::CompositeString(CompositeString::ShellExecute(_)) => true,
+        Expression::Assignment(a) if matches!(a.operator, AssignmentOperator::Assign(_)) => {
+            crate::assign::as_reference(a.rhs).is_some()
+                || match a.lhs {
+                    Expression::Array(arr) => crate::assign::list_has_refs(arr.elements.iter()),
+                    Expression::List(l) => crate::assign::list_has_refs(l.elements.iter()),
+                    _ => false,
+                }
+        }
+        _ => false,
     }
-    e
 }
 
 /// The stub signature of a builtin rhp implements: a native one, or a
@@ -1450,6 +1762,20 @@ fn call_flags(name: &[u8], fallback: Option<&[u8]>, argc: usize) -> CallFlags {
     flags
 }
 
+/// zend_try_compile_ct_bound_init_user_func: the first argument of
+/// `call_user_func[_array]` is a string literal naming an internal function.
+fn ct_bound_callee(cx: &FileCtx, list: &crate::parse::cst::ArgumentList) -> bool {
+    match list.arguments.first() {
+        Some(Argument::Positional(p)) => match p.value {
+            Expression::Literal(crate::parse::cst::Literal::String(s)) => s
+                .value
+                .is_some_and(|v| builtin_sig(cx, &v.to_ascii_lowercase()).is_some()),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 pub(crate) fn has_named(list: &crate::parse::cst::ArgumentList) -> bool {
     list.arguments
         .iter()
@@ -1496,6 +1822,8 @@ pub(crate) enum ArgRefTarget {
     Func(Reg),
     /// A callable value (`$f(...)`).
     Value(Reg),
+    /// A method named at run time (`$o->$m(...)`).
+    MethodDyn(Reg, Reg),
 }
 
 /// The variable name (without `$`) of a plain-variable argument php sends
@@ -1533,42 +1861,6 @@ fn later_arg_may_write(list: &crate::parse::cst::ArgumentList, i: usize) -> bool
 /// variable other than `$GLOBALS` or at a static property: the arguments
 /// SEND_FUNC_ARG can bind by reference (a chain on a call result or other
 /// temporary is passed by value).
-fn variable_rooted_lvalue(e: &Expression) -> bool {
-    match e {
-        Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
-        Expression::Access(Access::StaticProperty(_)) => true,
-        Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
-        Expression::ArrayAppend(a) => variable_rooted_lvalue(a.array),
-        Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
-        _ => false,
-    }
-}
-
-/// An element or property of a temporary (`[0, 1][0]`, `(new A)->p`): no
-/// container to reference.
-fn temp_rooted_lvalue(e: &Expression) -> bool {
-    match e {
-        Expression::Parenthesized(p) => temp_rooted_lvalue(p.expression),
-        Expression::ArrayAccess(a) => temp_root(a.array),
-        Expression::ArrayAppend(a) => temp_root(a.array),
-        Expression::Access(Access::Property(p)) => temp_root(p.object),
-        _ => false,
-    }
-}
-
-fn temp_root(e: &Expression) -> bool {
-    match e {
-        Expression::Variable(_) | Expression::Access(Access::StaticProperty(_)) => false,
-        Expression::Call(_) | Expression::Pipe(_) => false,
-        Expression::Access(Access::NullSafeProperty(_)) => false,
-        Expression::ArrayAccess(_)
-        | Expression::ArrayAppend(_)
-        | Expression::Access(Access::Property(_))
-        | Expression::Parenthesized(_) => temp_rooted_lvalue(e),
-        _ => true,
-    }
-}
-
 /// Calls php compiles to dedicated opcodes instead of a function call
 /// (zend_try_compile_special_func): they never appear as a trace frame, and a
 /// callback they invoke is called from the caller's own line.
@@ -1598,4 +1890,138 @@ pub(crate) fn frameless_icall(lcname: &[u8], argc: usize) -> bool {
         b"preg_replace" | b"str_replace" => argc == 3,
         _ => false,
     }
+}
+
+impl ProtoBuilder<'_> {
+    /// zend_compile_pipe: `$x |> f(...)` is the call `f($x)`, `$x |> $expr`
+    /// is `($expr)($x)`. The operand runs first, copied to a temporary so
+    /// a by-reference parameter refuses it.
+    pub(crate) fn compile_pipe(&mut self, p: &crate::parse::cst::Pipe) -> Result<Reg, Thrown> {
+        use crate::parse::cst::{
+            ArgumentList, Call, FunctionCall, Keyword, MethodCall, PartialApplication as Pa,
+            PositionalArgument, StaticMethodCall, TokenSeparatedSequence,
+        };
+        if let Expression::ArrowFunction(_) = p.callable {
+            return Err(compile_error(
+                "Arrow functions on the right hand side of |> must be parenthesized",
+                self.cur_line,
+            ));
+        }
+        let operand = self.compile_expr(p.input)?;
+        let operand = if operand < self.num_cvs {
+            let t = self.alloc_temp();
+            self.emit(Instr::Mov {
+                dst: t,
+                src: operand,
+            });
+            t
+        } else {
+            operand
+        };
+        // Stand-ins for already computed values: compile_expr hands back
+        // the register bound to the node's address.
+        let span = p.input.span();
+        let arg_expr = Expression::Static(Keyword {
+            span,
+            value: b"static",
+        });
+        let args = [Argument::Positional(PositionalArgument {
+            ellipsis: None,
+            value: &arg_expr,
+        })];
+        let callable = unparen(p.callable);
+        let list = |left_parenthesis, right_parenthesis| ArgumentList {
+            left_parenthesis,
+            arguments: TokenSeparatedSequence {
+                nodes: &args,
+                tokens: &[],
+            },
+            right_parenthesis,
+        };
+        let mark = self.expr_regs.len();
+        self.expr_regs
+            .push((&arg_expr as *const Expression as usize, operand));
+        let callee_expr;
+        let call = match callable {
+            Expression::PartialApplication(Pa::Function(f))
+                if pa_is_fcc(callable)
+                    && !matches!(f.function, Expression::Identifier(id)
+                        if id.value().strip_prefix(b"\\").unwrap_or(id.value()).eq_ignore_ascii_case(b"assert")) =>
+            {
+                Call::Function(FunctionCall {
+                    function: f.function,
+                    argument_list: list(
+                        f.argument_list.left_parenthesis,
+                        f.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            Expression::PartialApplication(Pa::StaticMethod(s)) if pa_is_fcc(callable) => {
+                Call::StaticMethod(StaticMethodCall {
+                    class: s.class,
+                    double_colon: s.double_colon,
+                    method: s.method.clone(),
+                    argument_list: list(
+                        s.argument_list.left_parenthesis,
+                        s.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            Expression::PartialApplication(Pa::Method(m)) if pa_is_fcc(callable) => {
+                Call::Method(MethodCall {
+                    object: m.object,
+                    arrow: m.arrow,
+                    method: m.method.clone(),
+                    argument_list: list(
+                        m.argument_list.left_parenthesis,
+                        m.argument_list.right_parenthesis,
+                    ),
+                })
+            }
+            other => {
+                let callee = match self.compile_expr(other) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.expr_regs.truncate(mark);
+                        return Err(e);
+                    }
+                };
+                callee_expr = Expression::Static(Keyword {
+                    span: other.span(),
+                    value: b"static",
+                });
+                self.expr_regs
+                    .push((&callee_expr as *const Expression as usize, callee));
+                Call::Function(FunctionCall {
+                    function: &callee_expr,
+                    argument_list: list(other.span(), other.span()),
+                })
+            }
+        };
+        let at = match &call {
+            Call::Function(fc) => fc.function.span(),
+            Call::Method(mc) => mc.method.span(),
+            Call::NullSafeMethod(mc) => mc.method.span(),
+            Call::StaticMethod(smc) => smc.method.span(),
+        };
+        self.call_lines.push(self.cx.line_of(at.start.offset));
+        let r = self.compile_call(&call);
+        self.call_lines.pop();
+        self.expr_regs.truncate(mark);
+        r
+    }
+}
+
+/// `clone` as mago gives it for `clone(...)` (a local name), or `\clone`.
+fn is_clone_name(id: &Identifier) -> bool {
+    match id {
+        Identifier::Local(l) => l.value.eq_ignore_ascii_case(b"clone"),
+        Identifier::FullyQualified(f) => f.value.eq_ignore_ascii_case(b"\\clone"),
+        Identifier::Qualified(_) => false,
+    }
+}
+
+/// `f(...)`: a partial application with only the variadic placeholder.
+fn pa_is_fcc(e: &Expression) -> bool {
+    matches!(e, Expression::PartialApplication(pa) if pa.is_first_class_callable())
 }

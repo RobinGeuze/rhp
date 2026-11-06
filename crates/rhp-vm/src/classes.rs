@@ -83,6 +83,9 @@ pub struct ClassEntry {
     /// Some property has hooks (php's `ce->num_hooked_props`): property
     /// access takes the hook-aware path only for such classes.
     pub hooked: bool,
+    /// Some static property has a type or a set visibility: static
+    /// property writes take the checked path only for such classes.
+    pub checked_statics: bool,
 }
 
 #[derive(Clone)]
@@ -165,6 +168,8 @@ pub struct StaticProp {
     pub prototype: ClassId,
     /// Declared type (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
 }
 
 #[derive(Clone)]
@@ -311,6 +316,11 @@ pub(crate) fn resolve_prop(
         }
     }
     let Some(key) = entry.prop_visible.get(name) else {
+        if !entry.static_props.is_empty() {
+            if let Some(d) = static_as_instance_denied(classes, cls, scope, name) {
+                return PropRes::Denied(d);
+            }
+        }
         return dynamic_or_bad(name);
     };
     let pe = &entry.props[key];
@@ -327,6 +337,49 @@ pub(crate) fn resolve_prop(
         Visibility::Private if pe.declaring_class != cls => dynamic_or_bad(name),
         Visibility::Private => PropRes::Denied(Deny::Vis(Visibility::Private)),
     }
+}
+
+/// A static property reached as `$o->name`, as zend_get_property_offset
+/// finds it: `Some(Some(deny))` when the scope may not see it,
+/// `Some(None)` when it may (php then notices "Accessing static property
+/// as non static" and uses a dynamic property), `None` for no such static
+/// (or a parent's private one, which is invisible here).
+pub(crate) fn static_as_instance(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> Option<Option<Deny>> {
+    let sp = classes[cls as usize].static_props.get(name.as_bytes())?;
+    if scope == Some(sp.declaring_class) {
+        return Some(None);
+    }
+    // zend_get_parent_private_property: the scope's own private static,
+    // redeclared by a subclass.
+    if let Some(s) = scope {
+        let own = classes[s as usize].static_props.get(name.as_bytes());
+        if own.is_some_and(|p| p.declaring_class == s && p.visibility == Visibility::Private)
+            && classes[cls as usize].ancestors.contains(&s)
+        {
+            return Some(None);
+        }
+    }
+    match sp.visibility {
+        Visibility::Public => Some(None),
+        Visibility::Protected if protected_ok(classes, scope, sp.prototype) => Some(None),
+        Visibility::Protected => Some(Some(Deny::Vis(Visibility::Protected))),
+        Visibility::Private if sp.declaring_class != cls => None,
+        Visibility::Private => Some(Some(Deny::Vis(Visibility::Private))),
+    }
+}
+
+fn static_as_instance_denied(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> Option<Deny> {
+    static_as_instance(classes, cls, scope, name).flatten()
 }
 
 /// An undeclared (dynamic) property name; one starting with NUL is refused
@@ -391,11 +444,7 @@ fn inherit_prop(
     }
     // The set visibility may not narrow (a get-only virtual parent has
     // none).
-    let set_flag = |p: &PropEntry| {
-        p.set_visibility.or_else(|| {
-            (p.readonly && p.visibility == Visibility::Public).then_some(Visibility::Protected)
-        })
-    };
+    let set_flag = |p: &PropEntry| p.set_visibility;
     let rank = |v: Visibility| match v {
         Visibility::Public => 0,
         Visibility::Protected => 1,
@@ -614,7 +663,8 @@ pub(crate) fn set_access_ok(
     let Some(sv) = pe.set_visibility else {
         return Ok(());
     };
-    if scope == Some(pe.declaring_class)
+    if sv == Visibility::Public
+        || scope == Some(pe.declaring_class)
         || (sv == Visibility::Protected && protected_ok(classes, scope, pe.prototype))
     {
         return Ok(());
@@ -748,6 +798,9 @@ pub(crate) fn slot_accessible(
     let entry = &classes[cls as usize];
     let name = match entry.props.get(key) {
         Some(pe) => pe.name.clone(),
+        // A dynamic property under a mangled name (`(object)["\0A\0b" => 1]`)
+        // is accessible (zend_check_property_access).
+        None if key.as_bytes().first() == Some(&0) => return Some(key.clone()),
         None => key.clone(), // dynamic property
     };
     let ok = match resolve_prop(classes, cls, scope, &name) {
@@ -756,6 +809,18 @@ pub(crate) fn slot_accessible(
         PropRes::Denied(_) => false,
     };
     ok.then_some(name)
+}
+
+/// zend_unmangle_property_name: `"\0A\0b"` -> `b`; other names unchanged.
+pub(crate) fn unmangle(name: &PhpStr) -> PhpStr {
+    let b = name.as_bytes();
+    if b.first() != Some(&0) {
+        return name.clone();
+    }
+    match b[1..].iter().position(|&c| c == 0) {
+        Some(i) => PhpStr::from_bytes(b[i + 2..].to_vec()),
+        None => name.clone(),
+    }
 }
 
 /// php's visibility-mangled form of an object's storage key (what `(array)`,
@@ -886,7 +951,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
     let mut fresh = |c: &Rc<RefCell<Value>>| {
         cells
             .entry(Rc::as_ptr(c) as usize)
-            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().clone())))
+            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().copy_slot())))
             .clone()
     };
     let mut out = Vec::with_capacity(capacity.max(classes.len()));
@@ -924,6 +989,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             handlers: e.handlers,
             create_object: e.create_object,
             hooked: e.hooked,
+            checked_statics: e.checked_statics,
         });
     }
     out
@@ -1297,6 +1363,12 @@ impl Vm {
                 self.deprecated_trait_use(tid, proto.name.as_bytes())?;
             }
         }
+        let used_traits = self.used_traits(proto);
+        let mut tm = self.trait_methods(proto, &used_traits)?;
+        if !used_traits.is_empty() {
+            self.check_trait_constants(proto, &used_traits)?;
+            self.check_trait_props(proto, &used_traits)?;
+        }
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -1334,28 +1406,18 @@ impl Vm {
             }
             methods.insert(k, m);
         };
-        for tname in &proto.traits {
-            let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, m) in self.classes[tid as usize].methods.clone() {
-                // An enum's engine methods (zend_enum_register_funcs) come
-                // first: the class's own members win over a trait's.
-                let engine = matches!(k.as_slice(), b"cases")
-                    || (proto.enum_backing.is_some()
-                        && matches!(k.as_slice(), b"from" | b"tryfrom"));
-                if proto.kind == ClassKind::Enum && engine {
-                    continue;
-                }
-                // Trait methods adopt the using class as their defining class.
-                insert_method(
-                    &mut methods,
-                    k,
-                    ResolvedMethod {
-                        defining_class: id,
-                        prototype: None,
-                        ..m
-                    },
-                );
-            }
+        let trait_order: Vec<Vec<u8>> = tm.concrete.keys().cloned().collect();
+        for (k, m) in std::mem::take(&mut tm.concrete) {
+            // Trait methods adopt the using class as their defining class.
+            insert_method(
+                &mut methods,
+                k,
+                ResolvedMethod {
+                    defining_class: id,
+                    prototype: None,
+                    ..m
+                },
+            );
         }
         // Final, static, visibility and signature rules: `inherit`.
         for m in &proto.methods {
@@ -1376,6 +1438,22 @@ impl Vm {
                 },
             );
         }
+        // Abstract trait methods are bound after the parent's methods: one
+        // that is already there is checked against it (`inherit`), the
+        // others are added.
+        for (k, m) in &tm.abstracts {
+            if !methods.contains_key(k) {
+                insert_method(
+                    &mut methods,
+                    k.clone(),
+                    ResolvedMethod {
+                        defining_class: id,
+                        prototype: None,
+                        ..m.clone()
+                    },
+                );
+            }
+        }
         // php copies interface methods into the implementing class's function
         // table (do_inherit_iface_method): an abstract class / interface lists
         // the abstract methods it inherits from its interfaces.
@@ -1395,19 +1473,7 @@ impl Vm {
             }
         }
         let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
-        let trait_methods: Vec<Vec<u8>> = proto
-            .traits
-            .iter()
-            .flat_map(|t| {
-                let tid = self.class_ids[&lc(t.as_bytes())];
-                self.classes[tid as usize]
-                    .methods
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let methods = php_member_order(methods, own_methods.chain(trait_methods));
+        let methods = php_member_order(methods, own_methods.chain(trait_order));
 
         // Instance properties, flattened. A redeclared public/protected property
         // keeps its inherited slot (same plain key, same position); a property
@@ -1438,6 +1504,50 @@ impl Vm {
             };
         let mut link_err: Option<String> = parent
             .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
+        // zend_enum_register_props: `name` (and a backed enum's `value`) are
+        // public readonly properties.
+        if proto.kind == ClassKind::Enum {
+            let mut add = |name: &str, kind: rhp_bytecode::TypeKind| {
+                let ty = TypeHint {
+                    nullable: false,
+                    intersection: false,
+                    kinds: vec![kind],
+                    groups: Vec::new(),
+                    group_pos: Vec::new(),
+                    explicit_null: false,
+                };
+                let r = declare(
+                    &mut props,
+                    PropEntry {
+                        name: PhpStr::from(name),
+                        default: Value::Null,
+                        init: None,
+                        visibility: Visibility::Public,
+                        set_visibility: Some(Visibility::Protected),
+                        declaring_class: id,
+                        prototype: id,
+                        ty: Some(Rc::new(ty)),
+                        readonly: true,
+                        no_default: true,
+                        hooks: None,
+                        virt: false,
+                        is_final: false,
+                        is_abstract: false,
+                    },
+                );
+                if let Err(e) = r {
+                    link_err.get_or_insert(e);
+                }
+            };
+            add("name", rhp_bytecode::TypeKind::String);
+            match proto.enum_backing {
+                Some(rhp_bytecode::EnumBacking::Int) => add("value", rhp_bytecode::TypeKind::Int),
+                Some(rhp_bytecode::EnumBacking::Str) => {
+                    add("value", rhp_bytecode::TypeKind::String)
+                }
+                None => {}
+            }
+        }
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),
@@ -1472,7 +1582,17 @@ impl Vm {
                     default,
                     init,
                     visibility: pp.visibility,
-                    set_visibility: pp.set_visibility,
+                    // zend_declare_typed_property: a public readonly
+                    // property is protected(set) unless it says public(set).
+                    set_visibility: match pp.set_visibility {
+                        Some(Visibility::Public) => None,
+                        None if pp.visibility == Visibility::Public
+                            && (pp.is_readonly || proto.flags.is_readonly) =>
+                        {
+                            Some(Visibility::Protected)
+                        }
+                        sv => sv,
+                    },
                     declaring_class: id,
                     prototype: id,
                     ty: pp.type_hint.clone().map(Rc::new),
@@ -1480,7 +1600,8 @@ impl Vm {
                     no_default: matches!(pp.default, PropDefaultProto::None),
                     hooks,
                     virt: pp.is_virtual,
-                    is_final: pp.is_final,
+                    // private(set) properties are implicitly final.
+                    is_final: pp.is_final || pp.set_visibility == Some(Visibility::Private),
                     is_abstract: pp.is_abstract,
                 },
             );
@@ -1493,18 +1614,8 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for pe in self.classes[tid as usize].props.values().cloned() {
-                if let Some(own) = proto.props.iter().find(|pp| pp.name == pe.name) {
-                    if own.has_hooks() || pe.hooks.is_some() {
-                        link_err.get_or_insert(format!(
-                            "{} and {} define the same hooked property (${}) in the composition of {}. \
-                             Conflict resolution between hooked properties is currently not supported. \
-                             Class was composed",
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                            String::from_utf8_lossy(self.classes[tid as usize].name.as_bytes()),
-                            String::from_utf8_lossy(pe.name.as_bytes()),
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                        ));
-                    }
+                // (Conflicts were checked by check_trait_props.)
+                if proto.props.iter().any(|pp| pp.name == pe.name) {
                     continue;
                 }
                 let hooks = pe.hooks.as_ref().map(|h| {
@@ -1596,6 +1707,7 @@ impl Vm {
                         declaring_class: id,
                         prototype,
                         ty: sp.ty.clone(),
+                        set_visibility: sp.set_visibility,
                     },
                 );
             }
@@ -1611,6 +1723,10 @@ impl Vm {
             };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
             let default = cell.borrow().clone();
+            // A typed static without a default starts uninitialized.
+            if sp.type_hint.is_some() && !sp.has_default {
+                *cell.borrow_mut() = Value::Undef;
+            }
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
@@ -1621,9 +1737,17 @@ impl Vm {
                     declaring_class: id,
                     prototype,
                     ty: sp.type_hint.clone().map(Rc::new),
+                    set_visibility: match sp.set_visibility {
+                        Some(Visibility::Public) => None,
+                        sv => sv,
+                    },
                 },
             );
         }
+
+        let checked_statics = static_props
+            .values()
+            .any(|sp| sp.ty.is_some() || sp.set_visibility.is_some());
 
         // Class constants.
         self.check_const_inheritance(proto, parent)?;
@@ -1840,6 +1964,7 @@ impl Vm {
             handlers,
             create_object,
             hooked,
+            checked_statics,
         });
         let inherits_hooks = {
             let e = &self.classes[id as usize];
@@ -1856,7 +1981,7 @@ impl Vm {
         }
         if self.internal_classes > 0
             && !proto.decl_file.is_empty()
-            && !self.inheritance_checks(id, early)?
+            && !self.inheritance_checks(id, early, &tm.abstracts)?
         {
             self.classes.pop();
             self.class_ids.remove(&lc(proto.name.as_bytes()));
@@ -2200,6 +2325,14 @@ impl Vm {
             .contains_key(name)
         {
             self.update_class_constants(class_id)?;
+            if self.classes[class_id as usize].kind == ClassKind::Trait {
+                let msg = format!(
+                    "Accessing static trait property {}::${} is deprecated, it should only be accessed on a class using the trait",
+                    String::from_utf8_lossy(self.classes[class_id as usize].name.as_bytes()),
+                    String::from_utf8_lossy(name)
+                );
+                self.diag(rhp_builtins::E_DEPRECATED, msg.as_bytes())?;
+            }
         }
         self.classes[class_id as usize]
             .static_props

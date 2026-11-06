@@ -1,0 +1,13 @@
+bool(true)
+bool(true)
+curl_setopt(): open_basedir restriction in effect. File(/nonexistent/jar) is not within the allowed path(s): (DIR)
+bool(false)
+bool(true)
+curl_setopt(): CURLPROTO_FILE cannot be activated when an open_basedir is set
+bool(false)
+bool(true)
+curl_setopt(): The FILE protocol cannot be activated when an open_basedir is set
+bool(false)
+curl_setopt(): The FILE protocol cannot be activated when an open_basedir is set
+bool(false)
+bool(true)

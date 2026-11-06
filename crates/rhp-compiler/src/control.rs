@@ -326,22 +326,18 @@ impl ProtoBuilder<'_> {
             check_globals_write(k, self.cur_line)?;
         }
 
-        // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
-        let by_ref = matches!(
-            val_expr,
-            Expression::UnaryPrefix(u) if matches!(u.operator, UnaryPrefixOperator::Reference(_))
-        );
+        // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`,
+        // or a pattern that binds a reference (`as [&$x, $y]`).
+        let by_ref = match val_expr {
+            Expression::UnaryPrefix(u) => {
+                matches!(u.operator, UnaryPrefixOperator::Reference(_))
+            }
+            Expression::Array(a) => crate::assign::list_has_refs(a.elements.iter()),
+            Expression::List(l) => crate::assign::list_has_refs(l.elements.iter()),
+            _ => false,
+        };
 
         if by_ref {
-            let Expression::UnaryPrefix(u) = val_expr else {
-                unreachable!()
-            };
-            let Expression::Variable(Variable::Direct(d)) = u.operand else {
-                return Err(Thrown::unsupported(
-                    "foreach by-reference target",
-                    "only a simple `&$v` loop variable is supported",
-                ));
-            };
             // The source must be assignable so its elements can be referenced: a
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
@@ -371,10 +367,25 @@ impl ProtoBuilder<'_> {
                 // by-ref generator / its elements are referenced in place.
                 _ => self.compile_expr(fe.expression)?,
             };
-            let val_cv = self.cv(strip_dollar(d.name));
-            let key_cv = match key_expr {
-                Some(k) => self.foreach_target_cv(k)?,
-                None => Reg::MAX,
+            // `&$v` binds the variable; any other target gets the element's
+            // reference through a temporary.
+            let (val_cv, ref_target) = match val_expr {
+                Expression::UnaryPrefix(u) => match u.operand {
+                    Expression::Variable(Variable::Direct(d)) => {
+                        (self.cv(strip_dollar(d.name)), None)
+                    }
+                    other => (self.alloc_temp(), Some(other)),
+                },
+                pattern => (self.alloc_temp(), Some(pattern)),
+            };
+            let (key_cv, key_target) = self.foreach_key_target(key_expr)?;
+            // php assigns the key after the value target, which may use it
+            let key_after = (ref_target.is_some() && key_target.is_none() && key_cv != Reg::MAX)
+                .then_some(key_cv);
+            let key_cv = if key_after.is_some() {
+                self.alloc_temp()
+            } else {
+                key_cv
             };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
@@ -385,6 +396,40 @@ impl ProtoBuilder<'_> {
             let fetch_label = self.here();
             let fetch_pos = self.code.len();
             self.emit(Instr::Nop); // FeFetchRef
+
+            let prologue = self.next_temp;
+            match ref_target {
+                Some(Expression::Array(arr)) => {
+                    self.destructure_into(arr.elements.iter(), val_cv, false)?
+                }
+                Some(Expression::List(lst)) => {
+                    self.destructure_into(lst.elements.iter(), val_cv, true)?
+                }
+                Some(t) => {
+                    self.assign_ref_to(t, val_cv)?;
+                }
+                None => {}
+            }
+            if let Some(cv) = key_after {
+                self.emit(Instr::Assign { cv, src: key_cv });
+            }
+            if let Some(k) = key_target {
+                self.store_to_target(k, key_cv)?;
+            }
+            if ref_target.is_some() {
+                // FE_FETCH_RW's result and the pattern's fetches are freed
+                // once bound.
+                self.emit(Instr::ClearTemps {
+                    from: val_cv,
+                    to: val_cv + 1,
+                });
+                if self.next_temp > prologue {
+                    self.emit(Instr::ClearTemps {
+                        from: prologue,
+                        to: self.next_temp,
+                    });
+                }
+            }
 
             self.loops.push(LoopCtx {
                 free: lval_source.then_some(arr_cv),
@@ -440,17 +485,15 @@ impl ProtoBuilder<'_> {
         };
         // The key variable is created after the value variable, as php does
         // (observable in the order of `$GLOBALS`).
-        let key_cv = match key_expr {
-            Some(k) => self.foreach_target_cv(k)?,
-            None => Reg::MAX,
-        };
+        let (key_cv, key_target) = self.foreach_key_target(key_expr)?;
         // php stores the value target before assigning the key, so a key
         // variable used inside the target (`$k => $$k`) is the previous one.
-        let (fetch_key, key_after) = if val_pattern.is_some() && key_cv != Reg::MAX {
-            (self.alloc_temp(), Some(key_cv))
-        } else {
-            (key_cv, None)
-        };
+        let (fetch_key, key_after) =
+            if val_pattern.is_some() && key_cv != Reg::MAX && key_target.is_none() {
+                (self.alloc_temp(), Some(key_cv))
+            } else {
+                (key_cv, None)
+            };
 
         let saved_floor = self.temp_floor;
         self.temp_floor = self.next_temp; // protect iterator + element regs across the body
@@ -475,6 +518,9 @@ impl ProtoBuilder<'_> {
         }
         if let Some(cv) = key_after {
             self.emit(Instr::Assign { cv, src: fetch_key });
+        }
+        if let Some(k) = key_target {
+            self.store_to_target(k, fetch_key)?;
         }
 
         self.loops.push(self.loop_ctx(false));
@@ -510,21 +556,18 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    fn foreach_target_cv(&mut self, e: &Expression) -> Result<Reg, Thrown> {
-        match e {
-            Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
-            Expression::UnaryPrefix(u)
-                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
-            {
-                Err(Thrown::unsupported(
-                    "foreach by reference",
-                    "references arrive in the next phase",
-                ))
+    /// The register a foreach key lands in: the variable, or a temporary
+    /// stored into the key target (`$o->p`, `$a[k]`) after the value.
+    fn foreach_key_target<'e>(
+        &mut self,
+        key: Option<&'e Expression<'e>>,
+    ) -> Result<(Reg, Option<&'e Expression<'e>>), Thrown> {
+        match key {
+            None => Ok((Reg::MAX, None)),
+            Some(Expression::Variable(Variable::Direct(d))) => {
+                Ok((self.cv(strip_dollar(d.name)), None))
             }
-            _ => Err(Thrown::unsupported(
-                "foreach target",
-                "only simple `$var` targets for now (no list()/destructuring)",
-            )),
+            Some(k) => Ok((self.alloc_temp(), Some(k))),
         }
     }
 
@@ -608,6 +651,7 @@ impl ProtoBuilder<'_> {
             self.finally_rets.push(Vec::new());
         }
         let try_start = self.here();
+        let temps = self.next_temp;
         self.compile_stmts(t.block.statements.iter())?;
         let try_end = self.here();
         // Normal completion jumps past the catch bodies to finally/after.
@@ -679,6 +723,7 @@ impl ProtoBuilder<'_> {
             catches: catch_arms,
             finally: finally_pc,
             finally_end,
+            temps,
         });
         // An exception escaping a catch body still runs the finally.
         if finally_pc.is_some() && has_catches {
@@ -688,6 +733,7 @@ impl ProtoBuilder<'_> {
                 catches: Vec::new(),
                 finally: finally_pc,
                 finally_end,
+                temps,
             });
         }
         Ok(())

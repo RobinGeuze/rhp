@@ -1,9 +1,22 @@
 //! The interpreter surface builtins call back into: the [`Host`] trait,
 //! which the VM implements, and the types its methods take.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use rhp_values::{ObjectHandle, PhpArray, Value};
 
 /// See [`Host::unserialize_prop`].
+/// A variable of the running user code's scope, looked up by name.
+pub enum ScopeVar {
+    /// No such variable.
+    Missing,
+    /// A compiled variable (or symbol-table entry) that is undefined.
+    Undef,
+    /// Its value, dereferenced.
+    Set(Value),
+}
+
 pub enum UnserProp {
     /// A declared property's storage key; `typed`: it has a type.
     Declared {
@@ -392,6 +405,13 @@ pub trait Host {
     /// (`zend_get_executed_scope`), if any.
     fn caller_scope(&self) -> Option<u32>;
 
+    /// clone(): copy `obj` (running `__clone`), then write `with` to the
+    /// copy from the calling scope.
+    fn clone_object(&mut self, obj: &Value, with: &PhpArray) -> Result<Value, Thrown> {
+        let _ = (obj, with);
+        Err(Thrown::error("Error", "clone() needs the engine"))
+    }
+
     /// The late-static-binding class of the code calling the builtin
     /// (`zend_get_called_scope`), if any.
     fn caller_called_scope(&self) -> Option<u32>;
@@ -665,6 +685,10 @@ pub trait Host {
     fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
         None
     }
+    /// zend_exception_error(thrown, level): report a throwable as uncaught
+    /// ("Fatal error: Uncaught ..." for E_ERROR, "Warning: ..." for
+    /// E_WARNING).
+    fn exception_error(&mut self, _thrown: Thrown, _level: i64) {}
     /// The line of the innermost user-code frame (php's
     /// `zend_get_executed_lineno`), 0 outside one.
     fn executing_line(&self) -> u32 {
@@ -778,6 +802,36 @@ pub trait Host {
     /// code's scope (a compiled variable, or the symbol table where there
     /// is one). False when the scope has no such variable.
     fn set_local_var(&mut self, name: &[u8], value: Value) -> bool;
+    /// The running builtin was called dynamically (a callback, `$f()`,
+    /// call_user_func): php's ZEND_CALL_DYNAMIC.
+    fn call_is_dynamic(&self) -> bool {
+        false
+    }
+    /// The running builtin is a callback another builtin (or the engine,
+    /// with no frame running) invoked: php's previous frame is not user
+    /// code.
+    fn called_back_by_builtin(&self) -> bool {
+        false
+    }
+    /// get_defined_vars(): a copy of the running user code's variables.
+    fn scope_vars(&mut self) -> PhpArray {
+        PhpArray::new()
+    }
+    /// A variable of the running user code's scope.
+    fn scope_var(&mut self, _name: &[u8]) -> ScopeVar {
+        ScopeVar::Missing
+    }
+    /// Assign a variable of the running user code's scope (created when
+    /// missing; a reference it holds is written through).
+    fn scope_assign(&mut self, _name: &[u8], _value: Value) -> Result<(), Thrown> {
+        Ok(())
+    }
+    /// Make a variable of the running user code's scope an alias of `cell`.
+    fn scope_bind(&mut self, _name: &[u8], _cell: Rc<RefCell<Value>>) {}
+    /// `$this` of the running user code (compact('this')).
+    fn scope_this(&self) -> Option<Value> {
+        None
+    }
     /// `stream_set_timeout` (`None` = wait forever): false unless `res` is a
     /// socket stream.
     fn stream_set_timeout(&mut self, res: &Value, timeout: Option<(i64, i64)>) -> bool;
@@ -799,13 +853,14 @@ pub trait Host {
         init: fn() -> Box<dyn std::any::Any>,
     ) -> Option<&mut dyn std::any::Any>;
     /// `ReflectionMethod::invoke`: call `class::method` on `obj` (null for a
-    /// static method) regardless of its visibility.
+    /// static method) regardless of its visibility. `args` is the argument
+    /// array (string keys are named arguments).
     fn reflect_invoke(
         &mut self,
         obj: &Value,
         class: &[u8],
         method: &[u8],
-        args: Vec<Value>,
+        args: Value,
     ) -> Result<Value, Thrown>;
     /// Is `res` a stream resource that is still open (not `fclose`d)?
     fn stream_is_open(&self, res: &Value) -> bool;
@@ -905,4 +960,13 @@ pub enum WrapperRestore {
     Unchanged,
     /// The built-in wrapper is registered again.
     Restored,
+}
+
+/// A list of positional arguments as an argument array.
+pub fn list_value(args: Vec<Value>) -> Value {
+    let mut a = rhp_values::PhpArray::new();
+    for v in args {
+        a.push(v);
+    }
+    Value::Array(a)
 }

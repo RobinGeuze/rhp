@@ -6,6 +6,7 @@ use rhp_values::Value;
 
 use crate::{Host, Thrown};
 
+pub mod fopen_wrappers;
 pub mod ini;
 #[rustfmt::skip]
 pub mod ini_table;
@@ -40,6 +41,7 @@ pub(crate) fn reset_state() {
     streams::plain_wrapper::reset_state();
     streams::xp_socket::reset_state();
     ini::reset_state();
+    fopen_wrappers::reset_state();
     sapi::reset_state();
 }
 

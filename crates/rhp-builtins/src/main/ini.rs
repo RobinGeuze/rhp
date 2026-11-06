@@ -155,6 +155,7 @@ thread_local! {
 /// `zend_ini_parse_quantity_warn` (OnUpdateLong and handlers built on it),
 /// among those rhp applies.
 const QUANTITY_DIRECTIVES: &[&str] = &[
+    "zend.assertions",
     "pcre.backtrack_limit",
     "pcre.recursion_limit",
     "bcmath.scale",
@@ -335,6 +336,17 @@ pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
             diags.push((pos, String::new(), level, format!("PHP Startup: {msg}")));
         }
     }
+    // php_ini_register_extensions: an `extension=` library that fails to load.
+    if let Some(rhp_values::Value::Str(name)) = cfg_get(b"extension") {
+        if let Some(msg) = crate::ext::standard::dl::startup_extension_error(name.as_bytes()) {
+            diags.push((
+                usize::MAX - 1,
+                String::new(),
+                rhp_values::E_CORE_WARNING,
+                msg,
+            ));
+        }
+    }
     // php_module_startup's check of removed and deprecated directives.
     for (level, phrase, names) in REMOVED_DIRECTIVES {
         for name in *names {
@@ -409,6 +421,8 @@ pub(crate) fn reset_state() {
     SCANNED_FILES.with(|s| *s.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
     crate::zend::exceptions::reset_ini();
+    crate::zend::set_assertions(1);
+    crate::ext::standard::assert::reset_state();
 }
 
 /// Is a directive's owning module loaded in this engine?
@@ -494,6 +508,22 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     else {
         return;
     };
+    // assert.c registers its directives in its own order (the table is
+    // sorted by name).
+    const ASSERT_ORDER: [&[u8]; 5] = [
+        b"assert.active",
+        b"assert.bail",
+        b"assert.warning",
+        b"assert.callback",
+        b"assert.exception",
+    ];
+    let pos = match ASSERT_ORDER.iter().position(|n| *n == name) {
+        Some(rank) => INI_TABLE
+            .iter()
+            .position(|e| e.1 == "assert.active")
+            .map_or(pos, |base| base + rank),
+        None => pos,
+    };
     let key = String::from_utf8_lossy(name).into_owned();
     let mut level = crate::E_WARNING;
     let (warnings, stored) = if v.is_empty() && STRING_UNEMPTY.contains(&name) {
@@ -515,6 +545,14 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         level = crate::E_DEPRECATED;
         let msg = "PHP Startup: Directive 'report_memleaks' is deprecated".to_string();
         (vec![msg], Some(v.to_vec()))
+    } else if let Some(msg) = crate::ext::standard::assert::ini_deprecation(name, v) {
+        level = crate::E_DEPRECATED;
+        (vec![format!("PHP Startup: {msg}")], Some(v.to_vec()))
+    } else if name == b"auto_detect_line_endings" && ini_parse_bool(v) {
+        // OnUpdateAutoDetectLineEndings (zend_error: no "PHP Startup").
+        level = crate::E_DEPRECATED;
+        let msg = "auto_detect_line_endings is deprecated".to_string();
+        (vec![msg], Some(v.to_vec()))
     } else if name == b"disable_functions" {
         // php_module_startup's zend_disable_functions, once the ini is in.
         crate::registry::reset_disabled();
@@ -532,7 +570,9 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
-        if ok && !replaced && !warnings.is_empty() {
+        // The assert.* handlers don't deprecate at shutdown; ini_restore
+        // raises theirs itself.
+        if ok && !replaced && !warnings.is_empty() && !name.starts_with(b"assert.") {
             d.restore.insert(key.clone(), warnings.clone());
         } else {
             d.restore.remove(&key);
@@ -546,6 +586,18 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     ini_apply(name, Some(&v));
+    // the realpath cache's startup settings (php_request_startup turns it
+    // off under open_basedir)
+    use crate::zend::virtual_cwd::realpath_cache::configure;
+    match name {
+        b"realpath_cache_size" => configure(Some(ini_parse_quantity(&v)), None, None),
+        b"realpath_cache_ttl" => configure(None, Some(ini_parse_quantity(&v)), None),
+        b"open_basedir" => {
+            crate::main::fopen_wrappers::set(Some(&v));
+            configure(None, None, Some(!v.is_empty()))
+        }
+        _ => {}
+    }
     ini_store(name, v.clone());
     INI_STARTUP.with(|m| m.borrow_mut().insert(key, v));
     if name == b"max_memory_limit" {
@@ -725,6 +777,9 @@ pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
             crate::ext::pcre::ini_update(name, v.unwrap_or_default())
         }
         b"bcmath.scale" => crate::ext::bcmath::set_default_scale(v.map_or(0, ini_parse_quantity)),
+        b"zend.assertions" => crate::zend::set_assertions(v.map_or(1, ini_parse_quantity)),
+        b"assert.active" | b"assert.bail" | b"assert.warning" | b"assert.exception"
+        | b"assert.callback" => crate::ext::standard::assert::ini_update(name, v),
         b"zend.exception_ignore_args" => {
             crate::zend::exceptions::set_ignore_args(v.is_some_and(ini_parse_bool))
         }
@@ -758,6 +813,19 @@ pub(crate) fn alter_ini_entry(
     newv: Vec<u8>,
     func: &str,
 ) -> Result<Option<Vec<u8>>, Thrown> {
+    alter_ini_entry_ex(host, name, newv, func, false)
+}
+
+/// [`alter_ini_entry`]; `assert_options` is assert_options()'s own stage
+/// (ZEND_INI_STAGE_ASSERT_OPTIONS), where the assert.* handlers don't
+/// deprecate.
+pub(crate) fn alter_ini_entry_ex(
+    host: &mut dyn Host,
+    name: &[u8],
+    newv: Vec<u8>,
+    func: &str,
+    assert_options: bool,
+) -> Result<Option<Vec<u8>>, Thrown> {
     let Some(e) = ini_entry(name) else {
         return Ok(None);
     };
@@ -767,6 +835,26 @@ pub(crate) fn alter_ini_entry(
     mark_changed(&String::from_utf8_lossy(name));
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
+    if name == b"auto_detect_line_endings" && ini_parse_bool(&newv) {
+        host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"auto_detect_line_endings is deprecated",
+        )?;
+    }
+    // OnUpdateBaseDir: only a tightening (the entry keeps the value as
+    // given, the check uses each entry expanded).
+    if name == b"open_basedir" && !crate::main::fopen_wrappers::on_update(&newv) {
+        return Ok(None);
+    }
+    // OnUpdateErrorLog / OnUpdateMailLog: a log file must be within
+    // open_basedir.
+    if crate::main::fopen_wrappers::active()
+        && ((name == b"error_log" && newv != b"syslog") || name == b"mail.log")
+        && !newv.is_empty()
+        && !crate::main::fopen_wrappers::check(host, func, &newv, true)?
+    {
+        return Ok(None);
     }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
@@ -795,7 +883,18 @@ pub(crate) fn alter_ini_entry(
     }
     if ini_validate(name, &newv).is_err() {
         // php: the directive's handler warns (where it does) and refuses.
+        if name == b"zend.assertions" {
+            host.emit_diagnostic(
+                crate::E_WARNING,
+                b"zend.assertions may be completely enabled or disabled only in php.ini",
+            )?;
+        }
         return Ok(None);
+    }
+    if !assert_options {
+        if let Some(msg) = crate::ext::standard::assert::ini_deprecation(name, &newv) {
+            crate::diag::deprecated(host, func, &msg)?;
+        }
     }
     let old = ini_value(name).flatten().unwrap_or_default();
     ini_apply(name, Some(&newv));

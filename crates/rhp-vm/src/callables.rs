@@ -54,7 +54,7 @@ impl Vm {
         String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned()
     }
 
-    fn instance_of(&self, c: ClassId, of: ClassId) -> bool {
+    pub(crate) fn instance_of(&self, c: ClassId, of: ClassId) -> bool {
         self.class(c).ancestors.contains(&of)
     }
 
@@ -252,6 +252,15 @@ impl Vm {
                         String::from_utf8_lossy(name)
                     ),
                 ));
+            }
+            // The trampoline's scope is the called class.
+            if self.class(cls).kind == ClassKind::Trait {
+                let msg = format!(
+                    "Calling static trait method {}::{} is deprecated, it should only be called on a class using the trait",
+                    self.class_name_lossy(cls),
+                    String::from_utf8_lossy(name)
+                );
+                self.diag(rhp_builtins::E_DEPRECATED, &msg)?;
             }
         }
         if let Some(Found::Method(m)) = &found {

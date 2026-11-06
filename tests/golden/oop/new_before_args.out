@@ -1,0 +1,29 @@
+object(D)#1 (1) {
+  ["inner"]=>
+  object(D)#2 (1) {
+    ["inner"]=>
+    object(D)#3 (1) {
+      ["inner"]=>
+      NULL
+    }
+  }
+}
+Cannot instantiate abstract class Abs
+Cannot instantiate interface I
+Class "Missing" not found
+arg 1
+arg 2
+object(NoCtor)#2 (0) {
+}
+boom
+boom
+boom
+dtor
+end
+object(class@anonymous)#2 (1) {
+  ["d"]=>
+  object(D)#3 (1) {
+    ["inner"]=>
+    NULL
+  }
+}

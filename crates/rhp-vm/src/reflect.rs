@@ -231,11 +231,31 @@ impl Vm {
                 let name = arg_bytes(args, 1);
                 Ok(self.prop_info(cid, &name))
             }
-            b"fn" => match self.fn_subject(&arg(args, 0))? {
-                Some(sub) => Ok(self.fn_info(&sub)),
-                None => Ok(Value::Null),
-            },
+            b"fn" => {
+                let loc = arg(args, 0);
+                match self.fn_subject(&loc)? {
+                    Some(sub) => {
+                        let mut info = self.fn_info(&sub);
+                        // A method's first-class callable: the method's
+                        // class is its scope, the class it was named on
+                        // the called scope (zend_create_fake_closure).
+                        if let (
+                            Value::Closure(_),
+                            FnSubject::Method { class, m },
+                            Value::Array(a),
+                        ) = (&loc, &sub, &mut info)
+                        {
+                            let name = |c: ClassId| s(self.classes[c as usize].name.as_bytes());
+                            a.insert(ArrayKey::from_bytes(b"scope"), name(m.defining_class));
+                            a.insert(ArrayKey::from_bytes(b"calledScope"), name(*class));
+                        }
+                        Ok(info)
+                    }
+                    None => Ok(Value::Null),
+                }
+            }
             b"attr_args" => self.attr_args(args),
+            b"attr_new" => self.attr_new(args),
             // A global constant's attributes (`#[A] const X = 1;`).
             b"gconst_attrs" => {
                 let name = arg_bytes(args, 0);
@@ -369,8 +389,14 @@ impl Vm {
                     if !st {
                         continue;
                     }
+                    // (An uninitialized typed static is left out.)
                     if let Some(sp) = e.static_props.get(n.as_bytes()) {
-                        out.insert(ArrayKey::from_bytes(n.as_bytes()), deref(&sp.cell.borrow()));
+                        if !sp.cell.borrow().is_undef() {
+                            out.insert(
+                                ArrayKey::from_bytes(n.as_bytes()),
+                                deref(&sp.cell.borrow()),
+                            );
+                        }
                     }
                 }
                 Ok(Value::Array(out))
@@ -633,6 +659,29 @@ impl Vm {
             traits.push(s(self.classes[t as usize].name.as_bytes()));
         }
         put(&mut a, "traits", Value::Array(traits));
+        // getTraitAliases: alias => "Trait::method", the trait as written or
+        // the first used trait that has the method.
+        let mut aliases = PhpArray::new();
+        for al in e.proto.trait_rules.iter().flat_map(|r| r.aliases.iter()) {
+            let Some(alias) = &al.alias else { continue };
+            let lcm = al.method.as_bytes().to_ascii_lowercase();
+            let cn = al
+                .trait_name
+                .as_ref()
+                .map(|n| n.as_bytes().to_vec())
+                .or_else(|| {
+                    e.traits
+                        .iter()
+                        .map(|&t| &self.classes[t as usize])
+                        .find(|t| t.methods.contains_key(&lcm))
+                        .map(|t| t.name.as_bytes().to_vec())
+                });
+            let mut v = cn.unwrap_or_default();
+            v.extend_from_slice(b"::");
+            v.extend_from_slice(al.method.as_bytes());
+            aliases.insert(ArrayKey::from_bytes(alias.as_bytes()), s(&v));
+        }
+        put(&mut a, "trait_aliases", Value::Array(aliases));
         put(
             &mut a,
             "ext",
@@ -731,6 +780,14 @@ impl Vm {
     fn prop_order_ex(&self, cid: ClassId, with_private: bool) -> Vec<(PhpStr, ClassId, bool)> {
         let e = &self.classes[cid as usize];
         let mut out: Vec<(PhpStr, ClassId, bool)> = Vec::new();
+        // An enum's `name` / `value` come first (zend_enum_register_props).
+        if e.kind == rhp_values::ClassKind::Enum {
+            for n in ["name", "value"] {
+                if e.prop_visible.contains_key(&PhpStr::from(n)) {
+                    out.push((PhpStr::from(n), cid, false));
+                }
+            }
+        }
         let own = own_props_ordered(&e.proto);
         let internal = self.is_internal_class(cid);
         // A built-in class's table is filled by inheritance first.
@@ -773,6 +830,28 @@ impl Vm {
             }
         }
         out
+    }
+
+    /// The type of an enum's built-in `name` / `value` property.
+    fn enum_prop_type(&self, cid: ClassId, name: &[u8]) -> Option<TypeHint> {
+        let e = &self.classes[cid as usize];
+        if e.kind != ClassKind::Enum {
+            return None;
+        }
+        let kind = match (name, e.enum_backing) {
+            (b"name", _) => TypeKind::String,
+            (b"value", Some(rhp_bytecode::EnumBacking::Int)) => TypeKind::Int,
+            (b"value", Some(rhp_bytecode::EnumBacking::Str)) => TypeKind::String,
+            _ => return None,
+        };
+        Some(TypeHint {
+            nullable: false,
+            intersection: false,
+            kinds: vec![kind],
+            groups: Vec::new(),
+            group_pos: Vec::new(),
+            explicit_null: false,
+        })
     }
 
     /// Declared visibility of property `name` on its declaring class.
@@ -855,6 +934,17 @@ impl Vm {
                 } else {
                     pe.default.clone()
                 },
+            ))
+        } else if let Some(ty) = self.enum_prop_type(cid, name) {
+            // public protected(set) readonly
+            Some((
+                cid,
+                Visibility::Public,
+                None,
+                Some(Rc::new(ty)),
+                true,
+                false,
+                Value::Null,
             ))
         } else {
             e.static_props.get(name).map(|sp| {
@@ -1166,8 +1256,118 @@ impl Vm {
     /// Evaluate an attribute's argument array; `args[0]` is its key
     /// (`[kind, owner…, index]`).
     fn attr_args(&mut self, args: &[Value]) -> Result<Value, Thrown> {
-        let Value::Array(key) = arg(args, 0) else {
+        let Some((at, scope, unit)) = self.attr_lookup(&arg(args, 0))? else {
             return Ok(Value::Array(PhpArray::new()));
+        };
+        self.attr_eval_args(&at, scope, unit)
+    }
+
+    fn attr_eval_args(
+        &mut self,
+        at: &AttributeProto,
+        scope: Option<ClassId>,
+        unit: UnitId,
+    ) -> Result<Value, Thrown> {
+        match &at.args {
+            None => Ok(Value::Array(PhpArray::new())),
+            Some(ConstInitProto::Const(v)) => Ok(v.clone()),
+            Some(ConstInitProto::Thunk(proto)) => {
+                let f = UnitFn {
+                    proto: proto.clone(),
+                    unit,
+                };
+                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
+            }
+        }
+    }
+
+    /// `ReflectionAttribute::newInstance()`'s last step
+    /// (zend_get_attribute_object): with a dummy frame standing for the
+    /// attribute's file, line and `strict_types` as the caller, evaluate the
+    /// arguments and run object_init_with_constructor for class `args[1]`.
+    fn attr_new(&mut self, args: &[Value]) -> Result<Value, Thrown> {
+        let Some((at, scope, unit)) = self.attr_lookup(&arg(args, 0))? else {
+            return Ok(Value::Null);
+        };
+        let cls = arg_bytes(args, 1);
+        let mut p = FunctionProto::new(PhpStr::from(""));
+        p.debug.file = at.file.clone();
+        p.debug.lines = vec![(0, at.line)];
+        p.strict_types = at.strict_types;
+        p.flags.insert(rhp_bytecode::ProtoFlags::CALL_SITE);
+        let base = self.stack.len();
+        self.stack
+            .push(crate::Frame::new(Rc::new(p), unit, rhp_bytecode::Reg::MAX));
+        let r = self.attr_construct(&at, scope, unit, &cls, base);
+        // Errors get their file, line and trace while the frame is there.
+        let r = r.map_err(|t| self.materialize(t, None));
+        self.stack.truncate(base);
+        r
+    }
+
+    fn attr_construct(
+        &mut self,
+        at: &AttributeProto,
+        scope: Option<ClassId>,
+        unit: UnitId,
+        cls: &[u8],
+        top: usize,
+    ) -> Result<Value, Thrown> {
+        let argv = self.attr_eval_args(at, scope, unit)?;
+        let cid = self.resolve_class_by_name(cls)?;
+        let entry = self.class(cid);
+        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+            let what = if entry.flags.is_abstract {
+                "abstract class"
+            } else {
+                match entry.kind {
+                    ClassKind::Enum => "enum",
+                    ClassKind::Interface => "interface",
+                    ClassKind::Trait => "trait",
+                    ClassKind::Class => "class",
+                }
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot instantiate {what} {}",
+                    String::from_utf8_lossy(entry.name.as_bytes())
+                ),
+            ));
+        }
+        self.update_class_constants(cid)?;
+        let obj = self.new_object(cid);
+        self.check_ctor_access(top, cid)?;
+        let (argv, named) = self.split_call_args(&argv)?;
+        match self.lookup_method(cid, b"__construct") {
+            Some(m) => {
+                let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+                let strict = self.caller_strict();
+                self.call_sync_mode(&m, Some(obj.clone()), cid, argv, Some(strict))?;
+            }
+            None => {
+                if let Some((name, _)) = named.first() {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Unknown named parameter ${}",
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Value::Object(obj))
+    }
+
+    /// The attribute a `[kind, owner…, index]` key names, with the class
+    /// scope and unit its arguments evaluate in.
+    fn attr_lookup(
+        &mut self,
+        key: &Value,
+    ) -> Result<Option<(AttributeProto, Option<ClassId>, UnitId)>, Thrown> {
+        let Value::Array(key) = key else {
+            return Ok(None);
         };
         let mut k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
         // A forged key (the prelude's helpers are callable from PHP) must
@@ -1233,17 +1433,7 @@ impl Vm {
             }
             _ => None,
         };
-        let Some((at, scope, unit)) = found else {
-            return Ok(Value::Array(PhpArray::new()));
-        };
-        match at.args {
-            None => Ok(Value::Array(PhpArray::new())),
-            Some(ConstInitProto::Const(v)) => Ok(v),
-            Some(ConstInitProto::Thunk(proto)) => {
-                let f = UnitFn { proto, unit };
-                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
-            }
-        }
+        Ok(found)
     }
 
     /// Resolve a function locator: a function name, a Closure, or a
@@ -1277,6 +1467,26 @@ impl Vm {
                     // `$closure->__invoke(...)`: the closure's own function.
                     if let Some(inner) = rhp_builtins::zend::closures::closure_invoke_of(&w) {
                         w = inner;
+                    }
+                    // `self::m(...)`: the class the closure was made in.
+                    if let Value::Array(a) = &mut w {
+                        let named = match a.get(&ArrayKey::Int(0)) {
+                            Some(Value::Str(n)) => {
+                                match n.as_bytes().to_ascii_lowercase().as_slice() {
+                                    b"self" => cd.bound_class,
+                                    b"static" => cd.bound_static.or(cd.bound_class),
+                                    b"parent" => {
+                                        cd.bound_class.and_then(|c| self.classes[c as usize].parent)
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(c) = named {
+                            let n = self.classes[c as usize].name.clone();
+                            a.insert(ArrayKey::Int(0), Value::Str(n));
+                        }
                     }
                     // `Closure::fromCallable($invokable)`: its `__invoke`.
                     if let Value::Object(_) = &w {

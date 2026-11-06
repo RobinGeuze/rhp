@@ -11,7 +11,7 @@ use rhp_values::{
 };
 
 use crate::classes::PropRes;
-use crate::{classes, deref, Vm};
+use crate::{classes, deref, scope, Vm};
 
 /// The open cursor's steps: inline for the usual few, so an element
 /// write allocates nothing for its path.
@@ -44,6 +44,47 @@ pub(crate) enum MagicSplit {
     /// A property of this `__PHP_Incomplete_Class` object: writing through
     /// it throws.
     Incomplete(ObjectHandle),
+}
+
+/// A cursor rooted at a static property with a type or set visibility:
+/// what its checks need.
+#[derive(Clone)]
+pub(crate) struct StaticRoot {
+    pub(crate) cell: Rc<RefCell<Value>>,
+    /// The class the property was reached through.
+    pub(crate) cls: ClassId,
+    pub(crate) name: PhpStr,
+    pub(crate) decl: ClassId,
+    pub(crate) set_vis: Option<rhp_values::Visibility>,
+    pub(crate) ty: Option<Rc<rhp_bytecode::TypeHint>>,
+}
+
+/// The operation on a cursor rooted at a static property, for its
+/// asymmetric visibility and type checks.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum StaticOp {
+    /// `C::$p = v` (ZEND_ASSIGN_STATIC_PROP) or the write of `C::$p[..] = v`.
+    Assign,
+    /// `C::$p = &$x` (ZEND_ASSIGN_STATIC_PROP_REF).
+    Ref,
+    /// `C::$p op= v`, `++C::$p` (BP_VAR_RW).
+    Rw,
+    /// `&C::$p`, `C::$p[] = v` (ZEND_FETCH_STATIC_PROP_W).
+    Fetch,
+    /// `unset(C::$p[k])` (ZEND_FETCH_STATIC_PROP_UNSET).
+    Unset,
+}
+
+/// What [`Vm::cursor_through_check`] found.
+#[derive(PartialEq)]
+pub(crate) enum Through {
+    /// Nothing in the way.
+    Plain,
+    /// The reference target is a readonly / set-restricted property
+    /// holding an object: the reference gets a copy.
+    Copy,
+    /// An unset below an uninitialized such property: nothing to do.
+    Stop,
 }
 
 /// How an ArrayAccess element is fetched below a nested write (php's
@@ -82,6 +123,8 @@ struct PropCtx<'a> {
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
+    /// The write is a `++`/`--` (zend_throw_non_object_error names it).
+    incdec: bool,
 }
 
 impl PropCtx<'_> {
@@ -121,7 +164,36 @@ impl PropCtx<'_> {
         leaf_op: &str,
         rest: &[CursorStep],
     ) -> Result<PhpStr, Thrown> {
-        let key = self.key(od.class, name)?;
+        let (key, dynamic) = match classes::resolve_prop(self.classes, od.class, self.scope, name) {
+            PropRes::Slot(k) => (k, false),
+            PropRes::Dynamic => (name.clone(), true),
+            PropRes::Denied(vis) => {
+                return Err(classes::prop_access_err(
+                    self.classes,
+                    od.class,
+                    name.as_bytes(),
+                    vis,
+                ))
+            }
+        };
+        let entry = &self.classes[od.class as usize];
+        if dynamic
+            && !entry.static_props.is_empty()
+            && !entry.methods.contains_key(&b"__get"[..])
+            && matches!(
+                classes::static_as_instance(self.classes, od.class, self.scope, name),
+                Some(None)
+            )
+        {
+            path_diag(
+                builtins::E_NOTICE,
+                format!(
+                    "Accessing static property {}::${} as non static",
+                    String::from_utf8_lossy(entry.name.as_bytes()),
+                    String::from_utf8_lossy(name.as_bytes())
+                ),
+            );
+        }
         if let Err(e) = classes::set_access_ok(self.classes, od.class, self.scope, &key) {
             let holds_object = !rest.is_empty()
                 && matches!(od.properties.get(&key).map(deref), Some(Value::Object(_)));
@@ -146,6 +218,9 @@ thread_local! {
     /// The value of the last string offset assignment: the byte written,
     /// or null when none was ([`assign_string_offset`]).
     static STRING_OFFSET_RESULT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// [`assign_string_offset`] stopped at an object value: the caller
+    /// converts it with `__toString` and writes again.
+    static STRING_OFFSET_OBJECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The value of the string offset assignment the last cursor write made,
@@ -188,7 +263,10 @@ impl Vm {
                 self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))
             }
-            MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
+            // (A by-reference `__get` result is read as a copy.)
+            MagicSplit::Leaf(h, name) => self
+                .prop_fetch(top, Value::Object(h), name)
+                .map(|v| deref(&v)),
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, &steps[i..], incdec))
@@ -214,6 +292,7 @@ impl Vm {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    incdec: false,
                 };
                 Ok(read_path(&got, rest, &cx))
             }
@@ -233,6 +312,9 @@ impl Vm {
     /// write is done, so a value released later (`unset($$n)`) is freed then.
     pub(crate) fn cursor_release(&mut self) {
         self.rw_null_keys = 0;
+        self.cursor_static = None;
+        self.deferred_undef_src = None;
+        self.typed_write_result = None;
         if matches!(self.cursor_root, CursorRoot::Cell(_)) {
             self.cursor_root = CursorRoot::Cv(0);
         }
@@ -270,6 +352,7 @@ impl Vm {
                         classes: &self.classes,
                         scope: self.stack[top].defining_class,
                         called: self.stack[top].called_class,
+                        incdec: false,
                     };
                     let checked = string_offset(k, false, &cx);
                     self.flush_path_diags()?;
@@ -363,6 +446,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         illegal_offset_on_array(&deref(k), &cx)
     }
@@ -568,15 +652,30 @@ impl Vm {
         top: usize,
         steps: &[CursorStep],
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
-        self.cursor_readonly_check(top, steps, true)?;
+        if self.cursor_readonly_check(top, steps, true)? {
+            let v = self.cursor_read_steps(top, steps);
+            return Ok(Rc::new(RefCell::new(deref(&v))));
+        }
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
+                // `&$GLOBALS['x']`: the symbol-table cell is the variable.
+                if let (true, CursorRoot::Cell(rc), Some(n)) =
+                    (steps.is_empty(), &self.cursor_root, &self.cursor_global)
+                {
+                    let rc = rc.clone();
+                    if !self.ref_globals.contains(&n[..]) {
+                        self.ref_globals.insert(n.clone());
+                    }
+                    crate::dispatch::cell_define(&rc);
+                    return Ok(rc);
+                }
                 self.cursor_dyn_check(top, steps, true)?;
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
+                    incdec: false,
                 };
                 let r = match &self.cursor_root {
                     CursorRoot::Cv(r) => {
@@ -621,6 +720,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         match &self.cursor_root {
             CursorRoot::Cv(r) => read_path(&self.stack[top].regs[*r as usize], steps, &cx),
@@ -628,16 +728,34 @@ impl Vm {
         }
     }
 
-    /// Readonly properties along a cursor path: writing the property itself
-    /// follows the readonly rules; writing *through* it (`$o->ro[] = 1`) or
-    /// taking a reference is "Cannot indirectly modify readonly property",
-    /// unless it holds an object.
+    /// Readonly and asymmetric visibility along a cursor path: writing the
+    /// property itself follows the readonly / set visibility rules; writing
+    /// *through* one (`$o->ro[] = 1`, `unset($o->ro[0])`) or taking a
+    /// reference is php's "Cannot indirectly modify" (zend_std_read_property
+    /// for BP_VAR_W/RW/UNSET), ahead of the uninitialized check, unless it
+    /// holds an object (then a reference gets a copy: `Ok(true)`).
     fn cursor_readonly_check(
         &mut self,
         top: usize,
         steps: &[CursorStep],
         make_ref: bool,
-    ) -> Result<(), Thrown> {
+    ) -> Result<bool, Thrown> {
+        self.cursor_through_check(top, steps, make_ref, false)
+            .map(|r| r == Through::Copy)
+    }
+
+    pub(crate) fn cursor_through_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        make_ref: bool,
+        unset: bool,
+    ) -> Result<Through, Thrown> {
+        self.cursor_leaf = None;
+        // Only properties along the path are checked.
+        if !steps.iter().any(|s| matches!(s, CursorStep::Prop(_))) {
+            return Ok(Through::Plain);
+        }
         let scope = self.stack[top].defining_class;
         let mut cur = self.cursor_root_value(top);
         for (i, step) in steps.iter().enumerate() {
@@ -645,43 +763,70 @@ impl Vm {
                 (Value::Array(a), CursorStep::Key(k)) => {
                     match ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned()) {
                         Some(v) => v,
-                        None => return Ok(()),
+                        None => return Ok(Through::Plain),
                     }
                 }
                 (Value::Object(h), CursorStep::Prop(name)) => {
                     let cls = h.borrow().class;
                     let PropRes::Slot(key) = classes::resolve_prop(&self.classes, cls, scope, name)
                     else {
-                        return Ok(());
+                        return Ok(Through::Plain);
                     };
                     let val = h.borrow().properties.get(&key).cloned();
-                    if let Some(pe) = self.class(cls).props.get(&key).filter(|pe| pe.readonly) {
+                    let Some(pe) = self.class(cls).props.get(&key) else {
+                        return Ok(Through::Plain);
+                    };
+                    // The typed property a write to the leaf lands in.
+                    let typed_leaf = match &pe.ty {
+                        Some(ty) if i + 1 == steps.len() => {
+                            Some((cls, pe.declaring_class, pe.name.clone(), ty.clone()))
+                        }
+                        _ => None,
+                    };
+                    let checked = pe.readonly || pe.set_visibility.is_some();
+                    if typed_leaf.is_some() {
+                        self.cursor_leaf = typed_leaf;
+                    }
+                    if checked {
+                        let ro = self.class(cls).props[&key].readonly;
                         let last = i + 1 == steps.len();
                         if last && !make_ref {
-                            self.check_readonly_write(&h, &key, val.is_some(), scope)?;
-                        } else if !matches!(val.as_ref().map(deref), Some(Value::Object(_))) {
-                            return Err(Thrown::error(
-                                "Error",
-                                format!(
-                                    "Cannot indirectly modify readonly property {}::${}",
-                                    String::from_utf8_lossy(
-                                        self.class(pe.declaring_class).name.as_bytes()
-                                    ),
-                                    String::from_utf8_lossy(pe.name.as_bytes())
-                                ),
-                            ));
+                            if !unset {
+                                let called = self.stack[top].called_class;
+                                self.check_readonly_write(
+                                    &h,
+                                    &key,
+                                    val.is_some(),
+                                    scope,
+                                    called,
+                                    "modify",
+                                )?;
+                                // The write uses up the `__clone` window.
+                                if ro && val.is_some() {
+                                    self.consume_reinit(&h, &key);
+                                }
+                            }
+                        } else if ro
+                            || classes::set_access_ok(&self.classes, cls, scope, &key).is_err()
+                        {
+                            match val.as_ref().map(deref) {
+                                Some(Value::Object(_)) if last => return Ok(Through::Copy),
+                                Some(Value::Object(_)) => {}
+                                None if unset => return Ok(Through::Stop),
+                                _ => return Err(self.indirect_modification_err(top, cls, &key)),
+                            }
                         }
                     }
                     match val {
                         Some(v) => v,
-                        None => return Ok(()),
+                        None => return Ok(Through::Plain),
                     }
                 }
-                _ => return Ok(()),
+                _ => return Ok(Through::Plain),
             };
             cur = next;
         }
-        Ok(())
+        Ok(Through::Plain)
     }
 
     /// The dynamic-property rules (deprecation, or php's "Cannot create
@@ -695,6 +840,9 @@ impl Vm {
         steps: &[CursorStep],
         make_ref: bool,
     ) -> Result<(), Thrown> {
+        if !steps.iter().any(|s| matches!(s, CursorStep::Prop(_))) {
+            return Ok(());
+        }
         let scope = self.stack[top].defining_class;
         let mut cur = self.cursor_root_value(top);
         for (i, step) in steps.iter().enumerate() {
@@ -741,10 +889,26 @@ impl Vm {
         steps: &[CursorStep],
         v: Value,
     ) -> Result<(), Thrown> {
-        self.cursor_readonly_check(top, steps, false)?;
+        // (`$o->p = &$x` fetches the property for a reference.)
+        self.cursor_readonly_check(top, steps, matches!(v, Value::Ref(_)))?;
+        let mut v = v;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
-            MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
+            MagicSplit::Plain => {
+                self.flush_deferred_undef(top)?;
+                self.cursor_dyn_check(top, steps, false)?;
+                // zend_assign_to_typed_prop / zend_binary_assign_op_typed_prop.
+                if steps.is_empty() && !matches!(v, Value::Ref(_)) && self.cursor_static.is_some() {
+                    v = self.cursor_static_coerce(top, v)?;
+                } else if !matches!(v, Value::Ref(_)) {
+                    if let Some((cls, decl, name, ty)) = self.cursor_leaf.take() {
+                        let strict = self.stack[top].proto.strict_types;
+                        v =
+                            self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
+                        self.typed_write_result = Some(v.clone());
+                    }
+                }
+            }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
             // the write fetch runs the get hook, then the reference cannot be
             // made.
@@ -760,7 +924,21 @@ impl Vm {
                     }
                 });
             }
-            MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
+            // ZEND_ASSIGN_OBJ_REF on a property served by `__get`: the
+            // write fetch reads it, then the reference cannot be made.
+            MagicSplit::Leaf(h, name) if matches!(v, Value::Ref(_)) => {
+                self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                    vm.prop_fetch(top, Value::Object(h), name)
+                })?;
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot assign by reference to overloaded object",
+                ));
+            }
+            MagicSplit::Leaf(h, name) => {
+                self.flush_deferred_undef(top)?;
+                return self.prop_store(top, Value::Object(h), name, v);
+            }
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v));
@@ -790,7 +968,10 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
+        // An object written to a string offset is converted afterwards.
+        let obj_val = matches!(v, Value::Object(_) | Value::Closure(_)).then(|| v.clone());
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -804,6 +985,9 @@ impl Vm {
         };
         flush_deferred_writes();
         self.flush_path_diags()?;
+        if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
+            return self.string_offset_object_write(top, steps, obj_val, r);
+        }
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
         if !self.destructibles.is_empty() {
@@ -812,10 +996,230 @@ impl Vm {
         r
     }
 
+    /// The warning of an undefined assigned variable whose read was put
+    /// off until the containers were fetched.
+    fn flush_deferred_undef(&mut self, top: usize) -> Result<(), Thrown> {
+        match self.deferred_undef_src.take() {
+            Some(r) => self.undef_cv(top, r).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Remember the static property a cursor is rooted at, when it has a
+    /// type or a set visibility to check.
+    pub(crate) fn note_cursor_static(
+        &mut self,
+        cell: &Rc<RefCell<Value>>,
+        cls: ClassId,
+        name: &[u8],
+    ) {
+        if !self.class(cls).checked_statics {
+            return;
+        }
+        let Some(sp) = self.class(cls).static_props.get(name) else {
+            return;
+        };
+        if sp.ty.is_some() || sp.set_visibility.is_some() {
+            self.cursor_static = Some(StaticRoot {
+                cell: cell.clone(),
+                cls,
+                name: PhpStr::from_bytes(name),
+                decl: sp.declaring_class,
+                set_vis: sp.set_visibility,
+                ty: sp.ty.clone(),
+            });
+        }
+    }
+
+    /// The static property the open cursor is rooted at, while the root is
+    /// still its cell.
+    pub(crate) fn cursor_static_prop(&self) -> Option<StaticRoot> {
+        let st = self.cursor_static.as_ref()?;
+        match &self.cursor_root {
+            CursorRoot::Cell(rc) if Rc::ptr_eq(rc, &st.cell) => Some(st.clone()),
+            _ => None,
+        }
+    }
+
+    /// "Typed static property C::$p must not be accessed before
+    /// initialization".
+    pub(crate) fn uninit_static_err(&self, cls: ClassId, name: &[u8]) -> Thrown {
+        let decl = self
+            .class(cls)
+            .static_props
+            .get(name)
+            .map_or(cls, |sp| sp.declaring_class);
+        Thrown::error(
+            "Error",
+            format!(
+                "Typed static property {}::${} must not be accessed before initialization",
+                String::from_utf8_lossy(self.class(decl).name.as_bytes()),
+                String::from_utf8_lossy(name)
+            ),
+        )
+    }
+
+    /// php's asymmetric visibility and typed checks for a cursor rooted
+    /// at a static property (ZEND_ASSIGN_STATIC_PROP and friends). Returns
+    /// `v`.
+    pub(crate) fn cursor_static_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        op: StaticOp,
+        v: Value,
+    ) -> Result<Value, Thrown> {
+        let Some(StaticRoot {
+            cls,
+            name,
+            decl,
+            set_vis,
+            ty,
+            ..
+        }) = self.cursor_static_prop()
+        else {
+            return Ok(v);
+        };
+        let cur = self.cursor_root_value(top);
+        let undef = match &self.cursor_root {
+            CursorRoot::Cell(rc) => rc.borrow().is_undef(),
+            CursorRoot::Cv(_) => false,
+        };
+        let direct = steps.is_empty();
+        let op = if direct || matches!(op, StaticOp::Fetch | StaticOp::Unset) {
+            op
+        } else {
+            StaticOp::Fetch
+        };
+        if let Some(sv) = set_vis {
+            let scope = self.stack[top].defining_class;
+            let ok = scope == Some(decl)
+                || (sv == rhp_values::Visibility::Protected
+                    && scope.is_some_and(|s| {
+                        self.class(s).ancestors.contains(&decl)
+                            || self.class(decl).ancestors.contains(&s)
+                    }));
+            if !ok {
+                let what = match op {
+                    StaticOp::Assign => Some("modify"),
+                    StaticOp::Ref | StaticOp::Rw => Some("indirectly modify"),
+                    // An object below a nested write is used as is; a
+                    // reference to the static itself is refused (php's
+                    // ZEND_FETCH_REF makes the slot a reference first).
+                    StaticOp::Fetch => match deref(&cur) {
+                        Value::Object(_) if !direct => None,
+                        _ => Some("indirectly modify"),
+                    },
+                    StaticOp::Unset if undef || matches!(deref(&cur), Value::Object(_)) => None,
+                    StaticOp::Unset => Some("indirectly modify"),
+                };
+                if let Some(what) = what {
+                    let vis = if sv == rhp_values::Visibility::Private {
+                        "private(set)"
+                    } else {
+                        "protected(set)"
+                    };
+                    let from = match self.stack[top].called_class {
+                        Some(c) => format!(
+                            "scope {}",
+                            String::from_utf8_lossy(self.class(c).name.as_bytes())
+                        ),
+                        None => "global scope".into(),
+                    };
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Cannot {what} {vis} property {}::${} from {from}",
+                            String::from_utf8_lossy(self.class(decl).name.as_bytes()),
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+        }
+        if ty.is_some() && op == StaticOp::Rw && undef {
+            return Err(self.uninit_static_err(cls, name.as_bytes()));
+        }
+        Ok(v)
+    }
+
+    /// `v` coerced to the type of the typed static property the cursor is
+    /// rooted at (zend_verify_property_type), for a write to the root.
+    fn cursor_static_coerce(&mut self, top: usize, v: Value) -> Result<Value, Thrown> {
+        let Some(StaticRoot {
+            cls,
+            name,
+            decl,
+            ty: Some(ty),
+            ..
+        }) = self.cursor_static_prop()
+        else {
+            return Ok(v);
+        };
+        let strict = self.stack[top].proto.strict_types;
+        let v = self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
+        self.typed_write_result = Some(v.clone());
+        Ok(v)
+    }
+
+    /// The readonly / set visibility error a write to the leaf of `steps`
+    /// would raise, if any.
+    pub(crate) fn cursor_readonly_leaf_err(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<Thrown> {
+        self.cursor_readonly_check(top, steps, false).err()
+    }
+
+    /// The declared typed property the leaf of a cursor path is (php's
+    /// zend_object_fetch_property_type_info on the fetched slot): its
+    /// object's class and storage key.
+    pub(crate) fn cursor_leaf_typed(
+        &self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<(ClassId, PhpStr)> {
+        let (CursorStep::Prop(name), prefix) = steps.split_last()? else {
+            return None;
+        };
+        let parent = if prefix.is_empty() {
+            self.cursor_root_value(top)
+        } else {
+            self.cursor_read_steps(top, prefix)
+        };
+        let Value::Object(h) = deref(&parent) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        let PropRes::Slot(key) =
+            classes::resolve_prop(&self.classes, cls, self.stack[top].defining_class, name)
+        else {
+            return None;
+        };
+        self.class(cls).props.get(&key)?.ty.as_ref()?;
+        Some((cls, key))
+    }
+
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
+        if self.cursor_through_check(top, steps, false, true)? == Through::Stop {
+            return Ok(());
+        }
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
-            MagicSplit::Plain | MagicSplit::Leaf(..) => {}
+            MagicSplit::Plain | MagicSplit::Leaf(..) => {
+                // A property leaf is unset by its object (zend_std_unset_property).
+                if let Some((CursorStep::Prop(name), prefix)) = steps.split_last() {
+                    let parent = if prefix.is_empty() {
+                        self.cursor_root_value(top)
+                    } else {
+                        self.cursor_read_steps(top, prefix)
+                    };
+                    if let Value::Object(h) = deref(&parent) {
+                        return self.prop_unset(top, Value::Object(h), name.clone());
+                    }
+                }
+            }
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 return self.with_cursor_root(cell, |vm| vm.cursor_unset(top, &steps[i..]));
@@ -845,6 +1249,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => unset_path(&mut self.stack[top].regs[*r as usize], steps, &cx),
@@ -862,6 +1267,47 @@ impl Vm {
         r
     }
 
+    /// zend_assign_to_string_offset with an object value: after the
+    /// offset's checks, the value goes through `__toString`, then the
+    /// write runs again with the string (its offset diagnostics already
+    /// shown).
+    #[cold]
+    fn string_offset_object_write(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: Option<Value>,
+        r: Result<(), Thrown>,
+    ) -> Result<(), Thrown> {
+        r?;
+        let Some(v) = v else {
+            return Ok(());
+        };
+        let s = Value::str(self.to_string_vm(&v)?);
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
+            incdec: false,
+        };
+        let r = match &self.cursor_root {
+            CursorRoot::Cv(r) => assign_path(&mut self.stack[top].regs[*r as usize], steps, s, &cx),
+            CursorRoot::Cell(rc) => {
+                let rc = rc.clone();
+                let r = assign_path(&mut rc.borrow_mut(), steps, s, &cx);
+                r
+            }
+        };
+        flush_deferred_writes();
+        // Keep only what the conversion's write adds after the offset.
+        PATH_DIAGS.with(|d| {
+            d.borrow_mut()
+                .retain(|(_, m)| m.starts_with(b"Only the first byte"))
+        });
+        self.flush_path_diags()?;
+        r
+    }
+
     /// `$str[$k]->…` written: the offset's own checks, then "Cannot use
     /// string offset as an object".
     pub(crate) fn string_offset_as_object(&mut self, top: usize, k: &Value) -> Thrown {
@@ -869,6 +1315,7 @@ impl Vm {
             classes: &self.classes,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
+            incdec: self.incdec_write,
         };
         let checked = string_offset(k, false, &cx);
         if let Err(t) = self.flush_path_diags() {
@@ -957,14 +1404,8 @@ impl Vm {
         top: usize,
         name: &[u8],
     ) -> Option<Result<Reg, Rc<RefCell<Value>>>> {
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            return Some(Ok(i as Reg));
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            return Some(Ok(i));
         }
         // The global scope ({main}, top-level includes) is the global
         // symbol table.
@@ -991,14 +1432,8 @@ impl Vm {
             self.rebind_global(name, cell);
             return;
         }
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            self.stack[top].regs[i] = Value::Ref(cell);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            self.stack[top].regs[i as usize] = Value::Ref(cell);
         } else if let Some(caller) = self.stack[top].include_caller {
             self.var_var_bind(caller, name, cell);
         } else {
@@ -1013,17 +1448,11 @@ impl Vm {
             self.unset_global(name);
             return;
         }
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            self.unset_cv(top, i as Reg);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            self.unset_cv(top, i);
         } else if let Some(caller) = self.stack[top].include_caller {
             self.var_var_unset(caller, name);
-        } else if let Some(c) = self.stack[top].dyn_vars.remove(name) {
+        } else if let Some(c) = self.stack[top].dyn_vars.shift_remove(name) {
             if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
                 self.dtor_check = true;
             }
@@ -1045,14 +1474,8 @@ impl Vm {
         top: usize,
         name: &[u8],
     ) -> Result<Reg, Rc<RefCell<Value>>> {
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            return Ok(i as Reg);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            return Ok(i);
         }
         if self.stack[top].global_scope {
             return Err(self.global_cell(name));
@@ -1103,7 +1526,7 @@ impl Vm {
         })
     }
 
-    fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
+    pub(crate) fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
         let cls = h.borrow().class;
         let msg = format!(
             "Indirect modification of overloaded element of {} has no effect",
@@ -1132,9 +1555,27 @@ impl Vm {
             classes: &self.classes,
             scope: Some(owner),
             called: Some(owner),
+            incdec: false,
         };
         let mut obj = Value::Object(h.clone());
         make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
+    }
+
+    /// The storage key of offset `key` of the built-in ArrayObject /
+    /// ArrayIterator `h` (spl_array_get_dimension_ptr's conversion).
+    pub(crate) fn spl_array_key(
+        &mut self,
+        h: &ObjectHandle,
+        key: &Value,
+    ) -> Result<rhp_values::ArrayKey, Thrown> {
+        let akey = self.dim_key(&deref(key), false)?;
+        akey.ok_or_else(|| {
+            Thrown::type_error(format!(
+                "Cannot access offset of type {} on {}",
+                rhp_builtins::zval_type_name(self, key),
+                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
+            ))
+        })
     }
 
     /// php's spl_array_get_dimension_ptr for a built-in ArrayObject /
@@ -1157,23 +1598,7 @@ impl Vm {
             return Ok(Some(Rc::new(RefCell::new(Value::Null))));
         }
         let storage = self.spl_array_storage(h, owner)?;
-        let akey = match deref(key) {
-            Value::Null => {
-                self.diag(
-                    builtins::E_DEPRECATED,
-                    "Using null as an array offset is deprecated, use an empty string instead",
-                )?;
-                Some(rhp_values::ArrayKey::from_bytes(b""))
-            }
-            k => rhp_values::ArrayKey::from_value(&k),
-        };
-        let Some(akey) = akey else {
-            return Err(Thrown::type_error(format!(
-                "Cannot access offset of type {} on {}",
-                rhp_builtins::zval_type_name(self, key),
-                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
-            )));
-        };
+        let akey = self.spl_array_key(h, key)?;
         let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());
         if !exists {
             match mode {
@@ -1198,6 +1623,7 @@ impl Vm {
             classes: &self.classes,
             scope: Some(owner),
             called: Some(owner),
+            incdec: false,
         };
         let mut slot = storage.borrow_mut();
         make_ref_path(&mut slot, &[CursorStep::Key(akey.to_value())], &cx).map(Some)
@@ -1719,10 +2145,8 @@ fn assign_string_offset(
             b"Array".to_vec()
         }
         Value::Object(_) | Value::Closure(_) => {
-            return Err(Thrown::unsupported(
-                "string offset write of an object",
-                "converting an object to string here needs __toString dispatch",
-            ))
+            STRING_OFFSET_OBJECT.with(|f| f.set(true));
+            return Ok(());
         }
         v => conv::to_string_bytes(&v),
     };
@@ -1787,9 +2211,12 @@ fn assign_path(
     value: Value,
     cx: &PropCtx,
 ) -> Result<(), Thrown> {
-    // An undefined variable at the root is created by the write.
+    // An undefined variable at the root is created by the write (not by a
+    // property write, which fails on it).
     if let Value::Undef = slot {
-        *slot = Value::Null;
+        if !matches!(steps.first(), Some(CursorStep::Prop(_))) {
+            *slot = Value::Null;
+        }
     }
     // `lval = &$x` (a `Ref` value at the leaf) rebinds the slot itself: it
     // does not write through a reference the slot already held.
@@ -1827,11 +2254,17 @@ fn assign_path(
             // a write further down the path modifies it.
             other => {
                 let shown = cx.value_name(other);
+                let op = if !rest.is_empty() || matches!(value, Value::Ref(_)) {
+                    "modify"
+                } else if cx.incdec {
+                    "increment/decrement"
+                } else {
+                    "assign"
+                };
                 return Err(Thrown::error(
                     "Error",
                     format!(
-                        "Attempt to {} property \"{}\" on {shown}",
-                        if rest.is_empty() { "assign" } else { "modify" },
+                        "Attempt to {op} property \"{}\" on {shown}",
                         String::from_utf8_lossy(name.as_bytes())
                     ),
                 ));
@@ -1849,10 +2282,14 @@ fn assign_path(
                 "[] operator not supported for strings",
             ));
         };
-        if rest.is_empty() {
+        if rest.is_empty() && !matches!(value, Value::Ref(_)) {
             return assign_string_offset(slot, k, &value, cx);
         }
         string_offset(k, false, cx)?;
+        // `$str[k] =& $v`
+        if rest.is_empty() {
+            return Err(string_offset_misuse(rest, true));
+        }
         return Err(string_offset_misuse(rest, false));
     }
     autovivify(slot, cx)?;

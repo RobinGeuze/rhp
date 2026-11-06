@@ -1,0 +1,31 @@
+
+Deprecated: Non-canonical cast (integer) is deprecated, use the (int) cast instead in F(5) : eval()'d code on line 1
+
+Deprecated: Non-canonical cast (boolean) is deprecated, use the (bool) cast instead in F(5) : eval()'d code on line 2
+
+Warning: Octal escape sequence overflow \400 is greater than \377 in F(5) : eval()'d code on line 3
+
+Deprecated: Non-canonical cast (double) is deprecated, use the (float) cast instead in F(5) : eval()'d code on line 3
+
+Warning: Octal escape sequence overflow \401 is greater than \377 in F(5) : eval()'d code on line 4
+
+Warning: Octal escape sequence overflow \402 is greater than \377 in F(5) : eval()'d code on line 5
+
+Deprecated: Non-canonical cast (binary) is deprecated, use the (string) cast instead in F(5) : eval()'d code on line 9
+
+Warning: Octal escape sequence overflow \404 is greater than \377 in F(5) : eval()'d code on line 9
+
+Warning: Octal escape sequence overflow \405 is greater than \377 in F(5) : eval()'d code on line 10
+
+Deprecated: Non-canonical cast (integer) is deprecated, use the (int) cast instead in F(5) : eval()'d code on line 11
+
+Deprecated: Non-canonical cast (boolean) is deprecated, use the (bool) cast instead in F(5) : eval()'d code on line 13
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(false)
+bool(false)

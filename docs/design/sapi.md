@@ -53,7 +53,8 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
 - **`rhp-cli`** only picks the SAPI (`rhp --cgi …`, or the binary named
   `php-cgi`) and hands the command line to `cli::main` or `cgi::main`.
   Both parse it with a port of php's `php_getopt`, so bad options get
-  php's messages; the php-cli modes rhp lacks (`-i`, `-l`, `-m`, `-s`,
+  php's messages (`-v` and `-i` run after module startup, so its
+  warnings come first); the php-cli modes rhp lacks (`-l`, `-m`, `-s`,
   `-w`, `-B`/`-R`/`-F`/`-E`, `-S`, `--rf` and friends, `--ini`,
   `--repeat`) are refused after php's own checks, and `-a` gets the error
   of a php without readline.

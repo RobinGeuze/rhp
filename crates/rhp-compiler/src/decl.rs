@@ -41,7 +41,8 @@ pub(crate) fn modifiers_visibility(mods: &crate::parse::cst::Sequence<Modifier>)
 }
 
 /// The asymmetric write visibility (`private(set)` / `protected(set)`), when
-/// it is narrower than the read visibility.
+/// it is narrower than the read visibility; an explicit `public(set)` on a
+/// public property is kept (it keeps a readonly one publicly writable).
 pub(crate) fn modifiers_set_visibility(
     mods: &crate::parse::cst::Sequence<Modifier>,
 ) -> Option<Visibility> {
@@ -57,7 +58,19 @@ pub(crate) fn modifiers_set_visibility(
         Visibility::Protected => 1,
         Visibility::Private => 2,
     };
-    (rank(set) > rank(read)).then_some(set)
+    (rank(set) > rank(read) || (set == Visibility::Public && read == Visibility::Public))
+        .then_some(set)
+}
+
+/// [`modifiers_set_visibility`], plus an explicit `public(set)` on a
+/// readonly property (which is otherwise implicitly protected(set)).
+pub(crate) fn readonly_set_visibility(
+    mods: &crate::parse::cst::Sequence<Modifier>,
+    readonly: bool,
+) -> Option<Visibility> {
+    let public_set = || mods.iter().any(|m| matches!(m, Modifier::PublicSet(_)));
+    modifiers_set_visibility(mods)
+        .or_else(|| (readonly && public_set()).then_some(Visibility::Public))
 }
 
 pub(crate) fn has_modifier(
@@ -271,6 +284,9 @@ pub(crate) fn compile_attributes(
                 name,
                 args,
                 validation_error: None,
+                file: cx.file.clone(),
+                line: cx.line_of(a.name.span().start.offset),
+                strict_types: cx.strict_types,
             });
         }
     }
@@ -470,6 +486,7 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         flags,
         parent,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -586,6 +603,7 @@ pub(crate) fn compile_anon_class(
         flags,
         parent,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -680,6 +698,7 @@ pub(crate) fn compile_enum(
         },
         parent: None,
         interfaces,
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -849,7 +868,15 @@ struct CompiledMembers {
     static_props: Vec<StaticPropProto>,
     constants: Vec<ConstProto>,
     traits: Vec<PhpStr>,
+    trait_rules: rhp_bytecode::TraitRules,
     enum_cases: Vec<rhp_bytecode::EnumCaseProto>,
+}
+
+impl CompiledMembers {
+    fn trait_rules(&self) -> Option<Box<rhp_bytecode::TraitRules>> {
+        let r = &self.trait_rules;
+        (!r.precedences.is_empty() || !r.aliases.is_empty()).then(|| Box::new(r.clone()))
+    }
 }
 
 fn compile_members(
@@ -952,9 +979,57 @@ fn compile_member(
             }
         }
         ClassLikeMember::TraitUse(tu) => {
+            use crate::parse::cst::{
+                TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
+            };
             for t in tu.trait_names.iter() {
                 out.traits
                     .push(PhpStr::from_bytes(cx.resolve_class_name(t)));
+            }
+            // zend_compile_trait_precedence / zend_compile_trait_alias.
+            if let TraitUseSpecification::Concrete(c) = &tu.specification {
+                let name = |t| PhpStr::from_bytes(cx.resolve_class_name(t));
+                for a in c.adaptations.iter() {
+                    match a {
+                        TraitUseAdaptation::Precedence(p) => {
+                            let r = &p.method_reference;
+                            out.trait_rules
+                                .precedences
+                                .push(rhp_bytecode::TraitPrecedence {
+                                    trait_name: name(&r.trait_name),
+                                    method: PhpStr::from_bytes(r.method_name.value.to_vec()),
+                                    excludes: p.trait_names.iter().map(name).collect(),
+                                });
+                        }
+                        TraitUseAdaptation::Alias(al) => {
+                            let (trait_name, method) = match &al.method_reference {
+                                TraitUseMethodReference::Identifier(m) => (None, m.value),
+                                TraitUseMethodReference::Absolute(r) => {
+                                    (Some(name(&r.trait_name)), r.method_name.value)
+                                }
+                            };
+                            let (visibility, is_final) = match &al.modifier {
+                                Some(Modifier::Public(_)) => (Some(Visibility::Public), false),
+                                Some(Modifier::Protected(_)) => {
+                                    (Some(Visibility::Protected), false)
+                                }
+                                Some(Modifier::Private(_)) => (Some(Visibility::Private), false),
+                                Some(Modifier::Final(_)) => (None, true),
+                                _ => (None, false),
+                            };
+                            out.trait_rules.aliases.push(rhp_bytecode::TraitAlias {
+                                trait_name,
+                                method: PhpStr::from_bytes(method.to_vec()),
+                                alias: al
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| PhpStr::from_bytes(a.value.to_vec())),
+                                visibility,
+                                is_final,
+                            });
+                        }
+                    }
+                }
             }
         }
         ClassLikeMember::EnumCase(ec) => {
@@ -1006,9 +1081,10 @@ fn compile_property(
     class_name: &PhpStr,
 ) -> Result<(), Thrown> {
     let visibility = modifiers_visibility(p.modifiers);
-    let set_visibility = modifiers_set_visibility(p.modifiers);
     let is_static = has_modifier(p.modifiers, |m| matches!(m, Modifier::Static(_)));
     let is_readonly = has_modifier(p.modifiers, |m| matches!(m, Modifier::Readonly(_)));
+    let set_visibility =
+        readonly_set_visibility(p.modifiers, is_readonly || cx.in_readonly_class.get());
     let is_final = has_modifier(p.modifiers, |m| matches!(m, Modifier::Final(_)));
     let mut is_abstract = has_modifier(p.modifiers, |m| matches!(m, Modifier::Abstract(_)));
     let in_interface = cx.in_interface.get();
@@ -1164,6 +1240,7 @@ fn compile_property_items(
                 type_hint: hint.clone(),
                 meta,
                 has_default,
+                set_visibility,
             });
         } else {
             out.props.push(PropProto {
@@ -1239,6 +1316,7 @@ pub(crate) fn compile_trait(
         flags: ClassFlags::default(),
         parent: None,
         interfaces: Vec::new(),
+        trait_rules: m.trait_rules(),
         traits: m.traits,
         methods: m.methods,
         props: m.props,
@@ -1323,6 +1401,7 @@ pub(crate) fn compile_interface(
         parent: None,
         interfaces,
         traits: Vec::new(),
+        trait_rules: None,
         methods,
         props: m.props,
         static_props: Vec::new(),

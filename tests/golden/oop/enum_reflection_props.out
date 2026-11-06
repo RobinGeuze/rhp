@@ -1,0 +1,7 @@
+int(1)
+int(2)
+Property [ public protected(set) readonly string $name ]
+bool(false)
+Property [ public protected(set) readonly string $name ]
+Property [ public protected(set) readonly int $value ]
+bool(true)

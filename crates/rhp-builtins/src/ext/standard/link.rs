@@ -16,6 +16,18 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::warn(host, "link", "No such file or directory")?;
         return Ok(Value::Bool(false));
     }
+    if crate::main::fopen_wrappers::active() {
+        use crate::zend::virtual_cwd::expand_filepath_checked as expand;
+        let (Ok(source), Ok(dest)) = (expand(&link), expand(&target)) else {
+            crate::warn(host, "link", "No such file or directory")?;
+            return Ok(Value::Bool(false));
+        };
+        if !crate::main::fopen_wrappers::check(host, "link", &dest, true)?
+            || !crate::main::fopen_wrappers::check(host, "link", &source, true)?
+        {
+            return Ok(Value::Bool(false));
+        }
+    }
     let (Some(t), Some(l)) = (
         crate::zend::virtual_cwd::c_path(&target),
         crate::zend::virtual_cwd::c_path(&link),
@@ -33,6 +45,12 @@ fn fn_link(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// `linkinfo($path)`: `st_dev` of the link itself, or -1 with a warning.
 fn fn_linkinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "linkinfo", "path")?;
+    if crate::main::fopen_wrappers::active() {
+        let dir = crate::ext::standard::string::php_dirname(&path);
+        if !crate::main::fopen_wrappers::check(host, "linkinfo", &dir, true)? {
+            return Ok(Value::Bool(false));
+        }
+    }
     match crate::zend::virtual_cwd::stat(&path, false) {
         Ok(st) => Ok(Value::Int(
             crate::main::streams::StatInfo::from_libc(&st).dev,
@@ -46,6 +64,9 @@ fn fn_linkinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_readlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "readlink", "path")?;
+    if !crate::main::fopen_wrappers::check(host, "readlink", &path, true)? {
+        return Ok(Value::Bool(false));
+    }
     match std::fs::read_link(crate::zend::virtual_cwd::os_path(&path)) {
         Ok(p) => Ok(Value::str(p.into_os_string().into_encoded_bytes())),
         Err(e) => {
@@ -65,6 +86,23 @@ fn fn_symlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if target.is_empty() || link.is_empty() {
         crate::warn(host, "symlink", "No such file or directory")?;
         return Ok(Value::Bool(false));
+    }
+    if crate::main::fopen_wrappers::active() {
+        use crate::zend::virtual_cwd::expand_filepath_ex;
+        let Ok(source) = expand_filepath_ex(&link, None) else {
+            crate::warn(host, "symlink", "No such file or directory")?;
+            return Ok(Value::Bool(false));
+        };
+        let dir = crate::ext::standard::string::php_dirname(&source);
+        let Ok(dest) = expand_filepath_ex(&target, Some(&dir)) else {
+            crate::warn(host, "symlink", "No such file or directory")?;
+            return Ok(Value::Bool(false));
+        };
+        if !crate::main::fopen_wrappers::check(host, "symlink", &dest, true)?
+            || !crate::main::fopen_wrappers::check(host, "symlink", &source, true)?
+        {
+            return Ok(Value::Bool(false));
+        }
     }
     let target = std::ffi::OsStr::from_bytes(&target);
     match std::os::unix::fs::symlink(target, crate::zend::virtual_cwd::os_path(&link)) {

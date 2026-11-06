@@ -132,11 +132,20 @@ pub fn main(args: &[String]) -> i32 {
     loop {
         match g.next(false) {
             Opt::End => break,
+            // Both after module startup (its warnings come first), with no
+            // script and no auto_prepend_file.
             Opt::Char(b'v', _) => {
-                print!("{}", crate::version_banner("cli"));
-                return 0;
+                // A literal, so disable_functions cannot get in the way.
+                let banner = crate::version_banner("cli");
+                let lit = banner.replace('\\', "\\\\").replace('\'', "\\'");
+                let code = format!("echo '{lit}';");
+                return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
             }
-            Opt::Char(c @ (b'i' | b'm'), _) => return refuse(c),
+            Opt::Char(b'i', _) => {
+                let code = "phpinfo(INFO_ALL & ~INFO_CREDITS);".to_string();
+                return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
+            }
+            Opt::Char(c @ b'm', _) => return refuse(c),
             _ => {}
         }
     }

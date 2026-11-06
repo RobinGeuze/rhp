@@ -1,0 +1,5 @@
+start
+
+Fatal error: Enum E cannot include magic method __get in F on line 6
+Stack trace:
+#0 {main}

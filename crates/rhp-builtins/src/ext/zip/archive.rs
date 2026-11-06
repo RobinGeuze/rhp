@@ -531,6 +531,9 @@ fn open(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
     if filename.is_empty() {
         return Err(cx.empty(1, "filename"));
     }
+    if !crate::main::fopen_wrappers::check(cx.host, &cx.fname, &filename, true)? {
+        return Ok(Value::Bool(false));
+    }
     let Some(resolved) = expand_filepath(&filename) else {
         cx.warn("No such file or directory")?;
         return Ok(Value::Bool(false));

@@ -30,6 +30,8 @@ impl StreamWrapper for GlobWrapper {
         Some(
             paths
                 .into_iter()
+                // open_basedir filters the matches
+                .filter(|p| crate::main::fopen_wrappers::check_queued(p, false))
                 .map(|p| match p.iter().rposition(|&c| c == b'/') {
                     Some(i) => p[i + 1..].to_vec(),
                     None => p,

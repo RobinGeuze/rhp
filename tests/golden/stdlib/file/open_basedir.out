@@ -1,0 +1,97 @@
+first set: ''
+ini_get keeps the value as given: 'BASE/in/'
+loosen: false
+unset: false
+relative entry: 'BASE/in/'
+after: 'sub:.'
+restore fails: NULL
+still: 'sub:.'
+set in: 'sub:.'
+file_exists(): open_basedir restriction in effect. File(lnk) is not within the allowed path(s): (BASE/in)
+symlink out: false
+file_exists(): open_basedir restriction in effect. File(lnk/) is not within the allowed path(s): (BASE/in)
+symlink out, slash: false
+file_exists(): open_basedir restriction in effect. File(broken) is not within the allowed path(s): (BASE/in)
+broken link: false
+missing dirs inside: false
+is_dir(): open_basedir restriction in effect. File(sub/../..) is not within the allowed path(s): (BASE/in)
+dotdot out: false
+realpath(): open_basedir restriction in effect. File(BASE) is not within the allowed path(s): (BASE/in)
+realpath out: false
+realpath in: 'sub'
+fopen(): open_basedir restriction in effect. File(../out/bad.txt) is not within the allowed path(s): (BASE/in)
+fopen(../out/bad.txt): Failed to open stream: Operation not permitted
+fopen: false
+file_get_contents(): open_basedir restriction in effect. File(lnk/bad.txt) is not within the allowed path(s): (BASE/in)
+file_get_contents(lnk/bad.txt): Failed to open stream: Operation not permitted
+get: false
+include(): open_basedir restriction in effect. File(BASE/out/x.php) is not within the allowed path(s): (BASE/in)
+include(BASE/out/x.php): Failed to open stream: Operation not permitted
+include(): Failed opening '../out/x.php' for inclusion (include_path='.')
+include: false
+parse_ini_file: array (
+  'a' => '1',
+)
+parse_ini_file(): open_basedir restriction in effect. File(BASE/out/bad.txt) is not within the allowed path(s): (BASE/in)
+parse_ini_file(BASE/out/bad.txt): Failed to open stream: Operation not permitted
+parse_ini_file out: false
+highlight_file(): open_basedir restriction in effect. File(../out/x.php) is not within the allowed path(s): (BASE/in)
+highlight out: false
+copy in: true
+copy(): open_basedir restriction in effect. File(../out/c.txt) is not within the allowed path(s): (BASE/in)
+copy(../out/c.txt): Failed to open stream: Operation not permitted
+copy out: false
+copy(): open_basedir restriction in effect. File(../out/bad.txt) is not within the allowed path(s): (BASE/in)
+copy from out: false
+rename(): open_basedir restriction in effect. File(../out/ok2.txt) is not within the allowed path(s): (BASE/in)
+rename out: false
+unlink: true
+mkdir(): open_basedir restriction in effect. File(../out/n) is not within the allowed path(s): (BASE/in)
+mkdir: false
+mkdir(): open_basedir restriction in effect. File(BASE/out/n/m) is not within the allowed path(s): (BASE/in)
+mkdir recursive: false
+touch(): open_basedir restriction in effect. File(../out/t) is not within the allowed path(s): (BASE/in)
+touch: false
+chmod(): open_basedir restriction in effect. File(../out/bad.txt) is not within the allowed path(s): (BASE/in)
+chmod: false
+symlink(): open_basedir restriction in effect. File(BASE/out) is not within the allowed path(s): (BASE/in)
+symlink: false
+link(): open_basedir restriction in effect. File(BASE/out/bad.txt) is not within the allowed path(s): (BASE/in)
+link: false
+readlink(): open_basedir restriction in effect. File(lnk) is not within the allowed path(s): (BASE/in)
+readlink: false
+linkinfo(): open_basedir restriction in effect. File(../out) is not within the allowed path(s): (BASE/in)
+linkinfo: false
+tempnam(): open_basedir restriction in effect. File(../out) is not within the allowed path(s): (BASE/in)
+tempnam: false
+disk_free_space(): open_basedir restriction in effect. File(BASE) is not within the allowed path(s): (BASE/in)
+disk_free_space: false
+glob: array (
+  0 => 'BASE/in',
+)
+glob in: array (
+  0 => 'ok.txt',
+)
+scandir(): open_basedir restriction in effect. File(..) is not within the allowed path(s): (BASE/in)
+scandir(..): Failed to open directory: Operation not permitted
+scandir(): (errno 1): Operation not permitted
+scandir: false
+opendir(): open_basedir restriction in effect. File(../out) is not within the allowed path(s): (BASE/in)
+opendir(../out): Failed to open directory: Operation not permitted
+opendir: false
+chdir(): open_basedir restriction in effect. File(..) is not within the allowed path(s): (BASE/in)
+chdir: false
+error_log(): open_basedir restriction in effect. File(../out/log) is not within the allowed path(s): (BASE/in)
+error_log(../out/log): Failed to open stream: Operation not permitted
+error_log: false
+ini_set(): open_basedir restriction in effect. File(BASE/out/log) is not within the allowed path(s): (BASE/in)
+ini error_log: false
+stat(): open_basedir restriction in effect. File(/) is not within the allowed path(s): (BASE/in)
+stat: false
+lstat(): open_basedir restriction in effect. File(../out) is not within the allowed path(s): (BASE/in)
+lstat: false
+filesize(): open_basedir restriction in effect. File(../out/bad.txt) is not within the allowed path(s): (BASE/in)
+filesize: false
+is_writable(): open_basedir restriction in effect. File(../out) is not within the allowed path(s): (BASE/in)
+is_writable: false
+done

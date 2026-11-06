@@ -226,6 +226,34 @@ fn check_members(cx: &FileCtx, d: &Decl, cname: &str, backed: bool) {
                                 if let TraitUseMethodReference::Absolute(r) = &al.method_reference {
                                     check_class_ref(cx, &r.trait_name, "trait name");
                                 }
+                                // zend_modifier_token_to_flag, then
+                                // zend_check_trait_alias_modifiers.
+                                let at = al.span().start.offset;
+                                match &al.modifier {
+                                    Some(Modifier::Static(_)) => cx.fatal(
+                                        at,
+                                        "Cannot use \"static\" as method modifier in trait alias"
+                                            .into(),
+                                    ),
+                                    Some(Modifier::Abstract(_)) => cx.fatal(
+                                        at,
+                                        "Cannot use \"abstract\" as method modifier in trait alias"
+                                            .into(),
+                                    ),
+                                    Some(
+                                        m @ (Modifier::Readonly(_)
+                                        | Modifier::PublicSet(_)
+                                        | Modifier::ProtectedSet(_)
+                                        | Modifier::PrivateSet(_)),
+                                    ) => cx.fatal(
+                                        at,
+                                        format!(
+                                            "Cannot use the {} modifier on a method",
+                                            s(m.get_keyword().value)
+                                        ),
+                                    ),
+                                    _ => {}
+                                }
                             }
                         }
                     }
@@ -362,6 +390,51 @@ fn check_property(cx: &FileCtx, d: &Decl, cname: &str, p: &Property, props: &mut
                 );
             }
         }
+        check_asymmetric(cx, vat, cname, name, mods, hint.is_some());
+    }
+}
+
+/// zend_declare_typed_property's asymmetric visibility checks.
+fn check_asymmetric(
+    cx: &FileCtx,
+    at: u32,
+    cname: &str,
+    name: &[u8],
+    mods: &crate::parse::cst::Sequence<Modifier>,
+    typed: bool,
+) {
+    let set = mods.iter().find_map(|m| match m {
+        Modifier::PrivateSet(_) => Some(2),
+        Modifier::ProtectedSet(_) => Some(1),
+        Modifier::PublicSet(_) => Some(0),
+        _ => None,
+    });
+    let Some(set) = set else {
+        return;
+    };
+    if !typed {
+        cx.fatal(
+            at,
+            format!(
+                "Property with asymmetric visibility {cname}::${} must have type",
+                s(name)
+            ),
+        );
+        return;
+    }
+    let get = match modifiers_visibility(mods) {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    if get > set {
+        cx.fatal(
+            at,
+            format!(
+                "Visibility of property {cname}::${} must not be weaker than set visibility",
+                s(name)
+            ),
+        );
     }
 }
 
@@ -518,6 +591,7 @@ pub(crate) fn check_promotion(
                 format!("Readonly property {cname}::${} must have type", s(name)),
             );
         }
+        check_asymmetric(cx, at, cname, name, &p.modifiers, p.hint.is_some());
     }
 }
 

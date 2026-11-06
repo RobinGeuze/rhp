@@ -30,7 +30,7 @@ verbatim: [`value-model.md`](./value-model.md), [`php-semantics.md`](./php-seman
 Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
 dropped at compile time (a `FunctionProto` carries **no** `'arena` borrow);
-`eval` / `extract` / `compact` / `create_function` / `include`/`require` /
+`eval` / `create_function` / `include`/`require` /
 `(unset)`-cast are **refused**, structurally in the compiler for the
 construct nodes and via `is_refused()` for function names (§4). `eval` is
 **never** implemented — no opcode interprets a string as code, by construction.
@@ -331,7 +331,12 @@ JmpTrue    { cond, target }    if conv::to_bool(deref(cond))
 JmpFalse   { cond, target }    if !conv::to_bool(deref(cond))
 JmpNull    { src, target }     if deref(src) is Null          (for ?? / nullsafe)
 JmpNotNull { src, target }
+AssertCheck { dst, target }    if zend.assertions <= 0: dst = true, jump (ZEND_ASSERT_CHECK)
 ```
+`assert(...)` (zend_compile_assert): `AssertCheck` jumps over the call when
+assertions are off at run time; with zend.assertions=-1 the compiler emits
+only `true`. A one-argument call gets `assert(<expr>)` as its description,
+printed by `ast_export.rs`, a port of zend_ast_export over the CST.
 `switch` → chain of `Cmp Eq; JmpTrue` (loose). `match` → `Cmp Identical; JmpTrue`
 (strict) ending in `ThrowMatchError`.
 
@@ -360,6 +365,23 @@ EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
 UnsetCv    { cv }                     regs[cv] = Undef  (see "Undefined variables")
 UnsetDim   { arr, key }               remove via make_mut; next free key not lowered (value-model §3c)
 ```
+
+**By-name scope (as built).** extract(), compact(), get_defined_vars() and
+`$$x` / `${expr}` / `global $$x` see a scope by name, as php's symbol table
+(zend_rebuild_symbol_table) does: a function's compiled variables in CV order
+(`scope::named_cv`; `$this` and the auto-globals are not among them), then
+the variables created by name in `Frame::dyn_vars` (insertion-ordered); the
+global scope's is the global symbol table. An include/eval frame uses its
+includer's. A builtin reaches the innermost user-code frame through the
+`Host::scope_*` methods (crates/rhp-vm/src/scope.rs). Nothing is built
+ahead: frames that never look a name up pay nothing. A direct call by name
+sets `Vm::call_direct` for the builtin it runs; any other way in (`$f()`,
+callbacks, call_user_func, `f(...)`) is php's ZEND_CALL_DYNAMIC, which the
+scope functions refuse with "Cannot call f() dynamically"
+(`Host::call_is_dynamic`). The exception is `call_user_func[_array]('name', …)`
+with a string literal naming an internal function: php binds that at compile
+time, so the compiler sets `CallFlags::CT_BOUND` and the callee's call is
+direct.
 
 **Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
 IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts
@@ -424,7 +446,14 @@ BindRef    { dst_cv, src_cv }         `$dst =& $src`: promote src slot to Ref(rc
 MakeRef    { dst, cv }                materialize cv slot as Ref, place Ref(rc) in dst (for `&$x` as arg/element)
 BindGlobal { cv, name: NIdx }         `global $x`: bind cv to {main} scope slot for name, as a shared Ref
 BindStatic { cv, slot: u32, init: CIdx }  `static $x=init`: init persistent slot on first exec; alias cv after
+RefFuncResult { src }                 `=& f()`: notice when the call's result is no reference (then assigned)
+FetchListW { dst, src, key }          `[&$a] = $src`: element `key` of the container `src` references, as a reference
+RetRef     { src, kind }              by-ref return; `kind` (RET_REF_*) says when php notices
+SetPendingRetRef { src, kind }        RetRef crossing finally: type checked now and again after it, notice at the end
+ArgSpreadRef { arr, src, sig }        `f(...$a)` for by-ref params: their elements become references in `$a`
 ```
+The value-model's §4 ("Non-variables where php wants a reference") has the
+rules these follow.
 
 **Calls / return (phase 5)** — positional args evaluated into a contiguous temp
 window `[base, base+argc)`; for a builtin the VM passes `&regs[base..base+argc]`
@@ -442,7 +471,10 @@ before any of this, from the stub's `since` and `message`.)
 attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed
 targets, repetition and the validators, with `#[\DelayedTargetValidation]`
 leaving the error to `ReflectionAttribute::newInstance()`
-(`AttributeProto::validation_error`). `#[\Deprecated]` and `#[\NoDiscard]`
+(`AttributeProto::validation_error`). `newInstance()` runs the
+constructor from a frame that only stands for the attribute's file, line
+and `strict_types` (`ProtoFlags::CALL_SITE`, zend_get_attribute_object's
+dummy frame): traces show it as the call site, never as a frame. `#[\Deprecated]` and `#[\NoDiscard]`
 set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
 once per call and, only when one is set, raises the deprecation and the
 unused-result warning before the frame is entered
@@ -469,6 +501,9 @@ RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
    takes them), so an object passed as a temporary is freed when the call
    returns and its handle comes back as in php (oop-model.md, "Fresh id")
+-- php's live ranges, approximated: `f()[k]` clears the call's result once
+   the element is out, and an exception caught by a try frees the try
+   body's temporaries (`ExRegion::temps` up) before the handler runs
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)
@@ -587,6 +622,17 @@ callables, first-class callables, `function_exists`, `is_callable`,
 user function may take such a name. A first-class callable of such a name
 is looked up when it is made, as in php: in a namespace `MakeFcc` carries
 the namespaced name, which is tried first and named in the error.
+
+Every first-class callable resolves its callee when `MakeFcc` runs and
+raises that call's errors (undefined function, class or method, a private
+or non-static method, a value that is not callable); a Closure is its own
+first-class callable. An unqualified name in a namespace takes the global
+function when one exists (like php's per-site cache once it has found it),
+else the namespaced one. In a constant expression (`const_expr`) a
+`__callStatic` callable is refused. With `static_call` (static-call
+syntax: `C::m(...)` or a `'C::m'` literal) `self`/`parent`/`static` name
+the scope's classes and an instance method of `$this`'s class binds
+`$this`; an array callable such as `['C', 'm']` gets neither.
 
 ---
 
@@ -879,11 +925,10 @@ can't swallow it):
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
 | backticks `` `…` `` | `CompositeString::ShellExecute` | compiled as a `shell_exec()` call with php 8.5's deprecation (no longer refused) |
 | `(real)` cast | `UnaryPrefixOperator::RealCast` | refuse (`(unset)` is php's compile error; `(void)` compiles, §2) |
-| `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 
 ### 4.2 Function-name refusals — `is_refused()`
 
-`extract`, `compact`, `create_function`, the string form of `assert`,
+`create_function`, the string form of `assert`,
 `exec`/`system`/`shell_exec`/`passthru`/`proc_open`/`popen`: no dedicated AST
 node. For a **statically-named** call the compiler checks
 `builtins::is_refused(name)` at call-lowering time and emits the refusal in place
@@ -942,6 +987,24 @@ try/catch/finally (exception_table: {[Ltry,Lend)->catch Lcatch, finally Lfin}):
   Lfin:   <finally body> ; FinallyEnd                   ; resume per pending
   Lafter:
 ```
+
+### 5.5 PHP 8.5 forms
+```
+$x |> f(...):            <x→t0> ; (Mov t1,cv(x) for a variable) ; Call f with t0/t1 as its only argument
+$x |> $o->m(...):        <x→t0> ; <o→t1> ; CallMethod t1,m (t0)       (C::m(...) likewise: CallStatic)
+$x |> <expr>:            <x→t0> ; <expr→t1> ; CallDyn t1 (t0)
+clone $x / clone($x):    CloneObj t0,cv(x)                           (ZEND_CLONE)
+clone($x, $w):           Call clone (the builtin: __clone, then $w written from the caller's scope)
+new C($a):               NewObj t0,C ; <args> ; NewCall t0,window     (no arguments: New)
+```
+The pipe compiles like zend_compile_pipe: the operand first, copied out of
+a variable so a by-reference parameter refuses it; an FCC on the right is
+called directly (no Closure, no extra frame). The compiler stands a
+synthetic node for each computed register (`ProtoBuilder::expr_regs`) and
+reuses the ordinary call lowering. `NewObj` is php's ZEND_NEW: the class
+checks run and the object exists before the arguments, so nested `new`s
+get php's object ids; an exception in between releases the object
+without its destructor (`FunctionProto::new_ranges`).
 
 ---
 

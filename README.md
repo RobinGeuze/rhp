@@ -43,26 +43,26 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 4,469 | 5,396 | 82.8% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 753 | 895 | 84.1% | php-src's tests of the language, functions, classes and output |
-| sapi/cli | 21 | 117 | 17.9% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
+| Zend/tests | 4,855 | 5,396 | 90.0% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| tests | 824 | 895 | 92.1% | php-src's tests of the language, functions, classes and output |
+| sapi/cli | 22 | 117 | 18.8% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,162 | 3,880 | 81.5% | no user stream wrappers or stream filters |
+| ext/standard | 3,250 | 3,880 | 83.8% | no user stream wrappers or stream filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 8 | 27 | 29.6% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
-| ext/curl | 153 | 180 | 85.0% | on libcurl |
-| ext/date | 685 | 705 | 97.2% | on timelib, compiled in (rhp-csrc) |
+| ext/curl | 157 | 180 | 87.2% | on libcurl |
+| ext/date | 686 | 705 | 97.3% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
 | ext/filter | 40 | 129 | 31.0% | `filter_var` only |
 | ext/gmp | 95 | 99 | 96.0% | on libgmp |
-| ext/hash | 62 | 83 | 74.7% | all 60 algorithms; no `mhash`, `hash_hkdf` |
+| ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 75 | 82 | 91.5% | the system iconv |
 | ext/intl | 42 | 511 | 8.2% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 80 | 94 | 85.1% | |
 | ext/libxml | 18 | 32 | 56.2% | on libxml2 |
 | ext/mbstring | 223 | 446 | 50.0% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 781 | 876 | 89.2% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/opcache | 792 | 876 | 90.4% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 23 | 66 | 34.8% | |
 | ext/pcre | 166 | 174 | 95.4% | PCRE2, linked statically |
@@ -70,10 +70,10 @@ passing, so the percentages are of all php-src tests.
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
-| ext/reflection | 400 | 540 | 74.1% | |
-| ext/simplexml | 152 | 165 | 92.1% | on libxml2 |
+| ext/reflection | 420 | 540 | 77.8% | |
+| ext/simplexml | 153 | 165 | 92.7% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
-| ext/spl | 548 | 796 | 68.8% | |
+| ext/spl | 553 | 796 | 69.5% | |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **13,295** | **22,219** | **59.8%** | |
+| **total** | **13,887** | **22,219** | **62.5%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

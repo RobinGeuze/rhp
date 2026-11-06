@@ -310,7 +310,7 @@ fn call_fcc(fcc: &Fcc, args: Vec<Value>) -> Option<Value> {
         Fcc::Callable(cb) => h.call_callable(cb, &args),
         Fcc::Method { object, name } => {
             let class = h.object_class_name(object).unwrap_or_default();
-            h.reflect_invoke(object, &class, name, args)
+            h.reflect_invoke(object, &class, name, crate::host::list_value(args))
         }
     })
 }

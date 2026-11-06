@@ -188,7 +188,7 @@ class ReflectionAttribute implements Reflector {
         if (!$c['internal'] && !($flags & 128) && $this->__d[2]) {
             throw new Error('Attribute "' . $cls . '" must not be repeated');
         }
-        return new $cls(...$this->getArguments());
+        return __reflect('attr_new', $this->__d[3], $cls);
     }
     public static function __targets($f) {
         $n = ['class', 'function', 'method', 'property', 'class constant', 'parameter', 'constant'];
@@ -752,7 +752,7 @@ class ReflectionClass implements Reflector {
     public function isInterface(): bool { return $this->__c['kind'] === 'interface'; }
     public function getTraits(): array { $o = []; foreach ($this->__c['traits'] as $t) { $o[$t] = new ReflectionClass($t); } return $o; }
     public function getTraitNames(): array { return $this->__c['traits']; }
-    public function getTraitAliases(): array { return []; }
+    public function getTraitAliases(): array { return $this->__c['trait_aliases']; }
     public function isTrait(): bool { return $this->__c['kind'] === 'trait'; }
     public function isEnum(): bool { return $this->__c['kind'] === 'enum'; }
     public function isAbstract(): bool { return $this->__c['abstract']; }
@@ -836,6 +836,10 @@ class ReflectionClass implements Reflector {
         $all = __reflect('static_props', $this->name);
         if (array_key_exists($name, $all)) { return $all[$name]; }
         if (func_num_args() > 1) { return $default; }
+        // (An uninitialized typed static is left out of static_props.)
+        if (property_exists($this->name, $name) && (new ReflectionProperty($this->name, $name))->isStatic()) {
+            throw new Error('Typed property ' . $this->name . '::$' . $name . ' must not be accessed before initialization');
+        }
         throw new ReflectionException('Property ' . $this->name . '::$' . $name . ' does not exist');
     }
     public function setStaticPropertyValue(string $name, mixed $value): void {
@@ -956,7 +960,13 @@ class ReflectionProperty implements Reflector {
         return $this->name;
     }
     public function getValue(?object $object = null): mixed {
-        if ($this->__i['static']) { return __reflect('static_props', $this->class)[$this->name] ?? null; }
+        if ($this->__i['static']) {
+            $all = __reflect('static_props', $this->class);
+            if (!array_key_exists($this->name, $all)) {
+                throw new Error('Typed static property ' . $this->class . '::$' . $this->name . ' must not be accessed before initialization');
+            }
+            return $all[$this->name];
+        }
         if ($object === null) { throw new TypeError('ReflectionProperty::getValue(): Argument #1 ($object) must be provided for instance properties'); }
         if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
         if ($this->__i['type'] !== null && !isset($this->__i['dynamic']) && !__reflect('is_init', $object, $this->class, $this->name)) {
@@ -1001,7 +1011,7 @@ class ReflectionProperty implements Reflector {
         return __reflect('lazy_prop', 'is', $object, $this->class, $this->name);
     }
     public function isInitialized(?object $object = null): bool {
-        if ($this->__i['static']) { return true; }
+        if ($this->__i['static']) { return array_key_exists($this->name, __reflect('static_props', $this->class)); }
         if ($object === null) { throw new TypeError('ReflectionProperty::isInitialized(): Argument #1 ($object) must be provided for instance properties'); }
         if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
         return __reflect('is_init', $object, $this->class, $this->name);

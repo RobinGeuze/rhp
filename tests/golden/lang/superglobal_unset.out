@@ -1,0 +1,18 @@
+warning: Undefined global variable $_GET
+NULL
+bool(false)
+warning: Undefined variable $x
+NULL
+warning: Undefined global variable $_COOKIE
+NULL
+bool(false)
+array(1) {
+  ["a"]=>
+  int(1)
+}
+bool(false)
+array(1) {
+  ["b"]=>
+  int(2)
+}
+string(7) "_COOKIE"

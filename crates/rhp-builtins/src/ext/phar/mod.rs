@@ -558,6 +558,11 @@ impl PharWrapper {
             if !st.is_regular {
                 return;
             }
+            // phar_open_from_filename's open_basedir check (php's later
+            // checks and its phar error are not modelled)
+            if !crate::main::fopen_wrappers::check_queued(prefix, true) {
+                return;
+            }
             let Ok(bytes) = std::fs::read(crate::zend::virtual_cwd::os_path(prefix)) else {
                 return;
             };

@@ -56,6 +56,11 @@ impl CallFlags {
     /// The call is a whole expression statement: its result is unused
     /// (php's USED_RET() is false).
     pub const RESULT_UNUSED: CallFlags = CallFlags(8);
+    /// A `USER_CALL` whose first argument is a string literal naming an
+    /// internal function: php binds it at compile time
+    /// (zend_try_compile_ct_bound_init_user_func), so the callee's call is
+    /// not dynamic.
+    pub const CT_BOUND: CallFlags = CallFlags(16);
 
     pub const fn contains(self, other: CallFlags) -> bool {
         self.0 & other.0 == other.0
@@ -292,6 +297,12 @@ pub enum Instr {
         src: Reg,
         target: Pc,
     },
+    /// ZEND_ASSERT_CHECK: with zend.assertions <= 0, store true in `dst`
+    /// and jump to `target`, past the `assert()` call.
+    AssertCheck {
+        dst: Reg,
+        target: Pc,
+    },
 
     // -- arrays --
     NewArray {
@@ -316,6 +327,16 @@ pub enum Instr {
     ArgSpread {
         arr: Reg,
         src: Reg,
+    },
+    /// [`Instr::ArgSpread`] for a callee with by-reference parameters:
+    /// `consts[sig]` is `[name, variadic, [by_ref...], [param names...]]`.
+    /// An element for a
+    /// by-reference position becomes a reference in the array `src`
+    /// references; a Traversable's warns and is passed by value.
+    ArgSpreadRef {
+        arr: Reg,
+        src: Reg,
+        sig: CIdx,
     },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
@@ -494,14 +515,22 @@ pub enum Instr {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        /// In a constant expression (no `__callStatic` callables there).
+        const_expr: bool,
+        /// Static-call syntax (`C::m(...)`, `'C::m'(...)`): `self`/`parent`/
+        /// `static` mean the scope's classes and `$this` is kept
+        /// (ZEND_INIT_STATIC_METHOD_CALL), unlike an array callable.
+        static_call: bool,
     },
     Ret {
         src: Reg,
     },
     /// `return` from a by-reference function (`function &f()`): `src` holds a
     /// reference to the returned lvalue; it is delivered raw (not dereferenced).
+    /// `kind` is a `RET_REF_*` constant (php's ZEND_RETURN_BY_REF flags).
     RetRef {
         src: Reg,
+        kind: u8,
     },
     RetNull,
     /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
@@ -564,6 +593,13 @@ pub enum Instr {
     SetPendingRet {
         src: Reg,
     },
+    /// [`Instr::SetPendingRet`] in a by-reference function (`kind` as in
+    /// [`Instr::RetRef`]); the return type is checked again after the
+    /// finally blocks ran.
+    SetPendingRetRef {
+        src: Reg,
+        kind: u8,
+    },
     /// A `break`/`continue` that leaves a `try` with a `finally`: run the
     /// enclosing finally blocks (innermost first) that do not contain
     /// `target`, then jump to `target`.
@@ -578,6 +614,24 @@ pub enum Instr {
         class: ClassRef,
         base: Reg,
         argc: u16,
+    },
+    /// ZEND_NEW for a `new` with arguments: create the object in `dst`;
+    /// the arguments are evaluated next, then `NewCall` / `NewCallV`
+    /// runs the constructor.
+    NewObj {
+        dst: Reg,
+        class: ClassRef,
+    },
+    /// Run the constructor of the object `NewObj` put in `dst`.
+    NewCall {
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    },
+    /// `NewCall` with the arguments in a `PhpArray` (spread / named).
+    NewCallV {
+        dst: Reg,
+        args: Reg,
     },
     /// Variadic `new` / method / static calls: `args` holds a `PhpArray`.
     NewV {
@@ -635,6 +689,19 @@ pub enum Instr {
     },
     /// `FetchPropW` with the property name in a register.
     FetchPropDynW {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
+    /// `$o->p` as the object of `unset($o->p->q)` (BP_VAR_UNSET): like
+    /// `FetchPropW`, but a non-object container gives null.
+    FetchPropUnset {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropUnset` with the property name in a register.
+    FetchPropDynUnset {
         dst: Reg,
         obj: Reg,
         name: Reg,
@@ -742,7 +809,8 @@ pub enum Instr {
         func: Reg,
         idx: u16,
     },
-    /// Copy `src` to `dst` as is: a reference stays a reference.
+    /// Move `src` to `dst` as is (a CV is copied): a reference stays a
+    /// reference.
     PassArg {
         dst: Reg,
         src: Reg,
@@ -1034,6 +1102,21 @@ pub enum Instr {
         dst_cv: Reg,
         src: Reg,
     },
+    /// php's FETCH_LIST_W: element `key` of the container referenced by
+    /// `src`, as a reference (created for writing). When `src` holds no
+    /// reference (a by-value call result): "Attempting to set reference to
+    /// non referenceable value", and the element is read into a new one.
+    FetchListW {
+        dst: Reg,
+        src: Reg,
+        key: Reg,
+    },
+    /// `=& f()`: when call result `src` is not a reference (the function
+    /// returns by value), php's notice "Only variables should be assigned by
+    /// reference"; the bind that follows then assigns the value.
+    RefFuncResult {
+        src: Reg,
+    },
     /// `<lvalue> =& <src>`: write the raw `Ref` in `src` (not deref'd) to the
     /// current lvalue-cursor target, so that element/property becomes a reference.
     AssignLvalRef {
@@ -1161,6 +1244,11 @@ pub struct AttributeProto {
     /// An internal attribute's validator error that
     /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
     pub validation_error: Option<PhpStr>,
+    /// Where it is written and its file's `strict_types`: `newInstance()`
+    /// runs the constructor as if called from there.
+    pub file: PhpStr,
+    pub line: u32,
+    pub strict_types: bool,
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment
@@ -1241,6 +1329,9 @@ pub struct ExRegion {
     /// The pc of the finally block's `FinallyEnd` (the block is
     /// `[finally, finally_end]`); meaningless without `finally`.
     pub finally_end: Pc,
+    /// The first temporary the try body allocates: an exception caught
+    /// here frees every temporary from it up (php's live ranges).
+    pub temps: Reg,
 }
 
 #[derive(Clone)]
@@ -1260,7 +1351,7 @@ pub struct DebugInfo {
 /// What the compiler knows about a function that the VM checks while
 /// running it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProtoFlags(u8);
+pub struct ProtoFlags(u16);
 
 impl ProtoFlags {
     /// Built-in code, compiled from the prelude (the PHP source behind some
@@ -1293,6 +1384,10 @@ impl ProtoFlags {
     /// just a global constant name (php looks it up directly), or one with
     /// no class scope (zend_ast_evaluate_ex overrides only with a scope).
     pub const CONST_EXPR_PLAIN: ProtoFlags = ProtoFlags(128);
+    /// Not set by the compiler: a frame that runs no code and only stands
+    /// for a call site (the dummy frame php pushes for an attribute
+    /// constructor). Traces show it as the caller, never as a frame.
+    pub const CALL_SITE: ProtoFlags = ProtoFlags(256);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0
@@ -1367,7 +1462,23 @@ pub struct FunctionProto {
     /// zend_do_free), ascending: a `#[\NoDiscard]` callee warns when called
     /// from one.
     pub discard_calls: Vec<Pc>,
+    /// Each `NewObj` pc, its `NewCall`/`NewCallV` pc and register: an
+    /// exception thrown in between releases the object without its
+    /// destructor (php's live range of a NEW result).
+    pub new_ranges: Vec<(Pc, Pc, Reg)>,
+    /// Arguments that are no variable, sent to a callee only known at run
+    /// time, as `(call pc, argument index, SEND_*)`, ascending by pc: php's
+    /// SEND_VAL_EX / SEND_VAR_NO_REF_EX checks, made when such an argument
+    /// meets a by-reference parameter.
+    pub send_kinds: Vec<(Pc, u16, u8)>,
 }
+
+/// `FunctionProto::send_kinds`: a temporary value; a by-reference parameter
+/// throws "could not be passed by reference".
+pub const SEND_VAL: u8 = 0;
+/// `FunctionProto::send_kinds`: a call result (or `new`); a value that is no
+/// reference notices "Only variables should be passed by reference".
+pub const SEND_VAR: u8 = 1;
 
 impl FunctionProto {
     /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
@@ -1410,6 +1521,8 @@ impl FunctionProto {
             flags: ProtoFlags::default(),
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            new_ranges: Vec::new(),
+            send_kinds: Vec::new(),
         }
     }
 }
@@ -1486,6 +1599,9 @@ pub struct ClassProto {
     pub parent: Option<PhpStr>,
     pub interfaces: Vec<PhpStr>,
     pub traits: Vec<PhpStr>,
+    /// The `use T { ... }` adaptation rules, in source order (`None` when
+    /// there are none).
+    pub trait_rules: Option<Box<TraitRules>>,
     pub methods: Vec<MethodProto>,
     pub props: Vec<PropProto>,
     pub static_props: Vec<StaticPropProto>,
@@ -1503,6 +1619,34 @@ pub struct ClassProto {
     /// built-in prelude class.
     pub decl_file: PhpStr,
     pub decl_line: u32,
+}
+
+/// A class's trait adaptations: php's `trait_precedences` and
+/// `trait_aliases`. Trait names are resolved, as written otherwise.
+#[derive(Clone, Default)]
+pub struct TraitRules {
+    pub precedences: Vec<TraitPrecedence>,
+    pub aliases: Vec<TraitAlias>,
+}
+
+/// `T::m insteadof A, B;`
+#[derive(Clone)]
+pub struct TraitPrecedence {
+    pub trait_name: PhpStr,
+    pub method: PhpStr,
+    pub excludes: Vec<PhpStr>,
+}
+
+/// `[T::]m as [modifier] [alias];`
+#[derive(Clone)]
+pub struct TraitAlias {
+    pub trait_name: Option<PhpStr>,
+    pub method: PhpStr,
+    pub alias: Option<PhpStr>,
+    /// A new visibility (`as protected`).
+    pub visibility: Option<Visibility>,
+    /// `as final`.
+    pub is_final: bool,
 }
 
 /// One compiled enum case.
@@ -1596,6 +1740,8 @@ pub struct StaticPropProto {
     pub meta: DeclMeta,
     /// Declared with an explicit default (`static $x = 1;`).
     pub has_default: bool,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
 }
 
 #[derive(Clone)]
@@ -1629,6 +1775,15 @@ pub enum ConstInitProto {
 
 /// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
 pub const PACKED_ARGS: u16 = u16::MAX;
+
+/// `RetRef::kind`: a variable fetched for writing (always a reference).
+pub const RET_REF_VAR: u8 = 0;
+/// `RetRef::kind`: a call result; a value (not a reference) notices.
+pub const RET_REF_FUNC: u8 = 1;
+/// `RetRef::kind`: any other expression; always notices.
+pub const RET_REF_VALUE: u8 = 2;
+/// `RetRef::kind`: the implicit `return null` at the end of the body.
+pub const RET_REF_IMPLICIT: u8 = 3;
 
 // The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
 // it without decoding a niche.

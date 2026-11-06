@@ -653,6 +653,11 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
+                if !self.stack[top].proto.send_kinds.is_empty()
+                    && proto.params.iter().any(|p| p.by_ref)
+                {
+                    self.check_sends(top, &proto, frame.defining_class, base)?;
+                }
                 self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
                 // The window's temporaries move into the callee (php moves
                 // arguments into the callee's frame, so they die with it).
@@ -676,18 +681,28 @@ impl Vm {
                 )
             }
         };
-        let failed = match bound {
-            _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
-            Ok(()) => {
-                if let Some((holes, extra)) = named {
-                    bind_named_extra(&proto, frame, holes, extra);
-                }
+        let failed = if count_error.is_some() {
+            count_error.map(|e| (0, e))
+        } else {
+            if let (Ok(()), Some((holes, extra))) = (&bound, named) {
+                bind_named_extra(&proto, frame, holes, extra);
+            }
+            // php's RECV checks the passed arguments' types in order before
+            // the first missing one raises the count error.
+            let typed = if proto.params.iter().any(|p| p.type_hint.is_some()) {
                 let scope = frame.defining_class;
                 match self.coerce_stringable_args(&proto, frame, caller, scope) {
                     Err(e) => Some((0, e)),
                     Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
                 }
+            } else {
+                None
+            };
+            match bound {
+                Err(missing) if typed.is_none() => {
+                    Some((missing, self.arg_count_error(&proto, frame, argc)))
+                }
+                _ => typed,
             }
         };
         let Some((idx, err)) = failed else {
@@ -706,6 +721,93 @@ impl Vm {
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
+    }
+
+    /// php's SEND_VAL_EX / SEND_VAR_NO_REF_EX for the call frame `top` is
+    /// making to `proto` (its `send_kinds`): a temporary for a by-reference
+    /// parameter throws, a call result that is no reference notices.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn check_sends(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        scope: Option<ClassId>,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let label = |i: u16| match proto.params.get(i as usize) {
+            Some(p) if !p.variadic => format!(
+                " (${})",
+                String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+            ),
+            _ => String::new(),
+        };
+        let fname = self.func_c_name(proto, scope);
+        self.check_sends_with(top, base, &fname, |i| param_is_ref(proto, i), label)
+    }
+
+    /// [`Vm::check_sends`] for a builtin called through a callable value.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn check_sends_builtin(
+        &mut self,
+        top: usize,
+        sig: &rhp_bytecode::signatures::Func,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let param = |i: u16| {
+            sig.params
+                .get(i as usize)
+                .or_else(|| sig.params.last().filter(|p| p.variadic()))
+        };
+        let is_ref = |i: u16| param(i).is_some_and(|p| p.by_ref() && !p.prefer_ref());
+        let label = |i: u16| match param(i) {
+            Some(p) if !p.variadic() => format!(" (${})", p.name),
+            _ => String::new(),
+        };
+        self.check_sends_with(top, base, sig.name, is_ref, label)
+    }
+
+    fn check_sends_with(
+        &mut self,
+        top: usize,
+        base: Reg,
+        fname: &str,
+        is_ref: impl Fn(u16) -> bool,
+        label: impl Fn(u16) -> String,
+    ) -> Result<(), Thrown> {
+        let caller = self.stack[top].proto.clone();
+        let pc = self.stack[top].pc as u32 - 1;
+        let start = caller.send_kinds.partition_point(|e| e.0 < pc);
+        for &(at, idx, kind) in &caller.send_kinds[start..] {
+            if at != pc {
+                break;
+            }
+            if !is_ref(idx) || matches!(self.stack[top].regs[(base + idx) as usize], Value::Ref(_))
+            {
+                continue;
+            }
+            if kind == rhp_bytecode::SEND_VAR {
+                self.diag(
+                    builtins::E_NOTICE,
+                    "Only variables should be passed by reference",
+                )?;
+                // sent in a reference of its own
+                let slot = &mut self.stack[top].regs[(base + idx) as usize];
+                let v = std::mem::replace(slot, Value::Null);
+                *slot = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
+                continue;
+            }
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "{fname}(): Argument #{}{} could not be passed by reference",
+                    idx + 1,
+                    label(idx)
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a
@@ -1605,6 +1707,40 @@ impl Vm {
         }
     }
 
+    /// zend_call_function's by-reference check for named arguments to a
+    /// builtin, numbered by the parameter each one names.
+    fn named_by_ref_args(
+        &mut self,
+        sig: &rhp_bytecode::signatures::Func,
+        mut named: Vec<(PhpStr, Value)>,
+    ) -> Result<Vec<(PhpStr, Value)>, Thrown> {
+        for (name, a) in named.iter_mut() {
+            let Some(i) = sig
+                .params
+                .iter()
+                .position(|p| p.name.as_bytes() == name.as_bytes())
+            else {
+                continue;
+            };
+            let p = &sig.params[i];
+            if !p.by_ref() || p.prefer_ref() || p.variadic() || matches!(a, Value::Ref(_)) {
+                continue;
+            }
+            self.diag(
+                builtins::E_WARNING,
+                &format!(
+                    "{}(): Argument #{} (${}) must be passed by reference, value given",
+                    sig.name,
+                    i + 1,
+                    p.name
+                ),
+            )?;
+            let v = std::mem::replace(a, Value::Null);
+            *a = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
+        }
+        Ok(named)
+    }
+
     /// zend_call_function's by-reference parameters: a plain value passed
     /// to one is "f(): Argument #N ($x) must be passed by reference, value
     /// given", then passed in a fresh reference.
@@ -1655,6 +1791,9 @@ impl Vm {
         }
         if !self.destructibles.is_empty() {
             self.dtor_check = true;
+        }
+        if !self.readonly_reinit.is_empty() {
+            self.close_reinit(self.stack.len());
         }
         self.include_writeback(&frame);
         // A synchronous (re-entrant) call returns its value to the Rust caller.
@@ -2035,21 +2174,22 @@ impl Vm {
         class: ClassRef,
         args: Reg,
     ) -> Result<(), Thrown> {
-        let cls = self.resolve_class_autoload(top, class)?;
-        let entry = self.class(cls);
-        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
-            return Err(Thrown::error(
-                "Error",
-                format!(
-                    "Cannot instantiate {}",
-                    String::from_utf8_lossy(entry.name.as_bytes())
-                ),
-            ));
-        }
-        self.check_ctor_access(top, cls)?;
-        self.update_class_constants(cls)?;
-        let obj = self.new_object(cls);
-        self.reg_set(top, dst, Value::Object(obj.clone()));
+        let obj = self.new_alloc(top, class)?;
+        self.reg_set(top, dst, Value::Object(obj));
+        self.exec_new_call_v(top, dst, args)
+    }
+
+    /// `NewCallV`: [`Vm::exec_new_call`] with the arguments in an array.
+    pub(crate) fn exec_new_call_v(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        args: Reg,
+    ) -> Result<(), Thrown> {
+        let Value::Object(obj) = self.reg_get(top, dst) else {
+            return Ok(());
+        };
+        let cls = obj.borrow().class;
         if let Some(m) = self.lookup_method(cls, b"__construct") {
             let arr = self.reg_get(top, args);
             let (argv, named) = self.split_call_args(&arr)?;
@@ -2108,6 +2248,9 @@ impl Vm {
                 Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,
                 None => match self.callable_builtin(c) {
                     Some((b, sig)) => {
+                        let args =
+                            self.callee_by_ref_args(&Callee::Builtin(b.name.to_string()), args)?;
+                        let named = self.named_by_ref_args(sig, named)?;
                         let (args, extra) = self.place_builtin_named_args(sig, args, named)?;
                         // Z_PARAM_VARIADIC_WITH_NAMED: forwarded.
                         if b.name == "call_user_func" && !args.is_empty() {
@@ -2224,6 +2367,7 @@ impl Vm {
             self.dtor_check = true;
         }
         let strict = self.stack[top].proto.strict_types;
+        self.call_direct = true;
         self.run_builtin_sig(builtin, sig, args, &[], frameless, icall, strict)
     }
 
@@ -2292,6 +2436,7 @@ impl Vm {
         icall: bool,
         strict: bool,
     ) -> Result<Value, Thrown> {
+        let dynamic = !std::mem::take(&mut self.call_direct);
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero; what that throws is thrown there).
         self.reap_dropped_streams()?;
@@ -2347,7 +2492,7 @@ impl Vm {
         if frameless || !(user || engine_called()) {
             let r = match zpp_error {
                 Some(e) => Err(e),
-                None => (builtin.func)(self, &args),
+                None => self.run_builtin_fn(builtin, &args, dynamic),
             };
             self.zpp_fcc = None;
             // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
@@ -2384,7 +2529,7 @@ impl Vm {
         });
         let r = match zpp_error {
             Some(e) => Err(e),
-            None => (builtin.func)(self, &args),
+            None => self.run_builtin_fn(builtin, &args, dynamic),
         };
         self.zpp_fcc = None;
         // What a stream operation queued without reaching a host.
@@ -2413,6 +2558,21 @@ impl Vm {
         r
     }
 
+    /// Run a builtin's body, with [`Vm::builtin_dynamic`] telling it how it
+    /// was called.
+    #[inline]
+    fn run_builtin_fn(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        args: &[Value],
+        dynamic: bool,
+    ) -> Result<Value, Thrown> {
+        let saved = std::mem::replace(&mut self.builtin_dynamic, dynamic);
+        let r = (builtin.func)(self, args);
+        self.builtin_dynamic = saved;
+        r
+    }
+
     /// zend_fcall_interrupt's zend_timeout: the fatal error, when
     /// max_execution_time ran out.
     #[inline]
@@ -2426,15 +2586,13 @@ impl Vm {
         Some(self.fatal_error_here(1, msg.as_bytes()))
     }
 
-    /// `New`: instantiate `class` into `dst` and push its constructor frame.
-    pub(crate) fn exec_new(
+    /// ZEND_NEW's half before the constructor: resolve `class`, check it
+    /// can be instantiated, create the object.
+    pub(crate) fn new_alloc(
         &mut self,
         top: usize,
-        dst: Reg,
         class: ClassRef,
-        base: Reg,
-        argc: u16,
-    ) -> Result<(), Thrown> {
+    ) -> Result<ObjectHandle, Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
         let entry = self.class(cls);
         if entry.kind != ClassKind::Class || entry.flags.is_abstract {
@@ -2473,16 +2631,58 @@ impl Vm {
         }
         self.check_ctor_access(top, cls)?;
         self.update_class_constants(cls)?;
-        let obj = self.new_object(cls);
+        Ok(self.new_object(cls))
+    }
+
+    /// `New`: instantiate `class` into `dst` and push its constructor frame.
+    pub(crate) fn exec_new(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        class: ClassRef,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let obj = self.new_alloc(top, class)?;
         self.reg_set(top, dst, Value::Object(obj.clone()));
-        // Run __construct, discarding its return (into the arg window).
+        let tracked = !self.destructibles.is_empty()
+            && self
+                .destructibles
+                .last()
+                .is_some_and(|d| Rc::ptr_eq(d, &obj));
+        self.new_construct(top, obj, tracked, base, argc)
+    }
+
+    /// `NewCall`: push the constructor frame of the object `NewObj` put in
+    /// `dst`, its arguments in the window.
+    pub(crate) fn exec_new_call(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let Value::Object(obj) = self.reg_get(top, dst) else {
+            return Ok(());
+        };
+        let tracked = !self.destructibles.is_empty()
+            && self.destructibles.iter().rev().any(|d| Rc::ptr_eq(d, &obj));
+        self.new_construct(top, obj, tracked, base, argc)
+    }
+
+    /// Run `obj`'s `__construct`, discarding its return (into the arg
+    /// window); `tracked`: it is destructible.
+    fn new_construct(
+        &mut self,
+        top: usize,
+        obj: ObjectHandle,
+        tracked: bool,
+        base: Reg,
+        argc: u16,
+    ) -> Result<(), Thrown> {
+        let cls = obj.borrow().class;
         if let Some(m) = self.lookup_method(cls, b"__construct") {
             let ptr = Rc::as_ptr(&obj) as usize;
-            let tracked = !self.destructibles.is_empty()
-                && self
-                    .destructibles
-                    .last()
-                    .is_some_and(|d| Rc::as_ptr(d) as usize == ptr);
             self.enter_method(top, &m, Some(obj), cls, Reg::MAX, base, argc)?;
             if tracked {
                 self.ctor_frames.push((self.stack.len() - 1, ptr));
@@ -2533,6 +2733,7 @@ impl Vm {
                     self.place_builtin_named_args(s, argv, named)?
                 };
                 let strict = self.caller_strict();
+                self.call_direct = true;
                 let out = self.run_builtin_sig(builtin, sig, argv, &extra, false, false, strict)?;
                 self.reg_set(top, dst, out);
             }

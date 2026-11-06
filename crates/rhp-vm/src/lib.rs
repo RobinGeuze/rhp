@@ -34,8 +34,10 @@ mod output;
 mod props;
 mod reflect;
 mod request;
+mod scope;
 mod streams;
 mod stub_default;
+mod traits;
 mod types;
 mod zpp;
 
@@ -202,6 +204,9 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// Set with `cuf_caller` when php binds the callback at compile time
+    /// (`CallFlags::CT_BOUND`): its call is a direct one.
+    cuf_direct: bool,
     /// The stack depth of the builtin call whose result is unused
     /// (`CallFlags::RESULT_UNUSED`), else `usize::MAX`.
     unused_call_depth: usize,
@@ -211,6 +216,12 @@ pub struct Vm {
     /// The builtin about to run got a dynamic call's raw arguments: its
     /// by-value positions are dereferenced first.
     dyn_raw_args: bool,
+    /// Set by a direct call by name (`f(...)`) right before its builtin
+    /// runs; any other way to reach a builtin is php's ZEND_CALL_DYNAMIC.
+    call_direct: bool,
+    /// The running builtin was called dynamically (a callback, `$f()`):
+    /// the scope functions refuse that (zend_forbid_dynamic_call).
+    builtin_dynamic: bool,
     /// A callable check's deprecation threw (see `Vm::check_callable_ex`).
     callable_dep_thrown: bool,
     /// The callable argument the running builtin's zpp resolved, by its
@@ -231,9 +242,9 @@ pub struct Vm {
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
-    /// Readonly properties already reinitialized inside a `__clone`
-    /// (object id, storage key): once each.
-    readonly_reinit: HashMap<u32, Vec<PhpStr>>,
+    /// Clones whose `__clone` runs (object id -> the frame's stack index
+    /// and the readonly slots it may still modify once).
+    readonly_reinit: HashMap<u32, (usize, Vec<PhpStr>)>,
     /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
@@ -264,6 +275,22 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // The value a cursor write stored in a typed property after coercion
+    // (the assignment expression's value).
+    typed_write_result: Option<Value>,
+    // `StoreProp` wants `typed_write_result` from the write it runs.
+    want_typed_result: bool,
+    // The running cursor write is a `++`/`--`.
+    incdec_write: bool,
+    // The static property an open cursor is rooted at: its cell, the class
+    // it was reached through and its name (valid while the root is that cell).
+    cursor_static: Option<lvalue::StaticRoot>,
+    // An undefined variable assigned below a `__get` property: php reads
+    // it (and warns) after fetching the container.
+    deferred_undef_src: Option<Reg>,
+    // The typed property the open cursor's leaf is, as the last
+    // `cursor_through_check` found it.
+    cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
@@ -396,7 +423,7 @@ struct Frame {
     /// runs in.
     include_caller: Option<usize>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
-    dyn_vars: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
+    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
@@ -443,7 +470,7 @@ impl Frame {
             extra_args: Vec::new(),
             include_kind: None,
             include_caller: None,
-            dyn_vars: HashMap::new(),
+            dyn_vars: indexmap::IndexMap::new(),
             global_scope: false,
             closure: None,
         }

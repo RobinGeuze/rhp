@@ -21,6 +21,7 @@ pub fn warn(
     fname: &str,
     msg: &(impl AsRef<[u8]> + ?Sized),
 ) -> Result<(), Thrown> {
+    flush_queued(host, fname)?;
     host.emit_diagnostic(E_WARNING, &docref(fname, msg.as_ref()))
 }
 
@@ -37,6 +38,16 @@ pub fn flush_stream_diags(host: &mut dyn Host, fname: &str) -> Result<(), Thrown
     Ok(())
 }
 
+/// Raise what stream operations queued before a warning of our own, in
+/// the order php raised them.
+#[inline]
+fn flush_queued(host: &mut dyn Host, fname: &str) -> Result<(), Thrown> {
+    if plain_wrapper::has_diags() {
+        flush_stream_diags(host, fname)?;
+    }
+    Ok(())
+}
+
 /// `php_error_docref1(NULL, arg, E_WARNING, msg)`: `fname(arg): msg`.
 pub fn warn_arg(
     host: &mut dyn Host,
@@ -44,6 +55,7 @@ pub fn warn_arg(
     arg: &[u8],
     msg: &(impl AsRef<[u8]> + ?Sized),
 ) -> Result<(), Thrown> {
+    flush_queued(host, fname)?;
     let msg = msg.as_ref();
     let mut m = Vec::with_capacity(fname.len() + arg.len() + 4 + msg.len());
     m.extend_from_slice(fname.as_bytes());
@@ -115,6 +127,21 @@ pub fn locate_for_open(
             "Failed to open stream: no suitable wrapper could be found",
         )?;
         return Ok(None);
+    }
+    if matches!(
+        located,
+        streams::Located::Plain(_) | streams::Located::Unknown(_)
+    ) && crate::main::fopen_wrappers::active()
+    {
+        // php_plain_files_stream_opener's open_basedir check
+        let local = match &located {
+            streams::Located::Plain(_) => streams::file_path(path),
+            _ => path,
+        };
+        UNKNOWN_WRAPPER_WARNED.with(|w| w.set(false));
+        if !crate::main::fopen_wrappers::check_open(host, fname, local, path)? {
+            return Ok(None);
+        }
     }
     Ok(match located {
         // the stream layer takes a file:// prefix off itself

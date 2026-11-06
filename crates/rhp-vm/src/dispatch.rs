@@ -14,6 +14,7 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
+use crate::lvalue::StaticOp;
 use crate::lvalue::{
     aa_key, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
@@ -138,15 +139,77 @@ impl Vm {
             .get(r as usize)
             .map(|n| n.as_bytes().to_vec())
             .unwrap_or_default();
-        let msg = [b"Undefined variable $".as_slice(), &name].concat();
+        // A superglobal is a global fetch in php ("Undefined global variable").
+        let what: &[u8] = if proto.superglobals.iter().any(|(cv, _)| *cv == r) {
+            b"Undefined global variable $"
+        } else {
+            b"Undefined variable $"
+        };
+        let msg = [what, &name].concat();
         self.diag(builtins::E_WARNING, &msg)?;
         Ok(Value::Null)
     }
 
+    /// The name of a variable-variable (`$$n`, `${expr}`, `global $$n`):
+    /// php's zval_try_get_tmp_string, so an array warns and an object
+    /// needs `__toString`. `quiet`: an undefined `$n` reads as null
+    /// without the warning (an isset fetch).
+    pub(crate) fn var_name(
+        &mut self,
+        top: usize,
+        name: Reg,
+        quiet: bool,
+    ) -> Result<Vec<u8>, Thrown> {
+        let v = if quiet {
+            self.reg_get(top, name)
+        } else {
+            self.reg_r(top, name)?
+        };
+        match v {
+            Value::Str(s) => Ok(s.as_bytes().to_vec()),
+            Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Float(_) => {
+                self.to_string_vm(&v)
+            }
+            v => Ok(conv::to_string_bytes(&v)),
+        }
+    }
+
+    /// `IncDec` other than an int that does not overflow: out of the
+    /// dispatch loop.
+    #[inline(never)]
+    fn inc_dec_slow(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        cv: Reg,
+        pre: bool,
+        delta: i8,
+    ) -> Result<(), Thrown> {
+        // An undefined variable warns, then counts as null even when the
+        // handler threw (zend_pre_inc_helper).
+        let undef = if self.stack[top].regs[cv as usize].is_undef() {
+            let r = self.undef_cv(top, cv).err();
+            self.cv_assign(top, cv, Value::Null);
+            r
+        } else {
+            None
+        };
+        let cur = self.reg_get(top, cv);
+        let new = self.inc_dec_vm(&cur, delta as i64)?;
+        self.cv_assign(top, cv, new.clone());
+        self.reg_set(top, dst, if pre { new } else { cur });
+        match undef {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// `LvalVarVar` / `LvalVarVarRw`: a cursor rooted at the variable named
     /// by `name` (created; a read-modify-write warns first when undefined).
+    #[cold]
+    #[inline(never)]
     fn lval_var_var(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
-        let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+        let vname = self.var_name(top, name, false)?;
         if vname == b"this" {
             return Err(Thrown::error("Error", "Cannot re-assign $this"));
         }
@@ -181,6 +244,8 @@ impl Vm {
     /// `LvalGlobal` / `LvalGlobalRw`: a cursor rooted at global `name`
     /// (`$GLOBALS[...]` as an lvalue; a read-modify-write warns first when
     /// it is undefined).
+    #[cold]
+    #[inline(never)]
     fn lval_global(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
         let n = conv::to_string_bytes(&self.reg_r(top, name)?);
         if rw
@@ -242,7 +307,9 @@ impl Vm {
         let global = self.cursor_global.take();
         let nulls = self.rw_null_keys;
         let null_key = self.cursor_null_key;
+        let st = self.cursor_static.take();
         let r = f(self);
+        self.cursor_static = st;
         self.cursor_root = root;
         self.cursor_steps = steps;
         self.cursor_global = global;
@@ -256,6 +323,15 @@ impl Vm {
     /// old cell).
     pub(crate) fn unset_cv(&mut self, top: usize, cv: Reg) {
         let f = &self.stack[top];
+        if !f.proto.superglobals.is_empty() {
+            // A superglobal is a global fetch: unset() drops the global.
+            let sg = f.proto.superglobals.iter().find(|(r, _)| *r == cv);
+            if let Some((_, name)) = sg.filter(|(_, n)| n.as_bytes() != b"GLOBALS") {
+                let name = name.as_bytes().to_vec();
+                self.unset_superglobal(&name);
+                return;
+            }
+        }
         if f.global_scope
             && (cv as usize) < f.proto.cv_var_names.len()
             && matches!(f.regs[cv as usize], Value::Ref(_))
@@ -650,22 +726,7 @@ impl Vm {
                         self.reg_set_fast(top, dst, Value::Int(r));
                         continue;
                     }
-                    // An undefined variable warns, then counts as null
-                    // even when the handler threw (zend_pre_inc_helper).
-                    let undef = if self.stack[top].regs[cv as usize].is_undef() {
-                        let r = self.undef_cv(top, cv).err();
-                        self.cv_assign(top, cv, Value::Null);
-                        r
-                    } else {
-                        None
-                    };
-                    let cur = self.reg_get(top, cv);
-                    let new = self.inc_dec_vm(&cur, delta as i64)?;
-                    self.cv_assign(top, cv, new.clone());
-                    self.reg_set(top, dst, if pre { new } else { cur });
-                    if let Some(e) = undef {
-                        return Err(e);
-                    }
+                    self.inc_dec_slow(top, dst, cv, pre, delta)?;
                 }
 
                 Instr::CastInt { dst, a } => {
@@ -826,6 +887,12 @@ impl Vm {
                         self.stack[top].pc = target as usize;
                     }
                 }
+                Instr::AssertCheck { dst, target } => {
+                    if builtins::zend::assertions() <= 0 {
+                        self.reg_set(top, dst, Value::Bool(true));
+                        self.stack[top].pc = target as usize;
+                    }
+                }
                 Instr::JmpNotNull { src, target } => {
                     if !matches!(self.reg_get(top, src), Value::Null) {
                         self.stack[top].pc = target as usize;
@@ -889,6 +956,9 @@ impl Vm {
                         }
                     }
                 }
+                Instr::ArgSpreadRef { arr, src, sig } => {
+                    self.arg_spread_ref(top, &proto, arr, src, sig)?
+                }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
                     let Value::Array(mut a) =
@@ -936,11 +1006,13 @@ impl Vm {
                         self.cuf_caller = flags
                             .contains(CallFlags::USER_CALL)
                             .then(|| self.caller_strict());
+                        self.cuf_direct = flags.contains(CallFlags::CT_BOUND);
                         if flags.contains(CallFlags::RESULT_UNUSED) {
                             self.unused_call_depth = self.stack.len();
                         }
                         let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
+                        self.cuf_direct = false;
                         self.unused_call_depth = usize::MAX;
                         let out = out?;
                         self.reg_set(top, dst, out);
@@ -965,13 +1037,7 @@ impl Vm {
                     self.ref_globals.insert(gname.as_bytes().to_vec());
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
-                Instr::BindGlobalDyn { name } => {
-                    let gname = conv::to_string_bytes(&self.reg_r(top, name)?);
-                    let cell = self.global_cell(&gname);
-                    cell_define(&cell);
-                    self.ref_globals.insert(gname.clone());
-                    self.var_var_bind(top, &gname, cell);
-                }
+                Instr::BindGlobalDyn { name } => self.bind_global_dyn(top, name)?,
                 Instr::BindStatic { cv, name, init } => {
                     self.bind_static(top, &proto, cv, name, init);
                 }
@@ -1043,8 +1109,10 @@ impl Vm {
                     dst,
                     callee,
                     ns_name,
+                    const_expr,
+                    static_call,
                 } => {
-                    self.make_fcc(top, &proto, dst, callee, ns_name)?;
+                    self.make_fcc(top, &proto, dst, callee, ns_name, const_expr, static_call)?;
                 }
                 Instr::CallDyn {
                     dst,
@@ -1193,6 +1261,7 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    self.note_cursor_static(&cell, cls, &pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1204,6 +1273,7 @@ impl Vm {
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    self.note_cursor_static(&cell, cls, &pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1212,45 +1282,18 @@ impl Vm {
                 }
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
-                Instr::BindVarVarRef { name, src } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
-                    let cell = match &self.stack[top].regs[src as usize] {
-                        Value::Ref(rc) => rc.clone(),
-                        v => Rc::new(RefCell::new(v.clone())),
-                    };
-                    self.var_var_bind(top, &vname, cell);
-                }
-                Instr::UnsetVarVar { name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
-                    self.var_var_unset(top, &vname);
-                }
-                Instr::FetchVarVarIs { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
-                    let v = match self.var_var_lookup(top, &vname) {
-                        Some(Ok(cv)) => self.reg_get(top, cv),
-                        Some(Err(cell)) => deref(&cell.borrow()),
-                        None => Value::Null,
-                    };
-                    self.reg_set(top, dst, v);
-                }
-                Instr::FetchVarVar { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
-                    let v = match self.var_var_lookup(top, &vname) {
-                        Some(Ok(cv)) => self.reg_r(top, cv)?,
-                        Some(Err(cell)) if !cell.borrow().is_undef() => deref(&cell.borrow()),
-                        _ => {
-                            let msg = [b"Undefined variable $".as_slice(), &vname].concat();
-                            self.diag(builtins::E_WARNING, &msg)?;
-                            Value::Null
-                        }
-                    };
-                    self.reg_set(top, dst, v);
-                }
+                Instr::BindVarVarRef { name, src } => self.bind_var_var_ref(top, name, src)?,
+                Instr::UnsetVarVar { name } => self.unset_var_var(top, name)?,
+                Instr::FetchVarVarIs { dst, name } => self.fetch_var_var(top, dst, name, true)?,
+                Instr::FetchVarVar { dst, name } => self.fetch_var_var(top, dst, name, false)?,
                 Instr::FetchStaticPropDyn { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    if cell.borrow().is_undef() {
+                        return Err(self.uninit_static_err(cls, &pname));
+                    }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }
@@ -1273,7 +1316,10 @@ impl Vm {
                         Some(sp)
                             if self.static_prop_accessible(self.stack[top].defining_class, sp) =>
                         {
-                            deref(&sp.cell.borrow())
+                            match deref(&sp.cell.borrow()) {
+                                Value::Undef => Value::Null,
+                                v => v,
+                            }
                         }
                         _ => Value::Null,
                     };
@@ -1305,6 +1351,12 @@ impl Vm {
                     self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
+                    if self.cursor_static.is_some() {
+                        let steps = std::mem::take(&mut self.cursor_steps);
+                        let r = self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null);
+                        self.cursor_steps = steps;
+                        r?;
+                    }
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
@@ -1314,14 +1366,50 @@ impl Vm {
                     if self.cursor_null_key && self.rw_null_keys == 0 {
                         self.w_null_key_diags(top)?;
                     }
-                    let v = self.reg_r(top, src)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    let v = if self.stack[top].regs[src as usize].is_undef()
+                        && src < proto.num_cvs
+                        && matches!(self.cursor_magic_split(top, &steps), MagicSplit::Nested(..))
+                    {
+                        self.deferred_undef_src = Some(src);
+                        Value::Null
+                    } else {
+                        match self.reg_r(top, src) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.cursor_steps = steps;
+                                return Err(e);
+                            }
+                        }
+                    };
+                    let v = if self.cursor_static.is_some() {
+                        match self.cursor_static_check(top, &steps, StaticOp::Assign, v) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.cursor_release();
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        v
+                    };
                     let r = if dst == src {
-                        self.cursor_write(top, &steps, v)
+                        let r = self.cursor_write(top, &steps, v);
+                        // A typed property coerced the value: a temporary
+                        // source is the assignment's result.
+                        if let Some(c) = self.typed_write_result.take() {
+                            if src as usize >= proto.num_cvs as usize {
+                                self.reg_set(top, src, c);
+                            }
+                        }
+                        r
                     } else {
                         crate::lvalue::take_string_offset_result();
+                        self.typed_write_result = None;
                         let r = self.cursor_write(top, &steps, v.clone());
-                        let res = crate::lvalue::take_string_offset_result().unwrap_or(v);
+                        let res = crate::lvalue::take_string_offset_result()
+                            .or_else(|| self.typed_write_result.take())
+                            .unwrap_or(v);
                         self.reg_set(top, dst, res);
                         r
                     };
@@ -1343,18 +1431,78 @@ impl Vm {
                         self.rebind_global(&n, rc.clone());
                         continue;
                     }
+                    // A by-value source (a call result) binds a fresh reference.
+                    let v = match v {
+                        Value::Ref(_) => v,
+                        other => Value::Ref(Rc::new(RefCell::new(other))),
+                    };
+                    if let Err(e) =
+                        self.cursor_static_check(top, &steps, StaticOp::Ref, Value::Null)
+                    {
+                        self.cursor_release();
+                        return Err(e);
+                    }
+                    // `$obj[k] =& $v` on a user ArrayAccess: php fetches the
+                    // offset for writing (offsetGet), which yields no slot.
+                    if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
+                        // ArrayObject: its storage holds the reference.
+                        let owner = self.spl_array_owner(&h, b"offsetget");
+                        if let (true, Some(owner)) = (i + 1 == steps.len(), owner) {
+                            let cell = self.spl_array_storage(&h, owner);
+                            self.cursor_release();
+                            let cell = cell?;
+                            // `$ao[] =& $v`: no slot (php's uninitialized_zval)
+                            let CursorStep::Key(k) = &steps[i] else {
+                                self.indirect_overloaded_notice(&h)?;
+                                return Err(Thrown::error(
+                                    "Error",
+                                    "Cannot assign by reference to an array dimension of an object",
+                                ));
+                            };
+                            let key = self.spl_array_key(&h, k)?;
+                            let mut st = cell.borrow_mut();
+                            if let Value::Array(a) = &mut *st {
+                                a.insert(key, v);
+                                continue;
+                            }
+                        }
+                        if i + 1 == steps.len() && owner.is_none() {
+                            let key = crate::lvalue::aa_key(&steps[i]).unwrap_or(Value::Null);
+                            let r = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W);
+                            self.cursor_release();
+                            r?;
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot assign by reference to an array dimension of an object",
+                            ));
+                        }
+                    }
                     let r = self.cursor_write(top, &steps, v);
                     self.cursor_release();
                     r?;
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if let Err(e) =
+                        self.cursor_static_check(top, &steps, StaticOp::Fetch, Value::Null)
+                    {
+                        self.cursor_release();
+                        return Err(e);
+                    }
                     let cell = self.cursor_make_ref(top, &steps);
                     self.cursor_release();
                     self.reg_set(top, dst, Value::Ref(cell?));
                 }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if self.cursor_static.is_some() {
+                        if let Err(e) =
+                            self.cursor_static_check(top, &steps, StaticOp::Unset, Value::Null)
+                        {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    }
                     let r = self.cursor_unset(top, &steps);
                     self.cursor_release();
                     r?;
@@ -1362,6 +1510,14 @@ impl Vm {
                 Instr::IncDecLval { dst, pre, delta } => {
                     self.cursor_settle_offsets(top)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if self.cursor_static.is_some() {
+                        if let Err(e) =
+                            self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null)
+                        {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    }
                     // `$obj[$k]++` on an ArrayAccess object: php fetches the
                     // element for RW (offsetGet) and increments that; there
                     // is no offsetSet.
@@ -1384,8 +1540,29 @@ impl Vm {
                         }
                     }
                     let old = self.cursor_read_magic(top, &steps, true)?;
-                    let new = self.inc_dec_vm(&old, delta as i64)?;
-                    self.cursor_write(top, &steps, new.clone())?;
+                    let new = match self.inc_dec_vm(&old, delta as i64) {
+                        Ok(n) => n,
+                        // php writes the property even so: a readonly one
+                        // throws over the operator's TypeError.
+                        Err(e) => {
+                            return Err(match self.cursor_readonly_leaf_err(top, &steps) {
+                                Some(ro) => {
+                                    use rhp_builtins::Host;
+                                    self.chain_thrown(ro, e)
+                                }
+                                None => e,
+                            });
+                        }
+                    };
+                    if matches!((&old, &new), (Value::Int(_), Value::Float(_))) {
+                        self.incdec_typed_overflow(top, &steps, delta)?;
+                    }
+                    self.typed_write_result = None;
+                    self.incdec_write = true;
+                    let r = self.cursor_write(top, &steps, new.clone());
+                    self.incdec_write = false;
+                    r?;
+                    let new = self.typed_write_result.take().unwrap_or(new);
                     self.cursor_release();
                     self.reg_set(top, dst, if pre { new } else { old });
                 }
@@ -1471,6 +1648,11 @@ impl Vm {
                     return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
+                    if let Value::Ref(rc) = &self.stack[top].regs[src as usize] {
+                        let v = Value::Ref(rc.clone());
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let v = self.reg_r(top, src)?;
                     self.diag(
                         builtins::E_NOTICE,
@@ -1533,6 +1715,25 @@ impl Vm {
                                 return Ok(done);
                             }
                         }
+                        Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
+                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                                self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
+                                self.stack[top].pc = f2 as usize;
+                            } else {
+                                // php checks the type again at the return,
+                                // whose finally runs again when it fails.
+                                self.stack[top].pc = ret_pc as usize + 1;
+                                let v = if kind == rhp_bytecode::RET_REF_IMPLICIT {
+                                    v
+                                } else {
+                                    self.recheck_ref_return(top, &proto, &v)?
+                                };
+                                let v = self.ret_ref_wrap(v, kind)?;
+                                if let Some(done) = self.do_return(v) {
+                                    return Ok(done);
+                                }
+                            }
+                        }
                         Some(FinallyCont::Jump(target)) => {
                             self.jump_through_finally(top, &proto, pc, target)
                         }
@@ -1550,6 +1751,15 @@ impl Vm {
                     self.drop_left_finallies(top, &proto, pc);
                     if let Some(f) = enclosing_finally(&proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
+                    }
+                }
+                Instr::SetPendingRetRef { src, kind } => {
+                    // the notice comes with the return, after the finally
+                    let v = self.ret_ref_checked(top, &proto, src, kind)?;
+                    let pc = self.stack[top].pc as u32 - 1;
+                    self.drop_left_finallies(top, &proto, pc);
+                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                        self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
@@ -1581,17 +1791,25 @@ impl Vm {
                 Instr::FetchPropW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
-                        vm.prop_fetch(top, o, pname)
-                    })?;
+                    let v = self.prop_fetch_w(top, o, pname, false)?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDynW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = self.dyn_prop_name(top, name)?;
-                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
-                        vm.prop_fetch(top, o, pname)
-                    })?;
+                    let v = self.prop_fetch_w(top, o, pname, false)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropUnset { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = self.prop_fetch_w(top, o, pname, true)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDynUnset { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = self.dyn_prop_name(top, name)?;
+                    let v = self.prop_fetch_w(top, o, pname, true)?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropIs { dst, obj, name } => {
@@ -1602,6 +1820,13 @@ impl Vm {
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
+                        self.reg_set(top, dst, Value::Null);
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
                     self.reg_set(top, dst, v);
@@ -1616,7 +1841,10 @@ impl Vm {
                     // The cell via static_prop_cell: runs the class's
                     // deferred (non-literal) initializers first.
                     let v = if accessible {
-                        deref(&self.static_prop_cell(cls, &pname)?.borrow())
+                        match deref(&self.static_prop_cell(cls, &pname)?.borrow()) {
+                            Value::Undef => Value::Null,
+                            v => v,
+                        }
                     } else {
                         Value::Null
                     };
@@ -1665,7 +1893,15 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let val = self.reg_r(top, src)?;
+                    self.want_typed_result = true;
                     self.prop_store(top, o, pname, val)?;
+                    // A typed property coerced the value: a temporary
+                    // source is the assignment's result.
+                    if let Some(v) = self.typed_write_result.take() {
+                        if src as usize >= proto.num_cvs as usize {
+                            self.reg_set(top, src, v);
+                        }
+                    }
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true; // the old value may be released
                     }
@@ -1737,12 +1973,26 @@ impl Vm {
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
+                        self.reg_set(top, dst, Value::Bool(true));
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
+                    if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
+                        self.reg_set(top, dst, Value::Bool(false));
+                        continue;
+                    }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
@@ -1770,6 +2020,9 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    if cell.borrow().is_undef() {
+                        return Err(self.uninit_static_err(cls, &pname));
+                    }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }
@@ -1885,7 +2138,12 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::PassArg { dst, src } => {
-                    let v = self.stack[top].regs[src as usize].clone();
+                    // the temporary moves into the window
+                    let v = if src >= proto.num_cvs {
+                        std::mem::replace(&mut self.stack[top].regs[src as usize], Value::Null)
+                    } else {
+                        self.stack[top].regs[src as usize].clone()
+                    };
                     self.reg_set(top, dst, v);
                 }
                 Instr::StaticArgIsRef {
@@ -2011,10 +2269,47 @@ impl Vm {
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
-                    // `src` already holds a `Ref` (MakeRefLval); alias it raw.
+                    // `src` holds a `Ref` (MakeRefLval): alias it raw. A
+                    // by-value call result is assigned (after its notice).
                     let v = self.stack[top].regs[src as usize].clone();
+                    if !matches!(v, Value::Ref(_)) {
+                        self.cv_assign(top, dst_cv, v);
+                        continue;
+                    }
                     self.stack[top].regs[dst_cv as usize] = v;
                     self.sync_global_cv(top, dst_cv);
+                }
+                Instr::FetchListW { dst, src, key } => {
+                    let k = self.reg_r(top, key)?;
+                    let v = match self.stack[top].regs[src as usize].clone() {
+                        Value::Ref(rc) => {
+                            self.cursor_root = CursorRoot::Cell(rc);
+                            self.cursor_global = None;
+                            self.cursor_steps.clear();
+                            self.rw_null_keys = 0;
+                            self.cursor_null_key = matches!(k, Value::Null);
+                            let cell = self.cursor_make_ref(top, &[CursorStep::Key(k)]);
+                            self.cursor_release();
+                            Value::Ref(cell?)
+                        }
+                        v => {
+                            self.diag(
+                                builtins::E_NOTICE,
+                                "Attempting to set reference to non referenceable value",
+                            )?;
+                            let r = self.dim_read(&deref(&v), &k, DimMode::List)?;
+                            Value::Ref(Rc::new(RefCell::new(r)))
+                        }
+                    };
+                    self.reg_set(top, dst, v);
+                }
+                Instr::RefFuncResult { src } => {
+                    if !matches!(self.stack[top].regs[src as usize], Value::Ref(_)) {
+                        self.diag(
+                            builtins::E_NOTICE,
+                            "Only variables should be assigned by reference",
+                        )?;
+                    }
                 }
                 Instr::MakeRef { dst, cv } => {
                     let rc = self.promote(top, cv);
@@ -2039,6 +2334,22 @@ impl Vm {
                     self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
                 Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
+                Instr::NewObj { dst, class } => {
+                    // The temporaries from `dst` up are dead: what they held
+                    // is released first, as the arguments' window would
+                    // (php has freed it by now), so the new object can
+                    // take a freed id.
+                    let n = proto.num_registers as usize;
+                    for r in dst as usize..n {
+                        if matches!(self.stack[top].regs[r], Value::Object(_) | Value::Array(_)) {
+                            self.reg_set(top, r as Reg, Value::Null);
+                        }
+                    }
+                    let obj = self.new_alloc(top, class)?;
+                    self.reg_set(top, dst, Value::Object(obj));
+                }
+                Instr::NewCall { dst, base, argc } => self.exec_new_call(top, dst, base, argc)?,
+                Instr::NewCallV { dst, args } => self.exec_new_call_v(top, dst, args)?,
                 Instr::CallMethodV {
                     dst,
                     obj,
@@ -2108,11 +2419,8 @@ impl Vm {
                         return Ok(done);
                     }
                 }
-                Instr::RetRef { src } => {
-                    // Return-by-reference: deliver the raw slot (a `Value::Ref`
-                    // cell) without dereferencing, so the caller's `$x = &f()`
-                    // aliases the same cell. No return-type coercion.
-                    let v = self.stack[top].regs[src as usize].clone();
+                Instr::RetRef { src, kind } => {
+                    let v = self.ret_ref_value(top, &proto, src, kind)?;
                     if let Some(done) = self.do_return(v) {
                         return Ok(done);
                     }
@@ -2288,6 +2596,111 @@ impl Vm {
     /// The entries `...$src` unpacks (ZEND_SEND_UNPACK when `args`, else
     /// ZEND_ADD_ARRAY_UNPACK): an array's elements as they are, or what a
     /// Traversable yields (numeric-string keys count as positional).
+    /// ZEND_SEND_UNPACK's by-reference parameters (see
+    /// [`Instr::ArgSpreadRef`]); the rest is [`Instr::ArgSpread`]'s.
+    fn arg_spread_ref(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        arr: Reg,
+        src: Reg,
+        sig: u32,
+    ) -> Result<(), Thrown> {
+        let Value::Array(sig) = &proto.consts[sig as usize] else {
+            return Ok(());
+        };
+        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let fname = conv::to_string_bytes(&sig[0]);
+        let variadic = matches!(sig[1], Value::Bool(true));
+        let list = |v: &Value| match v {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            _ => Vec::new(),
+        };
+        let flags: Vec<Value> = list(&sig[2]);
+        let names: Vec<Value> = list(&sig[3]);
+        let by_ref = |p: usize| match flags.get(p) {
+            Some(b) => matches!(b, Value::Bool(true)),
+            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+        };
+        // a named element's position
+        let named_pos = |s: &[u8]| {
+            names
+                .iter()
+                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
+        };
+        let source = match &self.stack[top].regs[src as usize] {
+            Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
+            _ => None,
+        };
+        let traversable = matches!(self.reg_get(top, src), Value::Object(_));
+        let entries = self.unpack_entries(top, src, true)?;
+        let Value::Array(mut a) =
+            std::mem::replace(&mut self.stack[top].regs[arr as usize], Value::Null)
+        else {
+            unreachable!("ArgSpreadRef target is the argument array")
+        };
+        let mut pos = a
+            .iter()
+            .filter(|(k, _)| matches!(k, ArrayKey::Int(_)))
+            .count();
+        for (k, iv) in entries {
+            let at = match &k {
+                ArrayKey::Int(_) => Some(pos),
+                ArrayKey::Str(s) => {
+                    if a.get(&k).is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(s.as_bytes())
+                            ),
+                        ));
+                    }
+                    // an unknown name lands in a variadic parameter
+                    named_pos(s.as_bytes())
+                        .or_else(|| variadic.then(|| flags.len().saturating_sub(1)))
+                }
+            };
+            let mut v = iv;
+            if let Some(at) = at.filter(|&p| by_ref(p)) {
+                if let Some(rc) = &source {
+                    // separated from other holders of the array
+                    if let Value::Array(sa) = &mut *rc.borrow_mut() {
+                        if let Some(slot) = sa.get_mut(&k) {
+                            let cell = match slot {
+                                Value::Ref(c) => c.clone(),
+                                other => {
+                                    let c = Rc::new(RefCell::new(std::mem::replace(
+                                        other,
+                                        Value::Null,
+                                    )));
+                                    *other = Value::Ref(c.clone());
+                                    c
+                                }
+                            };
+                            v = Value::Ref(cell);
+                        }
+                    }
+                } else if traversable {
+                    let msg = format!(
+                        "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
+                        at + 1,
+                        String::from_utf8_lossy(&fname)
+                    );
+                    self.diag(builtins::E_WARNING, &msg)?;
+                }
+            }
+            if let ArrayKey::Int(_) = k {
+                a.push(v);
+                pos += 1;
+            } else {
+                a.insert(k, v);
+            }
+        }
+        self.stack[top].regs[arr as usize] = Value::Array(a);
+        Ok(())
+    }
+
     fn unpack_entries(
         &mut self,
         top: usize,
@@ -2841,7 +3254,7 @@ impl Vm {
             while idx < n {
                 let key = b.properties.get_index(idx).unwrap().0;
                 if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                    found = Some(name);
+                    found = Some(classes::unmangle(&name));
                     break;
                 }
                 idx += 1;
@@ -2996,7 +3409,11 @@ impl Vm {
             // (Not from inside a constant expression, which goes
             // through zend_get_class_constant_ex in php.)
             let in_const_expr = proto.flags.contains(rhp_bytecode::ProtoFlags::CONST_EXPR);
-            if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
+            // (Only a user enum: an internal one creates each case alone.)
+            if self.class(cls).enum_backing.is_some()
+                && !self.class(cls).updated
+                && !in_const_expr
+                && !self.is_internal_class(cls)
             {
                 self.update_class_constants(cls)?;
             }
@@ -3016,6 +3433,16 @@ impl Vm {
                     let ready = c.init.is_none().then(|| c.value.clone());
                     if !self.check_access(self.stack[top].defining_class, decl, vis) {
                         return Err(self.access_err("constant", decl, &name_b, vis));
+                    }
+                    if self.class(cls).kind == rhp_values::ClassKind::Trait {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot access trait constant {}::{} directly",
+                                String::from_utf8_lossy(&display),
+                                String::from_utf8_lossy(&name_b)
+                            ),
+                        ));
                     }
                     if let Some(d) = deprecated {
                         self.class_const_deprecation(decl, &name_b, &d)?;
@@ -3259,6 +3686,7 @@ impl Vm {
 
     /// `MakeFcc`: a first-class callable Closure over `callee`.
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn make_fcc(
         &mut self,
         top: usize,
@@ -3266,6 +3694,8 @@ impl Vm {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        const_expr: bool,
+        static_call: bool,
     ) -> Result<(), Thrown> {
         // A callee built in a temporary (`[$o, 'm']`) is dead
         // after this: the closure owns it.
@@ -3283,9 +3713,54 @@ impl Vm {
             self.reg_set(top, dst, cl);
             return Ok(());
         }
+        // zend_closure_from_frame: a Closure is its own first-class callable.
+        if let Value::Closure(_) = &c {
+            self.reg_set(top, dst, c);
+            return Ok(());
+        }
         if let Value::Str(name) = &c {
             if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
                 c = Value::Str(n);
+            }
+        }
+        // The INIT_*_CALL opcode before ZEND_CALLABLE_CONVERT resolves the
+        // callee: its errors are raised now.
+        match &c {
+            Value::Str(name) if !name.as_bytes().windows(2).any(|w| w == b"::") => {
+                let ns = (ns_name != rhp_bytecode::NO_NAME)
+                    .then(|| proto.names[ns_name as usize].clone());
+                let known = |vm: &Self, n: &[u8]| {
+                    let n = n.strip_prefix(b"\\").unwrap_or(n);
+                    vm.fn_names.contains_key(&n.to_ascii_lowercase())
+                        || crate::calls::user_visible_builtin(n)
+                };
+                // (Like php's per-site cache, a later namespaced function
+                // does not replace the global one found.)
+                match ns {
+                    _ if known(self, name.as_bytes()) => {}
+                    Some(ns) if known(self, ns.as_bytes()) => c = Value::Str(ns),
+                    ns => {
+                        return Err(crate::calls::undefined_function(
+                            ns.as_ref().unwrap_or(name),
+                        ))
+                    }
+                }
+            }
+            _ => {
+                // ZEND_INIT_STATIC_METHOD_CALL for static-call syntax;
+                // an array callable (INIT_DYNAMIC_CALL) has no scope or $this.
+                let named = static_call.then(|| self.fcc_class_named(top, &c)).flatten();
+                let named = named.as_ref().unwrap_or(&c);
+                let on_this = static_call.then(|| self.fcc_on_this(top, named)).flatten();
+                let checked = on_this.as_ref().unwrap_or(named);
+                let callee = self.resolve_dynamic_call(checked)?;
+                // zend_ast_evaluate's ZEND_AST_CALLABLE_CONVERT.
+                if const_expr && matches!(callee, crate::calls::Callee::Magic(_, None, ..)) {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Creating a callable for the magic __callStatic() method is not supported in constant expressions",
+                    ));
+                }
             }
         }
         // ZEND_CALLABLE_CONVERT keeps the call's object.
@@ -3307,6 +3782,62 @@ impl Vm {
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
+    }
+
+    /// `[self|parent|static, m]` of a first-class callable with the class
+    /// it means in frame `top` (None for any other callable).
+    fn fcc_class_named(&self, top: usize, c: &Value) -> Option<Value> {
+        let Value::Array(a) = c else { return None };
+        let Some(Value::Str(cn)) = a.get(&rhp_values::ArrayKey::Int(0)) else {
+            return None;
+        };
+        let f = &self.stack[top];
+        let cls = match cn.as_bytes().to_ascii_lowercase().as_slice() {
+            b"self" => f.defining_class?,
+            b"static" => f.called_class.or(f.defining_class)?,
+            b"parent" => self.class(f.defining_class?).parent?,
+            _ => return None,
+        };
+        let mut a = a.clone();
+        a.insert(
+            rhp_values::ArrayKey::Int(0),
+            Value::Str(self.class(cls).name.clone()),
+        );
+        Some(Value::Array(a))
+    }
+
+    /// ZEND_INIT_STATIC_METHOD_CALL calls a non-static method on `$this`
+    /// when it is an instance of the class: `[C, m]` checked as
+    /// `[$this, m]` then.
+    fn fcc_on_this(&self, top: usize, c: &Value) -> Option<Value> {
+        let (cn, m) = match c {
+            Value::Array(a) => match (
+                a.get(&rhp_values::ArrayKey::Int(0)),
+                a.get(&rhp_values::ArrayKey::Int(1)),
+            ) {
+                (Some(Value::Str(cn)), Some(m)) => (cn.as_bytes().to_vec(), m.clone()),
+                _ => return None,
+            },
+            // `'C::m'(...)`.
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                let at = b.windows(2).position(|w| w == b"::")?;
+                (
+                    b[..at].to_vec(),
+                    Value::Str(PhpStr::from_bytes(b[at + 2..].to_vec())),
+                )
+            }
+            _ => return None,
+        };
+        let this = self.current_this(top)?;
+        let cls = self.resolve_class_by_name(&cn).ok()?;
+        if !self.instance_of(this.borrow().class, cls) {
+            return None;
+        }
+        let mut a = PhpArray::new();
+        a.push(Value::Object(this));
+        a.push(m);
+        Some(Value::Array(a))
     }
 
     /// `CallDyn`: `$f(...)` with the arguments in a window.
@@ -3347,6 +3878,21 @@ impl Vm {
                 }
             }
         }
+        // A user function's name: a direct call (by-reference parameters
+        // and return).
+        if let Value::Str(s) = &c {
+            let n = s.as_bytes();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if !n.contains(&b':') {
+                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                    let callee = self.functions[i].clone();
+                    if !callee.proto.is_internal() {
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // An invokable object: a call of its __invoke method, with
         // by-reference parameters and return.
         if let Value::Object(h) = &c {
@@ -3359,10 +3905,23 @@ impl Vm {
                 return Ok(());
             }
         }
+        if !self.stack[top].proto.send_kinds.is_empty() {
+            if let Some((p, scope)) = self.callable_proto(&c) {
+                if p.params.iter().any(|q| q.by_ref) {
+                    self.check_sends(top, &p, scope, base)?;
+                }
+            } else if let Ok(crate::calls::Callee::Builtin(name)) = self.resolve_callable(&c) {
+                if let Some(sig) = rhp_bytecode::signatures::function(name.as_bytes()) {
+                    self.check_sends_builtin(top, sig, base)?;
+                }
+            }
+        }
         // Passed raw (the window's references kept): the callee's
         // by-reference parameters bind them, by-value ones dereference.
+        // Moved out of the window, so a temporary is freed when the call
+        // returns (zend_vm_stack_free_args), not at the next statement.
         let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .map(|i| std::mem::replace(&mut self.stack[top].regs[(base + i) as usize], Value::Null))
             .collect();
         self.dyn_call = true;
         let out = self.call_callable_value_mode(&c, args, Some(strict));

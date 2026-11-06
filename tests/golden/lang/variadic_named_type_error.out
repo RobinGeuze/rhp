@@ -1,0 +1,13 @@
+vt(): Argument #2 must be of type int, string given
+vt(): Argument #2 must be of type int, string given
+vt(): Argument #2 must be of type int, string given
+vt(): Argument #1 must be of type int, string given
+vu(): Argument #4 must be of type int, string given
+vu(): Argument #2 must be of type int, string given
+array(2) {
+  [0]=>
+  int(2)
+  ["x"]=>
+  int(3)
+}
+string(1) "S"

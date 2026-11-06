@@ -313,10 +313,8 @@ impl ProtoBuilder<'_> {
                 if self.finally_rets.is_empty() {
                     match r.value {
                         // By-ref function: `return $lval` yields a reference.
-                        Some(e) if self.returns_ref => {
-                            let src = self.compile_ref_source(e)?;
-                            self.check_return(r.value, line)?;
-                            self.emit(Instr::RetRef { src });
+                        _ if self.returns_ref && !self.is_generator => {
+                            self.compile_return_ref(r.value, line)?
                         }
                         Some(e) => {
                             let src = self.compile_expr(e)?;
@@ -330,16 +328,22 @@ impl ProtoBuilder<'_> {
                     }
                 } else {
                     // Route the return through the innermost enclosing finally.
-                    let src = match r.value {
-                        Some(e) => self.compile_expr(e)?,
-                        None => {
-                            let t = self.alloc_temp();
-                            self.emit(Instr::LoadNull { dst: t });
-                            t
-                        }
-                    };
-                    self.check_return(r.value, line)?;
-                    self.emit(Instr::SetPendingRet { src });
+                    if self.returns_ref && !self.is_generator {
+                        let (src, kind) = self.return_ref_operand(r.value)?;
+                        self.check_return(r.value, line)?;
+                        self.emit(Instr::SetPendingRetRef { src, kind });
+                    } else {
+                        let src = match r.value {
+                            Some(e) => self.compile_expr(e)?,
+                            None => {
+                                let t = self.alloc_temp();
+                                self.emit(Instr::LoadNull { dst: t });
+                                t
+                            }
+                        };
+                        self.check_return(r.value, line)?;
+                        self.emit(Instr::SetPendingRet { src });
+                    }
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // Jmp -> finally (patched)
                     self.finally_rets.last_mut().unwrap().push(pos);
@@ -408,6 +412,62 @@ impl ProtoBuilder<'_> {
 
 impl ProtoBuilder<'_> {
     /// zend_emit_return_type_check's compile-time errors for `return`.
+    /// zend_compile_return in a by-reference function: a variable is
+    /// fetched for writing, anything else is returned with php's notice
+    /// (ZEND_RETURNS_FUNCTION / ZEND_RETURNS_VALUE, checked when it runs).
+    fn compile_return_ref(&mut self, value: Option<&Expression>, line: u32) -> Result<(), Thrown> {
+        let (src, kind) = self.return_ref_operand(value)?;
+        self.check_return(value, line)?;
+        self.emit(Instr::RetRef { src, kind });
+        Ok(())
+    }
+
+    /// The operand of a by-reference `return` and its `RET_REF_*` kind.
+    fn return_ref_operand(&mut self, value: Option<&Expression>) -> Result<(Reg, u8), Thrown> {
+        use crate::assign::{is_call, is_variable};
+        use rhp_bytecode::{RET_REF_FUNC, RET_REF_IMPLICIT, RET_REF_VALUE, RET_REF_VAR};
+        let Some(e) = value else {
+            let src = self.alloc_temp();
+            self.emit(Instr::LoadNull { dst: src });
+            return Ok((src, RET_REF_IMPLICIT));
+        };
+        let bare = crate::util::unparen(e);
+        Ok(if is_variable(bare) {
+            (self.compile_ref_source(bare)?, RET_REF_VAR)
+        } else if is_call(bare) {
+            (self.compile_expr(e)?, RET_REF_FUNC)
+        } else {
+            (self.compile_expr(e)?, RET_REF_VALUE)
+        })
+    }
+
+    /// An arrow function's body, compiled as php does: `return <expr>;`.
+    pub(crate) fn compile_arrow_return(&mut self, e: &Expression) -> Result<(), Thrown> {
+        if self.returns_ref && !self.is_generator {
+            let line = self.cur_line;
+            return self.compile_return_ref(Some(e), line);
+        }
+        let src = self.compile_expr(e)?;
+        self.emit(Instr::Ret { src });
+        Ok(())
+    }
+
+    /// zend_emit_final_return: the implicit `return null` at the end of a
+    /// body (by reference in a by-reference function, with its notice).
+    pub(crate) fn emit_final_return(&mut self, end: u32) {
+        if self.returns_ref && !self.is_generator {
+            self.cur_line = self.cx.line_of(end);
+            let src = self.alloc_temp();
+            self.emit(Instr::LoadNull { dst: src });
+            self.emit(Instr::RetRef {
+                src,
+                kind: rhp_bytecode::RET_REF_IMPLICIT,
+            });
+        } else {
+            self.emit(Instr::RetNull);
+        }
+    }
+
     fn check_return(&self, value: Option<&Expression>, line: u32) -> Result<(), Thrown> {
         use crate::checks::{type_mask, NEVER, NULL, VOID};
         let Some(t) = &self.ret_type else {

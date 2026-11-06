@@ -1,0 +1,32 @@
+int(2)
+E8: Indirect modification of overloaded element of ArrayObject has no effect
+Error: Cannot assign by reference to an array dimension of an object
+E8192: Using null as an array offset is deprecated, use an empty string instead
+array(1) {
+  [""]=>
+  &int(2)
+}
+E8192: Implicit conversion from float 1.5 to int loses precision
+array(1) {
+  [1]=>
+  &int(2)
+}
+array(1) {
+  [1]=>
+  &int(2)
+}
+TypeError: Cannot access offset of type array on ArrayObject
+int(4)
+get k
+E8: Indirect modification of overloaded element of S has no effect
+Error: Cannot assign by reference to an array dimension of an object
+E8192: Implicit conversion from float 2.5 to int loses precision
+array(1) {
+  [2]=>
+  array(1) {
+    ["x"]=>
+    int(1)
+  }
+}
+handler sees 0
+int(1)

@@ -70,11 +70,65 @@ impl ProtoBuilder<'_> {
     /// body starting at source `offset`.
     fn octal_overflow_warnings(&self, raw: &[u8], offset: u32) {
         for (at, digits) in crate::strings::octal_overflows(raw) {
-            self.cx.diag(
+            self.cx.scan_diag(
                 rhp_values::E_COMPILE_WARNING,
                 offset + at as u32,
                 format!("Octal escape sequence overflow \\{digits} is greater than \\377"),
             );
+        }
+    }
+
+    /// The scanner's 8.5 deprecation of the long cast spellings.
+    fn cast_deprecation(&self, op: &UnaryPrefixOperator) {
+        use mago_span::HasSpan;
+        use UnaryPrefixOperator as Op;
+        let (from, to) = match op {
+            Op::BinaryCast(..) => ("binary", "string"),
+            Op::BooleanCast(..) => ("boolean", "bool"),
+            Op::DoubleCast(..) => ("double", "float"),
+            Op::IntegerCast(..) => ("integer", "int"),
+            _ => return,
+        };
+        self.cx.scan_diag(
+            rhp_values::E_DEPRECATED,
+            op.span().start.offset,
+            format!("Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"),
+        );
+    }
+
+    /// The scanner's diagnostics in code php scans but never compiles
+    /// (the right side of `false && ...`, assert() under
+    /// zend.assertions=-1): long cast spellings and octal overflows.
+    pub(crate) fn scanner_diags(&self, node: crate::parse::cst::Node) {
+        use crate::parse::cst::DocumentKind;
+        use mago_span::HasSpan;
+        match node {
+            Node::UnaryPrefix(u) => self.cast_deprecation(&u.operator),
+            Node::LiteralString(s) if matches!(s.raw.first(), Some(b'"' | b'b' | b'B')) => {
+                self.octal_overflow_warnings(s.raw, s.span().start.offset)
+            }
+            Node::CompositeString(cs) => {
+                let (parts, escapes) = match cs {
+                    CompositeString::Interpolated(i) => (&i.parts, true),
+                    CompositeString::Document(d) => (&d.parts, d.kind != DocumentKind::Nowdoc),
+                    CompositeString::ShellExecute(s) => (&s.parts, true),
+                };
+                for part in parts.iter() {
+                    match part {
+                        StringPart::Literal(l) => {
+                            if escapes {
+                                self.octal_overflow_warnings(l.raw, l.span.start.offset);
+                            }
+                        }
+                        p => self.scanner_diags(Node::StringPart(p)),
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        for child in node.children() {
+            self.scanner_diags(child);
         }
     }
 
@@ -165,6 +219,12 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        if !self.expr_regs.is_empty() {
+            let addr = expr as *const Expression as usize;
+            if let Some(&(_, r)) = self.expr_regs.iter().find(|(a, _)| *a == addr) {
+                return Ok(r);
+            }
+        }
         if matches!(
             expr,
             Expression::ArrayAccess(_) | Expression::Access(Access::Property(_))
@@ -207,6 +267,11 @@ impl ProtoBuilder<'_> {
                 }
                 let dst = self.alloc_temp();
                 self.emit(Instr::DimFetch { dst, arr, key });
+                // FETCH_DIM_R frees a call's result once the element is
+                // out, so the rest of the statement no longer holds it.
+                if matches!(aa.array, Expression::Call(_)) && arr >= self.num_cvs {
+                    self.emit(Instr::LoadNull { dst: arr });
+                }
                 Ok(dst)
             }
             Expression::ConstantAccess(ca) => self.compile_constant(&ca.name),
@@ -271,6 +336,7 @@ impl ProtoBuilder<'_> {
                 self.call_lines.pop();
                 r
             }
+            Expression::Pipe(p) => self.compile_pipe(p),
             Expression::ArrowFunction(af) => self.compile_arrow(af),
             Expression::Closure(cl) => self.compile_closure(cl),
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
@@ -336,6 +402,8 @@ impl ProtoBuilder<'_> {
             MagicConstant::Directory(_) => dirname(self.cx.builtins, &self.cx.file_name()),
             MagicConstant::Function(_) => self.magic_function_name(),
             MagicConstant::Method(_) => self.magic_method_name(),
+            // __TRAIT__ is "" outside a trait.
+            MagicConstant::Trait(_) if !self.cx.in_trait.get() => Vec::new(),
             MagicConstant::Class(_) | MagicConstant::Trait(_) => self
                 .class_name
                 .as_ref()
@@ -519,6 +587,17 @@ impl ProtoBuilder<'_> {
         b: &crate::parse::cst::Binary,
         is_and: bool,
     ) -> Result<Reg, Thrown> {
+        // zend_compile_short_circuiting: a constant left side that decides
+        // the result leaves the right side uncompiled (no diagnostics).
+        if let Some(v) = literal_bool(b.lhs) {
+            if v != is_and {
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.lhs));
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.rhs));
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadBool { dst, b: v });
+                return Ok(dst);
+            }
+        }
         let dst = self.alloc_temp();
         let a = self.compile_expr(b.lhs)?;
         let jcond = self.code.len();
@@ -573,21 +652,7 @@ impl ProtoBuilder<'_> {
                 ))
             }
             Op::BinaryCast(..) | Op::BooleanCast(..) | Op::DoubleCast(..) | Op::IntegerCast(..) => {
-                // The scanner's 8.5 deprecation of the long cast spellings.
-                use mago_span::HasSpan;
-                let (from, to) = match &u.operator {
-                    Op::BinaryCast(..) => ("binary", "string"),
-                    Op::BooleanCast(..) => ("boolean", "bool"),
-                    Op::DoubleCast(..) => ("double", "float"),
-                    _ => ("integer", "int"),
-                };
-                self.cx.diag(
-                    rhp_values::E_DEPRECATED,
-                    u.operator.span().start.offset,
-                    format!(
-                        "Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"
-                    ),
-                );
+                self.cast_deprecation(&u.operator)
             }
             // Only a statement (php's grammar refuses it elsewhere): see
             // `compile_discarded`.
@@ -912,6 +977,9 @@ impl ProtoBuilder<'_> {
                         self.octal_overflow_warnings(l.raw, l.span.start.offset);
                     }
                     let mut v = l.value.unwrap_or(l.raw).to_vec();
+                    if matches!(cs, CompositeString::ShellExecute(_)) {
+                        v = crate::strings::shell_exec_value(&v);
+                    }
                     // A heredoc keeps `\"` as written.
                     if heredoc && flat {
                         if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
@@ -944,7 +1012,12 @@ impl ProtoBuilder<'_> {
                     r
                 }
                 StringPart::Expression(Expression::Variable(Variable::Indirect(iv))) => {
-                    self.compile_dollar_brace(iv)?
+                    use mago_span::HasSpan;
+                    // The encaps list's lineno: its first part's.
+                    let list_line = parts
+                        .first()
+                        .map_or(self.cur_line, |p| self.cx.line_of(p.span().start.offset));
+                    self.compile_dollar_brace(iv, list_line)?
                 }
                 StringPart::Expression(e) => self.compile_expr(e)?,
                 StringPart::BracedExpression(b) => self.compile_expr(b.expression)?,
@@ -959,18 +1032,24 @@ impl ProtoBuilder<'_> {
     fn compile_dollar_brace(
         &mut self,
         iv: &crate::parse::cst::IndirectVariable,
+        list_line: u32,
     ) -> Result<Reg, Thrown> {
         let at = iv.dollar_left_brace.start.offset;
         let src = self.cx.src;
         let name =
             crate::strings::dollar_brace_varname(src, iv.dollar_left_brace.end.offset as usize);
         let Some(name) = name else {
-            self.cx.diag(
+            // zend_compile_encaps_list, at the list's line; the fetch runs
+            // at the variable's own line.
+            self.cx.compile_diags.borrow_mut().push((
                 rhp_values::E_DEPRECATED,
-                at,
                 "Using ${expr} (variable variables) in strings is deprecated, use {${expr}} instead".into(),
-            );
-            return self.compile_variable(&Variable::Indirect(iv.clone()));
+                list_line,
+            ));
+            let saved = std::mem::replace(&mut self.cur_line, self.cx.line_of(at));
+            let r = self.compile_variable(&Variable::Indirect(iv.clone()));
+            self.cur_line = saved;
+            return r;
         };
         self.cx.diag(
             rhp_values::E_DEPRECATED,
@@ -1054,8 +1133,28 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         let path = self.compile_expr(path_expr)?;
         let dst = self.alloc_temp();
-        self.emit(Instr::Include { dst, path, kind });
+        self.emit_at_operand_line(path_expr, Instr::Include { dst, path, kind });
         Ok(dst)
+    }
+
+    /// Emit an include/eval opcode at its operand's line: php's
+    /// ZEND_AST_INCLUDE_OR_EVAL takes its child's lineno (a heredoc's is
+    /// the line its body starts on).
+    fn emit_at_operand_line(&mut self, operand: &Expression, instr: Instr) {
+        use crate::parse::cst::{CompositeString, Literal};
+        use mago_span::HasSpan;
+        let mut line = self.cx.line_of(operand.span().start.offset);
+        let doc = match operand {
+            Expression::CompositeString(CompositeString::Document(_)) => true,
+            Expression::Literal(Literal::String(s)) => s.raw.starts_with(b"<<<"),
+            _ => false,
+        };
+        if doc {
+            line += 1;
+        }
+        let saved = std::mem::replace(&mut self.cur_line, line);
+        self.emit(instr);
+        self.cur_line = saved;
     }
 
     fn compile_construct(&mut self, c: &Construct) -> Result<Reg, Thrown> {
@@ -1069,7 +1168,7 @@ impl ProtoBuilder<'_> {
             Construct::Eval(e) => {
                 let src = self.compile_expr(e.value)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::Eval { dst, src });
+                self.emit_at_operand_line(e.value, Instr::Eval { dst, src });
                 Ok(dst)
             }
             Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),
@@ -1292,6 +1391,22 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// zend_compile_params: "Returning by reference from a void function
+    /// is deprecated" (`function &f(): void`).
+    pub(crate) fn check_void_by_ref(&self, display: &str, hint: Option<&crate::parse::cst::Hint>) {
+        use mago_span::HasSpan;
+        let (Some(t), Some(h)) = (&self.ret_type, hint) else {
+            return;
+        };
+        if self.returns_ref && t.kinds.contains(&rhp_bytecode::TypeKind::Void) {
+            self.cx.diag(
+                rhp_values::E_DEPRECATED,
+                h.span().start.offset,
+                format!("{display}(): Returning by reference from a void function is deprecated"),
+            );
+        }
+    }
+
     /// zend_mark_function_as_generator's return type check. php runs it
     /// after the parameters, at the declaration's line.
     pub(crate) fn check_generator_type(&self, line: u32) -> Result<(), Thrown> {
@@ -1420,18 +1535,25 @@ impl ProtoBuilder<'_> {
         arr
     }
 
-    /// The raw identifier bytes of a member selector (non-dynamic only).
-    pub(crate) fn selector_string(
-        &self,
+    /// [`Self::build_pair`] with the method named by a selector, which may
+    /// be dynamic (`$o->$name(...)`, `$o->{expr}(...)`).
+    pub(crate) fn build_pair_sel(
+        &mut self,
+        first: Reg,
         sel: &crate::parse::cst::ClassLikeMemberSelector,
-    ) -> Result<Vec<u8>, Thrown> {
-        match sel {
-            ClassLikeMemberSelector::Identifier(li) => Ok(li.value.to_vec()),
-            _ => Err(Thrown::unsupported(
-                "dynamic member name",
-                "`->$x(...)` deferred",
-            )),
+    ) -> Result<Reg, Thrown> {
+        if let ClassLikeMemberSelector::Identifier(li) = sel {
+            return Ok(self.build_pair(first, li.value));
         }
+        let name = match self.compile_selector(sel)? {
+            crate::oop::Sel::Dyn(r) => r,
+            crate::oop::Sel::Static(_) => unreachable!("identifier handled above"),
+        };
+        let arr = self.alloc_temp();
+        self.emit(Instr::NewArray { dst: arr, cap: 2 });
+        self.emit(Instr::ArrPush { arr, val: first });
+        self.emit(Instr::ArrPush { arr, val: name });
+        Ok(arr)
     }
 }
 
@@ -1506,4 +1628,43 @@ fn expr_kind(e: &Expression) -> &'static str {
 /// array element `&$this` is not a reference.
 fn is_this_var(e: &Expression) -> bool {
     matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == b"$this")
+}
+
+/// The truth value of a literal (`0`, `'x'`, `true`, `null`, ...), which
+/// php's compiler knows as a constant, or of `!` and `&&` / `||` over
+/// such constants (zend_compile_short_circuiting's constant result).
+fn literal_bool(e: &Expression) -> Option<bool> {
+    let mut e = e;
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    match e {
+        Expression::UnaryPrefix(u) if matches!(u.operator, UnaryPrefixOperator::Not(_)) => {
+            literal_bool(u.operand).map(|v| !v)
+        }
+        Expression::Binary(b) => {
+            let is_and = match b.operator {
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => true,
+                BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => false,
+                _ => return None,
+            };
+            match literal_bool(b.lhs)? {
+                v if v != is_and => Some(v),
+                _ => literal_bool(b.rhs),
+            }
+        }
+        Expression::Literal(l) => Some(rhp_values::conv::to_bool(&crate::fold::literal_value(l))),
+        Expression::ConstantAccess(ca) => {
+            let n = ca.name.value();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if n.eq_ignore_ascii_case(b"true") {
+                Some(true)
+            } else if n.eq_ignore_ascii_case(b"false") || n.eq_ignore_ascii_case(b"null") {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }

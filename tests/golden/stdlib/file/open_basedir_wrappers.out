@@ -1,0 +1,40 @@
+file_get_contents(): open_basedir restriction in effect. File(BASE/out/t.gz) is not within the allowed path(s): (BASE/in)
+file_get_contents(compress.zlib://BASE/out/t.gz): Failed to open stream: operation failed
+compress.zlib: false
+gzfile(): open_basedir restriction in effect. File(BASE/out/t.gz) is not within the allowed path(s): (BASE/in)
+gzfile(BASE/out/t.gz): Failed to open stream: Operation not permitted
+gzfile: false
+gzopen(): open_basedir restriction in effect. File(BASE/out/t.gz) is not within the allowed path(s): (BASE/in)
+gzopen(BASE/out/t.gz): Failed to open stream: Operation not permitted
+gzopen: false
+readgzfile(): open_basedir restriction in effect. File(BASE/out/t.gz) is not within the allowed path(s): (BASE/in)
+readgzfile(BASE/out/t.gz): Failed to open stream: Operation not permitted
+readgzfile: false
+file_put_contents(): open_basedir restriction in effect. File(BASE/out/w.gz) is not within the allowed path(s): (BASE/in)
+file_put_contents(compress.zlib://BASE/out/w.gz): Failed to open stream: operation failed
+gz write: false
+file_get_contents(): open_basedir restriction in effect. File(BASE/out/t.bz2) is not within the allowed path(s): (BASE/in)
+file_get_contents(compress.bzip2://BASE/out/t.bz2): Failed to open stream: operation failed
+compress.bzip2: false
+bzopen(): open_basedir restriction in effect. File(BASE/out/t.bz2) is not within the allowed path(s): (BASE/in)
+bzopen: false
+ZipArchive::open(): open_basedir restriction in effect. File(BASE/out/t.zip) is not within the allowed path(s): (BASE/in)
+ZipArchive::open: false
+file_get_contents(): open_basedir restriction in effect. File(BASE/out/t.zip) is not within the allowed path(s): (BASE/in)
+file_get_contents(zip://BASE/out/t.zip#a.txt): Failed to open stream: operation failed
+zip://: false
+simplexml_load_file(): I/O warning : failed to load ...
+simplexml: false
+DOMDocument::load(): I/O warning : failed to load ...
+dom: false
+include(): open_basedir restriction in effect. File(../out/missing.php) is not within the allowed path(s): (BASE/in)
+include(../out/missing.php): Failed to open stream: Operation not permitted
+include(): Failed opening '../out/missing.php' for inclusion (include_path='.')
+include missing: false
+include(missing.php): Failed to open stream: No such file or directory
+include(): Failed opening 'missing.php' for inclusion (include_path='.')
+include missing inside: false
+getRealPath: true
+file_exists(): open_basedir restriction in effect. File(BASE/out/w.gz) is not within the allowed path(s): (BASE/in)
+w.gz written: false
+done

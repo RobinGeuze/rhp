@@ -30,6 +30,10 @@ pub(crate) enum FinallyCont {
     Rethrow(Thrown),
     /// A `return` crossed out of the try/catch; complete it after finally.
     Return(Value),
+    /// A by-reference function's `return` (at `pc`, of `RET_REF_*` kind)
+    /// crossed out of the try/catch: its type is checked again after the
+    /// finally blocks, then RETURN_BY_REF's notice.
+    ReturnRef(Value, u32, u8),
     /// A `break`/`continue` crossed out of the try/catch; jump after finally.
     Jump(u32),
 }
@@ -551,10 +555,12 @@ impl Vm {
         // execution point, when it differs, as a `[constant expression]`
         // frame.
         if let Some((ofile, oline)) = self.const_expr_site() {
-            if let Some(i) = (0..self.stack.len())
+            // (None when an internal function evaluates it.)
+            let user = (0..self.stack.len())
                 .rev()
-                .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
-            {
+                .find(|&i| !self.is_const_expr_frame(i))
+                .filter(|&i| !self.is_internal_frame(i));
+            if let Some(i) = user {
                 let (file, line) = (self.current_file(i), self.current_line(i));
                 if file != ofile || line != oline {
                     let mut e = PhpArray::new();
@@ -619,7 +625,9 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            if self.is_const_expr_frame(i) {
+            if self.is_const_expr_frame(i)
+                || f.proto.flags.contains(rhp_bytecode::ProtoFlags::CALL_SITE)
+            {
                 continue;
             }
             let shown_as = if self.is_plumbing_frame(i) {
@@ -965,6 +973,12 @@ impl Vm {
     }
 
     pub(crate) fn report_uncaught(&mut self, thrown: Thrown) {
+        self.report_uncaught_as(thrown, 1, "Fatal error")
+    }
+
+    /// zend_exception_error(ex, severity): [`Vm::report_uncaught`] at
+    /// level `ty` (assert.bail reports a callback's exception as a warning).
+    pub(crate) fn report_uncaught_as(&mut self, thrown: Thrown, ty: i64, label: &str) {
         self.last_fatal_trace = None;
         let thrown = self.materialize(thrown, None);
         let h = match thrown {
@@ -972,7 +986,7 @@ impl Vm {
             Thrown::Error { class, message } => {
                 let (file, line) = self.throw_site();
                 let msg = format!("Uncaught {class}: {message}");
-                self.fatal_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
+                self.fatal_error(ty, label, msg.as_bytes(), &file, line as i64);
                 return;
             }
             _ => return,
@@ -1024,7 +1038,7 @@ impl Vm {
                 self.raise_error(builtins::E_WARNING, &m);
             }
             Err(t) if t.is_catchable() => {
-                self.report_uncaught(t);
+                self.report_uncaught_as(t, ty, label);
                 return;
             }
             Err(_) => return,
@@ -1040,7 +1054,7 @@ impl Vm {
         msg.extend_from_slice(&s);
         msg.extend_from_slice(b"\n  thrown");
         let (file, line) = location();
-        self.fatal_error(1, "Fatal error", &msg, &file, line);
+        self.fatal_error(ty, label, &msg, &file, line);
     }
 
     /// An exception that escaped to the top level: the user handler gets it
@@ -1122,10 +1136,24 @@ impl Vm {
             let throw_pc = (self.stack[top].pc as u32).saturating_sub(1);
             // The live range of NEW's result: an object whose constructor
             // threw is released before the handler runs.
-            if let Some(Instr::New { dst, .. } | Instr::NewV { dst, .. }) =
-                proto.code.get(throw_pc as usize)
+            if let Some(
+                Instr::New { dst, .. }
+                | Instr::NewV { dst, .. }
+                | Instr::NewCall { dst, .. }
+                | Instr::NewCallV { dst, .. },
+            ) = proto.code.get(throw_pc as usize)
             {
                 self.reg_set(top, *dst, Value::Null);
+            }
+            // Thrown while its arguments ran: the object is released
+            // without its destructor (zend_cleanup_unfinished_calls).
+            for &(start, end, dst) in &proto.new_ranges {
+                if throw_pc > start && throw_pc < end {
+                    if let Value::Object(h) = self.reg_get(top, dst) {
+                        self.destructibles.retain(|d| !Rc::ptr_eq(d, &h));
+                    }
+                    self.reg_set(top, dst, Value::Null);
+                }
             }
             let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
             let handler = proto.exception_table.iter().find(in_try).cloned();
@@ -1151,7 +1179,27 @@ impl Vm {
                     }
                 }
             }
-            if let Some(region) = handler {
+            // The innermost try first; one whose catches do not match and
+            // that has no finally passes the exception to the next one out.
+            let regions: Vec<rhp_bytecode::ExRegion> = proto
+                .exception_table
+                .iter()
+                .filter(in_try)
+                .cloned()
+                .collect();
+            for region in regions {
+                if self.free_try_temps(top, region.temps) && !self.destructibles.is_empty() {
+                    // Destructed as they are freed, before the handler.
+                    match self.collect_released() {
+                        Ok(()) => {}
+                        Err(e) if !e.is_catchable() => return Err(e),
+                        Err(e) => {
+                            let e = self.materialize(e, None);
+                            self.chain_previous(&e, thrown);
+                            thrown = e;
+                        }
+                    }
+                }
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
                         if arm
@@ -1183,6 +1231,9 @@ impl Vm {
                 self.include_writeback(f);
             }
             let depth = self.stack.len();
+            if !self.readonly_reinit.is_empty() {
+                self.close_reinit(depth);
+            }
             if let Some((_, ptr)) = self.ctor_frames.pop_if(|c| c.0 == depth) {
                 // The constructor threw: its object will never be destructed.
                 self.destructibles.retain(|d| Rc::as_ptr(d) as usize != ptr);
@@ -1214,6 +1265,22 @@ impl Vm {
                 thrown = e;
             }
         }
+    }
+
+    /// The temporaries of an unwound try body (from `from` up), freed in
+    /// order before its handler runs.
+    fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
+        let n = self.stack[top].regs.len();
+        let mut freed = false;
+        for r in from as usize..n {
+            if matches!(self.stack[top].regs[r], Value::Object(_) | Value::Array(_)) {
+                freed = true;
+            }
+            if !matches!(self.stack[top].regs[r], Value::Undef | Value::Null) {
+                self.reg_set(top, r as rhp_bytecode::Reg, Value::Null);
+            }
+        }
+        freed
     }
 
     /// Record what the finally block starting at `fin` does when it ends.

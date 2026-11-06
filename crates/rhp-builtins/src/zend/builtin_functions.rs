@@ -256,6 +256,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
+        Value::Closure(_) => Ok(Value::str("Closure")),
         other => Err(Thrown::type_error(format!(
             "get_class(): Argument #1 ($object) must be of type object, {} given",
             zend::zpp::zval_value_name(host, &other)
@@ -329,6 +330,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
+        Some(Value::Closure(_)) => Ok(Value::Bool(false)),
         Some(v @ Value::Str(_)) => {
             let name = conv::to_string_bytes(&v);
             match host.resolve_class_autoload(&name)? {
@@ -513,6 +515,7 @@ fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             }
             Ok(Value::Array(arr))
         }
+        Value::Closure(_) => Ok(Value::Array(PhpArray::new())),
         _ => Err(Thrown::type_error(
             "get_object_vars(): Argument #1 must be of type object",
         )),
@@ -694,23 +697,49 @@ fn fn_function_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Bool(host.function_exists(name)))
 }
 
+/// zend_forbid_dynamic_call: the scope functions refuse a dynamic call.
+pub(crate) fn forbid_dynamic_call(host: &dyn Host, name: &str) -> Result<(), Thrown> {
+    if host.call_is_dynamic() {
+        return Err(Thrown::error(
+            "Error",
+            format!("Cannot call {name}() dynamically"),
+        ));
+    }
+    Ok(())
+}
+
+/// php's `EX(prev_execute_data)` is top-level code (ZEND_CALL_CODE): a
+/// callback some builtin made has that builtin's frame there instead.
+fn called_from_code(host: &dyn Host) -> bool {
+    host.current_arg_count().is_none() && !(host.call_is_dynamic() && host.called_back_by_builtin())
+}
+
 fn fn_func_num_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    match host.current_arg_count() {
-        Some(n) => Ok(Value::Int(n)),
-        None => Err(Thrown::error(
+    if called_from_code(host) {
+        return Err(Thrown::error(
             "Error",
             "func_num_args() must be called from a function context",
-        )),
+        ));
     }
+    forbid_dynamic_call(host, "func_num_args")?;
+    Ok(Value::Int(host.current_arg_count().unwrap_or(0)))
+}
+
+/// `get_defined_vars()`: a copy of the calling scope's variables.
+fn fn_get_defined_vars(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    forbid_dynamic_call(host, "get_defined_vars")?;
+    Ok(Value::Array(host.scope_vars()))
 }
 
 fn fn_func_get_args(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let Some(args) = host.current_args() else {
+    if called_from_code(host) {
         return Err(Thrown::error(
             "Error",
             "func_get_args() cannot be called from the global scope",
         ));
-    };
+    }
+    forbid_dynamic_call(host, "func_get_args")?;
+    let args = host.current_args().unwrap_or_default();
     let mut a = PhpArray::new();
     for v in args {
         a.push(v);
@@ -726,12 +755,14 @@ fn fn_func_get_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             "func_get_arg(): Argument #1 ($position) must be greater than or equal to 0",
         ));
     }
-    let Some(n) = host.current_arg_count() else {
+    if called_from_code(host) {
         return Err(Thrown::error(
             "Error",
             "func_get_arg() cannot be called from the global scope",
         ));
-    };
+    }
+    forbid_dynamic_call(host, "func_get_arg")?;
+    let n = host.current_arg_count().unwrap_or(0);
     if i >= n {
         return Err(Thrown::error("ValueError", 
             "func_get_arg(): Argument #1 ($position) must be less than the number of the arguments passed to the currently executed function",
@@ -1269,10 +1300,20 @@ fn fn_exit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// ZEND_FUNCTION(clone): zpp gave an object and an array.
+fn fn_clone(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let with = match args.get(1).map(deref) {
+        Some(Value::Array(a)) => a,
+        _ => PhpArray::new(),
+    };
+    host.clone_object(&deref(&args[0]), &with)
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("clone", fn_clone),
             ("exit", fn_exit),
             ("die", fn_exit),
             ("get_declared_classes", fn_get_declared_classes),
@@ -1304,6 +1345,7 @@ pub fn register(m: &mut crate::Registry) {
             ("function_exists", fn_function_exists),
             ("func_num_args", fn_func_num_args),
             ("func_get_args", fn_func_get_args),
+            ("get_defined_vars", fn_get_defined_vars),
             ("func_get_arg", fn_func_get_arg),
             ("get_called_class", fn_get_called_class),
             ("get_resource_id", fn_get_resource_id),

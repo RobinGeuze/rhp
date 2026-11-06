@@ -607,6 +607,17 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     let local = crate::main::streams::file_path(&path).to_vec();
+    if crate::main::fopen_wrappers::active() {
+        // a recursive mkdir checks the lexical expansion
+        let checked = if recursive {
+            crate::zend::virtual_cwd::expand_path(strip_file_scheme(&path))
+        } else {
+            strip_file_scheme(&path).to_vec()
+        };
+        if !crate::main::fopen_wrappers::check(host, "mkdir", &checked, true)? {
+            return Ok(Value::Bool(false));
+        }
+    }
     let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
         crate::warn(host, "mkdir", &crate::main::streams::strerror(e))?;
         Ok(Value::Bool(false))
@@ -654,7 +665,29 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let from = path_param(args, 0, "copy", "from")?;
     let to = path_param(args, 1, "copy", "to")?;
+    let ob = crate::main::fopen_wrappers::active();
+    if ob
+        && matches!(
+            crate::main::streams::locate_url_wrapper(&from, |s| crate::diag::wrapper_registered(
+                host, s
+            )),
+            crate::main::streams::Located::Plain(_) | crate::main::streams::Located::Unknown(_)
+        )
+        && !crate::main::fopen_wrappers::check(host, "copy", &from, true)?
+    {
+        return Ok(Value::Bool(false));
+    }
     touch_ctx(host, args, 2);
+    // the quiet url_stat of a refused target fails: copy goes on to open it
+    let to_plain = split_scheme(&to).0 == b"file";
+    let stat_to = !ob
+        || !to_plain
+        || crate::main::fopen_wrappers::check(
+            host,
+            "copy",
+            crate::main::streams::file_path(&to),
+            false,
+        )?;
     if let Some(s) = host.stream_stat(&from) {
         if s.is_dir {
             crate::warn(
@@ -664,7 +697,7 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             )?;
             return Ok(Value::Bool(false));
         }
-        if let Some(d) = host.stream_stat(&to) {
+        if let Some(d) = stat_to.then(|| host.stream_stat(&to)).flatten() {
             if d.is_dir {
                 crate::warn(
                     host,
@@ -715,6 +748,14 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (scheme, _) = split_scheme(&to);
     crate::main::streams::clear_errno();
     if scheme == b"file" {
+        if !crate::main::fopen_wrappers::check_open(
+            host,
+            "copy",
+            crate::main::streams::file_path(&to),
+            &to,
+        )? {
+            return Ok(Value::Bool(false));
+        }
         let Some(mut f) = crate::main::streams::LocalFile::open(&to, b"wb") else {
             crate::open_failed(host, "copy", &to)?;
             return Ok(Value::Bool(false));
@@ -750,6 +791,14 @@ fn copy_plain_files(host: &mut dyn Host, from: &[u8], to: &[u8]) -> Result<Optio
     };
     host.consume_resource_ids(1);
     crate::main::streams::clear_errno();
+    if !crate::main::fopen_wrappers::check_open(
+        host,
+        "copy",
+        crate::main::streams::file_path(to),
+        to,
+    )? {
+        return Ok(Some(false));
+    }
     let Some(mut dst) = LocalFile::open(to, b"wb") else {
         crate::open_failed(host, "copy", to)?;
         return Ok(Some(false));
@@ -796,11 +845,15 @@ fn fn_sys_get_temp_dir(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Throw
 
 use crate::zend::virtual_cwd::realpath as realpath_bytes;
 
-fn fn_realpath(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_realpath(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let p = path_param(args, 0, "realpath", "path")?;
-    Ok(realpath_bytes(&p)
-        .map(Value::str)
-        .unwrap_or(Value::Bool(false)))
+    let Some(real) = realpath_bytes(&p) else {
+        return Ok(Value::Bool(false));
+    };
+    if !crate::main::fopen_wrappers::check(host, "realpath", &real, true)? {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::str(real))
 }
 
 pub(crate) fn open_temp(dir: &[u8], pfx: &[u8]) -> Option<Vec<u8>> {
@@ -865,24 +918,25 @@ fn fn_tempnam(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(0);
     let mut pfx = prefix[start..end].to_vec();
     pfx.truncate(63);
+    // php_open_temporary_fd_ex with PHP_TMP_FILE_OPEN_BASEDIR_CHECK_ALWAYS
     if !dir.is_empty() {
+        if !crate::main::fopen_wrappers::check(host, "tempnam", &dir, true)? {
+            return Ok(Value::Bool(false));
+        }
         if let Some(p) = open_temp(&dir, &pfx) {
             return Ok(Value::str(p));
         }
+        crate::notice(
+            host,
+            "tempnam",
+            "file created in the system's temporary directory",
+        )?;
     }
-    match open_temp(&temp_dir(), &pfx) {
-        Some(p) => {
-            if !dir.is_empty() {
-                crate::notice(
-                    host,
-                    "tempnam",
-                    "file created in the system's temporary directory",
-                )?;
-            }
-            Ok(Value::str(p))
-        }
-        None => Ok(Value::Bool(false)),
+    let tmp = temp_dir();
+    if tmp.is_empty() || !crate::main::fopen_wrappers::check(host, "tempnam", &tmp, true)? {
+        return Ok(Value::Bool(false));
     }
+    Ok(open_temp(&tmp, &pfx).map_or(Value::Bool(false), Value::str))
 }
 
 /// `readfile($filename)`: copy a file to the output; bytes written or false.
@@ -1433,6 +1487,10 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Some(n as usize)
         }
     };
+    // php_stream_open_wrapper_ex
+    if url.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     touch_ctx(host, args, 2);
     if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
         return Ok(
@@ -1874,6 +1932,9 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
+    if !crate::main::fopen_wrappers::check(host, "unlink", strip_file_scheme(&path), true)? {
+        return Ok(Value::Bool(false));
+    }
     let c = crate::zend::virtual_cwd::c_path(strip_file_scheme(&path)).unwrap_or_default();
     // php_plain_files_unlink: unlink(2) (a directory fails with EPERM/EISDIR).
     if unsafe { libc::unlink(c.as_ptr()) } != 0 {
@@ -1881,6 +1942,7 @@ fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         crate::warn_arg(host, "unlink", &path, &os_text(&e))?;
         return Ok(Value::Bool(false));
     }
+    crate::zend::virtual_cwd::realpath_cache::clean();
     Ok(Value::Bool(true))
 }
 
@@ -1905,18 +1967,36 @@ pub(crate) fn os_text(e: &std::io::Error) -> String {
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "rmdir", "directory")?;
     touch_ctx(host, args, 1);
+    if !crate::main::fopen_wrappers::check(host, "rmdir", strip_file_scheme(&path), true)? {
+        return Ok(Value::Bool(false));
+    }
     if let Err(e) = std::fs::remove_dir(crate::zend::virtual_cwd::os_path(strip_file_scheme(&path)))
     {
         crate::warn_arg(host, "rmdir", &path, &os_text(&e))?;
         return Ok(Value::Bool(false));
     }
+    crate::zend::virtual_cwd::realpath_cache::clean();
     Ok(Value::Bool(true))
 }
 
 fn fn_rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let r = rename(host, args)?;
+    if matches!(r, Value::Bool(true)) {
+        // php_plain_files_rename clears the realpath cache
+        crate::zend::virtual_cwd::realpath_cache::clean();
+    }
+    Ok(r)
+}
+
+fn rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 2);
     let from_b = path_arg(args, 0);
     let to_b = path_arg(args, 1);
+    if !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&from_b), true)?
+        || !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&to_b), true)?
+    {
+        return Ok(Value::Bool(false));
+    }
     let from = crate::zend::virtual_cwd::os_path(&from_b);
     let to = crate::zend::virtual_cwd::os_path(&to_b);
     let both = [&from_b[..], b",", &to_b[..]].concat();

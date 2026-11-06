@@ -116,9 +116,12 @@ impl Vm {
             inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
+            cuf_direct: false,
             unused_call_depth: usize::MAX,
             dyn_call: false,
             dyn_raw_args: false,
+            call_direct: false,
+            builtin_dynamic: false,
             callable_dep_thrown: false,
             zpp_fcc: None,
             wrappers,
@@ -140,6 +143,12 @@ impl Vm {
             silence_stack: Vec::new(),
             quiet: 0,
             rw_null_keys: 0,
+            typed_write_result: None,
+            want_typed_result: false,
+            incdec_write: false,
+            cursor_static: None,
+            deferred_undef_src: None,
+            cursor_leaf: None,
             cursor_null_key: false,
             last_error: None,
             error_handlers: Vec::new(),
@@ -230,6 +239,28 @@ impl Vm {
             self.ref_globals.remove(name);
             self.dtor_check = true;
         }
+    }
+
+    /// `unset($_GET)` and friends: the symbol-table entry is deleted (no
+    /// frame has a slot for it in php, so a later assignment appends it)
+    /// and replaced by a fresh undefined cell (a reference to the old one
+    /// keeps it); every live frame's superglobal slot follows.
+    pub(crate) fn unset_superglobal(&mut self, name: &[u8]) {
+        let cell = Rc::new(RefCell::new(Value::Undef));
+        self.globals.shift_remove(name);
+        self.rebind_global(name, cell.clone());
+        for f in self.stack.iter_mut() {
+            let sg = f
+                .proto
+                .superglobals
+                .iter()
+                .find(|(_, n)| n.as_bytes() == name);
+            if let Some(&(cv, _)) = sg {
+                f.regs[cv as usize] = Value::Ref(cell.clone());
+            }
+        }
+        self.ref_globals.remove(name);
+        self.dtor_check = true;
     }
 
     /// After CV `cv` of frame `top` was overwritten as a slot (unset, `=&`),

@@ -457,13 +457,11 @@ impl Vm {
     /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
     /// through it (so by-ref aliases see the change, checked against the
     /// typed properties it is bound to); otherwise overwrite.
+    #[inline(always)]
     pub(crate) fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) -> Result<(), Thrown> {
-        if !self.typed_refs.is_empty() {
-            if let Value::Ref(rc) = &self.stack[top].regs[cv as usize] {
-                if self.typed_refs.has(rc) {
-                    return self.cv_assign_typed(top, cv, v).map(|_| ());
-                }
-            }
+        if !self.typed_refs.is_empty() && matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+        {
+            return self.cv_assign_typed(top, cv, v).map(|_| ());
         }
         self.cv_assign_raw(top, cv, v);
         Ok(())
@@ -471,6 +469,7 @@ impl Vm {
 
     /// [`Vm::cv_assign`], giving the stored value (a typed reference
     /// coerces it).
+    #[inline(never)]
     pub(crate) fn cv_assign_typed(
         &mut self,
         top: usize,
@@ -507,6 +506,7 @@ impl Vm {
 
     /// [`Vm::cv_assign`] without the typed reference check (internal
     /// writes php does not check either).
+    #[inline]
     pub(crate) fn cv_assign_raw(&mut self, top: usize, cv: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[cv as usize];
         let old = if let Value::Ref(rc) = slot {

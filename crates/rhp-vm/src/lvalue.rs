@@ -1281,6 +1281,7 @@ impl Vm {
     }
 
     #[cold]
+    #[inline(never)]
     fn typed_stop(&mut self, top: usize, stop: TypedStop) -> Result<(), Thrown> {
         match stop {
             TypedStop::Leaf(rc, v) => {
@@ -1336,6 +1337,8 @@ impl Vm {
 
     /// A write below a typed static property at the cursor root that would
     /// make it an array (ZEND_FETCH_STATIC_PROP_W with ZEND_FETCH_DIM_WRITE).
+    #[cold]
+    #[inline(never)]
     fn cursor_static_auto_init(&self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
         if !matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
             return Ok(());
@@ -1375,6 +1378,8 @@ impl Vm {
     /// The typed slot a `lval = &$x` binds (zend_assign_to_typed_property_
     /// reference): checks the reference against it and drops the old
     /// reference's source. What to add as a source after the bind.
+    #[cold]
+    #[inline(never)]
     fn cursor_bind_ref_check(
         &mut self,
         top: usize,
@@ -1411,6 +1416,8 @@ impl Vm {
     }
 
     /// Add the source [`Vm::cursor_bind_ref_check`] found.
+    #[cold]
+    #[inline(never)]
     fn finish_ref_bind(&mut self, bind: RefBind, v: &Value) {
         let Value::Ref(rc) = v else { return };
         match bind {

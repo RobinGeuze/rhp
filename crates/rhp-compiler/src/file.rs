@@ -157,7 +157,7 @@ impl<'s> FileCtx<'s> {
         let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
-        cx.first_declares = first_declares(program);
+        cx.first_declares = first_declares(&cx, program);
         cx.line_starts = build_line_starts(src);
         // Keyed by fully qualified name (lowercased), as call sites resolve.
         for (ns, stmt) in flat {
@@ -400,7 +400,7 @@ fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
 
 /// The top-level `declare`s before any other statement, with whether an
 /// empty statement (`;`, `?>`) came before each.
-fn first_declares(program: &AstProgram) -> Vec<(u32, bool)> {
+fn first_declares(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, bool)> {
     let mut out = Vec::new();
     let mut nop = false;
     for stmt in program.statements.iter() {
@@ -408,6 +408,8 @@ fn first_declares(program: &AstProgram) -> Vec<(u32, bool)> {
             // The scanner skips a leading `#!` line.
             Statement::OpeningTag(_) => {}
             Statement::Inline(i) if matches!(i.kind, crate::parse::cst::InlineKind::Shebang) => {}
+            // `?>` takes its newline, so `?>\n<?php` leaves no text.
+            Statement::Inline(i) if cx.inline_is_empty(i) => {}
             Statement::Noop(_) | Statement::ClosingTag(_) => nop = true,
             Statement::Declare(d) => out.push((d.declare.span.start.offset, nop)),
             _ => break,

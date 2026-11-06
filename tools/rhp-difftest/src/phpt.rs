@@ -202,6 +202,7 @@ const RHP_INI: &[&str] = &[
     "auto_globals_jit",
     "auto_prepend_file",
     "bcmath.scale",
+    "browscap",
     "date.timezone",
     "default_charset",
     "default_socket_timeout",

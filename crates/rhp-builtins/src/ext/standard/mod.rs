@@ -11,6 +11,7 @@ pub mod array;
 pub mod assert;
 pub mod base64;
 pub mod basic_functions;
+pub mod browscap;
 pub mod crc32;
 pub mod crypt;
 pub mod datetime;
@@ -87,6 +88,7 @@ fn register(m: &mut crate::Registry) {
     math::register(m);
     array::register(m);
     basic_functions::register(m);
+    browscap::register(m);
     file::register(m);
     filestat::register(m);
     dir::register(m);

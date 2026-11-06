@@ -234,9 +234,6 @@ pub struct Vm {
     /// Readonly properties already reinitialized inside a `__clone`
     /// (object id, storage key): once each.
     readonly_reinit: HashMap<u32, Vec<PhpStr>>,
-    /// The object a clone() with properties is writing (its id), and the
-    /// readonly properties it reinitialized.
-    clone_with_reinit: Option<(u32, Vec<PhpStr>)>,
     /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,

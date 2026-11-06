@@ -2040,6 +2040,12 @@ impl Vm {
                     self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
                 Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
+                Instr::NewObj { dst, class } => {
+                    let obj = self.new_alloc(top, class)?;
+                    self.reg_set(top, dst, Value::Object(obj));
+                }
+                Instr::NewCall { dst, base, argc } => self.exec_new_call(top, dst, base, argc)?,
+                Instr::NewCallV { dst, args } => self.exec_new_call_v(top, dst, args)?,
                 Instr::CallMethodV {
                     dst,
                     obj,

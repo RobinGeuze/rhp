@@ -14,6 +14,12 @@ use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
 use crate::{classes, deref, Vm};
 
+thread_local! {
+    /// The object a clone() with properties is writing (its id), and the
+    /// readonly properties it reinitialized (kept out of `Vm`: rarely set).
+    static CLONE_WITH: RefCell<Option<(u32, Vec<PhpStr>)>> = const { RefCell::new(None) };
+}
+
 impl Vm {
     /// Whether `v` is an instance of the named class/interface (or a Closure for
     /// the `Closure` type). Unresolvable target class → lenient `true` (the class
@@ -1043,12 +1049,14 @@ impl Vm {
             // clone-with unlocks each readonly property once more; the
             // set visibility still applies.
             let oid = obj.borrow().id;
-            if let Some((_, done)) = self
-                .clone_with_reinit
-                .as_mut()
-                .filter(|(o, d)| *o == oid && !d.contains(key))
-            {
-                done.push(key.clone());
+            let reinit = CLONE_WITH.with_borrow_mut(|cw| match cw {
+                Some((o, done)) if *o == oid && !done.contains(key) => {
+                    done.push(key.clone());
+                    true
+                }
+                _ => false,
+            });
+            if reinit {
                 if !pe_public_implicit_set(self, cls, key)
                     || scope.is_some_and(|s| {
                         self.class(s).ancestors.contains(&decl)
@@ -1100,9 +1108,11 @@ impl Vm {
         }
         // Initializing it during clone-with uses up its reinitialization.
         let oid = obj.borrow().id;
-        if let Some((_, done)) = self.clone_with_reinit.as_mut().filter(|(o, _)| *o == oid) {
-            done.push(key.clone());
-        }
+        CLONE_WITH.with_borrow_mut(|cw| {
+            if let Some((_, done)) = cw.as_mut().filter(|(o, _)| *o == oid) {
+                done.push(key.clone());
+            }
+        });
         // An explicit public(set): anyone may initialize it.
         if self
             .class(cls)
@@ -1249,7 +1259,7 @@ impl Vm {
             Value::Object(h) => Some(h.borrow().id),
             _ => None,
         };
-        let saved = std::mem::replace(&mut self.clone_with_reinit, oid.map(|o| (o, Vec::new())));
+        let saved = CLONE_WITH.replace(oid.map(|o| (o, Vec::new())));
         let mut r = Ok(());
         for (k, val) in with.iter() {
             let val = match val {
@@ -1272,7 +1282,7 @@ impl Vm {
                 break;
             }
         }
-        self.clone_with_reinit = saved;
+        CLONE_WITH.set(saved);
         r.map(|()| copy)
     }
 

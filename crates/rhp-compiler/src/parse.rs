@@ -49,15 +49,46 @@ pub fn tokens(source: &[u8]) -> Vec<Token> {
 }
 
 /// The compile error php raises for code its grammar accepts but
-/// mago-syntax rejects: a first-class callable of `new` ("Cannot create
-/// Closure for new expression") or of a nullsafe method call. Message and
-/// 1-based line.
+/// mago-syntax rejects: an unbracketed namespace inside a bracketed one, a
+/// first-class callable of `new` ("Cannot create Closure for new
+/// expression") or of a nullsafe method call. Message and 1-based line.
 pub fn mago_gap_error(source: &[u8]) -> Option<(String, u32)> {
     let toks: Vec<Token> = tokens(source)
         .into_iter()
         .filter(|t| !t.kind.is_trivia())
         .collect();
     let line = |t: &Token| source[..t.start].iter().filter(|&&c| c == b'\n').count() as u32 + 1;
+    // `namespace X;` inside a bracketed namespace.
+    let mut depth = 0usize;
+    let mut bracketed_at = None;
+    for (i, t) in toks.iter().enumerate() {
+        match t.kind {
+            TokenKind::LeftBrace | TokenKind::DollarLeftBrace => depth += 1,
+            TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1);
+                if bracketed_at.is_some_and(|d| depth < d) {
+                    bracketed_at = None;
+                }
+            }
+            TokenKind::Namespace => {
+                let next = |k: usize| toks.get(i + k).map(|t| t.kind);
+                let named = matches!(
+                    next(1),
+                    Some(TokenKind::Identifier | TokenKind::QualifiedIdentifier)
+                );
+                let brace_at = if named { 2 } else { 1 };
+                if next(brace_at) == Some(TokenKind::LeftBrace) && bracketed_at.is_none() {
+                    bracketed_at = Some(depth + 1);
+                } else if named && next(2) == Some(TokenKind::Semicolon) && bracketed_at.is_some() {
+                    return Some((
+                        "Cannot mix bracketed namespace declarations with unbracketed namespace declarations".into(),
+                        line(t),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
     for (i, w) in toks.windows(3).enumerate() {
         if !matches!(
             [w[0].kind, w[1].kind, w[2].kind],

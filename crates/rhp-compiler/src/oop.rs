@@ -271,31 +271,43 @@ impl ProtoBuilder<'_> {
             return self.compile_new_anon(ac);
         }
         let class = self.class_ref(inst.class)?;
-        if inst
+        let args = inst
             .argument_list
             .as_ref()
-            .is_some_and(|l| has_spread(l) || has_named(l))
-        {
-            let args = self.build_args_array(inst.argument_list.as_ref())?;
+            .filter(|l| !l.arguments.is_empty());
+        let Some(list) = args else {
             let dst = self.alloc_temp();
-            self.emit(Instr::NewV { dst, class, args });
+            self.emit(Instr::New {
+                dst,
+                class,
+                base: 0,
+                argc: 0,
+            });
+            return Ok(dst);
+        };
+        // ZEND_NEW creates the object before the arguments run (the ids
+        // of nested `new`s follow from that).
+        let dst = self.alloc_temp();
+        let start = self.code.len() as rhp_bytecode::Pc;
+        self.emit(Instr::NewObj { dst, class });
+        if has_spread(list) || has_named(list) {
+            let args = self.build_args_array(Some(list))?;
+            self.new_ranges
+                .push((start, self.code.len() as rhp_bytecode::Pc, dst));
+            self.emit(Instr::NewCallV { dst, args });
             return Ok(dst);
         }
         let mask = self.method_ref_mask(b"__construct");
         let ctor = self.intern_name(b"__construct");
         let (base, argc) = self.compile_arg_window_t(
-            inst.argument_list.as_ref(),
+            Some(list),
             &mask,
             true,
             Some(ArgRefTarget::Static(class, ctor)),
         )?;
-        let dst = self.alloc_temp();
-        self.emit(Instr::New {
-            dst,
-            class,
-            base,
-            argc,
-        });
+        self.new_ranges
+            .push((start, self.code.len() as rhp_bytecode::Pc, dst));
+        self.emit(Instr::NewCall { dst, base, argc });
         Ok(dst)
     }
 

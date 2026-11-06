@@ -53,6 +53,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// See [`FunctionProto::const_attrs`] / [`FunctionProto::discard_calls`].
     pub(crate) const_attrs: Vec<Rc<Vec<rhp_bytecode::AttributeProto>>>,
     pub(crate) discard_calls: Vec<rhp_bytecode::Pc>,
+    /// See [`FunctionProto::new_ranges`].
+    pub(crate) new_ranges: Vec<(rhp_bytecode::Pc, rhp_bytecode::Pc, Reg)>,
     /// The function call about to be compiled is an expression statement.
     pub(crate) call_result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
@@ -149,6 +151,7 @@ impl<'c> ProtoBuilder<'c> {
             result_unused: false,
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            new_ranges: Vec::new(),
             call_result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
@@ -256,6 +259,7 @@ impl<'c> ProtoBuilder<'c> {
         proto.const_attrs = self.const_attrs;
         proto.discard_calls = self.discard_calls;
         proto.discard_calls.shrink_to_fit();
+        proto.new_ranges = self.new_ranges;
         proto.cv_var_names = self
             .cv_map
             .iter()
@@ -297,6 +301,9 @@ impl<'c> ProtoBuilder<'c> {
                 | Instr::CallDyn { .. }
                 | Instr::CallDynV { .. }
                 | Instr::New { .. }
+                | Instr::NewObj { .. }
+                | Instr::NewCall { .. }
+                | Instr::NewCallV { .. }
                 | Instr::NewV { .. }
                 | Instr::CallMethod { .. }
                 | Instr::CallMethodV { .. }

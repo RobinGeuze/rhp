@@ -41,3 +41,12 @@ class C2 extends P2 {
 foreach ((new C2)->t() as $f) { var_dump($f()); }
 class Q { function f() { return P2::m(...); } }
 try { (new Q)->f(); } catch (\Error $e) { echo $e->getMessage(), "\n"; }
+// An array callable has no scope or $this; a 'C::m' literal is static-call syntax.
+class R2 extends P2 {
+    function t() {
+        foreach ([fn() => 'N\P2::m'(...), fn() => ['N\P2', 'm'](...), fn() => ['self', 'm'](...), fn() => 'self::m'(...)] as $i => $t) {
+            try { echo $i, " ", $t()(), "\n"; } catch (\Error $e) { echo $i, " ", $e->getMessage(), "\n"; }
+        }
+    }
+}
+(new R2)->t();

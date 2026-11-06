@@ -496,6 +496,10 @@ pub enum Instr {
         ns_name: NIdx,
         /// In a constant expression (no `__callStatic` callables there).
         const_expr: bool,
+        /// Static-call syntax (`C::m(...)`, `'C::m'(...)`): `self`/`parent`/
+        /// `static` mean the scope's classes and `$this` is kept
+        /// (ZEND_INIT_STATIC_METHOD_CALL), unlike an array callable.
+        static_call: bool,
     },
     Ret {
         src: Reg,

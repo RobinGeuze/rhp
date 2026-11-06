@@ -594,7 +594,10 @@ or non-static method, a value that is not callable); a Closure is its own
 first-class callable. An unqualified name in a namespace takes the global
 function when one exists (like php's per-site cache once it has found it),
 else the namespaced one. In a constant expression (`const_expr`) a
-`__callStatic` callable is refused.
+`__callStatic` callable is refused. With `static_call` (static-call
+syntax: `C::m(...)` or a `'C::m'` literal) `self`/`parent`/`static` name
+the scope's classes and an instance method of `$this`'s class binds
+`$this`; an array callable such as `['C', 'm']` gets neither.
 
 ---
 

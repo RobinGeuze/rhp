@@ -20,3 +20,7 @@ string(10) "P2::m N\C2"
 string(2) "C2"
 string(2) "pv"
 Non-static method N\P2::m() cannot be called statically
+0 P2::m N\R2
+1 1 Non-static method N\P2::m() cannot be called statically
+2 2 Class "self" not found
+3 3 Class "self" not found

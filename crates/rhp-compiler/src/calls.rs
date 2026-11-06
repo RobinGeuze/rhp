@@ -616,6 +616,19 @@ impl ProtoBuilder<'_> {
         }
         // Build the callable Value into `callee`.
         let mut ns_name = None;
+        let static_call = match pa {
+            Pa::StaticMethod(_) => true,
+            // zend_compile_dynamic_call: a string literal with `::`.
+            Pa::Function(f) => {
+                let mut lit = f.function;
+                while let Expression::Parenthesized(p) = lit {
+                    lit = p.expression;
+                }
+                matches!(lit, Expression::Literal(crate::parse::cst::Literal::String(s))
+                    if s.value.is_some_and(|v| v.windows(2).any(|w| w == b"::")))
+            }
+            Pa::Method(_) => false,
+        };
         let callee = match pa {
             Pa::Function(f) => match f.function {
                 // Named function: the callable is its (resolved) name string.
@@ -689,6 +702,7 @@ impl ProtoBuilder<'_> {
             callee,
             ns_name,
             const_expr,
+            static_call,
         });
         Ok(dst)
     }

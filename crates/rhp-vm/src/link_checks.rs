@@ -106,6 +106,20 @@ impl Vm {
             vm.class_ids.get(&lc(n.as_bytes())).map(|&id| id as usize)
         };
         let is_enum = proto.kind == ClassKind::Enum;
+        // zend_do_link_class fetching the traits.
+        for t in &proto.traits {
+            if let Some(tid) = class_of(self, t) {
+                if self.classes[tid].kind != ClassKind::Trait {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "{name} cannot use {} - it is not a trait",
+                            shown(&self.classes[tid].name)
+                        ),
+                    ));
+                }
+            }
+        }
         // zend_enum_register_funcs
         if is_enum {
             let mut builtin = vec!["cases"];

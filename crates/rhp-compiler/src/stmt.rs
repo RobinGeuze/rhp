@@ -57,9 +57,22 @@ impl ProtoBuilder<'_> {
         ) {
             return;
         }
-        let n = self.cx.ticks_at(stmt.span().end.offset);
+        self.tick_at(stmt.span().end.offset);
+    }
+
+    /// The tick for code ending at `end`, if ticks are on there.
+    fn tick_at(&mut self, end: u32) {
+        let n = self.cx.ticks_at(end);
         if n != 0 && !matches!(self.code.last(), Some(Instr::Ticks { .. })) {
             self.emit(Instr::Ticks { n });
+        }
+    }
+
+    /// echo, global, static and unset lists are statement lists in php:
+    /// each item is a statement of its own, ticked after it.
+    pub(crate) fn tick_item(&mut self, item: &impl mago_span::HasSpan) {
+        if !self.cx.ticks.is_empty() {
+            self.tick_at(item.span().end.offset);
         }
     }
 
@@ -90,12 +103,14 @@ impl ProtoBuilder<'_> {
                 for v in e.values.iter() {
                     let r = self.compile_expr(v)?;
                     self.emit(Instr::Echo { src: r });
+                    self.tick_item(v);
                 }
             }
             Statement::EchoTag(e) => {
                 for v in e.values.iter() {
                     let r = self.compile_expr(v)?;
                     self.emit(Instr::Echo { src: r });
+                    self.tick_item(v);
                 }
             }
             Statement::Expression(s) => {
@@ -200,6 +215,7 @@ impl ProtoBuilder<'_> {
                         let name = self.var_name_reg(v)?;
                         self.emit(Instr::BindGlobalDyn { name });
                     }
+                    self.tick_item(v);
                 }
             }
             Statement::Static(s) => {
@@ -246,6 +262,7 @@ impl ProtoBuilder<'_> {
                                     name,
                                     target: after,
                                 };
+                                self.tick_item(item);
                                 continue;
                             }
                         },
@@ -254,6 +271,7 @@ impl ProtoBuilder<'_> {
                     let cv = self.cv(var);
                     let name = self.intern_name(var);
                     self.emit(Instr::BindStatic { cv, name, init });
+                    self.tick_item(item);
                 }
             }
             Statement::Unset(u) => self.compile_unset(u)?,

@@ -3312,7 +3312,7 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         offset = (num_in + offset).max(0);
     }
     if length < 0 {
-        length = num_in - offset + length;
+        length += num_in - offset;
     } else if (offset as u32).wrapping_add(length as u32) > num_in as u32 {
         length = num_in - offset;
     }

@@ -656,7 +656,8 @@ pub struct ArrayData {
     pub pos: usize,
     /// Positions of the active HashTable iterators (array_walk), by id,
     /// updated on removal like `pos`. Copied along with the array, as
-    /// zend_array_dup copies iterators.
+    /// zend_array_dup copies iterators. Boxed: one word in every array.
+    #[allow(clippy::box_collection)]
     iters: Option<Box<Vec<(u32, usize)>>>,
 }
 

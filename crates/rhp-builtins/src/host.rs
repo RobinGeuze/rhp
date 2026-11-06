@@ -584,6 +584,11 @@ pub trait Host {
     /// The file of the innermost user-code frame (php's
     /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
     fn executing_file(&self) -> Option<Vec<u8>>;
+    /// The line of the innermost user-code frame (php's
+    /// `zend_get_executed_lineno`), 0 outside one.
+    fn executing_line(&self) -> u32 {
+        0
+    }
 
     // --- stream resources (fopen family) -------------------------------------
     // Streams are resource Values whose state lives in the VM; these are the

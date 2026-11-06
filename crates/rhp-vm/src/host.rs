@@ -519,6 +519,13 @@ impl Host for Vm {
             .or_else(|| self.main_script_path.clone())
     }
 
+    fn executing_line(&self) -> u32 {
+        (0..self.stack.len())
+            .rev()
+            .find(|&i| !self.is_internal_frame(i))
+            .map_or(0, |i| self.current_line(i))
+    }
+
     fn stream_open(&mut self, path: &[u8], mode: &[u8]) -> Option<Value> {
         self.stream_open_ctx(path, mode, &Value::Null)
     }

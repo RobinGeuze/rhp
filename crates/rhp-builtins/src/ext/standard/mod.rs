@@ -35,6 +35,7 @@ pub mod info;
 pub mod iptc;
 pub mod levenshtein;
 pub mod link;
+pub mod mail;
 pub mod math;
 pub mod md5;
 pub mod meta_tags;
@@ -116,6 +117,7 @@ fn register(m: &mut crate::Registry) {
     datetime::register(m);
     iptc::register(m);
     image::register(m);
+    mail::register(m);
     versioning::register(m);
     info::register(m);
     streamsfuncs::register(m);

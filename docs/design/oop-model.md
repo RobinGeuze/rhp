@@ -611,9 +611,8 @@ pub struct Vm {
   typed-no-default and untyped-no-default as `Null`. Faithful follow-up: store the
   hint, add a `Value::Uninit` sentinel (a leaf `value-model` change) or track
   initialization out-of-band, and throw on read-before-write.
-- **Trait adaptations** (`insteadof`/`as` renaming + visibility change): basic
-  trait method/property merge is in; conflict-resolution adaptations are a
-  follow-up.
+- **Trait adaptations** (`insteadof`/`as` renaming + visibility change) are
+  in; see oop.md.
 - **Enums, interfaces-with-constants edge cases, `__get`/`__set`/
   `__call` magic, `readonly` enforcement, Closure `$this` rebinding**: layer onto
   these types later; none require reshaping the class table. Property hooks

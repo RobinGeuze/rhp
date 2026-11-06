@@ -253,6 +253,15 @@ impl Vm {
                     ),
                 ));
             }
+            // The trampoline's scope is the called class.
+            if self.class(cls).kind == ClassKind::Trait {
+                let msg = format!(
+                    "Calling static trait method {}::{} is deprecated, it should only be called on a class using the trait",
+                    self.class_name_lossy(cls),
+                    String::from_utf8_lossy(name)
+                );
+                self.diag(rhp_builtins::E_DEPRECATED, &msg)?;
+            }
         }
         if let Some(Found::Method(m)) = &found {
             if m.is_abstract {

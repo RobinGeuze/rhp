@@ -36,6 +36,7 @@ mod reflect;
 mod request;
 mod streams;
 mod stub_default;
+mod traits;
 mod types;
 mod zpp;
 

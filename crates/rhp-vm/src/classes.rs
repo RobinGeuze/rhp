@@ -1297,6 +1297,12 @@ impl Vm {
                 self.deprecated_trait_use(tid, proto.name.as_bytes())?;
             }
         }
+        let used_traits = self.used_traits(proto);
+        let mut tm = self.trait_methods(proto, &used_traits)?;
+        if !used_traits.is_empty() {
+            self.check_trait_constants(proto, &used_traits)?;
+            self.check_trait_props(proto, &used_traits)?;
+        }
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -1334,28 +1340,18 @@ impl Vm {
             }
             methods.insert(k, m);
         };
-        for tname in &proto.traits {
-            let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, m) in self.classes[tid as usize].methods.clone() {
-                // An enum's engine methods (zend_enum_register_funcs) come
-                // first: the class's own members win over a trait's.
-                let engine = matches!(k.as_slice(), b"cases")
-                    || (proto.enum_backing.is_some()
-                        && matches!(k.as_slice(), b"from" | b"tryfrom"));
-                if proto.kind == ClassKind::Enum && engine {
-                    continue;
-                }
-                // Trait methods adopt the using class as their defining class.
-                insert_method(
-                    &mut methods,
-                    k,
-                    ResolvedMethod {
-                        defining_class: id,
-                        prototype: None,
-                        ..m
-                    },
-                );
-            }
+        let trait_order: Vec<Vec<u8>> = tm.concrete.keys().cloned().collect();
+        for (k, m) in std::mem::take(&mut tm.concrete) {
+            // Trait methods adopt the using class as their defining class.
+            insert_method(
+                &mut methods,
+                k,
+                ResolvedMethod {
+                    defining_class: id,
+                    prototype: None,
+                    ..m
+                },
+            );
         }
         // Final, static, visibility and signature rules: `inherit`.
         for m in &proto.methods {
@@ -1376,6 +1372,22 @@ impl Vm {
                 },
             );
         }
+        // Abstract trait methods are bound after the parent's methods: one
+        // that is already there is checked against it (`inherit`), the
+        // others are added.
+        for (k, m) in &tm.abstracts {
+            if !methods.contains_key(k) {
+                insert_method(
+                    &mut methods,
+                    k.clone(),
+                    ResolvedMethod {
+                        defining_class: id,
+                        prototype: None,
+                        ..m.clone()
+                    },
+                );
+            }
+        }
         // php copies interface methods into the implementing class's function
         // table (do_inherit_iface_method): an abstract class / interface lists
         // the abstract methods it inherits from its interfaces.
@@ -1395,19 +1407,7 @@ impl Vm {
             }
         }
         let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
-        let trait_methods: Vec<Vec<u8>> = proto
-            .traits
-            .iter()
-            .flat_map(|t| {
-                let tid = self.class_ids[&lc(t.as_bytes())];
-                self.classes[tid as usize]
-                    .methods
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let methods = php_member_order(methods, own_methods.chain(trait_methods));
+        let methods = php_member_order(methods, own_methods.chain(trait_order));
 
         // Instance properties, flattened. A redeclared public/protected property
         // keeps its inherited slot (same plain key, same position); a property
@@ -1493,18 +1493,8 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for pe in self.classes[tid as usize].props.values().cloned() {
-                if let Some(own) = proto.props.iter().find(|pp| pp.name == pe.name) {
-                    if own.has_hooks() || pe.hooks.is_some() {
-                        link_err.get_or_insert(format!(
-                            "{} and {} define the same hooked property (${}) in the composition of {}. \
-                             Conflict resolution between hooked properties is currently not supported. \
-                             Class was composed",
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                            String::from_utf8_lossy(self.classes[tid as usize].name.as_bytes()),
-                            String::from_utf8_lossy(pe.name.as_bytes()),
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                        ));
-                    }
+                // (Conflicts were checked by check_trait_props.)
+                if proto.props.iter().any(|pp| pp.name == pe.name) {
                     continue;
                 }
                 let hooks = pe.hooks.as_ref().map(|h| {
@@ -1856,7 +1846,7 @@ impl Vm {
         }
         if self.internal_classes > 0
             && !proto.decl_file.is_empty()
-            && !self.inheritance_checks(id, early)?
+            && !self.inheritance_checks(id, early, &tm.abstracts)?
         {
             self.classes.pop();
             self.class_ids.remove(&lc(proto.name.as_bytes()));
@@ -2200,6 +2190,14 @@ impl Vm {
             .contains_key(name)
         {
             self.update_class_constants(class_id)?;
+            if self.classes[class_id as usize].kind == ClassKind::Trait {
+                let msg = format!(
+                    "Accessing static trait property {}::${} is deprecated, it should only be accessed on a class using the trait",
+                    String::from_utf8_lossy(self.classes[class_id as usize].name.as_bytes()),
+                    String::from_utf8_lossy(name)
+                );
+                self.diag(rhp_builtins::E_DEPRECATED, msg.as_bytes())?;
+            }
         }
         self.classes[class_id as usize]
             .static_props

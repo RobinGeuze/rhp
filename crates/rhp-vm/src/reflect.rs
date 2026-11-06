@@ -633,6 +633,29 @@ impl Vm {
             traits.push(s(self.classes[t as usize].name.as_bytes()));
         }
         put(&mut a, "traits", Value::Array(traits));
+        // getTraitAliases: alias => "Trait::method", the trait as written or
+        // the first used trait that has the method.
+        let mut aliases = PhpArray::new();
+        for al in e.proto.trait_rules.iter().flat_map(|r| r.aliases.iter()) {
+            let Some(alias) = &al.alias else { continue };
+            let lcm = al.method.as_bytes().to_ascii_lowercase();
+            let cn = al
+                .trait_name
+                .as_ref()
+                .map(|n| n.as_bytes().to_vec())
+                .or_else(|| {
+                    e.traits
+                        .iter()
+                        .map(|&t| &self.classes[t as usize])
+                        .find(|t| t.methods.contains_key(&lcm))
+                        .map(|t| t.name.as_bytes().to_vec())
+                });
+            let mut v = cn.unwrap_or_default();
+            v.extend_from_slice(b"::");
+            v.extend_from_slice(al.method.as_bytes());
+            aliases.insert(ArrayKey::from_bytes(alias.as_bytes()), s(&v));
+        }
+        put(&mut a, "trait_aliases", Value::Array(aliases));
         put(
             &mut a,
             "ext",

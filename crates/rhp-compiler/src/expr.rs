@@ -336,6 +336,8 @@ impl ProtoBuilder<'_> {
             MagicConstant::Directory(_) => dirname(self.cx.builtins, &self.cx.file_name()),
             MagicConstant::Function(_) => self.magic_function_name(),
             MagicConstant::Method(_) => self.magic_method_name(),
+            // __TRAIT__ is "" outside a trait.
+            MagicConstant::Trait(_) if !self.cx.in_trait.get() => Vec::new(),
             MagicConstant::Class(_) | MagicConstant::Trait(_) => self
                 .class_name
                 .as_ref()

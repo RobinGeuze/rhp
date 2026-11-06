@@ -1524,9 +1524,14 @@ impl Vm {
     /// `early`: hoisting; returns `Ok(false)` when the class cannot be
     /// early-bound because a check needs a class that is not declared yet
     /// (the caller unlinks it again).
-    pub(crate) fn inheritance_checks(&mut self, ce: ClassId, early: bool) -> Result<bool, Thrown> {
+    pub(crate) fn inheritance_checks(
+        &mut self,
+        ce: ClassId,
+        early: bool,
+        trait_abstracts: &[(Vec<u8>, ResolvedMethod)],
+    ) -> Result<bool, Thrown> {
         let outer = std::mem::take(&mut self.inherit.recorded);
-        let r = self.inheritance_checks_inner(ce, early);
+        let r = self.inheritance_checks_inner(ce, early, trait_abstracts);
         let rec = std::mem::replace(&mut self.inherit.recorded, outer);
         match r {
             Ok(true) => {
@@ -1542,7 +1547,12 @@ impl Vm {
         }
     }
 
-    fn inheritance_checks_inner(&mut self, ce: ClassId, early: bool) -> Result<bool, Thrown> {
+    fn inheritance_checks_inner(
+        &mut self,
+        ce: ClassId,
+        early: bool,
+        trait_abstracts: &[(Vec<u8>, ResolvedMethod)],
+    ) -> Result<bool, Thrown> {
         if early {
             let prev = std::mem::replace(&mut self.inherit.compiling, true);
             let st = self.can_early_bind(ce);
@@ -1553,7 +1563,7 @@ impl Vm {
         }
         let prev = std::mem::replace(&mut self.inherit.compiling, early);
         let mut obligations = Vec::new();
-        let r = self.link_pass(ce, &mut obligations);
+        let r = self.link_pass(ce, trait_abstracts, &mut obligations);
         self.inherit.compiling = prev;
         r?;
         if !obligations.is_empty() {
@@ -1638,7 +1648,12 @@ impl Vm {
     /// The method checks of zend_do_link_class, in php's order: properties
     /// and methods against the parent, trait abstract methods, then the
     /// interfaces the parent does not already implement.
-    fn link_pass(&mut self, ce: ClassId, obligations: &mut Vec<Obligation>) -> Result<(), Thrown> {
+    fn link_pass(
+        &mut self,
+        ce: ClassId,
+        trait_abstracts: &[(Vec<u8>, ResolvedMethod)],
+        obligations: &mut Vec<Obligation>,
+    ) -> Result<(), Thrown> {
         let parent = self.class(ce).parent;
         if let Some(pid) = parent {
             for (c, p) in self.redeclared_props(ce) {
@@ -1667,32 +1682,27 @@ impl Vm {
                 self.set_prototype(ce, &k, np, child.is_ctor);
             }
         }
-        // Abstract trait methods: what the class (or its parent) has must
-        // satisfy them; visibility is not checked.
-        let traits = self.class(ce).traits.clone();
-        for t in traits {
-            let tm: Vec<(Vec<u8>, ResolvedMethod)> = self
-                .class(t)
-                .methods
-                .iter()
-                .filter(|(_, m)| m.is_abstract)
-                .map(|(k, m)| (k.clone(), m.clone()))
-                .collect();
-            for (k, m) in tm {
-                let existing = match self.own_method_sig(ce, &k) {
-                    Some(s) => Some((s, ce)),
-                    None => parent
-                        .and_then(|p| self.class(p).methods.get(&k).cloned())
-                        .and_then(|pm| self.method_sig(&pm).map(|s| (s, pm.defining_class))),
-                };
-                let Some((child, child_scope)) = existing else {
-                    continue;
-                };
-                let Some(tsig) = self.method_sig(&m) else {
-                    continue;
-                };
-                self.check_method(&child, child_scope, &tsig, ce, CHECK_PROTO, obligations)?;
-            }
+        // Abstract trait methods (zend_add_trait_method): what the class
+        // (or its parent, or an earlier trait) has must satisfy them;
+        // visibility is not checked. One that was added is skipped.
+        for (k, m) in trait_abstracts {
+            let existing = match self.own_method_sig(ce, k) {
+                Some(s) => Some((s, ce)),
+                None => self
+                    .class(ce)
+                    .methods
+                    .get(k)
+                    .filter(|em| !Rc::ptr_eq(&em.proto, &m.proto))
+                    .cloned()
+                    .and_then(|em| self.method_sig(&em).map(|s| (s, em.defining_class))),
+            };
+            let Some((child, child_scope)) = existing else {
+                continue;
+            };
+            let Some(tsig) = self.method_sig(m) else {
+                continue;
+            };
+            self.check_method(&child, child_scope, &tsig, ce, CHECK_PROTO, obligations)?;
         }
         // Interfaces new to this class.
         let inherited: Vec<ClassId> = parent

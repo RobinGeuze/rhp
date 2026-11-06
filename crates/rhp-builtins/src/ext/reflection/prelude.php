@@ -752,7 +752,7 @@ class ReflectionClass implements Reflector {
     public function isInterface(): bool { return $this->__c['kind'] === 'interface'; }
     public function getTraits(): array { $o = []; foreach ($this->__c['traits'] as $t) { $o[$t] = new ReflectionClass($t); } return $o; }
     public function getTraitNames(): array { return $this->__c['traits']; }
-    public function getTraitAliases(): array { return []; }
+    public function getTraitAliases(): array { return $this->__c['trait_aliases']; }
     public function isTrait(): bool { return $this->__c['kind'] === 'trait'; }
     public function isEnum(): bool { return $this->__c['kind'] === 'enum'; }
     public function isAbstract(): bool { return $this->__c['abstract']; }

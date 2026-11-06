@@ -204,6 +204,10 @@ impl Vm {
         name: &[u8],
         d: &crate::classes::DeprecatedConst,
     ) -> Result<(), Thrown> {
+        // A built-in class's are raised from its stub data (E_DEPRECATED).
+        if self.is_internal_class(class) {
+            return Ok(());
+        }
         let mut key = format!("{class}::").into_bytes();
         key.extend_from_slice(name);
         if self.const_guard.contains(&key) {

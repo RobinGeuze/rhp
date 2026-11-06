@@ -1,0 +1,14 @@
+toString
+
+Warning: Only the first byte will be assigned to the string offset in /Users/robing/gits/rhp/.claude/worktrees/rest/wave1-cleanup/tests/golden/lang/string_offset_object.php on line 7
+string(1) "x"
+string(3) "axc"
+toString
+
+Warning: Only the first byte will be assigned to the string offset in /Users/robing/gits/rhp/.claude/worktrees/rest/wave1-cleanup/tests/golden/lang/string_offset_object.php on line 9
+string(6) "axc  x"
+
+Fatal error: Uncaught TypeError: Cannot access offset of type string on string in /Users/robing/gits/rhp/.claude/worktrees/rest/wave1-cleanup/tests/golden/lang/string_offset_object.php:11
+Stack trace:
+#0 {main}
+  thrown in /Users/robing/gits/rhp/.claude/worktrees/rest/wave1-cleanup/tests/golden/lang/string_offset_object.php on line 11

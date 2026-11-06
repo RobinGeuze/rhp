@@ -1,0 +1,5 @@
+warning: Undefined global variable $_GET
+NULL
+bool(false)
+warning: Undefined variable $x
+NULL

@@ -142,6 +142,10 @@ fn open_wrapper(
     if super::stream_context().is_none() {
         h.default_stream_context();
     }
+    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+        let ctx = super::stream_context().unwrap_or(Value::Null);
+        return crate::ext::standard::http_fopen_wrapper::open(h, &fname, &path, mode, &ctx, false);
+    }
     crate::main::streams::clear_errno();
     match h.stream_open(&path, mode) {
         Some(res) => Ok(Some(res)),

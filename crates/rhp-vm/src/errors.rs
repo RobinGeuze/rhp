@@ -205,7 +205,9 @@ impl Vm {
             // only if the handler did not install another one.
             let idx = self.error_handlers.len() - 1;
             self.error_handlers[idx].0 = Value::Bool(false);
-            let r = self.call_callable_value(&h, args);
+            // The diagnostic may come from the middle of an lvalue write:
+            // the handler's own writes must not disturb that cursor.
+            let r = self.with_saved_cursor(|vm| vm.call_callable_value(&h, args));
             if self.error_handlers.len() == idx + 1
                 && matches!(self.error_handlers[idx].0, Value::Bool(false))
             {

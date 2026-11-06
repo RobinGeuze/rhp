@@ -196,6 +196,53 @@ impl Vm {
         Ok(())
     }
 
+    /// An undefined variable as a key of the open cursor: the warning may
+    /// run an error handler, which must not disturb the cursor. php has
+    /// fetched the container already (a null one made an array): when the
+    /// handler replaces the variable, the write still goes to that
+    /// container (an object's offsetSet) and is lost for the variable.
+    #[cold]
+    fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
+        let target = match self.cursor_root {
+            CursorRoot::Cv(cv) => match self.reg_get(top, cv) {
+                Value::Null => {
+                    let a = Value::Array(PhpArray::new());
+                    self.cv_assign(top, cv, a.clone());
+                    Some((cv, a))
+                }
+                v @ (Value::Array(_) | Value::Object(_)) => Some((cv, v)),
+                _ => None,
+            },
+            CursorRoot::Cell(_) => None,
+        };
+        let r = self.undef_cv(top, key);
+        if let Some((cv, t)) = target {
+            let same = match (&t, &self.reg_get(top, cv)) {
+                (Value::Array(a), Value::Array(b)) => a.data_ptr() == b.data_ptr(),
+                (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+                _ => false,
+            };
+            if !same {
+                self.cursor_root = CursorRoot::Cell(Rc::new(RefCell::new(t)));
+            }
+        }
+        r
+    }
+
+    /// Run `f` (which may call user code) with the open cursor set aside.
+    pub(crate) fn with_saved_cursor<T>(&mut self, f: impl FnOnce(&mut Vm) -> T) -> T {
+        let root = self.cursor_root.clone();
+        let steps = std::mem::take(&mut self.cursor_steps);
+        let global = self.cursor_global.take();
+        let nulls = self.rw_null_keys;
+        let r = f(self);
+        self.cursor_root = root;
+        self.cursor_steps = steps;
+        self.cursor_global = global;
+        self.rw_null_keys = nulls;
+        r
+    }
+
     /// `unset($x)`: CV `cv` of frame `top` becomes undefined. In the global
     /// scope the symbol-table entry is dropped (a reference to it keeps the
     /// old cell).
@@ -1067,7 +1114,11 @@ impl Vm {
                     self.rw_null_keys = 0;
                 }
                 Instr::LvalKey { key } => {
-                    let k = self.reg_r(top, key)?;
+                    let k = if self.stack[top].regs[key as usize].is_undef() {
+                        self.lval_undef_key(top, key)?
+                    } else {
+                        self.reg_get(top, key)
+                    };
                     self.cursor_steps.push(CursorStep::Key(k));
                 }
                 Instr::LvalAppend => self.cursor_steps.push(CursorStep::Append),

@@ -1,0 +1,16 @@
+0 Error: Call to undefined function N\undefined_fn()
+1 Error: Call to undefined function undefined_fn()
+2 Error: Class "N\Missing" not found
+3 Error: Non-static method N\A::inst() cannot be called statically
+4 Error: Call to private method N\A::priv() from global scope
+5 Error: Call to undefined method N\A::nope()
+6 Error: Call to undefined method N\A::nope()
+7 Error: Class "A" not found
+8 ok
+9 Error: Value of type int is not callable
+10 Error: Array callback must have exactly two elements
+string(14) "magic anything"
+int(3)
+int(3)
+bool(true)
+bool(true)

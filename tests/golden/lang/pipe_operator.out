@@ -1,0 +1,22 @@
+int(3)
+int(6)
+int(-2)
+string(5) "inv:5"
+string(3) "cba"
+int(6)
+string(2) "x!"
+lhs
+rhs
+int(5)
+float(1.7320508075688772)
+byref(): Argument #1 ($x) could not be passed by reference
+int(1)
+int(3)
+string(2) "AB"
+bool(true)
+int(3)
+#0 F(38): boom(7)
+#1 {main}
+boom 21
+bool(true)
+bool(false)

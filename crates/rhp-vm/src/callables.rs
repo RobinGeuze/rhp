@@ -240,6 +240,20 @@ impl Vm {
             },
             None => self.static_method_fallback(cls, self.current_this(top).as_ref()),
         };
+        if let Some(Found::Call(m) | Found::CallStatic(m)) = &found {
+            // An abstract trampoline (zend_get_call_trampoline_func keeps
+            // the flag), named after the called method.
+            if m.is_abstract {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot call abstract method {}::{}()",
+                        self.class_name_lossy(m.defining_class),
+                        String::from_utf8_lossy(name)
+                    ),
+                ));
+            }
+        }
         if let Some(Found::Method(m)) = &found {
             if m.is_abstract {
                 return Err(self.abstract_method_call(m));

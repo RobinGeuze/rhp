@@ -21,6 +21,5 @@ int(4)
 bool(false)
 bool(true)
 int(2)
-
-Warning: Undefined variable $undefined in /Users/robing/gits/rhp/.claude/worktrees/rest/property-followups/tests/golden/oop/property_followups_2.php on line 47
+warning: Undefined variable $undefined
 bool(false)

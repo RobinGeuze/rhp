@@ -44,4 +44,6 @@ var_dump($rp->isInitialized(), $rp->getValue());
 class S { public function __toString(): string { echo "toString\n"; return "x"; } }
 $s = new S;
 var_dump(isset($null->$s), empty($null->$s), $null->$s ?? 2);
+set_error_handler(function ($no, $msg) { echo "warning: $msg\n"; return true; });
 var_dump(isset($null->{$undefined}));
+restore_error_handler();

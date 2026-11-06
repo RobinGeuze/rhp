@@ -199,6 +199,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 const RHP_INI: &[&str] = &[
     "allow_url_include",
     "arg_separator.input",
+    "auto_detect_line_endings",
     "auto_globals_jit",
     "auto_prepend_file",
     "bcmath.scale",

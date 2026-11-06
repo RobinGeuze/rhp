@@ -521,6 +521,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         level = crate::E_DEPRECATED;
         let msg = "PHP Startup: Directive 'report_memleaks' is deprecated".to_string();
         (vec![msg], Some(v.to_vec()))
+    } else if name == b"auto_detect_line_endings" && ini_parse_bool(v) {
+        // OnUpdateAutoDetectLineEndings (zend_error: no "PHP Startup").
+        level = crate::E_DEPRECATED;
+        let msg = "auto_detect_line_endings is deprecated".to_string();
+        (vec![msg], Some(v.to_vec()))
     } else if name == b"disable_functions" {
         // php_module_startup's zend_disable_functions, once the ini is in.
         crate::registry::reset_disabled();
@@ -773,6 +778,9 @@ pub(crate) fn alter_ini_entry(
     mark_changed(&String::from_utf8_lossy(name));
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
+    if name == b"auto_detect_line_endings" && ini_parse_bool(&newv) {
+        host.emit_diagnostic(crate::E_DEPRECATED, b"auto_detect_line_endings is deprecated")?;
     }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {

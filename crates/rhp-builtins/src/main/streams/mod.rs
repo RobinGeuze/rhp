@@ -556,12 +556,64 @@ pub fn default_put_contents(url: &[u8], data: &[u8]) -> Option<usize> {
 /// php's plain-files stream read chunk size.
 const CHUNK: usize = 8192;
 
+/// How a stream finds the end of a line (`PHP_STREAM_FLAG_DETECT_EOL` /
+/// `PHP_STREAM_FLAG_EOL_MAC`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Eol {
+    /// `\n` (unix and dos endings).
+    Lf,
+    /// `\r` (old mac endings), once detected.
+    Cr,
+    /// auto_detect_line_endings: decided by the first line read.
+    Detect,
+}
+
+impl Eol {
+    /// A new stream's mode (`_php_stream_alloc`): detection when
+    /// auto_detect_line_endings is on.
+    pub fn for_new_stream() -> Eol {
+        let on = crate::ini_value(b"auto_detect_line_endings")
+            .flatten()
+            .is_some_and(|v| crate::main::ini::ini_parse_bool(&v));
+        if on {
+            Eol::Detect
+        } else {
+            Eol::Lf
+        }
+    }
+
+    /// php_stream_locate_eol: where the line in `buf` ends (the index of
+    /// its terminator), settling a pending detection.
+    pub fn locate(&mut self, buf: &[u8]) -> Option<usize> {
+        match self {
+            Eol::Lf => buf.iter().position(|&b| b == b'\n'),
+            Eol::Cr => buf.iter().position(|&b| b == b'\r'),
+            Eol::Detect => {
+                let cr = buf.iter().position(|&b| b == b'\r');
+                let lf = buf.iter().position(|&b| b == b'\n');
+                if let Some(c) = cr {
+                    if lf != Some(c + 1) && !lf.is_some_and(|l| l < c) {
+                        *self = Eol::Cr;
+                        return Some(c);
+                    }
+                }
+                if lf.is_some() {
+                    *self = Eol::Lf;
+                }
+                lf
+            }
+        }
+    }
+}
+
 /// An open local file behind an `fopen`ed stream resource, with php's
 /// plain-files semantics: a read buffer over the descriptor, a logical
 /// position (`ftell`), and an eof flag that is set only when an underlying
 /// `read(2)` returns 0.
 pub struct LocalFile {
     file: std::fs::File,
+    /// The line ending fgets stops at.
+    eol: Eol,
     rbuf: Vec<u8>,
     rpos: usize,
     pos: i64,
@@ -637,6 +689,7 @@ impl LocalFile {
         };
         Some(LocalFile {
             file: std::fs::File::from(fd),
+            eol: Eol::for_new_stream(),
             rbuf: Vec::new(),
             rpos: 0,
             pos: 0,
@@ -744,14 +797,15 @@ impl LocalFile {
                 break;
             }
             let avail = &self.rbuf[self.rpos..];
-            let mut n = match avail.iter().position(|&b| b == b'\n') {
+            let eol = self.eol.locate(avail);
+            let mut n = match eol {
                 Some(i) => i + 1,
                 None => avail.len(),
             };
             if let Some(m) = max {
                 n = n.min(m - out.len());
             }
-            let found_nl = avail[..n].last() == Some(&b'\n');
+            let found_nl = eol.is_some_and(|i| i < n);
             let more = self.take(n);
             out.extend_from_slice(&more);
             if found_nl {

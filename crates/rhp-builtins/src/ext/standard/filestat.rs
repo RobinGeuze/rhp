@@ -39,43 +39,65 @@ pub(crate) fn arr_from_stat(s: &StatInfo) -> Value {
 
 // --- stat family -----------------------------------------------------------------
 
-/// `php_stream_stat_path` of the first argument for builtin `fname`.
+/// `php_stream_stat_path` of the first argument for builtin `fname`, after
+/// php_stat's open_basedir check of a plain path: `None` when that refused
+/// it (and warned), else the stat.
 fn stat_path(
     host: &mut dyn Host,
     args: &[Value],
     link: bool,
     fname: &str,
-) -> Result<Option<StatInfo>, Thrown> {
+) -> Result<Option<Option<StatInfo>>, Thrown> {
     let p = str_arg(args, 0);
     if p.is_empty() || p.contains(&0) {
-        return Ok(None);
+        return Ok(Some(None));
     }
     let url = match crate::locate_url(host, fname, &p)? {
-        Located::Plain(local) => local,
+        Located::Plain(local) => {
+            if !crate::main::fopen_wrappers::check(host, fname, &local, true)? {
+                return Ok(None);
+            }
+            local
+        }
         Located::Wrapper(u) => u,
         // the plain url_stat of the whole path, or no wrapper at all
-        Located::Unknown(_) => return Ok(crate::main::streams::sys_stat(&p, link)),
-        Located::RemoteHost => return Ok(None),
+        Located::Unknown(_) => {
+            if !crate::main::fopen_wrappers::check(host, fname, &p, true)? {
+                return Ok(None);
+            }
+            return Ok(Some(crate::main::streams::sys_stat(&p, link)));
+        }
+        Located::RemoteHost => return Ok(Some(None)),
     };
-    Ok(if link {
+    Ok(Some(if link {
         host.stream_lstat(&url)
     } else {
         host.stream_stat(&url)
-    })
+    }))
 }
 
 /// The path php_stat's access checks (`file_exists`, `is_readable`, …)
 /// give `access(2)`: the local path, expanded when the wrapper was not
 /// found. `Err(url)` for a URL of a registered wrapper; `Ok(None)` when no
-/// wrapper fits.
+/// wrapper fits or open_basedir refused the path.
 fn access_path(
     host: &mut dyn Host,
     fname: &str,
     p: &[u8],
 ) -> Result<Result<Option<Vec<u8>>, Vec<u8>>, Thrown> {
     Ok(match crate::locate_url(host, fname, p)? {
-        Located::Plain(local) => Ok(Some(local)),
-        Located::Unknown(_) => Ok(Some(crate::zend::virtual_cwd::expand_local(p))),
+        Located::Plain(local) => {
+            if !crate::main::fopen_wrappers::check(host, fname, &local, true)? {
+                return Ok(Ok(None));
+            }
+            Ok(Some(local))
+        }
+        Located::Unknown(_) => {
+            if !crate::main::fopen_wrappers::check(host, fname, p, true)? {
+                return Ok(Ok(None));
+            }
+            Ok(Some(crate::zend::virtual_cwd::expand_local(p)))
+        }
         Located::RemoteHost => Ok(None),
         Located::Wrapper(u) => Err(u),
     })
@@ -111,15 +133,17 @@ fn stat_failed(
 
 fn fn_stat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match stat_path(host, args, false, "stat")? {
-        Some(s) => Ok(arr_from_stat(&s)),
-        None => stat_failed(host, args, "stat", false),
+        Some(Some(s)) => Ok(arr_from_stat(&s)),
+        Some(None) => stat_failed(host, args, "stat", false),
+        None => Ok(Value::Bool(false)),
     }
 }
 
 fn fn_lstat(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match stat_path(host, args, true, "lstat")? {
-        Some(s) => Ok(arr_from_stat(&s)),
-        None => stat_failed(host, args, "lstat", true),
+        Some(Some(s)) => Ok(arr_from_stat(&s)),
+        Some(None) => stat_failed(host, args, "lstat", true),
+        None => Ok(Value::Bool(false)),
     }
 }
 
@@ -127,9 +151,9 @@ macro_rules! stat_field_fn {
     ($name:ident, $fname:literal, $link:expr, $warn:expr, |$s:ident| $e:expr) => {
         fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             match stat_path(host, args, $link, $fname)? {
-                Some($s) => Ok($e),
-                None if $warn => stat_failed(host, args, $fname, $link),
-                None => Ok(Value::Bool(false)),
+                Some(Some($s)) => Ok($e),
+                Some(None) if $warn => stat_failed(host, args, $fname, $link),
+                _ => Ok(Value::Bool(false)),
             }
         }
     };
@@ -169,7 +193,7 @@ fn exists_check(
     link: bool,
     fname: &str,
 ) -> Result<Option<StatInfo>, Thrown> {
-    stat_path(host, args, link, fname)
+    Ok(stat_path(host, args, link, fname)?.flatten())
 }
 
 fn fn_is_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -186,8 +210,10 @@ fn fn_is_dir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 #[allow(clippy::unnecessary_cast)]
 fn fn_filetype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(s) = stat_path(host, args, true, "filetype")? else {
-        return stat_failed(host, args, "filetype", true);
+    let s = match stat_path(host, args, true, "filetype")? {
+        Some(Some(s)) => s,
+        Some(None) => return stat_failed(host, args, "filetype", true),
+        None => return Ok(Value::Bool(false)),
     };
     let t = s.mode & libc::S_IFMT as u32;
     let name: &str = if t == libc::S_IFLNK as u32 {
@@ -337,6 +363,14 @@ fn do_chown(
             )));
         }
     };
+    if !crate::main::fopen_wrappers::check(
+        host,
+        fname,
+        crate::main::streams::file_path(&path),
+        true,
+    )? {
+        return Ok(Value::Bool(false));
+    }
     let Some(c) = crate::zend::virtual_cwd::c_path(crate::main::streams::file_path(&path)) else {
         return Ok(Value::Bool(false));
     };
@@ -405,6 +439,14 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "cannot be null when argument #3 ($atime) is an integer",
         ));
     }
+    if !crate::main::fopen_wrappers::check(
+        host,
+        "touch",
+        crate::main::streams::file_path(&path),
+        true,
+    )? {
+        return Ok(Value::Bool(false));
+    }
     // Create the file if absent (php's touch creates an empty file).
     if !crate::zend::virtual_cwd::os_path(&path).exists() {
         let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC;
@@ -456,14 +498,58 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(ok))
 }
 
-/// `clearstatcache(): void`. rhp keeps no stat or realpath cache, so both
-/// parameters have nothing to clear.
-fn fn_clearstatcache(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+/// `clearstatcache($clear_realpath_cache, $filename)`: rhp keeps no stat
+/// cache; the realpath cache loses `$filename`'s entry, or all of them.
+fn fn_clearstatcache(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let clear = args.first().is_some_and(|v| conv::to_bool(&deref(v)));
+    let path = path_param(args, 1, "clearstatcache", "filename")?;
+    if clear {
+        use crate::zend::virtual_cwd::realpath_cache;
+        if args.len() > 1 {
+            realpath_cache::del(&path);
+        } else {
+            realpath_cache::clean();
+        }
+    }
     Ok(Value::Null)
+}
+
+/// `realpath_cache_size()`.
+fn fn_realpath_cache_size(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(crate::zend::virtual_cwd::realpath_cache::size()))
+}
+
+/// `realpath_cache_get()`: the entries by path.
+fn fn_realpath_cache_get(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let mut out = PhpArray::new();
+    crate::zend::virtual_cwd::realpath_cache::entries(|it| {
+        for e in it {
+            let mut a = PhpArray::new();
+            let key = i64::try_from(e.key).map_or(Value::Float(e.key as f64), Value::Int);
+            a.insert(ArrayKey::from_bytes(b"key"), key);
+            a.insert(ArrayKey::from_bytes(b"is_dir"), Value::Bool(e.is_dir));
+            a.insert(
+                ArrayKey::from_bytes(b"realpath"),
+                Value::str(e.realpath.clone()),
+            );
+            a.insert(ArrayKey::from_bytes(b"expires"), Value::Int(e.expires));
+            out.insert(ArrayKey::from_bytes(&e.path), Value::Array(a));
+        }
+    });
+    Ok(Value::Array(out))
 }
 
 fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mode = conv::to_int(&deref(&args[1])) as libc::mode_t;
+    let path = path_arg(args, 0);
+    if !crate::main::fopen_wrappers::check(
+        host,
+        "chmod",
+        crate::main::streams::file_path(&path),
+        true,
+    )? {
+        return Ok(Value::Bool(false));
+    }
     let ok = match crate::zend::virtual_cwd::c_path(&path_arg(args, 0)) {
         Some(c) => unsafe { libc::chmod(c.as_ptr(), mode) == 0 },
         None => false,
@@ -488,6 +574,18 @@ fn statvfs_of(path: &[u8]) -> Option<libc::statvfs> {
     }
 }
 
+/// disk_free_space / disk_total_space's checks: the path expanded, then
+/// open_basedir on the expansion.
+fn space_path_allowed(host: &mut dyn Host, func: &str, path: &[u8]) -> Result<bool, Thrown> {
+    if !crate::main::fopen_wrappers::active() {
+        return Ok(true);
+    }
+    let Ok(full) = crate::zend::virtual_cwd::expand_filepath_checked(path) else {
+        return Ok(false);
+    };
+    crate::main::fopen_wrappers::check(host, func, &full, true)
+}
+
 /// `disk_free_space` — `f_bavail * f_frsize` as a float (php's formula).
 fn fn_disk_free_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     disk_free_space(host, args, "disk_free_space")
@@ -500,6 +598,9 @@ fn fn_diskfreespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 
 fn disk_free_space(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
     let path = crate::ext::standard::file::path_param(args, 0, func, "directory")?;
+    if !space_path_allowed(host, func, &path)? {
+        return Ok(Value::Bool(false));
+    }
     match statvfs_of(&path) {
         Some(s) => Ok(Value::Float(s.f_bavail as f64 * s.f_frsize as f64)),
         None => {
@@ -512,6 +613,9 @@ fn disk_free_space(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Va
 /// `disk_total_space` — `f_blocks * f_frsize` as a float (php's formula).
 fn fn_disk_total_space(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = crate::ext::standard::file::path_param(args, 0, "disk_total_space", "directory")?;
+    if !space_path_allowed(host, "disk_total_space", &path)? {
+        return Ok(Value::Bool(false));
+    }
     match statvfs_of(&path) {
         Some(s) => Ok(Value::Float(s.f_blocks as f64 * s.f_frsize as f64)),
         None => {
@@ -555,6 +659,8 @@ pub fn register(m: &mut crate::Registry) {
             ("touch", fn_touch),
             ("chmod", fn_chmod),
             ("clearstatcache", fn_clearstatcache),
+            ("realpath_cache_size", fn_realpath_cache_size),
+            ("realpath_cache_get", fn_realpath_cache_get),
             ("disk_free_space", fn_disk_free_space),
             ("diskfreespace", fn_diskfreespace),
             ("disk_total_space", fn_disk_total_space),

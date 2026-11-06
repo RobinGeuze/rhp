@@ -600,6 +600,14 @@ fn fn_ini_alter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = str_param(host, args, 0, "ini_restore", "option")?;
     let key = String::from_utf8_lossy(&name).into_owned();
+    if name == b"open_basedir" && STARTUP_DIAGS.with(|d| d.borrow().changed.contains(&key)) {
+        // OnUpdateBaseDir runs at run time on the startup value: a loosening
+        // fails, and the entry keeps its value.
+        let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
+        if !crate::main::fopen_wrappers::on_update(&startup.unwrap_or_default()) {
+            return Ok(Value::Null);
+        }
+    }
     // zend_restore_ini_entry: a directive ini_set changed is no longer
     // modified, and its handler runs again on the startup value.
     let restore = STARTUP_DIAGS.with(|d| {
@@ -692,6 +700,16 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Some(path) = dest else {
                 return Ok(Value::Bool(false));
             };
+            if crate::main::streams::split_scheme(&path).0 == b"file"
+                && !crate::main::fopen_wrappers::check_open(
+                    host,
+                    "error_log",
+                    crate::main::streams::file_path(&path),
+                    &path,
+                )?
+            {
+                return Ok(Value::Bool(false));
+            }
             let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
             Ok(Value::Bool(ok))
         }
@@ -1497,6 +1515,16 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     // zend_stream_open: USE_PATH | REPORT_ERRORS
     crate::main::streams::clear_errno();
     let target = crate::ext::standard::file::include_path_target(host, &path);
+    if crate::main::streams::split_scheme(&target).0 == b"file"
+        && !crate::main::fopen_wrappers::check_open(
+            host,
+            "parse_ini_file",
+            crate::main::streams::file_path(&target),
+            &target,
+        )?
+    {
+        return Ok(Value::Bool(false));
+    }
     let Some(src) = host.stream_get_contents(&target) else {
         crate::open_failed(host, "parse_ini_file", &path)?;
         return Ok(Value::Bool(false));
@@ -1536,6 +1564,9 @@ fn fn_show_source(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
     let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    if !crate::main::fopen_wrappers::check(host, fname, &path, true)? {
+        return Ok(Value::Bool(false));
+    }
     let failed = |host: &mut dyn Host| {
         let mut m = b"Failed opening '".to_vec();
         m.extend_from_slice(&path);

@@ -380,6 +380,13 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Some(info) = req.info {
         vm.set_request(info);
     }
+    if let Script::File(_) = req.script {
+        // php-cli resolves the script (VCWD_REALPATH) before the request
+        // starts, which fills the realpath cache even under open_basedir.
+        rhp_builtins::zend::virtual_cwd::realpath_cache::startup(|| {
+            rhp_builtins::zend::virtual_cwd::realpath(file.as_bytes())
+        });
+    }
     vm.start_request();
     if vm.startup_failed() {
         vm.finish_request();

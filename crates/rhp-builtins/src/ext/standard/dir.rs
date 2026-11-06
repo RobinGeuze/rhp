@@ -18,11 +18,30 @@ fn do_opendir(
     let path = path_param(args, 0, fname, "directory")?;
     touch_ctx(host, args, 1);
     crate::main::streams::clear_errno();
+    if !dir_allowed(host, fname, &path)? {
+        dir_open_failed(host, fname, &path)?;
+        return Ok(None);
+    }
     let Some(entries) = host.stream_opendir(&path) else {
         dir_open_failed(host, fname, &path)?;
         return Ok(None);
     };
     Ok(host.dir_open(&path, entries).map(|h| (path, h)))
+}
+
+/// The plain-files dir opener's open_basedir check (it sets errno).
+fn dir_allowed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<bool, Thrown> {
+    if !crate::main::fopen_wrappers::active() {
+        return Ok(true);
+    }
+    let local = match crate::main::streams::locate_url_wrapper(path, |s| {
+        crate::diag::wrapper_registered(host, s)
+    }) {
+        crate::main::streams::Located::Plain(_) => crate::main::streams::file_path(path),
+        crate::main::streams::Located::Unknown(_) => path,
+        _ => return Ok(true),
+    };
+    crate::main::fopen_wrappers::check(host, fname, local, true)
 }
 
 /// "fname(path): Failed to open directory: <strerror>".
@@ -177,7 +196,12 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let flags = int_arg(args, 1, 0);
     crate::main::streams::clear_errno();
-    let Some(mut names) = host.stream_opendir(&path) else {
+    let names = if dir_allowed(host, "scandir", &path)? {
+        host.stream_opendir(&path)
+    } else {
+        None
+    };
+    let Some(mut names) = names else {
         let errno = crate::main::streams::last_errno();
         dir_open_failed(host, "scandir", &path)?;
         let (code, text) = match errno {
@@ -201,7 +225,6 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let _ = host;
     let pattern = path_param(args, 0, "glob", "pattern")?;
     let flags = int_arg(args, 1, 0);
     if pattern.len() >= 1024 {
@@ -215,7 +238,13 @@ fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     let mut a = PhpArray::new();
+    let ob = crate::main::fopen_wrappers::active();
+    let mut basedir_limit = false;
     for p in paths {
+        if ob && !crate::main::fopen_wrappers::check(host, "glob", &p, false)? {
+            basedir_limit = true;
+            continue;
+        }
         if flags & GLOB_ONLYDIR != 0 {
             match crate::main::streams::sys_stat(&p, false) {
                 Some(s) if s.is_dir => {}
@@ -223,6 +252,9 @@ fn fn_glob(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
         a.push(Value::str(p));
+    }
+    if basedir_limit && a.is_empty() {
+        return Ok(Value::Bool(false));
     }
     Ok(Value::Array(a))
 }
@@ -234,6 +266,9 @@ fn fn_getcwd(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
 /// `chdir()`: the request's working directory (see [`crate::zend::virtual_cwd`]).
 fn fn_chdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let dir = crate::zend::zpp::path_param(host, args, 0, "chdir", "directory")?;
+    if !crate::main::fopen_wrappers::check(host, "chdir", &dir, true)? {
+        return Ok(Value::Bool(false));
+    }
     match crate::zend::virtual_cwd::chdir(&dir) {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {

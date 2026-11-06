@@ -246,6 +246,7 @@ const RHP_INI: &[&str] = &[
     "mbstring.internal_encoding",
     "memory_hard_limit_percent",
     "memory_limit",
+    "open_basedir",
     "output_buffering",
     "output_encoding",
     "pcre.backtrack_limit",

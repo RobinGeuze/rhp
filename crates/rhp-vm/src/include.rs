@@ -258,6 +258,19 @@ impl Vm {
                     .map(|real| (real, IncludeSource::Cached))
             })
         };
+        // The plain-files opener's open_basedir check of the resolved path.
+        let mut shown = path_str.clone();
+        let found = match found {
+            Some((real, IncludeSource::File(_)))
+                if builtins::main::fopen_wrappers::active()
+                    && !builtins::main::fopen_wrappers::check_queued(&real, true) =>
+            {
+                self.flush_stream_diags(kind.name());
+                shown = String::from_utf8_lossy(&real).into_owned();
+                None
+            }
+            f => f,
+        };
         let (realpath, source) = match found {
             Some(found) => found,
             None => {
@@ -277,7 +290,7 @@ impl Vm {
                     })
                 };
                 if let Some(reason) = reason {
-                    let msg = format!("{fname}({path_str}): Failed to open stream: {reason}");
+                    let msg = format!("{fname}({shown}): Failed to open stream: {reason}");
                     let msg = self.docref_html(msg.as_bytes()).into_owned();
                     self.diag(builtins::E_WARNING, &msg)?;
                 }

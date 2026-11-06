@@ -546,6 +546,18 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         return;
     };
     ini_apply(name, Some(&v));
+    // the realpath cache's startup settings (php_request_startup turns it
+    // off under open_basedir)
+    use crate::zend::virtual_cwd::realpath_cache::configure;
+    match name {
+        b"realpath_cache_size" => configure(Some(ini_parse_quantity(&v)), None, None),
+        b"realpath_cache_ttl" => configure(None, Some(ini_parse_quantity(&v)), None),
+        b"open_basedir" => {
+            crate::main::fopen_wrappers::set(Some(&v));
+            configure(None, None, Some(!v.is_empty()))
+        }
+        _ => {}
+    }
     ini_store(name, v.clone());
     INI_STARTUP.with(|m| m.borrow_mut().insert(key, v));
     if name == b"max_memory_limit" {
@@ -767,6 +779,20 @@ pub(crate) fn alter_ini_entry(
     mark_changed(&String::from_utf8_lossy(name));
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
+    // OnUpdateBaseDir: only a tightening (the entry keeps the value as
+    // given, the check uses each entry expanded).
+    if name == b"open_basedir" && !crate::main::fopen_wrappers::on_update(&newv) {
+        return Ok(None);
+    }
+    // OnUpdateErrorLog / OnUpdateMailLog: a log file must be within
+    // open_basedir.
+    if crate::main::fopen_wrappers::active()
+        && ((name == b"error_log" && newv != b"syslog") || name == b"mail.log")
+        && !newv.is_empty()
+        && !crate::main::fopen_wrappers::check(host, func, &newv, true)?
+    {
+        return Ok(None);
     }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {

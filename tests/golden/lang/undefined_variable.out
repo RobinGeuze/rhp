@@ -1,0 +1,150 @@
+[2] Undefined variable $a (line 10)
+[2] Undefined variable $c (line 11)
+[2] Undefined variable $d (line 12)
+[2] Undefined variable $e (line 12)
+[2] Undefined variable $f (line 12)
+[2] Undefined variable $g (line 12)
+[2] Undefined variable $h (line 12)
+[2] Undefined variable $i (line 12)
+[2] Undefined variable $j (line 12)
+string(1) "x"
+int(1)
+int(0)
+bool(true)
+int(0)
+bool(false)
+array(2) {
+  [0]=>
+  NULL
+  ["k"]=>
+  NULL
+}
+[2] Undefined variable $k (line 13)
+[2] Trying to access array offset on null (line 13)
+[2] Undefined variable $l (line 13)
+[2] Attempt to read property "p" on null (line 13)
+[2] Undefined variable $m (line 13)
+NULL
+NULL
+string(10) "in  string"
+[2] Undefined variable $n (line 15)
+[2] Undefined variable $o (line 18)
+NULL
+[2] Undefined variable $vv (line 21)
+[2] Undefined variable $kk (line 21)
+array(1) {
+  [""]=>
+  NULL
+}
+[2] Undefined variable $pk (line 23)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 23)
+[2] Undefined variable $pv (line 23)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 24)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 24)
+[2] Undefined variable $pv2 (line 24)
+array(1) {
+  [""]=>
+  array(1) {
+    [""]=>
+    NULL
+  }
+}
+[2] Undefined variable $e (line 30)
+bool(false)
+bool(true)
+string(4) "dflt"
+bool(false)
+NULL
+bool(false)
+int(5)
+array(1) {
+  [0]=>
+  int(1)
+}
+array(1) {
+  ["x"]=>
+  array(1) {
+    ["y"]=>
+    int(2)
+  }
+}
+[2] Undefined variable $a (line 40)
+[2] Undefined variable $b (line 41)
+[2] Undefined variable $c (line 42)
+[2] Undefined variable $d (line 43)
+[2] Decrement on type null has no effect, this will change in the next major version of PHP (line 43)
+[2] Undefined variable $e (line 44)
+[2] Undefined array key 0 (line 44)
+[2] Undefined variable $f (line 45)
+[2] Undefined array key "k" (line 45)
+[2] Undefined variable $g (line 46)
+string(1) "s"
+int(2)
+int(1)
+NULL
+array(1) {
+  [0]=>
+  string(1) "t"
+}
+array(1) {
+  ["k"]=>
+  int(1)
+}
+[2] Undefined variable $g (line 48)
+[2] Undefined variable $src (line 53)
+[2] Undefined variable $src2 (line 54)
+NULL
+NULL
+NULL
+[2] Undefined variable $none (line 56)
+[2] foreach() argument must be of type array|object, null given (line 56)
+[2] Undefined variable $none2 (line 58)
+[2] foreach() argument must be of type array|object, null given (line 58)
+[2] Undefined variable $none2 (line 60)
+[2] Undefined variable $cap (line 65)
+NULL
+[2] Undefined variable $out (line 69)
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+array(0) {
+}
+[2] Undefined variable $a (line 97)
+NULL
+string(3) "set"
+[2] Undefined variable $c (line 100)
+NULL
+[2] Undefined variable $d (line 101)
+__call missing
+[2] Undefined variable $d (line 102)
+[2] Undefined variable $u (line 107)
+none
+[2] Undefined variable $w (line 108)
+none
+[2] Undefined variable $x (line 109)
+none
+[2] Undefined variable $y (line 110)
+[2] Undefined variable $y (line 110)
+none
+[2] Undefined variable $z (line 112)
+[2] Undefined variable $z (line 113)
+[2] Undefined variable $a (line 121)
+[2] Undefined variable $b (line 123)
+[2] Undefined variable $c (line 126)
+[2] Undefined variable $g1 (line 136)
+g1
+g2
+g3
+glob
+bool(true)
+bool(false)
+quiet
+[2] Undefined global variable $g5 (line 145)
+string(1) "x"
+caught: Undefined variable $undef
+bool(false)
+caught: Undefined variable $y
+int(1)

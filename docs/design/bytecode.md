@@ -354,13 +354,48 @@ IssetCv    { dst, cv }                Bool(!is_null(deref(cv)))           (unset
 IssetDim   { dst, arr, key }          Bool(present AND not null); no warning; chains via DimFetchIs
 EmptyCv    { dst, cv }                Bool(!conv::to_bool(deref(cv)))
 EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
-UnsetCv    { cv }                     regs[cv] = Null   (see note)
+UnsetCv    { cv }                     regs[cv] = Undef  (see "Undefined variables")
 UnsetDim   { arr, key }               remove via make_mut; next_int high-water not lowered (value-model §3c)
 ```
-> `unset` vs "never defined": `isset` treats null/absent identically, so storing
-> `Null` on `UnsetCv` is observably correct for isset/??/empty. The only
-> divergence is the undefined-variable *warning* on a later read; if a golden
-> needs it, add an `Undef` CV sentinel. Baseline accepts `Null`.
+
+**Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
+IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts
+every CV undefined. In the global scope a CV is a `Ref` to the symbol-table
+cell, and the cell holds `Undef` instead. There is no compile-time analysis:
+as in php, each instruction decides how it fetches its operands.
+
+- R (a plain read, php's BP_VAR_R): `Vm::reg_r` raises "Undefined variable
+  $x" (the name from `cv_var_names`) and reads null. The handlers that read
+  an operand that may be a CV use it: arithmetic and concat, comparisons,
+  casts, `echo`, `Mov`/`Assign`, array literal elements, dimension and
+  property containers and keys, dynamic names, call targets, `return`,
+  `throw`, `yield`, … A temporary never warns (`undef_cv` checks
+  `r < num_cvs`).
+- IS (`isset`, `empty`, `??`, `??=`, the `?->` under isset): `MovIs`,
+  `FetchVarVarIs` and the `*Is` fetches read quietly (`reg_get`: `clone()`
+  gives null).
+- W (assignment, `$a[] = v`, `global`, `static`, by-ref binding): writes
+  replace `Undef`; `LvalCv` leaves the root alone until the write lands, so
+  `$a[0] = $a` reads (and warns about) `$a` first. A PHP reference never
+  holds `Undef`: `promote` turns it into null.
+- RW (`$x .= v`, `$x++`, `$a[$k] += v`): `IncDec` and `LvalCvRw` warn, then
+  the variable is null; `LvalGlobalRw` / `LvalVarVarRw` do the same for
+  `$GLOBALS['x']` ("Undefined global variable") and `$$n`.
+- UNSET (`unset($a[$k])`): `LvalCvUnset` warns and unsets nothing.
+- A method's argument window passes variables as `MakeArgRef` (the callee
+  is only known when the call runs): an undefined one stays undefined in a
+  shared cell, and binding decides (`bind_undef_args`): a by-reference
+  parameter creates it as null, a by-value one (or `__call`) warns.
+- `CheckCv` warns once where php reads once but rhp fetches several times
+  (a `list()` source, a `match` subject php puts in a jump table, the
+  operand of a `?->` guard).
+- `$GLOBALS` (`globals_array`) and a closure's static variables leave
+  undefined entries out; `unset($GLOBALS['x'])` keeps the symbol-table entry
+  (an `Undef` cell), as php keeps the bucket of an IS_INDIRECT slot.
+- An include shares the including function's variables by name through cells
+  (`promote_slot`), which keep `Undef`; an arrow function's implicit capture
+  copies the slot with `copy_slot`, so an undefined outer variable is
+  undefined inside (`use ($x)` reads it, with the warning).
 
 **foreach (phase 4)** — by-value iterates a COW snapshot (Rc bump into a hidden
 reg); by-ref operates on the live CV array. Position is a hidden `Int` reg via

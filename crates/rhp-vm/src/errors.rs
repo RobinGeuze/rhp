@@ -965,6 +965,12 @@ impl Vm {
     }
 
     pub(crate) fn report_uncaught(&mut self, thrown: Thrown) {
+        self.report_uncaught_as(thrown, 1, "Fatal error")
+    }
+
+    /// zend_exception_error(ex, severity): [`Vm::report_uncaught`] at
+    /// level `ty` (assert.bail reports a callback's exception as a warning).
+    pub(crate) fn report_uncaught_as(&mut self, thrown: Thrown, ty: i64, label: &str) {
         self.last_fatal_trace = None;
         let thrown = self.materialize(thrown, None);
         let h = match thrown {
@@ -972,7 +978,7 @@ impl Vm {
             Thrown::Error { class, message } => {
                 let (file, line) = self.throw_site();
                 let msg = format!("Uncaught {class}: {message}");
-                self.fatal_error(1, "Fatal error", msg.as_bytes(), &file, line as i64);
+                self.fatal_error(ty, label, msg.as_bytes(), &file, line as i64);
                 return;
             }
             _ => return,
@@ -1024,7 +1030,7 @@ impl Vm {
                 self.raise_error(builtins::E_WARNING, &m);
             }
             Err(t) if t.is_catchable() => {
-                self.report_uncaught(t);
+                self.report_uncaught_as(t, ty, label);
                 return;
             }
             Err(_) => return,
@@ -1040,7 +1046,7 @@ impl Vm {
         msg.extend_from_slice(&s);
         msg.extend_from_slice(b"\n  thrown");
         let (file, line) = location();
-        self.fatal_error(1, "Fatal error", &msg, &file, line);
+        self.fatal_error(ty, label, &msg, &file, line);
     }
 
     /// An exception that escaped to the top level: the user handler gets it

@@ -626,8 +626,7 @@ impl Vm {
         }
         let mut frame = Frame::new(main.clone(), unit, 0);
         frame.capture = true;
-        frame.include_kind = Some(kind);
-        frame.include_caller = Some(caller_top);
+        frame.include = Some((kind, caller_top));
         frame.defining_class = self.stack[caller_top].defining_class;
         frame.called_class = self.stack[caller_top].called_class;
 
@@ -687,7 +686,7 @@ impl Vm {
     /// `global $a`, `static $a`) or unset carries that over to the including
     /// scope, as php's shared symbol table does.
     pub(crate) fn include_writeback(&mut self, frame: &Frame) {
-        let Some(caller) = frame.include_caller else {
+        let Some(caller) = frame.include_caller() else {
             return;
         };
         // In the global scope every variable already is a global symbol-table

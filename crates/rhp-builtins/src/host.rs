@@ -544,7 +544,7 @@ pub trait Host {
                 o.properties.insert(storage.clone(), v);
             }
             None => {
-                o.properties.shift_remove(storage);
+                o.remove_prop(storage);
             }
         }
     }

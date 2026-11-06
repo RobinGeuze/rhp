@@ -93,6 +93,7 @@ pub fn init() {
     };
     BASE.with(|b| b.set(base));
     LIMIT.with(|l| l.set(lim));
+    rhp_values::ops::set_stack_overflow_check(overflowed);
 }
 
 /// zend_call_stack_overflowed: the stack has grown past the limit.

@@ -137,7 +137,7 @@ impl Vm {
         name: NIdx,
         fallback: NIdx,
     ) -> Result<CallTarget, Thrown> {
-        if self.stack[top].include_kind.is_none() {
+        if self.stack[top].include_kind().is_none() {
             let key = (Rc::as_ptr(proto) as usize, pc as u32);
             if let Some(site) = self.call_sites.get(&key) {
                 if site.gen == 0 || site.gen == self.fn_gen {
@@ -162,7 +162,7 @@ impl Vm {
         fallback: NIdx,
     ) -> Result<CallTarget, Thrown> {
         let (target, stable) = self.resolve_call(proto, name, fallback)?;
-        if self.stack[top].include_kind.is_none() && !matches!(target, CallTarget::Missing) {
+        if self.stack[top].include_kind().is_none() && !matches!(target, CallTarget::Missing) {
             let key = (Rc::as_ptr(proto) as usize, pc as u32);
             let site = CallSite {
                 target,
@@ -980,7 +980,7 @@ impl Vm {
     pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let Some(cv) = self.stack[top].proto.this_cv else {
             // An include or eval runs with its caller's `$this`.
-            if let Some(caller) = self.stack[top].include_caller {
+            if let Some(caller) = self.stack[top].include_caller() {
                 return self.current_this(caller);
             }
             // A closure whose body has no `$this` slot still has the bound
@@ -2380,7 +2380,7 @@ impl Vm {
     pub(crate) fn caller_function_frame(&self) -> Option<&Frame> {
         self.stack
             .last()
-            .filter(|f| f.include_kind.is_none() && f.proto.name.as_bytes() != b"{main}")
+            .filter(|f| f.include_kind().is_none() && f.proto.name.as_bytes() != b"{main}")
     }
 
     pub(crate) fn invoke_builtin(

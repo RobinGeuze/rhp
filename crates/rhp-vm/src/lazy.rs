@@ -167,7 +167,7 @@ impl Vm {
                         .cloned()
                         .collect();
                     for k in keys {
-                        removed.extend(b.properties.shift_remove(&k));
+                        removed.extend(b.remove_prop(&k));
                     }
                     for k in reset {
                         let present = b.properties.contains_key(&k);
@@ -179,7 +179,7 @@ impl Vm {
                             if keep {
                                 continue;
                             }
-                            removed.extend(b.properties.shift_remove(&k));
+                            removed.extend(b.remove_prop(&k));
                         }
                         lazy_props.push(k);
                     }

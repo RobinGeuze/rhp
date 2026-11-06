@@ -88,6 +88,10 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) labels: HashMap<Vec<u8>, (u32, Vec<u32>)>,
     /// Pending `goto`s: placeholder position, label, scope path, line.
     pub(crate) gotos: Vec<(usize, Vec<u8>, Vec<u32>, u32)>,
+    /// FE_FREE placeholders before a `goto`: (goto position, placeholder
+    /// position, the free, the loop's scope id); kept for the loops the
+    /// jump leaves.
+    pub(crate) goto_frees: Vec<(usize, usize, Instr, u32)>,
     /// In a property hook: the property's name and the hook (php's
     /// `active_property_info_name` / `active_property_hook_kind`).
     pub(crate) hook: Option<(Vec<u8>, rhp_bytecode::HookKind)>,
@@ -129,10 +133,14 @@ pub(crate) struct LoopCtx {
     pub(crate) is_switch: bool,
     pub(crate) break_jumps: Vec<usize>,
     pub(crate) continue_jumps: Vec<usize>,
-    /// A temp the loop frees when it ends (FE_FREE of a by-reference
-    /// foreach over `$a['k']` / `$o->p`): a `break N` / `continue N`
-    /// leaving it frees it too.
-    pub(crate) free: Option<Reg>,
+    /// The loop's FE_FREE (a foreach): a `break N` / `continue N`,
+    /// `return` or `goto` leaving the loop runs it first.
+    pub(crate) free: Option<Instr>,
+    /// The loop's `goto_scope` id.
+    pub(crate) scope: u32,
+    /// FE_FREEs a jump out of the loop emitted: their `end` is set to the
+    /// loop's end when it closes.
+    pub(crate) free_sites: Vec<usize>,
 }
 
 impl<'c> ProtoBuilder<'c> {
@@ -171,6 +179,7 @@ impl<'c> ProtoBuilder<'c> {
             goto_serial: 0,
             labels: HashMap::new(),
             gotos: Vec::new(),
+            goto_frees: Vec::new(),
             hook: None,
             ret_type: None,
             this_bound: false,
@@ -246,6 +255,11 @@ impl<'c> ProtoBuilder<'c> {
                 ));
             }
             let target = *target;
+            for (_, at, free, sid) in self.goto_frees.iter().filter(|f| f.0 == pos) {
+                if scope[common..].contains(sid) {
+                    self.code[*at] = *free;
+                }
+            }
             self.code[pos] = match self.code[pos] {
                 Instr::JmpFinally { .. } => Instr::JmpFinally { target },
                 _ => Instr::Jmp { target },

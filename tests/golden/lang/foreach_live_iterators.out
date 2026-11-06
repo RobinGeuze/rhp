@@ -1,0 +1,19 @@
+0=1 2=3 3=4 
+1,3,4 / 1,2,3
+1 20 30 
+1
+
+Warning: foreach() argument must be of type array|object, int given in /Users/robing/gits/rhp/.claude/worktrees/rest/foreach-semantics/tests/golden/lang/foreach_live_iterators.php on line 26
+a=1 e=5 
+a=1 b=2 c=3 e=5 
+a=1 d=back 
+~D1 ret 
+~D2 after break
+~D4 ~D3 after continue 2
+int(4)
+int(2)
+int(3)
+bool(false)
+Nesting level too deep - recursive dependency?
+bool(true)
+5

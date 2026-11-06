@@ -216,7 +216,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .unwrap_or(false);
     for (k, v) in a.iter() {
         let hit = if strict {
-            ops::strict_eq(&needle, v)
+            ops::identical(&needle, v)?
         } else {
             crate::host_loose_eq(host, &needle, v)?
         };
@@ -923,7 +923,7 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             None => true,
             Some(needle) => {
                 if strict {
-                    ops::strict_eq(&deref(v), needle)
+                    ops::identical(&deref(v), needle)?
                 } else {
                     host_loose_eq(host, &deref(v), needle)?
                 }
@@ -1412,7 +1412,7 @@ fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
     for (_, v) in a.iter() {
         let hit = if strict {
-            ops::strict_eq(&needle, v)
+            ops::identical(&needle, v)?
         } else {
             host_loose_eq(host, &needle, v)?
         };
@@ -2593,8 +2593,14 @@ fn sort_by_ref(
         }
         out.make_mut().set_next_free(next_free);
     }
+    let sorted = arr.data_ptr();
     drop(arr);
     let mut g = rc.borrow_mut();
+    // zend_array_sort holds the table it sorts in place: a comparison that
+    // wrote to the variable separated it, and the sorted table goes away.
+    if !dup && !matches!(&*g, Value::Array(a) if a.data_ptr() == sorted) {
+        return true;
+    }
     // An array_walk over it goes on from the same position (zend_hash_sort
     // keeps iterator positions; php_usort's zend_array_dup copies them).
     if let Value::Array(old) = &mut *g {
@@ -2761,11 +2767,6 @@ fn fn_natcasesort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 
 type Cell = std::rc::Rc<std::cell::RefCell<Value>>;
 
-thread_local! {
-    /// Ids for array_walk's HashTable iterators.
-    static WALK_ITER_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
 /// `array_walk(array|object &$array, callable $callback, mixed $arg)`.
 fn fn_array_walk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     walk_entry(host, args, false)
@@ -2875,11 +2876,7 @@ fn php_array_walk(
     active: &mut Vec<*const std::cell::RefCell<Value>>,
 ) -> Result<(), Thrown> {
     crate::zend::call_stack::check()?;
-    let id = WALK_ITER_ID.with(|c| {
-        let n = c.get().wrapping_add(1);
-        c.set(n);
-        n
-    });
+    let id = rhp_values::next_ht_iter_id();
     let mut obj_pos = 0usize;
     // An object walks its own property table (a lazy object initializes).
     // `held`: the object in the container; `obj`: the one whose properties

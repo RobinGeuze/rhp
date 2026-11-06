@@ -46,7 +46,7 @@ impl Vm {
     /// in its includer's scope.
     fn scope_owner(&self, mut top: usize) -> usize {
         while !self.stack[top].global_scope {
-            match self.stack[top].include_caller {
+            match self.stack[top].include_caller() {
                 Some(c) => top = c,
                 None => break,
             }

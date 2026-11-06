@@ -965,6 +965,63 @@ fn fn_hash_pbkdf2(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
+/// RFC 5869 HKDF over HMAC (PHP_FUNCTION(hash_hkdf)): raw output.
+fn fn_hash_hkdf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let algo = conv::to_string_bytes(&args[0]).to_ascii_lowercase();
+    let ikm = conv::to_string_bytes(&args[1]);
+    let length = args.get(2).map(as_int).unwrap_or(0);
+    let info = args.get(3).map(conv::to_string_bytes).unwrap_or_default();
+    let salt = args.get(4).map(conv::to_string_bytes).unwrap_or_default();
+    let Some(size) = hmac_block_size(&algo).and_then(|_| digest(&algo, b"")).map(|d| d.len())
+    else {
+        return Err(Thrown::error(
+            "ValueError",
+            "hash_hkdf(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm",
+        ));
+    };
+    if ikm.is_empty() {
+        return Err(Thrown::error(
+            "ValueError",
+            "hash_hkdf(): Argument #2 ($key) must not be empty",
+        ));
+    }
+    let length = match length {
+        n if n < 0 => {
+            return Err(Thrown::error(
+                "ValueError",
+                "hash_hkdf(): Argument #3 ($length) must be greater than or equal to 0",
+            ))
+        }
+        0 => size,
+        n if n as u64 > size as u64 * 255 => {
+            return Err(Thrown::error(
+                "ValueError",
+                format!(
+                    "hash_hkdf(): Argument #3 ($length) must be less than or equal to {}",
+                    size * 255
+                ),
+            ))
+        }
+        n => n as usize,
+    };
+    let fail = || invalid_algo("hash_hkdf");
+    // Extract, then expand.
+    let prk = hmac(&algo, &salt, &ikm).ok_or_else(fail)?;
+    let mut out = Vec::with_capacity(length);
+    let mut t: Vec<u8> = Vec::new();
+    let mut i: u8 = 1;
+    while out.len() < length {
+        let mut msg = std::mem::take(&mut t);
+        msg.extend_from_slice(&info);
+        msg.push(i);
+        t = hmac(&algo, &prk, &msg).ok_or_else(fail)?;
+        let n = (length - out.len()).min(t.len());
+        out.extend_from_slice(&t[..n]);
+        i = i.wrapping_add(1);
+    }
+    Ok(Value::str(out))
+}
+
 fn fn_hash_equals(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // zpp takes any value ("zz"); only strings compare.
     let mut strs = [Vec::new(), Vec::new()];
@@ -1131,6 +1188,7 @@ pub fn register(m: &mut crate::Registry) {
             ("hash_file", fn_hash_file),
             ("hash_hmac", fn_hash_hmac),
             ("hash_pbkdf2", fn_hash_pbkdf2),
+            ("hash_hkdf", fn_hash_hkdf),
             ("hash_equals", fn_hash_equals),
             ("hash_algos", fn_hash_algos),
             ("hash_hmac_algos", fn_hash_hmac_algos),

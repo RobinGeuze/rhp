@@ -180,6 +180,7 @@ pub struct ClassConst {
     pub visited: bool,
     /// Declared type of a typed constant (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    pub is_final: bool,
 }
 
 /// A deferred class-constant initializer.
@@ -1487,6 +1488,7 @@ impl Vm {
         }
 
         // Class constants.
+        self.check_const_inheritance(proto, parent)?;
         self.check_const_types(proto, parent)?;
         // A parent's private constants are not inherited (do_inherit_constant).
         let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
@@ -1537,6 +1539,7 @@ impl Vm {
                     init,
                     visited: false,
                     ty: c.type_hint.clone().map(Rc::new),
+                    is_final: c.is_final,
                 },
             );
         }
@@ -1758,6 +1761,7 @@ impl Vm {
                     init,
                     visited: false,
                     ty: None,
+                    is_final: false,
                 },
             );
             self.classes[id as usize].enum_cases.push(obj);

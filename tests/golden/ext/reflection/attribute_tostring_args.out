@@ -1,0 +1,56 @@
+Attribute [ Foo\Bar\A ] {
+  - Arguments [37] {
+    Argument #0 [ 1 ]
+    Argument #1 [ 'a'b\\c' ]
+    Argument #2 [ 't\tn\n\x7F' ]
+    Argument #3 [ [0 => 1, 'x' => 2.5] ]
+    Argument #4 [ NULL ]
+    Argument #5 [ true ]
+    Argument #6 [ \Foo\Bar\E::A ]
+    Argument #7 [ \Foo\Bar\E::X ]
+    Argument #8 [ \K::Y ]
+    Argument #9 [ \Other\Thing::Z ]
+    Argument #10 [ \Other\Pkg\Q::Z ]
+    Argument #11 [ \Foo\Bar\R::Z ]
+    Argument #12 [ new \K(1) ]
+    Argument #13 [ new \Other\Thing() ]
+    Argument #14 [ Foo\Bar\FOO ]
+    Argument #15 [ FOO ]
+    Argument #16 [ Other\C1 ]
+    Argument #17 [ Foo\Bar\PHP_EOL ]
+    Argument #18 [ Foo\Bar\E_ALL ]
+    Argument #19 [ 3 ]
+    Argument #20 [ Foo\Bar\FOO + 1 ]
+    Argument #21 [ [Foo\Bar\FOO, 2] ]
+    Argument #22 [ Foo\Bar\strlen(...) ]
+    Argument #23 [ \strlen(...) ]
+    Argument #24 [ \Other\fn1(...) ]
+    Argument #25 [ \Foo\Bar\Sub\f(...) ]
+    Argument #26 [ Closure({closure:Foo\Bar\g():12}) ]
+    Argument #27 [ name = 5 ]
+    Argument #28 [ other = Foo\Bar\FOO ? 1 : 2 ]
+    Argument #29 [ x = -Foo\Bar\FOO ]
+    Argument #30 [ z = Foo\Bar\FOO . 'x' ]
+    Argument #31 [ w = 'Foo\\Bar\\E' ]
+    Argument #32 [ v = '' ]
+    Argument #33 [ t = [1, ...Foo\Bar\FOO] ]
+    Argument #34 [ s = (int)Foo\Bar\FOO ]
+    Argument #35 [ r = Foo\Bar\FOO['a'] ]
+    Argument #36 [ p = \Foo\Bar\E::A->name ]
+  }
+}
+Attribute [ Foo\Bar\NoArgs ]
+Attribute [ Foo\Bar\EmptyArgs ]
+Attribute [ Foo\Bar\A ] {
+  - Arguments [5] {
+    Argument #0 [ 'Foo\\Bar\\W' ]
+    Argument #1 [ new self() ]
+    Argument #2 [ 'Foo\\Bar\\W' ]
+    Argument #3 [ self::m(...) ]
+    Argument #4 [ Closure({closure:Foo\Bar\W::m():21}) ]
+  }
+}
+{closure:Foo\Bar\c():27}
+{closure:Foo\Bar\V::m():29}
+Parameter #0 [ <optional> $a = 'it's\\ \n\x7F\x01' ]
+Parameter #1 [ <optional> $b = ['k'\t' => 1.5, 2 => NULL] ]

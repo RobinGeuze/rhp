@@ -113,6 +113,9 @@ pub struct Vm {
     /// instruction run. php raises the timeout where a jump lands or a
     /// function starts (its VM interrupt checks).
     timeout_prev: Option<(usize, usize)>,
+    /// EG(ticks_count): statements run under `declare(ticks)` since the
+    /// tick functions last ran.
+    ticks_count: u32,
     /// A jump landed on a loop head: php's layout tests the condition at
     /// the bottom, so its landing is the body start, here (frame, pc).
     timeout_wait: Option<(usize, usize)>,

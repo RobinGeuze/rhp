@@ -303,6 +303,13 @@ impl Vm {
 
             match instr {
                 Instr::Nop => {}
+                Instr::Ticks { n } => {
+                    self.ticks_count += 1;
+                    if self.ticks_count >= n {
+                        self.ticks_count = 0;
+                        builtins::run_tick_functions(self)?;
+                    }
+                }
                 Instr::Mov { dst, src } => {
                     let v = self.reg_get_fast(top, src);
                     self.reg_set_fast(top, dst, v);

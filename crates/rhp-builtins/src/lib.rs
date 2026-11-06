@@ -43,10 +43,11 @@ pub use registry::{
 };
 pub(crate) use registry::{register, register_helpers, Registry};
 
+pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 /// pcntl's asynchronous signal delivery: the VM polls
 /// [`pcntl_interrupt_pending`] between instructions and, when set, calls
 /// [`pcntl_dispatch`] to run the queued PHP signal handlers.
-pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
+pub use ext::standard::basic_functions::run_tick_functions;
 
 #[rustfmt::skip]
 mod const_modules;

@@ -270,6 +270,7 @@ from isa.md are the disassembly spelling of the same variants.
 **Move / const / load (phase 1–2)**
 ```
 Nop
+Ticks      { n }                  ZEND_TICKS: after each statement under declare(ticks=n); every nth runs the tick functions ?
 Mov        { dst, src }           dst = deref(src)                         (value copy; `$b=$a`)
 MovTake    { dst, src }           dst = deref(src); src = Null             (a dead temporary into a call window)
 LoadConst  { dst, k }             dst = consts[k].clone()

@@ -35,7 +35,32 @@ impl ProtoBuilder<'_> {
             ));
         }
         self.compile_stmt_inner(stmt)
-            .map_err(|e| self.cx.locate(e, stmt.span().start.offset))
+            .map_err(|e| self.cx.locate(e, stmt.span().start.offset))?;
+        if !self.cx.ticks.is_empty() {
+            self.emit_tick(stmt);
+        }
+        Ok(())
+    }
+
+    /// zend_emit_tick after a statement compiled under `declare(ticks)`:
+    /// not for an empty statement, a statement list or a label, nor right
+    /// after another tick.
+    fn emit_tick(&mut self, stmt: &Statement) {
+        use mago_span::HasSpan;
+        if matches!(
+            stmt,
+            Statement::OpeningTag(_)
+                | Statement::ClosingTag(_)
+                | Statement::Noop(_)
+                | Statement::Block(_)
+                | Statement::Label(_)
+        ) {
+            return;
+        }
+        let n = self.cx.ticks_at(stmt.span().end.offset);
+        if n != 0 && !matches!(self.code.last(), Some(Instr::Ticks { .. })) {
+            self.emit(Instr::Ticks { n });
+        }
     }
 
     fn compile_stmt_inner(&mut self, stmt: &Statement) -> Result<(), Thrown> {

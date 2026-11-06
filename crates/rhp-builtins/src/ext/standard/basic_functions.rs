@@ -210,6 +210,129 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
 
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
+    TICK_FUNCS.with(|t| t.borrow_mut().clear());
+}
+
+/// One register_tick_function() entry (user_tick_function_entry).
+struct TickFn {
+    id: u64,
+    callback: Value,
+    params: Vec<Value>,
+    /// Running now: not called again from its own ticks.
+    calling: bool,
+}
+
+thread_local! {
+    /// BG(user_tick_functions), in registration order.
+    static TICK_FUNCS: std::cell::RefCell<Vec<TickFn>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TICK_NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// php_run_ticks: call every registered tick function (the engine's
+/// ZEND_TICKS when its count is reached). A function already running is
+/// skipped.
+pub fn run_tick_functions(host: &mut dyn Host) -> Result<(), Thrown> {
+    let ids: Vec<u64> = TICK_FUNCS.with(|t| t.borrow().iter().map(|f| f.id).collect());
+    for id in ids {
+        let call = TICK_FUNCS.with(|t| {
+            let mut t = t.borrow_mut();
+            let f = t.iter_mut().find(|f| f.id == id && !f.calling)?;
+            f.calling = true;
+            Some((f.callback.clone(), f.params.clone()))
+        });
+        let Some((cb, params)) = call else {
+            continue;
+        };
+        let r = host.call_callable(&cb, &params);
+        TICK_FUNCS.with(|t| {
+            if let Some(f) = t.borrow_mut().iter_mut().find(|f| f.id == id) {
+                f.calling = false;
+            }
+        });
+        r?;
+    }
+    Ok(())
+}
+
+/// What zend_fcc_equals compares of a callable: the bound object (by
+/// identity) or closure, and the lowercased class and function names.
+#[derive(PartialEq)]
+enum CallableKey {
+    Closure(usize),
+    Func(Vec<u8>),
+    Method(Option<usize>, Vec<u8>, Vec<u8>),
+}
+
+fn callable_key(host: &dyn Host, v: &Value) -> Option<CallableKey> {
+    let name = |b: &[u8]| {
+        let b = b.strip_prefix(b"\\").unwrap_or(b);
+        b.to_ascii_lowercase()
+    };
+    match deref(v) {
+        Value::Closure(c) => Some(CallableKey::Closure(
+            std::rc::Rc::as_ptr(&c) as *const u8 as usize
+        )),
+        Value::Str(s) => {
+            let s = s.as_bytes();
+            match s.windows(2).position(|w| w == b"::") {
+                Some(i) => Some(CallableKey::Method(None, name(&s[..i]), name(&s[i + 2..]))),
+                None => Some(CallableKey::Func(name(s))),
+            }
+        }
+        Value::Array(a) if a.len() == 2 => {
+            let target = deref(a.get(&ArrayKey::Int(0))?);
+            let method = conv::to_string_bytes(&deref(a.get(&ArrayKey::Int(1))?));
+            match target {
+                Value::Object(o) => {
+                    let class = host.object_class_name(&Value::Object(o.clone()))?;
+                    let id = std::rc::Rc::as_ptr(&o) as *const u8 as usize;
+                    Some(CallableKey::Method(Some(id), name(&class), name(&method)))
+                }
+                Value::Str(c) => Some(CallableKey::Method(None, name(c.as_bytes()), name(&method))),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn fn_register_tick_function(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let id = TICK_NEXT_ID.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    let f = TickFn {
+        id,
+        callback: deref(&args[0]),
+        params: args[1..].iter().map(deref).collect(),
+        calling: false,
+    };
+    TICK_FUNCS.with(|t| t.borrow_mut().push(f));
+    Ok(Value::Bool(true))
+}
+
+fn fn_unregister_tick_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let key = callable_key(host, &args[0]);
+    let funcs: Vec<(u64, Value, bool)> = TICK_FUNCS.with(|t| {
+        t.borrow()
+            .iter()
+            .map(|f| (f.id, f.callback.clone(), f.calling))
+            .collect()
+    });
+    // zend_llist_del_element: the first equal entry.
+    for (id, cb, calling) in funcs {
+        if key.is_some() && callable_key(host, &cb) == key {
+            if calling {
+                return Err(Thrown::error(
+                    "Error",
+                    "Registered tick function cannot be unregistered while it is being executed",
+                ));
+            }
+            TICK_FUNCS.with(|t| t.borrow_mut().retain(|f| f.id != id));
+            break;
+        }
+    }
+    Ok(Value::Null)
 }
 
 /// The request's `putenv` changes in order (`None` = unset). A spawner of
@@ -1378,6 +1501,8 @@ pub fn register(m: &mut crate::Registry) {
         m,
         &[
             ("highlight_file", fn_highlight_file),
+            ("register_tick_function", fn_register_tick_function),
+            ("unregister_tick_function", fn_unregister_tick_function),
             ("show_source", fn_show_source),
             ("highlight_string", fn_highlight_string),
             ("php_strip_whitespace", fn_php_strip_whitespace),

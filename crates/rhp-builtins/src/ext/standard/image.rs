@@ -967,14 +967,15 @@ fn from_any(host: &mut dyn Host, args: &[Value], from_path: bool) -> Result<Valu
     Ok(r)
 }
 
-/// The bytes behind `path`: a user wrapper's stream read through, other
+/// The bytes behind `path`: php:// and user wrapper streams read through, other
 /// paths read whole (php copies an unseekable stream to a temp one anyway).
 fn read_path(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Option<Vec<u8>>, Thrown> {
     let scheme = crate::main::streams::split_scheme(path).0.to_vec();
-    if !host
-        .stream_wrapper(&scheme)
-        .is_some_and(|w| w.has_stream_opener())
-    {
+    let via_stream = scheme.eq_ignore_ascii_case(b"php")
+        || host
+            .stream_wrapper(&scheme)
+            .is_some_and(|w| w.has_stream_opener());
+    if !via_stream {
         return crate::ext::standard::md5::read_file_for_hash(host, fname, path);
     }
     let Some(res) = host.stream_open_ctx(path, b"rb", &Value::Null) else {

@@ -94,6 +94,10 @@ pub(crate) struct FileCtx<'s> {
     /// The leading run of top-level `declare`s (zend_is_first_statement):
     /// each one's offset, and whether an empty statement came before it.
     pub(crate) first_declares: Vec<(u32, bool)>,
+    /// `declare(ticks)`'s value through the file, as php's file-level
+    /// FC(declarables).ticks changes in source order: (offset, ticks) at
+    /// each change, sorted. Empty when the file never declares ticks.
+    pub(crate) ticks: Vec<(u32, u32)>,
 }
 
 /// The class-like a declaration sits in, as type compilation needs it.
@@ -143,6 +147,7 @@ impl<'s> FileCtx<'s> {
             fatal: RefCell::new(None),
             compile_diags: RefCell::new(Vec::new()),
             first_declares: Vec::new(),
+            ticks: Vec::new(),
         }
     }
 
@@ -158,6 +163,7 @@ impl<'s> FileCtx<'s> {
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
         cx.first_declares = first_declares(&cx, program);
+        cx.ticks = tick_points(&cx, program);
         cx.line_starts = build_line_starts(src);
         // Keyed by fully qualified name (lowercased), as call sites resolve.
         for (ns, stmt) in flat {
@@ -416,6 +422,73 @@ fn first_declares(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, bool)> {
         }
     }
     out
+}
+
+/// [`FileCtx::ticks`]: each `declare(ticks=n)` sets the value from its
+/// start; one with a body restores the previous value at its end (php
+/// restores it once the body is compiled; `declare(ticks=n);` has none).
+fn tick_points(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, u32)> {
+    use crate::parse::cst::{DeclareBody, Node};
+    use mago_span::HasSpan;
+    if !cx.src.windows(5).any(|w| w.eq_ignore_ascii_case(b"ticks")) {
+        return Vec::new();
+    }
+    // (start, end of the body or None, value), in source order.
+    let mut decls: Vec<(u32, Option<u32>, u32)> = Vec::new();
+    fn walk(node: Node, cx: &FileCtx, out: &mut Vec<(u32, Option<u32>, u32)>) {
+        if let Node::Declare(d) = node {
+            for item in d.items.iter() {
+                if item.name.value.eq_ignore_ascii_case(b"ticks") {
+                    let v = crate::fold::fold_const(cx, item.value)
+                        .map_or(0, |v| rhp_values::conv::to_int(&v));
+                    let block = !matches!(
+                        &d.body,
+                        DeclareBody::Statement(Statement::Noop(_) | Statement::ClosingTag(_))
+                    );
+                    // The restore point is the declare's last byte: the
+                    // statements in its body all end before it.
+                    let end = block.then(|| d.span().end.offset.saturating_sub(1));
+                    out.push((d.span().start.offset, end, v as u32));
+                }
+            }
+        }
+        node.visit_children(|ch| walk(ch, cx, out));
+    }
+    walk(Node::Program(program), cx, &mut decls);
+    decls.sort_by_key(|d| d.0);
+    let mut points = Vec::new();
+    let mut cur = 0u32;
+    // Block declares still open: (end, the value before them).
+    let mut open: Vec<(u32, u32)> = Vec::new();
+    for (start, end, v) in decls {
+        while open.last().is_some_and(|&(e, _)| e <= start) {
+            let (e, orig) = open.pop().unwrap();
+            cur = orig;
+            points.push((e, cur));
+        }
+        if let Some(end) = end {
+            open.push((end, cur));
+        }
+        cur = v;
+        points.push((start, cur));
+    }
+    while let Some((e, orig)) = open.pop() {
+        points.push((e, orig));
+    }
+    points
+}
+
+impl FileCtx<'_> {
+    /// The ticks value a statement ending at `end` is compiled under: the
+    /// last change before it.
+    pub(crate) fn ticks_at(&self, end: u32) -> u32 {
+        let i = self.ticks.partition_point(|&(o, _)| o < end);
+        if i == 0 {
+            0
+        } else {
+            self.ticks[i - 1].1
+        }
+    }
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').

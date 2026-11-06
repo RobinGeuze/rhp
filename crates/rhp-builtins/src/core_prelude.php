@@ -46,12 +46,12 @@ final class Closure {
 }
 class Exception implements Throwable {
     protected $message = "";
-    private $string = "";
+    private string $string = "";
     protected $code = 0;
-    protected $file = "";
-    protected $line = 0;
-    private $trace = [];
-    private $previous = null;
+    protected string $file = "";
+    protected int $line = 0;
+    private array $trace = [];
+    private ?Throwable $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
@@ -72,12 +72,12 @@ class Exception implements Throwable {
 }
 class Error implements Throwable {
     protected $message = "";
-    private $string = "";
+    private string $string = "";
     protected $code = 0;
-    protected $file = "";
-    protected $line = 0;
-    private $trace = [];
-    private $previous = null;
+    protected string $file = "";
+    protected int $line = 0;
+    private array $trace = [];
+    private ?Throwable $previous = null;
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }

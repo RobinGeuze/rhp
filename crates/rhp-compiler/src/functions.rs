@@ -16,7 +16,7 @@ use crate::expr::{block_has_yield, expr_has_yield, stmt_has_yield};
 use crate::file::FileCtx;
 use crate::hints::{compile_type, compile_type_ex, PhpType};
 use crate::names::join_ns;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 /// The body form of a closure being lowered.
 enum ClosureBody<'a> {
@@ -46,6 +46,7 @@ pub(crate) fn compile_method(
     if !is_static {
         let this = c.cv(b"this");
         debug_assert_eq!(this, 0);
+        c.this_bound = true;
     }
 
     // Constructor property promotion: a param with a modifier declares a property.
@@ -62,8 +63,14 @@ pub(crate) fn compile_method(
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    c.ret_type = return_type.clone();
+    c.is_generator = match &m.body {
+        MethodBody::Concrete(block) => block.statements.iter().any(stmt_has_yield),
+        MethodBody::Abstract(_) => false,
+    };
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
+    c.check_generator_type(cx.line_of(m.function.span.start.offset))?;
     for ((p, info), ty) in m.parameter_list.parameters.iter().zip(&params).zip(&types) {
         if p.modifiers.is_empty() && p.hooks.is_none() {
             continue;
@@ -215,9 +222,12 @@ pub(crate) fn compile_function(
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    c.ret_type = return_type.clone();
+    c.is_generator = block_has_yield(&func.body.statements);
     let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
     let (params, nonconst_defaults, _) =
         c.lower_params(&func.parameter_list, &display, false, None)?;
+    c.check_generator_type(cx.line_of(func.function.span.start.offset))?;
     let num_params = params.len() as u16;
 
     // Scan the body for the rest of the function's local variables.
@@ -359,6 +369,45 @@ impl ProtoBuilder<'_> {
             captures.push((b"this".to_vec(), false));
         }
         if let Some(uses) = &cl.use_clause {
+            // zend_compile_closure_binding / zend_compile_closure_uses.
+            let mut seen: Vec<&[u8]> = Vec::new();
+            for u in uses.variables.iter() {
+                use mago_span::HasSpan;
+                let name = strip_dollar(u.variable.name);
+                let line = self.cx.line_of(u.span().start.offset);
+                let msg = if name == b"this" {
+                    "Cannot use $this as lexical variable".to_string()
+                } else if crate::util::is_superglobal(name) {
+                    "Cannot use auto-global as lexical variable".to_string()
+                } else if seen.contains(&name) {
+                    format!(
+                        "Cannot use variable ${} twice",
+                        String::from_utf8_lossy(name)
+                    )
+                } else {
+                    seen.push(name);
+                    continue;
+                };
+                return Err(compile_error(msg, line));
+            }
+            for u in uses.variables.iter() {
+                use mago_span::HasSpan;
+                let name = strip_dollar(u.variable.name);
+                if cl
+                    .parameter_list
+                    .parameters
+                    .iter()
+                    .any(|p| strip_dollar(p.variable.name) == name)
+                {
+                    return Err(compile_error(
+                        format!(
+                            "Cannot use lexical variable ${} as a parameter name",
+                            String::from_utf8_lossy(name)
+                        ),
+                        self.cx.line_of(u.span().start.offset),
+                    ));
+                }
+            }
             for u in uses.variables.iter() {
                 let name = strip_dollar(u.variable.name).to_vec();
                 let by_ref = u.ampersand.is_some();
@@ -422,19 +471,22 @@ impl ProtoBuilder<'_> {
         c.returns_ref = returns_ref;
         for (name, _) in &captures {
             c.cv(name); // captures occupy CVs 0..nc
+            if name != b"this" {
+                c.static_vars.push(name.clone());
+            }
         }
         let return_type = ret_hint.and_then(|h| compile_type(self.cx, h, true).map(|t| t.hint));
-        let display = match &self.class_name {
-            Some(cn) => format!(
-                "{}::{}",
-                String::from_utf8_lossy(cn.as_bytes()),
-                String::from_utf8_lossy(c.name.as_bytes())
-            ),
-            None => String::from_utf8_lossy(c.name.as_bytes()).into_owned(),
+        c.ret_type = return_type.clone();
+        c.is_generator = match body {
+            ClosureBody::Block(b) => block_has_yield(&b.statements),
+            ClosureBody::Arrow(e) => expr_has_yield(e),
         };
+        // A closure has no scope while it is compiled: its name alone.
+        let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
         let cname = c.class_name.clone();
         let (params, nonconst_defaults, _) =
             c.lower_params(param_list, &display, true, cname.as_ref())?;
+        c.check_generator_type(meta.start_line)?;
         let num_params = params.len() as u16;
 
         match body {
@@ -553,6 +605,28 @@ impl ProtoBuilder<'_> {
             .rposition(|p| p.default_value.is_none() && p.ellipsis.is_none());
         for (idx, p) in list.parameters.iter().enumerate() {
             let var = strip_dollar(p.variable.name);
+            let pline = cx.line_of(p.span().start.offset);
+            if var == b"this" {
+                return Err(compile_error("Cannot use $this as parameter", pline));
+            }
+            if idx > 0
+                && list
+                    .parameters
+                    .iter()
+                    .nth(idx - 1)
+                    .is_some_and(|q| q.ellipsis.is_some())
+            {
+                return Err(compile_error(
+                    "Only the last parameter can be variadic",
+                    pline,
+                ));
+            }
+            if p.ellipsis.is_some() && p.default_value.is_some() {
+                return Err(compile_error(
+                    "Variadic parameter cannot have a default value",
+                    pline,
+                ));
+            }
             let cv = self.cv(var); // params get CVs in order
             let name = self.intern_name(var);
             let at = p.span().start.offset;
@@ -626,6 +700,7 @@ impl ProtoBuilder<'_> {
             let default = folded.map(|d| match d {
                 Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),
                 Err(e) => {
+                    crate::constexpr::check_const_expr(cx, e, true, self.scope_known());
                     nonconst.push((idx as u16, cv, e, type_hint.is_some().then_some(line)));
                     rhp_bytecode::ParamDefault::Init
                 }

@@ -11,7 +11,7 @@ use crate::file::FileCtx;
 use crate::names::NameKind;
 use crate::oop::Sel;
 use crate::prelude::prelude_classes;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, strip_dollar};
 
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_call(&mut self, call: &crate::parse::cst::Call) -> Result<Reg, Thrown> {
@@ -275,10 +275,11 @@ impl ProtoBuilder<'_> {
                 && matches!(
                     p.value,
                     Expression::ArrayAccess(_)
+                        | Expression::ArrayAppend(_)
                         | Expression::Access(Access::Property(_))
                         | Expression::Access(Access::StaticProperty(_))
                 )
-                && variable_rooted_lvalue(p.value)
+                && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
             {
                 // SEND_FUNC_ARG for an element or property of a variable
                 let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
@@ -287,7 +288,22 @@ impl ProtoBuilder<'_> {
             } else {
                 // A variable's value is taken when its argument is evaluated
                 // (php's SEND_VAR), before later arguments can change it.
-                let r = self.compile_expr(p.value)?;
+                // A file function not compiled yet is called by name: `[]`
+                // in its argument fails at run time (SEND_FUNC_ARG).
+                let late = builtin.is_none() && {
+                    use mago_span::HasSpan;
+                    let at = fc.span().start.offset;
+                    [Some(&name_lc), global_lc.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|n| self.cx.sig_ends.get(n))
+                        .is_some_and(|end| *end > at)
+                };
+                let saved = self.func_arg_read;
+                self.func_arg_read |= late;
+                let r = self.compile_expr(p.value);
+                self.func_arg_read = saved;
+                let r = r?;
                 let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
@@ -475,25 +491,28 @@ impl ProtoBuilder<'_> {
             ));
         }
         let strict = rhp_values::conv::to_bool(&flag);
-        let haystack = arg(1)?;
+        self.in_array_haystack_ok(arg(1)?, strict).then_some(strict)
+    }
+
+    /// zend_compile_func_in_array's haystack: a constant array of only
+    /// strings and ints (strict) or only non-numeric strings.
+    pub(crate) fn in_array_haystack_ok(&self, haystack: &Expression, strict: bool) -> bool {
         if !matches!(haystack, Expression::Array(_) | Expression::LegacyArray(_)) {
-            return None;
+            return false;
         }
         let Ok(Value::Array(a)) = crate::fold::fold_const(self.cx, haystack) else {
-            return None;
+            return false;
         };
-        a.iter()
-            .all(|(_, v)| match v {
-                Value::Int(_) => strict,
-                Value::Str(s) => strict || rhp_values::conv::numeric_string(s.as_bytes()).is_none(),
-                _ => false,
-            })
-            .then_some(strict)
+        a.iter().all(|(_, v)| match v {
+            Value::Int(_) => strict,
+            Value::Str(s) => strict || rhp_values::conv::numeric_string(s.as_bytes()).is_none(),
+            _ => false,
+        })
     }
 
     /// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
     /// global builtin constant that is not deprecated.
-    fn ct_constant(&self, id: &Identifier) -> Option<Value> {
+    pub(crate) fn ct_constant(&self, id: &Identifier) -> Option<Value> {
         let namespaced_fq =
             matches!(id, Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
         if !namespaced_fq {
@@ -548,7 +567,12 @@ impl ProtoBuilder<'_> {
         // The callee is only known at run time, so (as for method calls) a
         // simple-variable argument travels as a reference; a by-value
         // parameter dereferences it.
-        let (base, argc) = self.compile_arg_window_ex(Some(&fc.argument_list), &[], true)?;
+        let (base, argc) = self.compile_arg_window_t(
+            Some(&fc.argument_list),
+            &[],
+            true,
+            Some(ArgRefTarget::Value(callee)),
+        )?;
         let dst = self.alloc_temp();
         self.emit(Instr::CallDyn {
             dst,
@@ -591,6 +615,12 @@ impl ProtoBuilder<'_> {
                 other => self.compile_expr(other)?,
             },
             Pa::Method(m) => {
+                if crate::assign::is_short_circuited(m.object) {
+                    return Err(compile_error(
+                        "Cannot combine nullsafe operator with Closure creation",
+                        self.cur_line,
+                    ));
+                }
                 let obj = self.compile_expr(m.object)?;
                 let name = self.selector_string(&m.method)?;
                 self.build_pair(obj, &name)
@@ -865,7 +895,10 @@ impl ProtoBuilder<'_> {
     /// after a named one or an unpack, no unpack after a named argument.
     pub(crate) fn check_arg_order(&self, list: &crate::parse::cst::ArgumentList) {
         let (mut named, mut unpack) = (false, false);
+        // php reports the line it last compiled: the previous argument's.
+        let mut prev = list.left_parenthesis.start.offset;
         for arg in list.arguments.iter() {
+            let at = std::mem::replace(&mut prev, arg.span().start.offset);
             let msg = match arg {
                 Argument::Named(_) => {
                     named = true;
@@ -886,7 +919,7 @@ impl ProtoBuilder<'_> {
                 }
                 Argument::Positional(_) => continue,
             };
-            self.cx.fatal(arg.span().start.offset, msg.to_string());
+            self.cx.fatal(at, msg.to_string());
             return;
         }
     }
@@ -946,9 +979,10 @@ impl ProtoBuilder<'_> {
                     if matches!(
                         p.value,
                         Expression::ArrayAccess(_)
+                            | Expression::ArrayAppend(_)
                             | Expression::Access(Access::Property(_))
                             | Expression::Access(Access::StaticProperty(_))
-                    ) && variable_rooted_lvalue(p.value)
+                    ) && (variable_rooted_lvalue(p.value) || temp_rooted_lvalue(p.value))
                     {
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
                         slots.push(Slot::Ref(r));
@@ -1005,14 +1039,26 @@ impl ProtoBuilder<'_> {
                 func,
                 idx,
             }),
+            ArgRefTarget::Value(callee) => self.emit(Instr::ValueArgIsRef {
+                dst: flag,
+                callee,
+                idx,
+            }),
         }
         let t = self.alloc_temp();
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse flag -> by_value
-        let mut steps = Vec::new();
-        let root = self.collect_lvalue_steps(e, &mut steps)?;
-        self.emit_cursor(root, &steps);
-        self.emit(Instr::MakeRefLval { dst: t });
+        if temp_rooted_lvalue(e) {
+            let k = self.intern_const(Value::str(
+                "Cannot use temporary expression in write context",
+            ));
+            self.emit(Instr::ThrowError { k });
+        } else {
+            let mut steps = Vec::new();
+            let root = self.collect_lvalue_steps(e, &mut steps)?;
+            self.emit_cursor(root, &steps);
+            self.emit(Instr::MakeRefLval { dst: t });
+        }
         let jend = self.code.len();
         self.emit(Instr::Nop); // Jmp -> end
         let by_value = self.here();
@@ -1020,8 +1066,11 @@ impl ProtoBuilder<'_> {
             cond: flag,
             target: by_value,
         };
-        let v = self.compile_expr(e)?;
-        self.emit(Instr::Mov { dst: t, src: v });
+        // FETCH_DIM_FUNC_ARG reading: `[]` fails when the call runs.
+        let saved = std::mem::replace(&mut self.func_arg_read, true);
+        let v = self.compile_expr(e);
+        self.func_arg_read = saved;
+        self.emit(Instr::Mov { dst: t, src: v? });
         let end = self.here();
         self.code[jend] = Instr::Jmp { target: end };
         Ok(t)
@@ -1067,8 +1116,14 @@ impl ProtoBuilder<'_> {
         args: &crate::parse::cst::ArgumentList,
         null_safe: bool,
     ) -> Result<Reg, Thrown> {
+        self.check_method_name(selector)?;
         let obj = self.compile_expr(object)?;
-        if !null_safe {
+        // `$o?->m(...)`: a null object makes the whole chain null, without
+        // evaluating the arguments.
+        if null_safe {
+            self.nullsafe_guard(obj);
+        }
+        {
             match self.compile_selector(selector)? {
                 Sel::Static(name) => {
                     if has_spread(args) || has_named(args) {
@@ -1097,7 +1152,7 @@ impl ProtoBuilder<'_> {
                         base,
                         argc,
                     });
-                    return Ok(dst);
+                    Ok(dst)
                 }
                 Sel::Dyn(name) => {
                     if has_spread(args) || has_named(args) {
@@ -1120,76 +1175,25 @@ impl ProtoBuilder<'_> {
                         base,
                         argc,
                     });
-                    return Ok(dst);
+                    Ok(dst)
                 }
             }
         }
-        // `$o?->m(...)`: if $o is null, the whole call is null and args are not
-        // evaluated (the guard jumps over both the arg marshalling and the call).
-        let dst = self.alloc_temp();
-        self.emit(Instr::Mov { dst, src: obj });
-        let jn = self.code.len();
-        self.emit(Instr::Nop); // JmpNull dst -> Lnull
-        let sel = self.compile_selector(selector)?;
-        let t = self.alloc_temp();
-        if has_spread(args) || has_named(args) {
-            let args = self.build_args_array(Some(args))?;
-            match sel {
-                Sel::Static(name) => self.emit(Instr::CallMethodV {
-                    dst: t,
-                    obj: dst,
-                    name,
-                    args,
-                }),
-                Sel::Dyn(name) => self.emit(Instr::CallMethodDynV {
-                    dst: t,
-                    obj: dst,
-                    name,
-                    args,
-                }),
-            }
-        } else {
-            match sel {
-                Sel::Static(name) => {
-                    let mask = self.name_ref_mask(name);
-                    let (base, argc) = self.compile_arg_window_t(
-                        Some(args),
-                        &mask,
-                        true,
-                        Some(ArgRefTarget::Method(dst, name)),
-                    )?;
-                    self.emit(Instr::CallMethod {
-                        dst: t,
-                        obj: dst,
-                        name,
-                        base,
-                        argc,
-                    });
-                }
-                Sel::Dyn(name) => {
-                    let (base, argc) = self.compile_arg_window_ex(Some(args), &[], true)?;
-                    self.emit(Instr::CallMethodDyn {
-                        dst: t,
-                        obj: dst,
-                        name,
-                        base,
-                        argc,
-                    });
-                }
+    }
+
+    /// zend_compile_method_call: a constant method name must be a string.
+    fn check_method_name(
+        &self,
+        sel: &crate::parse::cst::ClassLikeMemberSelector,
+    ) -> Result<(), Thrown> {
+        if let crate::parse::cst::ClassLikeMemberSelector::Expression(e) = sel {
+            if crate::fold::fold_const(self.cx, e.expression)
+                .is_ok_and(|v| !matches!(v, Value::Str(_)))
+            {
+                return Err(compile_error("Method name must be a string", self.cur_line));
             }
         }
-        self.emit(Instr::Mov { dst, src: t });
-        let jend = self.code.len();
-        self.emit(Instr::Nop); // Jmp end
-        let lnull = self.here();
-        self.emit(Instr::LoadNull { dst });
-        let end = self.here();
-        self.code[jn] = Instr::JmpNull {
-            src: dst,
-            target: lnull,
-        };
-        self.code[jend] = Instr::Jmp { target: end };
-        Ok(dst)
+        Ok(())
     }
 
     fn compile_static_call(
@@ -1200,6 +1204,7 @@ impl ProtoBuilder<'_> {
             return Ok(r);
         }
         let class = self.class_ref(smc.class)?;
+        self.check_method_name(&smc.method)?;
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
                 if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
@@ -1474,6 +1479,8 @@ pub(crate) enum ArgRefTarget {
     Static(ClassRef, NIdx),
     /// The function [`Instr::ResolveFunc`] put in the register.
     Func(Reg),
+    /// A callable value (`$f(...)`).
+    Value(Reg),
 }
 
 /// The variable name (without `$`) of a plain-variable argument php sends
@@ -1516,8 +1523,34 @@ fn variable_rooted_lvalue(e: &Expression) -> bool {
         Expression::Variable(Variable::Direct(_)) => !is_globals_var(e),
         Expression::Access(Access::StaticProperty(_)) => true,
         Expression::ArrayAccess(a) => variable_rooted_lvalue(a.array),
+        Expression::ArrayAppend(a) => variable_rooted_lvalue(a.array),
         Expression::Access(Access::Property(p)) => variable_rooted_lvalue(p.object),
         _ => false,
+    }
+}
+
+/// An element or property of a temporary (`[0, 1][0]`, `(new A)->p`): no
+/// container to reference.
+fn temp_rooted_lvalue(e: &Expression) -> bool {
+    match e {
+        Expression::Parenthesized(p) => temp_rooted_lvalue(p.expression),
+        Expression::ArrayAccess(a) => temp_root(a.array),
+        Expression::ArrayAppend(a) => temp_root(a.array),
+        Expression::Access(Access::Property(p)) => temp_root(p.object),
+        _ => false,
+    }
+}
+
+fn temp_root(e: &Expression) -> bool {
+    match e {
+        Expression::Variable(_) | Expression::Access(Access::StaticProperty(_)) => false,
+        Expression::Call(_) | Expression::Pipe(_) => false,
+        Expression::Access(Access::NullSafeProperty(_)) => false,
+        Expression::ArrayAccess(_)
+        | Expression::ArrayAppend(_)
+        | Expression::Access(Access::Property(_))
+        | Expression::Parenthesized(_) => temp_rooted_lvalue(e),
+        _ => true,
     }
 }
 

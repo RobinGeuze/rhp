@@ -21,6 +21,19 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), Thrown> {
         use mago_span::HasSpan;
+        if matches!(
+            stmt,
+            Statement::Class(_)
+                | Statement::Interface(_)
+                | Statement::Trait(_)
+                | Statement::Enum(_)
+        ) && self.cx.class_scope.borrow().is_some()
+        {
+            return Err(compile_error(
+                "Class declarations may not be nested",
+                self.cx.line_of(stmt.span().start.offset),
+            ));
+        }
         self.compile_stmt_inner(stmt)
             .map_err(|e| self.cx.locate(e, stmt.span().start.offset))
     }
@@ -122,7 +135,18 @@ impl ProtoBuilder<'_> {
                         );
                         self.cx.fatal(stmt.span().start.offset, msg);
                     }
-                    let src = self.compile_expr(item.value)?;
+                    if !crate::constexpr::check_const_expr(
+                        self.cx,
+                        item.value,
+                        true,
+                        self.scope_known(),
+                    ) {
+                        continue;
+                    }
+                    self.in_const_decl = true;
+                    let src = self.compile_expr(item.value);
+                    self.in_const_decl = false;
+                    let src = src?;
                     let name = self.intern_name(&join_ns(&self.cx.cur_ns(), item.name.value));
                     self.emit(Instr::DeclareConst { name, src });
                 }
@@ -136,6 +160,12 @@ impl ProtoBuilder<'_> {
             Statement::Try(t) => self.compile_try(t)?,
             Statement::Global(g) => {
                 for v in g.variables.iter() {
+                    if matches!(v, Variable::Direct(d) if strip_dollar(d.name) == b"this") {
+                        return Err(compile_error(
+                            "Cannot use $this as global variable",
+                            self.cur_line,
+                        ));
+                    }
                     if let Variable::Direct(d) = v {
                         let var = strip_dollar(d.name);
                         let cv = self.cv(var);
@@ -150,6 +180,27 @@ impl ProtoBuilder<'_> {
             Statement::Static(s) => {
                 for item in s.items.iter() {
                     use crate::parse::cst::StaticItem;
+                    let var = match item {
+                        StaticItem::Abstract(a) => &a.variable,
+                        StaticItem::Concrete(c) => &c.variable,
+                    };
+                    let vname = strip_dollar(var.name);
+                    if vname == b"this" {
+                        return Err(compile_error(
+                            "Cannot use $this as static variable",
+                            self.cur_line,
+                        ));
+                    }
+                    if self.static_vars.iter().any(|n| n == vname) {
+                        return Err(compile_error(
+                            format!(
+                                "Duplicate declaration of static variable ${}",
+                                String::from_utf8_lossy(vname)
+                            ),
+                            self.cur_line,
+                        ));
+                    }
+                    self.static_vars.push(vname.to_vec());
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
                         StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {
@@ -182,18 +233,24 @@ impl ProtoBuilder<'_> {
             }
             Statement::Unset(u) => self.compile_unset(u)?,
             Statement::Return(r) => {
+                let line = self.cur_line;
                 if self.finally_rets.is_empty() {
                     match r.value {
                         // By-ref function: `return $lval` yields a reference.
                         Some(e) if self.returns_ref => {
                             let src = self.compile_ref_source(e)?;
+                            self.check_return(r.value, line)?;
                             self.emit(Instr::RetRef { src });
                         }
                         Some(e) => {
                             let src = self.compile_expr(e)?;
+                            self.check_return(r.value, line)?;
                             self.emit(Instr::Ret { src });
                         }
-                        None => self.emit(Instr::RetNull),
+                        None => {
+                            self.check_return(None, line)?;
+                            self.emit(Instr::RetNull)
+                        }
                     }
                 } else {
                     // Route the return through the innermost enclosing finally.
@@ -205,14 +262,19 @@ impl ProtoBuilder<'_> {
                             t
                         }
                     };
+                    self.check_return(r.value, line)?;
                     self.emit(Instr::SetPendingRet { src });
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // Jmp -> finally (patched)
                     self.finally_rets.last_mut().unwrap().push(pos);
                 }
             }
-            Statement::Break(b) => self.compile_break_continue(b.level, true)?,
-            Statement::Continue(c) => self.compile_break_continue(c.level, false)?,
+            Statement::Break(b) => {
+                self.compile_break_continue(b.level, true, b.span().start.offset)?
+            }
+            Statement::Continue(c) => {
+                self.compile_break_continue(c.level, false, c.span().start.offset)?
+            }
             // `declare(strict_types=1|ticks=…|encoding=…)` — the directives are
             // no-ops for this engine; compile the body (usually just `;`).
             Statement::Declare(d) => {
@@ -269,6 +331,54 @@ impl ProtoBuilder<'_> {
 }
 
 impl ProtoBuilder<'_> {
+    /// zend_emit_return_type_check's compile-time errors for `return`.
+    fn check_return(&self, value: Option<&Expression>, line: u32) -> Result<(), Thrown> {
+        use crate::checks::{type_mask, NEVER, NULL, VOID};
+        let Some(t) = &self.ret_type else {
+            return Ok(());
+        };
+        if self.is_generator {
+            return Ok(());
+        }
+        let what = if self.cx.class_scope.borrow().is_some() {
+            "method"
+        } else {
+            "function"
+        };
+        let (mask, _) = type_mask(t);
+        if mask & VOID != 0 {
+            return match value {
+                None => Ok(()),
+                Some(e) if matches!(fold_const(self.cx, e), Ok(Value::Null)) => Err(compile_error(
+                    format!("A void {what} must not return a value (did you mean \"return;\" instead of \"return null;\"?)"),
+                    line,
+                )),
+                Some(_) => Err(compile_error(
+                    format!("A void {what} must not return a value"),
+                    line,
+                )),
+            };
+        }
+        if mask & NEVER != 0 {
+            return Err(compile_error(
+                format!("A never-returning {what} must not return"),
+                line,
+            ));
+        }
+        if value.is_none() {
+            let hint = if mask & NULL != 0 {
+                " (did you mean \"return null;\" instead of \"return;\"?)"
+            } else {
+                ""
+            };
+            return Err(compile_error(
+                format!("A {what} with return type must return a value{hint}"),
+                line,
+            ));
+        }
+        Ok(())
+    }
+
     /// zend_compile_declare's checks: literal values, where encoding and
     /// strict_types may appear, strict_types' value and form, unknown
     /// directives.

@@ -25,6 +25,23 @@ pub(crate) fn compile_error(msg: impl Into<String>, line: u32) -> Thrown {
     Thrown::error("CompileError", msg)
 }
 
+/// is_this_fetch: `$this` (also `${'this'}`).
+pub(crate) fn is_this(e: &crate::parse::cst::Expression) -> bool {
+    use crate::parse::cst::{Expression, Literal, Variable};
+    match e {
+        Expression::Variable(Variable::Direct(d)) => strip_dollar(d.name) == b"this",
+        Expression::Variable(Variable::Indirect(iv)) => matches!(
+            iv.expression,
+            Expression::Literal(Literal::String(s)) if s.value == Some(&b"this"[..])
+        ),
+        _ => false,
+    }
+}
+
+pub(crate) fn reassign_this(line: u32) -> Thrown {
+    compile_error("Cannot re-assign $this", line)
+}
+
 pub(crate) fn strip_dollar(name: &[u8]) -> &[u8] {
     name.strip_prefix(b"$").unwrap_or(name)
 }

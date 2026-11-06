@@ -6,9 +6,25 @@ use rhp_values::{Thrown, Value};
 
 use crate::assign::is_globals_var;
 use crate::builder::ProtoBuilder;
+use crate::builder::ScopeKind;
 use crate::calls::{has_named, has_spread, ArgRefTarget};
 use crate::decl::compile_anon_class;
-use crate::util::strip_dollar;
+use crate::fold::fold_const;
+use crate::util::{compile_error, strip_dollar};
+
+/// zend_zval_value_name of a compile-time constant.
+pub(crate) fn value_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(true) => "true",
+        Value::Bool(false) => "false",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "string",
+        Value::Array(_) => "array",
+        _ => "object",
+    }
+}
 
 /// A compiled member selector: a static interned name, or a runtime name in a
 /// register (dynamic `$o->$x` / `$o->{expr}`).
@@ -25,24 +41,114 @@ impl ProtoBuilder<'_> {
             Expression::Identifier(id) => Ok(ClassRef::Name(
                 self.intern_name(&self.cx.resolve_class_name(id)),
             )),
-            Expression::Self_(_) => Ok(ClassRef::SelfClass),
-            Expression::Static(_) => Ok(ClassRef::StaticClass),
-            Expression::Parent(_) => Ok(ClassRef::ParentClass),
-            other => Ok(ClassRef::Dynamic(self.compile_expr(other)?)),
+            Expression::Self_(_) => {
+                self.ensure_valid_class_fetch("self")?;
+                Ok(ClassRef::SelfClass)
+            }
+            Expression::Static(_) => {
+                self.ensure_valid_class_fetch("static")?;
+                Ok(ClassRef::StaticClass)
+            }
+            Expression::Parent(_) => {
+                self.ensure_valid_class_fetch("parent")?;
+                Ok(ClassRef::ParentClass)
+            }
+            other => {
+                // zend_compile_class_ref: a constant that is no string.
+                if fold_const(self.cx, other).is_ok_and(|v| !matches!(v, Value::Str(_))) {
+                    return Err(compile_error("Illegal class name", self.cur_line));
+                }
+                Ok(ClassRef::Dynamic(self.compile_expr(other)?))
+            }
         }
     }
 
-    fn selector_name(
-        &mut self,
-        sel: &crate::parse::cst::ClassLikeMemberSelector,
-    ) -> Result<NIdx, Thrown> {
-        match sel {
-            ClassLikeMemberSelector::Identifier(li) => Ok(self.intern_name(li.value)),
-            _ => Err(Thrown::unsupported(
-                "dynamic member name",
-                "`->$x`/`->{expr}` deferred",
-            )),
+    /// `X::class` (zend_compile_class_name).
+    fn compile_class_name(&mut self, class: &Expression) -> Result<Reg, Thrown> {
+        let mut e = class;
+        while let Expression::Parenthesized(p) = e {
+            e = p.expression;
         }
+        let class = match e {
+            Expression::Identifier(id) => {
+                let k = self.intern_const(Value::str(self.cx.resolve_class_name(id)));
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadConst { dst, k });
+                return Ok(dst);
+            }
+            Expression::Self_(_) | Expression::Static(_) | Expression::Parent(_) => {
+                self.class_ref(e)?
+            }
+            // zend_try_compile_const_expr_resolve_class_name: a string names
+            // the class as written (one leading `\` dropped), or self/parent/
+            // static.
+            Expression::Literal(crate::parse::cst::Literal::String(s)) => {
+                let name = s.value.unwrap_or(s.raw);
+                let class = if name.eq_ignore_ascii_case(b"self") {
+                    ClassRef::SelfClass
+                } else if name.eq_ignore_ascii_case(b"parent") {
+                    ClassRef::ParentClass
+                } else if name.eq_ignore_ascii_case(b"static") {
+                    ClassRef::StaticClass
+                } else {
+                    let name = name.strip_prefix(b"\\").unwrap_or(name);
+                    let k = self.intern_const(Value::str(name.to_vec()));
+                    let dst = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst, k });
+                    return Ok(dst);
+                };
+                let kind = std::str::from_utf8(name).unwrap_or("").to_ascii_lowercase();
+                self.ensure_valid_class_fetch(&kind)?;
+                class
+            }
+            Expression::Literal(_) => {
+                return Err(compile_error("Illegal class name", self.cur_line))
+            }
+            other => {
+                if let Ok(v) = fold_const(self.cx, other) {
+                    return Err(compile_error(
+                        format!("Cannot use \"::class\" on {}", value_name(&v)),
+                        self.cur_line,
+                    ));
+                }
+                ClassRef::Dynamic(self.compile_expr(other)?)
+            }
+        };
+        let dst = self.alloc_temp();
+        let const_expr = self.in_const_expr();
+        self.emit(Instr::FetchClassName {
+            dst,
+            class,
+            const_expr,
+        });
+        Ok(dst)
+    }
+
+    /// zend_is_scope_known: whether `self`/`parent` are known at compile time.
+    pub(crate) fn scope_known(&self) -> bool {
+        if self.scope_kind == ScopeKind::Closure {
+            return false;
+        }
+        match self.cx.class_scope.borrow().as_ref() {
+            Some(cs) => !cs.is_trait,
+            None => matches!(self.scope_kind, ScopeKind::Function | ScopeKind::Method),
+        }
+    }
+
+    /// zend_ensure_valid_class_fetch_type.
+    pub(crate) fn ensure_valid_class_fetch(&self, kind: &str) -> Result<(), Thrown> {
+        // Constant expressions check `X::class` only (constexpr.rs).
+        if !self.scope_known() || self.in_const_expr() {
+            return Ok(());
+        }
+        let msg = match self.cx.class_scope.borrow().as_ref() {
+            None => format!("Cannot use \"{kind}\" when no class scope is active"),
+            Some(cs) if kind == "parent" && cs.parent.is_none() => {
+                "Cannot use \"parent\" when current class scope has no parent".to_string()
+            }
+            Some(_) => return Ok(()),
+        };
+        Err(compile_error(msg, self.cur_line))
     }
 
     /// A member selector as either a static interned name or a runtime name
@@ -114,6 +220,12 @@ impl ProtoBuilder<'_> {
                 match arg {
                     PartialArgument::Positional(p) if p.ellipsis.is_none() => {
                         regs.push(self.compile_expr(p.value)?)
+                    }
+                    PartialArgument::VariadicPlaceholder(_) => {
+                        return Err(compile_error(
+                            "Cannot create Closure for new expression",
+                            self.cur_line,
+                        ))
                     }
                     _ => {
                         return Err(Thrown::unsupported(
@@ -292,45 +404,41 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    fn fetch_prop(&mut self, obj: Reg, sel: &ClassLikeMemberSelector) -> Result<Reg, Thrown> {
+        let sel = self.compile_selector(sel)?;
+        if self.in_const_expr() {
+            let name = match sel {
+                Sel::Dyn(r) => r,
+                Sel::Static(_) => Reg::MAX,
+            };
+            self.emit(Instr::ConstExprProp { obj, name });
+        }
+        let dst = self.alloc_temp();
+        match sel {
+            Sel::Static(name) => self.emit(Instr::FetchProp { dst, obj, name }),
+            Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
+        }
+        Ok(dst)
+    }
+
+    /// Compiling a constant expression (an initializer thunk, a parameter
+    /// default or a `const` value).
+    pub(crate) fn in_const_expr(&self) -> bool {
+        self.scope_kind == ScopeKind::Init || self.in_const_decl
+    }
+
     pub(crate) fn compile_access(&mut self, acc: &Access) -> Result<Reg, Thrown> {
         match acc {
             Access::Property(pa) => {
                 let obj = self.compile_expr(pa.object)?;
-                let dst = self.alloc_temp();
-                match self.compile_selector(&pa.property)? {
-                    Sel::Static(name) => {
-                        self.emit(Instr::FetchProp { dst, obj, name });
-                    }
-                    Sel::Dyn(name) => self.emit(Instr::FetchPropDyn { dst, obj, name }),
-                }
-                Ok(dst)
+                self.fetch_prop(obj, &pa.property)
             }
             Access::NullSafeProperty(npa) => {
                 // `$o?->p`: null short-circuits the whole access to null.
+                // The chain's outermost link sets the result to null.
                 let obj = self.compile_expr(npa.object)?;
-                let dst = self.alloc_temp();
-                self.emit(Instr::Mov { dst, src: obj });
-                let jn = self.code.len();
-                self.emit(Instr::Nop); // JmpNull dst -> Lnull
-                let name = self.selector_name(&npa.property)?;
-                let t = self.alloc_temp();
-                self.emit(Instr::FetchProp {
-                    dst: t,
-                    obj: dst,
-                    name,
-                });
-                self.emit(Instr::Mov { dst, src: t });
-                let jend = self.code.len();
-                self.emit(Instr::Nop); // Jmp end
-                let lnull = self.here();
-                self.emit(Instr::LoadNull { dst });
-                let end = self.here();
-                self.code[jn] = Instr::JmpNull {
-                    src: dst,
-                    target: lnull,
-                };
-                self.code[jend] = Instr::Jmp { target: end };
-                Ok(dst)
+                self.nullsafe_guard(obj);
+                self.fetch_prop(obj, &npa.property)
             }
             Access::StaticProperty(spa) => {
                 let class = self.class_ref(spa.class)?;
@@ -351,18 +459,19 @@ impl ProtoBuilder<'_> {
                 if let crate::parse::cst::ClassLikeConstantSelector::Identifier(li) = &cca.constant
                 {
                     if li.value.eq_ignore_ascii_case(b"class") {
-                        if let Expression::Identifier(id) = cca.class {
-                            let k = self.intern_const(Value::str(self.cx.resolve_class_name(id)));
-                            let dst = self.alloc_temp();
-                            self.emit(Instr::LoadConst { dst, k });
-                            return Ok(dst);
-                        }
+                        return self.compile_class_name(cca.class);
                     }
                 }
                 let class = self.class_ref(cca.class)?;
                 let name = match &cca.constant {
                     crate::parse::cst::ClassLikeConstantSelector::Identifier(li) => {
                         self.intern_name(li.value)
+                    }
+                    crate::parse::cst::ClassLikeConstantSelector::Expression(e) => {
+                        let name = self.compile_expr(e.expression)?;
+                        let dst = self.alloc_temp();
+                        self.emit(Instr::FetchClassConstDyn { dst, class, name });
+                        return Ok(dst);
                     }
                     _ => return Err(Thrown::unsupported("dynamic class constant", "deferred")),
                 };

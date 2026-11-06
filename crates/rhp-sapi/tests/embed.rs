@@ -100,10 +100,12 @@ fn a_header_callback_throw_without_output_is_uncaught() {
 
 #[test]
 fn compile_errors_reach_the_sapi_not_the_process() {
+    // php's E_COMPILE_ERROR, displayed through the SAPI.
     let (ev, o) = run("break;", &[], get());
     assert_eq!(o, Outcome::Exit(255));
     assert!(
-        ev.iter().any(|e| e.starts_with("stderr:PHP Fatal error")),
+        ev.iter()
+            .any(|e| e.contains("Fatal error: 'break' not in the 'loop' or 'switch' context")),
         "{ev:?}"
     );
 }

@@ -700,11 +700,18 @@ CallStatic   { dst, class, name: NIdx, base, argc, cache} C::m(...) / self:: / s
 FetchStaticProp  { dst, class, name: NIdx, cache }        C::$p
 AssignStaticProp { class, name: NIdx, src, cache }        C::$p = v  (writes through the shared cell)
 FetchClassConst  { dst, class, name: NIdx, cache }        C::K   (lazy-resolves + memoizes)
+FetchClassConstDyn { dst, class, name: Reg }              C::{expr} (name must be a string)
+FetchClassName   { dst, class, const_expr }               self/parent/static/$obj ::class (ZEND_FETCH_CLASS_NAME)
+UnsetStaticProp  { class, name: Reg }                     unset(C::$p): resolve C, then throw
+ConstExprProp    { obj, name: Reg }                       -> in a constant expression: enums only
 InstanceOf   { dst, obj, class: NIdx|ClassId }            Bool via interfaces set + parent chain
 ```
 
 `base`/`argc` reuse the contiguous arg-window convention; `CallMethod`/`CallStatic`
 bind `$this` (instance) and set `Frame.{defining_class, called_class}` per §3.
-`NullSafeMethod`/`NullSafeProperty` lower to a `JmpNull` guard (reusing the §5.1
-`??` pattern) around the call/fetch. `self`/`static`/`parent` as the `class`
+`NullSafeMethod`/`NullSafeProperty` lower to a `JmpNull` guard that jumps to
+the end of the chain's outermost link (property, method, static member or
+dimension), whose result is set to null there (zend_short_circuiting_commit).
+SEND_FUNC_ARG for a runtime callee asks `MethodArgIsRef`, `StaticArgIsRef`,
+`FuncArgIsRef` or, for a callable value, `ValueArgIsRef`. `self`/`static`/`parent` as the `class`
 operand are resolved from the current frame, not interned names.

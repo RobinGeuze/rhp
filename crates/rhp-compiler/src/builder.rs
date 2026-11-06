@@ -78,6 +78,26 @@ pub(crate) struct ProtoBuilder<'c> {
     /// In a property hook: the property's name and the hook (php's
     /// `active_property_info_name` / `active_property_hook_kind`).
     pub(crate) hook: Option<(Vec<u8>, rhp_bytecode::HookKind)>,
+    /// The declared return type, for zend_emit_return_type_check's
+    /// compile-time checks.
+    pub(crate) ret_type: Option<rhp_bytecode::TypeHint>,
+    /// The op_array's static_variables: `static` names and closure bindings.
+    pub(crate) static_vars: Vec<Vec<u8>>,
+    /// Compiling the by-value side of a SEND_FUNC_ARG argument: `[]` there
+    /// is a runtime Error, not a compile error.
+    pub(crate) func_arg_read: bool,
+    /// Nullsafe short-circuiting (zend_short_circuiting_commit): the object
+    /// node of the chain link being compiled, which continues its chain...
+    pub(crate) sc_inner: usize,
+    /// ...and the pending `JmpNull` guards of the open chain, jumping to
+    /// where its outermost link's result is set to null.
+    pub(crate) sc_jumps: Vec<(usize, Reg)>,
+    /// Compiling a `const` declaration's value (a constant expression).
+    pub(crate) in_const_decl: bool,
+    /// CV 0 is `$this`, always set (instance methods and hooks).
+    pub(crate) this_bound: bool,
+    /// The body contains `yield`.
+    pub(crate) is_generator: bool,
 }
 
 /// A break/continue target under construction. Jump placeholders are recorded
@@ -87,6 +107,10 @@ pub(crate) struct LoopCtx {
     /// `finally_rets.len()` when the loop was entered: a break/continue
     /// inside more try-with-finally levels than this must run them.
     pub(crate) finally_depth: usize,
+    /// Finally bodies around the loop: a jump from a deeper one leaves a
+    /// finally block.
+    pub(crate) finally_bodies: usize,
+    pub(crate) is_switch: bool,
     pub(crate) break_jumps: Vec<usize>,
     pub(crate) continue_jumps: Vec<usize>,
     /// A temp the loop frees when it ends (FE_FREE of a by-reference
@@ -126,10 +150,36 @@ impl<'c> ProtoBuilder<'c> {
             labels: HashMap::new(),
             gotos: Vec::new(),
             hook: None,
+            ret_type: None,
+            this_bound: false,
+            in_const_decl: false,
+            sc_inner: 0,
+            sc_jumps: Vec::new(),
+            func_arg_read: false,
+            static_vars: Vec::new(),
+            is_generator: false,
         }
     }
 
     /// Enter a loop/switch (`finally == false`) or finally-body scope.
+    /// A new loop (or switch) level for break/continue.
+    pub(crate) fn loop_ctx(&self, is_switch: bool) -> LoopCtx {
+        LoopCtx {
+            finally_depth: self.finally_rets.len(),
+            finally_bodies: self.finally_bodies(),
+            is_switch,
+            ..LoopCtx::default()
+        }
+    }
+
+    /// The finally bodies being compiled.
+    pub(crate) fn finally_bodies(&self) -> usize {
+        self.goto_scope
+            .iter()
+            .filter(|s| *s & (1 << 31) != 0)
+            .count()
+    }
+
     pub(crate) fn enter_goto_scope(&mut self, finally: bool) {
         self.goto_serial += 1;
         let id = self.goto_serial | if finally { 1 << 31 } else { 0 };
@@ -284,6 +334,22 @@ impl<'c> ProtoBuilder<'c> {
         self.code.len() as u32
     }
 
+    /// php's this_guaranteed_exists: an instance method (or hook), whose
+    /// CV 0 always holds the object.
+    pub(crate) fn this_guaranteed(&self) -> bool {
+        self.this_bound
+    }
+
+    /// The register of `$this` for a read (ZEND_FETCH_THIS): checked
+    /// unless the object is guaranteed.
+    pub(crate) fn this_reg(&mut self) -> Reg {
+        let cv = self.cv(b"this");
+        if !self.this_guaranteed() {
+            self.emit(Instr::CheckThis { cv });
+        }
+        cv
+    }
+
     pub(crate) fn cv(&mut self, var_name: &[u8]) -> Reg {
         if self.cvs_frozen && var_name == b"this" {
             self.uses_this = true;
@@ -372,7 +438,10 @@ impl<'c> ProtoBuilder<'c> {
         for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
-            let t = self.compile_expr(expr)?;
+            self.in_const_decl = true;
+            let t = self.compile_expr(expr);
+            self.in_const_decl = false;
+            let t = t?;
             self.emit(Instr::Mov { dst: cv, src: t });
             if let Some(line) = check_line {
                 let saved = std::mem::replace(&mut self.cur_line, line);

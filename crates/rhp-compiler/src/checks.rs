@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use crate::parse::cst::{
     AttributeList, ClassLikeMember, FunctionLikeParameterList, Hint, Identifier, Method,
-    MethodBody, Modifier, Property, PropertyItem, Sequence, Statement, TraitUseAdaptation,
+    MethodBody, Modifier, Property, PropertyItem, Sequence, TraitUseAdaptation,
     TraitUseMethodReference, TraitUseSpecification,
 };
 use mago_span::HasSpan;
@@ -265,9 +265,19 @@ fn check_members(cx: &FileCtx, d: &Decl, cname: &str, backed: bool) {
             }
             ClassLikeMember::Constant(c) => {
                 let vis = modifiers_visibility(&c.modifiers);
+                let is_final = has_modifier(&c.modifiers, |x| matches!(x, Modifier::Final(_)));
                 for item in c.items.iter() {
                     let at = item.name.span.start.offset;
                     let n = item.name.value;
+                    if vis == Visibility::Private && is_final {
+                        cx.fatal(
+                            at,
+                            format!(
+                                "Private constant {cname}::{} cannot be final as it is not visible to other classes",
+                                s(n)
+                            ),
+                        );
+                    }
                     if d.kind == DeclKind::Interface && vis != Visibility::Public {
                         cx.fatal(
                             at,
@@ -585,25 +595,25 @@ enum Magic {
 }
 
 /// php's MAY_BE_* bits for the magic method type checks.
-const NULL: u32 = 1 << 1;
+pub(crate) const NULL: u32 = 1 << 1;
 const FALSE: u32 = 1 << 2;
 const TRUE: u32 = 1 << 3;
 const LONG: u32 = 1 << 4;
 const DOUBLE: u32 = 1 << 5;
 const STRING: u32 = 1 << 6;
 const ARRAY: u32 = 1 << 7;
-const OBJECT: u32 = 1 << 8;
+pub(crate) const OBJECT: u32 = 1 << 8;
 const RESOURCE: u32 = 1 << 9;
 const CALLABLE: u32 = 1 << 17;
-const VOID: u32 = 1 << 18;
+pub(crate) const VOID: u32 = 1 << 18;
 const STATIC: u32 = 1 << 20;
-const NEVER: u32 = 1 << 21;
+pub(crate) const NEVER: u32 = 1 << 21;
 const BOOL: u32 = FALSE | TRUE;
 const ANY: u32 = NULL | BOOL | LONG | DOUBLE | STRING | ARRAY | OBJECT | RESOURCE;
 
 /// ZEND_TYPE_PURE_MASK of a declared type, and whether it names classes
 /// (ZEND_TYPE_IS_COMPLEX).
-fn type_mask(t: &TypeHint) -> (u32, bool) {
+pub(crate) fn type_mask(t: &TypeHint) -> (u32, bool) {
     let mut mask = if t.nullable { NULL } else { 0 };
     let mut complex = !t.groups.is_empty();
     for k in &t.kinds {
@@ -852,57 +862,4 @@ pub(crate) fn type_string(ty: &TypeHint) -> String {
         return format!("{}|null", parts.join(sep));
     }
     parts.join(sep)
-}
-
-/// zend_compile_use: a class import may not be named like a reserved class
-/// name. Walks the file's `use` statements (namespace bodies included).
-pub(crate) fn check_uses(cx: &FileCtx, stmts: &Sequence<Statement>) {
-    use crate::parse::cst::UseItems;
-    for st in stmts.iter() {
-        match st {
-            Statement::Namespace(ns) => check_uses(cx, ns.statements()),
-            Statement::Use(u) => {
-                let mut items: Vec<(Vec<u8>, &crate::parse::cst::UseItem)> = Vec::new();
-                match &u.items {
-                    UseItems::Sequence(seq) => {
-                        items.extend(seq.items.iter().map(|it| (Vec::new(), it)))
-                    }
-                    UseItems::TypedSequence(_) | UseItems::TypedList(_) => {}
-                    UseItems::MixedList(ml) => {
-                        let pfx = identifier_raw(&ml.namespace).to_vec();
-                        for mit in ml.items.iter() {
-                            if mit.r#type.is_none() {
-                                items.push((pfx.clone(), &mit.item));
-                            }
-                        }
-                    }
-                }
-                for (pfx, it) in items {
-                    let raw = identifier_raw(&it.name);
-                    let mut old = pfx;
-                    if !old.is_empty() {
-                        old.push(b'\\');
-                    }
-                    old.extend_from_slice(raw);
-                    let old = old.strip_prefix(b"\\").unwrap_or(&old).to_vec();
-                    let new: Vec<u8> = match &it.alias {
-                        Some(a) => a.identifier.value.to_vec(),
-                        None => old.rsplit(|&b| b == b'\\').next().unwrap_or(&old).to_vec(),
-                    };
-                    if is_reserved_class_name(&new) {
-                        cx.fatal(
-                            it.span().start.offset,
-                            format!(
-                                "Cannot use {} as {} because '{}' is a special class name",
-                                s(&old),
-                                s(&new),
-                                s(&new)
-                            ),
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }

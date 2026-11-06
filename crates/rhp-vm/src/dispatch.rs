@@ -928,6 +928,9 @@ impl Vm {
                 }
                 Instr::LvalVarVar { name } => {
                     let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    if vname == b"this" {
+                        return Err(Thrown::error("Error", "Cannot re-assign $this"));
+                    }
                     self.cursor_root = match self.var_var_slot(top, &vname) {
                         Ok(cv) => CursorRoot::Cv(cv),
                         Err(cell) => CursorRoot::Cell(cell),
@@ -963,6 +966,18 @@ impl Vm {
                     let cell = self.static_prop_cell(cls, &pname)?;
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
+                }
+                Instr::UnsetStaticProp { class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Attempt to unset static property {}::${}",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&pname)
+                        ),
+                    ));
                 }
                 Instr::FetchStaticPropDynIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
@@ -1128,6 +1143,50 @@ impl Vm {
                         "UnhandledMatchError",
                         format!("Unhandled match case {}", self.match_case_desc(&v)),
                     ));
+                }
+                Instr::CheckThis { cv } => {
+                    let ok = match &self.stack[top].regs[cv as usize] {
+                        Value::Object(_) => true,
+                        Value::Ref(rc) => matches!(*rc.borrow(), Value::Object(_)),
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Using $this when not in object context",
+                        ));
+                    }
+                }
+                Instr::ConstExprProp { obj, name } => {
+                    if name != Reg::MAX {
+                        let n = self.reg_get(top, name);
+                        let s = self.to_string_vm(&n)?;
+                        self.reg_set(top, name, Value::str(s));
+                    }
+                    if let Value::Object(h) = self.reg_get(top, obj) {
+                        let cls = h.borrow().class;
+                        if self.class(cls).kind != rhp_values::ClassKind::Enum {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Fetching properties on non-enums in constant expressions is not allowed",
+                            ));
+                        }
+                    }
+                }
+                Instr::ConstExprDim { arr } => {
+                    if let Value::Object(_) = self.reg_get(top, arr) {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot use [] on objects in constant expression",
+                        ));
+                    }
+                }
+                Instr::ThrowError { k } => {
+                    let msg = match &proto.consts[k as usize] {
+                        Value::Str(m) => String::from_utf8_lossy(m.as_bytes()).into_owned(),
+                        _ => String::new(),
+                    };
+                    return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
                     let v = self.reg_get(top, src);
@@ -1425,7 +1484,22 @@ impl Vm {
                 }
                 Instr::FetchClassConst {
                     dst, class, name, ..
-                } => self.fetch_class_const(top, &proto, dst, class, name)?,
+                } => {
+                    let n = Value::Str(proto.names[name as usize].clone());
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
+                Instr::FetchClassConstDyn { dst, class, name } => {
+                    let n = self.reg_get(top, name);
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
+                Instr::FetchClassName {
+                    dst,
+                    class,
+                    const_expr,
+                } => {
+                    let name = self.fetch_class_name(top, class, const_expr)?;
+                    self.reg_set(top, dst, Value::Str(name));
+                }
                 Instr::CallMethod {
                     dst,
                     obj,
@@ -1492,6 +1566,13 @@ impl Vm {
                         })
                         .map_or(-1, |&i| i as i64);
                     self.reg_set(top, dst, Value::Int(f));
+                }
+                Instr::ValueArgIsRef { dst, callee, idx } => {
+                    let c = self.reg_get(top, callee);
+                    let r = self
+                        .callable_proto(&c)
+                        .is_some_and(|(p, _)| crate::calls::param_is_ref(&p, idx));
+                    self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::FuncArgIsRef { dst, func, idx } => {
                     let r = self.resolved_param_is_ref(top, func, idx);
@@ -1563,6 +1644,18 @@ impl Vm {
                         // ZEND_INSTANCEOF never autoloads.
                         Value::Object(h) => match self.resolve_class(top, class) {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                            // self/parent/static without a scope throw
+                            // (zend_fetch_class).
+                            Err(e)
+                                if matches!(
+                                    class,
+                                    ClassRef::SelfClass
+                                        | ClassRef::ParentClass
+                                        | ClassRef::StaticClass
+                                ) =>
+                            {
+                                return Err(e)
+                            }
                             Err(_) => false,
                         },
                         // Closures / arrow fns / first-class callables are
@@ -2465,16 +2558,84 @@ impl Vm {
     }
 
     /// `FetchClassConst`: `Class::NAME` (and `Class::class`) into `dst`.
+    /// ZEND_FETCH_CLASS_NAME / ZEND_AST_CLASS_NAME.
+    fn fetch_class_name(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        const_expr: bool,
+    ) -> Result<PhpStr, Thrown> {
+        let scope = self.stack[top].defining_class;
+        let kind = match class {
+            ClassRef::Dynamic(reg) => {
+                let v = self.reg_get(top, reg);
+                return match v {
+                    Value::Object(h) => {
+                        let cls = h.borrow().class;
+                        Ok(self.class(cls).name.clone())
+                    }
+                    other => Err(Thrown::type_error(format!(
+                        "Cannot use \"::class\" on {}",
+                        rhp_builtins::zval_value_name(self, &other)
+                    ))),
+                };
+            }
+            ClassRef::Name(n) => {
+                return Ok(self.stack[top].proto.names[n as usize].clone());
+            }
+            ClassRef::SelfClass => "self",
+            ClassRef::ParentClass => "parent",
+            ClassRef::StaticClass => "static",
+        };
+        let Some(scope) = scope else {
+            return Err(Thrown::error(
+                "Error",
+                if const_expr {
+                    "Cannot use \"self\" when no class scope is active".to_string()
+                } else {
+                    format!("Cannot use \"{kind}\" in the global scope")
+                },
+            ));
+        };
+        let cls = match class {
+            ClassRef::SelfClass => scope,
+            ClassRef::ParentClass => self.class(scope).parent.ok_or_else(|| {
+                Thrown::error(
+                    "Error",
+                    "Cannot use \"parent\" when current class scope has no parent",
+                )
+            })?,
+            _ => self.stack[top].called_class.unwrap_or(scope),
+        };
+        Ok(self.class(cls).name.clone())
+    }
+
     fn fetch_class_const(
         &mut self,
         top: usize,
         proto: &FunctionProto,
         dst: Reg,
         class: ClassRef,
-        name: NIdx,
+        name: Value,
     ) -> Result<(), Thrown> {
-        let name_b = proto.names[name as usize].as_bytes().to_vec();
         let cls = self.resolve_class_autoload(top, class)?;
+        let name_b = match name {
+            Value::Str(s) => s.as_bytes().to_vec(),
+            // zend_invalid_class_constant_type_error.
+            other => {
+                return Err(Thrown::type_error(format!(
+                    "Cannot use value of type {} as class constant name",
+                    match other {
+                        Value::Null => "null",
+                        Value::Bool(_) => "bool",
+                        Value::Int(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::Array(_) => "array",
+                        _ => "object",
+                    }
+                )))
+            }
+        };
         if name_b == b"class" {
             let v = Value::str(self.class(cls).name.as_bytes().to_vec());
             self.reg_set(top, dst, v);

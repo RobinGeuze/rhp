@@ -115,6 +115,7 @@ fn register(m: &mut crate::Registry) {
     net::register(m);
     datetime::register(m);
     iptc::register(m);
+    image::register(m);
     versioning::register(m);
     info::register(m);
     streamsfuncs::register(m);

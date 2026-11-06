@@ -35,6 +35,10 @@ ext/date/lib/timezonedb.h
 ext/date/lib/timezonemap.h
 ext/date/lib/tm2unixtime.c
 ext/date/lib/unixtime2tm.c
+ext/standard/libavifinfo/LICENSE
+ext/standard/libavifinfo/PATENTS
+ext/standard/libavifinfo/avifinfo.c
+ext/standard/libavifinfo/avifinfo.h
 '
 
 # rhp-mbfl-sys: every C file and header of libmbfl (found below, so files a

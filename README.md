@@ -18,8 +18,8 @@ The crates are in `crates/`, the test tooling in `tools/`.
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv.
-- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the Argon2 reference
-  code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
+- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libavifinfo, the Argon2
+  reference code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
   statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,

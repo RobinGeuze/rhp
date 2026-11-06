@@ -55,6 +55,11 @@ ext/date/lib/
   twice, and the copy keeps only the "slim" branch parse_tz.c compiles
   (TIMELIB_SUPPORT_SLIM_FILE). The compiled object is byte-identical.
 
+ext/standard/libavifinfo/
+  BSD-2-Clause (ext/standard/libavifinfo/LICENSE), with the Alliance for
+  Open Media Patent License 1.0 (PATENTS). Copyright (c) 2021, Alliance for
+  Open Media. The AVIF parser php's getimagesize() uses.
+
 
 vendor/argon2
 -------------

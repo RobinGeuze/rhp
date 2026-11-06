@@ -3017,7 +3017,11 @@ impl Vm {
             // (Not from inside a constant expression, which goes
             // through zend_get_class_constant_ex in php.)
             let in_const_expr = proto.flags.contains(rhp_bytecode::ProtoFlags::CONST_EXPR);
-            if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
+            // (Only a user enum: an internal one creates each case alone.)
+            if self.class(cls).enum_backing.is_some()
+                && !self.class(cls).updated
+                && !in_const_expr
+                && !self.is_internal_class(cls)
             {
                 self.update_class_constants(cls)?;
             }

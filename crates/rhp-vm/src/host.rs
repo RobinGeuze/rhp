@@ -674,6 +674,8 @@ impl Host for Vm {
                 s.fd_name = Some((path.to_vec(), mode.to_vec()));
             }
             return Some(v);
+        } else if path.len() >= 13 && path[..13].eq_ignore_ascii_case(b"php://filter/") {
+            return self.open_php_filter(&path[6..], mode, ctx);
         } else if path.starts_with(b"php://") {
             return None; // other php:// streams unsupported
         } else if builtins::main::streams::is_data_url(path) {
@@ -786,6 +788,79 @@ impl Host for Vm {
         Some(self.make_stream(StreamState::Ops(Box::new(s)), "stream"))
     }
 
+    fn stream_filter_add(
+        &mut self,
+        res: &Value,
+        filter: builtins::main::streams::filter::Filter,
+        write: bool,
+        append: bool,
+        register: bool,
+    ) -> Option<Value> {
+        self.host_stream_filter_add(res, filter, write, append, register)
+    }
+
+    fn stream_filter_remove(&mut self, filter: &Value) -> Result<bool, Thrown> {
+        self.host_stream_filter_remove(filter)
+    }
+
+    fn stream_note_line_read(&mut self, res: &Value, done: bool) {
+        let Some(rec) = res_id(res).and_then(|id| self.streams.record_mut(id)) else {
+            return;
+        };
+        if done {
+            rec.extend_mem_line_read();
+        } else {
+            rec.note_mem_line_read();
+        }
+    }
+
+    fn stream_get_record(
+        &mut self,
+        res: &Value,
+        maxlen: usize,
+        delim: &[u8],
+    ) -> Option<Option<Vec<u8>>> {
+        let id = res_id(res)?;
+        if !self.layer_reads(id) {
+            return None;
+        }
+        Some(self.get_record_layered(id, maxlen, delim))
+    }
+
+    fn active_function_name(&self) -> String {
+        self.docref_function()
+    }
+
+    fn set_pending_throw(&mut self, t: Thrown) {
+        match self.pending_throw.take() {
+            Some(prev) => {
+                let t = self.chain_thrown(t, prev);
+                self.pending_throw = Some(t);
+            }
+            None => self.pending_throw = Some(t),
+        }
+    }
+
+    fn has_pending_throw(&self) -> bool {
+        self.pending_throw.is_some()
+    }
+
+    fn object_prop_exists_as(&self, obj: &Value, name: &[u8]) -> bool {
+        let Value::Object(h) = deref(obj) else {
+            return false;
+        };
+        let b = h.borrow();
+        let name = PhpStr::from_bytes(name.to_vec());
+        match classes::resolve_prop(&self.classes, b.class, Some(b.class), &name) {
+            PropRes::Slot(k) => b
+                .properties
+                .get(&k)
+                .is_some_and(|v| !matches!(v, Value::Undef)),
+            PropRes::Dynamic => b.properties.contains_key(&name),
+            PropRes::Denied(_) => false,
+        }
+    }
+
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>> {
         let id = res_id(res)?;
         let rec = self.streams.record(id)?;
@@ -808,159 +883,11 @@ impl Host for Vm {
     }
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
-        let id = res_id(res)?;
-        if self
-            .streams
-            .record(id)
-            .is_some_and(|s| s.data_url.is_some())
-        {
-            // php_stream_rfc2397_ops has no write
-            if data.is_empty() {
-                return Some(0);
-            }
-            let func = self.native_calls.last().map_or("fwrite", |n| n.name);
-            let msg = format!("{func}(): Stream is not writable");
-            self.raise_error(builtins::E_NOTICE, &msg);
-            return None;
-        }
-        enum Act {
-            Out,
-            Err,
-            Buf,
-            No,
-        }
-        let act = match self.streams.get_mut(&id)? {
-            StreamState::Stdout => Act::Out,
-            StreamState::Stderr => Act::Err,
-            StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
-            StreamState::File(f) => return f.write(data),
-            StreamState::Ops(s) => return s.write(data),
-            StreamState::Fd(f) => {
-                let r = f.write(data);
-                let send_error = f.take_send_error();
-                self.deliver_stream_events(res);
-                if let Some(e) = send_error {
-                    // php_sockop_write's notice, under the calling builtin.
-                    let func = self.native_calls.last().map_or("fwrite", |n| n.name);
-                    let msg = format!(
-                        "{func}(): Send of {} bytes failed with errno={} {}",
-                        e.count,
-                        e.errno,
-                        builtins::main::streams::strerror(e.errno)
-                    );
-                    self.raise_error(builtins::E_NOTICE, &msg);
-                }
-                return r;
-            }
-            StreamState::Stdin | StreamState::Dir { .. } => Act::No,
-        };
-        match act {
-            Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),
-            Act::Out => self.emit_raw_stdout(data),
-            Act::Err => self.write_stderr(data),
-            Act::Buf => match self.streams.get_mut(&id)? {
-                StreamState::Mem {
-                    mode: MemMode::ReadOnly,
-                    ..
-                } => return None,
-                StreamState::Mem {
-                    buf,
-                    pos,
-                    skew,
-                    mode: MemMode::Append,
-                    ..
-                } => {
-                    // Append mode writes at the end; php's position still
-                    // just advances by the bytes written.
-                    let tell = *pos as i64 + *skew + data.len() as i64;
-                    buf.extend_from_slice(data);
-                    *pos = buf.len();
-                    *skew = tell - *pos as i64;
-                }
-                StreamState::Mem { buf, pos, .. } => {
-                    // php://memory writes at the current position.
-                    let end = *pos + data.len();
-                    if end > buf.len() {
-                        buf.resize(end, 0);
-                    }
-                    buf[*pos..end].copy_from_slice(data);
-                    *pos = end;
-                }
-                StreamState::FileWrite { buf, .. } => buf.extend_from_slice(data),
-                _ => {}
-            },
-            Act::No => return None,
-        }
-        Some(data.len())
+        self.stream_write_filtered(res, data)
     }
 
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
-        let id = res_id(res)?;
-        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
-            let r = if len < 0 {
-                Some(s.read_all())
-            } else {
-                s.read(len as usize)
-            };
-            self.raise_ops_stream_diags(id);
-            return r;
-        }
-        match self.streams.get_mut(&id)? {
-            StreamState::Mem {
-                buf,
-                pos,
-                eof,
-                temp,
-                ..
-            } => {
-                let avail = buf.len().saturating_sub(*pos);
-                let take = if len < 0 {
-                    avail
-                } else {
-                    (len as usize).min(avail)
-                };
-                // _php_stream_read keeps reading memory streams until the
-                // request is met, so a short read hits the end and sets eof.
-                if len < 0 || take < len as usize {
-                    *eof = true;
-                }
-                // A position past the end (fseek beyond EOF) reads nothing.
-                let out = buf.get(*pos..*pos + take).unwrap_or_default().to_vec();
-                *pos += take;
-                // php://temp is a buffered stream over a memory stream: the
-                // buffer fill drains the inner stream, so consuming the last
-                // byte already leaves the stream at eof.
-                if temp.is_some() && *pos >= buf.len() {
-                    *eof = true;
-                }
-                Some(out)
-            }
-            StreamState::File(f) => {
-                if len < 0 {
-                    f.read_all()
-                } else {
-                    f.read(len as usize)
-                }
-            }
-            StreamState::Fd(f) => {
-                let r = if len < 0 {
-                    Some(f.read_all(-1))
-                } else {
-                    f.read(len as usize)
-                };
-                self.deliver_stream_events(res);
-                r
-            }
-            StreamState::Stdin => {
-                let f = self.stdin_stream()?;
-                if len < 0 {
-                    Some(f.read_all(-1))
-                } else {
-                    f.read(len as usize)
-                }
-            }
-            _ => Some(Vec::new()),
-        }
+        self.stream_read_filtered(res, len)
     }
 
     fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>> {
@@ -976,29 +903,7 @@ impl Host for Vm {
     }
 
     fn stream_eof(&self, res: &Value) -> bool {
-        match res_id(res).and_then(|id| self.streams.get(&id)) {
-            // Wrapper-backed buffers (phar://, compress.zlib://, …) are
-            // buffered streams in php: eof once everything has been consumed.
-            Some(StreamState::Mem { buf, pos, .. })
-                if res_id(res)
-                    .and_then(|id| self.streams.record(id))
-                    .is_some_and(|s| s.origin.is_some()) =>
-            {
-                *pos >= buf.len()
-            }
-            // php://memory and php://temp are unbuffered: eof is the flag a
-            // read sets when it runs out of data.
-            Some(StreamState::Mem { eof, .. }) => *eof,
-            Some(StreamState::File(f)) => f.eof(),
-            Some(StreamState::Fd(f)) => f.eof(),
-            Some(StreamState::Ops(s)) => s.eof(),
-            Some(StreamState::Stdin) => self.stdin_reader.as_ref().is_some_and(|f| f.eof()),
-            Some(StreamState::Dir { .. }) => false,
-            Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
-                false
-            }
-            _ => true,
-        }
+        self.stream_eof_filtered(res)
     }
 
     fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
@@ -1065,14 +970,7 @@ impl Host for Vm {
     }
 
     fn stream_push_back(&mut self, res: &Value, data: &[u8]) -> bool {
-        let Some(id) = res_id(res) else { return false };
-        match self.streams.get_mut(&id) {
-            Some(StreamState::Fd(f)) => f.push_back(data),
-            Some(StreamState::File(f)) => f.push_back(data),
-            Some(StreamState::Mem { pos, .. }) if *pos >= data.len() => *pos -= data.len(),
-            _ => return false,
-        }
-        true
+        self.stream_push_back_filtered(res, data)
     }
 
     fn stream_set_mode(&mut self, res: &Value, mode: &[u8]) {
@@ -1363,6 +1261,14 @@ impl Host for Vm {
 
     fn stream_close(&mut self, res: &Value) -> bool {
         let Some(id) = res_id(res) else { return false };
+        if self.streams.record(id).is_some_and(|r| r.no_fclose) {
+            let func = self.native_calls.last().map_or("fclose", |n| n.name);
+            let msg = format!(
+                "{func}(): cannot close the provided stream, as it must not be manually closed"
+            );
+            self.raise_error(builtins::E_WARNING, &msg);
+            return false;
+        }
         if self.last_dir.as_ref().and_then(res_id) == Some(id) {
             self.last_dir = None;
         }
@@ -1377,31 +1283,11 @@ impl Host for Vm {
     }
 
     fn stream_flush(&mut self, res: &Value) -> bool {
-        let Some(id) = res_id(res) else { return false };
-        if let Some(StreamState::FileWrite { buf, url }) = self.streams.get(&id) {
-            let (buf, url) = (buf.clone(), url.clone());
-            return self
-                .wrapper_for(&url)
-                .map(|w| w.put_contents(&url, &buf))
-                .is_some();
-        }
-        true
+        self.stream_flush_filtered(res)
     }
 
     fn stream_rewind(&mut self, res: &Value) -> bool {
-        match res_id(res).and_then(|id| self.streams.get_mut(&id)) {
-            Some(StreamState::Mem { pos, skew, eof, .. }) => {
-                *pos = 0;
-                *skew = 0;
-                *eof = false;
-                true
-            }
-            Some(StreamState::File(f)) => f.rewind(),
-            Some(StreamState::Fd(f)) => f.seek(0, 0),
-            Some(StreamState::Ops(s)) => s.seek(0, 0) == 0,
-            Some(StreamState::Stdout | StreamState::Stderr | StreamState::Stdin) => false,
-            _ => true,
-        }
+        self.stream_rewind_filtered(res)
     }
 
     fn stream_kind(&self, res: &Value) -> Option<builtins::StreamKind> {
@@ -1418,95 +1304,11 @@ impl Host for Vm {
     }
 
     fn stream_seek(&mut self, res: &Value, offset: i64, whence: i32) -> bool {
-        let Some(id) = res_id(res) else { return false };
-        match self.streams.get_mut(&id) {
-            Some(StreamState::File(f)) => f.seek(offset, whence),
-            Some(StreamState::Fd(f)) => f.seek(offset, whence),
-            Some(StreamState::Ops(s)) => {
-                let ok = s.seek(offset, whence) == 0;
-                self.raise_ops_stream_diags(id);
-                ok
-            }
-            Some(StreamState::Stdin) => match self.stdin_stream() {
-                Some(f) => f.seek(offset, whence),
-                None => false,
-            },
-            // php_plain_files_dirstream_rewind: any seek rewinds
-            Some(StreamState::Dir { pos, .. }) => {
-                *pos = 0;
-                true
-            }
-            Some(StreamState::Mem {
-                buf,
-                pos,
-                skew,
-                eof,
-                temp,
-                ..
-            }) => {
-                // _php_stream_seek + php_stream_memory_seek: a negative
-                // SEEK_SET fails without touching the stream; SEEK_CUR is
-                // turned into a SEEK_SET past that check, so a negative
-                // target reaches the memory stream, which resets its offset
-                // to 0 and php's position to -1 (as any other failure does).
-                // A temp stream (php://temp, data:) seeks its inner memory
-                // stream with SEEK_SET, so there it fails untouched. Seeking
-                // past the end is allowed (the next write zero-fills).
-                let target = match whence {
-                    0 if offset < 0 => return false,
-                    0 => offset,
-                    1 => {
-                        let t = (*pos as i64 + *skew).saturating_add(offset);
-                        if t < 0 && temp.is_some() {
-                            return false;
-                        }
-                        t
-                    }
-                    2 => (buf.len() as i64).saturating_add(offset),
-                    _ => {
-                        *skew = 0;
-                        return false;
-                    }
-                };
-                if target < 0 {
-                    *pos = 0;
-                    *skew = -1;
-                    return false;
-                }
-                *pos = target as usize;
-                *skew = 0;
-                *eof = false;
-                true
-            }
-            _ => false,
-        }
+        self.stream_seek_filtered(res, offset, whence)
     }
 
     fn stream_tell(&mut self, res: &Value) -> Option<i64> {
-        match self.streams.get(&res_id(res)?)? {
-            StreamState::File(f) => Some(f.tell()),
-            // php's ftell(): false while the stream position is -1.
-            StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
-            StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
-            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
-            StreamState::Mem { pos, skew, .. } => {
-                // ftell() is false while php's position is -1 (failed seek).
-                let t = *pos as i64 + *skew;
-                (t >= 0).then_some(t)
-            }
-            StreamState::FileWrite { buf, .. } => Some(buf.len() as i64),
-            // php reads a `php_stream_dirent` (char[MAXPATHLEN] + d_type) per
-            // entry, advancing the stream position by its size.
-            StreamState::Dir { pos, .. } => {
-                let dirent = if cfg!(target_os = "macos") {
-                    1025
-                } else {
-                    4097
-                };
-                Some(*pos as i64 * dirent)
-            }
-            _ => Some(0),
-        }
+        self.stream_tell_filtered(res)
     }
 
     fn stream_truncate(&mut self, res: &Value, size: i64) -> Option<bool> {
@@ -2691,4 +2493,320 @@ fn kind_word(kind: ClassKind) -> &'static str {
 /// `http(s)://`).
 fn outside_map_wrapper(scheme: &[u8]) -> bool {
     matches!(scheme, b"php" | b"data" | b"http" | b"https")
+}
+
+/// The stream operations without the filter layer.
+impl Vm {
+    pub(crate) fn stream_write_unfiltered(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
+        let id = res_id(res)?;
+        if self
+            .streams
+            .record(id)
+            .is_some_and(|s| s.data_url.is_some())
+        {
+            // php_stream_rfc2397_ops has no write
+            if data.is_empty() {
+                return Some(0);
+            }
+            let func = self.native_calls.last().map_or("fwrite", |n| n.name);
+            let msg = format!("{func}(): Stream is not writable");
+            self.raise_error(builtins::E_NOTICE, &msg);
+            return None;
+        }
+        enum Act {
+            Out,
+            Err,
+            Buf,
+            No,
+        }
+        let act = match self.streams.get_mut(&id)? {
+            StreamState::Stdout => Act::Out,
+            StreamState::Stderr => Act::Err,
+            StreamState::Mem { .. } | StreamState::FileWrite { .. } => Act::Buf,
+            StreamState::File(f) => return f.write(data),
+            StreamState::Ops(s) => return s.write(data),
+            StreamState::Fd(f) => {
+                let r = f.write(data);
+                let send_error = f.take_send_error();
+                self.deliver_stream_events(res);
+                if let Some(e) = send_error {
+                    // php_sockop_write's notice, under the calling builtin.
+                    let func = self.native_calls.last().map_or("fwrite", |n| n.name);
+                    let msg = format!(
+                        "{func}(): Send of {} bytes failed with errno={} {}",
+                        e.count,
+                        e.errno,
+                        builtins::main::streams::strerror(e.errno)
+                    );
+                    self.raise_error(builtins::E_NOTICE, &msg);
+                }
+                return r;
+            }
+            StreamState::Stdin | StreamState::Dir { .. } => Act::No,
+        };
+        match act {
+            Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),
+            Act::Out => self.emit_raw_stdout(data),
+            Act::Err => self.write_stderr(data),
+            Act::Buf => match self.streams.get_mut(&id)? {
+                StreamState::Mem {
+                    mode: MemMode::ReadOnly,
+                    ..
+                } => return None,
+                StreamState::Mem {
+                    buf,
+                    pos,
+                    skew,
+                    mode: MemMode::Append,
+                    ..
+                } => {
+                    // Append mode writes at the end; php's position still
+                    // just advances by the bytes written.
+                    let tell = *pos as i64 + *skew + data.len() as i64;
+                    buf.extend_from_slice(data);
+                    *pos = buf.len();
+                    *skew = tell - *pos as i64;
+                }
+                StreamState::Mem { buf, pos, .. } => {
+                    // php://memory writes at the current position.
+                    let end = *pos + data.len();
+                    if end > buf.len() {
+                        buf.resize(end, 0);
+                    }
+                    buf[*pos..end].copy_from_slice(data);
+                    *pos = end;
+                }
+                StreamState::FileWrite { buf, .. } => buf.extend_from_slice(data),
+                _ => {}
+            },
+            Act::No => return None,
+        }
+        Some(data.len())
+    }
+
+    pub(crate) fn stream_read_unfiltered(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
+        let id = res_id(res)?;
+        if let Some(StreamState::Ops(s)) = self.streams.get_mut(&id) {
+            let r = if len < 0 {
+                Some(s.read_all())
+            } else {
+                s.read(len as usize)
+            };
+            self.raise_ops_stream_diags(id);
+            return r;
+        }
+        match self.streams.get_mut(&id)? {
+            StreamState::Mem {
+                buf,
+                pos,
+                eof,
+                temp,
+                ..
+            } => {
+                let avail = buf.len().saturating_sub(*pos);
+                let take = if len < 0 {
+                    avail
+                } else {
+                    (len as usize).min(avail)
+                };
+                // _php_stream_read keeps reading memory streams until the
+                // request is met, so a short read hits the end and sets eof.
+                if len < 0 || take < len as usize {
+                    *eof = true;
+                }
+                // A position past the end (fseek beyond EOF) reads nothing.
+                let out = buf.get(*pos..*pos + take).unwrap_or_default().to_vec();
+                *pos += take;
+                // php://temp is a buffered stream over a memory stream: the
+                // buffer fill drains the inner stream, so consuming the last
+                // byte already leaves the stream at eof.
+                if temp.is_some() && *pos >= buf.len() {
+                    *eof = true;
+                }
+                Some(out)
+            }
+            StreamState::File(f) => {
+                if len < 0 {
+                    f.read_all()
+                } else {
+                    f.read(len as usize)
+                }
+            }
+            StreamState::Fd(f) => {
+                let r = if len < 0 {
+                    Some(f.read_all(-1))
+                } else {
+                    f.read(len as usize)
+                };
+                self.deliver_stream_events(res);
+                r
+            }
+            StreamState::Stdin => {
+                let f = self.stdin_stream()?;
+                if len < 0 {
+                    Some(f.read_all(-1))
+                } else {
+                    f.read(len as usize)
+                }
+            }
+            _ => Some(Vec::new()),
+        }
+    }
+
+    pub(crate) fn stream_eof_unfiltered(&self, res: &Value) -> bool {
+        match res_id(res).and_then(|id| self.streams.get(&id)) {
+            // Wrapper-backed buffers (phar://, compress.zlib://, …) are
+            // buffered streams in php: eof once everything has been consumed.
+            Some(StreamState::Mem { buf, pos, .. })
+                if res_id(res)
+                    .and_then(|id| self.streams.record(id))
+                    .is_some_and(|s| s.origin.is_some()) =>
+            {
+                *pos >= buf.len()
+            }
+            // php://memory and php://temp are unbuffered: eof is the flag a
+            // read sets when it runs out of data.
+            Some(StreamState::Mem { eof, .. }) => *eof,
+            Some(StreamState::File(f)) => f.eof(),
+            Some(StreamState::Fd(f)) => f.eof(),
+            Some(StreamState::Ops(s)) => s.eof(),
+            Some(StreamState::Stdin) => self.stdin_reader.as_ref().is_some_and(|f| f.eof()),
+            Some(StreamState::Dir { .. }) => false,
+            Some(StreamState::Stdout | StreamState::Stderr | StreamState::FileWrite { .. }) => {
+                false
+            }
+            _ => true,
+        }
+    }
+
+    pub(crate) fn stream_seek_unfiltered(&mut self, res: &Value, offset: i64, whence: i32) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::File(f)) => f.seek(offset, whence),
+            Some(StreamState::Fd(f)) => f.seek(offset, whence),
+            Some(StreamState::Ops(s)) => {
+                let ok = s.seek(offset, whence) == 0;
+                self.raise_ops_stream_diags(id);
+                ok
+            }
+            Some(StreamState::Stdin) => match self.stdin_stream() {
+                Some(f) => f.seek(offset, whence),
+                None => false,
+            },
+            // php_plain_files_dirstream_rewind: any seek rewinds
+            Some(StreamState::Dir { pos, .. }) => {
+                *pos = 0;
+                true
+            }
+            Some(StreamState::Mem {
+                buf,
+                pos,
+                skew,
+                eof,
+                temp,
+                ..
+            }) => {
+                // _php_stream_seek + php_stream_memory_seek: a negative
+                // SEEK_SET fails without touching the stream; SEEK_CUR is
+                // turned into a SEEK_SET past that check, so a negative
+                // target reaches the memory stream, which resets its offset
+                // to 0 and php's position to -1 (as any other failure does).
+                // A temp stream (php://temp, data:) seeks its inner memory
+                // stream with SEEK_SET, so there it fails untouched. Seeking
+                // past the end is allowed (the next write zero-fills).
+                let target = match whence {
+                    0 if offset < 0 => return false,
+                    0 => offset,
+                    1 => {
+                        let t = (*pos as i64 + *skew).saturating_add(offset);
+                        if t < 0 && temp.is_some() {
+                            return false;
+                        }
+                        t
+                    }
+                    2 => (buf.len() as i64).saturating_add(offset),
+                    _ => {
+                        *skew = 0;
+                        return false;
+                    }
+                };
+                if target < 0 {
+                    *pos = 0;
+                    *skew = -1;
+                    return false;
+                }
+                *pos = target as usize;
+                *skew = 0;
+                *eof = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn stream_tell_unfiltered(&mut self, res: &Value) -> Option<i64> {
+        match self.streams.get(&res_id(res)?)? {
+            StreamState::File(f) => Some(f.tell()),
+            // php's ftell(): false while the stream position is -1.
+            StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
+            StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
+            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
+            StreamState::Mem { pos, skew, .. } => {
+                // ftell() is false while php's position is -1 (failed seek).
+                let t = *pos as i64 + *skew;
+                (t >= 0).then_some(t)
+            }
+            StreamState::FileWrite { buf, .. } => Some(buf.len() as i64),
+            // php reads a `php_stream_dirent` (char[MAXPATHLEN] + d_type) per
+            // entry, advancing the stream position by its size.
+            StreamState::Dir { pos, .. } => {
+                let dirent = if cfg!(target_os = "macos") {
+                    1025
+                } else {
+                    4097
+                };
+                Some(*pos as i64 * dirent)
+            }
+            _ => Some(0),
+        }
+    }
+
+    pub(crate) fn stream_rewind_unfiltered(&mut self, res: &Value) -> bool {
+        match res_id(res).and_then(|id| self.streams.get_mut(&id)) {
+            Some(StreamState::Mem { pos, skew, eof, .. }) => {
+                *pos = 0;
+                *skew = 0;
+                *eof = false;
+                true
+            }
+            Some(StreamState::File(f)) => f.rewind(),
+            Some(StreamState::Fd(f)) => f.seek(0, 0),
+            Some(StreamState::Ops(s)) => s.seek(0, 0) == 0,
+            Some(StreamState::Stdout | StreamState::Stderr | StreamState::Stdin) => false,
+            _ => true,
+        }
+    }
+
+    pub(crate) fn stream_flush_unfiltered(&mut self, res: &Value) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        if let Some(StreamState::FileWrite { buf, url }) = self.streams.get(&id) {
+            let (buf, url) = (buf.clone(), url.clone());
+            return self
+                .wrapper_for(&url)
+                .map(|w| w.put_contents(&url, &buf))
+                .is_some();
+        }
+        true
+    }
+
+    pub(crate) fn stream_push_back_unfiltered(&mut self, res: &Value, data: &[u8]) -> bool {
+        let Some(id) = res_id(res) else { return false };
+        match self.streams.get_mut(&id) {
+            Some(StreamState::Fd(f)) => f.push_back(data),
+            Some(StreamState::File(f)) => f.push_back(data),
+            Some(StreamState::Mem { pos, .. }) if *pos >= data.len() => *pos -= data.len(),
+            _ => return false,
+        }
+        true
+    }
 }

@@ -23,7 +23,7 @@ unsafe extern "C" fn zfree(_: *mut c_void, p: *mut c_void) {
     libc::free(p)
 }
 
-fn new_stream() -> z::z_stream {
+pub(crate) fn new_stream() -> z::z_stream {
     z::z_stream {
         next_in: std::ptr::null_mut(),
         avail_in: 0,

@@ -290,10 +290,69 @@ fn fn_stream_copy_to_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value
                 host.stream_write(&dst, &b);
                 total += b.len();
             }
+            // a failed read fails the copy
+            None => return Ok(Value::Bool(false)),
             _ => break,
         }
     }
     Ok(Value::Int(total as i64))
+}
+
+/// `apply_filter_to_stream`: stream_filter_append / stream_filter_prepend.
+fn apply_filter_to_stream(
+    host: &mut dyn Host,
+    args: &[Value],
+    fname: &str,
+    append: bool,
+) -> Result<Value, Thrown> {
+    let (h, _) = stream_param(host, args, 0, fname, "stream")?;
+    let name = str_arg(args, 1);
+    let mut read_write = int_arg(args, 2, 0);
+    let params = args.get(3).map(deref);
+    const READ: i64 = 1;
+    const WRITE: i64 = 2;
+    if read_write & (READ | WRITE) == 0 {
+        // No chain given: the ones the stream's mode uses.
+        let mode = host.stream_meta(&h).map(|m| m.mode).unwrap_or_default();
+        if mode.contains(&b'r') || mode.contains(&b'+') {
+            read_write |= READ;
+        }
+        if mode.contains(&b'w') || mode.contains(&b'+') || mode.contains(&b'a') {
+            read_write |= WRITE;
+        }
+    }
+    let mut res = None;
+    for (bit, write) in [(READ, false), (WRITE, true)] {
+        if read_write & bit == 0 {
+            continue;
+        }
+        let Some(filter) = crate::main::streams::filter::create(host, &name, params.as_ref())
+        else {
+            return Ok(Value::Bool(false));
+        };
+        let register = write || read_write & WRITE == 0;
+        match host.stream_filter_add(&h, filter, write, append, register) {
+            Some(v) => res = Some(v),
+            None => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(res
+        .filter(|v| !matches!(v, Value::Null))
+        .unwrap_or(Value::Bool(false)))
+}
+
+fn fn_stream_filter_append(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    apply_filter_to_stream(host, args, "stream_filter_append", true)
+}
+
+fn fn_stream_filter_prepend(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    apply_filter_to_stream(host, args, "stream_filter_prepend", false)
+}
+
+/// `stream_filter_remove(resource $stream_filter): bool`.
+fn fn_stream_filter_remove(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = args.first().map(deref).unwrap_or(Value::Null);
+    Ok(Value::Bool(host.stream_filter_remove(&v)?))
 }
 
 fn fn_stream_get_wrappers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -925,12 +984,6 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("STREAM_META_GROUP_NAME", i(4)),
         ("STREAM_META_GROUP", i(5)),
         ("STREAM_META_ACCESS", i(6)),
-        ("PSFS_PASS_ON", i(2)),
-        ("PSFS_FEED_ME", i(1)),
-        ("PSFS_ERR_FATAL", i(0)),
-        ("PSFS_FLAG_NORMAL", i(0)),
-        ("PSFS_FLAG_FLUSH_INC", i(1)),
-        ("PSFS_FLAG_FLUSH_CLOSE", i(2)),
         ("STREAM_CLIENT_PERSISTENT", i(STREAM_CLIENT_PERSISTENT)),
         (
             "STREAM_CLIENT_ASYNC_CONNECT",
@@ -1339,16 +1392,26 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         return Ok(Value::Null);
     }
     let ending = str_arg(args, 2);
+    if let Some(r) = host.stream_get_record(&h, max as usize, &ending) {
+        return Ok(r.map_or(Value::Bool(false), Value::str));
+    }
+    host.stream_note_line_read(&h, false);
+    let r = get_line(host, &h, max, &ending);
+    host.stream_note_line_read(&h, true);
+    r
+}
+
+fn get_line(host: &mut dyn Host, h: &Value, max: i64, ending: &[u8]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
     while (out.len() as i64) < max {
-        let Some(b) = host.stream_read(&h, 1) else {
+        let Some(b) = host.stream_read(h, 1) else {
             break;
         };
         if b.is_empty() {
             break;
         }
         out.extend_from_slice(&b);
-        if !ending.is_empty() && out.ends_with(&ending) {
+        if !ending.is_empty() && out.ends_with(ending) {
             out.truncate(out.len() - ending.len());
             return Ok(Value::str(out));
         }
@@ -1356,8 +1419,8 @@ fn fn_stream_get_line(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     // php_stream_get_record: no delimiter, short of $length and not at
     // eof (a non-blocking stream out of data) returns false and leaves the
     // data buffered; so does nothing at eof
-    let eof = host.stream_eof(&h);
-    if (out.len() as i64) < max && !eof && host.stream_push_back(&h, &out) {
+    let eof = host.stream_eof(h);
+    if (out.len() as i64) < max && !eof && host.stream_push_back(h, &out) {
         return Ok(Value::Bool(false));
     }
     if out.is_empty() && eof {
@@ -1411,6 +1474,9 @@ pub fn register(m: &mut crate::Registry) {
         m,
         &[
             ("stream_get_wrappers", fn_stream_get_wrappers),
+            ("stream_filter_append", fn_stream_filter_append),
+            ("stream_filter_prepend", fn_stream_filter_prepend),
+            ("stream_filter_remove", fn_stream_filter_remove),
             ("stream_copy_to_stream", fn_stream_copy_to_stream),
             ("stream_context_create", fn_stream_context_create),
             ("stream_context_get_options", fn_stream_context_get_options),

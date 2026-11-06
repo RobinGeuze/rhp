@@ -506,6 +506,15 @@ impl Vm {
             // Run destructors of objects the program has just released.
             if self.dtor_check {
                 self.dtor_check = false;
+                if self.filtered_streams > 0 {
+                    // A filtered stream's last reference went away: its
+                    // filters run as it closes.
+                    if pc > 0 {
+                        self.stack[top].pc = pc;
+                    }
+                    self.reap_dropped_streams()?;
+                    self.stack[top].pc = pc + 1;
+                }
                 if !self.destructibles.is_empty() {
                     // Destructors belong to the releasing instruction: they
                     // report its line and its try catches their exceptions.

@@ -288,8 +288,19 @@ The original notes:
   (`main::fopen_wrappers`), including the compress.zlib/bzip2, zip and
   libxml opens. Not there yet: SplFileInfo/SplFileObject's own checks
   (which throw), CURLFile uploads, and phar's later checks and messages
-  (only the archive open is refused). Still missing: stream filters on plain
-  files, `php://fd` outside the CLI check.
+  (only the archive open is refused). Still missing: `php://fd` outside the
+  CLI check.
+- Stream filters (`stream_filter_append` & co., `php://filter`): a stream
+  gets a filter layer (`rhp-vm/src/stream_filters.rs`) when its first
+  filter is added. It holds the chains, php's read buffer, `stream->eof`
+  and `stream->position`, and runs streams.c's filtered read, line, write,
+  flush and seek paths over the stream's own read and write ops; streams
+  without filters take the unfiltered paths unchanged. What the backing
+  stream had read ahead moves into the layer's buffer (for memory streams,
+  the chunk php's line reads would have buffered). The filters are in
+  rhp-builtins (`main/streams/filter.rs`, `ext/standard/filters.rs`,
+  `user_filters.rs`, zlib, bz2 and iconv). Not modelled: persistent
+  streams and user stream wrappers (wave 6) carrying filters.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).

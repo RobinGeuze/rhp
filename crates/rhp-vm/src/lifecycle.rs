@@ -153,6 +153,9 @@ impl Vm {
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,
+            include_docref: None,
+            closing_resources: false,
+            filtered_streams: 0,
             native_resources: HashMap::new(),
             stdin_reader: None,
             destructibles: Vec::new(),
@@ -637,6 +640,11 @@ impl Vm {
             }
             self.output_end_all();
         }
+        // zend_deactivate closes the resource list: streams still open with
+        // filters run them a last time.
+        self.enter_shutdown_scope();
+        let _ = self.close_filtered_streams();
+        self.pending_throw = None;
         self.shutdown_functions.clear();
         self.stack.clear();
         Ok(status)

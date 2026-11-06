@@ -11,6 +11,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
+pub mod filter;
 pub mod glob_wrapper;
 pub mod ops;
 pub mod plain_wrapper;
@@ -785,6 +786,22 @@ impl LocalFile {
         Some(out)
     }
 
+    /// php's plain-files read op: buffered bytes, else one `read(2)` of a
+    /// chunk (eof only when it returns 0). `None` when the read failed.
+    pub fn read_once(&mut self, len: usize) -> Option<Vec<u8>> {
+        self.failed = false;
+        if self.rpos >= self.rbuf.len() && self.fill() == 0 {
+            return if self.failed { None } else { Some(Vec::new()) };
+        }
+        Some(self.take(len))
+    }
+
+    /// Hand over the read-ahead (php's read buffer when a filter is added).
+    pub fn take_buffered(&mut self) -> Vec<u8> {
+        let n = self.rbuf.len() - self.rpos;
+        self.take(n)
+    }
+
     /// Read to eof (`stream_get_contents` with no limit).
     pub fn read_all(&mut self) -> Option<Vec<u8>> {
         Some(self.read(usize::MAX).unwrap_or_default())
@@ -923,4 +940,9 @@ impl LocalFile {
     pub fn sync_for_cast(&mut self) {
         self.sync();
     }
+}
+
+/// A `php://filter/` URL (read through a stream, not whole by path).
+pub fn is_filter_url(url: &[u8]) -> bool {
+    url.len() >= 13 && url[..13].eq_ignore_ascii_case(b"php://filter/")
 }

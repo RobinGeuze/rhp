@@ -12,6 +12,7 @@
 //! The convert.iconv.* stream filter is not ported: rhp has no stream
 //! filters.
 
+pub(crate) mod iconv_filter;
 mod sys;
 
 use std::ffi::{CStr, CString};

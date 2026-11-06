@@ -35,6 +35,7 @@ mod props;
 mod reflect;
 mod request;
 mod scope;
+mod stream_filters;
 mod streams;
 mod stub_default;
 mod traits;
@@ -304,6 +305,15 @@ pub struct Vm {
     /// engine) raised a diagnostic: php's pending `EG(exception)`, thrown
     /// once the builtin returns.
     pending_throw: Option<Thrown>,
+    /// The include kind while an include opens its file (php's docref
+    /// names the include then).
+    include_docref: Option<&'static str>,
+    /// The end-of-request resource list close is running: filters see a
+    /// null stream.
+    closing_resources: bool,
+    /// Open streams with a filter layer (their release is checked at
+    /// function returns: php frees a resource on its last reference).
+    filtered_streams: u32,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,
     // The `STDIN` constant's reader: a buffered stream over a dup of fd 0

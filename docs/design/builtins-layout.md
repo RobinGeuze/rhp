@@ -86,6 +86,7 @@ These have no php-src counterpart.
 | `main/network.rs` | main/network.c, and the libc `inet_pton`/`inet_ntop` php calls |
 | `main/streams/mod.rs` | main/streams/streams.c (wrappers and their registry), with the plain-files wrapper (plain_wrapper.c) and `data:` URLs (memory.c) |
 | `main/streams/ops.rs` | main/streams/streams.c: the generic layer over `php_stream_ops` |
+| `main/streams/filter.rs` | main/streams/filter.c: buckets, brigades, the filter factories (the chains run in rhp-vm's `stream_filters.rs`) |
 | `main/streams/glob_wrapper.rs` | main/streams/glob_wrapper.c |
 | `main/streams/plain_wrapper.rs` | main/streams/plain_wrapper.c |
 | `main/streams/xp_socket.rs` | main/streams/xp_socket.c and transports.c |
@@ -107,6 +108,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `exec.rs` | exec.c |
 | `file.rs` | file.c |
 | `filestat.rs` | filestat.c |
+| `filters.rs` | filters.c: string.*, convert.*, consumed and dechunk filters |
 | `formatted_print.rs` | formatted_print.c |
 | `fsock.rs` | fsock.c |
 | `head.rs` | head.c |
@@ -136,6 +138,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `string.rs`, `string/prelude.php` | string.c; the prelude is `utf8_encode`/`utf8_decode` |
 | `type.rs` (module `r#type`) | type.c |
 | `uniqid.rs` | uniqid.c |
+| `user_filters.rs` | user_filters.c; its prelude holds `php_user_filter` and `StreamBucket` |
 | `url.rs` | url.c |
 | `uuencode.rs` | uuencode.c |
 | `var.rs` | var.c and var_unserializer.re, with Zend/zend.c's `print_r` formatter |

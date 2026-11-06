@@ -242,6 +242,7 @@ const RHP_INI: &[&str] = &[
     "max_execution_time",
     "max_input_vars",
     "max_memory_limit",
+    "mbstring.encoding_translation",
     "mbstring.http_input",
     "mbstring.http_output",
     "mbstring.internal_encoding",

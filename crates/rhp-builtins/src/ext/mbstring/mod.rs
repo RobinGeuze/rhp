@@ -292,6 +292,41 @@ pub(crate) fn convert_script(src: &[u8], to: Enc, from: Enc) -> Vec<u8> {
     mbfl::fast_convert(src, from, to, subst, mode).0
 }
 
+/// An encoding rfc1867 detected for a multipart part
+/// (mbstring.encoding_translation, php_rfc1867_set_multibyte_callbacks).
+#[derive(Clone, Copy)]
+pub(crate) struct GpcEnc(Enc);
+
+impl GpcEnc {
+    /// php_mb_mbchar_bytes: the length of the character starting with `b`.
+    pub(crate) fn char_bytes(&self, b: u8) -> usize {
+        if let Some(t) = self.0.mblen_table() {
+            t[b as usize] as usize
+        } else if self.0.flag() & mbfl::ENCTYPE_WCS2 != 0 {
+            2
+        } else if self.0.flag() & mbfl::ENCTYPE_WCS4 != 0 {
+            4
+        } else {
+            1
+        }
+    }
+
+    /// zend_multibyte_encoding_converter to the internal encoding.
+    pub(crate) fn to_internal(&self, s: &[u8]) -> Vec<u8> {
+        convert_script(s, ini_internal_encoding(), self.0)
+    }
+}
+
+/// php_mb_zend_encoding_detector over the http input list
+/// (php_mb_gpc_get_detect_order).
+pub(crate) fn gpc_detect(line: &[u8]) -> Option<GpcEnc> {
+    let v = ini(b"mbstring.http_input")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| php_encoding(b"input_encoding"));
+    let list = parse_encoding_list_raw(&v).ok().filter(|l| !l.is_empty())?;
+    detect_script_encoding(line, &list).map(GpcEnc)
+}
+
 fn deprecated_ini(d: &mut Vec<(i64, String)>, name: &str) {
     d.push((
         crate::E_DEPRECATED,

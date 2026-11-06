@@ -94,6 +94,19 @@ print_r(unserialize($c('SplStack', 'i:6;:i:1;:i:2;')));
 foreach ([$c('ArrayObject', 'x:i'), $c('ArrayIterator', 'y:i:0;'), $c('SplQueue', 'i:0'), $c('ArrayObject', 'x:i:0;a:0:{};m:i:1;')] as $s) {
     try { unserialize($s); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
 }
+// Magic methods run whatever their visibility.
+eval('class PW { private function __wakeup() { echo "PW wakeup\n"; } private function __sleep() { return []; } }');
+eval('class PU { private function __unserialize($d) { echo "PU unserialize\n"; } private function __serialize() { return [1]; } }');
+echo serialize(new PW), serialize(new PU), "\n";
+unserialize('O:2:"PW":0:{}');
+unserialize('O:2:"PU":0:{}');
+// SplDoublyLinkedList: O: with __serialize, and its checks.
+$q = new SplQueue;
+$q->enqueue(1);
+echo $s = serialize($q), "\n";
+print_r(unserialize($s));
+try { unserialize('O:8:"SplQueue":1:{i:0;i:0;}'); } catch (Exception $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+
 // Delayed calls: in parse order, after the whole payload; a throwing
 // __wakeup stops the rest.
 class W {

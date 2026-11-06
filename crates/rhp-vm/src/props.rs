@@ -72,6 +72,7 @@ impl Vm {
                         None
                     }
                     PropRes::Dynamic => {
+                        self.static_as_instance_notice(cls, scope, &pname, b"__get")?;
                         if Some(cls) == self.incomplete_class {
                             if self.pending_magic_fetch == builtins::MagicFetch::Write {
                                 return Err(self.incomplete_error(&h, "modify a property"));
@@ -91,8 +92,34 @@ impl Vm {
                 }
                 match self.magic(&h, cls, b"__get", &pname) {
                     Some(getter) => {
+                        let write = self.pending_magic_fetch == builtins::MagicFetch::Write
+                            && !getter.proto.is_internal();
                         let arg = Value::str(pname.as_bytes().to_vec());
-                        self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?
+                        let r = self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?;
+                        if write && !matches!(r, Value::Ref(_) | Value::Object(_)) {
+                            let msg = format!(
+                                "Indirect modification of overloaded property {}::${} has no effect",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(pname.as_bytes())
+                            );
+                            self.diag(builtins::E_NOTICE, &msg)?;
+                        }
+                        // (A built-in stand-in accessor is its class's own
+                        // read_property handler: no check.)
+                        match absent_slot {
+                            Some(k)
+                                if !getter.proto.is_internal()
+                                    && self
+                                        .class(cls)
+                                        .props
+                                        .get(&k)
+                                        .is_some_and(|pe| pe.ty.is_some()) =>
+                            {
+                                let strict = getter.proto.strict_types;
+                                self.verify_magic_get(cls, &k, r, strict)?
+                            }
+                            _ => r,
+                        }
                     }
                     None if denied.is_none() && self.lazy_slot(&h, absent_slot.as_ref()) => {
                         let inst = self.lazy_init(&h)?;
@@ -145,6 +172,105 @@ impl Vm {
                 Value::Null
             }
         })
+    }
+
+    /// php's FETCH_OBJ_W / FETCH_OBJ_UNSET (`unset`): the property below a
+    /// nested write. A non-object container is "Attempt to modify property"
+    /// (null for an unset); an absent dynamic property without `__get` is
+    /// created as null (zend_std_get_property_ptr_ptr).
+    pub(crate) fn prop_fetch_w(
+        &mut self,
+        top: usize,
+        o: Value,
+        pname: PhpStr,
+        unset: bool,
+    ) -> Result<Value, Thrown> {
+        let o = deref(&o);
+        match &o {
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                let scope = self.stack[top].defining_class;
+                // A readonly / set-restricted property (zend_std_read_property
+                // for BP_VAR_W/UNSET).
+                if let PropRes::Slot(k) = classes::resolve_prop(&self.classes, cls, scope, &pname) {
+                    if let Some(pe) = self.class(cls).props.get(&k) {
+                        if pe.hooks.is_none()
+                            && (pe.readonly
+                                || (pe.set_visibility.is_some()
+                                    && classes::set_access_ok(&self.classes, cls, scope, &k)
+                                        .is_err()))
+                        {
+                            let v = h.borrow().properties.get(&k).map(deref);
+                            match v {
+                                Some(v @ Value::Object(_)) => return Ok(v),
+                                None if unset => return Ok(Value::Null),
+                                _ => return Err(self.indirect_modification_err(top, cls, &k)),
+                            }
+                        }
+                    }
+                }
+                if Some(cls) != self.incomplete_class
+                    && !h.borrow().is_lazy()
+                    && matches!(
+                        classes::resolve_prop(&self.classes, cls, scope, &pname),
+                        PropRes::Dynamic
+                    )
+                    && !h.borrow().properties.contains_key(&pname)
+                    && self.lookup_method(cls, b"__get").is_none()
+                {
+                    self.static_as_instance_notice(cls, scope, &pname, b"__get")?;
+                    self.check_dynamic_prop(top, cls, &pname)?;
+                    h.borrow_mut().properties.insert(pname, Value::Null);
+                    return Ok(Value::Null);
+                }
+            }
+            Value::Closure(_) => {}
+            _ if unset => return Ok(Value::Null),
+            other => {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Attempt to modify property \"{}\" on {}",
+                        String::from_utf8_lossy(pname.as_bytes()),
+                        rhp_builtins::zval_value_name(self, other)
+                    ),
+                ))
+            }
+        }
+        self.fetching_as(builtins::MagicFetch::Write, |vm| {
+            vm.prop_fetch(top, o, pname)
+        })
+    }
+
+    /// "Cannot indirectly modify readonly property" / "Cannot indirectly
+    /// modify private(set) property … from …" for the declared slot `key`.
+    pub(crate) fn indirect_modification_err(
+        &self,
+        top: usize,
+        cls: ClassId,
+        key: &PhpStr,
+    ) -> Thrown {
+        let pe = &self.class(cls).props[key];
+        if pe.readonly {
+            return Thrown::error(
+                "Error",
+                format!(
+                    "Cannot indirectly modify readonly property {}::${}",
+                    String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
+                    String::from_utf8_lossy(pe.name.as_bytes())
+                ),
+            );
+        }
+        let scope = self.stack[top].defining_class;
+        match classes::set_access_ok(&self.classes, cls, scope, key) {
+            Err(e) => classes::set_access_err(
+                &self.classes,
+                self.stack[top].called_class,
+                "indirectly modify",
+                e,
+            ),
+            Ok(()) => Thrown::error("Error", "Cannot indirectly modify property"),
+        }
     }
 
     /// `isset($o->name)`: a set, non-null property reachable from the scope,
@@ -428,6 +554,8 @@ impl Vm {
             if let Some(pe) = self.hooked_entry(cls, k) {
                 return Err(self.hooked_unset_err(cls, pe));
             }
+        } else if matches!(res, PropRes::Dynamic) {
+            self.static_as_instance_notice(cls, scope, &pname, b"__unset")?;
         }
         let key = match &res {
             PropRes::Slot(k) => Some(k.clone()),
@@ -437,38 +565,13 @@ impl Vm {
         let present = key
             .as_ref()
             .is_some_and(|k| h.borrow().properties.contains_key(k));
-        // zend_std_unset_property: an initialized readonly property can never
-        // be unset; otherwise the (explicit or implicit) set visibility rules.
+        // zend_std_unset_property: the readonly and set visibility checks,
+        // unless an unset (not uninitialized) slot defers to `__unset`.
         if let PropRes::Slot(k) = &res {
-            if let Some(pe) = self.class(cls).props.get(k).filter(|pe| pe.readonly) {
-                if present {
-                    return Err(Thrown::error(
-                        "Error",
-                        format!(
-                            "Cannot unset readonly property {}::${}",
-                            String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
-                            String::from_utf8_lossy(pe.name.as_bytes())
-                        ),
-                    ));
-                }
-            }
-            let called = self.stack[top].called_class;
-            if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, k) {
-                return Err(classes::set_access_err(&self.classes, called, "unset", e));
-            }
-            // A public readonly property is implicitly protected(set).
-            if pe_public_implicit_set(self, cls, k) {
-                let pe = &self.class(cls).props[k];
-                let decl = pe.declaring_class;
-                let related = scope.is_some_and(|s| {
-                    s == decl
-                        || self.class(s).ancestors.contains(&decl)
-                        || self.class(decl).ancestors.contains(&s)
-                });
-                if !related {
-                    let e = (rhp_values::Visibility::Protected, decl, pe.name.clone());
-                    return Err(classes::set_access_err(&self.classes, called, "unset", e));
-                }
+            let uninit = !present && self.uninit_typed(&h, k);
+            if present || uninit || self.magic(&h, cls, b"__unset", &pname).is_none() {
+                let called = self.stack[top].called_class;
+                self.check_readonly_write(&h, k, present, scope, called, "unset")?;
             }
         }
         if !present {
@@ -487,6 +590,7 @@ impl Vm {
         let was_uninit = matches!(&res, PropRes::Slot(k) if self.uninit_typed(&h, k));
         if present {
             let key = key.unwrap();
+            self.consume_reinit(&h, &key);
             h.borrow_mut().properties.shift_remove(&key);
             self.mark_typed_unset(&h, &key);
         } else if was_uninit {
@@ -511,6 +615,34 @@ impl Vm {
             ));
         }
         Ok(())
+    }
+
+    /// zend_get_property_offset meeting a static property reached as
+    /// `$o->name`: "Accessing static property C::$p as non static" (then a
+    /// dynamic property is used), unless the class has the magic accessor
+    /// `magic` (php's `silent`).
+    pub(crate) fn static_as_instance_notice(
+        &mut self,
+        cls: ClassId,
+        scope: Option<ClassId>,
+        pname: &PhpStr,
+        magic: &'static [u8],
+    ) -> Result<(), Thrown> {
+        if self.classes[cls as usize].static_props.is_empty()
+            || !matches!(
+                classes::static_as_instance(&self.classes, cls, scope, pname),
+                Some(None)
+            )
+            || self.lookup_method(cls, magic).is_some()
+        {
+            return Ok(());
+        }
+        let msg = format!(
+            "Accessing static property {}::${} as non static",
+            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+            String::from_utf8_lossy(pname.as_bytes())
+        );
+        self.diag(builtins::E_NOTICE, &msg)
     }
 
     /// Is the declared slot `key` of `h` an uninitialized typed property
@@ -581,7 +713,8 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let guard = (h.borrow().id, which, name.clone());
         self.prop_guards.insert(guard.clone());
-        let r = self.call_sync(m, Some(h.clone()), cls, args);
+        // The accessor may use the lvalue cursor of the write it serves.
+        let r = self.with_saved_cursor(|vm| vm.call_sync(m, Some(h.clone()), cls, args));
         self.prop_guards.remove(&guard);
         r
     }
@@ -649,6 +782,8 @@ impl Vm {
         called: Option<ClassId>,
         strict: bool,
     ) -> Result<(), Thrown> {
+        // Only the write `StoreProp` itself asked for reports its value.
+        let want_result = std::mem::take(&mut self.want_typed_result);
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
             if Some(cls) == self.incomplete_class {
@@ -677,6 +812,9 @@ impl Vm {
                 _ => val,
             };
             let is_dyn = matches!(res, PropRes::Dynamic);
+            if is_dyn {
+                self.static_as_instance_notice(cls, scope, &pname, b"__set")?;
+            }
             let (key, denied) = match res {
                 PropRes::Slot(k) => (k, None),
                 PropRes::Dynamic => (pname.clone(), None),
@@ -722,18 +860,13 @@ impl Vm {
             }
             // Writes to uninitialized typed properties bypass __set().
             let uninit = !present && denied.is_none() && !is_dyn && self.uninit_typed(&h, &key);
-            if denied.is_none() {
-                if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, &key) {
-                    // An unset asymmetric property still defers to `__set`.
-                    if !present && !uninit {
-                        if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
-                            let nm = Value::str(pname.as_bytes().to_vec());
-                            self.call_magic(&setter, &h, cls, b"__set", &pname, vec![nm, val])?;
-                            return Ok(());
-                        }
-                    }
-                    return Err(classes::set_access_err(&self.classes, called, "modify", e));
-                }
+            // zend_std_write_property: an unset (not uninitialized) slot
+            // with an unguarded `__set` defers to it.
+            if denied.is_none()
+                && !is_dyn
+                && (present || uninit || self.magic(&h, cls, b"__set", &pname).is_none())
+            {
+                self.check_readonly_write(&h, &key, present, scope, called, "modify")?;
             }
             if !present && !uninit {
                 // Inaccessible, or not currently set (dynamic / unset declared):
@@ -768,9 +901,25 @@ impl Vm {
             let val = if is_dyn {
                 val
             } else {
-                let present = h.borrow().properties.contains_key(&key);
-                self.check_readonly_write(&h, &key, present, scope)?;
-                self.verify_prop_type(cls, &key, val, strict)?
+                let v = if self
+                    .class(cls)
+                    .props
+                    .get(&key)
+                    .is_some_and(|pe| pe.ty.is_some())
+                {
+                    let v = self.verify_prop_type(cls, &key, val, strict)?;
+                    // The assignment's value is the coerced one (`StoreProp`).
+                    if want_result {
+                        self.typed_write_result = Some(v.clone());
+                    }
+                    v
+                } else {
+                    val
+                };
+                if present {
+                    self.consume_reinit(&h, &key);
+                }
+                v
             };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
@@ -935,7 +1084,7 @@ impl Vm {
             }
             if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
                 // Property names iterate as string keys, even numeric ones.
-                arr.insert(ArrayKey::Str(name), deref(val).clone());
+                arr.insert(ArrayKey::Str(classes::unmangle(&name)), deref(val).clone());
             }
         }
         arr
@@ -990,8 +1139,22 @@ impl Vm {
         };
         let decl = pe.declaring_class;
         let name = pe.name.clone();
-        let val = self.coerce_stringable(val, &ty, strict, Some(decl))?;
-        match self.check_one(&val, &ty, strict, Some(decl)) {
+        self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), val, strict)
+    }
+
+    /// [`Vm::verify_prop_type`] for property `name` declared by `decl` with
+    /// type `ty`, seen on class `cls` (static properties too).
+    pub(crate) fn verify_type_for_prop(
+        &mut self,
+        ty: &Rc<rhp_bytecode::TypeHint>,
+        decl: ClassId,
+        cls: ClassId,
+        name: &[u8],
+        val: Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        let val = self.coerce_stringable(val, ty, strict, Some(decl))?;
+        match self.check_one(&val, ty, strict, Some(decl)) {
             Ok(None) => Ok(val),
             Ok(Some(c)) => {
                 self.coercion_diag(&val, &c)?;
@@ -1001,22 +1164,127 @@ impl Vm {
                 "Cannot assign {} to property {}::${} of type {}",
                 rhp_builtins::zval_value_name(self, &deref(&val)),
                 String::from_utf8_lossy(self.class(decl).name.as_bytes()),
-                String::from_utf8_lossy(name.as_bytes()),
-                self.prop_type_string(&ty, decl, Some(cls))
+                String::from_utf8_lossy(name),
+                self.prop_type_string(ty, decl, Some(cls))
             ))),
         }
     }
 
-    /// The readonly checks of a write to the declared slot `key` (`present`:
-    /// already initialized): php's "Cannot modify readonly property" and,
-    /// for an uninitialized one written outside its declaring class,
-    /// "Cannot initialize readonly property … from scope/global scope".
+    /// zend_verify_prop_assignable_by_ref_ex in the MAGIC_GET context: what
+    /// `__get` returned for the unset typed slot `key`, coerced to its type.
+    fn verify_magic_get(
+        &mut self,
+        cls: ClassId,
+        key: &PhpStr,
+        r: Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        let pe = &self.class(cls).props[key];
+        let ty = pe.ty.clone().expect("typed");
+        let decl = pe.declaring_class;
+        let name = pe.name.clone();
+        let (cell, val) = match &r {
+            Value::Ref(rc) => (Some(rc.clone()), rc.borrow().clone()),
+            v => (None, v.clone()),
+        };
+        let val = self.coerce_stringable(val, &ty, strict, Some(decl))?;
+        let val = match self.check_one(&val, &ty, strict, Some(decl)) {
+            Ok(None) => val,
+            Ok(Some(c)) => {
+                self.coercion_diag(&val, &c)?;
+                c
+            }
+            Err(()) => {
+                let dn = String::from_utf8_lossy(self.class(decl).name.as_bytes()).into_owned();
+                return Err(Thrown::type_error(format!(
+                    "Value of type {} returned from {dn}::__get() must be compatible with unset property {dn}::${} of type {}",
+                    rhp_builtins::zval_type_name(self, &val),
+                    String::from_utf8_lossy(name.as_bytes()),
+                    self.prop_type_string(&ty, decl, Some(cls))
+                )));
+            }
+        };
+        Ok(match cell {
+            Some(rc) => {
+                *rc.borrow_mut() = val;
+                Value::Ref(rc)
+            }
+            None => val,
+        })
+    }
+
+    /// `++`/`--` turned the int in a plain typed property leaf into a
+    /// float: unless the type takes floats, php's zend_throw_incdec_prop_error.
+    pub(crate) fn incdec_typed_overflow(
+        &mut self,
+        top: usize,
+        steps: &[crate::lvalue::CursorStep],
+        delta: i8,
+    ) -> Result<(), Thrown> {
+        let (ty, decl, cls, name) = if steps.is_empty() {
+            let Some(crate::lvalue::StaticRoot {
+                cls,
+                name,
+                decl,
+                ty: Some(ty),
+                ..
+            }) = self.cursor_static_prop()
+            else {
+                return Ok(());
+            };
+            (ty, decl, cls, name)
+        } else {
+            if !matches!(
+                self.cursor_magic_split(top, steps),
+                crate::lvalue::MagicSplit::Plain
+            ) {
+                return Ok(());
+            }
+            let Some((cls, key)) = self.cursor_leaf_typed(top, steps) else {
+                return Ok(());
+            };
+            let pe = &self.class(cls).props[&key];
+            (
+                pe.ty.clone().expect("typed leaf"),
+                pe.declaring_class,
+                cls,
+                pe.name.clone(),
+            )
+        };
+        if ty.kinds.iter().any(|k| {
+            matches!(
+                k,
+                rhp_bytecode::TypeKind::Float | rhp_bytecode::TypeKind::Mixed
+            )
+        }) {
+            return Ok(());
+        }
+        let (what, end) = if delta > 0 {
+            ("increment", "maximal")
+        } else {
+            ("decrement", "minimal")
+        };
+        Err(Thrown::type_error(format!(
+            "Cannot {what} property {}::${} of type {} past its {end} value",
+            String::from_utf8_lossy(self.class(decl).name.as_bytes()),
+            String::from_utf8_lossy(name.as_bytes()),
+            self.prop_type_string(&ty, decl, Some(cls))
+        )))
+    }
+
+    /// php's readonly and asymmetric visibility checks on writing (`op`:
+    /// "modify" / "unset") the declared slot `key` (`present`: initialized):
+    /// "Cannot modify readonly property" for an initialized one (outside
+    /// the `__clone` window), then the set visibility (a public readonly
+    /// property is protected(set)), named after the called scope.
     pub(crate) fn check_readonly_write(
         &mut self,
         obj: &ObjectHandle,
         key: &PhpStr,
         present: bool,
         scope: Option<ClassId>,
+        called: Option<ClassId>,
+        op: &str,
     ) -> Result<(), Thrown> {
         let cls = obj.borrow().class;
         let Some(pe) = self
@@ -1026,135 +1294,86 @@ impl Vm {
         else {
             return Ok(());
         };
-        if !pe.readonly {
+        if !pe.readonly && pe.set_visibility.is_none() {
             return Ok(());
         }
-        let decl = pe.declaring_class;
-        let name = pe.name.clone();
-        let cname = String::from_utf8_lossy(self.class(decl).name.as_bytes()).into_owned();
-        let p = String::from_utf8_lossy(name.as_bytes()).into_owned();
-        // Redeclared in a child: the parent that declared it may still
-        // initialize it (zend_verify_readonly_initialization_access).
-        let parent_scope_ok = scope.is_some_and(|s| {
-            s != decl
-                && self.class(cls).ancestors.contains(&s)
-                && self
-                    .class(s)
-                    .prop_visible
-                    .get(&name)
-                    .and_then(|k| self.class(s).props.get(k))
-                    .is_some_and(|spe| spe.declaring_class == s)
-        });
-        if present {
-            // clone-with unlocks each readonly property once more; the
-            // set visibility still applies.
-            let oid = obj.borrow().id;
-            let reinit = CLONE_WITH.with_borrow_mut(|cw| match cw {
-                Some((o, done)) if *o == oid && !done.contains(key) => {
-                    done.push(key.clone());
-                    true
-                }
-                _ => false,
-            });
-            if reinit {
-                if !pe_public_implicit_set(self, cls, key)
-                    || scope.is_some_and(|s| {
-                        self.class(s).ancestors.contains(&decl)
-                            || self.class(decl).ancestors.contains(&s)
-                    })
-                {
-                    return Ok(());
-                }
-                let from = match scope {
-                    Some(s) => format!(
-                        "scope {}",
-                        String::from_utf8_lossy(self.class(s).name.as_bytes())
-                    ),
-                    None => "global scope".into(),
-                };
-                return Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Cannot modify protected(set) readonly property {cname}::${p} from {from}"
-                    ),
-                ));
-            }
-            // php 8.3: during __clone each readonly property may be
-            // reinitialized once (from the property's scope).
-            let oid = obj.borrow().id;
-            let in_clone = self.stack.iter().any(|f| {
-                f.proto.name.as_bytes().eq_ignore_ascii_case(b"__clone")
-                    && f.proto
-                        .this_cv
-                        .and_then(|cv| match f.regs.get(cv as usize) {
-                            Some(Value::Object(o)) => Some(o.borrow().id == oid),
-                            _ => None,
-                        })
-                        .unwrap_or(false)
-            });
-            if in_clone && (scope == Some(decl) || parent_scope_ok) && {
-                let done = self.readonly_reinit.entry(oid).or_default();
-                !done.contains(key) && {
-                    done.push(key.clone());
-                    true
-                }
-            } {
-                return Ok(());
-            }
+        if pe.readonly && present && !self.reinitable(obj, key) && !clone_with_reinit(obj, key) {
+            let what = if op == "unset" { "unset" } else { "modify" };
             return Err(Thrown::error(
                 "Error",
-                format!("Cannot modify readonly property {cname}::${p}"),
+                format!(
+                    "Cannot {what} readonly property {}::${}",
+                    String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
+                    String::from_utf8_lossy(pe.name.as_bytes())
+                ),
             ));
         }
         // Initializing it during clone-with uses up its reinitialization.
-        let oid = obj.borrow().id;
-        CLONE_WITH.with_borrow_mut(|cw| {
-            if let Some((_, done)) = cw.as_mut().filter(|(o, _)| *o == oid) {
-                done.push(key.clone());
-            }
-        });
-        // An explicit public(set): anyone may initialize it.
-        if self
-            .class(cls)
-            .props
-            .get(key)
-            .and_then(|pe| pe.set_visibility)
-            == Some(rhp_values::Visibility::Public)
-        {
-            return Ok(());
+        if pe.readonly && !present {
+            clone_with_consume(obj, key);
         }
-        // A public readonly property is implicitly protected(set).
-        if pe_public_implicit_set(self, cls, key)
-            && !scope.is_some_and(|s| {
-                self.class(s).ancestors.contains(&decl) || self.class(decl).ancestors.contains(&s)
-            })
-        {
-            let from = match scope {
-                Some(s) => format!(
-                    "scope {}",
-                    String::from_utf8_lossy(self.class(s).name.as_bytes())
-                ),
-                None => "global scope".into(),
-            };
-            return Err(Thrown::error(
-                "Error",
-                format!("Cannot modify protected(set) readonly property {cname}::${p} from {from}"),
-            ));
-        }
-        if scope != Some(decl) && !parent_scope_ok {
-            let from = match scope {
-                Some(s) => format!(
-                    "scope {}",
-                    String::from_utf8_lossy(self.class(s).name.as_bytes())
-                ),
-                None => "global scope".into(),
-            };
-            return Err(Thrown::error(
-                "Error",
-                format!("Cannot initialize readonly property {cname}::${p} from {from}"),
-            ));
+        if let Err(e) = classes::set_access_ok(&self.classes, cls, scope, key) {
+            return Err(classes::set_access_err(&self.classes, called, op, e));
         }
         Ok(())
+    }
+
+    /// The readonly slot `key` of `obj` may be modified once more: `obj`
+    /// is a fresh clone whose `__clone` is running (IS_PROP_REINITABLE).
+    fn reinitable(&self, obj: &ObjectHandle, key: &PhpStr) -> bool {
+        if self.readonly_reinit.is_empty() {
+            return false;
+        }
+        let oid = obj.borrow().id;
+        let Some((depth, keys)) = self.readonly_reinit.get(&oid) else {
+            return false;
+        };
+        let alive = self.stack.get(*depth).is_some_and(|f| {
+            f.proto.name.as_bytes().eq_ignore_ascii_case(b"__clone")
+                && f.proto.this_cv.is_some_and(|cv| {
+                    matches!(f.regs.get(cv as usize), Some(Value::Object(o)) if Rc::ptr_eq(o, obj))
+                })
+        });
+        alive && keys.contains(key)
+    }
+
+    /// A write or unset used up the `__clone` window of slot `key`.
+    pub(crate) fn consume_reinit(&mut self, obj: &ObjectHandle, key: &PhpStr) {
+        if self.readonly_reinit.is_empty() {
+            return;
+        }
+        let oid = obj.borrow().id;
+        if let Some((_, keys)) = self.readonly_reinit.get_mut(&oid) {
+            keys.retain(|k| k != key);
+        }
+    }
+
+    /// The frame at stack index `depth` returned: close the `__clone`
+    /// windows it held, so a later direct `__clone()` call at the same
+    /// depth gets none.
+    pub(crate) fn close_reinit(&mut self, depth: usize) {
+        self.readonly_reinit.retain(|_, (d, _)| *d < depth);
+    }
+
+    /// Open the `__clone` window of the clone `obj`, whose `__clone` frame
+    /// is about to be pushed at stack index `depth`: each initialized
+    /// readonly property may be modified once.
+    pub(crate) fn open_reinit(&mut self, obj: &ObjectHandle, depth: usize) {
+        let b = obj.borrow();
+        let e = self.class(b.class);
+        let keys: Vec<PhpStr> = e
+            .props
+            .iter()
+            .filter(|(k, pe)| pe.readonly && b.properties.contains_key(*k))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if !keys.is_empty() {
+            let id = b.id;
+            drop(b);
+            // Windows whose frame returned are closed.
+            self.readonly_reinit.retain(|_, (d, _)| *d < depth);
+            self.readonly_reinit.insert(id, (depth, keys));
+        }
     }
 
     /// A prelude class's `__`-prefixed state slot (see
@@ -1195,6 +1414,7 @@ impl Vm {
         self.reg_set(top, dst, Value::Object(new_obj.clone()));
         if let Some(m) = clone_m {
             let cls = new_obj.borrow().class;
+            self.open_reinit(&new_obj, self.stack.len());
             self.enter_method(top, &m, Some(new_obj), cls, Reg::MAX, src, 0)?;
         }
         Ok(())
@@ -1245,6 +1465,7 @@ impl Vm {
             if let Some(m) = clone_m {
                 if !new_obj.borrow().is_lazy() {
                     let cls = new_obj.borrow().class;
+                    self.open_reinit(&new_obj, self.stack.len());
                     self.call_sync(&m, Some(new_obj.clone()), cls, Vec::new())?;
                 }
             }
@@ -1351,14 +1572,27 @@ fn clone_closure(cd: &rhp_values::ClosureData) -> Value {
     }))
 }
 
-/// A public readonly property without an explicit set visibility (php 8.4
-/// makes it protected(set)).
-fn pe_public_implicit_set(vm: &Vm, cls: ClassId, key: &PhpStr) -> bool {
-    vm.class(cls).props.get(key).is_some_and(|pe| {
-        pe.readonly
-            && pe.visibility == rhp_values::Visibility::Public
-            && pe.set_visibility.is_none()
+/// clone-with unlocks each readonly property of the copy once more
+/// (zend_objects_clone_obj_with sets IS_PROP_REINITABLE); a write uses it.
+fn clone_with_reinit(obj: &ObjectHandle, key: &PhpStr) -> bool {
+    let oid = obj.borrow().id;
+    CLONE_WITH.with_borrow_mut(|cw| match cw {
+        Some((o, done)) if *o == oid && !done.contains(key) => {
+            done.push(key.clone());
+            true
+        }
+        _ => false,
     })
+}
+
+/// Initializing a readonly slot during clone-with uses up its unlock.
+fn clone_with_consume(obj: &ObjectHandle, key: &PhpStr) {
+    let oid = obj.borrow().id;
+    CLONE_WITH.with_borrow_mut(|cw| {
+        if let Some((_, done)) = cw.as_mut().filter(|(o, _)| *o == oid) {
+            done.push(key.clone());
+        }
+    });
 }
 
 /// A Closure has no properties: writing one fails as a forbidden dynamic

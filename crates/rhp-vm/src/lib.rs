@@ -242,9 +242,9 @@ pub struct Vm {
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
-    /// Readonly properties already reinitialized inside a `__clone`
-    /// (object id, storage key): once each.
-    readonly_reinit: HashMap<u32, Vec<PhpStr>>,
+    /// Clones whose `__clone` runs (object id -> the frame's stack index
+    /// and the readonly slots it may still modify once).
+    readonly_reinit: HashMap<u32, (usize, Vec<PhpStr>)>,
     /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
@@ -275,6 +275,22 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // The value a cursor write stored in a typed property after coercion
+    // (the assignment expression's value).
+    typed_write_result: Option<Value>,
+    // `StoreProp` wants `typed_write_result` from the write it runs.
+    want_typed_result: bool,
+    // The running cursor write is a `++`/`--`.
+    incdec_write: bool,
+    // The static property an open cursor is rooted at: its cell, the class
+    // it was reached through and its name (valid while the root is that cell).
+    cursor_static: Option<lvalue::StaticRoot>,
+    // An undefined variable assigned below a `__get` property: php reads
+    // it (and warns) after fetching the container.
+    deferred_undef_src: Option<Reg>,
+    // The typed property the open cursor's leaf is, as the last
+    // `cursor_through_check` found it.
+    cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.

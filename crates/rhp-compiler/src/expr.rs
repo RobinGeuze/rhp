@@ -1519,18 +1519,25 @@ impl ProtoBuilder<'_> {
         arr
     }
 
-    /// The raw identifier bytes of a member selector (non-dynamic only).
-    pub(crate) fn selector_string(
-        &self,
+    /// [`Self::build_pair`] with the method named by a selector, which may
+    /// be dynamic (`$o->$name(...)`, `$o->{expr}(...)`).
+    pub(crate) fn build_pair_sel(
+        &mut self,
+        first: Reg,
         sel: &crate::parse::cst::ClassLikeMemberSelector,
-    ) -> Result<Vec<u8>, Thrown> {
-        match sel {
-            ClassLikeMemberSelector::Identifier(li) => Ok(li.value.to_vec()),
-            _ => Err(Thrown::unsupported(
-                "dynamic member name",
-                "`->$x(...)` deferred",
-            )),
+    ) -> Result<Reg, Thrown> {
+        if let ClassLikeMemberSelector::Identifier(li) = sel {
+            return Ok(self.build_pair(first, li.value));
         }
+        let name = match self.compile_selector(sel)? {
+            crate::oop::Sel::Dyn(r) => r,
+            crate::oop::Sel::Static(_) => unreachable!("identifier handled above"),
+        };
+        let arr = self.alloc_temp();
+        self.emit(Instr::NewArray { dst: arr, cap: 2 });
+        self.emit(Instr::ArrPush { arr, val: first });
+        self.emit(Instr::ArrPush { arr, val: name });
+        Ok(arr)
     }
 }
 

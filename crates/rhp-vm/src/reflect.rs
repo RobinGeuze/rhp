@@ -389,8 +389,14 @@ impl Vm {
                     if !st {
                         continue;
                     }
+                    // (An uninitialized typed static is left out.)
                     if let Some(sp) = e.static_props.get(n.as_bytes()) {
-                        out.insert(ArrayKey::from_bytes(n.as_bytes()), deref(&sp.cell.borrow()));
+                        if !sp.cell.borrow().is_undef() {
+                            out.insert(
+                                ArrayKey::from_bytes(n.as_bytes()),
+                                deref(&sp.cell.borrow()),
+                            );
+                        }
                     }
                 }
                 Ok(Value::Array(out))
@@ -774,11 +780,12 @@ impl Vm {
     fn prop_order_ex(&self, cid: ClassId, with_private: bool) -> Vec<(PhpStr, ClassId, bool)> {
         let e = &self.classes[cid as usize];
         let mut out: Vec<(PhpStr, ClassId, bool)> = Vec::new();
-        // An enum's `name` (and `value`) are declared by zend_enum_add_interfaces.
-        if e.kind == ClassKind::Enum {
-            out.push((PhpStr::from("name"), cid, false));
-            if e.enum_backing.is_some() {
-                out.push((PhpStr::from("value"), cid, false));
+        // An enum's `name` / `value` come first (zend_enum_register_props).
+        if e.kind == rhp_values::ClassKind::Enum {
+            for n in ["name", "value"] {
+                if e.prop_visible.contains_key(&PhpStr::from(n)) {
+                    out.push((PhpStr::from(n), cid, false));
+                }
             }
         }
         let own = own_props_ordered(&e.proto);

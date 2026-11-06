@@ -607,6 +607,15 @@ impl Vm {
         match &v {
             Value::Str(s) => Ok(s.clone()),
             Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),
+            // zval_try_get_string.
+            Value::Array(_) => {
+                self.diag(rhp_builtins::E_WARNING, "Array to string conversion")?;
+                Ok(PhpStr::from("Array"))
+            }
+            Value::Closure(_) => Err(Thrown::error(
+                "Error",
+                "Object of class Closure could not be converted to string",
+            )),
             _ => Ok(PhpStr::from_bytes(conv::to_string_bytes(&v))),
         }
     }

@@ -530,8 +530,9 @@ traces leave thunk frames out, and while one runs errors report its current
 line (each sub-expression is compiled with its own line) as php's
 `EG(filename_override)`/`EG(lineno_override)`. A trace built under the
 override starts with a `[constant expression]()` frame at the real execution
-point when that differs. A thunk that is just a global constant name
-(`CONST_EXPR_PLAIN`) sets no override, and an autoloader runs without one
+point when that differs. A thunk that is just a global constant name, or
+has no class scope (a function's attribute argument or parameter default),
+is `CONST_EXPR_PLAIN` and sets no override, and an autoloader runs without one
 (`zend_lookup_class`).
 
 ---

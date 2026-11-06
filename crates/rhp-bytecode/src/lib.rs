@@ -1212,8 +1212,9 @@ impl ProtoFlags {
     /// default or attribute argument). php evaluates those with no frame
     /// (zend_ast_evaluate), reporting at the expression's line.
     pub const CONST_EXPR: ProtoFlags = ProtoFlags(16);
-    /// A [`ProtoFlags::CONST_EXPR`] thunk that is just a global constant
-    /// name: php looks it up directly, without moving the reported line.
+    /// A [`ProtoFlags::CONST_EXPR`] thunk that sets no file/line override:
+    /// just a global constant name (php looks it up directly), or one with
+    /// no class scope (zend_ast_evaluate_ex overrides only with a scope).
     pub const CONST_EXPR_PLAIN: ProtoFlags = ProtoFlags(32);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {

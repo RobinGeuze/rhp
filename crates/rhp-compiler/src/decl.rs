@@ -244,6 +244,13 @@ pub(crate) fn compile_attributes(
                             c.emit(Instr::Ret { src: dst });
                             let mut proto = c.finish()?;
                             proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR);
+                            if class_name.is_none() {
+                                // No class scope: zend_ast_evaluate_ex sets
+                                // no file/line override.
+                                proto
+                                    .flags
+                                    .insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);
+                            }
                             Some(ConstInitProto::Thunk(Rc::new(proto)))
                         }
                     }
@@ -642,7 +649,9 @@ fn compile_const_thunk(
     c.emit(Instr::Ret { src: r });
     let mut proto = c.finish()?;
     proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR);
-    if matches!(expr, Expression::ConstantAccess(_)) {
+    // A plain global constant name, or no class scope (a function's
+    // parameter default): php sets no file/line override.
+    if matches!(expr, Expression::ConstantAccess(_)) || class_name.is_none() {
         proto
             .flags
             .insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);

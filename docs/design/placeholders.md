@@ -45,7 +45,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 18 | ~~stdin reads return empty~~ **done**: `STDIN` reads a buffered dup of fd 0; `php://stdin` opens its own | — | interactive input, piped stdin | — | — |
 | 19 | ~~`is_readable`/`is_writable`/`is_executable`~~ **RESOLVED** — `access(2)` for plain files, mode bits vs uid/gid for other wrappers (phar) | `fs_fns.rs` | — | — | — |
 | 20 | ~~`fileperms` — fixed~~ **RESOLVED** — real `st_mode` via the stream layer (phar: php's `phar_dostat` modes) | `fs_fns.rs` | — | — | — |
-| 21 | ~~`chmod`/`chdir`/`clearstatcache`~~ **RESOLVED** — real `chmod`/`chdir`; `clearstatcache` is a no-op because rhp has no stat cache (php's single-entry stat cache staleness is not modelled) | `file_fns.rs` | — | — | — |
+| 21 | ~~`chmod`/`chdir`/`clearstatcache`~~ **RESOLVED** — real `chmod`/`chdir`; `clearstatcache` clears the realpath cache only; rhp has no stat cache (php's single-entry stat cache staleness is not modelled) | `file_fns.rs` | — | — | — |
 | 22 | ~~`touch` — does not set mtime~~ **RESOLVED** — sets mtime/atime (php's defaulting rules) | `file_fns.rs` | — | — | — |
 | 23 | ~~Phar MD5/SHA-1/OpenSSL signatures — accepted without verification~~ **resolved**: all signature types verified (OpenSSL against `<phar>.pubkey`) | `ext/phar/mod.rs` `verify_signature` | — | — | — |
 | 24 | Phar bzip2 entries unsupported | `ext/phar/mod.rs:124` | bz2-compressed phars | low | low |
@@ -284,7 +284,9 @@ The original notes:
   lowercased, an unknown scheme warns and opens the plain file, `file://host/`
   is refused. Plain files open their `expand_filepath()` path. Failed
   `read(2)`/`write(2)` raise php's "Read/Write of N bytes failed with
-  errno=..." notices. Still missing: open_basedir, stream filters on plain
+  errno=..." notices. open_basedir is checked where php checks it
+  (`main::fopen_wrappers`; SplFileInfo/SplFileObject's own checks, which
+  throw, are not there yet). Still missing: stream filters on plain
   files, `php://fd` outside the CLI check.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
@@ -352,9 +354,12 @@ The original notes:
 ### 2.8 `chmod` / `chdir` / `clearstatcache` — RESOLVED (cache semantics aside)
 - `chmod` is real; `chdir`/`getcwd`/`umask` are the request's (php's ZTS
   virtual cwd, `rhp_builtins::zend::virtual_cwd`), with php CLI's results.
-  `clearstatcache` is a no-op: rhp keeps no stat cache, so a php script that
-  observes a *stale* cached stat (e.g. `filesize` after an external change
-  without `clearstatcache`) sees fresh data under rhp. Known, deliberate gap.
+  rhp keeps no stat cache, so a php script that observes a *stale* cached
+  stat (e.g. `filesize` after an external change without `clearstatcache`)
+  sees fresh data under rhp. Known, deliberate gap. php's realpath cache is
+  kept (per request, `virtual_cwd::realpath_cache`): `realpath()` and the
+  path expansion of opens go through it, and `clearstatcache(true[, $path])`,
+  `unlink`, `rename` and `rmdir` clear it.
 
 ### 2.9 `touch` — RESOLVED
 - Sets mtime/atime (`utimes`), creating the file when missing.

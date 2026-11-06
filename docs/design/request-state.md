@@ -33,7 +33,9 @@ Kinds:
 | where | static | kind | reset by |
 |---|---|---|---|
 | `zend/virtual_cwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `virtual_cwd::reset_state` |
+| `zend/virtual_cwd/realpath_cache.rs` | `CACHE` (php's realpath cache and its settings; php keeps it per process) | request | `realpath_cache::reset_state` |
 | `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
+| `main/fopen_wrappers.rs` | `BASEDIR`, `ACTIVE` (open_basedir, its entries expanded after an ini_set) | request | `fopen_wrappers::reset_state` |
 | `main/ini.rs` | `STARTUP_DIAGS` | request | `ini::reset_state` |
 | `ext/opcache/mod.rs` | `ACCEL_LOG` (opcache's startup messages) | startup | emptied by `start_request` |
 | `main/streams/mod.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |

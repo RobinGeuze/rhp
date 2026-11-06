@@ -1,0 +1,17 @@
+string(8) "BASE/dir"
+bool(true)
+string(8) "BASE/dir"
+bool(true)
+bool(true)
+string(8) "BASE/dir"
+string(8) "BASE/dir"
+string(8) "BASE/dir"
+bool(false)
+array(1) {
+  [0]=>
+  string(2) "x
+"
+}
+bool(true)
+bool(false)
+bool(false)

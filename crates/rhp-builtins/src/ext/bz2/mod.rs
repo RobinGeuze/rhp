@@ -41,6 +41,11 @@ fn err_code(e: bzip2::Error) -> i64 {
 pub fn compress(data: &[u8], block_size: u32, work_factor: u32) -> Vec<u8> {
     let mut c = Compress::new(Compression::new(block_size), work_factor);
     let mut out = Vec::with_capacity(data.len() + data.len() / 100 + 600);
+    // php allocates this buffer up front: past memory_limit it stops here,
+    // and the VM reports the error when the call returns.
+    if rhp_values::mem::state().attention() {
+        return out;
+    }
     loop {
         let consumed = c.total_in() as usize;
         match c.compress_vec(&data[consumed..], &mut out, Action::Finish) {

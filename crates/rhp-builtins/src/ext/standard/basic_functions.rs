@@ -1276,6 +1276,9 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     if !host.body_state().is_some_and(|s| s.is_uploaded(&from)) {
         return Ok(Value::Bool(false));
     }
+    if !crate::main::fopen_wrappers::check(host, "move_uploaded_file", &to, true)? {
+        return Ok(Value::Bool(false));
+    }
     let mut ok = false;
     if std::fs::rename(os_path(&from), os_path(&to)).is_ok() {
         ok = true;

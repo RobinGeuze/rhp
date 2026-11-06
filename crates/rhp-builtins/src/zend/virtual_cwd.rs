@@ -676,14 +676,13 @@ fn realpath_r(
 /// file; "" is the working directory. A relative path stays relative when
 /// the working directory is gone (realpath(".") is then ".").
 pub fn realpath(path: &[u8]) -> Option<Vec<u8>> {
-    let cwd = current_dir().ok();
     if path.is_empty() {
-        return virtual_file_ex(b"", &cwd?, Mode::Realpath).ok();
+        return virtual_file_ex(b"", &current_dir().ok()?, Mode::Realpath).ok();
     }
     let base = if path.starts_with(b"/") {
         Vec::new()
     } else {
-        cwd.unwrap_or_default()
+        current_dir().unwrap_or_default()
     };
     virtual_file_ex(&base, path, Mode::Realpath).ok()
 }

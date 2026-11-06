@@ -1595,6 +1595,10 @@ pub(super) fn bind_callable(host: &dyn Host, v: &Value) -> Value {
 }
 
 /// `php_curl_option_str`.
+/// libcurl's CURLPROTO_FILE and CURLPROTO_ALL.
+const CURLPROTO_FILE: i64 = 1 << 10;
+const CURLPROTO_ALL: i64 = !0;
+
 fn option_str(
     host: &mut dyn Host,
     f: &str,
@@ -1760,6 +1764,17 @@ fn set_option(
         }
         Some(Kind::Long) => {
             let lval = zval_get_long(host, &zvalue)?;
+            if (option == opt("CURLOPT_PROTOCOLS") || option == opt("CURLOPT_REDIR_PROTOCOLS"))
+                && crate::main::fopen_wrappers::active()
+                && lval & CURLPROTO_FILE != 0
+            {
+                crate::warn(
+                    host,
+                    f,
+                    "CURLPROTO_FILE cannot be activated when an open_basedir is set",
+                )?;
+                return Ok(false);
+            }
             error = logged(host, f, pending, || setopt_long(cp, option, lval))?;
         }
         Some(Kind::SafeUpload) => {
@@ -1772,10 +1787,40 @@ fn set_option(
         }
         Some(Kind::Str) | Some(Kind::Url) => {
             let s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
+            if crate::main::fopen_wrappers::active() {
+                if kind == Some(Kind::Url) {
+                    // php_curl_option_url: no file:// under open_basedir
+                    logged(host, f, pending, || {
+                        setopt_long(
+                            cp,
+                            opt("CURLOPT_PROTOCOLS"),
+                            CURLPROTO_ALL & !CURLPROTO_FILE,
+                        )
+                    })?;
+                } else if (option == opt("CURLOPT_PROTOCOLS_STR")
+                    || option == opt("CURLOPT_REDIR_PROTOCOLS_STR"))
+                    && [&b"file"[..], b"all"]
+                        .iter()
+                        .any(|w| s.windows(w.len()).any(|x| x.eq_ignore_ascii_case(w)))
+                {
+                    crate::warn(
+                        host,
+                        f,
+                        "The FILE protocol cannot be activated when an open_basedir is set",
+                    )?;
+                    return Ok(false);
+                }
+            }
             return option_str(host, f, e, pending, option, &s);
         }
         Some(Kind::Path) | Some(Kind::FilePath) => {
             let s = crate::zend::zpp::zval_get_string(host, &zvalue)?;
+            if kind == Some(Kind::FilePath)
+                && !s.is_empty()
+                && !crate::main::fopen_wrappers::check(host, f, &s, true)?
+            {
+                return Ok(false);
+            }
             return option_str(host, f, e, pending, option, &path_value(option, s));
         }
         Some(Kind::Nullable) | Some(Kind::NullablePath) => {

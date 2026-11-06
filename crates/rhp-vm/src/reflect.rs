@@ -521,6 +521,7 @@ impl Vm {
             wrapped: Some(Box::new(callable)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
         }))
     }
 
@@ -546,6 +547,7 @@ impl Vm {
             wrapped: Some(Box::new(Value::Array(pair))),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
         }))
     }
 

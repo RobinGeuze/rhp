@@ -170,6 +170,9 @@ pub struct ClosureData {
     /// them (php copies a closure's static variables into each Closure
     /// object). Unbound ones still have their declared initial value.
     pub statics: RefCell<Vec<(PhpStr, PhpRef)>>,
+    /// php's IS_OBJ_WEAKLY_REFERENCED: a WeakReference or WeakMap holds
+    /// this closure, so freeing it notifies them ([`set_weak_notify_hook`]).
+    pub weakly_referenced: std::cell::Cell<bool>,
 }
 
 impl ClosureData {
@@ -188,6 +191,10 @@ impl ClosureData {
 
 impl Drop for ClosureData {
     fn drop(&mut self) {
+        // zend_object_std_dtor: the weak references go first.
+        if self.weakly_referenced.get() {
+            weak_notify(self.id);
+        }
         // What the closure holds is freed before its handle goes back.
         self.captures.clear();
         self.bound_this = None;
@@ -235,6 +242,8 @@ struct ObjectExtra {
     /// Lazy object state (php's IS_OBJ_LAZY_* flags plus its
     /// `zend_lazy_object_info`).
     lazy: Option<LazyInfo>,
+    /// php's IS_OBJ_WEAKLY_REFERENCED (see [`set_weak_notify_hook`]).
+    weak: bool,
 }
 
 /// A lazy object's state (Zend/zend_lazy_objects.c). php keeps the info in
@@ -330,7 +339,7 @@ impl ObjectData {
     pub fn take_lazy(&mut self) -> Option<LazyInfo> {
         let extra = self.extra.as_deref_mut()?;
         let l = extra.lazy.take();
-        if extra.native.is_none() {
+        if extra.native.is_none() && !extra.weak {
             self.extra = None;
         }
         l
@@ -378,11 +387,18 @@ impl ObjectData {
             .replace(state)
     }
 
+    /// Mark the object weakly referenced (php's IS_OBJ_WEAKLY_REFERENCED):
+    /// freeing it calls the weak notify hook. The flag stays set; a hook
+    /// call for an object nothing refers to any more finds nothing.
+    pub fn set_weakly_referenced(&mut self) {
+        self.extra.get_or_insert_with(Default::default).weak = true;
+    }
+
     /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
     pub fn take_payload(&mut self) -> Option<Payload> {
         let extra = self.extra.as_deref_mut()?;
         let p = extra.native.take();
-        if extra.lazy.is_none() {
+        if extra.lazy.is_none() && !extra.weak {
             self.extra = None;
         }
         p
@@ -394,6 +410,24 @@ thread_local! {
     /// state still kept by object id (the internal array pointer of
     /// objects, archives not on the payload yet).
     static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+    /// Called with the id of a weakly referenced object or closure when it
+    /// is freed (php's zend_weakrefs_notify).
+    static WEAK_NOTIFY_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the weak notify hook: called with the handle of a weakly
+/// referenced object or closure ([`ObjectData::set_weakly_referenced`],
+/// [`ClosureData::weakly_referenced`]) when it is freed, before its
+/// properties and its handle go.
+pub fn set_weak_notify_hook(f: fn(u32)) {
+    WEAK_NOTIFY_HOOK.with(|h| h.set(Some(f)));
+}
+
+#[cold]
+fn weak_notify(id: u32) {
+    if let Ok(Some(f)) = WEAK_NOTIFY_HOOK.try_with(|h| h.get()) {
+        f(id);
+    }
 }
 
 /// The object an initialized lazy proxy forwards to (php's
@@ -420,6 +454,9 @@ impl Drop for ObjectData {
         // info (zend_object_std_dtor), then the properties.
         if let Some(mut extra) = self.extra.take() {
             drop(extra.native.take());
+            if extra.weak {
+                weak_notify(self.id);
+            }
             drop(extra.lazy.take());
         }
         // `try_with`: thread-local teardown may already have run.

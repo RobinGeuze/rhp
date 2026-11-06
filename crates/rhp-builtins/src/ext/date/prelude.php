@@ -170,15 +170,6 @@ class DatePeriod implements IteratorAggregate {
     }
 }
 
-final class InternalIterator implements Iterator {
-    private function __construct() {}
-    public function current(): mixed { return __date('it', $this, 'current'); }
-    public function key(): mixed { return __date('it', $this, 'key'); }
-    public function next(): void { __date('it', $this, 'next'); }
-    public function valid(): bool { return __date('it', $this, 'valid'); }
-    public function rewind(): void { __date('it', $this, 'rewind'); }
-}
-
 function date_create(string $datetime = "now", ?DateTimeZone $timezone = null) { return __date('date_create', 'DateTime', $datetime, $timezone); }
 function date_create_immutable(string $datetime = "now", ?DateTimeZone $timezone = null) { return __date('date_create', 'DateTimeImmutable', $datetime, $timezone); }
 function date_create_from_format(string $format, string $datetime, ?DateTimeZone $timezone = null) { return __date('createFromFormat', 'DateTime', $format, $datetime, $timezone, 'date_create_from_format'); }

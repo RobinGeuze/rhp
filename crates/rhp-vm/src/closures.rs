@@ -515,6 +515,7 @@ impl Vm {
             wrapped,
             id,
             statics,
+            weakly_referenced: Default::default(),
         })))
     }
 

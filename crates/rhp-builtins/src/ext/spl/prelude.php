@@ -234,31 +234,6 @@ function iterator_apply($iterator, $callback, $args = null) {
     return $count;
 }
 
-final class WeakReference {
-    public $__o = null;
-    private static $__make = false;
-    public function __construct() {
-        if (!self::$__make) { throw new Error('Direct instantiation of WeakReference is not allowed, use WeakReference::create instead'); }
-    }
-    public static function create($object) { self::$__make = true; $r = new WeakReference(); self::$__make = false; $r->__o = $object; return $r; }
-    public function get() { return $this->__o; }
-}
-
-final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
-    private $__o = [];
-    private $__v = [];
-    public function offsetExists($obj): bool { return isset($this->__o[spl_object_id($obj)]); }
-    public function offsetGet($obj): mixed { return $this->__v[spl_object_id($obj)]; }
-    public function offsetSet($obj, $value): void { $id = spl_object_id($obj); $this->__o[$id] = $obj; $this->__v[$id] = $value; }
-    public function offsetUnset($obj): void { $id = spl_object_id($obj); unset($this->__o[$id], $this->__v[$id]); }
-    public function count(): int { return count($this->__o); }
-    public function getIterator(): Iterator {
-        $pairs = [];
-        foreach ($this->__o as $id => $obj) { $pairs[] = [$obj, $this->__v[$id]]; }
-        return new ArrayIterator($pairs);
-    }
-}
-
 class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSerializable {
     private $__d = [];
     private $__size = 0;

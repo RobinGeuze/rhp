@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
-use rhp_builtins::zend::object_handlers::{CastTarget, Op};
+use rhp_builtins::zend::object_handlers::{CastTarget, DimType, Op};
 use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
@@ -1445,6 +1445,21 @@ impl Vm {
                     // `$obj[k] =& $v` on a user ArrayAccess: php fetches the
                     // offset for writing (offsetGet), which yields no slot.
                     if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
+                        // A native read_dimension hands out the stored slot
+                        // (WeakMap), which the reference replaces.
+                        if let (true, Some(d)) = (
+                            i + 1 == steps.len(),
+                            self.handlers_of(&h).and_then(|t| t.dimension),
+                        ) {
+                            self.cursor_release();
+                            let key = crate::lvalue::aa_key_opt(&steps[i]);
+                            (d.read)(self, &h, key.as_ref(), DimType::W)?;
+                            (d.write)(self, &h, key.as_ref(), v)?;
+                            if !self.destructibles.is_empty() {
+                                self.dtor_check = true;
+                            }
+                            continue;
+                        }
                         // ArrayObject: its storage holds the reference.
                         let owner = self.spl_array_owner(&h, b"offsetget");
                         if let (true, Some(owner)) = (i + 1 == steps.len(), owner) {
@@ -1940,6 +1955,14 @@ impl Vm {
                     let k = self.reg_r(top, key)?;
                     let v = match &a {
                         // zend_std_has_dimension(check_empty = 1).
+                        Value::Object(h)
+                            if self.handlers_of(h).is_some_and(|t| t.dimension.is_some()) =>
+                        {
+                            let d = self.handlers_of(h).and_then(|t| t.dimension).unwrap();
+                            let r = (d.has)(self, h, &k, true)?;
+                            self.reg_set(top, dst, Value::Bool(!r));
+                            continue;
+                        }
                         Value::Object(h)
                             if self.class_implements(h.borrow().class, b"ArrayAccess") =>
                         {
@@ -2881,7 +2904,10 @@ impl Vm {
                 // the protocol in FeFetch; a plain object iterates its
                 // accessible properties (snapshotted to an array).
                 let mut obj = h;
-                if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
+                if let Some(f) = self.handlers_of(&obj).and_then(|t| t.get_iterator) {
+                    // ce->get_iterator: an InternalIterator, driven below.
+                    obj = f(self, &obj, false)?;
+                } else if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
                     match self.call_iter_method(&obj, b"getiterator")? {
                         Value::Object(it) => obj = it,
                         _ => {
@@ -3056,6 +3082,21 @@ impl Vm {
         // generator (directly or from getIterator()) can do it;
         // `pos_reg` then holds [generator, fetched-once flag].
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            // ce->get_iterator by reference: `pos_reg` holds [iterator,
+            // fetched-once flag], as for a generator.
+            if let Some(f) = self.handlers_of(&h).and_then(|t| t.get_iterator) {
+                let it = f(self, &h, true)?;
+                builtins::zend::internal_iterator::step(
+                    self,
+                    &it,
+                    builtins::zend::internal_iterator::Step::Rewind,
+                )?;
+                let mut st = PhpArray::new();
+                st.push(Value::Object(it));
+                st.push(Value::Bool(false));
+                self.reg_set(top, pos_reg, Value::Array(st));
+                return Ok(());
+            }
             let mut obj = h;
             let mut traversable = false;
             while self.class_implements(obj.borrow().class, b"IteratorAggregate") {
@@ -3150,6 +3191,43 @@ impl Vm {
         Ok(())
     }
 
+    /// `FeFetchRef` over an InternalIterator (a class's get_iterator, see
+    /// FeResetRef).
+    #[allow(clippy::too_many_arguments)]
+    fn fe_fetch_ref_internal(
+        &mut self,
+        top: usize,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+        it: ObjectHandle,
+        fetched: bool,
+    ) -> Result<(), Thrown> {
+        use builtins::zend::internal_iterator::{step, Step};
+        if fetched {
+            step(self, &it, Step::Next)?;
+        }
+        if !conv::to_bool(&step(self, &it, Step::Valid)?) {
+            self.stack[top].pc = end as usize;
+            return Ok(());
+        }
+        let rc = match step(self, &it, Step::CurrentRef)? {
+            Value::Ref(rc) => rc,
+            other => Rc::new(RefCell::new(other)),
+        };
+        self.bind_ref_cv(top, val_cv, rc);
+        if key_cv != Reg::MAX {
+            let k = step(self, &it, Step::Key)?;
+            self.cv_assign(top, key_cv, k);
+        }
+        let mut st = PhpArray::new();
+        st.push(Value::Object(it));
+        st.push(Value::Bool(true));
+        self.reg_set(top, pos_reg, Value::Array(st));
+        Ok(())
+    }
+
     /// `FeFetchRef`: alias the loop variable to the next element of a by-reference
     /// foreach, or jump to `end`.
     fn fe_fetch_ref(
@@ -3213,6 +3291,9 @@ impl Vm {
                 return Ok(());
             };
             let id = g.borrow().id;
+            if !self.generators.contains_key(&id) {
+                return self.fe_fetch_ref_internal(top, pos_reg, key_cv, val_cv, end, g, fetched);
+            }
             if fetched {
                 self.advance_gen(id, Value::Null)?;
             }
@@ -3679,6 +3760,7 @@ impl Vm {
             wrapped: None,
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
@@ -3779,6 +3861,7 @@ impl Vm {
             wrapped: Some(Box::new(c)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())

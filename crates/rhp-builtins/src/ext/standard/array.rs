@@ -2883,7 +2883,6 @@ fn php_array_walk(
             None
         }
     };
-    active.push(std::rc::Rc::as_ptr(container));
     let result = (|| -> Result<(), Thrown> {
         loop {
             let next = match &obj {
@@ -2898,10 +2897,16 @@ fn php_array_walk(
             };
             let is_array = matches!(&*cell.borrow(), Value::Array(_));
             if recursive && is_array {
-                if active.contains(&std::rc::Rc::as_ptr(&cell)) {
+                // GC_PROTECT_RECURSION on the arrays recursed into (not
+                // the one the walk started from).
+                let p = std::rc::Rc::as_ptr(&cell);
+                if active.contains(&p) {
                     return Err(Thrown::error("Error", "Recursion detected"));
                 }
-                php_array_walk(host, &cell, cb, userdata, recursive, active)?;
+                active.push(p);
+                let r = php_array_walk(host, &cell, cb, userdata, recursive, active);
+                active.pop();
+                r?;
             } else {
                 let mut call_args = vec![Value::Ref(cell), key];
                 if let Some(u) = userdata {
@@ -2934,7 +2939,6 @@ fn php_array_walk(
             }
         }
     })();
-    active.pop();
     if let Value::Array(a) = &mut *container.borrow_mut() {
         if a.ref_count() == 1 {
             a.make_mut().iter_del(id);

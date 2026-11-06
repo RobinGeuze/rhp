@@ -9,6 +9,7 @@ pub mod call_stack;
 pub mod closures;
 pub(crate) mod constants;
 pub mod exceptions;
+pub mod fibers;
 pub mod highlight;
 pub(crate) mod ini_parser;
 #[rustfmt::skip]

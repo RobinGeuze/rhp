@@ -37,6 +37,7 @@ fn core() -> ModuleDef {
             zend::builtin_functions::register(m);
             zend::exceptions::register(m);
             zend::closures::register(m);
+            zend::fibers::register(m);
             zend::zpp::register(m);
         },
         constants: || {

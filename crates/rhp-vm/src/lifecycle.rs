@@ -141,6 +141,7 @@ impl Vm {
             silence: 0,
             last_fatal_trace: None,
             silence_stack: Vec::new(),
+            active_fiber: None,
             quiet: 0,
             rw_null_keys: 0,
             typed_write_result: None,

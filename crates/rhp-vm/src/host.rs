@@ -1001,7 +1001,7 @@ impl Host for Vm {
         }
     }
 
-    fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
+    fn backtrace(&mut self, provide_object: bool, ignore_args: bool) -> Option<Value> {
         // Leave out the running debug_backtrace()/debug_print_backtrace().
         let skip = self
             .native_calls
@@ -2130,6 +2130,15 @@ impl Host for Vm {
             Value::Closure(cd) => Some(Vm::closure_debug_info(self, &cd)),
             _ => None,
         }
+    }
+
+    fn fiber(
+        &mut self,
+        op: builtins::zend::fibers::FiberOp,
+        this: Option<&ObjectHandle>,
+        args: &[Value],
+    ) -> Result<Value, Thrown> {
+        self.fiber_op(op, this, args)
     }
 
     fn current_closure(&self) -> Option<Value> {

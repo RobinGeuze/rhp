@@ -208,7 +208,11 @@ const CORE: &[ClassHandlers] = &[
     },
     ClassHandlers {
         class: "Fiber",
-        handlers: &ObjectHandlers::UNCLONEABLE,
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::None,
+            dtor_obj: Some(crate::zend::fibers::object_dtor),
+            ..ObjectHandlers::STD
+        },
         create_object: true,
     },
     ClassHandlers {

@@ -17,6 +17,8 @@ rhp-builtins = { path = "../rhp-builtins" }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 smallvec = { workspace = true }
+# Fiber stack switching (fibers.rs), as php uses boost.context.
+corosensei = "=0.3.4"
 
 [dev-dependencies]
 # tests/golden.rs runs tests/golden/vm through the request layer.

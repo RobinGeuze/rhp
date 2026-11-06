@@ -195,7 +195,7 @@ pub trait Host {
 
     /// php's `zend_fetch_debug_backtrace` for `debug_backtrace()` (innermost
     /// first, the calling builtin's own frame skipped).
-    fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value>;
+    fn backtrace(&mut self, provide_object: bool, ignore_args: bool) -> Option<Value>;
 
     /// Push a user exception handler (`set_exception_handler`; null clears),
     /// returning the previous one (or null).
@@ -573,6 +573,18 @@ pub trait Host {
     /// The Closure the innermost user frame runs (`Closure::getCurrent()`),
     /// if that frame is a closure's.
     fn current_closure(&self) -> Option<Value>;
+
+    /// A `Fiber` method, or the object's destruction (Zend/zend_fibers.c;
+    /// the engine owns the stack switching).
+    fn fiber(
+        &mut self,
+        op: crate::zend::fibers::FiberOp,
+        this: Option<&rhp_values::ObjectHandle>,
+        args: &[Value],
+    ) -> Result<Value, Thrown> {
+        let _ = (op, this, args);
+        Err(Thrown::error("Error", "Fibers are not available"))
+    }
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins).

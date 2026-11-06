@@ -719,8 +719,10 @@ zend_object_handlers.c (vm/src/lazy.rs).
   `Host::lazy_props_object` or `hooked_properties_for`; `(array)`,
   `get_mangled_object_vars` and `var_dump`/`print_r` do not, and an
   initialized proxy shows its instance.
-- **Not done.** Typed reference sources (php's "Cannot assign string to
-  reference held by property") and "Lazy object was released during
+- Typed reference sources (value-model.md §4) work with lazy objects:
+  a source is the slot, so initializing or resetting an object needs no
+  bookkeeping.
+- **Not done.** "Lazy object was released during
   initialization" (needs refcounts php's way). php's "Can not reset an
   object during property iteration" check is missing, and
   reset/next/current do not initialize a lazy object.

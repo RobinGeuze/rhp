@@ -148,6 +148,7 @@ impl Vm {
             rw_null_keys: 0,
             rw_aborted: false,
             typed_write_result: None,
+            typed_refs: Default::default(),
             want_typed_result: false,
             incdec_write: false,
             cursor_static: None,

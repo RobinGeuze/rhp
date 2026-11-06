@@ -34,6 +34,7 @@ mod opcache;
 mod output;
 mod props;
 mod reflect;
+mod refsrc;
 mod request;
 mod scope;
 mod stream_filters;
@@ -65,6 +66,8 @@ pub use include::IncludeError;
 /// The virtual machine: call stack + global tables, running one request
 /// under its SAPI.
 pub struct Vm {
+    /// Typed references and their type sources (see `refsrc`).
+    typed_refs: refsrc::TypedRefs,
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// The fetch the next magic accessor or ArrayAccess call serves (php's

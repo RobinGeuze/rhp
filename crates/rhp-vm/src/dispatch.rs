@@ -192,14 +192,26 @@ impl Vm {
         // handler threw (zend_pre_inc_helper).
         let undef = if self.stack[top].regs[cv as usize].is_undef() {
             let r = self.undef_cv(top, cv).err();
-            self.cv_assign(top, cv, Value::Null);
+            self.cv_assign_raw(top, cv, Value::Null);
             r
         } else {
             None
         };
+        if let Value::Ref(rc) = &self.stack[top].regs[cv as usize] {
+            if self.typed_refs.has(rc) {
+                let rc = rc.clone();
+                let strict = self.stack[top].proto.strict_types;
+                let (old, new) = self.incdec_typed_ref(&rc, delta as i64, strict)?;
+                self.reg_set(top, dst, if pre { new } else { old });
+                return match undef {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                };
+            }
+        }
         let cur = self.reg_get(top, cv);
         let new = self.inc_dec_vm(&cur, delta as i64)?;
-        self.cv_assign(top, cv, new.clone());
+        self.cv_assign_raw(top, cv, new.clone());
         self.reg_set(top, dst, if pre { new } else { cur });
         match undef {
             Some(e) => Err(e),
@@ -281,7 +293,7 @@ impl Vm {
             CursorRoot::Cv(cv) => match self.reg_get(top, cv) {
                 Value::Null => {
                     let a = Value::Array(PhpArray::new());
-                    self.cv_assign(top, cv, a.clone());
+                    self.cv_assign_raw(top, cv, a.clone());
                     Some((cv, a))
                 }
                 v @ (Value::Array(_) | Value::Object(_)) => Some((cv, v)),
@@ -402,8 +414,35 @@ impl Vm {
         true
     }
 
-    /// Write `v` to CV `cv` as [`Vm::cv_assign`] does, inline when the old
-    /// value (behind a reference too) is a scalar.
+    /// `Assign` to a reference while typed references exist: through a
+    /// typed one, the value is checked, and a temporary source becomes the
+    /// coerced result.
+    #[inline(never)]
+    fn assign_maybe_typed(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        src: Reg,
+        v: Value,
+    ) -> Result<(), Thrown> {
+        let typed = match &self.stack[top].regs[cv as usize] {
+            Value::Ref(rc) => self.typed_refs.has(rc),
+            _ => false,
+        };
+        if !typed {
+            self.cv_assign_fast(top, cv, v);
+            return Ok(());
+        }
+        let v = self.cv_assign_typed(top, cv, v)?;
+        if src >= self.stack[top].proto.num_cvs {
+            self.reg_set(top, src, v);
+        }
+        Ok(())
+    }
+
+    /// Write `v` to CV `cv` as [`Vm::cv_assign_raw`] does (no typed
+    /// reference check), inline when the old value (behind a reference
+    /// too) is a scalar.
     #[inline(always)]
     fn cv_assign_fast(&mut self, top: usize, cv: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[cv as usize];
@@ -418,12 +457,63 @@ impl Vm {
             std::mem::forget(std::mem::replace(slot, v));
             return;
         }
-        self.cv_assign(top, cv, v);
+        self.cv_assign_raw(top, cv, v);
     }
 
     /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
-    /// through it (so by-ref aliases see the change); otherwise overwrite.
-    pub(crate) fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) {
+    /// through it (so by-ref aliases see the change, checked against the
+    /// typed properties it is bound to); otherwise overwrite.
+    #[inline(always)]
+    pub(crate) fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) -> Result<(), Thrown> {
+        if !self.typed_refs.is_empty() && matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+        {
+            return self.cv_assign_typed(top, cv, v).map(|_| ());
+        }
+        self.cv_assign_raw(top, cv, v);
+        Ok(())
+    }
+
+    /// [`Vm::cv_assign`], giving the stored value (a typed reference
+    /// coerces it).
+    #[inline(never)]
+    pub(crate) fn cv_assign_typed(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        v: Value,
+    ) -> Result<Value, Thrown> {
+        let strict = self.stack[top].proto.strict_types;
+        self.cv_assign_as(top, cv, v, strict)
+    }
+
+    /// [`Vm::cv_assign_typed`] in strict (`catch`) or coercive mode.
+    pub(crate) fn cv_assign_as(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        v: Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        if let Value::Ref(rc) = &self.stack[top].regs[cv as usize] {
+            if self.typed_refs.has(rc) {
+                let rc = rc.clone();
+                let (v, old) = self.assign_to_ref(&rc, v, strict)?;
+                if !self.destructibles.is_empty()
+                    && matches!(old, Value::Object(_) | Value::Array(_))
+                {
+                    self.dtor_check = true;
+                }
+                return Ok(v);
+            }
+        }
+        self.cv_assign_raw(top, cv, v.clone());
+        Ok(v)
+    }
+
+    /// [`Vm::cv_assign`] without the typed reference check (internal
+    /// writes php does not check either).
+    #[inline]
+    pub(crate) fn cv_assign_raw(&mut self, top: usize, cv: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[cv as usize];
         let old = if let Value::Ref(rc) = slot {
             std::mem::replace(&mut *rc.borrow_mut(), v)
@@ -643,7 +733,13 @@ impl Vm {
 
                 Instr::Assign { cv, src } => {
                     let v = self.reg_r_fast(top, src)?;
-                    self.cv_assign_fast(top, cv, v);
+                    if self.typed_refs.is_empty()
+                        || !matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+                    {
+                        self.cv_assign_fast(top, cv, v);
+                    } else {
+                        self.assign_maybe_typed(top, cv, src, v)?;
+                    }
                 }
 
                 // Int operands that don't overflow: what ops::add/sub/mul
@@ -1581,6 +1677,14 @@ impl Vm {
                         if i + 1 == steps.len() {
                             let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                             let cell = self.aa_fetch_w(&h, &steps[i], key, DimFetch::Rw)?;
+                            if self.typed_refs.has(&cell) {
+                                let strict = proto.strict_types;
+                                let r = self.incdec_typed_ref(&cell, delta as i64, strict);
+                                self.cursor_release();
+                                let (old, new) = r?;
+                                self.reg_set(top, dst, if pre { new } else { old });
+                                continue;
+                            }
                             let old = deref(&cell.borrow());
                             let new = match self.inc_dec_vm(&old, delta as i64) {
                                 Ok(n) => n,
@@ -1601,6 +1705,20 @@ impl Vm {
                         self.cursor_release();
                         self.reg_set(top, dst, Value::Null);
                         continue;
+                    }
+                    // zend_incdec_typed_ref: a typed reference in the slot
+                    // (an int that stays one needs no check).
+                    if !matches!(old, Value::Int(_)) || {
+                        let d = delta as i64;
+                        matches!(old, Value::Int(n) if n.checked_add(d).is_none())
+                    } {
+                        if let Some(rc) = self.cursor_leaf_ref(top, &steps) {
+                            let r = self.incdec_typed_ref(&rc, delta as i64, proto.strict_types);
+                            self.cursor_release();
+                            let (old, new) = r?;
+                            self.reg_set(top, dst, if pre { new } else { old });
+                            continue;
+                        }
                     }
                     let new = match self.inc_dec_vm(&old, delta as i64) {
                         Ok(n) => n,
@@ -2350,7 +2468,7 @@ impl Vm {
                     // by-value call result is assigned (after its notice).
                     let v = self.stack[top].regs[src as usize].clone();
                     if !matches!(v, Value::Ref(_)) {
-                        self.cv_assign(top, dst_cv, v);
+                        self.cv_assign(top, dst_cv, v)?;
                         continue;
                     }
                     self.stack[top].regs[dst_cv as usize] = v;
@@ -2596,7 +2714,7 @@ impl Vm {
     /// `++` / `--` (`delta` +1 / -1): php's increment_function /
     /// decrement_function, diagnostics and Perl-style string increment
     /// included.
-    fn inc_dec_vm(&mut self, v: &Value, delta: i64) -> Result<Value, Thrown> {
+    pub(crate) fn inc_dec_vm(&mut self, v: &Value, delta: i64) -> Result<Value, Thrown> {
         let inc = delta > 0;
         let what = if inc { "Increment" } else { "Decrement" };
         match deref(v) {
@@ -3084,9 +3202,9 @@ impl Vm {
                     // Bind as a PHP variable: if the loop var is still a
                     // reference (e.g. left over from a prior by-ref loop),
                     // write through it — matching PHP's foreach gotcha.
-                    self.cv_assign(top, val_cv, v);
+                    self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
-                        self.cv_assign(top, key_cv, k.to_value());
+                        self.cv_assign(top, key_cv, k.to_value())?;
                     }
                     self.stack[top].regs[pos_reg as usize] = Value::Int((pos + 1) as i64);
                 }
@@ -3124,9 +3242,9 @@ impl Vm {
                     self.stack[top].pc = end as usize;
                 } else {
                     let (k, v) = (g.current_key.clone(), deref(&g.current_val));
-                    self.cv_assign(top, val_cv, v);
+                    self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
-                        self.cv_assign(top, key_cv, k);
+                        self.cv_assign(top, key_cv, k)?;
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
                 }
@@ -3136,9 +3254,9 @@ impl Vm {
             if let st @ Value::Array(_) = self.reg_get(top, pos_reg) {
                 match self.hooked_iter_next(&h, &st, false)? {
                     Some((st, k, v)) => {
-                        self.cv_assign(top, val_cv, v);
+                        self.cv_assign(top, val_cv, v)?;
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, k);
+                            self.cv_assign(top, key_cv, k)?;
                         }
                         self.reg_set(top, pos_reg, st);
                     }
@@ -3157,10 +3275,10 @@ impl Vm {
                     self.stack[top].pc = end as usize;
                 } else {
                     let v = self.call_iter_method(&h, b"current")?;
-                    self.cv_assign(top, val_cv, v);
+                    self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
                         let k = self.call_iter_method(&h, b"key")?;
-                        self.cv_assign(top, key_cv, k);
+                        self.cv_assign(top, key_cv, k)?;
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
                 }
@@ -3173,9 +3291,9 @@ impl Vm {
             };
             match self.prop_iter_next(top, &h, id as u32, false)? {
                 Some((k, v)) => {
-                    self.cv_assign(top, val_cv, v);
+                    self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
-                        self.cv_assign(top, key_cv, k);
+                        self.cv_assign(top, key_cv, k)?;
                     }
                 }
                 None => self.stack[top].pc = end as usize,
@@ -3371,7 +3489,7 @@ impl Vm {
         self.bind_ref_cv(top, val_cv, rc);
         if key_cv != Reg::MAX {
             let k = step(self, &it, Step::Key)?;
-            self.cv_assign(top, key_cv, k);
+            self.cv_assign(top, key_cv, k)?;
         }
         let mut st = PhpArray::new();
         st.push(Value::Object(it));
@@ -3441,6 +3559,9 @@ impl Vm {
                 rc
             }
         };
+        drop(b);
+        // FE_FETCH_RW: the typed property is a source.
+        self.add_prop_ref_source(&rc, h, &skey);
         Ok(Some((key, Value::Ref(rc))))
     }
 
@@ -3568,7 +3689,7 @@ impl Vm {
                     Some((st, k, Value::Ref(rc))) => {
                         self.bind_ref_cv(top, val_cv, rc);
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, k);
+                            self.cv_assign(top, key_cv, k)?;
                         }
                         self.reg_set(top, pos_reg, st);
                     }
@@ -3586,7 +3707,7 @@ impl Vm {
                     Some((k, elem_rc)) => {
                         self.bind_ref_cv(top, val_cv, elem_rc);
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, k.to_value());
+                            self.cv_assign(top, key_cv, k.to_value())?;
                         }
                         let mut st = PhpArray::new();
                         st.push(Value::Ref(cell));
@@ -3623,7 +3744,7 @@ impl Vm {
             };
             self.bind_ref_cv(top, val_cv, rc);
             if key_cv != Reg::MAX {
-                self.cv_assign(top, key_cv, k);
+                self.cv_assign(top, key_cv, k)?;
             }
             let mut st = PhpArray::new();
             st.push(Value::Object(g));
@@ -3646,7 +3767,7 @@ impl Vm {
                     Some((k, Value::Ref(rc))) => {
                         self.bind_ref_cv(top, val_cv, rc);
                         if key_cv != Reg::MAX {
-                            self.cv_assign(top, key_cv, k);
+                            self.cv_assign(top, key_cv, k)?;
                         }
                     }
                     _ => self.stack[top].pc = end as usize,
@@ -3675,7 +3796,7 @@ impl Vm {
             Some((k, elem_rc)) => {
                 self.bind_ref_cv(top, val_cv, elem_rc);
                 if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, k.to_value());
+                    self.cv_assign(top, key_cv, k.to_value())?;
                 }
             }
             None => self.stack[top].pc = end as usize,

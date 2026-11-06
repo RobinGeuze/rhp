@@ -944,7 +944,11 @@ impl Vm {
                 Value::Ref(rc) => {
                     let rc = rc.clone();
                     drop(od);
-                    *rc.borrow_mut() = val;
+                    let (v, old) = self.assign_to_ref(&rc, val, strict)?;
+                    if want_result && self.typed_refs.has(&rc) {
+                        self.typed_write_result = Some(v);
+                    }
+                    drop(old);
                 }
                 other => *other = val,
             }
@@ -1577,6 +1581,22 @@ impl Vm {
         }
         let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         self.track_destructible(&new_obj);
+        // zend_objects_clone_members: a reference the clone shares gets its
+        // typed property as a source too.
+        if !self.typed_refs.is_empty() {
+            let refs: Vec<_> = new_obj
+                .borrow()
+                .properties
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Ref(rc) if self.typed_refs.has(rc) => Some((k.clone(), rc.clone())),
+                    _ => None,
+                })
+                .collect();
+            for (k, rc) in refs {
+                self.add_prop_ref_source(&rc, &new_obj, &k);
+            }
+        }
         if let Some(rhp_builtins::zend::object_handlers::CloneObj::Custom(f)) =
             self.class(cls).handlers.map(|t| t.clone_obj)
         {

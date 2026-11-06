@@ -98,6 +98,12 @@ pub(crate) enum DimFetch {
 }
 
 /// Where an lvalue cursor is rooted.
+/// A typed slot a reference is being bound to.
+enum RefBind {
+    Static(ClassId, PhpStr),
+    Prop(ObjectHandle, PhpStr),
+}
+
 #[derive(Clone)]
 pub(crate) enum CursorRoot {
     /// A register (compiled variable) in the current frame.
@@ -121,6 +127,8 @@ pub(crate) enum DimMode {
 /// same visibility errors) as a plain `$o->p`.
 struct PropCtx<'a> {
     classes: &'a [classes::ClassEntry],
+    /// The typed references (writes through one go back to the VM).
+    typed: &'a crate::refsrc::TypedRefs,
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
@@ -222,6 +230,20 @@ enum RwHold {
     RootNull,
 }
 
+/// Where [`assign_path`] stopped for the VM: a write through a typed
+/// reference (done by the VM, with the value), or an array that cannot be
+/// auto-initialized inside a typed reference / typed property.
+enum TypedStop {
+    Leaf(Rc<RefCell<Value>>, Value),
+    RefInit(Rc<RefCell<Value>>),
+    PropInit(ClassId, PhpStr),
+}
+
+/// php's promotes_to_array: null, false (and an undefined slot).
+fn promotes_to_array(v: &Value) -> bool {
+    matches!(v, Value::Null | Value::Undef | Value::Bool(false))
+}
+
 thread_local! {
     /// Diagnostics raised inside the pure cursor-path walkers
     /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
@@ -305,6 +327,7 @@ impl Vm {
                 }
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -369,6 +392,7 @@ impl Vm {
                     self.flush_rw_warnings(warnings)?;
                     let cx = PropCtx {
                         classes: &self.classes,
+                        typed: &self.typed_refs,
                         scope: self.stack[top].defining_class,
                         called: self.stack[top].called_class,
                         incdec: false,
@@ -501,6 +525,7 @@ impl Vm {
     fn illegal_array_offset(&self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -728,8 +753,19 @@ impl Vm {
                     return Ok(rc);
                 }
                 self.cursor_dyn_check(top, steps, true)?;
+                // ZEND_FETCH_REF on a typed property: the reference gets
+                // it as a type source.
+                let leaf = if steps.is_empty() {
+                    self.cursor_static_prop().map(|st| (None, st.cls, st.name))
+                } else if matches!(steps.last(), Some(CursorStep::Prop(_))) {
+                    self.cursor_leaf_slot(top, steps)
+                        .map(|(h, k)| (Some(h), 0, k))
+                } else {
+                    None
+                };
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -745,6 +781,12 @@ impl Vm {
                         c
                     }
                 };
+                if let (Ok(rc), Some((obj, cls, key))) = (&r, leaf) {
+                    match obj {
+                        Some(h) => self.add_prop_ref_source(rc, &h, &key),
+                        None => self.add_static_ref_source(rc, cls, key.as_bytes()),
+                    }
+                }
                 self.flush_path_diags()?;
                 return r;
             }
@@ -775,6 +817,7 @@ impl Vm {
     fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -954,6 +997,7 @@ impl Vm {
         // (`$o->p = &$x` fetches the property for a reference.)
         self.cursor_readonly_check(top, steps, matches!(v, Value::Ref(_)))?;
         let mut v = v;
+        let mut bind = None;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
@@ -969,6 +1013,11 @@ impl Vm {
                             self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
                         self.typed_write_result = Some(v.clone());
                     }
+                }
+                if matches!(v, Value::Ref(_)) {
+                    bind = self.cursor_bind_ref_check(top, steps, &v)?;
+                } else if self.cursor_static.is_some() {
+                    self.cursor_static_auto_init(top, steps)?;
                 }
             }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
@@ -1035,12 +1084,14 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
         };
         // An object written to a string offset is converted afterwards.
         let obj_val = matches!(v, Value::Object(_) | Value::Closure(_)).then(|| v.clone());
+        let bound = bind.is_some().then(|| v.clone());
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -1048,11 +1099,22 @@ impl Vm {
             }
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
-                r
+                // A global's cell that is itself a typed reference
+                // (`$GLOBALS['x']` bound to a typed property): written
+                // through it as a reference.
+                if cx.typed.has(&rc) && !(steps.is_empty() && matches!(v, Value::Ref(_))) {
+                    assign_path(&mut Value::Ref(rc), steps, v, &cx)
+                } else {
+                    let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
+                    r
+                }
             }
         };
         flush_deferred_writes();
+        let r = self.finish_typed_stop(top, r);
+        if let (Some(b), Some(bv), true) = (bind, &bound, r.is_ok()) {
+            self.finish_ref_bind(b, bv);
+        }
         self.flush_path_diags()?;
         if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
             return self.string_offset_object_write(top, steps, obj_val, r);
@@ -1249,6 +1311,16 @@ impl Vm {
         top: usize,
         steps: &[CursorStep],
     ) -> Option<(ClassId, PhpStr)> {
+        self.cursor_leaf_slot(top, steps)
+            .map(|(h, k)| (h.borrow().class, k))
+    }
+
+    /// [`Vm::cursor_leaf_typed`] with the object.
+    pub(crate) fn cursor_leaf_slot(
+        &self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<(ObjectHandle, PhpStr)> {
         let (CursorStep::Prop(name), prefix) = steps.split_last()? else {
             return None;
         };
@@ -1267,7 +1339,171 @@ impl Vm {
             return None;
         };
         self.class(cls).props.get(&key)?.ty.as_ref()?;
-        Some((cls, key))
+        Some((h, key))
+    }
+
+    /// What [`assign_path`] left to the VM (see [`TypedStop`]): the write
+    /// through a typed reference, or the auto-initialization error.
+    #[inline]
+    fn finish_typed_stop(
+        &mut self,
+        top: usize,
+        r: Result<Option<Box<TypedStop>>, Thrown>,
+    ) -> Result<(), Thrown> {
+        match r? {
+            None => Ok(()),
+            Some(stop) => self.typed_stop(top, *stop),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn typed_stop(&mut self, top: usize, stop: TypedStop) -> Result<(), Thrown> {
+        match stop {
+            TypedStop::Leaf(rc, v) => {
+                let strict = self.stack[top].proto.strict_types;
+                let (c, old) = self.assign_to_ref(&rc, v, strict)?;
+                self.typed_write_result = Some(c);
+                drop(old);
+                Ok(())
+            }
+            TypedStop::RefInit(rc) => self.verify_ref_array_assignable(&rc),
+            TypedStop::PropInit(cls, key) => match self.prop_src_info(cls, &key) {
+                Some(info) => self.check_auto_init(&info),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// The typed reference the leaf of a cursor path holds, if any.
+    pub(crate) fn cursor_leaf_ref(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<Rc<RefCell<Value>>> {
+        if self.typed_refs.is_empty() {
+            return None;
+        }
+        let scope = self.stack[top].defining_class;
+        let mut cur = match &self.cursor_root {
+            // A global's cell may be the typed reference itself.
+            CursorRoot::Cell(rc) if self.typed_refs.has(rc) => Value::Ref(rc.clone()),
+            _ => self.cursor_root_value(top),
+        };
+        for step in steps {
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned())
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => k,
+                        PropRes::Dynamic => name.clone(),
+                        PropRes::Denied(_) => return None,
+                    };
+                    let v = h.borrow().properties.get(&key).cloned();
+                    v
+                }
+                _ => None,
+            };
+            cur = next?;
+        }
+        match cur {
+            Value::Ref(rc) if self.typed_refs.has(&rc) => Some(rc),
+            _ => None,
+        }
+    }
+
+    /// A write below a typed static property at the cursor root that would
+    /// make it an array (ZEND_FETCH_STATIC_PROP_W with ZEND_FETCH_DIM_WRITE).
+    #[cold]
+    #[inline(never)]
+    fn cursor_static_auto_init(&self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
+        if !matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            return Ok(());
+        }
+        let Some(st) = self.cursor_static_prop() else {
+            return Ok(());
+        };
+        let cur = self.cursor_root_value(top);
+        if !promotes_to_array(&deref(&cur)) {
+            return Ok(());
+        }
+        match self.static_src_info(st.cls, st.name.as_bytes()) {
+            Some(info) => self.check_auto_init(&info),
+            None => Ok(()),
+        }
+    }
+
+    /// zend_throw_auto_init_in_prop_error unless typed property `s` takes
+    /// an array.
+    fn check_auto_init(&self, s: &crate::refsrc::SrcInfo) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        if s.ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, K::Array | K::Iterable | K::Mixed))
+        {
+            return Ok(());
+        }
+        Err(Thrown::type_error(format!(
+            "Cannot auto-initialize an array inside property {}::${} of type {}",
+            String::from_utf8_lossy(self.class(s.decl).name.as_bytes()),
+            String::from_utf8_lossy(s.name.as_bytes()),
+            self.prop_type_string(&s.ty, s.decl, Some(s.cls))
+        )))
+    }
+
+    /// The typed slot a `lval = &$x` binds (zend_assign_to_typed_property_
+    /// reference): checks the reference against it and drops the old
+    /// reference's source. What to add as a source after the bind.
+    #[cold]
+    #[inline(never)]
+    fn cursor_bind_ref_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: &Value,
+    ) -> Result<Option<RefBind>, Thrown> {
+        let strict = self.stack[top].proto.strict_types;
+        if steps.is_empty() {
+            let Some(st) = self.cursor_static_prop() else {
+                return Ok(None);
+            };
+            let Some(info) = self.static_src_info(st.cls, st.name.as_bytes()) else {
+                return Ok(None);
+            };
+            self.verify_prop_assignable_by_ref(&info, v, strict)?;
+            if let Value::Ref(old) = &*st.cell.borrow() {
+                self.del_static_ref_source(old, info.decl, st.name.as_bytes());
+            }
+            return Ok(Some(RefBind::Static(st.cls, st.name)));
+        }
+        let Some((h, key)) = self.cursor_leaf_slot(top, steps) else {
+            return Ok(None);
+        };
+        let cls = h.borrow().class;
+        let Some(info) = self.prop_src_info(cls, &key) else {
+            return Ok(None);
+        };
+        self.verify_prop_assignable_by_ref(&info, v, strict)?;
+        let old = h.borrow().properties.get(&key).cloned();
+        if let Some(Value::Ref(old)) = old {
+            self.del_prop_ref_source(&old, &h, &key);
+        }
+        Ok(Some(RefBind::Prop(h, key)))
+    }
+
+    /// Add the source [`Vm::cursor_bind_ref_check`] found.
+    #[cold]
+    #[inline(never)]
+    fn finish_ref_bind(&mut self, bind: RefBind, v: &Value) {
+        let Value::Ref(rc) = v else { return };
+        match bind {
+            RefBind::Static(cls, name) => self.add_static_ref_source(rc, cls, name.as_bytes()),
+            RefBind::Prop(h, key) => self.add_prop_ref_source(rc, &h, &key),
+        }
     }
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
@@ -1323,6 +1559,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1362,6 +1599,7 @@ impl Vm {
         let s = Value::str(self.to_string_vm(&v)?);
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: false,
@@ -1381,7 +1619,7 @@ impl Vm {
                 .retain(|(_, m)| m.starts_with(b"Only the first byte"))
         });
         self.flush_path_diags()?;
-        r
+        r.map(|_| ())
     }
 
     /// `$str[$k]->…` written: the offset's own checks, then "Cannot use
@@ -1389,6 +1627,7 @@ impl Vm {
     pub(crate) fn string_offset_as_object(&mut self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1653,6 +1892,7 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -1721,6 +1961,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -2310,7 +2551,7 @@ fn assign_path(
     steps: &[CursorStep],
     value: Value,
     cx: &PropCtx,
-) -> Result<(), Thrown> {
+) -> Result<Option<Box<TypedStop>>, Thrown> {
     // An undefined variable at the root is created by the write (not by a
     // property write, which fails on it).
     if let Value::Undef = slot {
@@ -2322,17 +2563,29 @@ fn assign_path(
     // does not write through a reference the slot already held.
     if steps.is_empty() && matches!(value, Value::Ref(_)) {
         *slot = value;
-        return Ok(());
+        return Ok(None);
     }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
+        if cx.typed.has(rc) {
+            if steps.is_empty() {
+                return Ok(Some(Box::new(TypedStop::Leaf(rc.clone(), value))));
+            }
+            let nested = matches!(steps[0], CursorStep::Key(_) | CursorStep::Append);
+            if nested
+                && rc.try_borrow().is_ok_and(|v| promotes_to_array(&v))
+                && !cx.typed.accepts_array(cx.classes, rc)
+            {
+                return Ok(Some(Box::new(TypedStop::RefInit(rc.clone()))));
+            }
+        }
         let Ok(mut inner) = rc.try_borrow_mut() else {
             // The reference is to a container this write is inside (an array
             // holding a reference to itself): the value is stored once the
             // path is released.
             if steps.is_empty() {
                 DEFERRED_WRITE.with(|d| d.borrow_mut().push((rc.clone(), value)));
-                return Ok(());
+                return Ok(None);
             }
             return Err(Thrown::error(
                 "Error",
@@ -2343,7 +2596,7 @@ fn assign_path(
     }
     let Some((head, rest)) = steps.split_first() else {
         *slot = value;
-        return Ok(());
+        return Ok(None);
     };
     if let CursorStep::Prop(name) = head {
         // Descend into an object property (handle semantics: no COW).
@@ -2372,6 +2625,27 @@ fn assign_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "modify", rest)?;
+        // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE): a typed
+        // property that would become an array.
+        if matches!(rest.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            let at = od.properties.get_index_of(&key);
+            let promotes = at.is_none_or(|i| match &od.properties[i] {
+                Value::Ref(r) => r.try_borrow().is_ok_and(|v| promotes_to_array(&v)),
+                v => promotes_to_array(v),
+            });
+            if promotes
+                && cx.classes[od.class as usize]
+                    .props
+                    .get(&key)
+                    .and_then(|pe| pe.ty.as_ref())
+                    .is_some_and(|t| !crate::refsrc::takes_array(t))
+            {
+                return Ok(Some(Box::new(TypedStop::PropInit(od.class, key))));
+            }
+            if let Some(i) = at {
+                return assign_path(&mut od.properties[i], rest, value, cx);
+            }
+        }
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
@@ -2383,7 +2657,7 @@ fn assign_path(
             ));
         };
         if rest.is_empty() && !matches!(value, Value::Ref(_)) {
-            return assign_string_offset(slot, k, &value, cx);
+            return assign_string_offset(slot, k, &value, cx).map(|_| None);
         }
         string_offset(k, false, cx)?;
         // `$str[k] =& $v`

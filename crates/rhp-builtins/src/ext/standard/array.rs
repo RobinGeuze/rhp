@@ -2861,7 +2861,11 @@ fn walk_next_object(
         }
         let name = host.mangled_prop_name(class, &key);
         let slot = b.properties.get_index_mut(i).expect("in range").1;
-        return Some((make_ref(slot), Value::Str(name)));
+        let rc = make_ref(slot);
+        drop(b);
+        // A typed property is a source of the reference.
+        host.add_ref_type_source(&rc, h, &key);
+        return Some((rc, Value::Str(name)));
     }
     None
 }

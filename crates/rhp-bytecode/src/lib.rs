@@ -1246,6 +1246,9 @@ pub struct ExRegion {
     /// The pc of the finally block's `FinallyEnd` (the block is
     /// `[finally, finally_end]`); meaningless without `finally`.
     pub finally_end: Pc,
+    /// The first temporary the try body allocates: an exception caught
+    /// here frees every temporary from it up (php's live ranges).
+    pub temps: Reg,
 }
 
 #[derive(Clone)]

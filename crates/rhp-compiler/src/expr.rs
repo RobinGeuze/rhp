@@ -207,6 +207,11 @@ impl ProtoBuilder<'_> {
                 }
                 let dst = self.alloc_temp();
                 self.emit(Instr::DimFetch { dst, arr, key });
+                // FETCH_DIM_R frees a call's result once the element is
+                // out, so the rest of the statement no longer holds it.
+                if matches!(aa.array, Expression::Call(_)) && arr >= self.num_cvs {
+                    self.emit(Instr::LoadNull { dst: arr });
+                }
                 Ok(dst)
             }
             Expression::ConstantAccess(ca) => self.compile_constant(&ca.name),

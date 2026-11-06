@@ -17,7 +17,12 @@ fn exit(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    // Arguments need not be UTF-8: php's $argv holds their bytes.
+    let raw: Vec<Vec<u8>> = std::env::args_os().map(os_bytes).collect();
+    let args: Vec<String> = raw
+        .iter()
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
     let argv0_cgi = args
         .first()
         .and_then(|a| std::path::Path::new(a).file_name())
@@ -36,5 +41,16 @@ fn main() -> ExitCode {
             rhp_sapi::cgi::CgiEnv::from_process(),
         ));
     }
-    exit(rhp_sapi::cli::main(&args))
+    exit(rhp_sapi::cli::main_bytes(&raw))
+}
+
+#[cfg(unix)]
+fn os_bytes(a: std::ffi::OsString) -> Vec<u8> {
+    use std::os::unix::ffi::OsStringExt;
+    a.into_vec()
+}
+
+#[cfg(not(unix))]
+fn os_bytes(a: std::ffi::OsString) -> Vec<u8> {
+    a.to_string_lossy().into_owned().into_bytes()
 }

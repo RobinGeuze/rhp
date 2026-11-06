@@ -224,10 +224,31 @@ impl<'s> Ex<'s> {
     /// A ZEND_AST_ZVAL string: a literal string, or a string without
     /// interpolation.
     fn zval_str(&self, e: &Expression) -> Option<Vec<u8>> {
+        match self.zval_of(e)? {
+            Value::Str(s) => Some(s.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
+
+    /// The value of a ZEND_AST_ZVAL node: a literal number or string, a
+    /// string without interpolation, or the parser's fold of `.` between
+    /// two of them (zend_ast_create_concat_op).
+    fn zval_of(&self, e: &Expression) -> Option<Value> {
         match unparen(e) {
-            Expression::Literal(Literal::String(s)) => Some(s.value.unwrap_or(s.raw).to_vec()),
+            Expression::Literal(
+                l @ (Literal::String(_) | Literal::Integer(_) | Literal::Float(_)),
+            ) => Some(crate::fold::literal_value(l)),
             Expression::CompositeString(cs) if !matches!(cs, CompositeString::ShellExecute(_)) => {
-                self.plain_composite(cs)
+                self.plain_composite(cs).map(Value::str)
+            }
+            Expression::Binary(Binary {
+                lhs,
+                operator: BinaryOperator::StringConcat(_),
+                rhs,
+            }) => {
+                let mut l = rhp_values::conv::to_string_bytes(&self.zval_of(lhs)?);
+                l.extend(rhp_values::conv::to_string_bytes(&self.zval_of(rhs)?));
+                Some(Value::str(l))
             }
             _ => None,
         }
@@ -611,7 +632,10 @@ impl<'s> Ex<'s> {
                 lit => self.zval(&crate::fold::literal_value(lit)),
             },
             Expression::CompositeString(cs) => self.composite(cs, indent),
-            Expression::Binary(b) => self.binop(b, priority, indent),
+            Expression::Binary(b) => match self.zval_of(e) {
+                Some(v) => self.zval(&v),
+                None => self.binop(b, priority, indent),
+            },
             Expression::Pipe(p) => {
                 self.binary(" |> ", 183, 183, 184, p.input, p.callable, priority, indent)
             }

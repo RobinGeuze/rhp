@@ -350,7 +350,7 @@ unsafe extern "C" fn passwd_callback(
         match &sh.passphrase {
             Some(p) if p.len() < (num as usize).saturating_sub(1) => {
                 unsafe {
-                    ptr::copy_nonoverlapping(p.as_ptr(), buf as *mut u8, p.len());
+                    ptr::copy_nonoverlapping(p.as_ptr(), buf.cast::<u8>(), p.len());
                     *buf.add(p.len()) = 0;
                 }
                 p.len() as c_int
@@ -660,7 +660,7 @@ fn matches_common_name(peer: *mut sys::X509, subject: &[u8]) -> bool {
     } else if len as usize != text.len() {
         let raw: Vec<u8> = buf[..len.max(0) as usize]
             .iter()
-            .map(|&c| c as u8)
+            .map(|&c| c.to_ne_bytes()[0])
             .collect();
         warn(format!(
             "Peer certificate CN=`{}' is malformed",

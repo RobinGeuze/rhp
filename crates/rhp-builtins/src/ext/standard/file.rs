@@ -702,6 +702,8 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Some(b) => b,
             None => return Ok(Value::Bool(false)),
         }
+    } else if let Some(copied) = copy_plain_files(host, &from, &to)? {
+        return Ok(Value::Bool(copied));
     } else {
         let Some(data) = host.stream_get_contents(&from) else {
             crate::open_failed(host, "copy", &from)?;
@@ -725,6 +727,35 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
+}
+
+/// copy() from one local file to another through the default `file://`
+/// wrapper: php opens the source "rb" and the target "wb", then copies
+/// between the descriptors (copy_file_range(2) on Linux), so a file of any
+/// size is copied without holding it in memory. `None` when either side is
+/// not a plain file.
+fn copy_plain_files(host: &mut dyn Host, from: &[u8], to: &[u8]) -> Result<Option<bool>, Thrown> {
+    use crate::main::streams::{FileWrapper, LocalFile};
+    if split_scheme(from).0 != b"file"
+        || split_scheme(to).0 != b"file"
+        || !host
+            .stream_wrapper(b"file")
+            .is_some_and(|w| w.as_any().is::<FileWrapper>())
+    {
+        return Ok(None);
+    }
+    let Some(mut src) = LocalFile::open(from, b"rb") else {
+        crate::open_failed(host, "copy", from)?;
+        return Ok(Some(false));
+    };
+    host.consume_resource_ids(1);
+    crate::main::streams::clear_errno();
+    let Some(mut dst) = LocalFile::open(to, b"wb") else {
+        crate::open_failed(host, "copy", to)?;
+        return Ok(Some(false));
+    };
+    host.consume_resource_ids(1);
+    Ok(Some(src.copy_to(&mut dst)))
 }
 
 // --- temp files / paths ------------------------------------------------------------
@@ -1417,6 +1448,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             },
         );
     }
+    if url.eq_ignore_ascii_case(b"php://stdin") {
+        return stdin_contents(host, offset, maxlen);
+    }
     let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
     if host
         .stream_wrapper(&scheme)
@@ -1496,6 +1530,43 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// file_get_contents("php://stdin"): a fresh stream on a dup of fd 0, seeked
+/// to `offset` as any stream. It seeks only where fd 0 does (a regular file;
+/// on Linux also /dev/null and the other memory devices); elsewhere the seek
+/// fails with php's two warnings.
+fn stdin_contents(
+    host: &mut dyn Host,
+    offset: i64,
+    maxlen: Option<usize>,
+) -> Result<Value, Thrown> {
+    use crate::main::streams::plain_wrapper::{dup_raw, FdStream};
+    let Some(fd) = dup_raw(0) else {
+        crate::open_failed(host, "file_get_contents", b"php://stdin")?;
+        return Ok(Value::Bool(false));
+    };
+    host.consume_resource_ids(1);
+    let mut stream = FdStream::new(fd);
+    if offset != 0 {
+        let whence = if offset > 0 {
+            libc::SEEK_SET
+        } else {
+            libc::SEEK_END
+        };
+        if !stream.seek(offset, whence) {
+            if !stream.is_seekable() {
+                crate::warn(host, "file_get_contents", "Stream does not support seeking")?;
+            }
+            crate::warn(
+                host,
+                "file_get_contents",
+                &format!("Failed to seek to position {offset} in the stream"),
+            )?;
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::str(stream.read_all(maxlen.map_or(-1, |m| m as i64))))
 }
 
 /// file_get_contents over a wrapper's own stream (`zip://`): open with the

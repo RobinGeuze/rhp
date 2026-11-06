@@ -9229,6 +9229,7 @@ ext/standard/tests/file/bug75679.phpt
 ext/standard/tests/file/bug76735.phpt
 ext/standard/tests/file/bug78296.phpt
 ext/standard/tests/file/bug79099.phpt
+ext/standard/tests/file/bug81145.phpt
 ext/standard/tests/file/chgrp.phpt
 ext/standard/tests/file/chmod_basic.phpt
 ext/standard/tests/file/chmod_error.phpt
@@ -9322,6 +9323,7 @@ ext/standard/tests/file/file_exists_variation1.phpt
 ext/standard/tests/file/file_get_contents_basic.phpt
 ext/standard/tests/file/file_get_contents_basic001.phpt
 ext/standard/tests/file/file_get_contents_error.phpt
+ext/standard/tests/file/file_get_contents_error001.phpt
 ext/standard/tests/file/file_get_contents_error002.phpt
 ext/standard/tests/file/file_get_contents_error_folder.phpt
 ext/standard/tests/file/file_get_contents_file_put_contents_basic.phpt
@@ -10424,15 +10426,11 @@ ext/standard/tests/streams/bug71884.phpt
 ext/standard/tests/streams/bug72075.phpt
 ext/standard/tests/streams/bug72221.phpt
 ext/standard/tests/streams/bug72534.phpt
-ext/standard/tests/streams/bug72771.phpt
 ext/standard/tests/streams/bug72853.phpt
 ext/standard/tests/streams/bug72857.phpt
-ext/standard/tests/streams/bug73457.phpt
 ext/standard/tests/streams/bug74556.phpt
 ext/standard/tests/streams/bug75031.phpt
 ext/standard/tests/streams/bug76857.phpt
-ext/standard/tests/streams/bug77680.phpt
-ext/standard/tests/streams/bug77765.phpt
 ext/standard/tests/streams/bug78326.phpt
 ext/standard/tests/streams/bug78326_1.phpt
 ext/standard/tests/streams/bug79000.phpt
@@ -10440,7 +10438,6 @@ ext/standard/tests/streams/bug79467.phpt
 ext/standard/tests/streams/bug81346.phpt
 ext/standard/tests/streams/bug81659.phpt
 ext/standard/tests/streams/eagain_is_not_an_error.phpt
-ext/standard/tests/streams/ftp_dirstream_oob.phpt
 ext/standard/tests/streams/gh10031.phpt
 ext/standard/tests/streams/gh10406.phpt
 ext/standard/tests/streams/gh11418.phpt
@@ -10455,10 +10452,6 @@ ext/standard/tests/streams/non_finite_values.phpt
 ext/standard/tests/streams/nonblocking_stdin.phpt
 ext/standard/tests/streams/oom_stream_copy_to_stream_memory.phpt
 ext/standard/tests/streams/oom_stream_get_contents.phpt
-ext/standard/tests/streams/opendir-001.phpt
-ext/standard/tests/streams/opendir-002.phpt
-ext/standard/tests/streams/opendir-003.phpt
-ext/standard/tests/streams/opendir-004.phpt
 ext/standard/tests/streams/proc_open_bug51800_right.phpt
 ext/standard/tests/streams/proc_open_bug51800_right2.phpt
 ext/standard/tests/streams/proc_open_bug60120.phpt
@@ -10473,6 +10466,7 @@ ext/standard/tests/streams/stream_context_set_options_basic.phpt
 ext/standard/tests/streams/stream_context_set_options_error.phpt
 ext/standard/tests/streams/stream_context_set_params_notification_error.phpt
 ext/standard/tests/streams/stream_context_set_params_notification_valid_then_invalid.phpt
+ext/standard/tests/streams/stream_context_tcp_nodelay_server.phpt
 ext/standard/tests/streams/stream_copy_to_stream_socket.phpt
 ext/standard/tests/streams/stream_get_contents_001.phpt
 ext/standard/tests/streams/stream_get_contents_002.phpt

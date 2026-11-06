@@ -58,9 +58,17 @@ fn cases() -> Vec<Fixture> {
         .collect()
 }
 
-/// Fixtures that install signal handlers or signal the process: they run
-/// one after another, after the rest.
-const ALONE: &[&str] = &["ext/pcntl/", "ext/posix/posix_pcntl"];
+/// Fixtures that run one after another, after the rest:
+/// - ones that install signal handlers or signal the process;
+/// - fs_stream_release, which checks that closing a stream drops its flock.
+///   Like php, rhp opens files without O_CLOEXEC, so a fixture on another
+///   thread that spawns a process at that moment hands the child a copy of
+///   the descriptor, and the lock outlives the close.
+const ALONE: &[&str] = &[
+    "ext/pcntl/",
+    "ext/posix/posix_pcntl",
+    "stdlib/file/fs_stream_release",
+];
 
 /// `None` when the fixture prints its `.out`, else what went wrong.
 fn check(name: &str, php: &Path) -> Option<String> {

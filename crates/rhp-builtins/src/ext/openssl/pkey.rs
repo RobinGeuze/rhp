@@ -876,7 +876,7 @@ fn pkey_details(out: &mut PhpArray, k: *mut sys::EVP_PKEY) -> i64 {
                 )
             } > 0
             {
-                let curve: Vec<u8> = buf[..len].iter().map(|&c| c as u8).collect();
+                let curve: Vec<u8> = buf[..len].iter().map(|&c| c.to_ne_bytes()[0]).collect();
                 ary.insert(key("curve_name"), Value::str(curve.clone()));
                 let c = cstring(&curve);
                 let nid = unsafe { sys::OBJ_sn2nid(c.as_ptr()) };
@@ -886,7 +886,7 @@ fn pkey_details(out: &mut PhpArray, k: *mut sys::EVP_PKEY) -> i64 {
                         let mut oid = [0 as c_char; 80];
                         let n = unsafe { sys::OBJ_obj2txt(oid.as_mut_ptr(), 80, obj, 1) };
                         let n = (n.max(0) as usize).min(79);
-                        let oid: Vec<u8> = oid[..n].iter().map(|&c| c as u8).collect();
+                        let oid: Vec<u8> = oid[..n].iter().map(|&c| c.to_ne_bytes()[0]).collect();
                         ary.insert(key("curve_oid"), Value::str(oid));
                         unsafe { sys::ASN1_OBJECT_free(obj) };
                     }

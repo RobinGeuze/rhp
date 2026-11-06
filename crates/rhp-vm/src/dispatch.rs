@@ -222,6 +222,9 @@ impl Vm {
         // nested runs leave the stack as they found it.
         let mut top = self.stack.len() - 1;
         let mut proto = self.stack[top].proto.clone();
+        // The previous instruction's (frame, pc): destructors it triggered
+        // report at its line.
+        let mut last: (usize, usize) = (usize::MAX, 0);
         loop {
             if self.stack.len() != top + 1 {
                 top = self.stack.len() - 1;
@@ -252,11 +255,15 @@ impl Vm {
             if self.dtor_check {
                 self.dtor_check = false;
                 if !self.destructibles.is_empty() {
+                    if last.0 == top {
+                        self.stack[top].pc = last.1 + 1;
+                    }
                     self.collect_released()?;
                     self.stack[top].pc = pc;
                     continue;
                 }
             }
+            last = (top, pc);
 
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.

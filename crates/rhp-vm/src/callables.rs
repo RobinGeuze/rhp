@@ -50,7 +50,7 @@ pub(crate) fn trampoline_name(name: &[u8]) -> Vec<u8> {
 }
 
 impl Vm {
-    fn class_name_lossy(&self, c: ClassId) -> String {
+    pub(crate) fn class_name_lossy(&self, c: ClassId) -> String {
         String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned()
     }
 

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_bytecode::{FunctionProto, Program, Reg};
-use rhp_values::{ObjectHandle, Thrown, Value};
+use rhp_values::{ObjectHandle, Thrown, Value, Visibility};
 
 use crate::lvalue::CursorRoot;
 use crate::streams::{StreamState, StreamTable};
@@ -421,7 +421,38 @@ impl Vm {
         let mut kept = false;
         // zend_objects_destroy_object: a lazy object is not destructed.
         let lazy = h.borrow().is_lazy();
-        if let Some(m) = self.lookup_method(cls, b"__destruct").filter(|_| !lazy) {
+        let mut dtor = self.lookup_method(cls, b"__destruct").filter(|_| !lazy);
+        if let Some(m) = &dtor {
+            if m.visibility != Visibility::Public {
+                // The destructor's visibility against the releasing scope.
+                let vis = if m.visibility == Visibility::Private {
+                    "private"
+                } else {
+                    "protected"
+                };
+                let cname = self.class_name_lossy(cls);
+                if self.no_code_running() {
+                    let msg = format!(
+                        "Call to {vis} {cname}::__destruct() from global scope during shutdown ignored"
+                    );
+                    self.raise_error_at(rhp_values::E_WARNING, msg.as_bytes(), b"Unknown".to_vec(), 0);
+                    dtor = None;
+                } else {
+                    let scope = self.stack.last().and_then(|f| f.defining_class);
+                    if !self.method_accessible(m, scope) {
+                        let from = match scope {
+                            Some(c) => format!("scope {}", self.class_name_lossy(c)),
+                            None => "global scope".to_string(),
+                        };
+                        return Err(Thrown::error(
+                            "Error",
+                            format!("Call to {vis} {cname}::__destruct() from {from}"),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(m) = dtor {
             let before = Rc::strong_count(&h);
             self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
             kept = Rc::strong_count(&h) > before;

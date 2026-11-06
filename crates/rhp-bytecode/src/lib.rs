@@ -53,6 +53,9 @@ impl CallFlags {
     /// `call_user_func()` / `call_user_func_array()` compiled to a user call
     /// (ZEND_INIT_USER_CALL): the callback sees the caller's `strict_types`.
     pub const USER_CALL: CallFlags = CallFlags(4);
+    /// The call is a whole expression statement: its result is unused
+    /// (php's USED_RET() is false).
+    pub const RESULT_UNUSED: CallFlags = CallFlags(8);
 
     pub const fn contains(self, other: CallFlags) -> bool {
         self.0 & other.0 == other.0

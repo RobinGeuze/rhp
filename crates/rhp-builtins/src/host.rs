@@ -151,6 +151,12 @@ pub trait Host {
     /// [`Host::raise_diagnostic`], if any.
     fn take_pending_throw(&mut self) -> Option<Thrown>;
 
+    /// Whether the running builtin was called as a whole expression
+    /// statement, its result unused (php's `!USED_RET()`).
+    fn result_unused(&self) -> bool {
+        false
+    }
+
     /// The last raised diagnostic for `error_get_last()`: (type, message, file,
     /// line).
     fn last_error(&self) -> Option<(i64, Vec<u8>, Vec<u8>, i64)>;

@@ -50,6 +50,7 @@ impl ProtoBuilder<'_> {
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.call_result_unused);
         let callee_id: &Identifier = match fc.function {
             Expression::Identifier(id) => id,
             Expression::ConstantAccess(ca) => &ca.name,
@@ -334,7 +335,10 @@ impl ProtoBuilder<'_> {
                 ArgSlot::Pass(src) => self.emit(Instr::PassArg { dst, src }),
             }
         }
-        let flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        let mut flags = call_flags(&name_bytes, fallback.as_deref(), argc as usize);
+        if result_unused {
+            flags.insert(CallFlags::RESULT_UNUSED);
+        }
         let name = self.intern_name(&name_bytes);
         let fb = self.intern_fallback(&fallback);
         let dst = self.alloc_temp();

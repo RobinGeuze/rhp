@@ -94,6 +94,10 @@ impl Host for Vm {
         self.pending_throw.take()
     }
 
+    fn result_unused(&self) -> bool {
+        self.unused_call_depth == self.stack.len()
+    }
+
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown> {
         self.ob_diag(level, msg);
         match self.pending_throw.take() {

@@ -649,7 +649,9 @@ impl Vm {
                 Instr::ArrPush { arr, val } => {
                     let v = self.elem_operand(top, &proto, val);
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
-                        a.push(v);
+                        if !a.try_push(v) {
+                            return Err(crate::lvalue::cannot_add_element());
+                        }
                     }
                 }
                 Instr::ArrSet { arr, key, val } => {
@@ -663,7 +665,9 @@ impl Vm {
                 Instr::ArrPushRef { arr, val } => {
                     let v = self.stack[top].regs[val as usize].clone();
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
-                        a.push(v);
+                        if !a.try_push(v) {
+                            return Err(crate::lvalue::cannot_add_element());
+                        }
                     }
                 }
                 Instr::ArrSetRef { arr, key, val } => {
@@ -679,7 +683,11 @@ impl Vm {
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         for (k, iv) in entries {
                             match k {
-                                ArrayKey::Int(_) => a.push(iv),
+                                ArrayKey::Int(_) => {
+                                    if !a.try_push(iv) {
+                                        return Err(crate::lvalue::cannot_add_element());
+                                    }
+                                }
                                 ArrayKey::Str(_) => a.insert(k, iv),
                             }
                         }
@@ -732,8 +740,12 @@ impl Vm {
                         self.cuf_caller = flags
                             .contains(CallFlags::USER_CALL)
                             .then(|| self.caller_strict());
+                        if flags.contains(CallFlags::RESULT_UNUSED) {
+                            self.unused_call_depth = self.stack.len();
+                        }
                         let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
+                        self.unused_call_depth = usize::MAX;
                         let out = out?;
                         self.reg_set(top, dst, out);
                     }

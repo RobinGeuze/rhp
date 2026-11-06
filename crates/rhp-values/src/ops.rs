@@ -690,19 +690,40 @@ fn compare_arrays(
     y: &crate::PhpArray,
     cx: &mut dyn CompareCx,
 ) -> Result<Ordering, Thrown> {
+    // zend_hash_compare: the same table is equal to itself; one met again
+    // inside itself is a recursive dependency.
+    if x.data_ptr() == y.data_ptr() {
+        return Ok(Ordering::Equal);
+    }
+    thread_local! {
+        static COMPARING: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    // Checked before the sizes, as zend_hash_compare does.
+    let p = x.data_ptr();
+    if COMPARING.with(|c| c.borrow().contains(&p)) {
+        return Err(Thrown::error(
+            "Error",
+            "Nesting level too deep - recursive dependency?",
+        ));
+    }
     if x.len() != y.len() {
         return Ok(x.len().cmp(&y.len()));
     }
-    for (k, xv) in x.iter() {
-        match y.get(k) {
-            Some(yv) => match compare(xv, yv, cx)? {
-                Ordering::Equal => continue,
-                other => return Ok(other),
-            },
-            None => return Ok(Ordering::Greater), // uncomparable
+    COMPARING.with(|c| c.borrow_mut().push(p));
+    let r = (|| {
+        for (k, xv) in x.iter() {
+            match y.get(k) {
+                Some(yv) => match compare(xv, yv, cx)? {
+                    Ordering::Equal => continue,
+                    other => return Ok(other),
+                },
+                None => return Ok(Ordering::Greater), // uncomparable
+            }
         }
-    }
-    Ok(Ordering::Equal)
+        Ok(Ordering::Equal)
+    })();
+    COMPARING.with(|c| c.borrow_mut().pop());
+    r
 }
 
 /// The object branch of `zend_compare`: at least one operand is an object.

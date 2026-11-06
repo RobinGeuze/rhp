@@ -754,6 +754,7 @@ impl Vm {
                 r
             }
         };
+        flush_deferred_writes();
         self.flush_path_diags()?;
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
@@ -1703,6 +1704,26 @@ fn assign_string_offset(
     Ok(())
 }
 
+thread_local! {
+    /// Leaf writes [`assign_path`] could not make while the target cell was
+    /// borrowed by the path itself.
+    static DEFERRED_WRITE: RefCell<Vec<(Rc<RefCell<Value>>, Value)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Store the writes [`assign_path`] deferred.
+#[inline]
+fn flush_deferred_writes() {
+    if DEFERRED_WRITE.with(|d| d.borrow().is_empty()) {
+        return;
+    }
+    let pending = DEFERRED_WRITE.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    for (rc, v) in pending {
+        let old = std::mem::replace(&mut *rc.borrow_mut(), v);
+        drop(old);
+    }
+}
+
 /// Write `value` at a cursor path, autovivifying + COW-bubbling along the way.
 fn assign_path(
     slot: &mut Value,
@@ -1718,7 +1739,19 @@ fn assign_path(
     }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
-        let mut inner = rc.borrow_mut();
+        let Ok(mut inner) = rc.try_borrow_mut() else {
+            // The reference is to a container this write is inside (an array
+            // holding a reference to itself): the value is stored once the
+            // path is released.
+            if steps.is_empty() {
+                DEFERRED_WRITE.with(|d| d.borrow_mut().push((rc.clone(), value)));
+                return Ok(());
+            }
+            return Err(Thrown::error(
+                "Error",
+                "Cannot write into an array through a reference to itself",
+            ));
+        };
         return assign_path(&mut inner, steps, value, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
@@ -1768,10 +1801,18 @@ fn assign_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value, cx)
+}
+
+/// zend_cannot_add_element: an append past PHP_INT_MAX.
+pub(crate) fn cannot_add_element() -> Thrown {
+    Thrown::error(
+        "Error",
+        "Cannot add element to the array as the next element is already occupied",
+    )
 }
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
@@ -1869,7 +1910,7 @@ fn make_ref_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     make_ref_path(child, rest, cx)

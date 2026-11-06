@@ -53,6 +53,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// See [`FunctionProto::const_attrs`] / [`FunctionProto::discard_calls`].
     pub(crate) const_attrs: Vec<Rc<Vec<rhp_bytecode::AttributeProto>>>,
     pub(crate) discard_calls: Vec<rhp_bytecode::Pc>,
+    /// The function call about to be compiled is an expression statement.
+    pub(crate) call_result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
     pub(crate) temp_floor: Reg,
@@ -144,6 +146,7 @@ impl<'c> ProtoBuilder<'c> {
             result_unused: false,
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            call_result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
             cur_line: 0,

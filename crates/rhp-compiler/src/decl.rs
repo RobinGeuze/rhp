@@ -271,6 +271,9 @@ pub(crate) fn compile_attributes(
                 name,
                 args,
                 validation_error: None,
+                file: cx.file.clone(),
+                line: cx.line_of(a.name.span().start.offset),
+                strict_types: cx.strict_types,
             });
         }
     }

@@ -619,7 +619,8 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            if self.is_const_expr_frame(i) {
+            if self.is_const_expr_frame(i) || f.proto.flags.contains(rhp_bytecode::ProtoFlags::CALL_SITE)
+            {
                 continue;
             }
             let shown_as = if self.is_plumbing_frame(i) {

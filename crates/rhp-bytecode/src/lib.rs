@@ -1161,6 +1161,11 @@ pub struct AttributeProto {
     /// An internal attribute's validator error that
     /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
     pub validation_error: Option<PhpStr>,
+    /// Where it is written and its file's `strict_types`: `newInstance()`
+    /// runs the constructor as if called from there.
+    pub file: PhpStr,
+    pub line: u32,
+    pub strict_types: bool,
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment
@@ -1260,7 +1265,7 @@ pub struct DebugInfo {
 /// What the compiler knows about a function that the VM checks while
 /// running it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ProtoFlags(u8);
+pub struct ProtoFlags(u16);
 
 impl ProtoFlags {
     /// Built-in code, compiled from the prelude (the PHP source behind some
@@ -1293,6 +1298,10 @@ impl ProtoFlags {
     /// just a global constant name (php looks it up directly), or one with
     /// no class scope (zend_ast_evaluate_ex overrides only with a scope).
     pub const CONST_EXPR_PLAIN: ProtoFlags = ProtoFlags(128);
+    /// Not set by the compiler: a frame that runs no code and only stands
+    /// for a call site (the dummy frame php pushes for an attribute
+    /// constructor). Traces show it as the caller, never as a frame.
+    pub const CALL_SITE: ProtoFlags = ProtoFlags(256);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0

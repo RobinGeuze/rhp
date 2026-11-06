@@ -42,14 +42,25 @@ array(1) {
 [8192] Using null as an array offset is deprecated, use an empty string instead (line 24)
 [8192] Using null as an array offset is deprecated, use an empty string instead (line 24)
 [2] Undefined variable $pv2 (line 24)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 25)
+[2] Array to string conversion (line 25)
+[2] Undefined variable $q (line 26)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 26)
+[2] Undefined array key "" (line 26)
+[8192] Using null as an array offset is deprecated, use an empty string instead (line 26)
+[2] Undefined array key "" (line 26)
+array(1) {
+  [""]=>
+  string(6) "Arrays"
+}
 array(1) {
   [""]=>
   array(1) {
     [""]=>
-    NULL
+    string(1) "t"
   }
 }
-[2] Undefined variable $e (line 30)
+[2] Undefined variable $e (line 32)
 bool(false)
 bool(true)
 string(4) "dflt"
@@ -68,16 +79,16 @@ array(1) {
     int(2)
   }
 }
-[2] Undefined variable $a (line 40)
-[2] Undefined variable $b (line 41)
-[2] Undefined variable $c (line 42)
-[2] Undefined variable $d (line 43)
-[2] Decrement on type null has no effect, this will change in the next major version of PHP (line 43)
-[2] Undefined variable $e (line 44)
-[2] Undefined array key 0 (line 44)
-[2] Undefined variable $f (line 45)
-[2] Undefined array key "k" (line 45)
-[2] Undefined variable $g (line 46)
+[2] Undefined variable $a (line 42)
+[2] Undefined variable $b (line 43)
+[2] Undefined variable $c (line 44)
+[2] Undefined variable $d (line 45)
+[2] Decrement on type null has no effect, this will change in the next major version of PHP (line 45)
+[2] Undefined variable $e (line 46)
+[2] Undefined array key 0 (line 46)
+[2] Undefined variable $f (line 47)
+[2] Undefined array key "k" (line 47)
+[2] Undefined variable $g (line 48)
 string(1) "s"
 int(2)
 int(1)
@@ -90,20 +101,20 @@ array(1) {
   ["k"]=>
   int(1)
 }
-[2] Undefined variable $g (line 48)
-[2] Undefined variable $src (line 53)
-[2] Undefined variable $src2 (line 54)
+[2] Undefined variable $g (line 50)
+[2] Undefined variable $src (line 55)
+[2] Undefined variable $src2 (line 56)
 NULL
 NULL
 NULL
-[2] Undefined variable $none (line 56)
-[2] foreach() argument must be of type array|object, null given (line 56)
-[2] Undefined variable $none2 (line 58)
+[2] Undefined variable $none (line 58)
 [2] foreach() argument must be of type array|object, null given (line 58)
 [2] Undefined variable $none2 (line 60)
-[2] Undefined variable $cap (line 65)
+[2] foreach() argument must be of type array|object, null given (line 60)
+[2] Undefined variable $none2 (line 62)
+[2] Undefined variable $cap (line 67)
 NULL
-[2] Undefined variable $out (line 69)
+[2] Undefined variable $out (line 71)
 NULL
 NULL
 NULL
@@ -112,29 +123,29 @@ NULL
 NULL
 array(0) {
 }
-[2] Undefined variable $a (line 97)
+[2] Undefined variable $a (line 99)
 NULL
 string(3) "set"
-[2] Undefined variable $c (line 100)
+[2] Undefined variable $c (line 102)
 NULL
-[2] Undefined variable $d (line 101)
+[2] Undefined variable $d (line 103)
 __call missing
-[2] Undefined variable $d (line 102)
-[2] Undefined variable $u (line 107)
+[2] Undefined variable $d (line 104)
+[2] Undefined variable $u (line 109)
 none
-[2] Undefined variable $w (line 108)
+[2] Undefined variable $w (line 110)
 none
-[2] Undefined variable $x (line 109)
+[2] Undefined variable $x (line 111)
 none
-[2] Undefined variable $y (line 110)
-[2] Undefined variable $y (line 110)
+[2] Undefined variable $y (line 112)
+[2] Undefined variable $y (line 112)
 none
-[2] Undefined variable $z (line 112)
-[2] Undefined variable $z (line 113)
-[2] Undefined variable $a (line 121)
-[2] Undefined variable $b (line 123)
-[2] Undefined variable $c (line 126)
-[2] Undefined variable $g1 (line 136)
+[2] Undefined variable $z (line 114)
+[2] Undefined variable $z (line 115)
+[2] Undefined variable $a (line 123)
+[2] Undefined variable $b (line 125)
+[2] Undefined variable $c (line 128)
+[2] Undefined variable $g1 (line 138)
 g1
 g2
 g3
@@ -142,7 +153,7 @@ glob
 bool(true)
 bool(false)
 quiet
-[2] Undefined global variable $g5 (line 145)
+[2] Undefined global variable $g5 (line 147)
 string(1) "x"
 caught: Undefined variable $undef
 bool(false)

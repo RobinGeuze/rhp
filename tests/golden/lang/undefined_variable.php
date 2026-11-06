@@ -22,7 +22,9 @@ function reads() {
     $p = [];
     $p[$pk] = $pv;
     $p[null][null] = $pv2;
-    var_dump($p);
+    $p[null] .= "s";
+    $q[null][null] .= "t";
+    var_dump($p, $q);
 }
 reads();
 

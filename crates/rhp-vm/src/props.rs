@@ -66,6 +66,13 @@ impl Vm {
                         None
                     }
                     PropRes::Dynamic => {
+                        if Some(cls) == self.incomplete_class {
+                            if self.pending_magic_fetch == builtins::MagicFetch::Write {
+                                return Err(self.incomplete_error(&h, "modify a property"));
+                            }
+                            self.incomplete_warning(&h)?;
+                            return Ok(Value::Null);
+                        }
                         if let Some(v) = h.borrow().properties.get(&pname) {
                             return Ok(deref(v));
                         }
@@ -158,6 +165,10 @@ impl Vm {
                 }
             }
             PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Dynamic if Some(cls) == self.incomplete_class => {
+                self.incomplete_warning(&h)?;
+                return Ok(false);
+            }
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
@@ -269,6 +280,10 @@ impl Vm {
                 }
             }
             PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Dynamic if Some(cls) == self.incomplete_class => {
+                self.incomplete_warning(&h)?;
+                return Ok(true);
+            }
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
@@ -333,6 +348,10 @@ impl Vm {
                 }
             }
             PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Dynamic if Some(cls) == self.incomplete_class => {
+                self.incomplete_warning(&h)?;
+                return Ok(Value::Null);
+            }
             PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
@@ -385,6 +404,9 @@ impl Vm {
             return Ok(());
         };
         let cls = h.borrow().class;
+        if Some(cls) == self.incomplete_class {
+            return Err(self.incomplete_error(&h, "modify a property"));
+        }
         if self.is_directory_class(cls) && self.class(cls).prop_visible.contains_key(&pname) {
             return Err(Thrown::error(
                 "Error",
@@ -623,6 +645,9 @@ impl Vm {
     ) -> Result<(), Thrown> {
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
+            if Some(cls) == self.incomplete_class {
+                return Err(self.incomplete_error(&h, "modify a property"));
+            }
             if self.is_directory_class(cls) {
                 // Directory: readonly properties, no dynamic properties.
                 let p = String::from_utf8_lossy(pname.as_bytes());
@@ -801,6 +826,33 @@ impl Vm {
             builtins::E_DEPRECATED,
             &format!("Creation of dynamic property {cname}::${p} is deprecated"),
         )
+    }
+
+    /// incomplete_class.c's message for object `h`: what the script tried,
+    /// and the class name the object remembers.
+    fn incomplete_msg(&self, h: &ObjectHandle, what: &str) -> String {
+        let name = match h
+            .borrow()
+            .properties
+            .get(&PhpStr::from("__PHP_Incomplete_Class_Name"))
+        {
+            Some(Value::Str(s)) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
+            _ => "unknown".to_string(),
+        };
+        format!(
+            "The script tried to {what} on an incomplete object. Please ensure that the class definition \"{name}\" of the object you are trying to operate on was loaded _before_ unserialize() gets called or provide an autoloader to load the class definition"
+        )
+    }
+
+    /// throw_incomplete_class_error.
+    pub(crate) fn incomplete_error(&self, h: &ObjectHandle, what: &str) -> Thrown {
+        Thrown::error("Error", self.incomplete_msg(h, what))
+    }
+
+    /// incomplete_class_message: reads and isset() warn.
+    pub(crate) fn incomplete_warning(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
+        let msg = self.incomplete_msg(h, "access a property");
+        builtins::Host::docref_diagnostic(self, builtins::E_WARNING, msg.as_bytes())
     }
 
     /// The internal `Directory` class (readonly props, not dynamic, not

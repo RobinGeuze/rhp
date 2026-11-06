@@ -41,6 +41,9 @@ pub(crate) enum MagicSplit {
     /// Step `.0` reaches a lazy slot (or an undefined property) of this
     /// lazy object: it initializes, and the path continues on the instance.
     Lazy(usize, ObjectHandle),
+    /// A property of this `__PHP_Incomplete_Class` object: writing through
+    /// it throws.
+    Incomplete(ObjectHandle),
 }
 
 /// How an ArrayAccess element is fetched below a nested write (php's
@@ -180,6 +183,7 @@ impl Vm {
         incdec: bool,
     ) -> Result<Value, Thrown> {
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))
@@ -387,6 +391,9 @@ impl Vm {
                     }
                 }
                 (Value::Object(h), CursorStep::Prop(name)) => {
+                    if self.incomplete_class == Some(h.borrow().class) {
+                        return MagicSplit::Incomplete(h);
+                    }
                     if self.cursor_hooked(top, &h, name) {
                         return if i + 1 == steps.len() {
                             MagicSplit::Leaf(h, name.clone())
@@ -515,6 +522,7 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         self.cursor_readonly_check(top, steps, true)?;
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_dyn_check(top, steps, true)?;
                 let cx = PropCtx {
@@ -687,6 +695,7 @@ impl Vm {
     ) -> Result<(), Thrown> {
         self.cursor_readonly_check(top, steps, false)?;
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
             // the write fetch runs the get hook, then the reference cannot be
@@ -756,6 +765,7 @@ impl Vm {
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
         match self.cursor_magic_split(top, steps) {
+            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain | MagicSplit::Leaf(..) => {}
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;

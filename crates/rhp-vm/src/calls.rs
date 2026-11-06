@@ -313,6 +313,9 @@ impl Vm {
                 let r = self.call_sync(&magic, Some(h.clone()), cls, args)?;
                 self.reg_set(top, dst, r);
             }
+            None if Some(cls) == self.incomplete_class => {
+                return Err(self.incomplete_error(&h, "call a method"))
+            }
             None => return Err(self.undefined_method(cls, mname)),
         }
         Ok(())

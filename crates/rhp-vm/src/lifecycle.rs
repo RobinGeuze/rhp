@@ -138,6 +138,7 @@ impl Vm {
             stdin_reader: None,
             destructibles: Vec::new(),
             marked_destructed: Vec::new(),
+            incomplete_class: None,
             dtor_check: false,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),

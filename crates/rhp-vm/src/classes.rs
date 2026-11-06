@@ -1709,6 +1709,9 @@ impl Vm {
         if proto.kind == ClassKind::Enum {
             self.materialize_enum_cases(id, proto, unit);
         }
+        if proto.decl_file.is_empty() && proto.name.as_bytes() == b"__PHP_Incomplete_Class" {
+            self.incomplete_class = Some(id);
+        }
         if self.internal_classes > 0
             && !proto.decl_file.is_empty()
             && !self.inheritance_checks(id, early)?

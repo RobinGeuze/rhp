@@ -1,0 +1,14 @@
+string(1584) "<pre><code style="color: #000000">&lt;html&gt;<span style="color: #0000BB">&lt;?php </span><span style="color: green">/* c */ </span><span style="color: #123456">echo </span><span style="color: red">"a </span><span style="color: #0000BB">$b</span><span style="color: red"> </span><span style="color: #123456">{</span><span style="color: #0000BB">$c</span><span style="color: #123456">-&gt;</span><span style="color: #0000BB">d</span><span style="color: #123456">}</span><span style="color: red">"</span><span style="color: #123456">, </span><span style="color: red">'x' </span><span style="color: #123456">. </span><span style="color: #0000BB">PHP_EOL</span><span style="color: #123456">; </span><span style="color: green">// e
+</span><span style="color: #0000BB">$h </span><span style="color: #123456">= &lt;&lt;&lt;EOT
+</span><span style="color: red">  x </span><span style="color: #0000BB">$y</span><span style="color: red">
+</span><span style="color: #123456">  EOT;
+function </span><span style="color: #0000BB">f</span><span style="color: #123456">(</span><span style="color: #0000BB">int $a </span><span style="color: #123456">= </span><span style="color: #0000BB">1.5e3</span><span style="color: #123456">, ?</span><span style="color: #0000BB">string $s </span><span style="color: #123456">= </span><span style="color: #0000BB">null</span><span style="color: #123456">): </span><span style="color: #0000BB">void </span><span style="color: #123456">{ return; } </span><span style="color: #0000BB">?&gt;
+</span>tail <span style="color: #0000BB">&lt;?= 1 ?&gt;</span></code></pre>"
+<pre><code style="color: #000000"><span style="color: #0000BB">&lt;?php
+    </span><span style="color: #123456">if (</span><span style="color: #0000BB">1 </span><span style="color: #123456">&lt; </span><span style="color: #0000BB">2 </span><span style="color: #123456">&amp;&amp; </span><span style="color: red">"&amp;"</span><span style="color: #123456">) {}
+</span></code></pre>
+string(155) "<html><?php  echo "a $b {$c->d}", 'x' . PHP_EOL; $h = <<<EOT
+  x $y
+  EOT;
+function f(int $a = 1.5e3, ?string $s = null): void { return; } ?>
+tail <?= 1 ?>"

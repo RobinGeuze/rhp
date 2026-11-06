@@ -643,7 +643,9 @@ fn compile_const_thunk(
     let mut proto = c.finish()?;
     proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR);
     if matches!(expr, Expression::ConstantAccess(_)) {
-        proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);
+        proto
+            .flags
+            .insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);
     }
     Ok(Rc::new(proto))
 }

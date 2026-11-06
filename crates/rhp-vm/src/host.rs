@@ -943,9 +943,11 @@ impl Host for Vm {
             .native_calls
             .last()
             .is_some_and(|n| n.caller + 1 == self.stack.len());
-        Some(Value::Array(
-            self.build_trace_skip(provide_object, ignore_args, skip),
-        ))
+        Some(Value::Array(self.build_trace_skip(
+            provide_object,
+            ignore_args,
+            skip,
+        )))
     }
 
     fn set_exception_handler(&mut self, handler: Value) -> Value {

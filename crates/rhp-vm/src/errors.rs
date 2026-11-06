@@ -949,7 +949,11 @@ impl Vm {
         // An emptied `file` makes php report the location as "Unknown".
         let location = || {
             let file = conv::to_string_bytes(&prop("file"));
-            let file = if file.is_empty() { b"Unknown".to_vec() } else { file };
+            let file = if file.is_empty() {
+                b"Unknown".to_vec()
+            } else {
+                file
+            };
             (file, conv::to_int(&prop("line")))
         };
         let cname = self.class(cls).name.as_bytes().to_ascii_lowercase();

@@ -565,7 +565,8 @@ impl Vm {
                     self.reg_set(top, dst, r);
                 }
                 Instr::BeginSilence => {
-                    self.silence_stack.push((self.stack.len(), self.silence, None));
+                    self.silence_stack
+                        .push((self.stack.len(), self.silence, None));
                     self.silence += 1;
                 }
                 Instr::EndSilence => self.end_silence(),

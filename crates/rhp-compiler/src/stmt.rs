@@ -81,7 +81,12 @@ impl ProtoBuilder<'_> {
                 let saved_hw = self.high_water;
                 self.high_water = self.next_temp;
                 self.result_unused = matches!(s.expression, Expression::Assignment(_));
+                self.call_result_unused = matches!(
+                    s.expression,
+                    Expression::Call(crate::parse::cst::Call::Function(_))
+                );
                 self.compile_expr(s.expression)?;
+                self.call_result_unused = false;
                 self.result_unused = false;
                 let to = self.high_water;
                 self.high_water = saved_hw.max(to);

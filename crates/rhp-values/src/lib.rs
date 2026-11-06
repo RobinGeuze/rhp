@@ -818,6 +818,11 @@ impl PhpArray {
         self.0.entries.len()
     }
 
+    /// php's nNextFreeElement (see [`ArrayData::next_free`]).
+    pub fn next_free(&self) -> i64 {
+        self.0.next_free
+    }
+
     /// How many values share this storage (debug_zval_dump's refcount).
     pub fn ref_count(&self) -> usize {
         Rc::strong_count(&self.0)

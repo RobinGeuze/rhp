@@ -49,6 +49,8 @@ pub(crate) struct ProtoBuilder<'c> {
     /// The assignment being compiled is a statement of its own: its value
     /// is not used.
     pub(crate) result_unused: bool,
+    /// The function call about to be compiled is an expression statement.
+    pub(crate) call_result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
     /// subject held live across fall-through case bodies).
     pub(crate) temp_floor: Reg,
@@ -138,6 +140,7 @@ impl<'c> ProtoBuilder<'c> {
             next_temp: 0,
             high_water: 0,
             result_unused: false,
+            call_result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
             cur_line: 0,

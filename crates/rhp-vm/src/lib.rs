@@ -190,6 +190,9 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// The stack depth of the builtin call whose result is unused
+    /// (`CallFlags::RESULT_UNUSED`), else `usize::MAX`.
+    unused_call_depth: usize,
     /// Set by `$f(...)` right before its callable dispatch, which then
     /// resolves the value as a dynamic call (zend_init_dynamic_call_*).
     dyn_call: bool,

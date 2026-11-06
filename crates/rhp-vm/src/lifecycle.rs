@@ -112,6 +112,7 @@ impl Vm {
             inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
+            unused_call_depth: usize::MAX,
             dyn_call: false,
             dyn_raw_args: false,
             callable_dep_thrown: false,

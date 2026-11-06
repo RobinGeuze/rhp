@@ -728,8 +728,12 @@ impl Vm {
                         self.cuf_caller = flags
                             .contains(CallFlags::USER_CALL)
                             .then(|| self.caller_strict());
+                        if flags.contains(CallFlags::RESULT_UNUSED) {
+                            self.unused_call_depth = self.stack.len();
+                        }
                         let out = self.call_builtin(top, builtin, sig, base, argc, inline, icall);
                         self.cuf_caller = None;
+                        self.unused_call_depth = usize::MAX;
                         let out = out?;
                         self.reg_set(top, dst, out);
                     }

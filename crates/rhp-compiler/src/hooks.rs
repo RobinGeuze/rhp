@@ -384,5 +384,7 @@ fn compile_hook_body(
         start,
         end,
     )?;
+    // php's line_start for a hook: its name's line (after attributes).
+    proto.meta.start_line = cx.line_of(hook.name.span.start.offset);
     Ok(proto)
 }

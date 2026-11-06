@@ -3,10 +3,31 @@
 //! readonly class inheritance and trait use. Each is a fatal error at the
 //! class declaration's line.
 
-use rhp_bytecode::ClassProto;
-use rhp_values::{ClassKind, Thrown};
+use rhp_bytecode::{AttributeProto, ClassProto, HookKind};
+use rhp_values::{ClassId, ClassKind, PhpStr, Thrown, Visibility};
 
+use crate::classes::PropEntry;
 use crate::Vm;
+
+/// Whether `attrs` holds `#[\Override]`.
+fn has_override(attrs: &[AttributeProto]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.name.as_bytes().eq_ignore_ascii_case(b"Override"))
+}
+
+/// A class name as php prints it (an anonymous class's name stops at NUL).
+fn shown(name: &PhpStr) -> String {
+    let b = name.as_bytes();
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    String::from_utf8_lossy(&b[..end]).into_owned()
+}
+
+/// php's property_has_operation.
+fn has_operation(p: &PropEntry, kind: usize) -> bool {
+    (!p.virt && (kind == HookKind::Get as usize || !p.readonly))
+        || p.hooks.as_ref().is_some_and(|h| h[kind].is_some())
+}
 
 /// zend_is_reserved_class_name for an unqualified name.
 pub(crate) fn is_reserved_class_name(name: &[u8]) -> bool {
@@ -241,5 +262,148 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// zend_inheritance_check_override: a method, property or hook marked
+    /// `#[\Override]` must override (or implement) a parent or interface
+    /// member. Traits are checked where they are used.
+    pub(crate) fn check_override(&mut self, ce: ClassId) -> Result<(), Thrown> {
+        let e = &self.classes[ce as usize];
+        if e.kind == ClassKind::Trait || e.decl_file.is_empty() {
+            return Ok(());
+        }
+        let parent = e.parent.map(|p| &self.classes[p as usize]);
+        let new_ifaces: Vec<ClassId> = e
+            .interfaces
+            .iter()
+            .copied()
+            .filter(|i| parent.is_none_or(|p| !p.interfaces.contains(i)))
+            .collect();
+        // Methods: do_inheritance_check_on_method resets the flag unless the
+        // parent method is private or a constructor without an abstract
+        // prototype.
+        for (k, m) in &e.methods {
+            if m.defining_class != ce || !has_override(&m.proto.meta.attributes) {
+                continue;
+            }
+            let by_parent = parent.and_then(|p| p.methods.get(k)).is_some_and(|pm| {
+                if k == b"__construct" {
+                    let pc = pm.prototype.unwrap_or(pm.defining_class);
+                    self.classes[pc as usize]
+                        .methods
+                        .get(k)
+                        .is_some_and(|m| m.is_abstract)
+                } else {
+                    pm.visibility != Visibility::Private || pm.is_abstract
+                }
+            });
+            let by_iface = || {
+                new_ifaces
+                    .iter()
+                    .any(|&i| self.classes[i as usize].methods.contains_key(k))
+            };
+            let by_trait = || {
+                e.traits.iter().any(|&t| {
+                    self.classes[t as usize]
+                        .methods
+                        .get(k)
+                        .is_some_and(|tm| tm.is_abstract && !std::rc::Rc::ptr_eq(&tm.proto, &m.proto))
+                })
+            };
+            if by_parent || by_iface() || by_trait() {
+                continue;
+            }
+            let msg = format!(
+                "{}::{}() has #[\\Override] attribute, but no matching parent method exists",
+                shown(&e.name),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            );
+            let file = m.proto.debug.file.as_bytes().to_vec();
+            let line = m.proto.meta.start_line as i64;
+            return Err(self.fatal_compile_error_at(msg.as_bytes(), file, line));
+        }
+        // The non-private parent or interface property of that name.
+        let inherited = |name: &PhpStr| -> Option<&PropEntry> {
+            parent
+                .and_then(|p| p.prop_visible.get(name).and_then(|k| p.props.get(k)))
+                .filter(|pp| pp.visibility != Visibility::Private)
+                .or_else(|| {
+                    new_ifaces.iter().find_map(|&i| {
+                        let ie = &self.classes[i as usize];
+                        ie.prop_visible.get(name).and_then(|k| ie.props.get(k))
+                    })
+                })
+        };
+        // The property declarations the class owns: its own, then its
+        // traits'.
+        let decl_attrs = |name: &[u8], is_static: bool| -> Option<bool> {
+            let own = |p: &ClassProto| {
+                if is_static {
+                    p.static_props
+                        .iter()
+                        .find(|sp| sp.name.as_bytes() == name)
+                        .map(|sp| has_override(&sp.meta.attributes))
+                } else {
+                    p.props
+                        .iter()
+                        .find(|pp| pp.name.as_bytes() == name)
+                        .map(|pp| has_override(&pp.meta.attributes))
+                }
+            };
+            own(&e.proto).or_else(|| {
+                e.traits
+                    .iter()
+                    .find_map(|&t| own(&self.classes[t as usize].proto))
+            })
+        };
+        for pe in e.props.values() {
+            if pe.declaring_class != ce {
+                continue;
+            }
+            let inh = inherited(&pe.name);
+            if decl_attrs(pe.name.as_bytes(), false) == Some(true) && inh.is_none() {
+                return Err(self.override_prop_error(ce, &pe.name.clone()));
+            }
+            let Some(hooks) = &pe.hooks else { continue };
+            for (kind, h) in hooks.iter().enumerate() {
+                let Some(h) = h else { continue };
+                if h.defining_class != ce
+                    || !has_override(&h.proto.meta.attributes)
+                    || inh.is_some_and(|p| has_operation(p, kind))
+                {
+                    continue;
+                }
+                let msg = format!(
+                    "{}::{}() has #[\\Override] attribute, but no matching parent method exists",
+                    shown(&e.name),
+                    String::from_utf8_lossy(h.proto.name.as_bytes())
+                );
+                let file = h.proto.debug.file.as_bytes().to_vec();
+                let line = h.proto.meta.start_line as i64;
+                return Err(self.fatal_compile_error_at(msg.as_bytes(), file, line));
+            }
+        }
+        for (k, sp) in &e.static_props {
+            if sp.declaring_class != ce || decl_attrs(k, true) != Some(true) {
+                continue;
+            }
+            let ok = parent
+                .and_then(|p| p.static_props.get(k))
+                .is_some_and(|ps| ps.visibility != Visibility::Private);
+            if !ok {
+                return Err(self.override_prop_error(ce, &PhpStr::from(k.as_slice())));
+            }
+        }
+        Ok(())
+    }
+
+    fn override_prop_error(&mut self, ce: ClassId, name: &PhpStr) -> Thrown {
+        let msg = format!(
+            "{}::${} has #[\\Override] attribute, but no matching parent property exists",
+            shown(&self.classes[ce as usize].name),
+            String::from_utf8_lossy(name.as_bytes())
+        );
+        let proto = self.classes[ce as usize].proto.clone();
+        self.link_fatal(&proto, 64, &msg)
     }
 }

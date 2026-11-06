@@ -1722,6 +1722,9 @@ impl Vm {
         if proto.kind == ClassKind::Class && self.internal_classes > 0 {
             self.verify_abstract_class(id)?;
         }
+        if self.internal_classes > 0 {
+            self.check_override(id)?;
+        }
         Ok(true)
     }
 

@@ -2753,27 +2753,22 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let cname = proto.names[name as usize].as_bytes();
         let key = builtins::zend::builtin_functions::const_key(cname);
-        let v = self.constants.get(&*key).cloned().or_else(|| {
-            if fallback != rhp_bytecode::NO_NAME {
-                self.constants
-                    .get(proto.names[fallback as usize].as_bytes())
-                    .cloned()
-            } else {
-                None
+        // The constant found: `name`, else the global `fallback`.
+        let (v, hit): (Option<Value>, &[u8]) = match self.constants.get(&*key) {
+            Some(v) => (Some(v.clone()), &key),
+            None if fallback != rhp_bytecode::NO_NAME => {
+                let f = proto.names[fallback as usize].as_bytes();
+                (self.constants.get(f).cloned(), f)
             }
-        });
+            None => (None, &key),
+        };
         match v {
             Some(v) => {
-                let bare = cname.rsplit(|&c| c == b'\\').next().unwrap_or(cname);
-                if let Some(msg) = self.internal_const_deprecation(bare) {
+                if let Some(msg) = self.internal_const_deprecation(hit) {
                     self.diag(builtins::E_DEPRECATED, &msg)?;
                 }
                 if !self.const_attrs.is_empty() {
-                    let hit = if self.constants.contains_key(&*key) {
-                        key.to_vec()
-                    } else {
-                        proto.names[fallback as usize].as_bytes().to_vec()
-                    };
+                    let hit = hit.to_vec();
                     self.deprecated_user_constant(&hit)?;
                 }
                 self.reg_set(top, dst, v);

@@ -21,3 +21,7 @@ SensitiveParameterValue
 x
 Exception: Serialization of 'SensitiveParameterValue' is not allowed
 caught dtor
+[512] The return value of method class@anonymous::m() should either be used or intentionally ignored by casting it as (void) (line 78)
+[512] The return value of method class@anonymous::m() should either be used or intentionally ignored by casting it as (void) (line 79)
+[16384] Constant class@anonymous::C is deprecated (line 80)
+1

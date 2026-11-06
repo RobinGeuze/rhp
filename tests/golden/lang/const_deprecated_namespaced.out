@@ -1,0 +1,5 @@
+111
+[8192] Constant FILE_TEXT is deprecated since 8.1, as the constant has no effect
+0
+[8192] Constant E_STRICT is deprecated since 8.4, the error level was removed
+2048

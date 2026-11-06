@@ -68,3 +68,13 @@ try {
 // A destructor of a released temporary throws inside the try.
 class D { function __destruct() { throw new Exception('dtor'); } }
 try { new D(); } catch (Exception $e) { echo "caught ", $e->getMessage(), "\n"; }
+
+// A nullsafe call's unused result; an anonymous class's name stops at its
+// NUL byte.
+$anon = new class {
+    #[\NoDiscard] function m(): int { return 1; }
+    #[\Deprecated] const C = 1;
+};
+$anon?->m();
+$anon->m();
+echo $anon::C, "\n";

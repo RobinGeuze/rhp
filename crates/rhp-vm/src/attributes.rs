@@ -182,8 +182,7 @@ impl Vm {
         scope: Option<ClassId>,
         first: Option<&Value>,
     ) -> (Option<String>, String) {
-        let class =
-            scope.map(|c| String::from_utf8_lossy(self.class(c).name.as_bytes()).into_owned());
+        let class = scope.map(|c| self.class_c_name(c));
         let mut fname = String::from_utf8_lossy(proto.name.as_bytes()).into_owned();
         if class.is_some()
             && (fname.eq_ignore_ascii_case("__call") || fname.eq_ignore_ascii_case("__callStatic"))
@@ -222,7 +221,7 @@ impl Vm {
             format!(
                 "{} {}::{} is deprecated",
                 if is_case { "Enum case" } else { "Constant" },
-                String::from_utf8_lossy(self.class(class).name.as_bytes()),
+                self.class_c_name(class),
                 String::from_utf8_lossy(name)
             ),
             &suffix,
@@ -263,12 +262,19 @@ impl Vm {
         let msg = cat(
             format!(
                 "Trait {} used by {} is deprecated",
-                String::from_utf8_lossy(self.class(t).name.as_bytes()),
-                String::from_utf8_lossy(class)
+                self.class_c_name(t),
+                String::from_utf8_lossy(crate::callables::trampoline_name(class).as_slice())
             ),
             &suffix,
         );
         self.diag(rhp_builtins::E_USER_DEPRECATED, &msg)
+    }
+
+    /// A class name as php's `%s` prints it: cut at a NUL byte (an
+    /// anonymous class shows as `class@anonymous`).
+    fn class_c_name(&self, c: ClassId) -> String {
+        let name = crate::callables::trampoline_name(self.class(c).name.as_bytes());
+        String::from_utf8_lossy(&name).into_owned()
     }
 
     /// A trace argument of a `#[\SensitiveParameter]` parameter: a

@@ -536,7 +536,15 @@ impl ProtoBuilder<'_> {
             }
         }
         let r = self.compile_expr(e)?;
-        let dst = match self.code.last() {
+        // A nullsafe chain ends `call; Jmp end; LoadNull` (php's call is
+        // still the last opline there).
+        let mut at = self.code.len().wrapping_sub(1);
+        if let [.., Instr::Jmp { target }, Instr::LoadNull { dst }] = self.code[..] {
+            if dst == r && target as usize == self.code.len() {
+                at = self.code.len() - 3;
+            }
+        }
+        let dst = match self.code.get(at) {
             Some(
                 Instr::Call { dst, .. }
                 | Instr::CallV { dst, .. }
@@ -554,8 +562,7 @@ impl ProtoBuilder<'_> {
             _ => None,
         };
         if dst == Some(r) {
-            self.discard_calls
-                .push((self.code.len() - 1) as rhp_bytecode::Pc);
+            self.discard_calls.push(at as rhp_bytecode::Pc);
         }
         Ok(r)
     }

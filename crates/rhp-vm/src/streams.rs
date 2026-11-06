@@ -269,11 +269,16 @@ impl Vm {
     pub(crate) fn reap_dropped_streams(&mut self) -> Result<(), Thrown> {
         let mut thrown = None;
         for id in rhp_values::take_dropped_streams() {
-            // The CLI std streams live for the whole request.
+            // The CLI std streams live for the whole request, unless filters
+            // have to run as they close.
             if matches!(
                 self.streams.get(&id),
                 Some(StreamState::Stdin | StreamState::Stdout | StreamState::Stderr)
-            ) {
+            ) && self
+                .streams
+                .record_mut(id)
+                .is_some_and(|r| r.filters.is_none())
+            {
                 continue;
             }
             if self.streams.contains_key(&id) {

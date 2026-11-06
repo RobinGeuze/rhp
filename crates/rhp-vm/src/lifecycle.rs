@@ -643,7 +643,14 @@ impl Vm {
         // zend_deactivate closes the resource list: streams still open with
         // filters run them a last time.
         self.enter_shutdown_scope();
-        let _ = self.close_filtered_streams();
+        let r = self.close_filtered_streams();
+        // A filter throwing there is reported as uncaught.
+        if let Some(t) = r.err().or_else(|| self.pending_throw.take()) {
+            self.enter_shutdown_scope();
+            if let Some(c) = on_throw(self, t)? {
+                status = c;
+            }
+        }
         self.pending_throw = None;
         self.shutdown_functions.clear();
         self.stack.clear();

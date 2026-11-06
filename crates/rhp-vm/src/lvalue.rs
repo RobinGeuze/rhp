@@ -990,7 +990,7 @@ impl Vm {
         }
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
-        if !self.destructibles.is_empty() {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         r
@@ -1261,7 +1261,7 @@ impl Vm {
         };
         self.flush_path_diags()?;
         // The removed element may have held the last reference to an object.
-        if !self.destructibles.is_empty() {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         r

@@ -299,8 +299,11 @@ The original notes:
   stream had read ahead moves into the layer's buffer (for memory streams,
   the chunk php's line reads would have buffered). The filters are in
   rhp-builtins (`main/streams/filter.rs`, `ext/standard/filters.rs`,
-  `user_filters.rs`, zlib, bz2 and iconv). Not modelled: persistent
-  streams and user stream wrappers (wave 6) carrying filters.
+  `user_filters.rs`, zlib, bz2 and iconv). A filtered stream closes when
+  its last variable, element or property reference goes; one whose last
+  reference was a temporary closes at the next such check or function
+  return. Not modelled: persistent streams and user stream wrappers
+  (wave 6) carrying filters.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).

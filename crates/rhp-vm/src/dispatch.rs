@@ -340,7 +340,8 @@ impl Vm {
             self.sync_global_cv(top, cv);
             self.dtor_check = true;
         } else {
-            if matches!(self.stack[top].regs[cv as usize], Value::Ref(_)) {
+            let old = &self.stack[top].regs[cv as usize];
+            if matches!(old, Value::Ref(_)) || self.release_tracked(old) {
                 self.dtor_check = true;
             }
             self.reg_set(top, cv, Value::Undef);
@@ -349,6 +350,8 @@ impl Vm {
 
     /// Plain register write (temporaries / instruction destinations): overwrites
     /// the slot. Never writes through a stale `Ref` left in a reused temp.
+    /// (A filtered stream released here closes at the next check: this path
+    /// is too hot to watch for it.)
     pub(crate) fn reg_set(&mut self, top: usize, r: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[r as usize];
         if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_)) {
@@ -424,9 +427,31 @@ impl Vm {
         } else {
             std::mem::replace(slot, v)
         };
-        if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
+        if self.release_tracked(&old) {
             self.dtor_check = true;
         }
+    }
+
+    /// Whether overwriting `old` may release something php frees at once:
+    /// an object with a destructor, or a stream with filters.
+    #[inline]
+    fn release_tracked(&self, old: &Value) -> bool {
+        // One branch for the common case: nothing to watch.
+        if self.destructibles.len() | self.filtered_streams as usize == 0 {
+            return false;
+        }
+        match old {
+            Value::Object(_) | Value::Array(_) => true,
+            Value::Resource(_) => self.filtered_streams > 0,
+            _ => false,
+        }
+    }
+
+    /// Something released now may need its destructor (or a filtered
+    /// stream its close) run.
+    #[inline]
+    pub(crate) fn release_pending(&self) -> bool {
+        !self.destructibles.is_empty() || self.filtered_streams > 0
     }
 
     /// Drive execution, catching thrown exceptions and routing them through the
@@ -1865,7 +1890,7 @@ impl Vm {
                     let val = self.reg_r(top, src)?;
                     let pname = self.dyn_prop_name(top, name)?;
                     self.prop_store(top, o, pname, val)?;
-                    if !self.destructibles.is_empty() {
+                    if self.release_pending() {
                         self.dtor_check = true; // the old value may be released
                     }
                 }
@@ -1911,7 +1936,7 @@ impl Vm {
                             self.reg_set(top, src, v);
                         }
                     }
-                    if !self.destructibles.is_empty() {
+                    if self.release_pending() {
                         self.dtor_check = true; // the old value may be released
                     }
                 }
@@ -2010,7 +2035,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     self.prop_unset(top, o, pname)?;
-                    if !self.destructibles.is_empty() {
+                    if self.release_pending() {
                         self.dtor_check = true;
                     }
                 }
@@ -2018,7 +2043,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = self.dyn_prop_name(top, name)?;
                     self.prop_unset(top, o, pname)?;
-                    if !self.destructibles.is_empty() {
+                    if self.release_pending() {
                         self.dtor_check = true;
                     }
                 }

@@ -1789,7 +1789,7 @@ impl Vm {
         {
             self.ctor_frames.pop();
         }
-        if !self.destructibles.is_empty() || self.filtered_streams > 0 {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         if !self.readonly_reinit.is_empty() {

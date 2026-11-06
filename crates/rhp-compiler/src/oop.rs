@@ -172,6 +172,23 @@ impl ProtoBuilder<'_> {
             }
             ClassLikeMemberSelector::Variable(v) => Ok(Sel::Dyn(self.compile_variable(v)?)),
             ClassLikeMemberSelector::Expression(e) => {
+                // zend_delayed_compile_prop: a constant name is converted to
+                // a string while compiling (an array warns then, once).
+                match crate::fold::fold_const(self.cx, e.expression) {
+                    Ok(Value::Str(s)) => return Ok(Sel::Static(self.intern_name(s.as_bytes()))),
+                    Ok(Value::Int(i)) => {
+                        return Ok(Sel::Static(self.intern_name(i.to_string().as_bytes())))
+                    }
+                    Ok(Value::Array(_)) => {
+                        self.cx.compile_diags.borrow_mut().push((
+                            rhp_values::E_WARNING,
+                            "Array to string conversion".into(),
+                            self.cur_line,
+                        ));
+                        return Ok(Sel::Static(self.intern_name(b"Array")));
+                    }
+                    _ => {}
+                }
                 Ok(Sel::Dyn(self.compile_expr(e.expression)?))
             }
             _ => Err(Thrown::unsupported(

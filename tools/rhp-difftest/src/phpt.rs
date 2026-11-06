@@ -216,6 +216,8 @@ const RHP_INI: &[&str] = &[
     "from",
     "hard_timeout",
     "html_errors",
+    "ignore_repeated_errors",
+    "ignore_repeated_source",
     "iconv.input_encoding",
     "iconv.internal_encoding",
     "iconv.output_encoding",

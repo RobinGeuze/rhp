@@ -36,6 +36,13 @@ pub(crate) enum FinallyCont {
 
 pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
 
+/// A boolean ini directive (php's OnUpdateBool: "1", "on", "yes", "true").
+fn ini_flag(name: &[u8]) -> bool {
+    builtins::ini_value(name)
+        .flatten()
+        .is_some_and(|v| builtins::ini_parse_bool(&v))
+}
+
 impl Vm {
     /// An `E_COMPILE_ERROR` raised while executing (e.g. a runtime class
     /// redeclaration): never seen by a user error handler, displayed with
@@ -213,7 +220,17 @@ impl Vm {
                 }
             }
         }
-        self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        // php_error_cb: ignore_repeated_errors drops a message equal to the
+        // last one (from the same place, unless ignore_repeated_source).
+        let repeated = ini_flag(b"ignore_repeated_errors")
+            && self.last_error.as_ref().is_some_and(|(_, m, f, l)| {
+                m == msg && (ini_flag(b"ignore_repeated_source") || (*l == line && *f == file))
+            });
+        if !repeated {
+            self.last_error = Some((level, msg.to_vec(), file.clone(), line));
+        } else if level != builtins::E_USER_ERROR {
+            return;
+        }
         if level == builtins::E_USER_ERROR {
             // E_USER_ERROR is fatal: displayed with the backtrace, then the
             // request bails out (shutdown functions still run; exit 255).

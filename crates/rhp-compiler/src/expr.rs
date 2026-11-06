@@ -64,6 +64,81 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// A read of a chain of dimensions and properties on a variable
+    /// (`$a->$b->{$c[1]}`, `$a[f()][g()]`) as php's delayed compilation
+    /// orders it: every key and name first, then the fetches, so a key's
+    /// side effects and warnings come before an inner fetch's. `None` when
+    /// the chain has nothing to reorder (or a form this does not handle).
+    fn compile_delayed_chain(&mut self, expr: &Expression) -> Result<Option<Reg>, Thrown> {
+        enum Link<'a> {
+            Dim(&'a Expression<'a>),
+            Prop(&'a crate::parse::cst::ClassLikeMemberSelector<'a>),
+        }
+        let simple = |e: &Expression| {
+            matches!(
+                e,
+                Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+            )
+        };
+        let mut links = Vec::new();
+        let mut complex = false;
+        let mut e = expr;
+        loop {
+            match e {
+                Expression::ArrayAccess(aa) if !is_globals_var(aa.array) => {
+                    complex |= !simple(aa.index);
+                    links.push(Link::Dim(aa.index));
+                    e = aa.array;
+                }
+                Expression::Access(Access::Property(pa)) => {
+                    use crate::parse::cst::ClassLikeMemberSelector as S;
+                    complex |= matches!(&pa.property, S::Expression(x) if !simple(x.expression));
+                    links.push(Link::Prop(&pa.property));
+                    e = pa.object;
+                }
+                _ => break,
+            }
+        }
+        let base = match e {
+            Expression::Variable(Variable::Direct(d))
+                if !matches!(strip_dollar(d.name), b"this" | b"GLOBALS") =>
+            {
+                strip_dollar(d.name)
+            }
+            _ => return Ok(None),
+        };
+        if links.len() < 2 || !complex || self.in_const_expr() {
+            return Ok(None);
+        }
+        links.reverse();
+        let mut keys = Vec::with_capacity(links.len());
+        for link in &links {
+            keys.push(match link {
+                Link::Dim(k) => Sel::Dyn(self.compile_expr(k)?),
+                Link::Prop(s) => self.compile_selector(s)?,
+            });
+        }
+        let mut cur = self.cv(base);
+        for (link, key) in links.iter().zip(keys) {
+            let dst = self.alloc_temp();
+            self.emit(match (link, key) {
+                (Link::Dim(_), Sel::Dyn(key)) => Instr::DimFetch { dst, arr: cur, key },
+                (Link::Prop(_), Sel::Dyn(name)) => Instr::FetchPropDyn {
+                    dst,
+                    obj: cur,
+                    name,
+                },
+                (_, Sel::Static(name)) => Instr::FetchProp {
+                    dst,
+                    obj: cur,
+                    name,
+                },
+            });
+            cur = dst;
+        }
+        Ok(Some(cur))
+    }
+
     /// A nullsafe guard on `src` for the open chain.
     pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
         // JMP_NULL reads its operand (an undefined variable warns).
@@ -76,6 +151,14 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        if matches!(
+            expr,
+            Expression::ArrayAccess(_) | Expression::Access(Access::Property(_))
+        ) {
+            if let Some(r) = self.compile_delayed_chain(expr)? {
+                return Ok(r);
+            }
+        }
         match expr {
             Expression::Literal(lit) => self.compile_literal(lit),
             Expression::Parenthesized(p) => self.compile_expr(p.expression),

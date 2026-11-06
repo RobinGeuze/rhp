@@ -329,6 +329,9 @@ fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thro
                 rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
                 Value::Int(line),
             );
+            if let Some(t) = host.last_error_trace() {
+                a.insert(rhp_values::ArrayKey::from_bytes(b"trace"), t);
+            }
             Value::Array(a)
         }
     })
@@ -348,6 +351,41 @@ fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<
             "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
         )));
     }
+    // php keeps the resolved zend_fcall_info_cache: `self` / `static` mean
+    // the registering scope, not the (absent) one at shutdown.
+    let cb = match &cb {
+        Value::Array(a) if a.len() == 2 => {
+            let mut it = a.iter();
+            let (Some((k0, Value::Str(c))), Some((_, m))) = (it.next(), it.next()) else {
+                return finish_shutdown_registration(host, cb.clone(), args);
+            };
+            let scope = if c.as_bytes().eq_ignore_ascii_case(b"self") {
+                host.caller_scope()
+            } else if c.as_bytes().eq_ignore_ascii_case(b"static") {
+                host.caller_called_scope()
+            } else {
+                None
+            };
+            match scope.and_then(|id| host.class_name(id)) {
+                Some(name) if matches!(k0, rhp_values::ArrayKey::Int(0)) => {
+                    let mut r = rhp_values::PhpArray::new();
+                    r.push(Value::str(name));
+                    r.push(m.clone());
+                    Value::Array(r)
+                }
+                _ => cb.clone(),
+            }
+        }
+        _ => cb,
+    };
+    finish_shutdown_registration(host, cb, args)
+}
+
+fn finish_shutdown_registration(
+    host: &mut dyn Host,
+    cb: Value,
+    args: &[Value],
+) -> Result<Value, Thrown> {
     host.register_shutdown_function(cb, args[1..].iter().map(deref).collect())?;
     Ok(Value::Null)
 }

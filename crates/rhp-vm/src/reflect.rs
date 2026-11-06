@@ -1567,34 +1567,8 @@ impl Vm {
                 put(&mut a, "modifiers", Value::Int(mods));
                 put(&mut a, "abstract", Value::Bool(m.is_abstract));
                 put(&mut a, "final", Value::Bool(m.is_final));
-                // The prototype: the same-named method of an ancestor
-                // (parent chain first, then interfaces).
                 let lname = lc(proto.name.as_bytes());
-                let e = &self.classes[m.defining_class as usize];
-                let mut proto_cls: Option<ClassId> = None;
-                let mut cur = e.parent;
-                while let Some(pc) = cur {
-                    if let Some(pm) = self.classes[pc as usize].methods.get(&lname) {
-                        if pm.visibility != Visibility::Private {
-                            proto_cls = Some(pm.defining_class);
-                            // Keep walking to the root declaration.
-                            cur = self.classes[pm.defining_class as usize].parent;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-                if proto_cls.is_none() {
-                    for &i in &e.interfaces {
-                        if i != m.defining_class
-                            && self.classes[i as usize].methods.contains_key(&lname)
-                        {
-                            proto_cls =
-                                Some(self.classes[i as usize].methods[&lname].defining_class);
-                            break;
-                        }
-                    }
-                }
+                let proto_cls = self.method_prototype(*class, &lname);
                 put(
                     &mut a,
                     "prototype",
@@ -1766,6 +1740,53 @@ impl Vm {
     }
 
     /// `Enum::cases()` / `from()` / `tryFrom()`.
+    /// php's `common.prototype` of method `lname` as class `r` holds it
+    /// (do_inheritance_check_on_method, do_interface_implementation): the
+    /// parent's prototype (or the parent's method) for an override, the
+    /// shared function's for an inherited one, then the last interface `r`
+    /// adds that declares it.
+    fn method_prototype(&self, r: ClassId, lname: &[u8]) -> Option<ClassId> {
+        let e = &self.classes[r as usize];
+        let m = e.methods.get(lname)?;
+        let mut p = None;
+        if let Some(pc) = e.parent {
+            if let Some(pm) = self.classes[pc as usize].methods.get(lname) {
+                if m.defining_class != r {
+                    p = self.method_prototype(pc, lname);
+                } else if pm.visibility != Visibility::Private {
+                    let proto = self
+                        .method_prototype(pc, lname)
+                        .unwrap_or(pm.defining_class);
+                    // A constructor only has an abstract one as prototype.
+                    let abstract_proto = self.classes[proto as usize]
+                        .methods
+                        .get(lname)
+                        .is_some_and(|m| m.is_abstract);
+                    if lname != b"__construct" || abstract_proto {
+                        p = Some(proto);
+                    }
+                }
+            }
+        }
+        let inherited: &[ClassId] = match e.parent {
+            Some(pc) => &self.classes[pc as usize].interfaces,
+            None => &[],
+        };
+        // An interface shares (does not copy) what it inherits.
+        if m.defining_class != r && e.kind == ClassKind::Interface {
+            return p;
+        }
+        for &i in &e.interfaces {
+            if i == r || inherited.contains(&i) {
+                continue;
+            }
+            if let Some(im) = self.classes[i as usize].methods.get(lname) {
+                p = Some(self.method_prototype(i, lname).unwrap_or(im.defining_class));
+            }
+        }
+        p
+    }
+
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();

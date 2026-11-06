@@ -139,6 +139,12 @@ pub trait Host {
     /// `error_clear_last()`.
     fn clear_last_error(&mut self);
 
+    /// The backtrace of the last fatal error (`fatal_error_backtraces`),
+    /// `error_get_last()['trace']`.
+    fn last_error_trace(&self) -> Option<Value> {
+        None
+    }
+
     /// The engine's comparison context (`__toString`, internal compare
     /// handlers, notices) for loose comparisons inside builtins.
     fn compare_cx(&mut self) -> Option<&mut dyn rhp_values::ops::CompareCx>;

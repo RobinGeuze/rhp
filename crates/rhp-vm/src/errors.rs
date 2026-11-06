@@ -59,12 +59,15 @@ impl Vm {
     }
 
     /// The backtrace a fatal error shows (`fatal_error_backtraces`).
-    pub(crate) fn fatal_trace(&self) -> Vec<u8> {
+    pub(crate) fn fatal_trace(&mut self) -> Vec<u8> {
+        self.last_fatal_trace = None;
         if !ini_bool(&self.ini_get(b"fatal_error_backtraces").unwrap_or_default()) {
             return Vec::new();
         }
-        let trace = Value::Array(self.build_trace());
-        builtins::zend::exceptions::trace_to_string(self, &trace)
+        let arr = self.build_trace();
+        let s = builtins::zend::exceptions::trace_to_string(self, &Value::Array(arr.clone()));
+        self.last_fatal_trace = Some(arr);
+        s
     }
 
     /// [`Vm::fatal_compile_error`] reported at `file`:`line` (php's
@@ -144,11 +147,14 @@ impl Vm {
     /// exception from the handler becomes `pending_throw`.
     pub(crate) fn raise_error(&mut self, level: i64, msg: &(impl AsRef<[u8]> + ?Sized)) {
         let msg = msg.as_ref();
+        if let Some((file, line)) = self.const_expr_site() {
+            return self.raise_error_at(level, msg, file, line as i64);
+        }
         // The innermost user frame: prelude (built-in PHP-source) code has no
         // line map, and php reports internal functions at their caller.
         let (file, line) = match (0..self.stack.len())
             .rev()
-            .find(|&i| !self.stack[i].proto.is_internal())
+            .find(|&i| !self.stack[i].proto.is_internal() && !self.is_const_expr_frame(i))
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
             None => (Vec::new(), 0),
@@ -175,6 +181,7 @@ impl Vm {
         if self.pending_throw.is_some() {
             return; // php skips diagnostics while an exception is pending
         }
+        self.last_fatal_trace = None;
         // A diagnostic prelude code silenced with `@` is engine plumbing (php's
         // C implementation raises none): it only updates error_get_last().
         // (`silence_stack` records the stack depth at each `@`.)
@@ -365,6 +372,9 @@ impl Vm {
             let flags = self.stack[i].proto.flags;
             flags.contains(F::CONST_EXPR) && !flags.contains(F::CONST_EXPR_PLAIN)
         })?;
+        if self.autoload_depths.last().is_some_and(|&d| d > i) {
+            return None;
+        }
         Some((self.current_file(i), self.current_line(i)))
     }
 
@@ -916,6 +926,7 @@ impl Vm {
     }
 
     pub(crate) fn report_uncaught(&mut self, thrown: Thrown) {
+        self.last_fatal_trace = None;
         let thrown = self.materialize(thrown, None);
         let h = match thrown {
             Thrown::Object(h) => h,

@@ -178,7 +178,12 @@ impl Host for Vm {
         self.last_error.clone()
     }
 
+    fn last_error_trace(&self) -> Option<Value> {
+        self.last_fatal_trace.clone().map(Value::Array)
+    }
+
     fn clear_last_error(&mut self) {
+        self.last_fatal_trace = None;
         self.last_error = None;
     }
 

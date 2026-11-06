@@ -228,10 +228,61 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     public function getReturnType(): ?ReflectionType { return Reflection::__type($this->__i['ret']); }
     public function hasTentativeReturnType(): bool { return ($this->__i['tentative'] ?? null) !== null; }
     public function getTentativeReturnType(): ?ReflectionType { return Reflection::__type($this->__i['tentative'] ?? null); }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, static::class); }
-    public function __str() {
-        $k = $this->__i['internal'] ? 'internal' : 'user';
-        return ($this instanceof ReflectionMethod ? 'Method' : (isset($this->__i['closure']) ? 'Closure' : 'Function')) . ' [ <' . $k . '> ' . ($this instanceof ReflectionMethod ? implode(' ', Reflection::getModifierNames($this->__i['modifiers'])) . ' method ' : 'function ') . $this->__i['name'] . " ] {\n}\n";
+    public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionFunctionAbstract'); }
+    /** php_reflection.c _function_string; $scope: the class it was looked up in. */
+    public function __str($scope = null, $indent = '') {
+        $i = $this->__i;
+        $m = $this instanceof ReflectionMethod;
+        $closure = !$m && $this->__l instanceof Closure;
+        $fscope = $m ? $i['class'] : ($closure ? ($i['scope'] ?? null) : null);
+        $s = $i['doc'] !== false ? $indent . $i['doc'] . "\n" : '';
+        $s .= $indent . ($closure ? 'Closure [ ' : ($fscope !== null ? 'Method [ ' : 'Function [ '));
+        $s .= $i['internal'] ? '<internal' : '<user';
+        if ($this->isDeprecated()) { $s .= ', deprecated'; }
+        if ($i['internal'] && $i['ext'] !== false) { $s .= ':' . $i['ext']; }
+        if ($scope !== null && $fscope !== null) {
+            if (strcasecmp($fscope, $scope) !== 0) {
+                $s .= ', inherits ' . $fscope;
+            } elseif (($par = get_parent_class($fscope)) !== false && method_exists($par, $i['name'])) {
+                $pm = new ReflectionMethod($par, $i['name']);
+                if (strcasecmp($pm->class, $fscope) !== 0 && !$pm->isPrivate()) { $s .= ', overwrites ' . $pm->class; }
+            }
+        }
+        if ($m && ($i['prototype'] ?? null) !== null) { $s .= ', prototype ' . $i['prototype']; }
+        if ($m && strcasecmp($i['name'], '__construct') === 0) { $s .= ', ctor'; }
+        $s .= '> ';
+        if ($i['abstract'] ?? false) { $s .= 'abstract '; }
+        if ($i['final'] ?? false) { $s .= 'final '; }
+        if ($i['static']) { $s .= 'static '; }
+        if ($fscope !== null) {
+            $v = $i['vis'] ?? 1;
+            $s .= ($v === 4 ? 'private' : ($v === 2 ? 'protected' : 'public')) . ' method ';
+        } else {
+            $s .= 'function ';
+        }
+        if ($i['returnsRef']) { $s .= '&'; }
+        $s .= $i['name'] . " ] {\n";
+        if (!$i['internal']) { $s .= $indent . '  @@ ' . $i['file'] . ' ' . $i['start'] . ' - ' . $i['end'] . "\n"; }
+        $pi = $indent . '  ';
+        $used = $i['used'] ?? [];
+        if ($closure && !$i['internal'] && $used !== []) {
+            $s .= "\n" . $pi . '- Bound Variables [' . count($used) . "] {\n";
+            $n = 0;
+            foreach ($used as $k => $_) { $s .= $pi . '    Variable #' . $n++ . ' [ $' . $k . " ]\n"; }
+            $s .= $pi . "}\n";
+        }
+        $ret = $i['ret'] ?? null;
+        $tent = $i['tentative'] ?? null;
+        $params = $this->getParameters();
+        if ($i['internal'] || $params !== [] || $ret !== null || $tent !== null) {
+            $s .= "\n" . $pi . '- Parameters [' . count($params) . "] {\n";
+            foreach ($params as $p) { $s .= $pi . '  ' . $p . "\n"; }
+            $s .= $pi . "}\n";
+        }
+        if ($ret !== null || $tent !== null) {
+            $s .= '  ' . $indent . '- ' . ($ret === null ? 'Tentative return' : 'Return') . ' [ ' . Reflection::__type($ret ?? $tent) . " ]\n";
+        }
+        return $s . $indent . "}\n";
     }
 }
 
@@ -323,7 +374,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         self::$__fromName = true;
         try { return new static($method); } finally { self::$__fromName = false; }
     }
-    public function __toString(): string { return $this->__str(); }
+    public function __toString(): string { return $this->__str($this->__i['reflClass'] ?? $this->class); }
     public function isPublic(): bool { return $this->__i['vis'] === 1; }
     public function isPrivate(): bool { return $this->__i['vis'] === 4; }
     public function isProtected(): bool { return $this->__i['vis'] === 2; }
@@ -514,7 +565,76 @@ class ReflectionClass implements Reflector {
         $this->__c = $c;
         $this->name = $c['name'];
     }
-    public function __toString(): string { return 'Class [ <' . ($this->__c['internal'] ? 'internal' : 'user') . '> class ' . $this->name . " ] {\n}\n"; }
+    public function __toString(): string { return $this->__str(''); }
+    /** php_reflection.c _class_string. */
+    public function __str($indent) {
+        $c = $this->__c;
+        $sub = $indent . '    ';
+        $s = $c['doc'] !== false ? $indent . $c['doc'] . "\n" : '';
+        $kind = $c['kind'];
+        if ($this instanceof ReflectionObject) {
+            $s .= $indent . 'Object of class [ ';
+        } else {
+            $s .= $indent . match ($kind) { 'interface' => 'Interface', 'trait' => 'Trait', 'enum' => 'Enum', default => 'Class' } . ' [ ';
+        }
+        $s .= $c['internal'] ? '<internal' . ($this->getExtensionName() !== false ? ':' . $this->getExtensionName() : '') : '<user';
+        $s .= '> ';
+        if ($kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable')) { $s .= '<iterateable> '; }
+        if ($kind === 'interface' || $kind === 'trait' || $kind === 'enum') {
+            $s .= $kind . ' ';
+        } else {
+            if ($c['abstract']) { $s .= 'abstract '; }
+            if ($c['final']) { $s .= 'final '; }
+            if ($c['readonly']) { $s .= 'readonly '; }
+            $s .= 'class ';
+        }
+        $s .= $this->name;
+        if ($c['parent'] !== false) { $s .= ' extends ' . $c['parent']; }
+        if ($kind === 'enum' && ($bt = (new ReflectionEnum($this->name))->getBackingType()) !== null) { $s .= ': ' . $bt; }
+        if ($c['interfaces'] !== []) {
+            $s .= ($kind === 'interface' ? ' extends ' : ' implements ') . implode(', ', $c['interfaces']);
+        }
+        $s .= " ] {\n";
+        if (!$c['internal']) { $s .= $indent . '  @@ ' . $c['file'] . ' ' . $c['start'] . '-' . $c['end'] . "\n"; }
+        $consts = '';
+        $cases = '';
+        $nc = 0;
+        $ncase = 0;
+        foreach ($this->getReflectionConstants() as $rc) {
+            if ($rc->isEnumCase()) { $cases .= $rc->__case($sub); $ncase++; } else { $consts .= $rc->__str($sub); $nc++; }
+        }
+        if ($ncase) { $s .= "\n" . $indent . '  - Enum cases [' . $ncase . "] {\n" . $cases . $indent . "  }\n"; }
+        $s .= "\n" . $indent . '  - Constants [' . $nc . "] {\n" . $consts . $indent . "  }\n";
+        $sp = '';
+        $ip = '';
+        $nsp = 0;
+        $nip = 0;
+        foreach ($this->getProperties() as $rp) {
+            if ($rp->__dynamic()) { continue; }
+            if ($rp->isStatic()) { $sp .= $sub . $rp; $nsp++; } else { $ip .= $sub . $rp; $nip++; }
+        }
+        $s .= "\n" . $indent . '  - Static properties [' . $nsp . "] {\n" . $sp . $indent . "  }\n";
+        $sm = '';
+        $im = '';
+        $nsm = 0;
+        $nim = 0;
+        foreach ($this->getMethods() as $rm) {
+            if ($rm->isPrivate() && strcasecmp($rm->class, $this->name) !== 0) { continue; }
+            if ($rm->isStatic()) { $sm .= "\n" . $rm->__str($this->name, $sub); $nsm++; } else { $im .= "\n" . $rm->__str($this->name, $sub); $nim++; }
+        }
+        $s .= "\n" . $indent . '  - Static methods [' . $nsm . '] {' . ($nsm ? $sm : "\n") . $indent . "  }\n";
+        $s .= "\n" . $indent . '  - Properties [' . $nip . "] {\n" . $ip . $indent . "  }\n";
+        if ($this instanceof ReflectionObject) {
+            $dp = '';
+            $nd = 0;
+            foreach (__reflect('obj_props', $this->__o) as $n) {
+                if (is_string($n) && $n !== '' && $n[0] !== "\0") { $dp .= $sub . 'Property [ <dynamic> public $' . $n . " ]\n"; $nd++; }
+            }
+            $s .= "\n" . $indent . '  - Dynamic properties [' . $nd . "] {\n" . $dp . $indent . "  }\n";
+        }
+        $s .= "\n" . $indent . '  - Methods [' . $nim . '] {' . ($nim ? $im : "\n") . $indent . "  }\n";
+        return $s . $indent . "}\n";
+    }
     public function getName(): string { return $this->__c['name']; }
     public function isInternal(): bool { return $this->__c['internal']; }
     public function isUserDefined(): bool { return !$this->__c['internal']; }
@@ -550,7 +670,22 @@ class ReflectionClass implements Reflector {
     }
     public function getProperty(string $name): ReflectionProperty {
         if ($this->hasProperty($name)) { return new ReflectionProperty($this->__o ?? $this->name, $name); }
-        throw new ReflectionException('Property ' . $this->name . '::$' . $name . ' does not exist');
+        $cls = $this->name;
+        if (($at = strpos($name, '::')) !== false) {
+            // A fully qualified `Class::prop`.
+            $cn = substr($name, 0, $at);
+            $name = substr($name, $at + 2);
+            $c = __reflect('class', $cn, true);
+            if ($c === null) { throw new ReflectionException('Class "' . $cn . '" does not exist', -1); }
+            if (!is_a($cls, $c['name'], true)) {
+                throw new ReflectionException('Fully qualified property name ' . $c['name'] . '::$' . $name . ' does not specify a base class of ' . $cls, -1);
+            }
+            $cls = $c['name'];
+            foreach (__reflect('props', $cls) as $p) {
+                if ($p[0] === $name) { return new ReflectionProperty($cls, $name); }
+            }
+        }
+        throw new ReflectionException('Property ' . $cls . '::$' . $name . ' does not exist');
     }
     public function getProperties(?int $filter = null): array {
         $o = [];
@@ -794,6 +929,7 @@ class ReflectionProperty implements Reflector {
         }
         return $s . " ]\n";
     }
+    public function __dynamic(): bool { return isset($this->__i['dynamic']); }
     public function getName(): string { return $this->name; }
     public function getMangledName(): string {
         $v = $this->__i['vis'];
@@ -917,7 +1053,29 @@ class ReflectionClassConstant implements Reflector {
         $this->name = $i['name'];
         $this->class = $i['class'];
     }
-    public function __toString(): string { return 'Constant [ ' . implode(' ', Reflection::getModifierNames($this->__i['modifiers'])) . ' ' . get_debug_type($this->__i['value']) . ' ' . $this->name . ' ] { ' . (is_scalar($this->__i['value']) ? $this->__i['value'] : '') . " }\n"; }
+    public function __toString(): string { return $this->__str(''); }
+    /** php_reflection.c _class_const_string. */
+    public function __str($indent) {
+        $i = $this->__i;
+        $v = $i['value'];
+        $m = $i['modifiers'];
+        $s = $i['doc'] !== false ? $indent . $i['doc'] . "\n" : '';
+        $type = ($i['type'] ?? null) !== null ? (string) Reflection::__type($i['type']) : match (true) {
+            is_null($v) => 'null', is_bool($v) => 'bool', is_int($v) => 'int', is_float($v) => 'float',
+            is_string($v) => 'string', is_array($v) => 'array', default => 'object' };
+        $s .= $indent . 'Constant [ ' . (($m & 32) ? 'final ' : '') . (($m & 4) ? 'private' : (($m & 2) ? 'protected' : 'public')) . ' ' . $type . ' ' . $this->name . ' ] { ';
+        $s .= is_array($v) ? 'Array' : (is_object($v) ? 'Object' : (string) $v);
+        return $s . " }\n";
+    }
+    /** php_reflection.c _enum_case_string. */
+    public function __case($indent) {
+        $i = $this->__i;
+        $s = $i['doc'] !== false ? $indent . $i['doc'] . "\n" : '';
+        $s .= $indent . 'Case ' . $this->name;
+        $v = $i['value'];
+        if ($v instanceof BackedEnum) { $s .= ' = ' . $v->value; }
+        return $s . "\n";
+    }
     public function getName(): string { return $this->name; }
     public function getValue(): mixed { return $this->__i['value']; }
     public function isPublic(): bool { return $this->__i['vis'] === 1; }

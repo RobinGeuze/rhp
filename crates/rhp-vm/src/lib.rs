@@ -181,6 +181,9 @@ pub struct Vm {
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
     in_autoload: std::collections::HashSet<Vec<u8>>,
+    /// Stack depth at each running autoload: php's zend_lookup_class clears
+    /// the constant-expression file/line override for the loader.
+    autoload_depths: Vec<usize>,
     /// Inheritance-check state while classes link (see `inherit`).
     inherit: inherit::LinkState,
     /// Named-argument binding for the frame about to be pushed: the skipped
@@ -245,6 +248,8 @@ pub struct Vm {
     silence_stack: Vec<(usize, u32, Option<i64>)>,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
+    /// EG(last_fatal_error_backtrace): `error_get_last()['trace']`.
+    last_fatal_trace: Option<rhp_values::PhpArray>,
     /// `set_error_handler` stack (innermost last): (callback or null, mask).
     error_handlers: Vec<(Value, i64)>,
     /// A user error handler is running (php unsets the handler meanwhile).

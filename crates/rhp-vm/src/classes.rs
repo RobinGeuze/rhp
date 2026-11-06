@@ -1947,6 +1947,7 @@ impl Vm {
         if !self.in_autoload.insert(key.clone()) {
             return Ok(false); // already being autoloaded further up the stack
         }
+        self.autoload_depths.push(self.stack.len());
         let r = (|| {
             for loader in self.autoloaders.clone() {
                 self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
@@ -1956,6 +1957,7 @@ impl Vm {
             }
             Ok(false)
         })();
+        self.autoload_depths.pop();
         self.in_autoload.remove(&key);
         r
     }

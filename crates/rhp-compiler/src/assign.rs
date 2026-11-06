@@ -825,11 +825,16 @@ impl ProtoBuilder<'_> {
                         | Expression::Access(Access::Property(_))
                         | Expression::Access(Access::StaticProperty(_))
                 ) {
-                    let r = self.compile_assign_ref_source(u.operand)?;
+                    let r = self.compile_ref_source(u.operand)?;
                     let mut steps = Vec::new();
                     let root = self.collect_lvalue_steps(a.lhs, &mut steps)?;
                     self.emit_cursor(root, &steps);
                     self.emit(Instr::AssignLvalRef { src: r });
+                    // php fetches the target (which may fail) before its
+                    // notice for a by-value call result.
+                    if is_call(crate::util::unparen(u.operand)) {
+                        self.emit(Instr::RefFuncResult { src: r });
+                    }
                     return Ok(r);
                 }
                 return Err(Thrown::unsupported(

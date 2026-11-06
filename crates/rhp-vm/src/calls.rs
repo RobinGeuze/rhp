@@ -653,7 +653,9 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
-                if !self.stack[top].proto.send_kinds.is_empty() {
+                if !self.stack[top].proto.send_kinds.is_empty()
+                    && proto.params.iter().any(|p| p.by_ref)
+                {
                     self.check_sends(top, &proto, frame.defining_class, base)?;
                 }
                 self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
@@ -679,27 +681,28 @@ impl Vm {
                 )
             }
         };
-        let failed = match bound {
-            _ if count_error.is_some() => count_error.map(|e| (0, e)),
+        let failed = if count_error.is_some() {
+            count_error.map(|e| (0, e))
+        } else {
+            if let (Ok(()), Some((holes, extra))) = (&bound, named) {
+                bind_named_extra(&proto, frame, holes, extra);
+            }
             // php's RECV checks the passed arguments' types in order before
             // the first missing one raises the count error.
-            Err(missing) => {
-                let scope = frame.defining_class;
-                let typed = match self.coerce_stringable_args(&proto, frame, caller, scope) {
-                    Err(e) => Some((0, e)),
-                    Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
-                };
-                typed.or_else(|| Some((missing, self.arg_count_error(&proto, frame, argc))))
-            }
-            Ok(()) => {
-                if let Some((holes, extra)) = named {
-                    bind_named_extra(&proto, frame, holes, extra);
-                }
+            let typed = if proto.params.iter().any(|p| p.type_hint.is_some()) {
                 let scope = frame.defining_class;
                 match self.coerce_stringable_args(&proto, frame, caller, scope) {
                     Err(e) => Some((0, e)),
                     Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
                 }
+            } else {
+                None
+            };
+            match bound {
+                Err(missing) if typed.is_none() => {
+                    Some((missing, self.arg_count_error(&proto, frame, argc)))
+                }
+                _ => typed,
             }
         };
         let Some((idx, err)) = failed else {
@@ -724,6 +727,7 @@ impl Vm {
     /// making (its `send_kinds`): a temporary for a by-reference parameter
     /// throws, a call result that is no reference notices.
     #[cold]
+    #[inline(never)]
     fn check_sends(
         &mut self,
         top: usize,

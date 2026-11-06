@@ -305,6 +305,8 @@ impl Vm {
     /// invoked by a builtin (`caller == None`) has none. Prelude (built-in
     /// PHP-source) functions report like internal ones: no call site.
     #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
     fn arg_type_error(
         &self,
         proto: &FunctionProto,
@@ -343,6 +345,7 @@ impl Vm {
     /// ZEND_RECV_VARIADIC's checks: each collected argument of the typed
     /// variadic parameter `i`, in order (a reference's value is coerced in
     /// place).
+    #[inline(never)]
     fn check_variadic_types(
         &mut self,
         proto: &FunctionProto,

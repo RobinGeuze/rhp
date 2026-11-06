@@ -351,6 +351,18 @@ fn inherit_prop(
     if !from_interface {
         pe.prototype = inh.prototype;
     }
+    let pname = String::from_utf8_lossy(pe.name.as_bytes());
+    let cn = String::from_utf8_lossy(class_name.as_bytes());
+    let cn = cn.split('\0').next().unwrap_or_default();
+    if pe.readonly != inh.readonly && !inh.is_abstract {
+        let word = |r: bool| if r { "readonly" } else { "non-readonly" };
+        return Err(format!(
+            "Cannot redeclare {} property {}::${pname} as {} {cn}::${pname}",
+            word(inh.readonly),
+            cname(classes, inh.declaring_class),
+            word(pe.readonly),
+        ));
+    }
     // The set visibility may not narrow (a get-only virtual parent has
     // none).
     let set_flag = |p: &PropEntry| {
@@ -389,6 +401,14 @@ fn inherit_prop(
             ));
         }
     }
+    if rank(pe.visibility) > rank(inh.visibility) {
+        return Err(access_level_error(
+            cn,
+            &pname,
+            inh.visibility,
+            &cname(classes, inh.declaring_class),
+        ));
+    }
     if !inh.virt {
         // A backed parent keeps the child backed (its slot holds the value).
         pe.virt = false;
@@ -423,6 +443,73 @@ fn inherit_prop(
     }
     pe.hooks = hooks.iter().any(Option::is_some).then(|| Rc::new(hooks));
     Ok(())
+}
+
+/// do_inherit_property's "Access level to C::$p must be ..." error.
+fn access_level_error(class: &str, prop: &str, parent_vis: Visibility, parent: &str) -> String {
+    let (word, tail) = match parent_vis {
+        Visibility::Public => ("public", ""),
+        Visibility::Protected => ("protected", " or weaker"),
+        Visibility::Private => ("private", " or weaker"),
+    };
+    format!("Access level to {class}::${prop} must be {word} (as in class {parent}){tail}")
+}
+
+/// do_inherit_property's static rules for `proto`'s properties against
+/// the parent's: static and non-static may not redeclare each other, and a
+/// static may not narrow its access level.
+fn static_prop_errors(classes: &[ClassEntry], proto: &ClassProto, parent: &ClassEntry) -> Option<String> {
+    let cn = String::from_utf8_lossy(proto.name.as_bytes());
+    let cn = cn.split('\0').next().unwrap_or_default().to_string();
+    let rank = |v: Visibility| match v {
+        Visibility::Public => 0,
+        Visibility::Protected => 1,
+        Visibility::Private => 2,
+    };
+    let redeclare = |pstatic: bool, pcls: ClassId, name: &[u8]| {
+        let word = |s: bool| if s { "static " } else { "non static " };
+        let n = String::from_utf8_lossy(name);
+        format!(
+            "Cannot redeclare {}{}::${n} as {}{cn}::${n}",
+            word(pstatic),
+            cname(classes, pcls),
+            word(!pstatic)
+        )
+    };
+    for pp in &proto.props {
+        if let Some(ps) = parent
+            .static_props
+            .get(pp.name.as_bytes())
+            .filter(|ps| ps.visibility != Visibility::Private)
+        {
+            return Some(redeclare(true, ps.declaring_class, pp.name.as_bytes()));
+        }
+    }
+    for sp in &proto.static_props {
+        let inst = parent
+            .prop_visible
+            .get(&sp.name)
+            .and_then(|k| parent.props.get(k))
+            .filter(|p| p.visibility != Visibility::Private);
+        if let Some(p) = inst {
+            return Some(redeclare(false, p.declaring_class, sp.name.as_bytes()));
+        }
+        if let Some(ps) = parent
+            .static_props
+            .get(sp.name.as_bytes())
+            .filter(|ps| ps.visibility != Visibility::Private)
+        {
+            if rank(sp.visibility) > rank(ps.visibility) {
+                return Some(access_level_error(
+                    &cn,
+                    &String::from_utf8_lossy(sp.name.as_bytes()),
+                    ps.visibility,
+                    &cname(classes, ps.declaring_class),
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// php's zend_verify_hooked_property for the class's own hooked
@@ -1299,7 +1386,8 @@ impl Vm {
                 props.insert(key, pe);
                 Ok(())
             };
-        let mut link_err: Option<String> = None;
+        let mut link_err: Option<String> =
+            parent.and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),

@@ -18,6 +18,10 @@ chdir("$base/in");
 set_include_path(".");
 
 set_error_handler(function ($no, $msg) use ($base) {
+    // libxml2's own wording of a failed load changed in 2.13 (Ubuntu's is newer).
+    if (preg_match('/^(\S+\(\): I\/O warning : failed to load)/', $msg, $m)) {
+        $msg = $m[1] . ' ...';
+    }
     echo str_replace($base, 'BASE', $msg), "\n";
     return true;
 });

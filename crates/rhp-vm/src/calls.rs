@@ -653,6 +653,9 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
+                if !self.stack[top].proto.send_kinds.is_empty() {
+                    self.check_sends(top, &proto, frame.defining_class, base)?;
+                }
                 self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
                 // The window's temporaries move into the callee (php moves
                 // arguments into the callee's frame, so they die with it).
@@ -678,7 +681,16 @@ impl Vm {
         };
         let failed = match bound {
             _ if count_error.is_some() => count_error.map(|e| (0, e)),
-            Err(missing) => Some((missing, self.arg_count_error(&proto, frame, argc))),
+            // php's RECV checks the passed arguments' types in order before
+            // the first missing one raises the count error.
+            Err(missing) => {
+                let scope = frame.defining_class;
+                let typed = match self.coerce_stringable_args(&proto, frame, caller, scope) {
+                    Err(e) => Some((0, e)),
+                    Ok(()) => self.check_arg_types(&proto, frame, caller, scope).err(),
+                };
+                typed.or_else(|| Some((missing, self.arg_count_error(&proto, frame, argc))))
+            }
             Ok(()) => {
                 if let Some((holes, extra)) = named {
                     bind_named_extra(&proto, frame, holes, extra);
@@ -706,6 +718,55 @@ impl Vm {
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
+    }
+
+    /// php's SEND_VAL_EX / SEND_VAR_NO_REF_EX for the call frame `top` is
+    /// making (its `send_kinds`): a temporary for a by-reference parameter
+    /// throws, a call result that is no reference notices.
+    #[cold]
+    fn check_sends(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        scope: Option<ClassId>,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let caller = self.stack[top].proto.clone();
+        let pc = self.stack[top].pc as u32 - 1;
+        let start = caller.send_kinds.partition_point(|e| e.0 < pc);
+        for &(at, idx, kind) in &caller.send_kinds[start..] {
+            if at != pc {
+                break;
+            }
+            if !param_is_ref(proto, idx)
+                || matches!(self.stack[top].regs[(base + idx) as usize], Value::Ref(_))
+            {
+                continue;
+            }
+            if kind == rhp_bytecode::SEND_VAR {
+                self.diag(
+                    builtins::E_NOTICE,
+                    "Only variables should be passed by reference",
+                )?;
+                continue;
+            }
+            let label = match proto.params.get(idx as usize) {
+                Some(p) if !p.variadic => format!(
+                    " (${})",
+                    String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                ),
+                _ => String::new(),
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "{}(): Argument #{}{label} could not be passed by reference",
+                    self.func_c_name(proto, scope),
+                    idx + 1
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a

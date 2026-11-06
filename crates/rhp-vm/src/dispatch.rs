@@ -1485,6 +1485,11 @@ impl Vm {
                     return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
+                    if let Value::Ref(rc) = &self.stack[top].regs[src as usize] {
+                        let v = Value::Ref(rc.clone());
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let v = self.reg_r(top, src)?;
                     self.diag(
                         builtins::E_NOTICE,
@@ -1921,7 +1926,12 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::PassArg { dst, src } => {
-                    let v = self.stack[top].regs[src as usize].clone();
+                    // the temporary moves into the window
+                    let v = if src >= proto.num_cvs {
+                        std::mem::replace(&mut self.stack[top].regs[src as usize], Value::Null)
+                    } else {
+                        self.stack[top].regs[src as usize].clone()
+                    };
                     self.reg_set(top, dst, v);
                 }
                 Instr::StaticArgIsRef {
@@ -2056,6 +2066,30 @@ impl Vm {
                     }
                     self.stack[top].regs[dst_cv as usize] = v;
                     self.sync_global_cv(top, dst_cv);
+                }
+                Instr::FetchListW { dst, src, key } => {
+                    let k = self.reg_r(top, key)?;
+                    let v = match self.stack[top].regs[src as usize].clone() {
+                        Value::Ref(rc) => {
+                            self.cursor_root = CursorRoot::Cell(rc);
+                            self.cursor_global = None;
+                            self.cursor_steps.clear();
+                            self.rw_null_keys = 0;
+                            self.cursor_null_key = matches!(k, Value::Null);
+                            let cell = self.cursor_make_ref(top, &[CursorStep::Key(k)]);
+                            self.cursor_release();
+                            Value::Ref(cell?)
+                        }
+                        v => {
+                            self.diag(
+                                builtins::E_NOTICE,
+                                "Attempting to set reference to non referenceable value",
+                            )?;
+                            let r = self.dim_read(&deref(&v), &k, DimMode::List)?;
+                            Value::Ref(Rc::new(RefCell::new(r)))
+                        }
+                    };
+                    self.reg_set(top, dst, v);
                 }
                 Instr::RefFuncResult { src } => {
                     if !matches!(self.stack[top].regs[src as usize], Value::Ref(_)) {
@@ -3384,6 +3418,21 @@ impl Vm {
             if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
                 let n = n.as_bytes();
                 let n = n.strip_prefix(b"\\").unwrap_or(n);
+                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                    let callee = self.functions[i].clone();
+                    if !callee.proto.is_internal() {
+                        self.enter_user_call(top, callee, dst, base, argc)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        // A user function's name: a direct call (by-reference parameters
+        // and return).
+        if let Value::Str(s) = &c {
+            let n = s.as_bytes();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if !n.contains(&b':') {
                 if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
                     let callee = self.functions[i].clone();
                     if !callee.proto.is_internal() {

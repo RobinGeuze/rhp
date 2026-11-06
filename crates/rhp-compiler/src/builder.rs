@@ -53,6 +53,11 @@ pub(crate) struct ProtoBuilder<'c> {
     /// See [`FunctionProto::const_attrs`] / [`FunctionProto::discard_calls`].
     pub(crate) const_attrs: Vec<Rc<Vec<rhp_bytecode::AttributeProto>>>,
     pub(crate) discard_calls: Vec<rhp_bytecode::Pc>,
+    /// See [`FunctionProto::send_kinds`].
+    pub(crate) send_kinds: Vec<(rhp_bytecode::Pc, u16, u8)>,
+    /// Send kinds of an argument window not yet followed by its call:
+    /// `(window base, [(argument index, SEND_*)])`.
+    pub(crate) pending_sends: Option<(Reg, Vec<(u16, u8)>)>,
     /// The function call about to be compiled is an expression statement.
     pub(crate) call_result_unused: bool,
     /// Temporaries below this are protected from `reset_temps` (e.g. a `switch`
@@ -146,6 +151,8 @@ impl<'c> ProtoBuilder<'c> {
             result_unused: false,
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            send_kinds: Vec::new(),
+            pending_sends: None,
             call_result_unused: false,
             temp_floor: 0,
             loops: Vec::new(),
@@ -252,6 +259,8 @@ impl<'c> ProtoBuilder<'c> {
         proto.const_attrs = self.const_attrs;
         proto.discard_calls = self.discard_calls;
         proto.discard_calls.shrink_to_fit();
+        proto.send_kinds = self.send_kinds;
+        proto.send_kinds.shrink_to_fit();
         proto.cv_var_names = self
             .cv_map
             .iter()
@@ -311,7 +320,32 @@ impl<'c> ProtoBuilder<'c> {
         if self.lines.last().map(|(_, l)| *l) != Some(line) {
             self.lines.push((self.code.len() as rhp_bytecode::Pc, line));
         }
+        if self.pending_sends.is_some() {
+            self.attach_sends(&instr);
+        }
         self.code.push(instr);
+    }
+
+    /// The call that consumes the pending argument window gets its send
+    /// kinds.
+    fn attach_sends(&mut self, instr: &Instr) {
+        let base = match *instr {
+            Instr::Call { base, .. }
+            | Instr::CallDyn { base, .. }
+            | Instr::CallMethod { base, .. }
+            | Instr::CallMethodDyn { base, .. }
+            | Instr::CallStatic { base, .. }
+            | Instr::CallStaticDyn { base, .. }
+            | Instr::CallParentHook { base, .. }
+            | Instr::New { base, .. } => base,
+            _ => return,
+        };
+        if self.pending_sends.as_ref().is_some_and(|(b, _)| *b == base) {
+            let (_, kinds) = self.pending_sends.take().expect("checked");
+            let pc = self.code.len() as rhp_bytecode::Pc;
+            self.send_kinds
+                .extend(kinds.into_iter().map(|(i, k)| (pc, i, k)));
+        }
     }
 
     pub(crate) fn alloc_temp(&mut self) -> Reg {

@@ -205,16 +205,21 @@ impl Vm {
         let strict = caller.unwrap_or(false);
         for (i, p) in proto.params.iter().enumerate() {
             let Some(ty) = &p.type_hint else { continue };
-            // by-ref / variadic params aren't coerced here; a defaulted (not
-            // passed) param is trusted.
-            if p.by_ref
-                || p.variadic
-                || i >= frame.argc
-                || (i < 64 && frame.holes & (1u64 << i) != 0)
-            {
+            if p.variadic {
+                self.check_variadic_types(proto, frame, i, caller, ctx)
+                    .map_err(|t| (i, t))?;
                 continue;
             }
-            let cur = frame.regs[p.cv as usize].clone();
+            // A defaulted (not passed) param is trusted.
+            if i >= frame.argc || (i < 64 && frame.holes & (1u64 << i) != 0) {
+                continue;
+            }
+            // A by-reference parameter is checked on the referenced value,
+            // which keeps a coerced one.
+            let cur = match &frame.regs[p.cv as usize] {
+                Value::Ref(rc) if p.by_ref => rc.borrow().clone(),
+                v => v.clone(),
+            };
             // zend_check_type_slow's zend_is_callable runs in the callee's
             // frame (its scope and `$this`), deprecations included.
             let callable = ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
@@ -252,7 +257,10 @@ impl Vm {
                     if let Err(t) = self.coercion_diag_at(&cur, &coerced, at) {
                         return Err((i, t));
                     }
-                    frame.regs[p.cv as usize] = coerced
+                    match &frame.regs[p.cv as usize] {
+                        Value::Ref(rc) if p.by_ref => *rc.borrow_mut() = coerced,
+                        _ => frame.regs[p.cv as usize] = coerced,
+                    }
                 }
                 // A prelude (built-in) function takes null for a scalar
                 // parameter like an internal one in coercive mode: deprecated,
@@ -277,39 +285,108 @@ impl Vm {
                     frame.regs[p.cv as usize] = zero;
                 }
                 Err(()) => {
-                    let fname = self.func_c_name(proto, ctx);
-                    let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
-                        .into_owned();
-                    // php appends the call site when the caller is user code (the
-                    // new frame has not been pushed yet: the caller is the top);
-                    // a callback invoked by a builtin (`caller == None`) has none.
-                    // Prelude (built-in PHP-source) functions report like
-                    // internal ones: no call site.
-                    let site = caller
-                        .filter(|_| !proto.is_internal())
-                        .and_then(|_| self.user_call_site())
-                        .map(|(file, line)| {
-                            format!(
-                                ", called in {} on line {}",
-                                String::from_utf8_lossy(&file),
-                                line
-                            )
-                        });
+                    let label = format!(
+                        " (${})",
+                        String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+                    );
                     return Err((
                         i,
-                        Thrown::error(
-                            "TypeError",
-                            format!(
-                                "{}(): Argument #{} (${}) must be of type {}, {} given{}",
-                                fname,
-                                i + 1,
-                                pname,
-                                self.type_string_resolved(ty, ctx, frame.called_class),
-                                rhp_builtins::zval_value_name(self, &deref(&cur)),
-                                site.unwrap_or_default(),
-                            ),
-                        ),
+                        self.arg_type_error(proto, frame, i, &label, &cur, caller, ctx),
                     ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// zend_verify_arg_error: "f(): Argument #N ($x) must be of type T, U
+    /// given". php appends the call site when the caller is user code (the
+    /// new frame has not been pushed yet: the caller is the top); a callback
+    /// invoked by a builtin (`caller == None`) has none. Prelude (built-in
+    /// PHP-source) functions report like internal ones: no call site.
+    #[allow(clippy::too_many_arguments)]
+    fn arg_type_error(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        i: usize,
+        label: &str,
+        cur: &Value,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Thrown {
+        let p = &proto.params[i.min(proto.params.len() - 1)];
+        let ty = p.type_hint.as_ref().expect("typed parameter");
+        let site = caller
+            .filter(|_| !proto.is_internal())
+            .and_then(|_| self.user_call_site())
+            .map(|(file, line)| {
+                format!(
+                    ", called in {} on line {}",
+                    String::from_utf8_lossy(&file),
+                    line
+                )
+            });
+        Thrown::error(
+            "TypeError",
+            format!(
+                "{}(): Argument #{}{label} must be of type {}, {} given{}",
+                self.func_c_name(proto, ctx),
+                i + 1,
+                self.type_string_resolved(ty, ctx, frame.called_class),
+                rhp_builtins::zval_value_name(self, &deref(cur)),
+                site.unwrap_or_default(),
+            ),
+        )
+    }
+
+    /// ZEND_RECV_VARIADIC's checks: each collected argument of the typed
+    /// variadic parameter `i`, in order (a reference's value is coerced in
+    /// place).
+    fn check_variadic_types(
+        &mut self,
+        proto: &FunctionProto,
+        frame: &mut Frame,
+        i: usize,
+        caller: Option<bool>,
+        ctx: Option<ClassId>,
+    ) -> Result<(), Thrown> {
+        let p = &proto.params[i];
+        let Some(ty) = &p.type_hint else {
+            return Ok(());
+        };
+        let Value::Array(arr) = &frame.regs[p.cv as usize] else {
+            return Ok(());
+        };
+        let strict = caller.unwrap_or(false);
+        let items: Vec<(ArrayKey, Value)> =
+            arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (n, (k, v)) in items.into_iter().enumerate() {
+            let cur = deref(&v);
+            match self.check_one(&cur, ty, strict, ctx) {
+                Ok(None) => {}
+                Ok(Some(coerced)) => {
+                    let at = || {
+                        (!proto.is_internal())
+                            .then(|| (proto.debug.file.as_bytes().to_vec(), p.line as i64))
+                    };
+                    self.coercion_diag_at(&cur, &coerced, at)?;
+                    match &v {
+                        Value::Ref(rc) => *rc.borrow_mut() = coerced,
+                        _ => {
+                            if let Value::Array(a) = &mut frame.regs[p.cv as usize] {
+                                a.insert(k, coerced);
+                            }
+                        }
+                    }
+                }
+                Err(()) => {
+                    // A named extra argument is labelled by its name.
+                    let label = match &k {
+                        ArrayKey::Str(s) => format!(" (${})", String::from_utf8_lossy(s.as_bytes())),
+                        ArrayKey::Int(_) => String::new(),
+                    };
+                    return Err(self.arg_type_error(proto, frame, i + n, &label, &cur, caller, ctx));
                 }
             }
         }

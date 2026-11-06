@@ -751,7 +751,8 @@ pub enum Instr {
         func: Reg,
         idx: u16,
     },
-    /// Copy `src` to `dst` as is: a reference stays a reference.
+    /// Move `src` to `dst` as is (a CV is copied): a reference stays a
+    /// reference.
     PassArg {
         dst: Reg,
         src: Reg,
@@ -1042,6 +1043,15 @@ pub enum Instr {
     RefAssign {
         dst_cv: Reg,
         src: Reg,
+    },
+    /// php's FETCH_LIST_W: element `key` of the container referenced by
+    /// `src`, as a reference (created for writing). When `src` holds no
+    /// reference (a by-value call result): "Attempting to set reference to
+    /// non referenceable value", and the element is read into a new one.
+    FetchListW {
+        dst: Reg,
+        src: Reg,
+        key: Reg,
     },
     /// `=& f()`: when call result `src` is not a reference (the function
     /// returns by value), php's notice "Only variables should be assigned by
@@ -1382,7 +1392,19 @@ pub struct FunctionProto {
     /// zend_do_free), ascending: a `#[\NoDiscard]` callee warns when called
     /// from one.
     pub discard_calls: Vec<Pc>,
+    /// Arguments that are no variable, sent to a callee only known at run
+    /// time, as `(call pc, argument index, SEND_*)`, ascending by pc: php's
+    /// SEND_VAL_EX / SEND_VAR_NO_REF_EX checks, made when such an argument
+    /// meets a by-reference parameter.
+    pub send_kinds: Vec<(Pc, u16, u8)>,
 }
+
+/// `FunctionProto::send_kinds`: a temporary value; a by-reference parameter
+/// throws "could not be passed by reference".
+pub const SEND_VAL: u8 = 0;
+/// `FunctionProto::send_kinds`: a call result (or `new`); a value that is no
+/// reference notices "Only variables should be passed by reference".
+pub const SEND_VAR: u8 = 1;
 
 impl FunctionProto {
     /// Built-in (prelude) code: see [`ProtoFlags::INTERNAL`].
@@ -1425,6 +1447,7 @@ impl FunctionProto {
             flags: ProtoFlags::default(),
             const_attrs: Vec::new(),
             discard_calls: Vec::new(),
+            send_kinds: Vec::new(),
         }
     }
 }

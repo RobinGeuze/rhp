@@ -80,6 +80,32 @@ fn next_int_high_water() {
     assert_eq!(keys, vec![ArrayKey::Int(-5), ArrayKey::Int(-4)]);
 }
 
+#[test]
+fn append_after_int_max_fails() {
+    let mut a = PhpArray::new();
+    a.insert(ArrayKey::Int(i64::MAX), Value::Int(1));
+    assert!(!a.try_push(Value::Int(2)));
+    assert_eq!(a.len(), 1);
+    // Freed again: php appends at PHP_INT_MAX.
+    a.remove(&ArrayKey::Int(i64::MAX));
+    assert!(a.try_push(Value::Int(3)));
+    assert!(a.get(&ArrayKey::Int(i64::MAX)).is_some());
+}
+
+#[test]
+fn removal_keeps_internal_pointer_on_element() {
+    let mut a: PhpArray = (0..4).map(|i| (ArrayKey::Int(i), Value::Int(i))).collect();
+    a.make_mut().pos = 2;
+    a.remove(&ArrayKey::Int(0));
+    assert_eq!(a.make_mut().pos, 1);
+    // The current element removed: the pointer is on the next one.
+    a.remove(&ArrayKey::Int(2));
+    assert_eq!(
+        a.get_index(a.clone().make_mut().pos).unwrap().0,
+        &ArrayKey::Int(3)
+    );
+}
+
 struct Native(Rc<std::cell::Cell<u32>>);
 impl Drop for Native {
     fn drop(&mut self) {

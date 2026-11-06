@@ -637,7 +637,9 @@ impl Vm {
                 Instr::ArrPush { arr, val } => {
                     let v = self.elem_operand(top, &proto, val);
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
-                        a.push(v);
+                        if !a.try_push(v) {
+                            return Err(crate::lvalue::cannot_add_element());
+                        }
                     }
                 }
                 Instr::ArrSet { arr, key, val } => {
@@ -651,7 +653,9 @@ impl Vm {
                 Instr::ArrPushRef { arr, val } => {
                     let v = self.stack[top].regs[val as usize].clone();
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
-                        a.push(v);
+                        if !a.try_push(v) {
+                            return Err(crate::lvalue::cannot_add_element());
+                        }
                     }
                 }
                 Instr::ArrSetRef { arr, key, val } => {
@@ -667,7 +671,11 @@ impl Vm {
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         for (k, iv) in entries {
                             match k {
-                                ArrayKey::Int(_) => a.push(iv),
+                                ArrayKey::Int(_) => {
+                                    if !a.try_push(iv) {
+                                        return Err(crate::lvalue::cannot_add_element());
+                                    }
+                                }
                                 ArrayKey::Str(_) => a.insert(k, iv),
                             }
                         }

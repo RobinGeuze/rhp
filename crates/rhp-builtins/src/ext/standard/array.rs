@@ -40,6 +40,14 @@ fn key_intstr(v: &Value) -> Option<ArrayKey> {
     }
 }
 
+/// zend_hash_next_index_insert failing: the next key is PHP_INT_MAX and taken.
+fn cannot_add_element() -> Thrown {
+    Thrown::error(
+        "Error",
+        "Cannot add element to the array as the next element is already occupied",
+    )
+}
+
 // ---------------------------------------------------------------------------
 // array_slice
 // ---------------------------------------------------------------------------
@@ -134,6 +142,9 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "ValueError",
             "array_fill(): Argument #2 ($count) is too large",
         ));
+    }
+    if count > 0 && start > i64::MAX - count + 1 {
+        return Err(cannot_add_element());
     }
     // php sizes the array up front, fallibly: packed when the keys start in
     // 0..count, else a hash.
@@ -2675,14 +2686,30 @@ pub(crate) fn object_freed(id: u32) {
 }
 
 /// The table php's Z_OBJPROP gives the internal-pointer functions: the
-/// property table by mangled name (an ArrayObject's storage is not in it).
-fn object_table(host: &mut dyn Host, h: &rhp_values::ObjectHandle) -> Vec<(Value, Value)> {
+/// property table by mangled name (an ArrayObject's storage is not in it),
+/// with `None` for the slot of an uninitialized typed property.
+fn object_table(host: &mut dyn Host, h: &rhp_values::ObjectHandle) -> Vec<(Value, Option<Value>)> {
+    let mut uninit = host.uninit_props(h).into_iter().peekable();
     let b = h.borrow();
-    b.properties
-        .iter()
-        .filter(|(k, _)| !host.is_internal_slot(b.class, k))
-        .map(|(k, v)| (Value::Str(host.mangled_prop_name(b.class, k)), deref(v)))
-        .collect()
+    let mut out = Vec::new();
+    let mut seen = 0usize;
+    for (k, v) in b.properties.iter() {
+        if host.is_internal_slot(b.class, k) {
+            continue;
+        }
+        while let Some((name, _, _)) = uninit.next_if(|u| u.2 == seen) {
+            out.push((Value::Str(name), None));
+        }
+        out.push((
+            Value::Str(host.mangled_prop_name(b.class, k)),
+            Some(deref(v)),
+        ));
+        seen += 1;
+    }
+    for (name, _, _) in uninit {
+        out.push((Value::Str(name), None));
+    }
+    out
 }
 
 /// Which internal-pointer operation to run.
@@ -2696,25 +2723,39 @@ enum PtrOp {
     Key,
 }
 
-/// An internal-pointer function on an object's property table.
+/// An internal-pointer function on an object's property table
+/// (php_array_iter_seek_current: an uninitialized slot is skipped in the
+/// direction of travel, moving the pointer).
 fn object_ptr(host: &mut dyn Host, h: &rhp_values::ObjectHandle, op: PtrOp) -> Value {
     let table = object_table(host, h);
+    let n = table.len();
     let id = h.borrow().id;
-    let pos = OBJECT_POS.with(|m| m.borrow().get(&id).copied().unwrap_or(0));
-    let pos = match op {
-        PtrOp::Reset => 0,
-        PtrOp::End => table.len().saturating_sub(1),
-        PtrOp::Next => pos.saturating_add(1),
-        PtrOp::Prev if pos == 0 || pos == usize::MAX => usize::MAX,
-        PtrOp::Prev => pos - 1,
-        PtrOp::Current | PtrOp::Key => pos,
-    };
+    let mut pos = OBJECT_POS
+        .with(|m| m.borrow().get(&id).copied().unwrap_or(0))
+        .min(n);
+    let moves = matches!(op, PtrOp::Reset | PtrOp::End | PtrOp::Next | PtrOp::Prev);
+    if moves && n == 0 {
+        return Value::Bool(false);
+    }
+    // zend_hash_move_backwards: from the first slot to past the end.
+    let back = |p: usize| if p == 0 || p >= n { n } else { p - 1 };
+    match op {
+        PtrOp::Reset => pos = 0,
+        PtrOp::End => pos = n - 1,
+        PtrOp::Next => pos = (pos + 1).min(n),
+        PtrOp::Prev => pos = back(pos),
+        PtrOp::Current | PtrOp::Key => {}
+    }
+    let forward = !matches!(op, PtrOp::End | PtrOp::Prev);
+    while pos < n && table[pos].1.is_none() {
+        pos = if forward { pos + 1 } else { back(pos) };
+    }
     OBJECT_POS.with(|m| m.borrow_mut().insert(id, pos));
     match (op, table.get(pos)) {
         (PtrOp::Key, Some((k, _))) => k.clone(),
         (PtrOp::Key, None) => Value::Null,
-        (_, Some((_, v))) => v.clone(),
-        (_, None) => Value::Bool(false),
+        (_, Some((_, Some(v)))) => v.clone(),
+        (_, _) => Value::Bool(false),
     }
 }
 
@@ -2757,7 +2798,8 @@ fn fn_next(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(object_ptr(host, &h, PtrOp::Next));
     }
     Ok(with_array_data(&args[0], |d| {
-        d.pos = d.pos.saturating_add(1);
+        // php stops at the end (nNumUsed), so a later append is current.
+        d.pos = d.pos.saturating_add(1).min(d.entries.len());
         elem_at(d, d.pos)
     })
     .unwrap_or(Value::Bool(false)))
@@ -2768,8 +2810,9 @@ fn fn_prev(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(object_ptr(host, &h, PtrOp::Prev));
     }
     Ok(with_array_data(&args[0], |d| {
-        if d.pos == 0 {
-            d.pos = usize::MAX; // past-begin
+        if d.pos == 0 || d.pos >= d.entries.len() {
+            // Before the first element php's pointer is past the end too.
+            d.pos = d.entries.len();
             Value::Bool(false)
         } else {
             d.pos -= 1;
@@ -2803,74 +2846,106 @@ fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Value::Ref(rc) = &args[0] else {
         return Ok(Value::Bool(false));
     };
+    let vals: Vec<Value> = args[1..].iter().map(deref).collect();
     let mut g = rc.borrow_mut();
     let Value::Array(a) = &mut *g else {
         return Ok(Value::Bool(false));
     };
-    for v in &args[1..] {
-        a.push(deref(v).clone());
+    for v in vals {
+        if !a.try_push(v) {
+            return Err(cannot_add_element());
+        }
     }
     Ok(Value::Int(a.len() as i64))
 }
 
-fn fn_array_pop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else {
-        return Ok(Value::Null);
+/// Remove the first or last element of the by-reference array in place
+/// (other elements keep their references), then run `fix` on what is left.
+/// The removed value is dereferenced only afterwards, as php unwraps the
+/// returned reference last (it may be the array itself).
+fn take_end(
+    arg: &Value,
+    first: bool,
+    fix: impl FnOnce(&mut rhp_values::ArrayData, &ArrayKey),
+) -> Value {
+    let Value::Ref(rc) = arg else {
+        return Value::Null;
     };
-    if pairs.is_empty() {
-        return Ok(Value::Null);
-    }
-    let mut pairs = pairs;
-    let (_, removed) = pairs.pop().unwrap();
-    // Surviving keys are preserved (no reindex); `from_pairs` recomputes the
-    // next free integer index, matching PHP's post-pop append behaviour.
-    store(&args[0], from_pairs(pairs));
-    Ok(removed)
+    let removed = {
+        let mut g = rc.borrow_mut();
+        let Value::Array(a) = &mut *g else {
+            return Value::Null;
+        };
+        if a.is_empty() {
+            return Value::Null;
+        }
+        let d = a.make_mut();
+        let i = if first { 0 } else { d.entries.len() - 1 };
+        let (k, v) = d.remove_index(i).expect("non-empty");
+        fix(d, &k);
+        d.pos = 0;
+        v
+    };
+    deref(&removed)
+}
+
+fn fn_array_pop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(take_end(&args[0], false, |d, k| {
+        if let ArrayKey::Int(h) = *k {
+            if d.next_free().checked_sub(1) == Some(h) {
+                d.set_next_free(h);
+            }
+        }
+    }))
 }
 
 fn fn_array_shift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else {
-        return Ok(Value::Null);
-    };
-    if pairs.is_empty() {
-        return Ok(Value::Null);
-    }
-    let mut it = pairs.into_iter();
-    let (_, removed) = it.next().unwrap();
-    store(&args[0], rebuild_reindex_ints(it));
-    Ok(removed)
+    Ok(take_end(&args[0], true, |d, _| {
+        let old = std::mem::take(&mut d.entries);
+        let mut k = 0i64;
+        for (key, v) in old {
+            match key {
+                ArrayKey::Int(_) => {
+                    d.entries.insert(ArrayKey::Int(k), v);
+                    k += 1;
+                }
+                s => {
+                    d.entries.insert(s, v);
+                }
+            }
+        }
+        d.set_next_free(k);
+    }))
 }
 
 fn fn_array_unshift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let Some(pairs) = snapshot(&args[0]) else {
+    let Value::Ref(rc) = &args[0] else {
         return Ok(Value::Bool(false));
     };
+    let vals: Vec<Value> = args[1..].iter().map(deref).collect();
+    let mut g = rc.borrow_mut();
+    let Value::Array(a) = &mut *g else {
+        return Ok(Value::Bool(false));
+    };
+    let argc = vals.len();
+    let d = a.make_mut();
+    let old = std::mem::take(&mut d.entries);
     let mut out = PhpArray::new();
-    for v in &args[1..] {
-        out.push(deref(v).clone());
+    for v in vals {
+        out.push(v);
     }
-    for (k, v) in pairs {
+    for (k, v) in old {
         match k {
             ArrayKey::Int(_) => out.push(v),
             s => out.insert(s, v),
         }
     }
-    let len = out.len() as i64;
-    store(&args[0], out);
-    Ok(Value::Int(len))
-}
-
-/// Rebuild from `pairs`, renumbering integer keys from 0 while preserving
-/// string keys (the reindexing `array_shift`/`array_unshift` perform).
-fn rebuild_reindex_ints(pairs: impl Iterator<Item = (ArrayKey, Value)>) -> PhpArray {
-    let mut out = PhpArray::new();
-    for (k, v) in pairs {
-        match k {
-            ArrayKey::Int(_) => out.push(v),
-            s => out.insert(s, v),
-        }
-    }
-    out
+    let nd = out.make_mut();
+    d.entries = std::mem::take(&mut nd.entries);
+    d.set_next_free(nd.next_free());
+    d.iters_advance(argc);
+    d.pos = 0;
+    Ok(Value::Int(d.entries.len() as i64))
 }
 
 /// `array_splice(&$array, $offset, $length?, $replacement?)`: remove a slice

@@ -1758,10 +1758,18 @@ fn assign_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     assign_path(child, rest, value, cx)
+}
+
+/// zend_cannot_add_element: an append past PHP_INT_MAX.
+pub(crate) fn cannot_add_element() -> Thrown {
+    Thrown::error(
+        "Error",
+        "Cannot add element to the array as the next element is already occupied",
+    )
 }
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
@@ -1859,7 +1867,7 @@ fn make_ref_path(
     };
     let child = match head {
         CursorStep::Key(k) => arr.get_or_insert_mut(write_key_of(k, cx)?),
-        CursorStep::Append => arr.append_mut(),
+        CursorStep::Append => arr.append_mut().ok_or_else(cannot_add_element)?,
         CursorStep::Prop(_) => unreachable!("handled above"),
     };
     make_ref_path(child, rest, cx)

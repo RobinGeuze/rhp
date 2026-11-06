@@ -2581,7 +2581,15 @@ fn sort_by_ref(
         out.make_mut().set_next_free(next_free);
     }
     drop(arr);
-    *rc.borrow_mut() = Value::Array(out);
+    let mut g = rc.borrow_mut();
+    // An array_walk over it goes on from the same position (zend_hash_sort
+    // keeps iterator positions; php_usort's zend_array_dup copies them).
+    if let Value::Array(old) = &mut *g {
+        if old.has_iters() {
+            old.make_mut().move_iters_to(out.make_mut());
+        }
+    }
+    *g = Value::Array(out);
     true
 }
 
@@ -3348,23 +3356,55 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     for (k, v) in it {
         add(&mut out, k, v);
     }
+    // HashTable iterators (array_walk) stay on the table, moved the way
+    // php_splice moves them.
+    let mut iter_moves = arr.iters();
+    if !iter_moves.is_empty() {
+        let packed = arr
+            .iter()
+            .try_fold(-1i64, |prev, (k, _)| match k {
+                ArrayKey::Int(n) if *n > prev => Some(*n),
+                _ => None,
+            })
+            .is_some();
+        let cut = removed.len() + dropped.len();
+        splice_iterators(
+            &mut iter_moves,
+            arr.len(),
+            offset as usize,
+            cut,
+            length,
+            out.len() + cut - arr.len(),
+            packed,
+            !unused,
+        );
+    }
     let ptr = arr.data_ptr();
     let mut expect_len = arr.len();
     drop(arr);
     let same = |v: &Value, len: usize| matches!(v, Value::Array(a) if a.data_ptr() == ptr && a.len() == len);
+    // php holds an extra reference to the table while destructors run
+    // (GC_ADDREF), so any write by a destructor separates the variable;
+    // `held` is that reference. Once the variable has moved on, the rest
+    // are still destroyed from the old table.
+    let mut held: Option<PhpArray> = None;
     let mut modified = false;
     for k in dropped {
         let v = {
             let mut g = rc.borrow_mut();
-            if !same(&g, expect_len) {
+            if !modified && same(&g, expect_len) {
+                let Value::Array(a) = &mut *g else {
+                    unreachable!()
+                };
+                drop(held.take());
+                expect_len -= 1;
+                let v = a.remove(&k);
+                held = Some(a.clone());
+                v
+            } else {
                 modified = true;
-                break;
+                held.as_mut().and_then(|h| h.remove(&k))
             }
-            let Value::Array(a) = &mut *g else {
-                unreachable!()
-            };
-            expect_len -= 1;
-            a.remove(&k)
         };
         drop(v);
         host.run_released_destructors()?;
@@ -3375,8 +3415,92 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             "Array was modified during array_splice operation",
         ));
     }
+    if !iter_moves.is_empty() {
+        let d = out.make_mut();
+        for (id, p) in iter_moves {
+            d.iter_add(id, p);
+        }
+    }
     *rc.borrow_mut() = Value::Array(out);
     Ok(Value::Array(removed))
+}
+
+/// php_splice's HashTable iterator updates, on positions (an rhp table has
+/// no holes, so a bucket index is the position). `n` elements, `cut`
+/// removed at `off`, `repl` inserted; `length` is php's clamped length.
+/// Deleting the last element shrinks the used part and clamps iterators
+/// to it.
+/// The packed loop also moves one met in the removed part to
+/// `offset + length`; the rest moves each iterator met to its output
+/// position, where it can be met again (php's loop does the same).
+#[allow(clippy::too_many_arguments)]
+fn splice_iterators(
+    iters: &mut [(u32, usize)],
+    n: usize,
+    off: usize,
+    cut: usize,
+    length: i64,
+    repl: usize,
+    packed: bool,
+    used: bool,
+) {
+    // zend_hash_iterators_lower_pos: the lowest position >= start, else
+    // the used size.
+    let lower = |its: &[(u32, usize)], start: usize, num_used: usize| {
+        its.iter()
+            .map(|e| e.1)
+            .filter(|&p| p >= start && p < num_used)
+            .min()
+            .unwrap_or(num_used)
+    };
+    let update = |its: &mut [(u32, usize)], from: usize, to: usize| {
+        for e in its.iter_mut() {
+            if e.1 == from {
+                e.1 = to;
+            }
+        }
+    };
+    let mut num_used = n;
+    let mut iter_pos = lower(iters, 0, num_used);
+    let (mut pos, mut idx) = (0usize, 0usize);
+    while idx < off {
+        if idx == iter_pos {
+            iter_pos = lower(iters, iter_pos + 1, num_used);
+        }
+        pos += 1;
+        idx += 1;
+    }
+    while idx < off + cut && idx < num_used {
+        if used {
+            pos += 1;
+        }
+        if idx + 1 == num_used {
+            // Everything from `off` on is deleted now.
+            num_used = off;
+            for e in iters.iter_mut() {
+                e.1 = e.1.min(num_used);
+            }
+        }
+        if packed && idx == iter_pos {
+            update(iters, idx, (off as i64 + length) as usize);
+            iter_pos = lower(iters, iter_pos + 1, num_used);
+        }
+        idx += 1;
+    }
+    if !packed {
+        iter_pos = lower(iters, iter_pos, num_used);
+    }
+    pos += repl;
+    while idx < num_used {
+        if idx == iter_pos {
+            if idx != pos {
+                update(iters, idx, pos);
+            }
+            iter_pos = lower(iters, iter_pos + 1, num_used);
+        }
+        pos += 1;
+        idx += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------

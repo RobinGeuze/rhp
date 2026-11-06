@@ -278,7 +278,8 @@ leaves the pointer on the next one, and the past-the-end position
 `array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
 is copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked
-from its internal pointer.
+from its internal pointer. The sorts keep iterator positions, and
+`array_splice` moves them the way `php_splice` does (`splice_iterators`).
 
 ## 4. Reference semantics (PHP `&`)
 

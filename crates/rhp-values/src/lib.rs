@@ -787,6 +787,12 @@ impl ArrayData {
         }
     }
 
+    /// Hand this array's iterators to `to`, positions unchanged (a table
+    /// rebuilt in place, as zend_hash_sort and php_splice do).
+    pub fn move_iters_to(&mut self, to: &mut ArrayData) {
+        to.iters = self.iters.take();
+    }
+
     /// Drop iterator `id` (zend_hash_iterator_del).
     pub fn iter_del(&mut self, id: u32) {
         if let Some(it) = &mut self.iters {
@@ -817,6 +823,16 @@ impl PhpArray {
 
     pub fn len(&self) -> usize {
         self.0.entries.len()
+    }
+
+    /// Whether HashTable iterators are registered on this array.
+    pub fn has_iters(&self) -> bool {
+        self.0.iters.is_some()
+    }
+
+    /// The registered HashTable iterators: (id, position).
+    pub fn iters(&self) -> Vec<(u32, usize)> {
+        self.0.iters.as_deref().cloned().unwrap_or_default()
     }
 
     /// php's nNextFreeElement (see [`ArrayData::next_free`]).

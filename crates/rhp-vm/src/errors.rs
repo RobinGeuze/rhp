@@ -179,7 +179,7 @@ impl Vm {
         // C implementation raises none): it only updates error_get_last().
         // (`silence_stack` records the stack depth at each `@`.)
         let prelude_silenced = self.silence > 0
-            && self.silence_stack.last().is_some_and(|&(depth, _)| {
+            && self.silence_stack.last().is_some_and(|&(depth, _, _)| {
                 depth
                     .checked_sub(1)
                     .and_then(|i| self.stack.get(i))
@@ -757,9 +757,16 @@ impl Vm {
         // (its globals are still reachable via `global`, and its objects are
         // destructed only after the shutdown functions).
         self.enter_shutdown_scope();
+        let before = self.exception_handlers.len();
         let r = self.call_callable_value(&handler, vec![arg]);
         self.stack.truncate(1);
-        r.err()
+        match r {
+            Ok(_) => None,
+            // zend_throw_exception_internal with no frame running: a handler
+            // the failed one installed gets the new throwable.
+            Err(t) if self.exception_handlers.len() > before => self.handle_uncaught(t),
+            Err(t) => Some(t),
+        }
     }
 
     /// Write to the SAPI's error stream.
@@ -1005,12 +1012,41 @@ impl Vm {
     /// An exception was caught at frame depth `depth`: end every `@` region
     /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
     fn unsilence_frames(&mut self, depth: usize) {
-        while let Some(&(d, lvl)) = self.silence_stack.last() {
+        while let Some(&(d, _, _)) = self.silence_stack.last() {
             if d < depth {
                 break;
             }
-            self.silence = lvl;
-            self.silence_stack.pop();
+            self.end_silence();
+        }
+    }
+
+    /// ZEND_END_SILENCE: leave the innermost `@`. An error_reporting set
+    /// inside it to fatal types only (such as 0) goes back to the value
+    /// from before; any other value stays.
+    pub(crate) fn end_silence(&mut self) {
+        let Some((_, lvl, saved)) = self.silence_stack.pop() else {
+            return;
+        };
+        self.silence = lvl;
+        if let Some(saved) = saved {
+            let cur = builtins::zend::builtin_functions::error_reporting_level(self);
+            if cur & !SILENCE_KEEPS == 0 && saved & !SILENCE_KEEPS != 0 {
+                builtins::Host::ini_set(self, b"error_reporting", saved.to_string().into_bytes());
+            }
+        }
+    }
+
+    /// error_reporting is about to change: the outermost open `@`
+    /// remembers the value it started with.
+    pub(crate) fn error_reporting_changing(&mut self) {
+        if let Some(e) = self.silence_stack.first_mut() {
+            if e.2.is_none() {
+                let saved = self.silence;
+                self.silence = 0;
+                let cur = builtins::zend::builtin_functions::error_reporting_level(self);
+                self.silence = saved;
+                self.silence_stack[0].2 = Some(cur);
+            }
         }
     }
 

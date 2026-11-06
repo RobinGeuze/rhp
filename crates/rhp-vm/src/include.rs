@@ -321,6 +321,20 @@ impl Vm {
         })
     }
 
+    /// do_bind_function_error's message for redeclaring user function
+    /// `lc` (lowercase) as `name`.
+    pub(crate) fn redeclare_function_msg(&self, lc: &[u8], name: &rhp_values::PhpStr) -> String {
+        let name = String::from_utf8_lossy(name.as_bytes());
+        match self.fn_names.get(lc).map(|&i| &self.functions[i].proto) {
+            Some(old) => format!(
+                "Cannot redeclare function {name}() (previously declared in {}:{})",
+                String::from_utf8_lossy(old.debug.file.as_bytes()),
+                old.meta.start_line
+            ),
+            None => format!("Cannot redeclare function {name}()"),
+        }
+    }
+
     /// The main script as an included file (`get_included_files()`, the
     /// `_once` check): when it is a real file, not `-r` code or a script
     /// read from stdin.
@@ -545,13 +559,12 @@ impl Vm {
                 if preloaded {
                     continue;
                 }
-                return Err(Thrown::error(
-                    "Error",
-                    format!(
-                        "Cannot redeclare function {}()",
-                        String::from_utf8_lossy(proto.name.as_bytes())
-                    ),
-                ));
+                // do_bind_function_error at compile time: E_COMPILE_ERROR at
+                // the new declaration.
+                let msg = self.redeclare_function_msg(&lc, &proto.name);
+                let line = proto.meta.start_line as i64;
+                let file = proto.debug.file.as_bytes().to_vec();
+                return Err(self.fatal_compile_error_at(msg.as_bytes(), file, line));
             }
             let idx = self.functions.len();
             self.functions.push(UnitFn {

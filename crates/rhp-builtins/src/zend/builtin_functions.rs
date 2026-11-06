@@ -928,6 +928,7 @@ fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     let new = crate::zend::zpp::int_or_null_param(host, args, 0, "error_reporting", "error_level")?;
     if let Some(n) = new {
         if n != old {
+            host.error_reporting_changing();
             host.ini_set(b"error_reporting", n.to_string().into_bytes());
         }
     }

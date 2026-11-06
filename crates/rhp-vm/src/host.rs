@@ -117,6 +117,10 @@ impl Host for Vm {
         self.silence > 0
     }
 
+    fn error_reporting_changing(&mut self) {
+        Vm::error_reporting_changing(self);
+    }
+
     fn caller_strict_types(&self) -> bool {
         // The user code calling the builtin: a prelude wrapper is internal.
         self.stack

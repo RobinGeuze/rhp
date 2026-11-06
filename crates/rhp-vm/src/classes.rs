@@ -1869,11 +1869,15 @@ impl Vm {
                 )
             }),
             ClassRef::Dynamic(reg) => {
-                let v = self.reg_get(top, reg);
+                let v = crate::deref(&self.reg_get(top, reg));
                 match v {
                     Value::Str(s) => self.resolve_class_by_name(s.as_bytes()),
                     Value::Object(h) => Ok(h.borrow().class),
-                    _ => Err(Thrown::type_error("Class name must be a string or object")),
+                    Value::Closure(_) => self.resolve_class_by_name(b"Closure"),
+                    _ => Err(Thrown::error(
+                        "Error",
+                        "Class name must be a valid object or a string",
+                    )),
                 }
             }
         }

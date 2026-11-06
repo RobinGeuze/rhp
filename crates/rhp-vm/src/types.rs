@@ -412,7 +412,25 @@ impl Vm {
         }
         let ctx = self.stack[top].defining_class;
         let strict = proto.strict_types;
-        match self.check_one(&v, ty, strict, ctx) {
+        // `static` is the called scope (zend_value_instanceof_static), not
+        // the declaring class.
+        let resolved;
+        let checked = if ty.kinds.contains(&K::StaticType) {
+            let called = self.stack[top]
+                .called_class
+                .or_else(|| self.current_this(top).map(|o| o.borrow().class));
+            let mut t = ty.clone();
+            t.kinds.retain(|k| *k != K::StaticType);
+            t.kinds.push(match called {
+                Some(c) => K::Named(self.class(c).name.clone()),
+                None => K::Never, // matches nothing
+            });
+            resolved = t;
+            &resolved
+        } else {
+            ty
+        };
+        match self.check_one(&v, checked, strict, ctx) {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => {
                 self.coercion_diag(&v, &coerced)?;

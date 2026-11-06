@@ -565,14 +565,10 @@ impl Vm {
                     self.reg_set(top, dst, r);
                 }
                 Instr::BeginSilence => {
-                    self.silence_stack.push((self.stack.len(), self.silence));
+                    self.silence_stack.push((self.stack.len(), self.silence, None));
                     self.silence += 1;
                 }
-                Instr::EndSilence => {
-                    if let Some((_, lvl)) = self.silence_stack.pop() {
-                        self.silence = lvl;
-                    }
-                }
+                Instr::EndSilence => self.end_silence(),
 
                 Instr::Echo { src } => {
                     let v = self.reg_get(top, src);
@@ -1647,6 +1643,18 @@ impl Vm {
                     base,
                     argc,
                 } => {
+                    // ZEND_INIT_STATIC_METHOD_CALL checks the class first.
+                    if let ClassRef::Dynamic(r) = class {
+                        if !matches!(
+                            deref(&self.reg_get(top, r)),
+                            Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                        ) {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Class name must be a valid object or a string",
+                            ));
+                        }
+                    }
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
                     self.do_call_static(top, class, &mname, dst, base, argc, false)?;
                 }
@@ -1698,13 +1706,9 @@ impl Vm {
                         if self.preloaded.as_ref().is_some_and(|p| p.has_function(&lc)) {
                             continue;
                         }
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot redeclare function {}()",
-                                String::from_utf8_lossy(f.proto.name.as_bytes())
-                            ),
-                        ));
+                        // do_bind_function_error at run time: E_ERROR.
+                        let msg = self.redeclare_function_msg(&lc, &f.proto.name);
+                        return Err(self.fatal_error_here(1, msg.as_bytes()));
                     }
                     let i = self.functions.len();
                     self.functions.push(f);
@@ -1775,6 +1779,18 @@ impl Vm {
                     name,
                     args,
                 } => {
+                    // ZEND_INIT_STATIC_METHOD_CALL checks the class first.
+                    if let ClassRef::Dynamic(r) = class {
+                        if !matches!(
+                            deref(&self.reg_get(top, r)),
+                            Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                        ) {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Class name must be a valid object or a string",
+                            ));
+                        }
+                    }
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
                     self.call_static_args(top, class, mname, args, dst, false)?;
                 }

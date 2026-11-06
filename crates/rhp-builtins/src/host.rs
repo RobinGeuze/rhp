@@ -196,6 +196,10 @@ pub trait Host {
     fn ini_get(&self, name: &[u8]) -> Option<Vec<u8>> {
         ini::ini_value(name).map(Option::unwrap_or_default)
     }
+    /// `error_reporting()` is about to set a new level (ZEND_END_SILENCE
+    /// compares against the level an `@` started with).
+    fn error_reporting_changing(&mut self) {}
+
     /// Store `value` for a known directive (no validation; engine-internal
     /// writes such as `error_reporting()`), returning the old value.
     fn ini_set(&mut self, name: &[u8], value: Vec<u8>) -> Option<Vec<u8>> {

@@ -238,7 +238,11 @@ pub struct Vm {
     // `@` nesting depth: diagnostics are recorded but not displayed while > 0.
     silence: u32,
     // Active `@` regions: (frame depth, silence level to restore).
-    silence_stack: Vec<(usize, u32)>,
+    /// Per open `@`: the stack depth, the silence level before it, and
+    /// (outermost `@` only) error_reporting before the first change made
+    /// inside it (ZEND_BEGIN_SILENCE's saved value, see
+    /// [`Vm::end_silence`]).
+    silence_stack: Vec<(usize, u32, Option<i64>)>,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
     /// `set_error_handler` stack (innermost last): (callback or null, mask).

@@ -155,6 +155,13 @@ Notes:
 - php's `ce->unserialize` (the `C:` format) is a class field, not a
   handler: `unserialize` calls GMP's (`gmp::is_gmp_class`) or a
   `Serializable` class's `unserialize()` itself (ext/standard/var.rs).
+  The SPL classes' old `C:` payloads are read by their prelude
+  `unserialize()` methods through `__unserialize_value` /
+  `__spl_array_unserialize`, which share the running unserialize()'s
+  var_hash as php_var_unserialize does.
+- `__PHP_Incomplete_Class` gets incomplete_class.c's handlers as checks
+  on the VM's dynamic-property paths (`Vm::incomplete_class`): reads and
+  `isset` warn, writes, unsets, write fetches and method calls throw.
 
 ## Class flags
 

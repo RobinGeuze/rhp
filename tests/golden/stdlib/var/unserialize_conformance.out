@@ -1,0 +1,175 @@
+"O:1:\"A\":1:{}" => [2] unserialize(): Unexpected end of serialized data
+[2] unserialize(): Error at offset 11 of 12 bytes
+bool(false)
+"O:8:\"stdClass\":1:{s:1:\"a\";i:1}" => [2] unserialize(): Error at offset 26 of 30 bytes
+bool(false)
+"O:8:\"stdClass\":-1:{}" => [2] unserialize(): Error at offset 17 of 20 bytes
+bool(false)
+"O:8:\"stdClass\"" => [2] unserialize(): Error at offset 14 of 14 bytes
+bool(false)
+"C:8:\"stdClass\":2:{x}" => [2] Insufficient data for unserializing - 2 required, 2 present
+[2] unserialize(): Error at offset 18 of 20 bytes
+bool(false)
+"C:3:\"Foo\":1:{x}" => [2] Class __PHP_Incomplete_Class has no unserializer
+object(__PHP_Incomplete_Class)#2 (1) {
+  ["__PHP_Incomplete_Class_Name"]=>
+  string(3) "Foo"
+}
+"E:3:\"Foo\";" => [2] unserialize(): Invalid enum name 'Foo' (missing colon)
+[2] unserialize(): Error at offset 0 of 10 bytes
+bool(false)
+"E:5:\"Foo:A\";" => [2] unserialize(): Class 'Foo' not found
+[2] unserialize(): Error at offset 0 of 12 bytes
+bool(false)
+"a:1:{O:8:\"stdClass\":0:{}i:1;}" => [2] unserialize(): Error at offset 5 of 29 bytes
+bool(false)
+"a:1:{a:0:{}i:1;}" => [2] unserialize(): Error at offset 10 of 16 bytes
+bool(false)
+"a:1:{R:1;i:1;}" => [2] unserialize(): Error at offset 9 of 14 bytes
+bool(false)
+"r:1;" => [2] unserialize(): Error at offset 4 of 4 bytes
+bool(false)
+"a:1:{i:0;r:1;}" => [2] unserialize(): Error at offset 13 of 14 bytes
+bool(false)
+"a:2:{i:0;i:1;i:1;r:2;}" => [2] unserialize(): Error at offset 21 of 22 bytes
+bool(false)
+"a:1:{i:0;d:1e5;}" => array(1) {
+  [0]=>
+  float(100000)
+}
+"a:1:{i:0;d:.5;}" => array(1) {
+  [0]=>
+  float(0.5)
+}
+"a:1:{i:0;d:5.;}" => array(1) {
+  [0]=>
+  float(5)
+}
+"i:+5;" => int(5)
+"i:-0;" => int(0)
+"s:2:\"\\61b\";" => [2] unserialize(): Error at offset 7 of 11 bytes
+bool(false)
+"S:2:\"\\61b\";" => [8192] unserialize(): Unserializing the 'S' format is deprecated
+string(2) "ab"
+"S:2:\"\\6xb\";" => [2] unserialize(): Error at offset 0 of 11 bytes
+bool(false)
+"O:0:\"\":0:{}" => [2] unserialize(): Error at offset 2 of 11 bytes
+bool(false)
+[8192] Old implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary)
+a:2:{i:0;O:8:"stdClass":0:{}i:1;C:3:"Old":22:{a:2:{i:0;r:2;i:1;r:2;}}}
+bool(true)
+bool(true)
+O:3:"Box":1:{i:0;i:1;}
+object(Box)#6 (1) {
+  ["v"]=>
+  int(5)
+}
+array(2) {
+  [0]=>
+  string(1) "x"
+  [1]=>
+  object(Old)#6 (1) {
+    ["v"]=>
+    string(1) "x"
+  }
+}
+string(8) "replaced"
+array(1) {
+  [0]=>
+  array(1) {
+    [0]=>
+    array(0) {
+    }
+  }
+}
+array(1) {
+  [0]=>
+  array(0) {
+  }
+}
+TypeError: unserialize(): Option "max_depth" must be of type int, string given
+ValueError: unserialize(): Option "max_depth" must be greater than or equal to 0
+callback Later
+object(Later)#6 (1) {
+  ["x"]=>
+  int(1)
+}
+callback Never
+[2] unserialize(): Function define_it() hasn't defined the class it was called for
+string(22) "__PHP_Incomplete_Class"
+object(T)#6 (3) {
+  ["f"]=>
+  float(3)
+  ["t"]=>
+  NULL
+  ["i"]=>
+  int(0)
+}
+Cannot assign string to property T::$i of type int
+[8192] Creation of dynamic property NoDyn::$b is deprecated
+object(NoDyn)#7 (2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+}
+[2] main(): The script tried to access a property on an incomplete object. Please ensure that the class definition "Missing" of the object you are trying to operate on was loaded _before_ unserialize() gets called or provide an autoloader to load the class definition
+[2] main(): The script tried to access a property on an incomplete object. Please ensure that the class definition "Missing" of the object you are trying to operate on was loaded _before_ unserialize() gets called or provide an autoloader to load the class definition
+[2] main(): The script tried to access a property on an incomplete object. Please ensure that the class definition "Missing" of the object you are trying to operate on was loaded _before_ unserialize() gets called or provide an autoloader to load the class definition
+[2] main(): The script tried to access a property on an incomplete object. Please ensure that the class definition "Missing" of the object you are trying to operate on was loaded _before_ unserialize() gets called or provide an autoloader to load the class definition
+bool(false)
+bool(true)
+string(4) "dflt"
+NULL
+The script tried to modify a property on an incomplete objec
+The script tried to modify a property on an incomplete objec
+The script tried to call a method on an incomplete object. P
+The script tried to modify a property on an incomplete objec
+The script tried to modify a property on an incomplete objec
+O:7:"Missing":1:{s:1:"p";i:1;}
+[8192] Creation of dynamic property ArrayObject::$m is deprecated
+ArrayObject Object
+(
+    [m] => 2
+    [storage:ArrayObject:private] => Array
+        (
+            [0] => 1
+        )
+
+)
+SplObjectStorage Object
+(
+    [storage:SplObjectStorage:private] => Array
+        (
+            [0] => Array
+                (
+                    [obj] => stdClass Object
+                        (
+                        )
+
+                    [inf] => i
+                )
+
+        )
+
+)
+SplStack Object
+(
+    [flags:SplDoublyLinkedList:private] => 6
+    [dllist:SplDoublyLinkedList:private] => Array
+        (
+            [0] => 1
+            [1] => 2
+        )
+
+)
+UnexpectedValueException: Error at offset 2 of 3 bytes
+UnexpectedValueException: Error at offset 0 of 6 bytes
+UnexpectedValueException: Error at offset 0 of 3 bytes
+UnexpectedValueException: Error at offset 19 of 19 bytes
+wakeup 1
+wakeup 2
+destruct 1
+Exception: stop
+after
+done

@@ -634,7 +634,10 @@ then switch the check on — but the metadata must be stored from step 1.)*
      trait methods come after the parent's: one already present is
      signature-checked in step 4, others are added. Trait constants and
      properties the class or an earlier trait declares must match
-     (visibility, static, readonly, final, type, default).
+     (visibility, static, readonly, final, type, default). Gaps: defaults
+     written as constant expressions are not evaluated for this check (they
+     count as equal), and types are compared for equality, not with php's
+     two-way covariance check.
    - `props` = clone `parent.props`; for each own `PropProto`, replace **in place**
      if the name exists (new default/visibility/declaring_class), else append —
      reproducing the observed order.

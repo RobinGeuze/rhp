@@ -889,6 +889,9 @@ impl Vm {
                         }
                     }
                 }
+                Instr::ArgSpreadRef { arr, src, sig } => {
+                    self.arg_spread_ref(top, &proto, arr, src, sig)?
+                }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
                     let Value::Array(mut a) =
@@ -1356,6 +1359,20 @@ impl Vm {
                         self.ref_globals.insert(n.clone());
                         self.rebind_global(&n, rc.clone());
                         continue;
+                    }
+                    // `$obj[k] =& $v` on a user ArrayAccess: php fetches the
+                    // offset for writing (offsetGet), which yields no slot.
+                    if let MagicSplit::Offset(i, h) = self.cursor_magic_split(top, &steps) {
+                        if i + 1 == steps.len() && self.spl_array_owner(&h, b"offsetget").is_none() {
+                            let key = crate::lvalue::aa_key(&steps[i]).unwrap_or(Value::Null);
+                            let r = self.aa_fetch_w(&h, &steps[i], key, DimFetch::W);
+                            self.cursor_release();
+                            r?;
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot assign by reference to an array dimension of an object",
+                            ));
+                        }
                     }
                     let r = self.cursor_write(top, &steps, v);
                     self.cursor_release();
@@ -2368,6 +2385,106 @@ impl Vm {
     /// The entries `...$src` unpacks (ZEND_SEND_UNPACK when `args`, else
     /// ZEND_ADD_ARRAY_UNPACK): an array's elements as they are, or what a
     /// Traversable yields (numeric-string keys count as positional).
+    /// ZEND_SEND_UNPACK's by-reference parameters (see
+    /// [`Instr::ArgSpreadRef`]); the rest is [`Instr::ArgSpread`]'s.
+    fn arg_spread_ref(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        arr: Reg,
+        src: Reg,
+        sig: u32,
+    ) -> Result<(), Thrown> {
+        let Value::Array(sig) = &proto.consts[sig as usize] else {
+            return Ok(());
+        };
+        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let fname = conv::to_string_bytes(&sig[0]);
+        let variadic = matches!(sig[1], Value::Bool(true));
+        let list = |v: &Value| match v {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            _ => Vec::new(),
+        };
+        let flags: Vec<Value> = list(&sig[2]);
+        let names: Vec<Value> = list(&sig[3]);
+        let by_ref = |p: usize| match flags.get(p) {
+            Some(b) => matches!(b, Value::Bool(true)),
+            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+        };
+        // a named element's position
+        let named_pos = |s: &[u8]| {
+            names
+                .iter()
+                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
+        };
+        let source = match &self.stack[top].regs[src as usize] {
+            Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
+            _ => None,
+        };
+        let traversable = matches!(self.reg_get(top, src), Value::Object(_));
+        let entries = self.unpack_entries(top, src, true)?;
+        let Value::Array(mut a) =
+            std::mem::replace(&mut self.stack[top].regs[arr as usize], Value::Null)
+        else {
+            unreachable!("ArgSpreadRef target is the argument array")
+        };
+        let mut pos = a.iter().filter(|(k, _)| matches!(k, ArrayKey::Int(_))).count();
+        for (k, iv) in entries {
+            let at = match &k {
+                ArrayKey::Int(_) => Some(pos),
+                ArrayKey::Str(s) => {
+                    if a.get(&k).is_some() {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(s.as_bytes())
+                            ),
+                        ));
+                    }
+                    named_pos(s.as_bytes())
+                }
+            };
+            let mut v = iv;
+            if let Some(at) = at.filter(|&p| by_ref(p)) {
+                if let Some(rc) = &source {
+                    // separated from other holders of the array
+                    if let Value::Array(sa) = &mut *rc.borrow_mut() {
+                        if let Some(slot) = sa.get_mut(&k) {
+                            let cell = match slot {
+                                Value::Ref(c) => c.clone(),
+                                other => {
+                                    let c = Rc::new(RefCell::new(std::mem::replace(
+                                        other,
+                                        Value::Null,
+                                    )));
+                                    *other = Value::Ref(c.clone());
+                                    c
+                                }
+                            };
+                            v = Value::Ref(cell);
+                        }
+                    }
+                } else if traversable {
+                    let msg = format!(
+                        "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
+                        at + 1,
+                        String::from_utf8_lossy(&fname)
+                    );
+                    self.diag(builtins::E_WARNING, &msg)?;
+                }
+            }
+            if let ArrayKey::Int(_) = k {
+                a.push(v);
+                pos += 1;
+            } else {
+                a.insert(k, v);
+            }
+        }
+        self.stack[top].regs[arr as usize] = Value::Array(a);
+        Ok(())
+    }
+
     fn unpack_entries(
         &mut self,
         top: usize,

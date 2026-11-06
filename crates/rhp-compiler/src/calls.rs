@@ -800,6 +800,39 @@ impl ProtoBuilder<'_> {
                             }
                         }
                     }
+                    // `...$arr` for a callee with by-reference parameters:
+                    // their elements are sent as references into the array
+                    // (php's SEND_UNPACK).
+                    Argument::Positional(p)
+                        if p.ellipsis.is_some()
+                            && known.is_some_and(|k| k.by_ref.iter().any(|b| *b)) =>
+                    {
+                        unpacked = true;
+                        let k = known.expect("checked");
+                        let v = unparen(p.value);
+                        let src = if crate::assign::is_variable(v)
+                            && !crate::assign::is_short_circuited(v)
+                        {
+                            self.compile_ref_source(v)?
+                        } else {
+                            self.compile_expr(p.value)?
+                        };
+                        let mut sig = rhp_values::PhpArray::new();
+                        sig.push(Value::str(k.fname.clone()));
+                        sig.push(Value::Bool(k.variadic));
+                        let mut flags = rhp_values::PhpArray::new();
+                        for b in &k.by_ref {
+                            flags.push(Value::Bool(*b));
+                        }
+                        sig.push(Value::Array(flags));
+                        let mut names = rhp_values::PhpArray::new();
+                        for n in &k.names {
+                            names.push(Value::str(n.clone()));
+                        }
+                        sig.push(Value::Array(names));
+                        let sig = self.intern_const(Value::Array(sig));
+                        self.emit(Instr::ArgSpreadRef { arr: dst, src, sig });
+                    }
                     Argument::Positional(p) => {
                         unpacked |= p.ellipsis.is_some();
                         let r = self.compile_expr(p.value)?;

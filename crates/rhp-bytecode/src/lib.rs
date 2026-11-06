@@ -317,6 +317,16 @@ pub enum Instr {
         arr: Reg,
         src: Reg,
     },
+    /// [`Instr::ArgSpread`] for a callee with by-reference parameters:
+    /// `consts[sig]` is `[name, variadic, [by_ref...], [param names...]]`.
+    /// An element for a
+    /// by-reference position becomes a reference in the array `src`
+    /// references; a Traversable's warns and is passed by value.
+    ArgSpreadRef {
+        arr: Reg,
+        src: Reg,
+        sig: CIdx,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {

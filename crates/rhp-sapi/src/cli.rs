@@ -135,9 +135,10 @@ pub fn main(args: &[String]) -> i32 {
             // Both after module startup (its warnings come first), with no
             // script and no auto_prepend_file.
             Opt::Char(b'v', _) => {
+                // A literal, so disable_functions cannot get in the way.
                 let banner = crate::version_banner("cli");
-                let hex: String = banner.bytes().map(|b| format!("{b:02x}")).collect();
-                let code = format!("echo hex2bin('{hex}');");
+                let lit = banner.replace('\\', "\\\\").replace('\'', "\\'");
+                let code = format!("echo '{lit}';");
                 return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
             }
             Opt::Char(b'i', _) => {

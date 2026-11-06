@@ -2501,8 +2501,8 @@ impl Vm {
         Ok(match kind {
             CmpKind::Eq => Value::Bool(self.compare_values(a, b)? == Ordering::Equal),
             CmpKind::Ne => Value::Bool(self.compare_values(a, b)? != Ordering::Equal),
-            CmpKind::Identical => Value::Bool(ops::strict_eq(a, b)),
-            CmpKind::NotIdentical => Value::Bool(!ops::strict_eq(a, b)),
+            CmpKind::Identical => Value::Bool(ops::identical(a, b)?),
+            CmpKind::NotIdentical => Value::Bool(!ops::identical(a, b)?),
             CmpKind::Lt => Value::Bool(self.compare_values(a, b)?.is_lt()),
             CmpKind::Le => Value::Bool(self.compare_values(a, b)?.is_le()),
             // php evaluates `a > b` as `b < a` (ZEND_IS_SMALLER with swapped

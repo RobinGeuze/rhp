@@ -216,7 +216,7 @@ fn fn_array_search(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         .unwrap_or(false);
     for (k, v) in a.iter() {
         let hit = if strict {
-            ops::strict_eq(&needle, v)
+            ops::identical(&needle, v)?
         } else {
             crate::host_loose_eq(host, &needle, v)?
         };
@@ -923,7 +923,7 @@ fn fn_array_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             None => true,
             Some(needle) => {
                 if strict {
-                    ops::strict_eq(&deref(v), needle)
+                    ops::identical(&deref(v), needle)?
                 } else {
                     host_loose_eq(host, &deref(v), needle)?
                 }
@@ -1412,7 +1412,7 @@ fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
     for (_, v) in a.iter() {
         let hit = if strict {
-            ops::strict_eq(&needle, v)
+            ops::identical(&needle, v)?
         } else {
             host_loose_eq(host, &needle, v)?
         };

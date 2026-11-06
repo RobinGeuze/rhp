@@ -684,6 +684,39 @@ fn int_overflow(s: &[u8], n: Num) -> i8 {
     sign
 }
 
+thread_local! {
+    /// Arrays being compared as the left operand (zend_hash_compare's
+    /// GC_PROTECT_RECURSION).
+    static COMPARING: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// zend_call_stack_overflowed, installed by the engine.
+    static STACK_OVERFLOWED: std::cell::Cell<Option<fn() -> bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the native stack limit check comparisons start with.
+pub fn set_stack_overflow_check(f: fn() -> bool) {
+    STACK_OVERFLOWED.with(|c| c.set(Some(f)));
+}
+
+fn stack_overflowed() -> bool {
+    STACK_OVERFLOWED.with(|c| c.get()).is_some_and(|f| f())
+}
+
+/// zend_hash_compare's checks before comparing `x` with another array:
+/// the stack limit, then `x` met again inside itself.
+fn hash_compare_guard(x: &crate::PhpArray) -> Result<(), Thrown> {
+    if stack_overflowed() {
+        return Err(Thrown::error(
+            "Error",
+            "Maximum call stack size reached during comparison",
+        ));
+    }
+    let p = x.data_ptr();
+    if COMPARING.with(|c| c.borrow().contains(&p)) {
+        return Err(nesting_error());
+    }
+    Ok(())
+}
+
 /// `zend_hash_compare(.., ordered=0)` over two arrays.
 fn compare_arrays(
     x: &crate::PhpArray,
@@ -695,17 +728,9 @@ fn compare_arrays(
     if x.data_ptr() == y.data_ptr() {
         return Ok(Ordering::Equal);
     }
-    thread_local! {
-        static COMPARING: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
     // Checked before the sizes, as zend_hash_compare does.
+    hash_compare_guard(x)?;
     let p = x.data_ptr();
-    if COMPARING.with(|c| c.borrow().contains(&p)) {
-        return Err(Thrown::error(
-            "Error",
-            "Nesting level too deep - recursive dependency?",
-        ));
-    }
     if x.len() != y.len() {
         return Ok(x.len().cmp(&y.len()));
     }
@@ -893,6 +918,12 @@ fn std_compare_objects(
     y: &crate::ObjectHandle,
     cx: &mut dyn CompareCx,
 ) -> Result<Ordering, Thrown> {
+    if stack_overflowed() {
+        return Err(Thrown::error(
+            "Error",
+            "Maximum call stack size reached during object comparison",
+        ));
+    }
     let (xc, yc) = (x.borrow().class, y.borrow().class);
     if xc != yc {
         return Ok(Ordering::Greater); // different classes: uncomparable
@@ -1003,27 +1034,52 @@ pub fn loose_eq(a: &Value, b: &Value) -> bool {
 }
 
 /// PHP strict comparison (`===`): same type and value; identity for objects.
+/// A comparison that throws (see [`identical`]) is false.
 pub fn strict_eq(a: &Value, b: &Value) -> bool {
+    identical(a, b).unwrap_or(false)
+}
+
+/// zend_is_identical: [`strict_eq`], with zend_hash_compare's errors for a
+/// recursive array (`$a = [&$a]`) and for nesting past the stack limit.
+pub fn identical(a: &Value, b: &Value) -> Result<bool, Thrown> {
     let a = deref(a);
     let b = deref(b);
     use Value::*;
-    match (&a, &b) {
+    Ok(match (&a, &b) {
         (Null, Null) => true,
         (Bool(x), Bool(y)) => x == y,
         (Int(x), Int(y)) => x == y,
         (Float(x), Float(y)) => x == y, // NaN !== NaN, as PHP
         (Str(x), Str(y)) => x == y,
-        (Array(x), Array(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .zip(y.iter())
-                    .all(|((xk, xv), (yk, yv))| xk == yk && strict_eq(xv, yv))
-        }
+        (Array(x), Array(y)) => return identical_arrays(x, y),
         (Object(x), Object(y)) => std::rc::Rc::ptr_eq(x, y),
         (Closure(x), Closure(y)) => std::rc::Rc::ptr_eq(x, y),
         (Resource(x), Resource(y)) => x.id == y.id,
         _ => false,
+    })
+}
+
+/// `zend_hash_compare(.., ordered=1)` with hash_zval_identical_function.
+fn identical_arrays(x: &crate::PhpArray, y: &crate::PhpArray) -> Result<bool, Thrown> {
+    if x.data_ptr() == y.data_ptr() {
+        return Ok(true);
     }
+    hash_compare_guard(x)?;
+    if x.len() != y.len() {
+        return Ok(false);
+    }
+    let p = x.data_ptr();
+    COMPARING.with(|c| c.borrow_mut().push(p));
+    let r = (|| {
+        for ((xk, xv), (yk, yv)) in x.iter().zip(y.iter()) {
+            if xk != yk || !identical(xv, yv)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    COMPARING.with(|c| c.borrow_mut().pop());
+    r
 }
 
 /// The `<=>` result as a PHP int.

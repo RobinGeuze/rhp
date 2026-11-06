@@ -30,12 +30,9 @@ array(7) {
   ["height_unit"]=>
   string(2) "px"
 }
-
-Notice: getimagesizefromstring(): Error reading from ab! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 18
+notice: getimagesizefromstring(): Error reading from ab!
 bool(false)
-
-Notice: getimagesizefromstring(): Error reading from a! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 19
+notice: getimagesizefromstring(): Error reading from a!
 bool(false)
-
-Notice: getimagesizefromstring(): Error reading from ! in /Users/robing/gits/rhp/.claude/worktrees/rest/misc-ext-features/tests/golden/stdlib/general/getimagesize_edges.php on line 20
+notice: getimagesizefromstring(): Error reading from !
 bool(false)

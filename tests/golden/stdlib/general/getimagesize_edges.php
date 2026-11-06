@@ -15,6 +15,7 @@ function swf(int $xmin, int $xmax, int $ymin, int $ymax): string {
 var_dump(getimagesizefromstring(swf(0, 2000, 0, 400)));
 var_dump(getimagesizefromstring(swf(100, 0, 0, 40)));
 // The notice prints the data as a C string: up to its first NUL.
+set_error_handler(function ($no, $msg) { echo "notice: $msg\n"; return true; });
 var_dump(getimagesizefromstring("ab"));
 var_dump(getimagesizefromstring("a\0b"));
 var_dump(getimagesizefromstring("\0\0"));

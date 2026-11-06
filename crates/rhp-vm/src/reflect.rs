@@ -369,8 +369,14 @@ impl Vm {
                     if !st {
                         continue;
                     }
+                    // (An uninitialized typed static is left out.)
                     if let Some(sp) = e.static_props.get(n.as_bytes()) {
-                        out.insert(ArrayKey::from_bytes(n.as_bytes()), deref(&sp.cell.borrow()));
+                        if !sp.cell.borrow().is_undef() {
+                            out.insert(
+                                ArrayKey::from_bytes(n.as_bytes()),
+                                deref(&sp.cell.borrow()),
+                            );
+                        }
                     }
                 }
                 Ok(Value::Array(out))

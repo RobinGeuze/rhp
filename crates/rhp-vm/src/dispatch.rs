@@ -14,6 +14,7 @@ use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
+use crate::lvalue::StaticOp;
 use crate::lvalue::{
     aa_key, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
@@ -1193,6 +1194,7 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    self.cursor_static = Some((cell.clone(), cls, pname));
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1204,6 +1206,7 @@ impl Vm {
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    self.cursor_static = Some((cell.clone(), cls, pname));
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1251,6 +1254,9 @@ impl Vm {
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    if cell.borrow().is_undef() {
+                        return Err(self.uninit_static_err(cls, &pname));
+                    }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }
@@ -1273,7 +1279,10 @@ impl Vm {
                         Some(sp)
                             if self.static_prop_accessible(self.stack[top].defining_class, sp) =>
                         {
-                            deref(&sp.cell.borrow())
+                            match deref(&sp.cell.borrow()) {
+                                Value::Undef => Value::Null,
+                                v => v,
+                            }
                         }
                         _ => Value::Null,
                     };
@@ -1305,6 +1314,12 @@ impl Vm {
                     self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
+                    if self.cursor_static.is_some() {
+                        let steps = std::mem::take(&mut self.cursor_steps);
+                        let r = self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null);
+                        self.cursor_steps = steps;
+                        r?;
+                    }
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
@@ -1316,6 +1331,13 @@ impl Vm {
                     }
                     let v = self.reg_r(top, src)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    let v = match self.cursor_static_check(top, &steps, StaticOp::Assign, v) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    };
                     let r = if dst == src {
                         self.cursor_write(top, &steps, v)
                     } else {
@@ -1351,12 +1373,29 @@ impl Vm {
                         Value::Ref(_) => v,
                         other => Value::Ref(Rc::new(RefCell::new(other))),
                     };
+                    if let Err(e) = self.cursor_static_check(top, &steps, StaticOp::Ref, Value::Null) {
+                        self.cursor_release();
+                        return Err(e);
+                    }
                     let r = self.cursor_write(top, &steps, v);
                     self.cursor_release();
                     r?;
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    match self.cursor_static_check(top, &steps, StaticOp::Fetch, Value::Null) {
+                        Ok(Value::Null) => {}
+                        // A set-restricted static holding an object: a copy.
+                        Ok(copy) => {
+                            self.cursor_release();
+                            self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(copy))));
+                            continue;
+                        }
+                        Err(e) => {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    }
                     let cell = self.cursor_make_ref(top, &steps);
                     self.cursor_release();
                     self.reg_set(top, dst, Value::Ref(cell?));
@@ -1370,6 +1409,14 @@ impl Vm {
                 Instr::IncDecLval { dst, pre, delta } => {
                     self.cursor_settle_offsets(top)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if self.cursor_static.is_some() {
+                        if let Err(e) =
+                            self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null)
+                        {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    }
                     // `$obj[$k]++` on an ArrayAccess object: php fetches the
                     // element for RW (offsetGet) and increments that; there
                     // is no offsetSet.
@@ -1392,7 +1439,20 @@ impl Vm {
                         }
                     }
                     let old = self.cursor_read_magic(top, &steps, true)?;
-                    let new = self.inc_dec_vm(&old, delta as i64)?;
+                    let new = match self.inc_dec_vm(&old, delta as i64) {
+                        Ok(n) => n,
+                        // php writes the property even so: a readonly one
+                        // throws over the operator's TypeError.
+                        Err(e) => {
+                            return Err(match self.cursor_readonly_leaf_err(top, &steps) {
+                                Some(ro) => {
+                                    use rhp_builtins::Host;
+                                    self.chain_thrown(ro, e)
+                                }
+                                None => e,
+                            });
+                        }
+                    };
                     if matches!((&old, &new), (Value::Int(_), Value::Float(_))) {
                         self.incdec_typed_overflow(top, &steps, delta)?;
                     }
@@ -1596,17 +1656,25 @@ impl Vm {
                 Instr::FetchPropW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
-                        vm.prop_fetch(top, o, pname)
-                    })?;
+                    let v = self.prop_fetch_w(top, o, pname, false)?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDynW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = self.dyn_prop_name(top, name)?;
-                    let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
-                        vm.prop_fetch(top, o, pname)
-                    })?;
+                    let v = self.prop_fetch_w(top, o, pname, false)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropUnset { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = proto.names[name as usize].clone();
+                    let v = self.prop_fetch_w(top, o, pname, true)?;
+                    self.reg_set(top, dst, v);
+                }
+                Instr::FetchPropDynUnset { dst, obj, name } => {
+                    let o = self.reg_get(top, obj);
+                    let pname = self.dyn_prop_name(top, name)?;
+                    let v = self.prop_fetch_w(top, o, pname, true)?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropIs { dst, obj, name } => {
@@ -1631,7 +1699,10 @@ impl Vm {
                     // The cell via static_prop_cell: runs the class's
                     // deferred (non-literal) initializers first.
                     let v = if accessible {
-                        deref(&self.static_prop_cell(cls, &pname)?.borrow())
+                        match deref(&self.static_prop_cell(cls, &pname)?.borrow()) {
+                            Value::Undef => Value::Null,
+                            v => v,
+                        }
                     } else {
                         Value::Null
                     };
@@ -1793,6 +1864,9 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
+                    if cell.borrow().is_undef() {
+                        return Err(self.uninit_static_err(cls, &pname));
+                    }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
                 }

@@ -165,6 +165,8 @@ pub struct StaticProp {
     pub prototype: ClassId,
     /// Declared type (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
 }
 
 #[derive(Clone)]
@@ -439,11 +441,7 @@ fn inherit_prop(
     }
     // The set visibility may not narrow (a get-only virtual parent has
     // none).
-    let set_flag = |p: &PropEntry| {
-        p.set_visibility.or_else(|| {
-            (p.readonly && p.visibility == Visibility::Public).then_some(Visibility::Protected)
-        })
-    };
+    let set_flag = |p: &PropEntry| p.set_visibility;
     let rank = |v: Visibility| match v {
         Visibility::Public => 0,
         Visibility::Protected => 1,
@@ -934,7 +932,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
     let mut fresh = |c: &Rc<RefCell<Value>>| {
         cells
             .entry(Rc::as_ptr(c) as usize)
-            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().clone())))
+            .or_insert_with(|| Rc::new(RefCell::new(c.borrow().copy_slot())))
             .clone()
     };
     let mut out = Vec::with_capacity(capacity.max(classes.len()));
@@ -1520,7 +1518,17 @@ impl Vm {
                     default,
                     init,
                     visibility: pp.visibility,
-                    set_visibility: pp.set_visibility,
+                    // zend_declare_typed_property: a public readonly
+                    // property is protected(set) unless it says public(set).
+                    set_visibility: match pp.set_visibility {
+                        Some(Visibility::Public) => None,
+                        None if pp.visibility == Visibility::Public
+                            && (pp.is_readonly || proto.flags.is_readonly) =>
+                        {
+                            Some(Visibility::Protected)
+                        }
+                        sv => sv,
+                    },
                     declaring_class: id,
                     prototype: id,
                     ty: pp.type_hint.clone().map(Rc::new),
@@ -1645,6 +1653,7 @@ impl Vm {
                         declaring_class: id,
                         prototype,
                         ty: sp.ty.clone(),
+                        set_visibility: sp.set_visibility,
                     },
                 );
             }
@@ -1660,6 +1669,10 @@ impl Vm {
             };
             let prototype = static_proto(&static_props, sp.name.as_bytes());
             let default = cell.borrow().clone();
+            // A typed static without a default starts uninitialized.
+            if sp.type_hint.is_some() && !sp.has_default {
+                *cell.borrow_mut() = Value::Undef;
+            }
             static_props.insert(
                 sp.name.as_bytes().to_vec(),
                 StaticProp {
@@ -1670,6 +1683,10 @@ impl Vm {
                     declaring_class: id,
                     prototype,
                     ty: sp.type_hint.clone().map(Rc::new),
+                    set_visibility: match sp.set_visibility {
+                        Some(Visibility::Public) => None,
+                        sv => sv,
+                    },
                 },
             );
         }

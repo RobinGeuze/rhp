@@ -141,6 +141,7 @@ impl Vm {
             quiet: 0,
             rw_null_keys: 0,
             typed_write_result: None,
+            cursor_static: None,
             cursor_null_key: false,
             last_error: None,
             error_handlers: Vec::new(),

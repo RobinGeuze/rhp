@@ -647,7 +647,7 @@ impl Vm {
         val: Value,
     ) -> Result<(), Thrown> {
         let present = h.borrow().properties.contains_key(key);
-        self.check_readonly_write(h, key, present, Some(scope))?;
+        self.check_readonly_write(h, key, present, Some(scope), Some(scope), "modify")?;
         let val = self.verify_prop_type(cls, key, val, false)?;
         let old = {
             let mut b = h.borrow_mut();

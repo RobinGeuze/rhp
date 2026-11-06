@@ -639,6 +639,19 @@ pub enum Instr {
         obj: Reg,
         name: Reg,
     },
+    /// `$o->p` as the object of `unset($o->p->q)` (BP_VAR_UNSET): like
+    /// `FetchPropW`, but a non-object container gives null.
+    FetchPropUnset {
+        dst: Reg,
+        obj: Reg,
+        name: NIdx,
+    },
+    /// `FetchPropUnset` with the property name in a register.
+    FetchPropDynUnset {
+        dst: Reg,
+        obj: Reg,
+        name: Reg,
+    },
     /// `$o->p` in isset/empty/`??` context (php's BP_VAR_IS): an inaccessible
     /// or missing property is null without an error, via `__isset` then
     /// `__get` when defined.
@@ -1596,6 +1609,8 @@ pub struct StaticPropProto {
     pub meta: DeclMeta,
     /// Declared with an explicit default (`static $x = 1;`).
     pub has_default: bool,
+    /// Asymmetric write visibility (`private(set)` / `protected(set)`).
+    pub set_visibility: Option<Visibility>,
 }
 
 #[derive(Clone)]

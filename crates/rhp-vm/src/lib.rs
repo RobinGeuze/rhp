@@ -231,9 +231,9 @@ pub struct Vm {
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
-    /// Readonly properties already reinitialized inside a `__clone`
-    /// (object id, storage key): once each.
-    readonly_reinit: HashMap<u32, Vec<PhpStr>>,
+    /// Clones whose `__clone` runs (object id -> the frame's stack index
+    /// and the readonly slots it may still modify once).
+    readonly_reinit: HashMap<u32, (usize, Vec<PhpStr>)>,
     /// Inside php's parent-hook trampoline (`parent::$p::get()` without a
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
@@ -267,6 +267,9 @@ pub struct Vm {
     // The value a cursor write stored in a typed property after coercion
     // (the assignment expression's value).
     typed_write_result: Option<Value>,
+    // The static property an open cursor is rooted at: its cell, the class
+    // it was reached through and its name (valid while the root is that cell).
+    cursor_static: Option<(Rc<RefCell<Value>>, ClassId, Vec<u8>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.

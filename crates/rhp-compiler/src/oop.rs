@@ -421,8 +421,18 @@ impl ProtoBuilder<'_> {
                 let obj = self.compile_unset_object(pa.object)?;
                 let dst = self.alloc_temp();
                 match self.compile_selector(&pa.property)? {
-                    Sel::Static(name) => self.emit(Instr::FetchPropW { dst, obj, name }),
-                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynW { dst, obj, name }),
+                    Sel::Static(name) => self.emit(Instr::FetchPropUnset { dst, obj, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynUnset { dst, obj, name }),
+                }
+                Ok(dst)
+            }
+            // FETCH_STATIC_PROP_UNSET: an uninitialized typed static is null.
+            Expression::Access(Access::StaticProperty(spa)) => {
+                let class = self.class_ref(spa.class)?;
+                let dst = self.alloc_temp();
+                match self.static_prop_sel(&spa.property)? {
+                    Sel::Static(name) => self.emit(Instr::FetchStaticPropIs { dst, class, name }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchStaticPropDynIs { dst, class, name }),
                 }
                 Ok(dst)
             }

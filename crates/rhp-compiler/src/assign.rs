@@ -604,6 +604,7 @@ impl ProtoBuilder<'_> {
             }
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
+            | Expression::Variable(Variable::Indirect(_) | Variable::Nested(_))
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();

@@ -41,7 +41,8 @@ pub(crate) fn modifiers_visibility(mods: &crate::parse::cst::Sequence<Modifier>)
 }
 
 /// The asymmetric write visibility (`private(set)` / `protected(set)`), when
-/// it is narrower than the read visibility.
+/// it is narrower than the read visibility; an explicit `public(set)` on a
+/// public property is kept (it keeps a readonly one publicly writable).
 pub(crate) fn modifiers_set_visibility(
     mods: &crate::parse::cst::Sequence<Modifier>,
 ) -> Option<Visibility> {
@@ -57,7 +58,8 @@ pub(crate) fn modifiers_set_visibility(
         Visibility::Protected => 1,
         Visibility::Private => 2,
     };
-    (rank(set) > rank(read)).then_some(set)
+    (rank(set) > rank(read) || (set == Visibility::Public && read == Visibility::Public))
+        .then_some(set)
 }
 
 pub(crate) fn has_modifier(
@@ -1164,6 +1166,7 @@ fn compile_property_items(
                 type_hint: hint.clone(),
                 meta,
                 has_default,
+                set_visibility,
             });
         } else {
             out.props.push(PropProto {

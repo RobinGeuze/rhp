@@ -2994,7 +2994,44 @@ impl Vm {
     }
 
     /// `FeFetch`: bind the next key/value of a by-value foreach, or jump to `end`.
+    #[inline]
     fn fe_fetch(
+        &mut self,
+        top: usize,
+        arr_reg: Reg,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+    ) -> Result<(), Thrown> {
+        // The hot case: an array snapshot, by position.
+        let regs = &self.stack[top].regs;
+        if let (Value::Array(a), Value::Int(pos)) =
+            (&regs[arr_reg as usize], &regs[pos_reg as usize])
+        {
+            let pos = *pos as usize;
+            match a.get_index(pos) {
+                Some((k, v)) => {
+                    let (k, v) = (k.clone(), deref(v));
+                    // Bind as a PHP variable: if the loop var is still a
+                    // reference (e.g. left over from a prior by-ref loop),
+                    // write through it — matching PHP's foreach gotcha.
+                    self.cv_assign(top, val_cv, v);
+                    if key_cv != Reg::MAX {
+                        self.cv_assign(top, key_cv, k.to_value());
+                    }
+                    self.stack[top].regs[pos_reg as usize] = Value::Int((pos + 1) as i64);
+                }
+                None => self.stack[top].pc = end as usize,
+            }
+            return Ok(());
+        }
+        self.fe_fetch_slow(top, arr_reg, pos_reg, key_cv, val_cv, end)
+    }
+
+    /// `FeFetch` over an object (or a register left empty).
+    #[inline(never)]
+    fn fe_fetch_slow(
         &mut self,
         top: usize,
         arr_reg: Reg,
@@ -3077,29 +3114,7 @@ impl Vm {
             }
             return Ok(());
         }
-        let pos = match self.reg_get(top, pos_reg) {
-            Value::Int(n) => n as usize,
-            _ => 0,
-        };
-        let snapshot = self.reg_get(top, arr_reg);
-        let Value::Array(a) = snapshot else {
-            self.stack[top].pc = end as usize;
-            return Ok(());
-        };
-        match a.get_index(pos) {
-            Some((k, v)) => {
-                let (k, v) = (k.clone(), deref(v).clone());
-                // Bind as a PHP variable: if the loop var is still a
-                // reference (e.g. left over from a prior by-ref loop),
-                // write through it — matching PHP's foreach gotcha.
-                self.cv_assign(top, val_cv, v);
-                if key_cv != Reg::MAX {
-                    self.cv_assign(top, key_cv, k.to_value());
-                }
-                self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
-            }
-            None => self.stack[top].pc = end as usize,
-        }
+        self.stack[top].pc = end as usize;
         Ok(())
     }
 
@@ -3187,8 +3202,14 @@ impl Vm {
             }
         }
         let id = rhp_values::next_ht_iter_id();
-        match deref(&self.stack[top].regs[arr_cv as usize]) {
-            Value::Array(a) if !a.is_empty() => {
+        // (An array is matched as `None`: no clone of it may be alive
+        // while it is separated.)
+        let src = match deref(&self.stack[top].regs[arr_cv as usize]) {
+            Value::Array(a) if !a.is_empty() => None,
+            v => Some(v),
+        };
+        match src {
+            None => {
                 // FE_RESET_RW separates the array and puts a HashTable
                 // iterator on it; FeFetchRef follows it.
                 let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
@@ -3206,7 +3227,7 @@ impl Vm {
                 }
                 self.reg_set(top, pos_reg, Value::Int(id as i64));
             }
-            Value::Object(h) => {
+            Some(Value::Object(h)) => {
                 // get_properties initializes a lazy object (a proxy iterates
                 // its instance, see FeFetchRef).
                 let h = self.lazy_props_object(&h)?;
@@ -3226,7 +3247,7 @@ impl Vm {
                     self.reg_set(top, pos_reg, Value::Int(id as i64));
                 }
             }
-            v => {
+            Some(v) => {
                 if !matches!(v, Value::Array(_) | Value::Closure(_)) {
                     self.foreach_type_warning(&v)?;
                 }
@@ -3320,7 +3341,10 @@ impl Vm {
         clear_arr: bool,
         end: Pc,
     ) -> Result<(), Thrown> {
-        if let Value::Int(id) = self.stack[top].regs[pos_reg as usize] {
+        // Iterators exist on by-reference loops and plain objects only.
+        let iter = by_ref || matches!(self.stack[top].regs[arr as usize], Value::Object(_));
+        if let (true, Value::Int(id)) = (iter, &self.stack[top].regs[pos_reg as usize]) {
+            let id = *id;
             let id = id as u32;
             let cell = match &self.stack[top].regs[arr as usize] {
                 Value::Ref(rc) if by_ref => Some(rc.clone()),

@@ -430,15 +430,31 @@ as in php, each instruction decides how it fetches its operands.
   copies the slot with `copy_slot`, so an undefined outer variable is
   undefined inside (`use ($x)` reads it, with the warning).
 
-**foreach (phase 4)** — by-value iterates a COW snapshot (Rc bump into a hidden
-reg); by-ref operates on the live CV array. Position is a hidden `Int` reg via
-`IndexMap::get_index(i)`. `keycv` = `Reg::MAX` means "no key target".
+**foreach** — by-value over an array iterates a COW snapshot (Rc bump into a
+hidden reg) by position (`IndexMap::get_index(i)`); a temporary source is moved
+into that reg. Everything else follows php's HashTable iterators: a by-ref loop
+puts an iterator on the live array (`ArrayData` iterator list, id from
+`next_ht_iter_id`, the same mechanism array_walk uses), so positions survive
+unset/append/splice/shift/unshift and reassignment (an array without the
+iterator is walked from its internal pointer); a plain object by value or by
+ref iterates its live property table through an iterator kept on the object
+(`ObjectData::prop_iter_*`, moved by `remove_prop` / `insert_prop_at`).
+`pos_reg + 1` holds a placeholder object for the handle php's
+zend_object_iterator takes (Traversable and hooked objects).
+`keycv` = `Reg::MAX` means "no key target".
 ```
-FeReset   { arr_reg, pos_reg, src, end }                  snapshot deref(src); pos=0; if empty Jmp end
-FeFetch   { arr_reg, pos_reg, keycv, valcv, end }         if exhausted Jmp end; bind key?/value from entry[pos]; pos+=1
-FeResetRw { cv, pos_reg, end }                            by-ref over the live array in CV cv (lvalue required)
-FeFetchRw { cv, pos_reg, keycv, valcv, end }              promote current element to Ref, bind valcv to it (writes alias)
+FeReset    { arr_reg, pos_reg, src, end }            start; empty/non-iterable (warns) -> Jmp end
+FeFetch    { arr_reg, pos_reg, keycv, valcv, end }    bind next key?/value, or Jmp end
+FeResetRef { arr_cv, pos_reg, end }                   by-ref: separate + iterator on the array in arr_cv
+FeFetchRef { arr_cv, pos_reg, keycv, valcv, end }     promote the next element to Ref, bind valcv to it
+FeFree     { arr, pos_reg, by_ref, clear_arr, end }   ZEND_FE_FREE: drop iterator, handle, temporary
 ```
+FeFree is emitted at the loop end and before `break N`/`continue N`, `return`
+and `goto` leave the loop (only loops inside the innermost try/finally; outer
+ones are left to the frame). On a jump `end` is the loop end: an exception a
+destructor throws there is handled as if thrown at the loop end
+(ZEND_FREE_ON_RETURN). A temporary is not freed on exception unwinding until the
+frame goes (php's live ranges are not modelled).
 
 **References / scope (phase 6)** — reuse `Value::Ref`, no new machinery.
 ```

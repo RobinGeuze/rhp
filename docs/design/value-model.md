@@ -325,7 +325,8 @@ A variable/array/property **slot** normally holds a `Value` *directly*
   element now holds a `Value::Ref`, the array's COW shallow-clone shares that
   ref — so the reference stays live even if the array is copied, exactly as PHP
   (the well-known "`&` left in an array after foreach" footgun is reproduced
-  faithfully).
+  faithfully). The loop keeps a HashTable iterator on the array (see the
+  foreach section of bytecode.md), so it sees elements added or removed.
 
 **Non-variables where php wants a reference.** As in php, the compiler
 classifies the expression (zend_is_variable / zend_is_call) and the VM

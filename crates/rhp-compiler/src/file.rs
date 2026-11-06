@@ -91,6 +91,9 @@ pub(crate) struct FileCtx<'s> {
     /// Diagnostics php raises while compiling (level, message, line):
     /// `Program::compile_diags`.
     pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
+    /// Diagnostics php's scanner raises (level, message, byte offset): the
+    /// whole file is scanned before anything compiles, so they come first.
+    pub(crate) scan_diags: RefCell<Vec<(i64, String, u32)>>,
     /// The leading run of top-level `declare`s (zend_is_first_statement):
     /// each one's offset, and whether an empty statement came before it.
     pub(crate) first_declares: Vec<(u32, bool)>,
@@ -146,6 +149,7 @@ impl<'s> FileCtx<'s> {
             num_top_classes: 0,
             fatal: RefCell::new(None),
             compile_diags: RefCell::new(Vec::new()),
+            scan_diags: RefCell::new(Vec::new()),
             first_declares: Vec::new(),
             ticks: Vec::new(),
         }
@@ -262,6 +266,26 @@ impl<'s> FileCtx<'s> {
     pub(crate) fn diag(&self, level: i64, offset: u32, message: String) {
         let line = self.line_of(offset);
         self.compile_diags.borrow_mut().push((level, message, line));
+    }
+
+    /// A diagnostic of php's scanner at byte `offset`.
+    pub(crate) fn scan_diag(&self, level: i64, offset: u32, message: String) {
+        self.scan_diags.borrow_mut().push((level, message, offset));
+    }
+
+    /// All diagnostics in php's order: the scanner's in source order, then
+    /// the compiler's by line.
+    pub(crate) fn take_diags(&self, extra: Vec<(i64, String, u32)>) -> Vec<(i64, String, u32)> {
+        let mut scan = self.scan_diags.take();
+        scan.sort_by_key(|d| d.2);
+        // An expression compiled twice is still scanned once.
+        scan.dedup();
+        let mut rest: Vec<_> = extra.into_iter().chain(self.compile_diags.take()).collect();
+        rest.sort_by_key(|d| d.2);
+        scan.into_iter()
+            .map(|(l, m, o)| (l, m, self.line_of(o)))
+            .chain(rest)
+            .collect()
     }
 
     /// The earliest recorded compile error: `(line, message)`.

@@ -152,7 +152,7 @@ fn compile_program(
             let d = p.compile_diags.clone();
             (Ok(p), d)
         }
-        Err(e) => (Err(e), cx.compile_diags.take()),
+        Err(e) => (Err(e), cx.take_diags(Vec::new())),
     };
     let r = match cx.take_fatal() {
         Some((line, message)) if unwound.is_none_or(|l| line <= l) => {
@@ -257,12 +257,12 @@ fn compile_file(
     let closures = cx.closures.take();
     classes.extend(cx.anon_classes.take().into_iter().map(Rc::new));
     let cond_classes = cx.cond_classes.take().into_iter().map(Rc::new).collect();
-    let mut compile_diags: Vec<_> = hrh::scan(flat, &|o| cx.line_of(o))
-        .into_iter()
-        .map(|line| (rhp_values::E_DEPRECATED, hrh::MESSAGE.to_string(), line))
-        .chain(cx.compile_diags.take())
-        .collect();
-    compile_diags.sort_by_key(|d| d.2);
+    let compile_diags = cx.take_diags(
+        hrh::scan(flat, &|o| cx.line_of(o))
+            .into_iter()
+            .map(|line| (rhp_values::E_DEPRECATED, hrh::MESSAGE.to_string(), line))
+            .collect(),
+    );
     let mut prog = Program {
         main: Rc::new(c.finish()?),
         functions,

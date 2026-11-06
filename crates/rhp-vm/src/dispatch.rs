@@ -1216,7 +1216,21 @@ impl Vm {
                     let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     let cell = match &self.stack[top].regs[src as usize] {
                         Value::Ref(rc) => rc.clone(),
-                        v => Rc::new(RefCell::new(v.clone())),
+                        // a by-value call result: assigned
+                        v => {
+                            let v = v.clone();
+                            match self.var_var_slot(top, &vname) {
+                                Ok(cv) => self.cv_assign(top, cv, v),
+                                Err(cell) => {
+                                    let mut c = cell.borrow_mut();
+                                    match &mut *c {
+                                        Value::Ref(rc) => *rc.borrow_mut() = v,
+                                        slot => *slot = v,
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                     };
                     self.var_var_bind(top, &vname, cell);
                 }
@@ -1533,6 +1547,20 @@ impl Vm {
                                 return Ok(done);
                             }
                         }
+                        Some(FinallyCont::ReturnRef(v, ret_pc)) => {
+                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                                self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc));
+                                self.stack[top].pc = f2 as usize;
+                            } else {
+                                // php checks the type again at the return,
+                                // whose finally runs again when it fails.
+                                self.stack[top].pc = ret_pc as usize + 1;
+                                self.recheck_ref_return(top, &proto, &v)?;
+                                if let Some(done) = self.do_return(v) {
+                                    return Ok(done);
+                                }
+                            }
+                        }
                         Some(FinallyCont::Jump(target)) => {
                             self.jump_through_finally(top, &proto, pc, target)
                         }
@@ -1550,6 +1578,14 @@ impl Vm {
                     self.drop_left_finallies(top, &proto, pc);
                     if let Some(f) = enclosing_finally(&proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
+                    }
+                }
+                Instr::SetPendingRetRef { src, kind } => {
+                    let v = self.ret_ref_value(top, &proto, src, kind)?;
+                    let pc = self.stack[top].pc as u32 - 1;
+                    self.drop_left_finallies(top, &proto, pc);
+                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                        self.push_pending(top, f, FinallyCont::ReturnRef(v, pc));
                     }
                 }
                 Instr::JmpFinally { target } => {
@@ -2011,10 +2047,23 @@ impl Vm {
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
-                    // `src` already holds a `Ref` (MakeRefLval); alias it raw.
+                    // `src` holds a `Ref` (MakeRefLval): alias it raw. A
+                    // by-value call result is assigned (after its notice).
                     let v = self.stack[top].regs[src as usize].clone();
+                    if !matches!(v, Value::Ref(_)) {
+                        self.cv_assign(top, dst_cv, v);
+                        continue;
+                    }
                     self.stack[top].regs[dst_cv as usize] = v;
                     self.sync_global_cv(top, dst_cv);
+                }
+                Instr::RefFuncResult { src } => {
+                    if !matches!(self.stack[top].regs[src as usize], Value::Ref(_)) {
+                        self.diag(
+                            builtins::E_NOTICE,
+                            "Only variables should be assigned by reference",
+                        )?;
+                    }
                 }
                 Instr::MakeRef { dst, cv } => {
                     let rc = self.promote(top, cv);
@@ -2108,11 +2157,8 @@ impl Vm {
                         return Ok(done);
                     }
                 }
-                Instr::RetRef { src } => {
-                    // Return-by-reference: deliver the raw slot (a `Value::Ref`
-                    // cell) without dereferencing, so the caller's `$x = &f()`
-                    // aliases the same cell. No return-type coercion.
-                    let v = self.stack[top].regs[src as usize].clone();
+                Instr::RetRef { src, kind } => {
+                    let v = self.ret_ref_value(top, &proto, src, kind)?;
                     if let Some(done) = self.do_return(v) {
                         return Ok(done);
                     }

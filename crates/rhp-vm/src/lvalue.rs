@@ -572,6 +572,17 @@ impl Vm {
         let (i, h, name) = match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
+                // `&$GLOBALS['x']`: the symbol-table cell is the variable.
+                if let (true, CursorRoot::Cell(rc), Some(n)) =
+                    (steps.is_empty(), &self.cursor_root, &self.cursor_global)
+                {
+                    let rc = rc.clone();
+                    if !self.ref_globals.contains(&n[..]) {
+                        self.ref_globals.insert(n.clone());
+                    }
+                    crate::dispatch::cell_define(&rc);
+                    return Ok(rc);
+                }
                 self.cursor_dyn_check(top, steps, true)?;
                 let cx = PropCtx {
                     classes: &self.classes,

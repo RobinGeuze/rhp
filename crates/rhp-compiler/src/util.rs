@@ -61,3 +61,13 @@ pub(crate) fn is_superglobal(name: &[u8]) -> bool {
             | b"_FILES"
     )
 }
+
+/// `e` without enclosing parentheses (php's AST has none).
+pub(crate) fn unparen<'a>(
+    mut e: &'a crate::parse::cst::Expression<'a>,
+) -> &'a crate::parse::cst::Expression<'a> {
+    while let crate::parse::cst::Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    e
+}

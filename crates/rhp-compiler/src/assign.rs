@@ -613,9 +613,14 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::MakeRefLval { dst: r });
                 Ok(r)
             }
-            // `$x = &func()` / other non-lvalue source: we don't implement
-            // return-by-reference, so bind by value (matches php's fallback for a
-            // non-ref-returning callee; object handles are shared regardless).
+            Expression::Parenthesized(p) => self.compile_ref_source(p.expression),
+            // `$x =& f()`: the reference a by-reference function returns, or
+            // (ZEND_RETURNS_FUNCTION) a value with php's notice.
+            other if is_call(other) => {
+                let r = self.compile_expr(other)?;
+                self.emit(Instr::RefFuncResult { src: r });
+                Ok(r)
+            }
             other => self.compile_expr(other),
         }
     }
@@ -682,6 +687,11 @@ impl ProtoBuilder<'_> {
                     let r = self.compile_ref_source(u.operand)?;
                     let dst_cv = self.cv(strip_dollar(dst.name));
                     self.emit(Instr::RefAssign { dst_cv, src: r });
+                    // A call's result is what was assigned (a destructor
+                    // run by the assignment may unset the variable).
+                    if is_call(crate::util::unparen(u.operand)) {
+                        return Ok(r);
+                    }
                     return Ok(dst_cv);
                 }
                 // `$$n =& <src>`: alias the variable named at run time.

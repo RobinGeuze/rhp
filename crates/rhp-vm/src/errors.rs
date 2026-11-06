@@ -30,6 +30,9 @@ pub(crate) enum FinallyCont {
     Rethrow(Thrown),
     /// A `return` crossed out of the try/catch; complete it after finally.
     Return(Value),
+    /// A by-reference function's `return` (at `pc`) crossed out of the
+    /// try/catch: its type is checked again after the finally blocks.
+    ReturnRef(Value, u32),
     /// A `break`/`continue` crossed out of the try/catch; jump after finally.
     Jump(u32),
 }

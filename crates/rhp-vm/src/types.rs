@@ -392,6 +392,82 @@ impl Vm {
         Err(Thrown::error("TypeError", msg))
     }
 
+    /// ZEND_RETURN_BY_REF (after ZEND_VERIFY_RETURN_TYPE): the value a
+    /// by-reference function returns from register `src`. The type is
+    /// checked on the referenced value, which keeps a coerced value; a value
+    /// that is no reference notices and is returned in a new one.
+    pub(crate) fn ret_ref_value(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        src: rhp_bytecode::Reg,
+        kind: u8,
+    ) -> Result<Value, Thrown> {
+        use rhp_bytecode::{RET_REF_FUNC, RET_REF_IMPLICIT, RET_REF_VALUE};
+        let typed = proto.return_type.is_some() && !proto.is_generator;
+        let raw = if kind == RET_REF_IMPLICIT {
+            if typed {
+                self.check_implicit_return(proto, top)?;
+            }
+            Value::Null
+        } else {
+            let raw = self.stack[top].regs[src as usize].clone();
+            if typed {
+                self.recheck_ref_return(top, proto, &raw)?
+            } else {
+                raw
+            }
+        };
+        let is_ref = matches!(raw, Value::Ref(_));
+        if kind == RET_REF_VALUE || kind == RET_REF_IMPLICIT || (kind == RET_REF_FUNC && !is_ref) {
+            self.diag(
+                rhp_builtins::E_NOTICE,
+                "Only variable references should be returned by reference",
+            )?;
+            let v = match raw {
+                Value::Undef => Value::Null,
+                v => deref(&v),
+            };
+            return Ok(Value::Ref(std::rc::Rc::new(std::cell::RefCell::new(v))));
+        }
+        Ok(match raw {
+            Value::Ref(_) => raw,
+            v => Value::Ref(std::rc::Rc::new(std::cell::RefCell::new(v))),
+        })
+    }
+
+    /// The return type check of a by-reference function on `v`: a
+    /// reference's value is coerced in place. A plain value comes back
+    /// coerced.
+    pub(crate) fn recheck_ref_return(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        v: &Value,
+    ) -> Result<Value, Thrown> {
+        let Some(ty) = &proto.return_type else {
+            return Ok(v.clone());
+        };
+        if proto.is_generator {
+            return Ok(v.clone());
+        }
+        let ctx = self.stack[top].defining_class;
+        let cur = match v {
+            Value::Ref(rc) => rc.borrow().clone(),
+            Value::Undef => Value::Null,
+            v => v.clone(),
+        };
+        let nv = self.coerce_stringable(cur, ty, proto.strict_types, ctx)?;
+        let nv = self.check_return_type(proto, top, nv)?;
+        Ok(match v {
+            Value::Ref(rc) => {
+                *rc.borrow_mut() = nv;
+                v.clone()
+            }
+            _ => nv,
+        })
+    }
+
     pub(crate) fn check_return_type(
         &mut self,
         proto: &FunctionProto,

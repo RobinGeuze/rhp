@@ -80,6 +80,7 @@ pub(crate) fn compile_method(
         MethodBody::Concrete(block) => block.statements.iter().any(stmt_has_yield),
         MethodBody::Abstract(_) => false,
     };
+    c.check_void_by_ref(&display, m.return_type_hint.as_ref().map(|r| &r.hint));
     let (params, nonconst_defaults, types) =
         c.lower_params(&m.parameter_list, &display, false, Some(class_name))?;
     c.check_generator_type(cx.line_of(m.function.span.start.offset))?;
@@ -204,7 +205,11 @@ pub(crate) fn compile_method(
     for s in body_stmts {
         c.compile_stmt(s)?;
     }
-    c.emit(Instr::RetNull);
+    let end = match &m.body {
+        MethodBody::Concrete(block) => block.right_brace.start.offset,
+        MethodBody::Abstract(_) => mago_span::HasSpan::span(m).end.offset,
+    };
+    c.emit_final_return(end);
 
     let mut proto = c.finish()?;
     proto.num_params = num_params;
@@ -253,6 +258,7 @@ pub(crate) fn compile_function(
     c.ret_type = return_type.clone();
     c.is_generator = block_has_yield(&func.body.statements);
     let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
+    c.check_void_by_ref(&display, func.return_type_hint.as_ref().map(|r| &r.hint));
     let (params, nonconst_defaults, _) =
         c.lower_params(&func.parameter_list, &display, false, None)?;
     c.check_generator_type(cx.line_of(func.function.span.start.offset))?;
@@ -272,7 +278,7 @@ pub(crate) fn compile_function(
     for s in func.body.statements.iter() {
         c.compile_stmt(s)?;
     }
-    c.emit(Instr::RetNull);
+    c.emit_final_return(func.body.right_brace.start.offset);
 
     let mut proto = c.finish()?;
     proto.num_params = num_params;
@@ -524,6 +530,7 @@ impl ProtoBuilder<'_> {
         };
         // A closure has no scope while it is compiled: its name alone.
         let display = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
+        c.check_void_by_ref(&display, ret_hint);
         let cname = c.class_name.clone();
         let (params, nonconst_defaults, _) =
             c.lower_params(param_list, &display, true, cname.as_ref())?;
@@ -552,14 +559,13 @@ impl ProtoBuilder<'_> {
                     use mago_span::HasSpan;
                     self.cx.line_of(e.span().start.offset)
                 };
-                let r = c.compile_expr(e)?;
-                c.emit(Instr::Ret { src: r });
+                c.compile_arrow_return(e)?;
             }
             ClosureBody::Block(b) => {
                 for s in b.statements.iter() {
                     c.compile_stmt(s)?;
                 }
-                c.emit(Instr::RetNull);
+                c.emit_final_return(b.right_brace.start.offset);
             }
         }
 

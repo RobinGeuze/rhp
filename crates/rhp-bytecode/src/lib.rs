@@ -500,8 +500,10 @@ pub enum Instr {
     },
     /// `return` from a by-reference function (`function &f()`): `src` holds a
     /// reference to the returned lvalue; it is delivered raw (not dereferenced).
+    /// `kind` is a `RET_REF_*` constant (php's ZEND_RETURN_BY_REF flags).
     RetRef {
         src: Reg,
+        kind: u8,
     },
     RetNull,
     /// `yield` / `yield $v` / `yield $k => $v` (only inside a generator). Suspends
@@ -563,6 +565,13 @@ pub enum Instr {
     /// return, then `Jmp` to the finally block.
     SetPendingRet {
         src: Reg,
+    },
+    /// [`Instr::SetPendingRet`] in a by-reference function (`kind` as in
+    /// [`Instr::RetRef`]); the return type is checked again after the
+    /// finally blocks ran.
+    SetPendingRetRef {
+        src: Reg,
+        kind: u8,
     },
     /// A `break`/`continue` that leaves a `try` with a `finally`: run the
     /// enclosing finally blocks (innermost first) that do not contain
@@ -1032,6 +1041,12 @@ pub enum Instr {
     /// CV `dst_cv` alias it (raw copy, no deref).
     RefAssign {
         dst_cv: Reg,
+        src: Reg,
+    },
+    /// `=& f()`: when call result `src` is not a reference (the function
+    /// returns by value), php's notice "Only variables should be assigned by
+    /// reference"; the bind that follows then assigns the value.
+    RefFuncResult {
         src: Reg,
     },
     /// `<lvalue> =& <src>`: write the raw `Ref` in `src` (not deref'd) to the
@@ -1629,6 +1644,15 @@ pub enum ConstInitProto {
 
 /// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
 pub const PACKED_ARGS: u16 = u16::MAX;
+
+/// `RetRef::kind`: a variable fetched for writing (always a reference).
+pub const RET_REF_VAR: u8 = 0;
+/// `RetRef::kind`: a call result; a value (not a reference) notices.
+pub const RET_REF_FUNC: u8 = 1;
+/// `RetRef::kind`: any other expression; always notices.
+pub const RET_REF_VALUE: u8 = 2;
+/// `RetRef::kind`: the implicit `return null` at the end of the body.
+pub const RET_REF_IMPLICIT: u8 = 3;
 
 // The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
 // it without decoding a niche.

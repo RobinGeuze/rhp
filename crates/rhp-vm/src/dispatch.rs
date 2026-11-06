@@ -3395,8 +3395,10 @@ impl Vm {
         }
         // Passed raw (the window's references kept): the callee's
         // by-reference parameters bind them, by-value ones dereference.
+        // Moved out of the window, so a temporary is freed when the call
+        // returns (zend_vm_stack_free_args), not at the next statement.
         let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .map(|i| std::mem::replace(&mut self.stack[top].regs[(base + i) as usize], Value::Null))
             .collect();
         self.dyn_call = true;
         let out = self.call_callable_value_mode(&c, args, Some(strict));

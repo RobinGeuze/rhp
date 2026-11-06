@@ -554,7 +554,8 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         d.startup.retain(|s| s.1 != key);
-        // The assert.* handlers deprecate neither on restore nor shutdown.
+        // The assert.* handlers don't deprecate at shutdown; ini_restore
+        // raises theirs itself.
         if ok && !replaced && !warnings.is_empty() && !name.starts_with(b"assert.") {
             d.restore.insert(key.clone(), warnings.clone());
         } else {

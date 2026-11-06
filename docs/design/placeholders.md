@@ -135,7 +135,10 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed
   at the next instruction boundary (frame return, overwritten/unset variable, end
-  of an expression statement via `ClearTemps`). Gap: an object freed while only a
+  of an expression statement via `ClearTemps`), reporting the line of the
+  instruction before that boundary; a non-public `__destruct` the releasing
+  scope may not call throws php's "Call to private X::__destruct()" (a
+  warning during shutdown). Gap: an object freed while only a
   non-tracked container held it is destructed late (at the next check) rather than
   exactly at release, and cycles are destructed at shutdown (php's GC may run
   earlier).

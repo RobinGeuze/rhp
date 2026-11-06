@@ -252,6 +252,9 @@ impl Vm {
             if self.dtor_check {
                 self.dtor_check = false;
                 if !self.destructibles.is_empty() {
+                    // Destructors report at the releasing instruction's line
+                    // (usually the one before `pc`).
+                    self.stack[top].pc = pc;
                     self.collect_released()?;
                     self.stack[top].pc = pc;
                     continue;

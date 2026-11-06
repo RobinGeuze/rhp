@@ -303,8 +303,12 @@ fn fn_is_subclass_of(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         .unwrap_or(true);
     match subject_class(host, &subject, allow_string)? {
         Some(n) => {
-            // Subtype but NOT the same class (is_subclass_of is exclusive).
-            let same = norm_class(&n) == norm_class(&target);
+            // Subtype but NOT the same class (is_subclass_of is exclusive;
+            // an alias names the same class).
+            let same = norm_class(&n) == norm_class(&target)
+                || host
+                    .resolve_class(&n)
+                    .is_some_and(|a| host.resolve_class(&target) == Some(a));
             Ok(Value::Bool(!same && host.reflect_is_a(&n, &target)))
         }
         None => Ok(Value::Bool(false)),
@@ -952,10 +956,13 @@ fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         host.resolve_class(&class)
     };
     match id {
-        // php: Warning "Cannot declare class X, because the name is already in use"
+        // The host warns when the alias name is taken.
         Some(id) => Ok(Value::Bool(host.class_alias(id, &alias)?)),
-        // php: Warning "Class "X" not found"
-        None => Ok(Value::Bool(false)),
+        None => {
+            let msg = format!("Class \"{}\" not found", String::from_utf8_lossy(&class));
+            host.emit_diagnostic(E_WARNING, msg.as_bytes())?;
+            Ok(Value::Bool(false))
+        }
     }
 }
 

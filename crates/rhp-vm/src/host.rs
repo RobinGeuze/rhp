@@ -2119,6 +2119,20 @@ impl Host for Vm {
             );
         }
         if self.class_ids.contains_key(&key) {
+            // zend_class_redeclaration_error_ex(E_WARNING, alias, ce)
+            let ce = &self.classes[class_id as usize];
+            let kind = crate::link_checks::kind_uc(ce.kind).to_ascii_lowercase();
+            let alias = String::from_utf8_lossy(alias);
+            let msg = if ce.decl_file.is_empty() {
+                format!("Cannot redeclare {kind} {alias}")
+            } else {
+                format!(
+                    "Cannot redeclare {kind} {alias} (previously declared in {}:{})",
+                    String::from_utf8_lossy(ce.decl_file.as_bytes()),
+                    ce.decl_line
+                )
+            };
+            self.diag(rhp_values::E_WARNING, &msg)?;
             return Ok(false);
         }
         self.class_aliases

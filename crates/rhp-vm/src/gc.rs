@@ -252,7 +252,8 @@ impl Vm {
                 for (k, p) in o.properties.iter() {
                     // A prelude class's private `__*` array is its native
                     // storage (a C array or HashTable php's get_gc walks
-                    // through, not a counted zend_array). Only when nothing
+                    // through, not a counted zend_array; ArrayObject's
+                    // `__s` is one). Only when nothing
                     // else reaches it: held once, and not a root itself.
                     if let Value::Array(a) = p {
                         let k = k.as_bytes();
@@ -260,10 +261,11 @@ impl Vm {
                             && a.ref_count() == 1
                             && gc::slot_of(p) == 0
                             && k.first() == Some(&0)
-                            && k[1..]
-                                .iter()
-                                .position(|&b| b == 0)
-                                .is_some_and(|i| k[i + 2..].starts_with(b"__"))
+                            && k[1..].iter().position(|&b| b == 0).is_some_and(|i| {
+                                // ArrayObject's storage is a zend_array.
+                                let name = &k[i + 2..];
+                                name.starts_with(b"__") && name != b"__s"
+                            })
                         {
                             out.extend(a.iter().map(|(_, v)| v.clone()));
                             continue;

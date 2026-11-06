@@ -1,6 +1,7 @@
 <?php
 // An ArrayObject over an object writes offsets through to the object's
-// property table; append() is refused.
+// property table; append() is refused. (Diagnostics without the path.)
+set_error_handler(function ($no, $msg, $file, $line) { echo "$msg (line $line)\n"; return true; });
 class T { public $p = 1; }
 $t = new T;
 $ao = new ArrayObject($t);
@@ -35,3 +36,11 @@ $ao = new ArrayObject($h);
 $h = null;
 unset($ao['d']);
 echo "after unset\n";
+
+// Over another ArrayObject php uses that one's storage: no property is
+// written, and append() is allowed.
+$in = new ArrayObject(['z' => 1]);
+$ao = new ArrayObject($in);
+$ao['y'] = 2;
+$ao->append(3);
+var_dump(get_object_vars($in));

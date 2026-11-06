@@ -497,7 +497,9 @@ The module is deliberately "READ-ONLY, native format only"
   snapshot; `$ao[] = v` and integer offsets land under string keys in the
   object (php keeps integer keys in a properties table); nested writes
   (`$ao['a']['b'] = v`) do not reach the object; ArrayIterator has no
-  write-through.
+  write-through. Over another ArrayObject / ArrayIterator php shares that
+  one's storage (SPL_ARRAY_USE_OTHER); rhp does not see its elements and
+  writes stay in the outer one.
 - **Full impl:** let the storage be the object's property table itself
   (spl_array_get_hash_table), which needs a properties table that can hold
   integer keys.

@@ -69,11 +69,13 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $__s = []; private $__f = 0; private $__i = 'ArrayIterator';
-    // The backing object, whose property table offset writes also update.
+    // The backing object, whose property table offset writes also update
+    // (not another ArrayObject / ArrayIterator: php uses its storage).
     private $__o = null;
-    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__o = is_object($array) ? $array : null; if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
+    private static function __backing($a, $self) { return is_object($a) && ($a === $self || !($a instanceof ArrayObject || $a instanceof ArrayIterator)) ? $a : null; }
+    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__o = self::__backing($array, $this); if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
     public function getIterator(): Iterator { $c = $this->__i; return new $c($this->__s); }
-    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__o = is_object($array) ? $array : null; $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
+    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__o = self::__backing($array, $this); $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
     public function getIteratorClass(): string { return $this->__i; }
     public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }

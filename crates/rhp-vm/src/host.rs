@@ -573,6 +573,15 @@ impl Host for Vm {
         (!matches!(v, Value::Null)).then_some(v)
     }
 
+    fn exception_error(&mut self, thrown: Thrown, level: i64) {
+        let label = if level == builtins::E_WARNING {
+            "Warning"
+        } else {
+            "Fatal error"
+        };
+        self.report_uncaught_as(thrown, level, label);
+    }
+
     fn executing_line(&self) -> u32 {
         (0..self.stack.len())
             .rev()

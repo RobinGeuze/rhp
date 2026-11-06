@@ -608,7 +608,8 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         d.changed.remove(pos);
         Some(d.restore.get(&key).cloned())
     });
-    if restore.is_some() {
+    let modified = restore.is_some();
+    if modified {
         crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
     }
     for w in restore.flatten().unwrap_or_default() {
@@ -620,6 +621,13 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         Some(v) => m.borrow_mut().insert(key, Some(v)),
         None => m.borrow_mut().remove(&key),
     });
+    // The assert.* handlers deprecate on a restore at run time too.
+    if modified {
+        let v = ini_value(&name).flatten().unwrap_or_default();
+        if let Some(msg) = crate::ext::standard::assert::ini_deprecation(&name, &v) {
+            crate::diag::deprecated(host, "ini_restore", &msg)?;
+        }
+    }
     if let Some(v) = ini_value(&name) {
         if name == b"memory_limit" {
             // The handler on the startup value (already within

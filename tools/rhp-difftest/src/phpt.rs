@@ -199,6 +199,11 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 const RHP_INI: &[&str] = &[
     "allow_url_include",
     "arg_separator.input",
+    "assert.active",
+    "assert.bail",
+    "assert.callback",
+    "assert.exception",
+    "assert.warning",
     "auto_globals_jit",
     "auto_prepend_file",
     "bcmath.scale",
@@ -223,11 +228,17 @@ const RHP_INI: &[&str] = &[
     "highlight.keyword",
     "highlight.string",
     "html_errors",
-    "ignore_repeated_errors",
-    "ignore_repeated_source",
+    // iconv.http_input, http_output and internal_charset were removed from
+    // php long ago but ext/iconv tests still set them: php 8.5 and rhp both
+    // ignore them.
+    "iconv.http_input",
+    "iconv.http_output",
     "iconv.input_encoding",
+    "iconv.internal_charset",
     "iconv.internal_encoding",
     "iconv.output_encoding",
+    "ignore_repeated_errors",
+    "ignore_repeated_source",
     "implicit_flush",
     "include_path",
     "input_encoding",
@@ -261,6 +272,7 @@ const RHP_INI: &[&str] = &[
     "url_rewriter.hosts",
     "url_rewriter.tags",
     "variables_order",
+    "zend.assertions",
     "zend.detect_unicode",
     "zend.exception_ignore_args",
     "zend.exception_string_param_max_len",
@@ -268,11 +280,6 @@ const RHP_INI: &[&str] = &[
     "zend.multibyte",
     "zend.reserved_stack_size",
     "zend.script_encoding",
-    // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
-    // rhp both ignore them.
-    "iconv.http_input",
-    "iconv.http_output",
-    "iconv.internal_charset",
 ];
 
 /// The `name` of a `name=value` setting.

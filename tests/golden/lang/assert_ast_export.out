@@ -1,0 +1,85 @@
+assert(-1 > 0)
+assert(16 > 100 && 1000.0 == 2 && 1.0 == 2 && 0.1 + 0.2 == 5 && 1.0E+100 == 3 && -0.0 == 1)
+assert(PHP_INT_MAX + 1 == 1.5E-7 && 123456789012345678 == 0.3)
+assert(false && ('a\'b\\c' == "x\ny\$" && "a$b{$c}d" && TRUE && \null && namespace\foo()))
+assert('hello' === 'w')
+assert(false && (__LINE__ == __FILE__ && __CLASS__ && [1, 2] == [3, 'a' => &$x, ...$y] && ([$a, , $b] = [1])))
+assert(false && ($a->b?->c::$d::E[0][1] ?? null))
+assert(false && (!($a = 1) || (int)$x . (string)$y || @f() || \clone($x) || new Foo() || new Foo(1) || new $c() || new foo()() || $x instanceof Foo || (print 1)))
+assert(false && (isset($a) && isset($b[1]) && empty($c) && $x++ && --$y && ~$z && +$q && -$r && (1 + 2) * 3 && 1 + 2 * 3 && 2 ** 3 ** 4 && (2 ** 3) ** 4 && -2 ** 2 && ($a = $b = 3)))
+assert(false && ($a ? $b : $c ? 1 : 2))
+assert(false && ($a ?: $b && $x ?? $y ?? $z && ($x ?? $y) ?? $z))
+assert(false && (Foo::bar() && Foo::$baz && Foo::class && $x::class && static::X && self::f(...) && $o->m(...) && strlen(...) && $$x && ${a b} && $o->{a b} && $o->$p && $o::$m()))
+assert(false && (f(a: 1, b: 2) && include('x.php')))
+assert(false && (\exit(1) && \exit('x') && \exit() && eval('1;')))
+assert(false && ($a && $b || ($c xor $d)) && $x != 1 && $y <=> 2 && ($s .= 'x' && ($n ??= [] && ($r =& $q))))
+assert(false && function () {
+    $a = (yield ) && (yield 1 => 2) && (yield from $g) && throw new Exception('x');
+    yield ;
+})
+assert(false && "tab\there\000" === `cmd\`q`)
+assert((fn() => false)())
+assert(false && (fn&(int ...$a): ?int => $a) && static fn() => 1)
+assert(false && function () {
+    echo 1;
+    echo 2;
+    echo 'inline';
+    global $a;
+    global $b;
+    unset($a);
+    unset($b);
+    static $s = [1];
+    static $t;
+    for (;;) {
+        break;
+    }
+    foreach ($a as [$k, $v]) {
+        continue 2;
+    }
+    while (true) {
+    }
+    if ($a) {
+        echo 1;
+    } elseif ($b) {
+        echo 2;
+    } else {
+        echo 3;
+    }
+    switch ($a) {
+        case 1:
+        case 2:
+            echo 3;
+        default:
+    }
+    try {
+    } catch (A|B) {
+    } finally {
+    }
+    function inner(&$r = null, string|int|null ...$rest): never {
+        throw new E();
+    }
+
+    interface I implements J, K {
+        public const C = 1;
+        public function m();
+
+    }
+
+    trait T {
+        protected static abstract function a();
+
+    }
+
+    enum E: string implements I {
+        case A = 'a';
+    }
+
+    final readonly class C extends P {
+        public $v;
+        private static ?int $s = 1, $t;
+    }
+
+    return match (true) {
+        default => 1,
+    };
+})

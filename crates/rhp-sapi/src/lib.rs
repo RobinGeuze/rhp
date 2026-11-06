@@ -217,6 +217,7 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     native_function: rhp_builtins::native_function,
     constant: rhp_builtins::ct_constant,
     cwd: rhp_builtins::zend::virtual_cwd::getcwd,
+    assertions: rhp_builtins::zend::assertions,
 };
 
 /// Parse and compile the source `src` of `file` as rhp runs a file: php's

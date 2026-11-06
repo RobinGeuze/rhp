@@ -24,6 +24,7 @@ use crate::prelude::prelude_classes;
 use crate::shrink::shrink_program;
 
 mod assign;
+mod ast_export;
 mod attrs;
 mod builder;
 mod calls;
@@ -104,6 +105,8 @@ pub struct Builtins {
     /// The request's working directory, php's `getcwd()`: `__DIR__` of code
     /// without a file ("Command line code", "Standard input code").
     pub cwd: fn() -> Option<Vec<u8>>,
+    /// EG(assertions), the zend.assertions ini: -1 compiles `assert()` away.
+    pub assertions: fn() -> i64,
 }
 
 /// Compile a parsed program into an owned, runnable bytecode `Program` (no

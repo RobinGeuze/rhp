@@ -78,6 +78,60 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// The scanner's 8.5 deprecation of the long cast spellings.
+    fn cast_deprecation(&self, op: &UnaryPrefixOperator) {
+        use mago_span::HasSpan;
+        use UnaryPrefixOperator as Op;
+        let (from, to) = match op {
+            Op::BinaryCast(..) => ("binary", "string"),
+            Op::BooleanCast(..) => ("boolean", "bool"),
+            Op::DoubleCast(..) => ("double", "float"),
+            Op::IntegerCast(..) => ("integer", "int"),
+            _ => return,
+        };
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            op.span().start.offset,
+            format!("Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"),
+        );
+    }
+
+    /// The scanner's diagnostics in code php scans but never compiles
+    /// (the right side of `false && ...`, assert() under
+    /// zend.assertions=-1): long cast spellings and octal overflows.
+    pub(crate) fn scanner_diags(&self, node: crate::parse::cst::Node) {
+        use crate::parse::cst::DocumentKind;
+        use mago_span::HasSpan;
+        match node {
+            Node::UnaryPrefix(u) => self.cast_deprecation(&u.operator),
+            Node::LiteralString(s) if matches!(s.raw.first(), Some(b'"' | b'b' | b'B')) => {
+                self.octal_overflow_warnings(s.raw, s.span().start.offset)
+            }
+            Node::CompositeString(cs) => {
+                let (parts, escapes) = match cs {
+                    CompositeString::Interpolated(i) => (&i.parts, true),
+                    CompositeString::Document(d) => (&d.parts, d.kind != DocumentKind::Nowdoc),
+                    CompositeString::ShellExecute(s) => (&s.parts, true),
+                };
+                for part in parts.iter() {
+                    match part {
+                        StringPart::Literal(l) => {
+                            if escapes {
+                                self.octal_overflow_warnings(l.raw, l.span.start.offset);
+                            }
+                        }
+                        p => self.scanner_diags(Node::StringPart(p)),
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        for child in node.children() {
+            self.scanner_diags(child);
+        }
+    }
+
     /// A read of a chain of dimensions and properties on a variable
     /// (`$a->$b->{$c[1]}`, `$a[f()][g()]`) as php's delayed compilation
     /// orders it: every key and name first, then the fetches, so a key's
@@ -521,6 +575,17 @@ impl ProtoBuilder<'_> {
         b: &crate::parse::cst::Binary,
         is_and: bool,
     ) -> Result<Reg, Thrown> {
+        // zend_compile_short_circuiting: a constant left side that decides
+        // the result leaves the right side uncompiled (no diagnostics).
+        if let Some(v) = literal_bool(b.lhs) {
+            if v != is_and {
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.lhs));
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.rhs));
+                let dst = self.alloc_temp();
+                self.emit(Instr::LoadBool { dst, b: v });
+                return Ok(dst);
+            }
+        }
         let dst = self.alloc_temp();
         let a = self.compile_expr(b.lhs)?;
         let jcond = self.code.len();
@@ -575,21 +640,7 @@ impl ProtoBuilder<'_> {
                 ))
             }
             Op::BinaryCast(..) | Op::BooleanCast(..) | Op::DoubleCast(..) | Op::IntegerCast(..) => {
-                // The scanner's 8.5 deprecation of the long cast spellings.
-                use mago_span::HasSpan;
-                let (from, to) = match &u.operator {
-                    Op::BinaryCast(..) => ("binary", "string"),
-                    Op::BooleanCast(..) => ("boolean", "bool"),
-                    Op::DoubleCast(..) => ("double", "float"),
-                    _ => ("integer", "int"),
-                };
-                self.cx.diag(
-                    rhp_values::E_DEPRECATED,
-                    u.operator.span().start.offset,
-                    format!(
-                        "Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"
-                    ),
-                );
+                self.cast_deprecation(&u.operator)
             }
             // Only a statement (php's grammar refuses it elsewhere): see
             // `compile_discarded`.
@@ -914,6 +965,9 @@ impl ProtoBuilder<'_> {
                         self.octal_overflow_warnings(l.raw, l.span.start.offset);
                     }
                     let mut v = l.value.unwrap_or(l.raw).to_vec();
+                    if matches!(cs, CompositeString::ShellExecute(_)) {
+                        v = crate::strings::shell_exec_value(&v);
+                    }
                     // A heredoc keeps `\"` as written.
                     if heredoc && flat {
                         if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
@@ -1508,4 +1562,43 @@ fn expr_kind(e: &Expression) -> &'static str {
 /// array element `&$this` is not a reference.
 fn is_this_var(e: &Expression) -> bool {
     matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == b"$this")
+}
+
+/// The truth value of a literal (`0`, `'x'`, `true`, `null`, ...), which
+/// php's compiler knows as a constant, or of `!` and `&&` / `||` over
+/// such constants (zend_compile_short_circuiting's constant result).
+fn literal_bool(e: &Expression) -> Option<bool> {
+    let mut e = e;
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    match e {
+        Expression::UnaryPrefix(u) if matches!(u.operator, UnaryPrefixOperator::Not(_)) => {
+            literal_bool(u.operand).map(|v| !v)
+        }
+        Expression::Binary(b) => {
+            let is_and = match b.operator {
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => true,
+                BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => false,
+                _ => return None,
+            };
+            match literal_bool(b.lhs)? {
+                v if v != is_and => Some(v),
+                _ => literal_bool(b.rhs),
+            }
+        }
+        Expression::Literal(l) => Some(rhp_values::conv::to_bool(&crate::fold::literal_value(l))),
+        Expression::ConstantAccess(ca) => {
+            let n = ca.name.value();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            if n.eq_ignore_ascii_case(b"true") {
+                Some(true)
+            } else if n.eq_ignore_ascii_case(b"false") || n.eq_ignore_ascii_case(b"null") {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }

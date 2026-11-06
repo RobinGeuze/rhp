@@ -665,6 +665,10 @@ pub trait Host {
     fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
         None
     }
+    /// zend_exception_error(thrown, level): report a throwable as uncaught
+    /// ("Fatal error: Uncaught ..." for E_ERROR, "Warning: ..." for
+    /// E_WARNING).
+    fn exception_error(&mut self, _thrown: Thrown, _level: i64) {}
     /// The line of the innermost user-code frame (php's
     /// `zend_get_executed_lineno`), 0 outside one.
     fn executing_line(&self) -> u32 {

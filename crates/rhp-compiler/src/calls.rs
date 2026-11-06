@@ -50,17 +50,90 @@ impl ProtoBuilder<'_> {
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
     ) -> Result<Reg, Thrown> {
-        let result_unused = std::mem::take(&mut self.call_result_unused);
         let callee_id: &Identifier = match fc.function {
             Expression::Identifier(id) => id,
             Expression::ConstantAccess(ca) => &ca.name,
             // `$f(...)`, `($expr)(...)`, `$arr[0](...)`: the callee is a runtime
             // value (closure / string name / `[obj, method]` / __invoke object).
-            _ => return self.compile_dynamic_call(fc),
+            _ => {
+                self.call_result_unused = false;
+                return self.compile_dynamic_call(fc);
+            }
         };
         // Resolve the (possibly namespaced) callee to a primary name + optional
         // global fallback (PHP's fall-back-to-global for unqualified calls).
         let (name_bytes, fallback) = self.cx.resolve_name(callee_id, NameKind::Func);
+        // zend_compile_call: `assert` as written in a namespace, or a name
+        // resolving to the global `assert`.
+        let is_assert = match &fallback {
+            Some(_) => crate::names::identifier_raw(callee_id).eq_ignore_ascii_case(b"assert"),
+            None => name_bytes.eq_ignore_ascii_case(b"assert"),
+        };
+        if is_assert {
+            return self.compile_assert(fc, name_bytes, fallback);
+        }
+        self.compile_named_call(fc, name_bytes, fallback, None)
+    }
+
+    /// zend_compile_assert: nothing at all under zend.assertions=-1;
+    /// otherwise ZEND_ASSERT_CHECK skips the call at run time when
+    /// assertions are off, and a lone argument gets the exported
+    /// expression as its description.
+    fn compile_assert(
+        &mut self,
+        fc: &crate::parse::cst::FunctionCall,
+        name_bytes: Vec<u8>,
+        fallback: Option<Vec<u8>>,
+    ) -> Result<Reg, Thrown> {
+        if (self.cx.builtins.assertions)() < 0 {
+            self.call_result_unused = false;
+            self.scanner_diags(crate::parse::cst::Node::ArgumentList(&fc.argument_list));
+            let dst = self.alloc_temp();
+            self.emit(Instr::LoadBool { dst, b: true });
+            return Ok(dst);
+        }
+        let extra = match fc
+            .argument_list
+            .arguments
+            .iter()
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            // The description goes after the spread: php's argument order check.
+            [Argument::Positional(p)] if p.ellipsis.is_some() => {
+                self.cx.fatal(
+                    p.span().start.offset,
+                    "Cannot use positional argument after argument unpacking".to_string(),
+                );
+                None
+            }
+            [arg] => Some((
+                matches!(arg, Argument::Named(_)),
+                crate::ast_export::assert_message(self.cx.src, arg),
+            )),
+            _ => None,
+        };
+        let res = self.alloc_temp();
+        let check = self.code.len();
+        self.emit(Instr::Nop);
+        let r = self.compile_named_call(fc, name_bytes, fallback, extra)?;
+        self.emit(Instr::Mov { dst: res, src: r });
+        let target = self.here();
+        self.code[check] = Instr::AssertCheck { dst: res, target };
+        Ok(res)
+    }
+
+    /// A call to a function by name; `extra` is an argument the compiler
+    /// adds after the written ones (assert()'s description; named when
+    /// the written one is).
+    fn compile_named_call(
+        &mut self,
+        fc: &crate::parse::cst::FunctionCall,
+        name_bytes: Vec<u8>,
+        fallback: Option<Vec<u8>>,
+        extra: Option<(bool, Vec<u8>)>,
+    ) -> Result<Reg, Thrown> {
+        let result_unused = std::mem::take(&mut self.call_result_unused);
 
         // Spread / named-argument call `foo(...$args)` / `foo(b: 1)`: marshal
         // args into an array, emit CallV (the VM places named arguments).
@@ -69,6 +142,32 @@ impl ProtoBuilder<'_> {
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let known = self.known_params(&name_bytes, &fallback);
             let args = self.build_args_array_known(Some(&fc.argument_list), known.as_ref())?;
+            if let Some((named, msg)) = &extra {
+                let k = self.intern_const(Value::str(msg.clone()));
+                let val = self.alloc_temp();
+                self.emit(Instr::LoadConst { dst: val, k });
+                let taken = fc
+                    .argument_list
+                    .arguments
+                    .iter()
+                    .any(|a| matches!(a, Argument::Named(n) if n.name.value == b"description"));
+                if taken {
+                    self.emit_throw_error(
+                        "Named parameter $description overwrites previous argument",
+                    );
+                } else if *named {
+                    let k = self.intern_const(Value::str("description"));
+                    let key = self.alloc_temp();
+                    self.emit(Instr::LoadConst { dst: key, k });
+                    self.emit(Instr::ArrSet {
+                        arr: args,
+                        key,
+                        val,
+                    });
+                } else {
+                    self.emit(Instr::ArrPush { arr: args, val });
+                }
+            }
             let name = self.intern_name(&name_bytes);
             let fb = self.intern_fallback(&fallback);
             let dst = self.alloc_temp();
@@ -308,6 +407,12 @@ impl ProtoBuilder<'_> {
                 let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
+        }
+        if let Some((_, msg)) = &extra {
+            let k = self.intern_const(Value::str(msg.clone()));
+            let r = self.alloc_temp();
+            self.emit(Instr::LoadConst { dst: r, k });
+            slots.push(ArgSlot::Value(r));
         }
         let argc = slots.len() as u16;
         let base = self.alloc_temps(argc);

@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 4,469 | 5,396 | 82.8% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| Zend/tests | 4,484 | 5,396 | 83.1% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 753 | 895 | 84.1% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 21 | 117 | 17.9% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,162 | 3,880 | 81.5% | no user stream wrappers or stream filters |
+| ext/standard | 3,209 | 3,880 | 82.7% | no user stream wrappers or stream filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 8 | 27 | 29.6% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -62,7 +62,7 @@ passing, so the percentages are of all php-src tests.
 | ext/json | 80 | 94 | 85.1% | |
 | ext/libxml | 18 | 32 | 56.2% | on libxml2 |
 | ext/mbstring | 223 | 446 | 50.0% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 781 | 876 | 89.2% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/opcache | 782 | 876 | 89.3% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 23 | 66 | 34.8% | |
 | ext/pcre | 166 | 174 | 95.4% | PCRE2, linked statically |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **13,295** | **22,219** | **59.8%** | |
+| **total** | **13,358** | **22,219** | **60.1%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

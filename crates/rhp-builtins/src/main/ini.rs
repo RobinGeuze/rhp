@@ -335,6 +335,12 @@ pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
             diags.push((pos, String::new(), level, format!("PHP Startup: {msg}")));
         }
     }
+    // php_ini_register_extensions: an `extension=` library that fails to load.
+    if let Some(rhp_values::Value::Str(name)) = cfg_get(b"extension") {
+        if let Some(msg) = crate::ext::standard::dl::startup_extension_error(name.as_bytes()) {
+            diags.push((usize::MAX - 1, String::new(), rhp_values::E_CORE_WARNING, msg));
+        }
+    }
     // php_module_startup's check of removed and deprecated directives.
     for (level, phrase, names) in REMOVED_DIRECTIVES {
         for name in *names {

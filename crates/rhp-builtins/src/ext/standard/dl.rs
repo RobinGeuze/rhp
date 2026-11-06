@@ -29,6 +29,36 @@ fn load_shlib(path: &[u8]) -> Result<bool, String> {
     }
 }
 
+/// php_load_extension for an `extension=` entry at startup
+/// (MODULE_PERSISTENT): the "Unable to load" message when the library does
+/// not load. One that loads is left alone (rhp cannot run it).
+pub(crate) fn startup_extension_error(filename: &[u8]) -> Option<String> {
+    let dir = ini_value(b"extension_dir").flatten().unwrap_or_default();
+    let has_slash = filename.contains(&b'/');
+    if !has_slash && dir.is_empty() {
+        return None;
+    }
+    let slash_suffix = !has_slash && dir.ends_with(b"/");
+    let sep: &[u8] = if slash_suffix { b"" } else { b"/" };
+    let first = if has_slash {
+        filename.to_vec()
+    } else {
+        [&dir[..], sep, filename].concat()
+    };
+    let err1 = load_shlib(&first).err()?;
+    let second = [&dir[..], sep, filename, b".so"].concat();
+    let err2 = load_shlib(&second).err()?;
+    let s = String::from_utf8_lossy;
+    Some(format!(
+        "PHP Startup: Unable to load dynamic library '{}' (tried: {} ({}), {} ({}))",
+        s(filename),
+        s(&first),
+        err1,
+        s(&second),
+        err2
+    ))
+}
+
 pub(crate) fn fn_dl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let filename = conv::to_string_bytes(&deref(&args[0]));
     let on = |n: &[u8]| ini_value(n).flatten().is_some_and(|v| ini_parse_bool(&v));

@@ -3067,9 +3067,6 @@ fn scalar_copy(v: &Value) -> Option<Value> {
     }
 }
 
-/// A value with nothing to drop: overwriting it needs no drop glue and
-/// never releases an object or array.
-#[inline(always)]
 /// Define an undefined variable cell as null (a write through it).
 pub(crate) fn cell_define(cell: &RefCell<Value>) {
     if let Ok(mut c) = cell.try_borrow_mut() {
@@ -3079,6 +3076,9 @@ pub(crate) fn cell_define(cell: &RefCell<Value>) {
     }
 }
 
+/// A value with nothing to drop: overwriting it needs no drop glue and
+/// never releases an object or array.
+#[inline(always)]
 fn is_scalar(v: &Value) -> bool {
     matches!(
         v,

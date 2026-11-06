@@ -984,6 +984,7 @@ impl Vm {
             }
         };
         flush_deferred_writes();
+        flush_replaced();
         self.flush_path_diags()?;
         if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
             return self.string_offset_object_write(top, steps, obj_val, r);
@@ -1259,6 +1260,7 @@ impl Vm {
                 r
             }
         };
+        flush_replaced();
         self.flush_path_diags()?;
         // The removed element may have held the last reference to an object.
         if !self.destructibles.is_empty() {
@@ -2200,7 +2202,36 @@ fn flush_deferred_writes() {
     let pending = DEFERRED_WRITE.with(|d| std::mem::take(&mut *d.borrow_mut()));
     for (rc, v) in pending {
         let old = std::mem::replace(&mut *rc.borrow_mut(), v);
+        rhp_values::gc::possible_root(&old);
         drop(old);
+    }
+}
+
+thread_local! {
+    /// Values a cursor write replaced, released once the path's borrows
+    /// are (each may become a possible root of a cycle).
+    static REPLACED: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Release `old` (overwritten by a path write) after the write.
+fn replaced(old: Value) {
+    if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = old {
+        REPLACED.with(|r| r.borrow_mut().push(old));
+    }
+}
+
+/// The values [`replaced`] kept: possible roots, then dropped.
+pub(crate) fn flush_replaced() {
+    let old = REPLACED.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *r)
+        }
+    });
+    for v in &old {
+        rhp_values::gc::possible_root(v);
     }
 }
 
@@ -2221,7 +2252,7 @@ fn assign_path(
     // `lval = &$x` (a `Ref` value at the leaf) rebinds the slot itself: it
     // does not write through a reference the slot already held.
     if steps.is_empty() && matches!(value, Value::Ref(_)) {
-        *slot = value;
+        replaced(std::mem::replace(slot, value));
         return Ok(());
     }
     // Descend through a reference to its underlying storage.
@@ -2242,7 +2273,7 @@ fn assign_path(
         return assign_path(&mut inner, steps, value, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
-        *slot = value;
+        replaced(std::mem::replace(slot, value));
         return Ok(());
     };
     if let CursorStep::Prop(name) = head {
@@ -2436,7 +2467,9 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 return Ok(());
             };
             if rest.is_empty() {
-                od.properties.shift_remove(&key);
+                if let Some(old) = od.properties.shift_remove(&key) {
+                    replaced(old);
+                }
             } else if let Some(child) = od.properties.get_mut(&key) {
                 unset_path(child, rest, cx)?;
             }

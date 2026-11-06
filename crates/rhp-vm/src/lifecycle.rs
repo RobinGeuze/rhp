@@ -34,6 +34,7 @@ impl Drop for RequestStateReset {
 fn reset_request_state() {
     builtins::reset_request_state();
     rhp_values::handles::reset_object_ids();
+    rhp_values::gc::reset();
     crate::lvalue::reset_path_diags();
 }
 
@@ -477,6 +478,7 @@ impl Vm {
             .handlers
             .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some());
         if native || self.lookup_method(cls, b"__destruct").is_some() {
+            rhp_values::gc::set_flag(h.borrow().id, rhp_values::gc::TRACKED, true);
             self.destructibles.push(h.clone());
         }
     }
@@ -486,7 +488,11 @@ impl Vm {
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
     pub(crate) fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
-        let cls = h.borrow().class;
+        let (cls, id) = {
+            let o = h.borrow();
+            (o.class, o.id)
+        };
+        rhp_values::gc::set_flag(id, rhp_values::gc::TRACKED, false);
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
             Some(f) => f(self, &h),

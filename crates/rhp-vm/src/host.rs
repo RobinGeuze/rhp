@@ -128,6 +128,10 @@ impl Host for Vm {
             .is_some_and(|f| f.proto.strict_types)
     }
 
+    fn gc_collect_cycles(&mut self) -> Result<i64, Thrown> {
+        Vm::gc_collect_cycles(self)
+    }
+
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown {
         match previous {
             Thrown::Error { .. } | Thrown::Object(_) => {

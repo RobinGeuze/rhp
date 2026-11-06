@@ -591,7 +591,11 @@ impl Vm {
         if present {
             let key = key.unwrap();
             self.consume_reinit(&h, &key);
-            h.borrow_mut().properties.shift_remove(&key);
+            let old = h.borrow_mut().properties.shift_remove(&key);
+            if let Some(old) = &old {
+                rhp_values::gc::possible_root(old);
+            }
+            drop(old);
             self.mark_typed_unset(&h, &key);
         } else if was_uninit {
             // Reset IS_PROP_UNINIT, bypassing __unset().
@@ -923,14 +927,21 @@ impl Vm {
             };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
-            match slot {
+            let old = match slot {
                 Value::Ref(rc) => {
                     let rc = rc.clone();
                     drop(od);
-                    *rc.borrow_mut() = val;
+                    let old = std::mem::replace(&mut *rc.borrow_mut(), val);
+                    old
                 }
-                other => *other = val,
-            }
+                other => {
+                    let old = std::mem::replace(other, val);
+                    drop(od);
+                    old
+                }
+            };
+            rhp_values::gc::possible_root(&old);
+            drop(old);
             return Ok(());
         }
         if let Value::Closure(_) = o {

@@ -227,6 +227,12 @@ pub trait Host {
     /// is a builtin or there is none (the main script).
     fn arg_uses_strict_types(&self) -> bool;
 
+    /// gc_collect_cycles(): run the cycle collector, returning how many
+    /// values it freed.
+    fn gc_collect_cycles(&mut self) -> Result<i64, Thrown> {
+        Ok(0)
+    }
+
     /// `thrown` raised while `previous` is pending: php makes `previous` the
     /// new exception's previous one. An `exit` in `previous` wins.
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown;

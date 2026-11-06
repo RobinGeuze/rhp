@@ -307,3 +307,66 @@ impl Vm {
         Ok(())
     }
 }
+
+impl Vm {
+    /// The values generator `id`'s state holds (zend_generator_get_gc):
+    /// the suspended frame's registers and the current and returned values.
+    pub(crate) fn gen_gc_children(&self, id: u32, out: &mut Vec<Value>) {
+        let Some(g) = self.generators.get(&id) else {
+            return;
+        };
+        if let Some(f) = &g.frame {
+            f.gc_children(out);
+        }
+        out.push(g.current_key.clone());
+        out.push(g.current_val.clone());
+        out.push(g.return_val.clone());
+    }
+
+    /// Whether generator `id` still has a frame to destroy (php's
+    /// generator `dtor_obj` has work to do).
+    pub(crate) fn gen_has_frame(&self, id: u32) -> bool {
+        self.generators.get(&id).is_some_and(|g| g.frame.is_some())
+    }
+
+    /// The cycle collector destroys generator `id`: its frame and values
+    /// go (returned, for the caller to drop).
+    pub(crate) fn gen_gc_close(&mut self, id: u32) {
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
+        if g.status == GenStatus::Running {
+            return;
+        }
+        let frame = g.frame.take();
+        g.status = GenStatus::Finished;
+        let cur = (
+            std::mem::replace(&mut g.current_key, Value::Null),
+            std::mem::replace(&mut g.current_val, Value::Null),
+        );
+        drop(cur);
+        drop(frame);
+    }
+
+    /// The generator object of handle `id` is being freed by the cycle
+    /// collector: its state goes with it.
+    pub(crate) fn gen_gc_free(&mut self, id: u32) -> Option<GenState> {
+        let g = self.generators.get(&id)?;
+        if g.status == GenStatus::Running {
+            return None;
+        }
+        self.generators.remove(&id)
+    }
+}
+
+impl Frame {
+    /// The values a suspended frame holds.
+    pub(crate) fn gc_children(&self, out: &mut Vec<Value>) {
+        out.extend(self.regs.iter().map(Value::copy_slot));
+        out.extend(self.extra_args.iter().cloned());
+        out.extend(self.dyn_vars.values().map(|r| Value::Ref(r.clone())));
+        if let Some(c) = &self.closure {
+            out.push(Value::Closure(c.clone()));
+        }
+    }
+}

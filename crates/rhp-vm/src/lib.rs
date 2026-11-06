@@ -19,6 +19,7 @@ mod compare;
 mod const_link;
 mod dispatch;
 mod errors;
+mod gc;
 mod generators;
 mod hooks;
 mod host;
@@ -435,7 +436,11 @@ struct Frame {
 impl Drop for Frame {
     fn drop(&mut self) {
         // php frees a frame's variables, then its `$this`: the handles come
-        // back in that order.
+        // back in that order. Each may become a possible root of a cycle.
+        let n = (self.proto.num_cvs as usize).min(self.regs.len());
+        for v in &self.regs[..n] {
+            rhp_values::gc::possible_root(v);
+        }
         if let Some(cv) = self.proto.this_cv {
             if let Some(slot) = self.regs.get_mut(cv as usize) {
                 let this = std::mem::replace(slot, Value::Null);

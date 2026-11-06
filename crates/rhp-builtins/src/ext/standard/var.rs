@@ -3013,6 +3013,8 @@ fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     // Per calling convention the result is never a reference.
     let v = deref(&root.borrow());
+    // php roots the result for the cycle collector.
+    rhp_values::gc::check_possible_root(&v);
     Ok(v)
 }
 

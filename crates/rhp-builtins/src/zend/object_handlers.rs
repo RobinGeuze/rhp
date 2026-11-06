@@ -86,6 +86,12 @@ pub type CastFn = fn(&mut dyn Host, &ObjectHandle, CastTarget) -> Result<Option<
 /// `free_obj_host` (once, with a host, after it).
 pub type DtorFn = fn(&mut dyn Host, &ObjectHandle) -> Result<(), Thrown>;
 
+/// `get_gc`: push the values the object's native state holds (what php's
+/// handler returns besides the properties), for the cycle collector. A
+/// value must be one the payload really holds a reference to; leaving
+/// one out only keeps garbage alive.
+pub type GetGcFn = fn(&ObjectHandle, &mut Vec<Value>);
+
 /// php's `clone_obj` slot.
 #[derive(Clone, Copy)]
 pub enum CloneObj {
@@ -113,6 +119,7 @@ pub struct ObjectHandlers {
     /// pass right after `__destruct` (in its place when there is none),
     /// unless the destructor kept a reference to the object.
     pub free_obj_host: Option<DtorFn>,
+    pub get_gc: Option<GetGcFn>,
 }
 
 impl ObjectHandlers {
@@ -125,6 +132,7 @@ impl ObjectHandlers {
         cast_object: None,
         dtor_obj: None,
         free_obj_host: None,
+        get_gc: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {

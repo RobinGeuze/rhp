@@ -11,9 +11,9 @@ reproduced inline so they can be turned into tests.
 
 - **Single-threaded.** The whole engine is `!Send`/`!Sync`. We use `Rc`/`RefCell`,
   not `Arc`/`Mutex`. This matches PHP's share-nothing request model and the Zend
-  engine's own non-atomic refcounting. Cycle collection is **deferred**: `Rc`
-  leaks reference cycles (e.g. `$a->x = $a`) for now; a mark-and-sweep cycle
-  collector is a later phase and does not change these types.
+  engine's own non-atomic refcounting. Reference cycles (e.g. `$a->x = $a`)
+  are found by php's trial-deletion cycle collector over `Rc::strong_count`
+  (gc.md); it did not change these types.
 - **Values own all their data.** No variant of `Value` (or anything reachable
   from it) carries the `'arena` lifetime. The arena holds the *AST*; the runtime
   holds *owned* copies. See §7.

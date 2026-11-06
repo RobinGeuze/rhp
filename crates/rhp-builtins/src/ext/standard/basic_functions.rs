@@ -418,6 +418,9 @@ fn ini_set_impl(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value
             )))
         }
     };
+    if name == b"error_reporting" {
+        host.error_reporting_changing();
+    }
     Ok(match alter_ini_entry(host, &name, newv, func)? {
         Some(old) => Value::str(old),
         None => Value::Bool(false),

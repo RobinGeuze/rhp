@@ -635,15 +635,18 @@ impl Vm {
                                 )));
                             }
                         }
-                        match slot {
-                            Value::Ref(rc) => Value::Ref(rc.clone()),
+                        let rc = match slot {
+                            Value::Ref(rc) => rc.clone(),
                             other => {
                                 let inner = std::mem::replace(other, Value::Null);
                                 let rc = Rc::new(std::cell::RefCell::new(inner));
                                 *other = Value::Ref(rc.clone());
-                                Value::Ref(rc)
+                                rc
                             }
-                        }
+                        };
+                        drop(b);
+                        self.add_prop_ref_source(&rc, h, &key);
+                        Value::Ref(rc)
                     }
                 }
                 IterStep::Hooked(name, decl) => {

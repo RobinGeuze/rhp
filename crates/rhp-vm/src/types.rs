@@ -657,7 +657,10 @@ impl Vm {
         decl: ClassId,
         called: Option<ClassId>,
     ) -> String {
-        if crate::classes::is_anon_name(self.class(decl).name.as_bytes()) {
+        // A trait keeps them too (its own copy of the property).
+        if crate::classes::is_anon_name(self.class(decl).name.as_bytes())
+            || self.class(decl).kind == rhp_values::ClassKind::Trait
+        {
             return self.type_string_resolved(ty, None, None);
         }
         self.type_string_resolved(ty, Some(decl), called)

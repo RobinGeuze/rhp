@@ -125,6 +125,21 @@ impl Vm {
         let Some(top) = self.scope_top() else {
             return Ok(());
         };
+        // A typed reference checks the value (extract: coercive).
+        let typed = match self.var_var_slot(top, name) {
+            Ok(cv) => match &self.stack[top].regs[cv as usize] {
+                Value::Ref(rc) if self.typed_refs.has(rc) => Some(rc.clone()),
+                _ => None,
+            },
+            Err(cell) => self.typed_refs.has(&cell).then_some(cell),
+        };
+        if let Some(rc) = typed {
+            let (_, old) = self.assign_to_ref(&rc, value, false)?;
+            if matches!(old, Value::Object(_) | Value::Array(_)) {
+                self.dtor_check = true;
+            }
+            return Ok(());
+        }
         let old = match self.var_var_slot(top, name) {
             Ok(cv) => match &mut self.stack[top].regs[cv as usize] {
                 Value::Ref(rc) => std::mem::replace(&mut *rc.borrow_mut(), value),
@@ -188,7 +203,7 @@ impl Vm {
             v => {
                 let v = v.clone();
                 match self.var_var_slot(top, &vname) {
-                    Ok(cv) => self.cv_assign(top, cv, v),
+                    Ok(cv) => self.cv_assign(top, cv, v)?,
                     Err(cell) => {
                         let mut c = cell.borrow_mut();
                         match &mut *c {

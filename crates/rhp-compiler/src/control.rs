@@ -676,6 +676,13 @@ impl ProtoBuilder<'_> {
                 .variable
                 .as_ref()
                 .map(|v| self.cv(strip_dollar(v.name)));
+            if var_reg.is_some() {
+                // The catch line: a typed reference refusing the exception
+                // throws from here.
+                use mago_span::HasSpan;
+                self.cur_line = self.cx.line_of(clause.span().start.offset);
+                self.emit(Instr::Nop);
+            }
             self.compile_stmts(clause.block.statements.iter())?;
             // As in php, the last catch without a finally falls through.
             if ci + 1 < n_catches || has_finally {

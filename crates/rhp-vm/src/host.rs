@@ -119,6 +119,20 @@ impl Host for Vm {
         self.error_handlers.pop();
     }
 
+    fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
+        let strict = self.caller_strict_types();
+        self.assign_to_ref(r, v, strict).map(|_| ())
+    }
+
+    fn add_ref_type_source(
+        &mut self,
+        r: &rhp_values::PhpRef,
+        obj: &ObjectHandle,
+        key: &rhp_values::PhpStr,
+    ) {
+        self.add_prop_ref_source(r, obj, key);
+    }
+
     fn caller_strict_types(&self) -> bool {
         // The user code calling the builtin: a prelude wrapper is internal.
         self.stack

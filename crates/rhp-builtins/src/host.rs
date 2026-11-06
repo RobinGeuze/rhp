@@ -213,6 +213,25 @@ pub trait Host {
     /// (zpp then coerces no scalars).
     fn caller_strict_types(&self) -> bool;
 
+    /// Write `v` through the by-reference argument `r` (php's
+    /// ZEND_TRY_ASSIGN_REF_*): a reference bound to typed properties checks
+    /// and coerces it, else the TypeError and nothing is written.
+    fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
+        *r.borrow_mut() = v;
+        Ok(())
+    }
+
+    /// Make the typed property `key` of `obj`, whose slot holds `r`, a type
+    /// source of that reference (ZEND_REF_ADD_TYPE_SOURCE).
+    fn add_ref_type_source(
+        &mut self,
+        r: &rhp_values::PhpRef,
+        obj: &ObjectHandle,
+        key: &rhp_values::PhpStr,
+    ) {
+        let _ = (r, obj, key);
+    }
+
     /// How the engine fetches the property or element whose magic accessor
     /// (`__get`, `__isset`, `offsetGet`, `offsetExists`) is running, asked from
     /// that accessor's own frame (anything it calls sees a read): SimpleXML's

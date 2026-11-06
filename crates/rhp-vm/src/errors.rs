@@ -1126,7 +1126,7 @@ impl Vm {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.
         let mut thrown = self.materialize(thrown, None);
-        loop {
+        'unwind: loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
             }
@@ -1210,8 +1210,14 @@ impl Vm {
                             let obj = self.thrown_to_object(&thrown)?;
                             // php assigns the catch variable like `$e = ...`:
                             // through a reference it holds (a global's cell).
+                            // A typed reference may refuse it: that error is
+                            // thrown from the catch block's start.
                             if let Some(vr) = arm.var_reg {
-                                self.cv_assign(top, vr, obj);
+                                if let Err(e) = self.cv_assign_as(top, vr, obj, true) {
+                                    self.stack[top].pc = arm.target as usize + 1;
+                                    thrown = self.materialize(e, None);
+                                    continue 'unwind;
+                                }
                             }
                             self.stack[top].pc = arm.target as usize;
                             self.unsilence_frames(top + 1);

@@ -97,6 +97,12 @@ pub(crate) enum DimFetch {
 }
 
 /// Where an lvalue cursor is rooted.
+/// A typed slot a reference is being bound to.
+enum RefBind {
+    Static(ClassId, PhpStr),
+    Prop(ObjectHandle, PhpStr),
+}
+
 #[derive(Clone)]
 pub(crate) enum CursorRoot {
     /// A register (compiled variable) in the current frame.
@@ -671,6 +677,16 @@ impl Vm {
                     return Ok(rc);
                 }
                 self.cursor_dyn_check(top, steps, true)?;
+                // ZEND_FETCH_REF on a typed property: the reference gets
+                // it as a type source.
+                let leaf = if steps.is_empty() {
+                    self.cursor_static_prop().map(|st| (None, st.cls, st.name))
+                } else if matches!(steps.last(), Some(CursorStep::Prop(_))) {
+                    self.cursor_leaf_slot(top, steps)
+                        .map(|(h, k)| (Some(h), 0, k))
+                } else {
+                    None
+                };
                 let cx = PropCtx {
                     classes: &self.classes,
                     scope: self.stack[top].defining_class,
@@ -688,6 +704,12 @@ impl Vm {
                         c
                     }
                 };
+                if let (Ok(rc), Some((obj, cls, key))) = (&r, leaf) {
+                    match obj {
+                        Some(h) => self.add_prop_ref_source(rc, &h, &key),
+                        None => self.add_static_ref_source(rc, cls, key.as_bytes()),
+                    }
+                }
                 self.flush_path_diags()?;
                 return r;
             }
@@ -892,6 +914,7 @@ impl Vm {
         // (`$o->p = &$x` fetches the property for a reference.)
         self.cursor_readonly_check(top, steps, matches!(v, Value::Ref(_)))?;
         let mut v = v;
+        let mut bind = None;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
@@ -907,6 +930,17 @@ impl Vm {
                             self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
                         self.typed_write_result = Some(v.clone());
                     }
+                }
+                if !matches!(v, Value::Ref(_))
+                    && (!self.typed_refs.is_empty() || self.cursor_may_auto_init(steps))
+                {
+                    let (c, typed) = self.cursor_typed_ref_check(top, steps, v)?;
+                    if typed {
+                        self.typed_write_result = Some(c.clone());
+                    }
+                    v = c;
+                } else if matches!(v, Value::Ref(_)) {
+                    bind = self.cursor_bind_ref_check(top, steps, &v)?;
                 }
             }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
@@ -972,6 +1006,7 @@ impl Vm {
         };
         // An object written to a string offset is converted afterwards.
         let obj_val = matches!(v, Value::Object(_) | Value::Closure(_)).then(|| v.clone());
+        let bound = bind.is_some().then(|| v.clone());
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -984,6 +1019,9 @@ impl Vm {
             }
         };
         flush_deferred_writes();
+        if let (Some(b), Some(bv), true) = (bind, &bound, r.is_ok()) {
+            self.finish_ref_bind(b, bv);
+        }
         self.flush_path_diags()?;
         if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
             return self.string_offset_object_write(top, steps, obj_val, r);
@@ -1180,6 +1218,16 @@ impl Vm {
         top: usize,
         steps: &[CursorStep],
     ) -> Option<(ClassId, PhpStr)> {
+        self.cursor_leaf_slot(top, steps)
+            .map(|(h, k)| (h.borrow().class, k))
+    }
+
+    /// [`Vm::cursor_leaf_typed`] with the object.
+    pub(crate) fn cursor_leaf_slot(
+        &self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<(ObjectHandle, PhpStr)> {
         let (CursorStep::Prop(name), prefix) = steps.split_last()? else {
             return None;
         };
@@ -1198,7 +1246,178 @@ impl Vm {
             return None;
         };
         self.class(cls).props.get(&key)?.ty.as_ref()?;
-        Some((cls, key))
+        Some((h, key))
+    }
+
+    /// The typed-reference checks of a cursor write (zend_assign_to_variable
+    /// on the leaf, zend_verify_ref_array_assignable along the path): `v`
+    /// coerced for the typed reference the leaf holds, and whether it is
+    /// one.
+    fn cursor_typed_ref_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: Value,
+    ) -> Result<(Value, bool), Thrown> {
+        match self.cursor_walk_refs(top, steps, true)? {
+            Some(rc) => {
+                let strict = self.stack[top].proto.strict_types;
+                Ok((self.verify_ref_assignable(&rc, deref(&v), strict)?, true))
+            }
+            None => Ok((v, false)),
+        }
+    }
+
+    /// The typed reference the leaf of a cursor path holds, if any.
+    pub(crate) fn cursor_leaf_ref(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<Rc<RefCell<Value>>> {
+        if self.typed_refs.is_empty() {
+            return None;
+        }
+        self.cursor_walk_refs(top, steps, false).ok().flatten()
+    }
+
+    /// Walk a cursor path to its leaf's typed reference; `vivify`: check
+    /// that typed references along it may become arrays.
+    fn cursor_walk_refs(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        vivify: bool,
+    ) -> Result<Option<Rc<RefCell<Value>>>, Thrown> {
+        let scope = self.stack[top].defining_class;
+        let mut cur = self.cursor_root_value(top);
+        let promotes = |v: &Value| matches!(v, Value::Null | Value::Undef | Value::Bool(false));
+        // A typed static property at the root (ZEND_FETCH_DIM_WRITE).
+        if vivify && matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            if let Some(st) = self.cursor_static_prop() {
+                if promotes(&deref(&cur)) {
+                    if let Some(info) = self.static_src_info(st.cls, st.name.as_bytes()) {
+                        self.check_auto_init(&info)?;
+                    }
+                }
+            }
+        }
+        for (i, step) in steps.iter().enumerate() {
+            if let (Value::Ref(rc), true) = (&cur, vivify) {
+                if promotes(&rc.borrow()) && !matches!(step, CursorStep::Prop(_)) {
+                    self.verify_ref_array_assignable(rc)?;
+                }
+            }
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned())
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => k,
+                        PropRes::Dynamic => name.clone(),
+                        PropRes::Denied(_) => return Ok(None),
+                    };
+                    let val = h.borrow().properties.get(&key).cloned();
+                    // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE).
+                    let below = matches!(
+                        steps.get(i + 1),
+                        Some(CursorStep::Key(_) | CursorStep::Append)
+                    );
+                    if vivify && below && val.as_ref().is_none_or(|v| promotes(&deref(v))) {
+                        if let Some(info) = self.prop_src_info(cls, &key) {
+                            self.check_auto_init(&info)?;
+                        }
+                    }
+                    val
+                }
+                _ => None,
+            };
+            match next {
+                Some(n) => cur = n,
+                None => return Ok(None),
+            }
+        }
+        Ok(match cur {
+            Value::Ref(rc) if self.typed_refs.has(&rc) => Some(rc),
+            _ => None,
+        })
+    }
+
+    /// Whether a write along `steps` may auto-initialize an array in a
+    /// (typed) property.
+    fn cursor_may_auto_init(&self, steps: &[CursorStep]) -> bool {
+        let nested = |s: &CursorStep| matches!(s, CursorStep::Key(_) | CursorStep::Append);
+        (self.cursor_static.is_some() && steps.first().is_some_and(nested))
+            || steps
+                .windows(2)
+                .any(|w| matches!(w[0], CursorStep::Prop(_)) && nested(&w[1]))
+    }
+
+    /// zend_throw_auto_init_in_prop_error unless typed property `s` takes
+    /// an array.
+    fn check_auto_init(&self, s: &crate::refsrc::SrcInfo) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        if s.ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, K::Array | K::Iterable | K::Mixed))
+        {
+            return Ok(());
+        }
+        Err(Thrown::type_error(format!(
+            "Cannot auto-initialize an array inside property {}::${} of type {}",
+            String::from_utf8_lossy(self.class(s.decl).name.as_bytes()),
+            String::from_utf8_lossy(s.name.as_bytes()),
+            self.prop_type_string(&s.ty, s.decl, Some(s.cls))
+        )))
+    }
+
+    /// The typed slot a `lval = &$x` binds (zend_assign_to_typed_property_
+    /// reference): checks the reference against it and drops the old
+    /// reference's source. What to add as a source after the bind.
+    fn cursor_bind_ref_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: &Value,
+    ) -> Result<Option<RefBind>, Thrown> {
+        let strict = self.stack[top].proto.strict_types;
+        if steps.is_empty() {
+            let Some(st) = self.cursor_static_prop() else {
+                return Ok(None);
+            };
+            let Some(info) = self.static_src_info(st.cls, st.name.as_bytes()) else {
+                return Ok(None);
+            };
+            self.verify_prop_assignable_by_ref(&info, v, strict)?;
+            if let Value::Ref(old) = &*st.cell.borrow() {
+                self.del_static_ref_source(old, info.decl, st.name.as_bytes());
+            }
+            return Ok(Some(RefBind::Static(st.cls, st.name)));
+        }
+        let Some((h, key)) = self.cursor_leaf_slot(top, steps) else {
+            return Ok(None);
+        };
+        let cls = h.borrow().class;
+        let Some(info) = self.prop_src_info(cls, &key) else {
+            return Ok(None);
+        };
+        self.verify_prop_assignable_by_ref(&info, v, strict)?;
+        let old = h.borrow().properties.get(&key).cloned();
+        if let Some(Value::Ref(old)) = old {
+            self.del_prop_ref_source(&old, &h, &key);
+        }
+        Ok(Some(RefBind::Prop(h, key)))
+    }
+
+    /// Add the source [`Vm::cursor_bind_ref_check`] found.
+    fn finish_ref_bind(&mut self, bind: RefBind, v: &Value) {
+        let Value::Ref(rc) = v else { return };
+        match bind {
+            RefBind::Static(cls, name) => self.add_static_ref_source(rc, cls, name.as_bytes()),
+            RefBind::Prop(h, key) => self.add_prop_ref_source(rc, &h, &key),
+        }
     }
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {

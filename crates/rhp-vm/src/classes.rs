@@ -1295,6 +1295,14 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for (k, m) in self.classes[tid as usize].methods.clone() {
+                // An enum's engine methods (zend_enum_register_funcs) come
+                // first: the class's own members win over a trait's.
+                let engine = matches!(k.as_slice(), b"cases")
+                    || (proto.enum_backing.is_some()
+                        && matches!(k.as_slice(), b"from" | b"tryfrom"));
+                if proto.kind == ClassKind::Enum && engine {
+                    continue;
+                }
                 // Trait methods adopt the using class as their defining class.
                 insert_method(
                     &mut methods,

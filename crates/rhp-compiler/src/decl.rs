@@ -285,16 +285,18 @@ pub(crate) fn param_default_meta(
     };
     let e = dv.value;
     let cname = match e {
+        // Names as php's compiled AST holds them: namespace-resolved.
         Expression::ConstantAccess(ca) => {
             let n = identifier_raw(&ca.name);
             let n = n.strip_prefix(b"\\").unwrap_or(n);
             let lcn = n.to_ascii_lowercase();
-            (!matches!(lcn.as_slice(), b"true" | b"false" | b"null"))
-                .then(|| PhpStr::from_bytes(n.to_vec()))
+            (!matches!(lcn.as_slice(), b"true" | b"false" | b"null")).then(|| {
+                PhpStr::from_bytes(cx.resolve_name(&ca.name, crate::names::NameKind::Const).0)
+            })
         }
         Expression::Access(Access::ClassConstant(cca)) => {
             let class: Option<Vec<u8>> = match cca.class {
-                Expression::Identifier(id) => Some(identifier_raw(id).to_vec()),
+                Expression::Identifier(id) => Some(cx.resolve_class_name(id)),
                 Expression::Self_(_) => Some(b"self".to_vec()),
                 Expression::Static(_) => Some(b"static".to_vec()),
                 Expression::Parent(_) => Some(b"parent".to_vec()),

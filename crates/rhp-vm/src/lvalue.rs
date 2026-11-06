@@ -640,6 +640,22 @@ impl Vm {
         }
     }
 
+    /// Whether register `r` holds a PHP reference (IS_REFERENCE), not just a
+    /// cell rhp shares with the symbol table: a global-scope variable is
+    /// one only once made so (`ref_globals`), and an include frame's
+    /// variables are bound to its caller's.
+    pub(crate) fn reg_is_php_ref(&self, top: usize, r: Reg) -> bool {
+        let f = &self.stack[top];
+        if !matches!(f.regs[r as usize], Value::Ref(_)) {
+            return false;
+        }
+        match f.proto.cv_var_names.get(r as usize) {
+            Some(name) if f.global_scope => self.ref_globals.contains(name.as_bytes()),
+            Some(_) => f.include_caller.is_none(),
+            None => true,
+        }
+    }
+
     /// Run `f` with the cursor temporarily re-rooted at `cell`.
     fn with_cursor_root<T>(
         &mut self,
@@ -1285,7 +1301,11 @@ impl Vm {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
                     if let Some(base) = self.spl_array_owner(&h, b"offsetunset") {
-                        return self.spl_array_unset_dim(&h, base, &key);
+                        // ArrayIterator's own offsetUnset keeps its position.
+                        if self.class(base).name.as_bytes() == b"ArrayObject" {
+                            return self.spl_array_unset_dim(&h, base, &key);
+                        }
+                        self.spl_array_key_in(&h, &key, SplKeyUse::Unset)?;
                     }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
@@ -1669,7 +1689,7 @@ impl Vm {
         Ok(found.unwrap_or(Value::Null))
     }
 
-    /// spl_array_unset_dimension_ex for the built-in offsetUnset.
+    /// spl_array_unset_dimension_ex for ArrayObject's built-in offsetUnset.
     fn spl_array_unset_dim(
         &mut self,
         h: &ObjectHandle,
@@ -1681,7 +1701,26 @@ impl Vm {
         if let Value::Array(a) = &mut *storage.borrow_mut() {
             a.remove(&akey);
         }
-        Ok(())
+        // Backed by an object: its property table too.
+        {
+            let cx = PropCtx {
+                classes: &self.classes,
+                scope: Some(base),
+                called: Some(base),
+                incdec: false,
+            };
+            let mut obj = Value::Object(h.clone());
+            let o = make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__o"))], &cx)?;
+            let backing = o.borrow().clone();
+            if let Value::Object(o) = backing {
+                let key = match akey {
+                    rhp_values::ArrayKey::Int(n) => PhpStr::from_bytes(n.to_string().into_bytes()),
+                    rhp_values::ArrayKey::Str(s) => s,
+                };
+                rhp_builtins::Host::prop_store(self, &o, &key, None);
+            }
+        }
+        self.collect_released()
     }
 
     /// spl_array_read_dimension_ex for `$ao[]` with a user offsetGet: it is

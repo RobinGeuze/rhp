@@ -1254,7 +1254,7 @@ impl Vm {
                         // A reference to null: ArrayObject's write_dimension
                         // sees a reference, not null, so it does not append.
                         let n = self.cursor_steps.len();
-                        if n < 64 && matches!(self.stack[top].regs[key as usize], Value::Ref(_)) {
+                        if n < 64 && self.reg_is_php_ref(top, key) {
                             self.cursor_ref_null |= 1 << n;
                         }
                     }

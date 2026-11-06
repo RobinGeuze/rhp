@@ -69,20 +69,22 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $__s = []; private $__f = 0; private $__i = 'ArrayIterator';
-    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
+    // The backing object, whose property table offset writes also update.
+    private $__o = null;
+    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__o = is_object($array) ? $array : null; if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
     public function getIterator(): Iterator { $c = $this->__i; return new $c($this->__s); }
-    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
+    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__o = is_object($array) ? $array : null; $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
     public function getIteratorClass(): string { return $this->__i; }
     public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }
     public function offsetExists($k): bool { return isset($this->__s[$k]); }
     public function offsetGet($k): mixed { if (is_array($k) || is_object($k)) { self::__badKey($k, $this); } return $this->__s[$k]; }
-    public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; } else { if (is_array($k) || is_object($k)) { self::__badKey($k, $this); } $this->__s[$k] = $v; } }
+    public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; if ($this->__o !== null) { __spl_obj_store($this->__o, array_key_last($this->__s), $v); } } else { if (is_array($k) || is_object($k)) { self::__badKey($k, $this); } $this->__s[$k] = $v; if ($this->__o !== null) { __spl_obj_store($this->__o, $k, $v); } } }
     // spl_array get_hash_key's failure (zend_illegal_container_offset).
     private static function __badKey($k, $o): never { throw new TypeError('Cannot access offset of type ' . (is_object($k) ? get_class($k) : 'array') . ' on ' . get_class($o)); }
-    public function offsetUnset($k): void { unset($this->__s[$k]); }
+    public function offsetUnset($k): void { unset($this->__s[$k]); if ($this->__o !== null) { __spl_obj_store($this->__o, $k, null, true); } }
     public function getArrayCopy(): array { return $this->__s; }
-    public function append($v): void { $this->__s[] = $v; }
+    public function append($v): void { if ($this->__o !== null) { throw new Error('Cannot append properties to objects, use ' . get_class($this) . '::offsetSet() instead'); } $this->__s[] = $v; }
     public function getFlags(): int { return $this->__f; }
     public function setFlags(int $flags): void { $this->__f = $flags; }
     public function asort(int $flags = SORT_REGULAR): true { asort($this->__s, $flags); return true; }

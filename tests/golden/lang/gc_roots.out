@@ -10,4 +10,8 @@ int(2)
 int(4)
 int(10001)
 int(40001)
+int(1)
+int(500)
+int(2)
+int(1)
 done

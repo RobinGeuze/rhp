@@ -1575,7 +1575,6 @@ impl Vm {
                     })
                 }))
             });
-            rhp_values::gc::mark_immutable(&default);
             let r = declare(
                 &mut props,
                 PropEntry {

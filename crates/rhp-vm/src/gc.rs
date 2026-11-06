@@ -250,22 +250,27 @@ impl Vm {
                         .iter()
                         .any(|&a| self.is_internal_class(a));
                 for (k, p) in o.properties.iter() {
-                    // A prelude class's private `__*` array is its native
+                    // A prelude class's private or protected `__*` array is its native
                     // storage (a C array or HashTable php's get_gc walks
                     // through, not a counted zend_array; ArrayObject's
                     // `__s` is one). Only when nothing
                     // else reaches it: held once, and not a root itself.
                     if let Value::Array(a) = p {
+                        // Private keys are mangled, protected ones plain.
                         let k = k.as_bytes();
+                        let name = match k.first() {
+                            Some(0) => k[1..]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .map_or(&[][..], |i| &k[i + 2..]),
+                            _ => k,
+                        };
+                        // ArrayObject's storage is a zend_array.
                         if internal
                             && a.ref_count() == 1
                             && gc::slot_of(p) == 0
-                            && k.first() == Some(&0)
-                            && k[1..].iter().position(|&b| b == 0).is_some_and(|i| {
-                                // ArrayObject's storage is a zend_array.
-                                let name = &k[i + 2..];
-                                name.starts_with(b"__") && name != b"__s"
-                            })
+                            && name.starts_with(b"__")
+                            && name != b"__s"
                         {
                             out.extend(a.iter().map(|(_, v)| v.clone()));
                             continue;
@@ -300,7 +305,14 @@ impl Vm {
                     out.push(Value::Object(t.clone()));
                 }
                 if let Some(w) = &c.wrapped {
-                    out.push((**w).clone());
+                    match &**w {
+                        // `$o->m(...)`: php's Closure holds the method and
+                        // `$this`, not an array.
+                        Value::Array(a) if a.ref_count() == 1 && gc::slot_of(w) == 0 => {
+                            out.extend(a.iter().map(|(_, v)| v.clone()))
+                        }
+                        other => out.push(other.clone()),
+                    }
                 }
                 if let Ok(s) = c.statics.try_borrow() {
                     out.extend(s.iter().map(|(_, r)| Value::Ref(r.clone())));

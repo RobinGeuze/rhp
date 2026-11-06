@@ -75,4 +75,36 @@ for ($i = 0; $i < 10002; $i++) {
 }
 $s = gc_status();
 var_dump($s['runs'] - $s0['runs'], $s['threshold'], $made);
+// Literal arrays are roots when a variable holding one goes (php without
+// opcache); the empty array never is.
+function lit() { $a = [1, 2]; $b = []; $c = $b; }
+gc_collect_cycles();
+$r0 = roots();
+lit();
+var_dump(roots() - $r0);
+
+// Literal roots stay correct after eval'd code's literals are freed.
+for ($i = 0; $i < 50; $i++) {
+    eval('$lz = [[1, 2], [3, [4]]];');
+}
+unset($lz);
+gc_collect_cycles();
+for ($i = 0; $i < 500; $i++) {
+    $cy = [$i];
+    $cy[] = &$cy;
+    unset($cy);
+}
+var_dump(gc_collect_cycles());
+
+// A method's first-class callable is a Closure, not an array; the
+// SplDoublyLinkedList family keeps native storage.
+class FC { public $c; function m() {} }
+$fo = new FC;
+$fo->c = $fo->m(...);
+unset($fo);
+var_dump(gc_collect_cycles());
+$q = new SplQueue;
+$q->enqueue($q);
+unset($q);
+var_dump(gc_collect_cycles());
 echo "done\n";

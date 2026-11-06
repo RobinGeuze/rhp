@@ -393,7 +393,9 @@ fn key_of(node: &Node) -> Option<Key> {
 pub fn possible_root(v: &Value) {
     let shared = match v {
         Value::Object(h) => Rc::strong_count(h) > 1,
-        Value::Array(a) => Rc::strong_count(&a.0) > 1,
+        // An empty array cannot be in a cycle (php's `[]` is the immutable
+        // zend_empty_array).
+        Value::Array(a) => Rc::strong_count(&a.0) > 1 && !a.0.entries.is_empty(),
         Value::Ref(r) => Rc::strong_count(r) > 1,
         Value::Closure(c) => Rc::strong_count(c) > 1 && !c.gc_buffered.get(),
         _ => false,
@@ -458,6 +460,9 @@ pub fn check_possible_root(v: &Value) {
 }
 
 fn add_array_root(a: &crate::PhpArray) {
+    if a.0.entries.is_empty() {
+        return;
+    }
     let addr = Rc::as_ptr(&a.0) as usize;
     add_root(|| Node::Arr(Rc::downgrade(&a.0)), Key::Addr(addr));
 }
@@ -613,39 +618,8 @@ pub fn object_freed(id: u32) {
     });
 }
 
-/// The `by_addr` mark of an immutable array.
-const IMMUTABLE: u32 = u32::MAX;
 /// The index mark of a root waiting for the due run.
 const DEFERRED: u32 = u32::MAX - 1;
-
-/// `v` is a literal array (a constant of compiled code, a property's
-/// default): php's immutable arrays are never possible roots. It and the
-/// arrays inside it are marked as if buffered.
-pub fn mark_immutable(v: &Value) {
-    let Value::Array(a) = v else {
-        return;
-    };
-    let _ = STATE.try_with(|st| {
-        crate::mem::uncounted(|| {
-            let Ok(mut b) = st.buf.try_borrow_mut() else {
-                return;
-            };
-            let mut todo = vec![a.clone()];
-            while let Some(a) = todo.pop() {
-                let addr = Rc::as_ptr(&a.0) as usize;
-                if b.by_addr.contains_key(&addr) {
-                    continue;
-                }
-                b.set_index(Key::Addr(addr), IMMUTABLE);
-                for (_, e) in a.iter() {
-                    if let Value::Array(inner) = e {
-                        todo.push(inner.clone());
-                    }
-                }
-            }
-        })
-    });
-}
 
 /// An array at `addr` is being freed (see [`object_freed`]).
 #[inline]

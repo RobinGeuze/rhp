@@ -1371,7 +1371,6 @@ fn fn_mb_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Array(out))
 }
 
-/// `mb_strlen(string $string, ?string $encoding = null)`.
 /// `mb_parse_str($string, &$result)`: parse_str into `$result` (php's
 /// _php_mb_encoding_handler_ex; with mbstring.http_input's default "pass"
 /// the input is not converted). zend_try_array_init empties the result
@@ -1388,6 +1387,7 @@ fn fn_mb_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     Ok(Value::Bool(true))
 }
 
+/// `mb_strlen(string $string, ?string $encoding = null)`.
 fn fn_mb_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_strlen";
     let s = str_arg(host, args, 0, f)?;

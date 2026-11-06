@@ -27,7 +27,9 @@ dropped:
 - `unserialize()`'s result (php roots it explicitly).
 
 A temporary's release adds no root, as php's `zval_ptr_dtor_nogc`. A
-reference adds the value it holds. The check is a tag test and
+reference adds the value it holds. An empty array is never a root (php's
+`[]` is the immutable zend_empty_array); other literal arrays are, as in
+php without opcache. The check is a tag test and
 `Rc::strong_count > 1` inline, plus a `gc_buffered` flag on closures
 (php's GC_INFO), so releasing a buffered closure stays out of the slow
 path. Objects have no room for the flag (an object stays in the 96-byte
@@ -75,7 +77,7 @@ The counts are `Rc::strong_count`s, read but never changed. A run:
    appends the nested garbage), the count is objects and arrays (not
    references).
 
-A prelude class keeps its native storage in private `__*` array
+A prelude class keeps its native storage in private or protected `__*` array
 properties; the walk goes through such an array to its elements (php's
 get_gc lists them, and the C storage is not a counted zend_array) when
 the property is its only holder and it is not buffered itself.

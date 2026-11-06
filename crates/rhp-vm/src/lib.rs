@@ -432,11 +432,16 @@ struct Frame {
     /// closure's own static variables).
     closure: Option<Rc<rhp_values::ClosureData>>,
     /// HashTable iterators of the running foreach loops over an object or
-    /// by reference: `(pos_reg, arr, by_ref, id)`. A loop left without its
-    /// `FeFree` (an exception, a jump through a finally) gives its iterator
-    /// up when a catch frees its temporaries or the frame goes.
-    fe_live: Option<Box<Vec<(Reg, Reg, bool, u32)>>>,
+    /// by reference. A loop left without its `FeFree` (an exception, a jump
+    /// through a finally) gives its iterator up when a catch frees its
+    /// temporaries or the frame goes. Boxed to keep `Frame` small (calls
+    /// move it): most frames have none.
+    #[allow(clippy::box_collection)]
+    fe_live: Option<Box<Vec<FeLive>>>,
 }
+
+/// A running foreach's iterator: `(pos_reg, arr, by_ref, id)`.
+type FeLive = (Reg, Reg, bool, u32);
 
 impl Drop for Frame {
     fn drop(&mut self) {

@@ -1036,7 +1036,14 @@ impl Vm {
             builtins::main::streams::note_wrapper_error("operation failed");
             return None;
         };
-        let spec = pathdup[..at].to_vec();
+        // php cuts the spec at "/resource=" and tokenizes from its second
+        // byte: with no spec ("php://filter/resource=…") the cut is at byte
+        // 0, so the whole rest, URL included, is read as filter names.
+        let spec = if at == 0 {
+            pathdup[1..].to_vec()
+        } else {
+            pathdup[..at].to_vec()
+        };
         for tok in spec.split(|&c| c == b'/').filter(|t| !t.is_empty()) {
             let (list, read, write) = if tok.len() >= 5 && tok[..5].eq_ignore_ascii_case(b"read=") {
                 (&tok[5..], true, false)

@@ -19,6 +19,8 @@ pub(crate) type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Include
 /// local file (read only when the compiled-script cache misses).
 pub(crate) enum IncludeSource {
     Bytes(Vec<u8>),
+    /// Read from a stream resource that already took its id.
+    Streamed(Vec<u8>),
     File(std::fs::File),
     /// Not on disk, but a cached script that needn't be revalidated.
     Cached,
@@ -246,7 +248,7 @@ impl Vm {
             if let Some(t) = self.pending_throw.take() {
                 return Err(t);
             }
-            data.map(|d| (raw_path.clone(), IncludeSource::Bytes(d)))
+            data.map(|d| (raw_path.clone(), IncludeSource::Streamed(d)))
         } else if builtins::main::streams::is_data_url(&raw_path) {
             let on = |vm: &Self, n: &[u8]| crate::ini_bool(&vm.ini_get(n).unwrap_or_default());
             let off = if !on(self, b"allow_url_fopen") {
@@ -426,6 +428,7 @@ impl Vm {
                 opened.set(true);
                 compile(self, &src).map(Rc::new)
             }
+            IncludeSource::Streamed(src) => compile(self, &src).map(Rc::new),
             IncludeSource::Cached => self.opcache_compile(
                 realpath,
                 given,

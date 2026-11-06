@@ -39,6 +39,9 @@ pub(crate) struct LinkState {
     linking: Vec<(Vec<u8>, Rc<ClassProto>, bool)>,
     /// php's `CG(delayed_autoloads)`: classes a variance check could not find.
     delayed: Vec<PhpStr>,
+    /// php's `CG(delayed_variance_obligations)`: the classes linked but for
+    /// their variance checks (ZEND_ACC_NEARLY_LINKED), with those checks.
+    pending: Vec<(ClassId, Vec<Obligation>)>,
     /// Hoisting (php's early binding at compile time): no unlinked classes
     /// are visible and nothing is registered for autoloading.
     compiling: bool,
@@ -271,6 +274,9 @@ fn prop_variance(pe: &crate::classes::PropEntry) -> PropVariance {
 }
 
 enum Obligation {
+    /// A parent or interface that is itself waiting for its variance
+    /// checks: they run first.
+    Dependency(ClassId),
     Method {
         child: Sig,
         child_scope: ClassId,
@@ -1563,13 +1569,48 @@ impl Vm {
         }
         let prev = std::mem::replace(&mut self.inherit.compiling, early);
         let mut obligations = Vec::new();
+        let is_pending = |vm: &Self, c: ClassId| vm.inherit.pending.iter().any(|(p, _)| *p == c);
+        if let Some(p) = self.class(ce).parent.filter(|&p| is_pending(self, p)) {
+            obligations.push(Obligation::Dependency(p));
+        }
         let r = self.link_pass(ce, trait_abstracts, &mut obligations);
         self.inherit.compiling = prev;
         r?;
+        let ifaces: Vec<ClassId> = self.class(ce).interfaces.clone();
+        for i in ifaces {
+            if is_pending(self, i)
+                && !matches!(obligations.first(), Some(Obligation::Dependency(d)) if *d == i)
+            {
+                obligations.push(Obligation::Dependency(i));
+            }
+        }
         if !obligations.is_empty() {
-            self.load_delayed_classes(ce)?;
+            // Nearly linked: the delayed autoloads first, then the checks
+            // (unless a class loaded meanwhile ran them as a dependency).
+            self.inherit.pending.push((ce, obligations));
+            let r = self
+                .load_delayed_classes(ce)
+                .and_then(|_| self.resolve_obligations(ce));
+            if r.is_err() {
+                self.inherit.pending.retain(|(c, _)| *c != ce);
+            }
+            r?;
+        }
+        self.implement_serializable(ce)?;
+        Ok(true)
+    }
+
+    /// resolve_delayed_variance_obligations for nearly linked `ce`, if it
+    /// still waits.
+    fn resolve_obligations(&mut self, ce: ClassId) -> Result<(), Thrown> {
+        let Some(i) = self.inherit.pending.iter().position(|(c, _)| *c == ce) else {
+            return Ok(());
+        };
+        let (_, obligations) = self.inherit.pending.remove(i);
+        {
             for o in obligations {
                 match o {
+                    Obligation::Dependency(d) => self.resolve_obligations(d)?,
                     Obligation::Method {
                         child,
                         child_scope,
@@ -1590,8 +1631,7 @@ impl Vm {
                 }
             }
         }
-        self.implement_serializable(ce)?;
-        Ok(true)
+        Ok(())
     }
 
     /// zend_implement_serializable: a class implementing Serializable

@@ -80,10 +80,10 @@ fn ini_noops_run_others_skip() {
     let test_ini = |p: &Phpt| rules.test_ini(p, dir, false);
     let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
     assert_eq!(test_ini(&p).unwrap().len(), 2);
-    let p = Phpt::parse(b"--INI--\nmbstring.encoding_translation=On\n--FILE--\n");
+    let p = Phpt::parse(b"--INI--\nmbstring.substitute_character=none\n--FILE--\n");
     assert_eq!(
         test_ini(&p).unwrap_err(),
-        "ini:mbstring.encoding_translation"
+        "ini:mbstring.substitute_character"
     );
     let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
     assert_eq!(test_ini(&p).unwrap().len(), 2);

@@ -284,6 +284,10 @@ impl Parser<'_, '_> {
             });
         }
         self.expect_ch(b'}')?;
+        // zend_ini_get_var: the configuration hash, then the environment.
+        if let Some(rhp_values::Value::Str(v)) = crate::main::ini::cfg_get(&name) {
+            return Ok(IV::s(v.as_bytes()));
+        }
         if let Some(v) = crate::ext::standard::basic_functions::env_get(&name) {
             return Ok(IV::s(&v));
         }

@@ -1433,6 +1433,10 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             Some(n as usize)
         }
     };
+    // php_stream_open_wrapper_ex
+    if url.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     touch_ctx(host, args, 2);
     if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
         return Ok(

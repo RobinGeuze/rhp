@@ -608,6 +608,7 @@ impl ProtoBuilder<'_> {
             self.finally_rets.push(Vec::new());
         }
         let try_start = self.here();
+        let temps = self.next_temp;
         self.compile_stmts(t.block.statements.iter())?;
         let try_end = self.here();
         // Normal completion jumps past the catch bodies to finally/after.
@@ -679,6 +680,7 @@ impl ProtoBuilder<'_> {
             catches: catch_arms,
             finally: finally_pc,
             finally_end,
+            temps,
         });
         // An exception escaping a catch body still runs the finally.
         if finally_pc.is_some() && has_catches {
@@ -688,6 +690,7 @@ impl ProtoBuilder<'_> {
                 catches: Vec::new(),
                 finally: finally_pc,
                 finally_end,
+                temps,
             });
         }
         Ok(())

@@ -803,13 +803,14 @@ pub trait Host {
         init: fn() -> Box<dyn std::any::Any>,
     ) -> Option<&mut dyn std::any::Any>;
     /// `ReflectionMethod::invoke`: call `class::method` on `obj` (null for a
-    /// static method) regardless of its visibility.
+    /// static method) regardless of its visibility. `args` is the argument
+    /// array (string keys are named arguments).
     fn reflect_invoke(
         &mut self,
         obj: &Value,
         class: &[u8],
         method: &[u8],
-        args: Vec<Value>,
+        args: Value,
     ) -> Result<Value, Thrown>;
     /// Is `res` a stream resource that is still open (not `fclose`d)?
     fn stream_is_open(&self, res: &Value) -> bool;
@@ -909,4 +910,13 @@ pub enum WrapperRestore {
     Unchanged,
     /// The built-in wrapper is registered again.
     Restored,
+}
+
+/// A list of positional arguments as an argument array.
+pub fn list_value(args: Vec<Value>) -> Value {
+    let mut a = rhp_values::PhpArray::new();
+    for v in args {
+        a.push(v);
+    }
+    Value::Array(a)
 }

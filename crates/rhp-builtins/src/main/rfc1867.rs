@@ -199,6 +199,8 @@ pub struct Limits {
     pub upload_max_filesize: i64,
     pub file_uploads: bool,
     pub upload_tmp_dir: Vec<u8>,
+    /// mbstring.encoding_translation.
+    pub translate: bool,
 }
 
 impl Limits {
@@ -219,6 +221,8 @@ impl Limits {
                 .unwrap_or_else(|| q(b"upload_max_filesize")),
             file_uploads: crate::ini_parse_bool(&fu),
             upload_tmp_dir: ini(b"upload_tmp_dir"),
+            translate: cfg!(feature = "mbstring-libmbfl")
+                && crate::ini_parse_bool(&ini(b"mbstring.encoding_translation")),
         }
     }
 }
@@ -279,6 +283,34 @@ pub(crate) fn cstr(s: &[u8]) -> &[u8] {
     }
 }
 
+/// The encoding of a part's headers under mbstring.encoding_translation.
+#[cfg(feature = "mbstring-libmbfl")]
+type InEnc = crate::ext::mbstring::GpcEnc;
+#[cfg(not(feature = "mbstring-libmbfl"))]
+#[derive(Clone, Copy)]
+struct InEnc;
+#[cfg(not(feature = "mbstring-libmbfl"))]
+impl InEnc {
+    fn char_bytes(self, _: u8) -> usize {
+        1
+    }
+    fn into_internal(self, s: &[u8]) -> Vec<u8> {
+        s.to_vec()
+    }
+}
+
+fn detect_encoding(_line: &[u8]) -> Option<InEnc> {
+    #[cfg(feature = "mbstring-libmbfl")]
+    return crate::ext::mbstring::gpc_detect(_line);
+    #[cfg(not(feature = "mbstring-libmbfl"))]
+    None
+}
+
+/// php_mb_mbchar_bytes for an optional encoding.
+fn char_bytes(enc: Option<InEnc>, b: u8) -> usize {
+    enc.map_or(1, |e| e.char_bytes(b)).max(1)
+}
+
 /// `multipart_buffer`, reading from the body.
 struct MBuf<'a> {
     src: &'a [u8],
@@ -293,6 +325,10 @@ struct MBuf<'a> {
     read_before: usize,
     /// `post_max_size` (<= 0: no limit).
     post_max_size: i64,
+    /// Detect each header line's encoding (encoding_translation).
+    translate: bool,
+    /// `input_encoding`: what the last header line was detected as.
+    input_enc: Option<InEnc>,
 }
 
 impl<'a> MBuf<'a> {
@@ -313,6 +349,8 @@ impl<'a> MBuf<'a> {
             boundary_next: bn,
             read_before: 0,
             post_max_size: 0,
+            translate: false,
+            input_enc: None,
         }
     }
 
@@ -409,6 +447,9 @@ impl<'a> MBuf<'a> {
             if line.is_empty() {
                 break;
             }
+            if self.translate {
+                self.input_enc = detect_encoding(&line);
+            }
             let colon = if !c_isspace(line[0]) {
                 line.iter().position(|&b| b == b':')
             } else {
@@ -500,7 +541,7 @@ fn memstr(hay: &[u8], needle: &[u8], partial: bool) -> Option<usize> {
 
 /// `php_ap_getword`: up to `stop` (outside quotes); the rest after any run
 /// of `stop`s.
-fn getword(line: &[u8], stop: u8) -> (Vec<u8>, &[u8]) {
+fn getword(line: &[u8], stop: u8, enc: Option<InEnc>) -> (Vec<u8>, &[u8]) {
     let mut pos = 0;
     while pos < line.len() && line[pos] != stop {
         let q = line[pos];
@@ -517,7 +558,7 @@ fn getword(line: &[u8], stop: u8) -> (Vec<u8>, &[u8]) {
                 pos += 1;
             }
         } else {
-            pos += 1;
+            pos += char_bytes(enc, line[pos]);
         }
     }
     if pos >= line.len() {
@@ -525,13 +566,14 @@ fn getword(line: &[u8], stop: u8) -> (Vec<u8>, &[u8]) {
     }
     let word = line[..pos].to_vec();
     while pos < line.len() && line[pos] == stop {
-        pos += 1;
+        pos += char_bytes(enc, line[pos]);
     }
+    let pos = pos.min(line.len());
     (word, &line[pos..])
 }
 
 /// `substring_conf`.
-fn substring_conf(s: &[u8], len: usize, quote: u8) -> Vec<u8> {
+fn substring_conf(s: &[u8], len: usize, quote: u8, enc: Option<InEnc>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < len && i < s.len() && s[i] != quote {
@@ -541,16 +583,23 @@ fn substring_conf(s: &[u8], len: usize, quote: u8) -> Vec<u8> {
         {
             i += 1;
             out.push(s[i]);
+            i += 1;
         } else {
-            out.push(s[i]);
+            // A multibyte character is copied whole.
+            let n = char_bytes(enc, s[i]);
+            let mut j = 0;
+            while j < n && i < len && i < s.len() {
+                out.push(s[i]);
+                i += 1;
+                j += 1;
+            }
         }
-        i += 1;
     }
     out
 }
 
 /// `php_ap_getword_conf`: a (possibly quoted) parameter value.
-fn getword_conf(s: &[u8]) -> Vec<u8> {
+fn getword_conf(s: &[u8], enc: Option<InEnc>) -> Vec<u8> {
     let mut p = 0;
     while p < s.len() && c_isspace(s[p]) {
         p += 1;
@@ -562,10 +611,10 @@ fn getword_conf(s: &[u8]) -> Vec<u8> {
     if s[0] == b'"' || s[0] == b'\'' {
         let q = s[0];
         let rest = &s[1..];
-        return substring_conf(rest, rest.len(), q);
+        return substring_conf(rest, rest.len(), q, enc);
     }
     let end = s.iter().position(|&c| c_isspace(c)).unwrap_or(s.len());
-    substring_conf(s, end, 0)
+    substring_conf(s, end, 0, enc)
 }
 
 /// `php_ap_basename`: after the last `/` or `\`.
@@ -731,6 +780,7 @@ pub fn parse(
     let mut mb = MBuf::new(src, boundary);
     mb.read_before = read_before;
     mb.post_max_size = lim.post_max_size;
+    mb.translate = lim.translate;
     let mut protected: HashSet<Vec<u8>> = HashSet::new();
     let mut uploaded: Vec<Vec<u8>> = Vec::new();
     let mut count: i64 = 0;
@@ -764,18 +814,23 @@ pub fn parse(
         while !cd.is_empty() && c_isspace(cd[0]) {
             cd = &cd[1..];
         }
+        let enc = mb.input_enc;
+        let conv = |v: Vec<u8>| match enc {
+            Some(e) => e.into_internal(&v),
+            None => v,
+        };
         while !cd.is_empty() {
-            let (pair, rest) = getword(cd, b';');
+            let (pair, rest) = getword(cd, b';', enc);
             cd = rest;
             while !cd.is_empty() && c_isspace(cd[0]) {
                 cd = &cd[1..];
             }
             if pair.contains(&b'=') {
-                let (key, val) = getword(&pair, b'=');
+                let (key, val) = getword(&pair, b'=', enc);
                 if key.eq_ignore_ascii_case(b"name") {
-                    param = Some(getword_conf(val));
+                    param = Some(conv(getword_conf(val, enc)));
                 } else if key.eq_ignore_ascii_case(b"filename") {
-                    filename = Some(getword_conf(val));
+                    filename = Some(conv(getword_conf(val, enc)));
                 }
             }
         }
@@ -783,6 +838,7 @@ pub fn parse(
         // A normal form variable.
         if let (None, Some(p)) = (&filename, param.clone()) {
             let value = mb.read_body().unwrap_or_default();
+            let value = conv(value);
             count += 1;
             if count <= max_input_vars {
                 // php 8.5 registers form fields under the name as sent (no

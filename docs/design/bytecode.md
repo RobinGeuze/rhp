@@ -447,7 +447,10 @@ before any of this, from the stub's `since` and `message`.)
 attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed
 targets, repetition and the validators, with `#[\DelayedTargetValidation]`
 leaving the error to `ReflectionAttribute::newInstance()`
-(`AttributeProto::validation_error`). `#[\Deprecated]` and `#[\NoDiscard]`
+(`AttributeProto::validation_error`). `newInstance()` runs the
+constructor from a frame that only stands for the attribute's file, line
+and `strict_types` (`ProtoFlags::CALL_SITE`, zend_get_attribute_object's
+dummy frame): traces show it as the call site, never as a frame. `#[\Deprecated]` and `#[\NoDiscard]`
 set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
 once per call and, only when one is set, raises the deprecation and the
 unused-result warning before the frame is entered
@@ -474,6 +477,9 @@ RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
    takes them), so an object passed as a temporary is freed when the call
    returns and its handle comes back as in php (oop-model.md, "Fresh id")
+-- php's live ranges, approximated: `f()[k]` clears the call's result once
+   the element is out, and an exception caught by a try frees the try
+   body's temporaries (`ExRegion::temps` up) before the handler runs
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)

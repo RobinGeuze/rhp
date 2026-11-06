@@ -236,6 +236,7 @@ impl Vm {
                 None => Ok(Value::Null),
             },
             b"attr_args" => self.attr_args(args),
+            b"attr_new" => self.attr_new(args),
             // A global constant's attributes (`#[A] const X = 1;`).
             b"gconst_attrs" => {
                 let name = arg_bytes(args, 0);
@@ -754,6 +755,13 @@ impl Vm {
     fn prop_order_ex(&self, cid: ClassId, with_private: bool) -> Vec<(PhpStr, ClassId, bool)> {
         let e = &self.classes[cid as usize];
         let mut out: Vec<(PhpStr, ClassId, bool)> = Vec::new();
+        // An enum's `name` (and `value`) are declared by zend_enum_add_interfaces.
+        if e.kind == ClassKind::Enum {
+            out.push((PhpStr::from("name"), cid, false));
+            if e.enum_backing.is_some() {
+                out.push((PhpStr::from("value"), cid, false));
+            }
+        }
         let own = own_props_ordered(&e.proto);
         let internal = self.is_internal_class(cid);
         // A built-in class's table is filled by inheritance first.
@@ -796,6 +804,28 @@ impl Vm {
             }
         }
         out
+    }
+
+    /// The type of an enum's built-in `name` / `value` property.
+    fn enum_prop_type(&self, cid: ClassId, name: &[u8]) -> Option<TypeHint> {
+        let e = &self.classes[cid as usize];
+        if e.kind != ClassKind::Enum {
+            return None;
+        }
+        let kind = match (name, e.enum_backing) {
+            (b"name", _) => TypeKind::String,
+            (b"value", Some(rhp_bytecode::EnumBacking::Int)) => TypeKind::Int,
+            (b"value", Some(rhp_bytecode::EnumBacking::Str)) => TypeKind::String,
+            _ => return None,
+        };
+        Some(TypeHint {
+            nullable: false,
+            intersection: false,
+            kinds: vec![kind],
+            groups: Vec::new(),
+            group_pos: Vec::new(),
+            explicit_null: false,
+        })
     }
 
     /// Declared visibility of property `name` on its declaring class.
@@ -878,6 +908,17 @@ impl Vm {
                 } else {
                     pe.default.clone()
                 },
+            ))
+        } else if let Some(ty) = self.enum_prop_type(cid, name) {
+            // public protected(set) readonly
+            Some((
+                cid,
+                Visibility::Public,
+                None,
+                Some(Rc::new(ty)),
+                true,
+                false,
+                Value::Null,
             ))
         } else {
             e.static_props.get(name).map(|sp| {
@@ -1189,8 +1230,118 @@ impl Vm {
     /// Evaluate an attribute's argument array; `args[0]` is its key
     /// (`[kind, owner…, index]`).
     fn attr_args(&mut self, args: &[Value]) -> Result<Value, Thrown> {
-        let Value::Array(key) = arg(args, 0) else {
+        let Some((at, scope, unit)) = self.attr_lookup(&arg(args, 0))? else {
             return Ok(Value::Array(PhpArray::new()));
+        };
+        self.attr_eval_args(&at, scope, unit)
+    }
+
+    fn attr_eval_args(
+        &mut self,
+        at: &AttributeProto,
+        scope: Option<ClassId>,
+        unit: UnitId,
+    ) -> Result<Value, Thrown> {
+        match &at.args {
+            None => Ok(Value::Array(PhpArray::new())),
+            Some(ConstInitProto::Const(v)) => Ok(v.clone()),
+            Some(ConstInitProto::Thunk(proto)) => {
+                let f = UnitFn {
+                    proto: proto.clone(),
+                    unit,
+                };
+                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
+            }
+        }
+    }
+
+    /// `ReflectionAttribute::newInstance()`'s last step
+    /// (zend_get_attribute_object): with a dummy frame standing for the
+    /// attribute's file, line and `strict_types` as the caller, evaluate the
+    /// arguments and run object_init_with_constructor for class `args[1]`.
+    fn attr_new(&mut self, args: &[Value]) -> Result<Value, Thrown> {
+        let Some((at, scope, unit)) = self.attr_lookup(&arg(args, 0))? else {
+            return Ok(Value::Null);
+        };
+        let cls = arg_bytes(args, 1);
+        let mut p = FunctionProto::new(PhpStr::from(""));
+        p.debug.file = at.file.clone();
+        p.debug.lines = vec![(0, at.line)];
+        p.strict_types = at.strict_types;
+        p.flags.insert(rhp_bytecode::ProtoFlags::CALL_SITE);
+        let base = self.stack.len();
+        self.stack
+            .push(crate::Frame::new(Rc::new(p), unit, rhp_bytecode::Reg::MAX));
+        let r = self.attr_construct(&at, scope, unit, &cls, base);
+        // Errors get their file, line and trace while the frame is there.
+        let r = r.map_err(|t| self.materialize(t, None));
+        self.stack.truncate(base);
+        r
+    }
+
+    fn attr_construct(
+        &mut self,
+        at: &AttributeProto,
+        scope: Option<ClassId>,
+        unit: UnitId,
+        cls: &[u8],
+        top: usize,
+    ) -> Result<Value, Thrown> {
+        let argv = self.attr_eval_args(at, scope, unit)?;
+        let cid = self.resolve_class_by_name(cls)?;
+        let entry = self.class(cid);
+        if entry.kind != ClassKind::Class || entry.flags.is_abstract {
+            let what = if entry.flags.is_abstract {
+                "abstract class"
+            } else {
+                match entry.kind {
+                    ClassKind::Enum => "enum",
+                    ClassKind::Interface => "interface",
+                    ClassKind::Trait => "trait",
+                    ClassKind::Class => "class",
+                }
+            };
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot instantiate {what} {}",
+                    String::from_utf8_lossy(entry.name.as_bytes())
+                ),
+            ));
+        }
+        self.update_class_constants(cid)?;
+        let obj = self.new_object(cid);
+        self.check_ctor_access(top, cid)?;
+        let (argv, named) = self.split_call_args(&argv)?;
+        match self.lookup_method(cid, b"__construct") {
+            Some(m) => {
+                let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+                let strict = self.caller_strict();
+                self.call_sync_mode(&m, Some(obj.clone()), cid, argv, Some(strict))?;
+            }
+            None => {
+                if let Some((name, _)) = named.first() {
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Unknown named parameter ${}",
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(Value::Object(obj))
+    }
+
+    /// The attribute a `[kind, owner…, index]` key names, with the class
+    /// scope and unit its arguments evaluate in.
+    fn attr_lookup(
+        &mut self,
+        key: &Value,
+    ) -> Result<Option<(AttributeProto, Option<ClassId>, UnitId)>, Thrown> {
+        let Value::Array(key) = key else {
+            return Ok(None);
         };
         let mut k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
         // A forged key (the prelude's helpers are callable from PHP) must
@@ -1256,17 +1407,7 @@ impl Vm {
             }
             _ => None,
         };
-        let Some((at, scope, unit)) = found else {
-            return Ok(Value::Array(PhpArray::new()));
-        };
-        match at.args {
-            None => Ok(Value::Array(PhpArray::new())),
-            Some(ConstInitProto::Const(v)) => Ok(v),
-            Some(ConstInitProto::Thunk(proto)) => {
-                let f = UnitFn { proto, unit };
-                self.run_proto_sync(f, None, scope, scope, Vec::new(), None)
-            }
-        }
+        Ok(found)
     }
 
     /// Resolve a function locator: a function name, a Closure, or a

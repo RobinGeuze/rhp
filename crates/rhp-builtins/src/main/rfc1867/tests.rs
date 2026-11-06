@@ -10,8 +10,8 @@ fn normalizes_like_php() {
 
 #[test]
 fn getword_conf_unquotes() {
-    assert_eq!(getword_conf(b" \"a\\\"b\" "), b"a\"b");
-    assert_eq!(getword_conf(b"abc def"), b"abc");
+    assert_eq!(getword_conf(b" \"a\\\"b\" ", None), b"a\"b");
+    assert_eq!(getword_conf(b"abc def", None), b"abc");
 }
 
 #[test]

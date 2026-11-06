@@ -336,6 +336,17 @@ pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
             diags.push((pos, String::new(), level, format!("PHP Startup: {msg}")));
         }
     }
+    // php_ini_register_extensions: an `extension=` library that fails to load.
+    if let Some(rhp_values::Value::Str(name)) = cfg_get(b"extension") {
+        if let Some(msg) = crate::ext::standard::dl::startup_extension_error(name.as_bytes()) {
+            diags.push((
+                usize::MAX - 1,
+                String::new(),
+                rhp_values::E_CORE_WARNING,
+                msg,
+            ));
+        }
+    }
     // php_module_startup's check of removed and deprecated directives.
     for (level, phrase, names) in REMOVED_DIRECTIVES {
         for name in *names {
@@ -537,6 +548,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     } else if let Some(msg) = crate::ext::standard::assert::ini_deprecation(name, v) {
         level = crate::E_DEPRECATED;
         (vec![format!("PHP Startup: {msg}")], Some(v.to_vec()))
+    } else if name == b"auto_detect_line_endings" && ini_parse_bool(v) {
+        // OnUpdateAutoDetectLineEndings (zend_error: no "PHP Startup").
+        level = crate::E_DEPRECATED;
+        let msg = "auto_detect_line_endings is deprecated".to_string();
+        (vec![msg], Some(v.to_vec()))
     } else if name == b"disable_functions" {
         // php_module_startup's zend_disable_functions, once the ini is in.
         crate::registry::reset_disabled();
@@ -807,6 +823,12 @@ pub(crate) fn alter_ini_entry_ex(
     mark_changed(&String::from_utf8_lossy(name));
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
+    if name == b"auto_detect_line_endings" && ini_parse_bool(&newv) {
+        host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"auto_detect_line_endings is deprecated",
+        )?;
     }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {

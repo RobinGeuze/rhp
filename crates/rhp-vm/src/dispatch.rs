@@ -138,15 +138,36 @@ impl Vm {
             .get(r as usize)
             .map(|n| n.as_bytes().to_vec())
             .unwrap_or_default();
-        let msg = [b"Undefined variable $".as_slice(), &name].concat();
+        // A superglobal is a global fetch in php ("Undefined global variable").
+        let what: &[u8] = if proto.superglobals.iter().any(|(cv, _)| *cv == r) {
+            b"Undefined global variable $"
+        } else {
+            b"Undefined variable $"
+        };
+        let msg = [what, &name].concat();
         self.diag(builtins::E_WARNING, &msg)?;
         Ok(Value::Null)
+    }
+
+    /// The name a variable-variable operand converts to
+    /// (zval_try_get_tmp_string: `__toString` for an object).
+    fn var_var_name(&mut self, top: usize, name: Reg, quiet: bool) -> Result<Vec<u8>, Thrown> {
+        let v = if quiet {
+            self.reg_get(top, name)
+        } else {
+            self.reg_r(top, name)?
+        };
+        match v {
+            Value::Str(s) => Ok(s.as_bytes().to_vec()),
+            Value::Object(_) | Value::Array(_) => self.to_string_vm(&v),
+            v => Ok(conv::to_string_bytes(&v)),
+        }
     }
 
     /// `LvalVarVar` / `LvalVarVarRw`: a cursor rooted at the variable named
     /// by `name` (created; a read-modify-write warns first when undefined).
     fn lval_var_var(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
-        let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+        let vname = self.var_var_name(top, name, false)?;
         if vname == b"this" {
             return Err(Thrown::error("Error", "Cannot re-assign $this"));
         }
@@ -256,6 +277,15 @@ impl Vm {
     /// old cell).
     pub(crate) fn unset_cv(&mut self, top: usize, cv: Reg) {
         let f = &self.stack[top];
+        if !f.proto.superglobals.is_empty() {
+            // A superglobal is a global fetch: unset() drops the global.
+            let sg = f.proto.superglobals.iter().find(|(r, _)| *r == cv);
+            if let Some((_, name)) = sg.filter(|(_, n)| n.as_bytes() != b"GLOBALS") {
+                let name = name.as_bytes().to_vec();
+                self.unset_superglobal(&name);
+                return;
+            }
+        }
         if f.global_scope
             && (cv as usize) < f.proto.cv_var_names.len()
             && matches!(f.regs[cv as usize], Value::Ref(_))
@@ -1219,7 +1249,7 @@ impl Vm {
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
                 Instr::BindVarVarRef { name, src } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_var_name(top, name, false)?;
                     let cell = match &self.stack[top].regs[src as usize] {
                         Value::Ref(rc) => rc.clone(),
                         v => Rc::new(RefCell::new(v.clone())),
@@ -1227,11 +1257,11 @@ impl Vm {
                     self.var_var_bind(top, &vname, cell);
                 }
                 Instr::UnsetVarVar { name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_var_name(top, name, false)?;
                     self.var_var_unset(top, &vname);
                 }
                 Instr::FetchVarVarIs { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let vname = self.var_var_name(top, name, true)?;
                     let v = match self.var_var_lookup(top, &vname) {
                         Some(Ok(cv)) => self.reg_get(top, cv),
                         Some(Err(cell)) => deref(&cell.borrow()),
@@ -1240,7 +1270,7 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchVarVar { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_var_name(top, name, false)?;
                     let v = match self.var_var_lookup(top, &vname) {
                         Some(Ok(cv)) => self.reg_r(top, cv)?,
                         Some(Err(cell)) if !cell.borrow().is_undef() => deref(&cell.borrow()),
@@ -3002,7 +3032,11 @@ impl Vm {
             // (Not from inside a constant expression, which goes
             // through zend_get_class_constant_ex in php.)
             let in_const_expr = proto.flags.contains(rhp_bytecode::ProtoFlags::CONST_EXPR);
-            if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
+            // (Only a user enum: an internal one creates each case alone.)
+            if self.class(cls).enum_backing.is_some()
+                && !self.class(cls).updated
+                && !in_const_expr
+                && !self.is_internal_class(cls)
             {
                 self.update_class_constants(cls)?;
             }
@@ -3377,8 +3411,10 @@ impl Vm {
         }
         // Passed raw (the window's references kept): the callee's
         // by-reference parameters bind them, by-value ones dereference.
+        // Moved out of the window, so a temporary is freed when the call
+        // returns (zend_vm_stack_free_args), not at the next statement.
         let args: Vec<Value> = (0..argc)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .map(|i| std::mem::replace(&mut self.stack[top].regs[(base + i) as usize], Value::Null))
             .collect();
         self.dyn_call = true;
         let out = self.call_callable_value_mode(&c, args, Some(strict));

@@ -70,7 +70,7 @@ impl ProtoBuilder<'_> {
     /// body starting at source `offset`.
     fn octal_overflow_warnings(&self, raw: &[u8], offset: u32) {
         for (at, digits) in crate::strings::octal_overflows(raw) {
-            self.cx.diag(
+            self.cx.scan_diag(
                 rhp_values::E_COMPILE_WARNING,
                 offset + at as u32,
                 format!("Octal escape sequence overflow \\{digits} is greater than \\377"),
@@ -89,7 +89,7 @@ impl ProtoBuilder<'_> {
             Op::IntegerCast(..) => ("integer", "int"),
             _ => return,
         };
-        self.cx.diag(
+        self.cx.scan_diag(
             rhp_values::E_DEPRECATED,
             op.span().start.offset,
             format!("Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"),
@@ -261,6 +261,11 @@ impl ProtoBuilder<'_> {
                 }
                 let dst = self.alloc_temp();
                 self.emit(Instr::DimFetch { dst, arr, key });
+                // FETCH_DIM_R frees a call's result once the element is
+                // out, so the rest of the statement no longer holds it.
+                if matches!(aa.array, Expression::Call(_)) && arr >= self.num_cvs {
+                    self.emit(Instr::LoadNull { dst: arr });
+                }
                 Ok(dst)
             }
             Expression::ConstantAccess(ca) => self.compile_constant(&ca.name),
@@ -1000,7 +1005,12 @@ impl ProtoBuilder<'_> {
                     r
                 }
                 StringPart::Expression(Expression::Variable(Variable::Indirect(iv))) => {
-                    self.compile_dollar_brace(iv)?
+                    use mago_span::HasSpan;
+                    // The encaps list's lineno: its first part's.
+                    let list_line = parts
+                        .first()
+                        .map_or(self.cur_line, |p| self.cx.line_of(p.span().start.offset));
+                    self.compile_dollar_brace(iv, list_line)?
                 }
                 StringPart::Expression(e) => self.compile_expr(e)?,
                 StringPart::BracedExpression(b) => self.compile_expr(b.expression)?,
@@ -1015,18 +1025,24 @@ impl ProtoBuilder<'_> {
     fn compile_dollar_brace(
         &mut self,
         iv: &crate::parse::cst::IndirectVariable,
+        list_line: u32,
     ) -> Result<Reg, Thrown> {
         let at = iv.dollar_left_brace.start.offset;
         let src = self.cx.src;
         let name =
             crate::strings::dollar_brace_varname(src, iv.dollar_left_brace.end.offset as usize);
         let Some(name) = name else {
-            self.cx.diag(
+            // zend_compile_encaps_list, at the list's line; the fetch runs
+            // at the variable's own line.
+            self.cx.compile_diags.borrow_mut().push((
                 rhp_values::E_DEPRECATED,
-                at,
                 "Using ${expr} (variable variables) in strings is deprecated, use {${expr}} instead".into(),
-            );
-            return self.compile_variable(&Variable::Indirect(iv.clone()));
+                list_line,
+            ));
+            let saved = std::mem::replace(&mut self.cur_line, self.cx.line_of(at));
+            let r = self.compile_variable(&Variable::Indirect(iv.clone()));
+            self.cur_line = saved;
+            return r;
         };
         self.cx.diag(
             rhp_values::E_DEPRECATED,
@@ -1110,8 +1126,28 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         let path = self.compile_expr(path_expr)?;
         let dst = self.alloc_temp();
-        self.emit(Instr::Include { dst, path, kind });
+        self.emit_at_operand_line(path_expr, Instr::Include { dst, path, kind });
         Ok(dst)
+    }
+
+    /// Emit an include/eval opcode at its operand's line: php's
+    /// ZEND_AST_INCLUDE_OR_EVAL takes its child's lineno (a heredoc's is
+    /// the line its body starts on).
+    fn emit_at_operand_line(&mut self, operand: &Expression, instr: Instr) {
+        use crate::parse::cst::{CompositeString, Literal};
+        use mago_span::HasSpan;
+        let mut line = self.cx.line_of(operand.span().start.offset);
+        let doc = match operand {
+            Expression::CompositeString(CompositeString::Document(_)) => true,
+            Expression::Literal(Literal::String(s)) => s.raw.starts_with(b"<<<"),
+            _ => false,
+        };
+        if doc {
+            line += 1;
+        }
+        let saved = std::mem::replace(&mut self.cur_line, line);
+        self.emit(instr);
+        self.cur_line = saved;
     }
 
     fn compile_construct(&mut self, c: &Construct) -> Result<Reg, Thrown> {
@@ -1125,7 +1161,7 @@ impl ProtoBuilder<'_> {
             Construct::Eval(e) => {
                 let src = self.compile_expr(e.value)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::Eval { dst, src });
+                self.emit_at_operand_line(e.value, Instr::Eval { dst, src });
                 Ok(dst)
             }
             Construct::Include(i) => self.compile_include(i.value, IncludeKind::Include),

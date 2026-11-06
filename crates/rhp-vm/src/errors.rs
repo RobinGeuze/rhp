@@ -619,7 +619,9 @@ impl Vm {
                 break;
             }
             let f = &self.stack[i];
-            if self.is_const_expr_frame(i) {
+            if self.is_const_expr_frame(i)
+                || f.proto.flags.contains(rhp_bytecode::ProtoFlags::CALL_SITE)
+            {
                 continue;
             }
             let shown_as = if self.is_plumbing_frame(i) {
@@ -1157,7 +1159,27 @@ impl Vm {
                     }
                 }
             }
-            if let Some(region) = handler {
+            // The innermost try first; one whose catches do not match and
+            // that has no finally passes the exception to the next one out.
+            let regions: Vec<rhp_bytecode::ExRegion> = proto
+                .exception_table
+                .iter()
+                .filter(in_try)
+                .cloned()
+                .collect();
+            for region in regions {
+                if self.free_try_temps(top, region.temps) && !self.destructibles.is_empty() {
+                    // Destructed as they are freed, before the handler.
+                    match self.collect_released() {
+                        Ok(()) => {}
+                        Err(e) if !e.is_catchable() => return Err(e),
+                        Err(e) => {
+                            let e = self.materialize(e, None);
+                            self.chain_previous(&e, thrown);
+                            thrown = e;
+                        }
+                    }
+                }
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
                         if arm
@@ -1220,6 +1242,22 @@ impl Vm {
                 thrown = e;
             }
         }
+    }
+
+    /// The temporaries of an unwound try body (from `from` up), freed in
+    /// order before its handler runs.
+    fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
+        let n = self.stack[top].regs.len();
+        let mut freed = false;
+        for r in from as usize..n {
+            if matches!(self.stack[top].regs[r], Value::Object(_) | Value::Array(_)) {
+                freed = true;
+            }
+            if !matches!(self.stack[top].regs[r], Value::Undef | Value::Null) {
+                self.reg_set(top, r as rhp_bytecode::Reg, Value::Null);
+            }
+        }
+        freed
     }
 
     /// Record what the finally block starting at `fin` does when it ends.

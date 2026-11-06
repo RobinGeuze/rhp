@@ -1119,7 +1119,7 @@ fn call_method(
     };
     let cid = h.borrow().class;
     let class = host.class_name(cid).unwrap_or_default();
-    host.reflect_invoke(obj, &class, m.as_bytes(), args)
+    host.reflect_invoke(obj, &class, m.as_bytes(), crate::host::list_value(args))
 }
 
 /// Forget the shared serialize state (a request that bailed out mid-call).

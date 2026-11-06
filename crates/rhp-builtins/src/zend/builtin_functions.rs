@@ -256,6 +256,7 @@ fn fn_get_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
+        Value::Closure(_) => Ok(Value::str("Closure")),
         other => Err(Thrown::type_error(format!(
             "get_class(): Argument #1 ($object) must be of type object, {} given",
             zend::zpp::zval_value_name(host, &other)
@@ -329,6 +330,7 @@ fn fn_get_parent_class(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
                 .map(Value::str)
                 .unwrap_or(Value::Bool(false)))
         }
+        Some(Value::Closure(_)) => Ok(Value::Bool(false)),
         Some(v @ Value::Str(_)) => {
             let name = conv::to_string_bytes(&v);
             match host.resolve_class_autoload(&name)? {
@@ -513,6 +515,7 @@ fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             }
             Ok(Value::Array(arr))
         }
+        Value::Closure(_) => Ok(Value::Array(PhpArray::new())),
         _ => Err(Thrown::type_error(
             "get_object_vars(): Argument #1 must be of type object",
         )),

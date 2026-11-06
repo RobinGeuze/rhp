@@ -88,6 +88,8 @@ pub fn take_diags() -> Vec<Diag> {
 }
 
 pub struct FdStream {
+    /// The line ending fgets stops at.
+    eol: super::Eol,
     /// The TLS layer of a socket stream (php's openssl socket ops). Declared
     /// before `fd`: it shuts the session down before the socket closes.
     pub(crate) tls: Option<Box<SslSock>>,
@@ -258,6 +260,7 @@ impl FdStream {
             }
         }
         FdStream {
+            eol: super::Eol::for_new_stream(),
             tls: None,
             fd: Some(fd),
             eof: false,
@@ -277,6 +280,7 @@ impl FdStream {
     /// `_pair`, `fsockopen`): never seekable, position 0.
     pub fn new_socket(fd: OwnedFd, info: SockInfo) -> Self {
         FdStream {
+            eol: super::Eol::for_new_stream(),
             tls: None,
             fd: Some(fd),
             eof: false,
@@ -619,7 +623,7 @@ impl FdStream {
     pub fn gets(&mut self, maxlen: Option<usize>) -> Option<Vec<u8>> {
         let cap = maxlen.map(|m| m.saturating_sub(1));
         loop {
-            if let Some(i) = self.rbuf.iter().position(|&b| b == b'\n') {
+            if let Some(i) = self.eol.locate(&self.rbuf) {
                 let n = cap.map(|c| c.min(i + 1)).unwrap_or(i + 1);
                 return Some(self.take(n));
             }

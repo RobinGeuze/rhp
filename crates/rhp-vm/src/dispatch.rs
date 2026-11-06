@@ -24,8 +24,12 @@ impl Vm {
     /// smart_str_append_zval prints it, else `of type T`.
     #[cold]
     fn match_case_desc(&self, v: &Value) -> String {
+        use rhp_builtins::zend::exceptions as ex;
         let mut out = Vec::new();
-        if !rhp_builtins::zend::exceptions::append_zval(self, v, &mut out) {
+        if ex::ignore_args()
+            || (matches!(deref(v), Value::Str(_)) && ex::string_param_max_len() == 0)
+            || !ex::append_zval(self, v, &mut out)
+        {
             return format!("of type {}", rhp_builtins::zval_type_name(self, v));
         }
         String::from_utf8_lossy(&out).into_owned()
@@ -1202,7 +1206,7 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Throw { src } => {
-                    let v = self.reg_get(top, src);
+                    let v = deref(&self.reg_get(top, src));
                     match v {
                         Value::Object(h) => {
                             let cls = h.borrow().class;
@@ -1213,11 +1217,19 @@ impl Vm {
                             if is_throwable {
                                 return Err(Thrown::Object(h));
                             }
-                            return Err(Thrown::type_error(
-                                "Can only throw objects that implement Throwable",
+                            // zend_throw_exception_internal.
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot throw objects that do not implement Throwable",
                             ));
                         }
-                        _ => return Err(Thrown::type_error("Can only throw objects")),
+                        Value::Closure(_) => {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot throw objects that do not implement Throwable",
+                            ))
+                        }
+                        _ => return Err(Thrown::error("Error", "Can only throw objects")),
                     }
                 }
                 Instr::FinallyEnd => {
@@ -2644,7 +2656,7 @@ impl Vm {
             // fetch (it builds the value -> case table).
             // (Not from inside a constant expression, which goes
             // through zend_get_class_constant_ex in php.)
-            let in_const_expr = proto.name.as_bytes() == b"{init}";
+            let in_const_expr = proto.flags.contains(rhp_bytecode::ProtoFlags::CONST_EXPR);
             if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
             {
                 self.update_class_constants(cls)?;

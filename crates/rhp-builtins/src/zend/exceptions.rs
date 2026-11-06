@@ -1,10 +1,42 @@
 //! Zend/zend_exceptions.c: the string forms of a backtrace and of a
 //! Throwable, and the engine helpers the prelude's exception classes call.
 
+use std::cell::Cell;
+
 use rhp_values::ops::deref;
 use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
+
+thread_local! {
+    /// EG(exception_ignore_args) (`zend.exception_ignore_args`).
+    static IGNORE_ARGS: Cell<bool> = const { Cell::new(false) };
+    /// EG(exception_string_param_max_len).
+    static STRING_PARAM_MAX_LEN: Cell<usize> = const { Cell::new(15) };
+}
+
+/// `zend.exception_ignore_args`: traces leave out `args`.
+pub fn ignore_args() -> bool {
+    IGNORE_ARGS.with(Cell::get)
+}
+
+pub(crate) fn set_ignore_args(v: bool) {
+    IGNORE_ARGS.with(|c| c.set(v));
+}
+
+/// `zend.exception_string_param_max_len` (validated: 0..=1000000).
+pub fn string_param_max_len() -> usize {
+    STRING_PARAM_MAX_LEN.with(Cell::get)
+}
+
+pub(crate) fn set_string_param_max_len(v: usize) {
+    STRING_PARAM_MAX_LEN.with(|c| c.set(v));
+}
+
+pub(crate) fn reset_ini() {
+    set_ignore_args(false);
+    set_string_param_max_len(15);
+}
 
 /// One trace argument as `zend_exceptions.c::_build_trace_args` renders it.
 fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
@@ -28,9 +60,9 @@ fn trace_arg(host: &dyn Host, v: &Value, out: &mut Vec<u8>) {
     }
 }
 
-/// `smart_str_append_zval` with the default
-/// `zend.exception_string_param_max_len` of 15: a scalar (a string quoted,
-/// escaped and cut) or an enum case. `false` for anything else.
+/// `smart_str_append_zval` with `zend.exception_string_param_max_len`: a
+/// scalar (a string quoted, escaped and cut) or an enum case. `false` for
+/// anything else.
 pub fn append_zval(host: &dyn Host, v: &Value, out: &mut Vec<u8>) -> bool {
     match deref(v) {
         Value::Null => out.extend_from_slice(b"NULL"),
@@ -46,9 +78,10 @@ pub fn append_zval(host: &dyn Host, v: &Value, out: &mut Vec<u8>) -> bool {
         }
         Value::Str(s) => {
             let b = s.as_bytes();
+            let max = string_param_max_len();
             out.push(b'\'');
-            append_escaped(out, &b[..b.len().min(15)]);
-            if b.len() > 15 {
+            append_escaped(out, &b[..b.len().min(max)]);
+            if b.len() > max {
                 out.extend_from_slice(b"...");
             }
             out.push(b'\'');
@@ -97,52 +130,28 @@ fn append_escaped(out: &mut Vec<u8>, s: &[u8]) {
 /// `zend_trace_to_string`: render a `getTrace()` array as php's
 /// `getTraceAsString()` text (`#0 file(line): Class->fn(args)` … `#N {main}`).
 pub fn trace_to_string(host: &dyn Host, trace: &Value) -> Vec<u8> {
+    trace_to_string_ex(host, trace, &mut |_| {})
+}
+
+/// [`trace_to_string`], passing php's warnings about malformed frames to
+/// `warn`.
+pub fn trace_to_string_ex(host: &dyn Host, trace: &Value, warn: &mut dyn FnMut(String)) -> Vec<u8> {
     use rhp_values::ArrayKey as K;
     let mut out = Vec::new();
     let mut num = 0usize;
     if let Value::Array(frames) = deref(trace) {
-        for (_, frame) in frames.iter() {
+        for (key, frame) in frames.iter() {
             let Value::Array(f) = deref(frame) else {
+                // ZEND_HASH_FOREACH_NUM_KEY_VAL: a string key reads as 0.
+                let index = match key {
+                    K::Int(i) => *i as u64,
+                    K::Str(_) => 0,
+                };
+                warn(format!("Expected array for frame {index}"));
                 continue;
             };
-            out.push(b'#');
-            out.extend_from_slice(num.to_string().as_bytes());
-            out.push(b' ');
+            build_trace_string(host, &f, num, &mut out, warn);
             num += 1;
-            match f.get(&K::from_bytes(b"file")) {
-                Some(file) => {
-                    out.extend_from_slice(&conv::to_string_bytes(&deref(file)));
-                    out.push(b'(');
-                    let line = f
-                        .get(&K::from_bytes(b"line"))
-                        .map(|l| conv::to_int(&deref(l)))
-                        .unwrap_or(0);
-                    out.extend_from_slice(line.to_string().as_bytes());
-                    out.extend_from_slice(b"): ");
-                }
-                None => out.extend_from_slice(b"[internal function]: "),
-            }
-            for key in [&b"class"[..], b"type", b"function"] {
-                if let Some(v) = f.get(&K::from_bytes(key)) {
-                    out.extend_from_slice(&conv::to_string_bytes(&deref(v)));
-                }
-            }
-            out.push(b'(');
-            if let Some(Value::Array(args)) = f.get(&K::from_bytes(b"args")).map(deref) {
-                let mut first = true;
-                for (k, a) in args.iter() {
-                    if !first {
-                        out.extend_from_slice(b", ");
-                    }
-                    first = false;
-                    if let K::Str(name) = k {
-                        out.extend_from_slice(name.as_bytes());
-                        out.extend_from_slice(b": ");
-                    }
-                    trace_arg(host, a, &mut out);
-                }
-            }
-            out.extend_from_slice(b")\n");
         }
     }
     out.push(b'#');
@@ -151,15 +160,91 @@ pub fn trace_to_string(host: &dyn Host, trace: &Value) -> Vec<u8> {
     out
 }
 
+/// `_build_trace_string`: one frame. String values print up to a NUL (C
+/// strings), so an anonymous class shows as `class@anonymous`.
+fn build_trace_string(
+    host: &dyn Host,
+    f: &rhp_values::PhpArray,
+    num: usize,
+    out: &mut Vec<u8>,
+    warn: &mut dyn FnMut(String),
+) {
+    use rhp_values::ArrayKey as K;
+    let c_str = |b: &[u8]| -> usize { b.iter().position(|&c| c == 0).unwrap_or(b.len()) };
+    out.push(b'#');
+    out.extend_from_slice(num.to_string().as_bytes());
+    out.push(b' ');
+    match f.get(&K::from_bytes(b"file")).map(deref) {
+        Some(Value::Str(file)) => {
+            let line = match f.get(&K::from_bytes(b"line")).map(deref) {
+                Some(Value::Int(n)) => n,
+                Some(_) => {
+                    warn("Line is not an int".into());
+                    0
+                }
+                None => 0,
+            };
+            out.extend_from_slice(file.as_bytes());
+            out.push(b'(');
+            out.extend_from_slice(line.to_string().as_bytes());
+            out.extend_from_slice(b"): ");
+        }
+        Some(_) => {
+            warn("File name is not a string".into());
+            out.extend_from_slice(b"[unknown file]: ");
+        }
+        None => out.extend_from_slice(b"[internal function]: "),
+    }
+    for key in ["class", "type", "function"] {
+        match f.get(&K::from_bytes(key.as_bytes())).map(deref) {
+            Some(Value::Str(v)) => {
+                let b = v.as_bytes();
+                out.extend_from_slice(&b[..c_str(b)]);
+            }
+            Some(_) => {
+                warn(format!("Value for {key} is not a string"));
+                out.extend_from_slice(b"[unknown]");
+            }
+            None => {}
+        }
+    }
+    out.push(b'(');
+    match f.get(&K::from_bytes(b"args")).map(deref) {
+        Some(Value::Array(args)) => {
+            let mut first = true;
+            for (k, a) in args.iter() {
+                if !first {
+                    out.extend_from_slice(b", ");
+                }
+                first = false;
+                if let K::Str(name) = k {
+                    out.extend_from_slice(name.as_bytes());
+                    out.extend_from_slice(b": ");
+                }
+                trace_arg(host, a, out);
+            }
+        }
+        Some(_) => warn("args element is not an array".into()),
+        None => {}
+    }
+    out.extend_from_slice(b")\n");
+}
+
 /// `__exception_trace_string($trace)`: backs `Exception::getTraceAsString()`.
 fn fn_exception_trace_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(trace_to_string(host, &args[0])))
+    let mut warnings = Vec::new();
+    let s = trace_to_string_ex(host, &args[0], &mut |w| warnings.push(w));
+    for w in warnings {
+        host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
+    }
+    Ok(Value::str(s))
 }
 
 /// `Exception::__toString()` (zend_exceptions.c): the chain from the innermost
 /// `previous` outwards, each as `Class: msg in file:line\nStack trace:\n…`,
 /// joined by `\n\nNext `.
-pub fn throwable_to_string(host: &dyn Host, exc: &Value) -> Vec<u8> {
+pub fn throwable_to_string(host: &mut dyn Host, exc: &Value) -> Result<Vec<u8>, Thrown> {
+    use crate::zend::zpp::{zval_get_long, zval_get_string};
     let mut s: Vec<u8> = Vec::new();
     let mut cur = deref(exc);
     let mut seen: Vec<u32> = Vec::new();
@@ -170,24 +255,26 @@ pub fn throwable_to_string(host: &dyn Host, exc: &Value) -> Vec<u8> {
             break;
         }
         seen.push(id);
-        let prop = |n: &[u8]| host.object_prop(&cur, n).map(|v| deref(&v));
-        let mut message = prop(b"message")
-            .map(|v| conv::to_string_bytes(&v))
-            .unwrap_or_default();
-        let file = prop(b"file")
-            .map(|v| conv::to_string_bytes(&v))
-            .unwrap_or_default();
-        let line = prop(b"line").map(|v| conv::to_int(&v)).unwrap_or(0);
+        let prop = |host: &dyn Host, n: &[u8]| {
+            host.object_prop(&cur, n)
+                .map(|v| deref(&v))
+                .unwrap_or(Value::Null)
+        };
+        let v = prop(host, b"message");
+        let mut message = zval_get_string(host, &v)?;
+        let v = prop(host, b"file");
+        let file = zval_get_string(host, &v)?;
+        let v = prop(host, b"line");
+        let line = zval_get_long(host, &v)?;
+        let mut warnings = Vec::new();
+        let trace = trace_to_string_ex(host, &prop(host, b"trace"), &mut |w| warnings.push(w));
+        for w in warnings {
+            host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
+        }
         if (name == b"TypeError" || name == b"ArgumentCountError")
             && message.windows(12).any(|w| w == b", called in ")
         {
             message.extend_from_slice(b" and defined");
-        }
-        let mut trace = prop(b"trace")
-            .map(|t| trace_to_string(host, &t))
-            .unwrap_or_else(|| b"#0 {main}".to_vec());
-        if trace.is_empty() {
-            trace = b"#0 {main}\n".to_vec();
         }
         let mut item = name.clone();
         if !message.is_empty() {
@@ -205,14 +292,14 @@ pub fn throwable_to_string(host: &dyn Host, exc: &Value) -> Vec<u8> {
             item.extend_from_slice(&s);
         }
         s = item;
-        cur = prop(b"previous").unwrap_or(Value::Null);
+        cur = prop(host, b"previous");
     }
-    s
+    Ok(s)
 }
 
 /// `__throwable_string($e)`: backs `Exception::__toString()` / `Error::__toString()`.
 fn fn_throwable_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(throwable_to_string(host, &args[0])))
+    Ok(Value::str(throwable_to_string(host, &args[0])?))
 }
 
 pub fn register(m: &mut crate::Registry) {

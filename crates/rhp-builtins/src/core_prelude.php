@@ -65,7 +65,7 @@ class Exception implements Throwable {
     final public function getLine() { return $this->line; }
     final public function getTrace() { return $this->trace; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
-    public function __toString() { return __throwable_string($this); }
+    public function __toString() { return $this->string = __throwable_string($this); }
     // ErrorException's constructor sets the private `previous` (php writes
     // it in Exception's scope).
     protected function __setPrevious($p) { $this->previous = $p; }
@@ -91,7 +91,7 @@ class Error implements Throwable {
     final public function getLine() { return $this->line; }
     final public function getTrace() { return $this->trace; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
-    public function __toString() { return __throwable_string($this); }
+    public function __toString() { return $this->string = __throwable_string($this); }
 }
 class ErrorException extends Exception {
     protected $severity = 1;

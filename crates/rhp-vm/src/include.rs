@@ -187,13 +187,7 @@ impl Vm {
     /// running the include/eval, `#0 {main}` for the main script), and
     /// objects are no longer destructed. The caller bails out (exit 255).
     pub fn compile_error(&mut self, message: &str, file: &[u8], line: u32) {
-        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
-        let trace = if ini_bool(&backtraces) {
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            builtins::zend::exceptions::trace_to_string(self, &trace)
-        } else {
-            Vec::new()
-        };
+        let trace = self.fatal_trace();
         let line = line as i64;
         self.last_error = Some((64, message.as_bytes().to_vec(), file.to_vec(), line));
         self.display_error_trace(64, "Fatal error", message.as_bytes(), file, line, &trace);

@@ -296,13 +296,7 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
-        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
-        let trace = if crate::ini_bool(&backtraces) {
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            rhp_builtins::zend::exceptions::trace_to_string(self, &trace)
-        } else {
-            Vec::new()
-        };
+        let trace = self.fatal_trace();
         self.last_error = Some((1, msg.as_bytes().to_vec(), file.clone(), line));
         self.display_error_trace(1, "Fatal error", msg.as_bytes(), &file, line, &trace);
         self.destructibles.clear();

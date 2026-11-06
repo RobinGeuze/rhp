@@ -277,7 +277,7 @@ impl Vm {
                     frame.regs[p.cv as usize] = zero;
                 }
                 Err(()) => {
-                    let fname = self.func_display_name(proto, ctx);
+                    let fname = self.func_c_name(proto, ctx);
                     let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                         .into_owned();
                     // php appends the call site when the caller is user code (the
@@ -335,7 +335,7 @@ impl Vm {
                 Ok(())
             }
             Err(()) => {
-                let fname = self.func_display_name(&proto, ctx);
+                let fname = self.func_c_name(&proto, ctx);
                 let pname = String::from_utf8_lossy(proto.names[p.name as usize].as_bytes());
                 let site = if from_user && !self.is_internal_frame(top - 1) {
                     format!(
@@ -376,10 +376,13 @@ impl Vm {
             return Ok(());
         }
         let ctx = self.stack[top].defining_class;
-        let fname = self.func_display_name(proto, ctx);
         let msg = if ty.kinds.contains(&K::Never) {
-            format!("{fname}(): never-returning function must not implicitly return")
+            // zend_verify_never_error.
+            let fname = self.func_c_name(proto, ctx);
+            let what = if ctx.is_some() { "method" } else { "function" };
+            format!("{fname}(): never-returning {what} must not implicitly return")
         } else {
+            let fname = self.func_display_name(proto, ctx);
             let called = self.stack[top].called_class;
             format!(
                 "{fname}(): Return value must be of type {}, none returned",
@@ -429,6 +432,21 @@ impl Vm {
                 ))
             }
         }
+    }
+
+    /// A property's type as zend_verify_property_type_error prints it: php
+    /// resolves `self`/`parent` when compiling a named class, but an
+    /// anonymous class keeps them as written.
+    pub(crate) fn prop_type_string(
+        &self,
+        ty: &rhp_bytecode::TypeHint,
+        decl: ClassId,
+        called: Option<ClassId>,
+    ) -> String {
+        if crate::classes::is_anon_name(self.class(decl).name.as_bytes()) {
+            return self.type_string_resolved(ty, None, None);
+        }
+        self.type_string_resolved(ty, Some(decl), called)
     }
 
     /// zend_type_to_string(_resolved): a declared type as php prints it in

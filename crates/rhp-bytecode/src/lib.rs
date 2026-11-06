@@ -1208,6 +1208,13 @@ impl ProtoFlags {
     /// The body refers to `$this` (ZEND_ACC_USES_THIS): `Closure::bind`
     /// refuses to unbind it.
     pub const USES_THIS: ProtoFlags = ProtoFlags(8);
+    /// A constant-expression thunk (`{init}`: a class constant, property
+    /// default or attribute argument). php evaluates those with no frame
+    /// (zend_ast_evaluate), reporting at the expression's line.
+    pub const CONST_EXPR: ProtoFlags = ProtoFlags(16);
+    /// A [`ProtoFlags::CONST_EXPR`] thunk that is just a global constant
+    /// name: php looks it up directly, without moving the reported line.
+    pub const CONST_EXPR_PLAIN: ProtoFlags = ProtoFlags(32);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0

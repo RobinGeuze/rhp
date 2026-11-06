@@ -944,7 +944,7 @@ impl Vm {
                 rhp_builtins::zval_value_name(self, &deref(&val)),
                 String::from_utf8_lossy(self.class(decl).name.as_bytes()),
                 String::from_utf8_lossy(name.as_bytes()),
-                self.type_string_resolved(&ty, Some(decl), Some(cls))
+                self.prop_type_string(&ty, decl, Some(cls))
             ))),
         }
     }

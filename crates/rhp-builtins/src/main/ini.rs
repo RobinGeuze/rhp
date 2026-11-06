@@ -408,6 +408,7 @@ pub(crate) fn reset_state() {
     OPENED_PATH.with(|p| *p.borrow_mut() = None);
     SCANNED_FILES.with(|s| *s.borrow_mut() = None);
     rhp_values::fmt::reset_precision();
+    crate::zend::exceptions::reset_ini();
 }
 
 /// Is a directive's owning module loaded in this engine?
@@ -703,6 +704,10 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
                 Ok(())
             }
         }
+        // OnSetExceptionStringParamMaxLen.
+        b"zend.exception_string_param_max_len" if !(0..=1_000_000).contains(&c_atol(v)) => {
+            Err(())
+        }
         b"arg_separator.output" if v.is_empty() => Err(()),
         // OnUpdateDefaultCharset.
         b"default_charset" if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) => Err(()),
@@ -722,6 +727,12 @@ pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
             crate::ext::pcre::ini_update(name, v.unwrap_or_default())
         }
         b"bcmath.scale" => crate::ext::bcmath::set_default_scale(v.map_or(0, ini_parse_quantity)),
+        b"zend.exception_ignore_args" => {
+            crate::zend::exceptions::set_ignore_args(v.is_some_and(ini_parse_bool))
+        }
+        b"zend.exception_string_param_max_len" => {
+            crate::zend::exceptions::set_string_param_max_len(v.map_or(15, c_atol) as usize)
+        }
         _ => {}
     }
 }

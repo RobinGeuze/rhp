@@ -791,6 +791,7 @@ impl Vm {
         };
         let name = self.func_display_name(proto, frame.defining_class);
         if proto.is_internal() {
+            let name = self.func_c_name(proto, frame.defining_class);
             // A built-in implemented in the PHP prelude reports like an
             // internal function (zend_wrong_parameters_count_error).
             let which = if proto.params.iter().any(|p| p.variadic) {

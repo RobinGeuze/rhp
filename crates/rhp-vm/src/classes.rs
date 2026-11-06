@@ -1758,14 +1758,7 @@ impl Vm {
     /// An E_COMPILE_ERROR (64) / E_ERROR (1) raised while linking `proto`,
     /// reported at its declaration.
     pub(crate) fn link_fatal(&mut self, proto: &ClassProto, level: i64, msg: &str) -> Thrown {
-        use rhp_builtins::Host;
-        let backtraces = self.ini_get(b"fatal_error_backtraces").unwrap_or_default();
-        let trace = if crate::ini_bool(&backtraces) {
-            let trace = Value::Array(self.build_trace_ex(false, false));
-            rhp_builtins::zend::exceptions::trace_to_string(self, &trace)
-        } else {
-            Vec::new()
-        };
+        let trace = self.fatal_trace();
         let file = proto.decl_file.as_bytes().to_vec();
         let line = proto.decl_line as i64;
         self.last_error = Some((level, msg.as_bytes().to_vec(), file.clone(), line));
@@ -2189,7 +2182,7 @@ impl Vm {
                 rhp_builtins::zval_value_name(self, &v),
                 String::from_utf8_lossy(self.classes[decl as usize].name.as_bytes()),
                 String::from_utf8_lossy(name),
-                self.type_string_resolved(ty, Some(decl), None),
+                self.prop_type_string(ty, decl, None),
             ))),
         }
     }

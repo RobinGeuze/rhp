@@ -18,6 +18,20 @@ use crate::util::{compile_error, dirname, strip_dollar};
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
+        if self.scope_kind == ScopeKind::Init {
+            // A constant expression reports at the line of the node being
+            // evaluated (zend_ast_evaluate_ex's EG(lineno_override)).
+            let line = self.cx.line_of(expr.span().start.offset);
+            let saved = std::mem::replace(&mut self.cur_line, line);
+            let r = self.compile_expr_at(expr);
+            self.cur_line = saved;
+            return r;
+        }
+        self.compile_expr_at(expr)
+    }
+
+    fn compile_expr_at(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
         let addr = expr as *const Expression as usize;
         let inner = self.sc_inner == addr;
         let link = chain_object(expr);

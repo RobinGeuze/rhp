@@ -751,6 +751,7 @@ impl Vm {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
         main.flags.insert(rhp_bytecode::ProtoFlags::INTERNAL);
+        main.flags.insert(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
         self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 

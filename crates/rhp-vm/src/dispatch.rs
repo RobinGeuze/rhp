@@ -1829,7 +1829,11 @@ impl Vm {
                     }
                 }
                 Instr::Include { dst, path, kind } => {
-                    let raw = conv::to_string_bytes(&self.reg_get(top, path));
+                    let pv = self.reg_get(top, path);
+                    let raw = match deref(&pv) {
+                        Value::Object(_) => self.to_string_vm(&pv)?,
+                        v => conv::to_string_bytes(&v),
+                    };
                     let v = self.do_include(top, raw, kind)?;
                     self.reg_set(top, dst, v);
                 }

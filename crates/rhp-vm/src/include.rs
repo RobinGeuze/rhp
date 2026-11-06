@@ -299,7 +299,10 @@ impl Vm {
 
         // `_once`: skip a file already included (count it as included before
         // running the body, so recursive `_once` includes terminate).
-        if kind.is_once() && self.included_files.contains(&realpath) {
+        if kind.is_once()
+            && (self.included_files.contains(&realpath)
+                || self.main_included_path().as_ref() == Some(&realpath))
+        {
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
@@ -315,6 +318,18 @@ impl Vm {
         Ok(match ret {
             Value::Null => Value::Int(1),
             v => v,
+        })
+    }
+
+    /// The main script as an included file (`get_included_files()`, the
+    /// `_once` check): when it is a real file, not `-r` code or a script
+    /// read from stdin.
+    pub(crate) fn main_included_path(&self) -> Option<Vec<u8>> {
+        self.main_script_path.clone().or_else(|| {
+            let f = self.stack.first()?.proto.debug.file.as_bytes();
+            builtins::zend::virtual_cwd::os_path(f)
+                .is_file()
+                .then(|| f.to_vec())
         })
     }
 

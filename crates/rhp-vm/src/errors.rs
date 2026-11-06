@@ -463,6 +463,19 @@ impl Vm {
     /// [`Vm::build_trace`] with debug_backtrace's options: `$trace['object']` for
     /// frames with a `$this`, and no `args`.
     pub(crate) fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
+        self.build_trace_skip(provide_object, ignore_args, false)
+    }
+
+    /// [`Vm::build_trace_ex`]; `skip_last` leaves out the innermost running
+    /// builtin (debug_backtrace() itself, zend_fetch_debug_backtrace's
+    /// `skip_last`).
+    pub(crate) fn build_trace_skip(
+        &self,
+        provide_object: bool,
+        ignore_args: bool,
+        skip_last: bool,
+    ) -> PhpArray {
+        let mut skip_native = skip_last;
         // Keys and file names are shared (Rc) rather than re-allocated per
         // frame: a trace is built at every Throwable creation.
         let key = |s: &str| ArrayKey::Str(rhp_values::PhpStr::from(s));
@@ -507,12 +520,29 @@ impl Vm {
                 }
             }
         }
+        // php's `include_filename`: the call-site file of the last frame
+        // added, the argument an include frame shows.
+        let mut include_file: Option<Value> = None;
         for i in (0..self.stack.len()).rev() {
-            if !self.is_internal_frame(i) {
+            // A builtin the engine called with no frame running (a shutdown
+            // function) shows as `[internal function]`.
+            let no_frame = self.stack[i]
+                .proto
+                .flags
+                .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
+            if !self.is_internal_frame(i) || no_frame {
                 for n in self.native_calls.iter().rev().filter(|n| n.caller == i) {
+                    if std::mem::take(&mut skip_native) {
+                        continue;
+                    }
                     let mut e = PhpArray::new();
-                    e.insert(k(b"file"), file_of(i));
-                    e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    if no_frame {
+                        include_file = None;
+                    } else {
+                        include_file = Some(file_of(i));
+                        e.insert(k(b"file"), file_of(i));
+                        e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
+                    }
                     e.insert(k(b"function"), Value::str(n.name));
                     if !ignore_args {
                         let mut a = PhpArray::new();
@@ -535,6 +565,7 @@ impl Vm {
                     out.push(Value::Array(e));
                 }
             }
+            skip_native = false;
             if i == 0 {
                 break;
             }
@@ -564,6 +595,13 @@ impl Vm {
                 e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
             if let Some(kind) = f.include_kind {
+                if kind != "eval" {
+                    if let Some(file) = &include_file {
+                        let mut a = PhpArray::new();
+                        a.push(file.clone());
+                        e.insert(k(b"args"), Value::Array(a));
+                    }
+                }
                 e.insert(k(b"function"), Value::str(kind));
             } else if let Some((name, args)) = shown_as {
                 let c = f.defining_class.expect("a method frame");
@@ -593,7 +631,28 @@ impl Vm {
                     e.insert(k(b"args"), Value::Array(self.frame_args(i)));
                 }
             }
+            let file = e.get(&k(b"file")).cloned();
             out.push(Value::Array(e));
+            // A frame the engine called (an error handler, an autoloader)
+            // while its caller runs an include that has not started a frame
+            // yet: php adds the include as a frame of its own.
+            if f.include_kind.is_none() && !self.is_internal_frame(caller) {
+                let cf = &self.stack[caller];
+                let at = cf.pc.checked_sub(1).and_then(|pc| cf.proto.code.get(pc));
+                if let Some(rhp_bytecode::Instr::Include { kind, .. }) = at {
+                    let mut e = PhpArray::new();
+                    e.insert(k(b"file"), file_of(caller));
+                    e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
+                    if let Some(file) = &include_file {
+                        let mut a = PhpArray::new();
+                        a.push(file.clone());
+                        e.insert(k(b"args"), Value::Array(a));
+                    }
+                    e.insert(k(b"function"), Value::str(kind.name()));
+                    out.push(Value::Array(e));
+                }
+            }
+            include_file = file;
         }
         out
     }

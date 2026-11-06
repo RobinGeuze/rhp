@@ -315,14 +315,7 @@ impl Vm {
             }
             b"included" => {
                 let mut out = PhpArray::new();
-                // The main script counts when it is a real file (not `-r`
-                // code or a script read from stdin).
-                let main = self.main_script_path.clone().or_else(|| {
-                    let f = self.stack.first()?.proto.debug.file.as_bytes();
-                    rhp_builtins::zend::virtual_cwd::os_path(f)
-                        .is_file()
-                        .then(|| f.to_vec())
-                });
+                let main = self.main_included_path();
                 if let Some(m) = &main {
                     out.push(s(m));
                 }

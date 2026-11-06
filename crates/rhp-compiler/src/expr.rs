@@ -577,6 +577,7 @@ impl ProtoBuilder<'_> {
         // the result leaves the right side uncompiled (no diagnostics).
         if let Some(v) = literal_bool(b.lhs) {
             if v != is_and {
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.lhs));
                 self.scanner_diags(crate::parse::cst::Node::Expression(b.rhs));
                 let dst = self.alloc_temp();
                 self.emit(Instr::LoadBool { dst, b: v });
@@ -1562,13 +1563,28 @@ fn is_this_var(e: &Expression) -> bool {
 }
 
 /// The truth value of a literal (`0`, `'x'`, `true`, `null`, ...), which
-/// php's compiler knows as a constant.
+/// php's compiler knows as a constant, or of `!` and `&&` / `||` over
+/// such constants (zend_compile_short_circuiting's constant result).
 fn literal_bool(e: &Expression) -> Option<bool> {
     let mut e = e;
     while let Expression::Parenthesized(p) = e {
         e = p.expression;
     }
     match e {
+        Expression::UnaryPrefix(u) if matches!(u.operator, UnaryPrefixOperator::Not(_)) => {
+            literal_bool(u.operand).map(|v| !v)
+        }
+        Expression::Binary(b) => {
+            let is_and = match b.operator {
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => true,
+                BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => false,
+                _ => return None,
+            };
+            match literal_bool(b.lhs)? {
+                v if v != is_and => Some(v),
+                _ => literal_bool(b.rhs),
+            }
+        }
         Expression::Literal(l) => Some(rhp_values::conv::to_bool(&crate::fold::literal_value(l))),
         Expression::ConstantAccess(ca) => {
             let n = ca.name.value();

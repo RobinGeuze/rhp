@@ -10,4 +10,8 @@ var_dump(\'1\' or "a\401$y" . <<<EOT
   EOT . <<<\'NOW\'
   \403
   NOW);
-var_dump(null && (binary) `x\404`);');
+var_dump(null && (binary) `x\404`);
+var_dump("\405" || f());
+var_dump((false && f()) || (integer) "1");
+var_dump(!true && new class { function f() { parent::x(); } });
+var_dump((true && false) && (boolean) i());');

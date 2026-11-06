@@ -180,6 +180,32 @@ pub struct ClassConst {
     pub visited: bool,
     /// Declared type of a typed constant (`None` = untyped).
     pub ty: Option<Rc<TypeHint>>,
+    /// A `#[\Deprecated]` constant or enum case (ZEND_ACC_DEPRECATED).
+    pub deprecated: Option<Rc<DeprecatedConst>>,
+}
+
+/// What a deprecated class constant's fetch needs to raise its deprecation.
+pub struct DeprecatedConst {
+    pub attrs: Vec<rhp_bytecode::AttributeProto>,
+    pub is_case: bool,
+    pub unit: UnitId,
+}
+
+fn deprecated_const(
+    attrs: &[rhp_bytecode::AttributeProto],
+    is_case: bool,
+    unit: UnitId,
+) -> Option<Rc<DeprecatedConst>> {
+    attrs
+        .iter()
+        .any(|a| a.name.as_bytes().eq_ignore_ascii_case(b"Deprecated"))
+        .then(|| {
+            Rc::new(DeprecatedConst {
+                attrs: attrs.to_vec(),
+                is_case,
+                unit,
+            })
+        })
 }
 
 /// A deferred class-constant initializer.
@@ -1164,6 +1190,16 @@ impl Vm {
         early: bool,
     ) -> Result<bool, Thrown> {
         self.check_link(proto)?;
+        // zend_do_link_class: a `#[\Deprecated]` trait's use.
+        for (i, tname) in proto.traits.iter().enumerate() {
+            let tid = self.class_ids[&lc(tname.as_bytes())];
+            let dup = proto.traits[..i]
+                .iter()
+                .any(|t| t.as_bytes().eq_ignore_ascii_case(tname.as_bytes()));
+            if !dup {
+                self.deprecated_trait_use(tid, proto.name.as_bytes())?;
+            }
+        }
         let id = self.classes.len() as ClassId;
         let parent = match &proto.parent {
             Some(n) => Some(self.class_ids[&lc(n.as_bytes())]),
@@ -1534,6 +1570,7 @@ impl Vm {
                     init,
                     visited: false,
                     ty: c.type_hint.clone().map(Rc::new),
+                    deprecated: deprecated_const(&c.meta.attributes, false, unit),
                 },
             );
         }
@@ -1749,6 +1786,7 @@ impl Vm {
                     init,
                     visited: false,
                     ty: None,
+                    deprecated: deprecated_const(&case.meta.attributes, true, unit),
                 },
             );
             self.classes[id as usize].enum_cases.push(obj);

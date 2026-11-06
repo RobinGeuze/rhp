@@ -378,14 +378,21 @@ impl Vm {
     fn frame_args(&self, i: usize) -> PhpArray {
         let f = &self.stack[i];
         let mut args = PhpArray::new();
+        let shown = |k: usize, v: Value| {
+            if crate::attributes::param_is_sensitive(&f.proto, k) {
+                self.sensitive_value(v)
+            } else {
+                v
+            }
+        };
         for (k, p) in f.proto.params.iter().enumerate() {
             if p.variadic {
                 if let Value::Array(a) = deref(&f.regs[p.cv as usize]) {
                     for (key, v) in a.iter() {
                         match key {
-                            ArrayKey::Int(_) => args.push(deref(v)),
+                            ArrayKey::Int(_) => args.push(shown(k, deref(v))),
                             ArrayKey::Str(_) => {
-                                args.insert(key.clone(), deref(v));
+                                args.insert(key.clone(), shown(k, deref(v)));
                             }
                         }
                     }
@@ -395,7 +402,7 @@ impl Vm {
             if k >= f.argc {
                 break;
             }
-            args.push(deref(&f.regs[p.cv as usize]));
+            args.push(shown(k, deref(&f.regs[p.cv as usize])));
         }
         for v in &f.extra_args {
             args.push(deref(v));
@@ -452,8 +459,12 @@ impl Vm {
                         // SAFETY: see `NativeCall::args` — every entry
                         // still in `native_calls` points at a live slice.
                         let call_args = unsafe { &*n.args };
+                        let sig = rhp_bytecode::signatures::function(n.name.as_bytes());
                         for (j, v) in call_args.iter().enumerate() {
-                            if j < 64 && n.shown_str >> j & 1 != 0 {
+                            use rhp_bytecode::signatures::Signature;
+                            if sig.and_then(|s| s.param(j)).is_some_and(|p| p.sensitive()) {
+                                a.push(self.sensitive_value(deref(v)));
+                            } else if j < 64 && n.shown_str >> j & 1 != 0 {
                                 a.push(Value::str(rhp_values::conv::to_string_bytes(&deref(v))));
                             } else {
                                 a.push(deref(v));

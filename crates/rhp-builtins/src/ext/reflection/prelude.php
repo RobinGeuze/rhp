@@ -166,8 +166,16 @@ class ReflectionAttribute implements Reflector {
         $flags = null;
         foreach ($c['attrs'] as $a) {
             if (strtolower($a[0]) === 'attribute') {
+                // zend_attribute_attribute_get_flags: the first argument, by any name.
                 $args = __reflect('attr_args', $a[3]);
-                $flags = $args[0] ?? ($args['flags'] ?? Attribute::TARGET_ALL);
+                $flags = Attribute::TARGET_ALL;
+                if ($args) {
+                    $flags = $args[array_key_first($args)];
+                    if (!is_int($flags)) {
+                        throw new Error('Attribute::__construct(): Argument #1 ($flags) must be of type int, ' . get_debug_type($flags) . ' given');
+                    }
+                    if ($flags & ~255) { throw new Error('Invalid attribute flags specified'); }
+                }
                 break;
             }
         }
@@ -176,6 +184,7 @@ class ReflectionAttribute implements Reflector {
         if (!($target & $flags)) {
             throw new Error('Attribute "' . $cls . '" cannot target ' . self::__targets($target) . ' (allowed targets: ' . self::__targets($flags) . ')');
         }
+        if (isset($this->__d[4])) { throw new Error($this->__d[4]); }
         if (!$c['internal'] && !($flags & 128) && $this->__d[2]) {
             throw new Error('Attribute "' . $cls . '" must not be repeated');
         }
@@ -958,11 +967,11 @@ class ReflectionConstant implements Reflector {
     public function getNamespaceName(): string { $p = strrpos($this->name, '\\'); return $p === false ? '' : substr($this->name, 0, $p); }
     public function getShortName(): string { $p = strrpos($this->name, '\\'); return $p === false ? $this->name : substr($this->name, $p + 1); }
     public function getValue(): mixed { return constant($this->name); }
-    public function isDeprecated(): bool { return false; }
+    public function isDeprecated(): bool { return Reflection::__deprecated(__reflect('gconst_attrs', $this->name)); }
     public function getFileName(): string|false { return false; }
     public function getExtension(): ?ReflectionExtension { return null; }
     public function getExtensionName(): string|false { return false; }
-    public function getAttributes(?string $name = null, int $flags = 0): array { return []; }
+    public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs(__reflect('gconst_attrs', $this->name), $name, $flags, static::class); }
     public function __toString(): string { return 'Constant [ ' . get_debug_type($this->getValue()) . ' ' . $this->name . ' ] { ' . (is_scalar($this->getValue()) ? $this->getValue() : '') . " }\n"; }
 }
 

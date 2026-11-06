@@ -10,6 +10,7 @@
 //! diagnostics and unwinds exceptions; `lifecycle` builds the engine and runs
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
+mod attributes;
 mod callables;
 mod calls;
 mod classes;
@@ -108,6 +109,11 @@ pub struct Vm {
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
+    /// Attributed global constants' attributes, by constant name.
+    const_attrs: HashMap<Vec<u8>, attributes::ConstAttrs>,
+    /// The `#[\Deprecated]` global constants whose deprecation is being
+    /// raised (php's CONST_PROTECT_RECURSION).
+    const_guard: Vec<Vec<u8>>,
     max_depth: usize,
     /// After max_execution_time ran out: the (frame, pc) of the last user
     /// instruction run. php raises the timeout where a jump lands or a

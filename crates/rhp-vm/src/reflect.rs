@@ -57,6 +57,7 @@ pub(crate) const T_METHOD: i64 = 4;
 pub(crate) const T_PROPERTY: i64 = 8;
 pub(crate) const T_CLASS_CONST: i64 = 16;
 pub(crate) const T_PARAMETER: i64 = 32;
+pub(crate) const T_CONST: i64 = 64;
 
 /// A resolved function-like reflection subject.
 #[derive(Clone)]
@@ -235,6 +236,22 @@ impl Vm {
                 None => Ok(Value::Null),
             },
             b"attr_args" => self.attr_args(args),
+            // A global constant's attributes (`#[A] const X = 1;`).
+            b"gconst_attrs" => {
+                let name = arg_bytes(args, 0);
+                let key = rhp_builtins::zend::builtin_functions::const_key(&name).into_owned();
+                let attrs = self.const_attrs.get(&key).map(|c| c.attrs.clone());
+                Ok(match attrs {
+                    Some(a) => self.attrs_desc(&a, T_CONST, |i| {
+                        let mut k = PhpArray::new();
+                        k.push(s(b"gconst"));
+                        k.push(s(&key));
+                        k.push(Value::Int(i as i64));
+                        Value::Array(k)
+                    }),
+                    None => Value::Array(PhpArray::new()),
+                })
+            }
             b"deprecated" => {
                 let msg = arg_bytes(args, 0);
                 self.raise_error(rhp_builtins::E_DEPRECATED, &msg);
@@ -1144,6 +1161,10 @@ impl Vm {
             d.push(Value::Int(target));
             d.push(Value::Bool(repeated));
             d.push(key(i));
+            d.push(match &at.validation_error {
+                Some(e) => Value::Str(e.clone()),
+                None => Value::Null,
+            });
             out.push(Value::Array(d));
         }
         Value::Array(out)
@@ -1187,6 +1208,13 @@ impl Vm {
                 meta.and_then(|(m, owner)| {
                     let a = m.attributes.get(idx_of(&k[3])).cloned()?;
                     Some((a, Some(cid), self.classes[owner as usize].unit))
+                })
+            }
+            b"gconst" => {
+                let name = rhp_values::conv::to_string_bytes(&k[1]);
+                self.const_attrs.get(&name).and_then(|c| {
+                    let a = c.attrs.get(idx_of(&k[2])).cloned()?;
+                    Some((a, None, c.unit))
                 })
             }
             b"fn" | b"param" => {

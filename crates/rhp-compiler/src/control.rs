@@ -132,7 +132,7 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_for(&mut self, f: &crate::parse::cst::For) -> Result<(), Thrown> {
         for e in f.initializations.iter() {
-            self.compile_expr(e)?;
+            self.compile_discarded(e)?;
         }
         self.emit_loop_entry();
         let top = self.here();
@@ -141,8 +141,13 @@ impl ProtoBuilder<'_> {
             None
         } else {
             let mut last = None;
-            for e in f.conditions.iter() {
-                last = Some(self.compile_expr(e)?);
+            let n = f.conditions.len();
+            for (i, e) in f.conditions.iter().enumerate() {
+                last = Some(if i + 1 < n {
+                    self.compile_discarded(e)?
+                } else {
+                    self.compile_expr(e)?
+                });
             }
             let pos = self.code.len();
             self.emit(Instr::Nop); // JmpFalse last -> end
@@ -158,7 +163,7 @@ impl ProtoBuilder<'_> {
         self.goto_scope.pop();
         let cont = self.here(); // continue -> increments
         for e in f.increments.iter() {
-            self.compile_expr(e)?;
+            self.compile_discarded(e)?;
         }
         self.emit(Instr::Jmp { target: top });
         let end = self.here();

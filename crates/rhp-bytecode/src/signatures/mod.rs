@@ -12,33 +12,35 @@ use std::cmp::Ordering;
 
 /// One parameter: its name, its type as Reflection prints it (empty when
 /// untyped), its default as Reflection prints it (empty when none), and
-/// flags ([`R`], [`PR`], [`V`], [`U`], and [`ZV`], [`RS`], [`ST`], [`NUL`]
-/// for what a function's C body parses it as).
+/// flags ([`R`], [`PR`], [`V`], [`U`], [`SENS`], and [`ZV`], [`RS`], [`ST`],
+/// [`NUL`] for what a function's C body parses it as).
 #[derive(Debug)]
 pub struct Param {
     pub name: &'static str,
     pub ty: &'static str,
     pub default: &'static str,
-    pub flags: u8,
+    pub flags: u16,
 }
 
 /// By reference (`ZEND_SEND_BY_REF`).
-pub const R: u8 = 1;
+pub const R: u16 = 1;
 /// `@prefer-ref` (`ZEND_SEND_PREFER_REF`): by reference when the argument
 /// is a variable, by value otherwise.
-pub const PR: u8 = 2;
+pub const PR: u16 = 2;
 /// Variadic.
-pub const V: u8 = 4;
+pub const V: u16 = 4;
 /// Optional without a default value (`= UNKNOWN` in the stub).
-pub const U: u8 = 8;
+pub const U: u16 = 8;
 /// php's C body parses it as any value (`Z_PARAM_ZVAL`, `z`).
-pub const ZV: u8 = 16;
+pub const ZV: u16 = 16;
 /// php's C body parses it as a resource (`Z_PARAM_RESOURCE`, `r`).
-pub const RS: u8 = 32;
+pub const RS: u16 = 32;
 /// php's C body parses it as an open stream (`PHP_Z_PARAM_STREAM`).
-pub const ST: u8 = 64;
+pub const ST: u16 = 64;
 /// With [`RS`] or [`ST`]: or null.
-pub const NUL: u8 = 128;
+pub const NUL: u16 = 128;
+/// `#[\SensitiveParameter]`: a trace shows a SensitiveParameterValue.
+pub const SENS: u16 = 256;
 
 impl Param {
     pub fn by_ref(&self) -> bool {
@@ -49,6 +51,9 @@ impl Param {
     }
     pub fn variadic(&self) -> bool {
         self.flags & V != 0
+    }
+    pub fn sensitive(&self) -> bool {
+        self.flags & SENS != 0
     }
     /// The default value's source text, when there is one.
     pub fn default(&self) -> Option<&'static str> {
@@ -132,7 +137,7 @@ pub(crate) const fn p(
     name: &'static str,
     ty: &'static str,
     default: &'static str,
-    flags: u8,
+    flags: u16,
 ) -> Param {
     Param {
         name,

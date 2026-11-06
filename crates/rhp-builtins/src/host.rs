@@ -279,6 +279,12 @@ pub trait Host {
     /// Look up a constant by name (`constant`), or None if undefined.
     fn get_const(&self, name: &[u8]) -> Option<Value>;
 
+    /// Raise the deprecation of fetching constant `name` (CONST_DEPRECATED),
+    /// when it has one.
+    fn const_fetch_deprecation(&mut self, _name: &[u8]) -> Result<(), Thrown> {
+        Ok(())
+    }
+
     /// A class constant's value (`defined`/`constant` with `Class::CONST`, incl.
     /// enum cases), or None if the class or constant does not exist.
     fn class_constant(&self, class: &[u8], name: &[u8]) -> Option<Value>;

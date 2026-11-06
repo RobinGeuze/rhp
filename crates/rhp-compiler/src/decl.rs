@@ -14,6 +14,7 @@ use rhp_bytecode::{
 use rhp_values::{ArrayKey, PhpArray, PhpStr, Thrown, Value};
 use rhp_values::{ClassFlags, ClassKind, Visibility};
 
+use crate::attrs::AttrTarget;
 use crate::builder::{ProtoBuilder, ScopeKind};
 use crate::checks::{check_decl, Decl, DeclKind};
 use crate::file::{ClassScope, FileCtx};
@@ -146,12 +147,16 @@ pub(crate) fn compile_attributes(
     cx: &FileCtx,
     lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
     class_name: Option<&PhpStr>,
+    target: &crate::attrs::AttrTarget,
 ) -> Result<Vec<rhp_bytecode::AttributeProto>, Thrown> {
     use crate::parse::cst::PartialArgument as PA;
     let mut out = Vec::new();
     for list in lists.iter() {
         for a in list.attributes.iter() {
             let name = PhpStr::from_bytes(cx.resolve_class_name(&a.name));
+            if crate::attrs::skip_promoted(&name.as_bytes().to_ascii_lowercase(), target) {
+                continue;
+            }
             let args = match &a.argument_list {
                 None => None,
                 Some(al) => {
@@ -179,6 +184,12 @@ pub(crate) fn compile_attributes(
                     for arg in al.arguments.iter() {
                         let at = arg.span().start.offset;
                         match arg {
+                            PA::Positional(p) if p.ellipsis.is_some() => {
+                                cx.fatal(
+                                    at,
+                                    "Cannot use unpacking in attribute argument list".into(),
+                                );
+                            }
                             PA::Positional(_) if items.iter().any(|(n, _)| n.is_some()) => {
                                 cx.fatal(
                                     at,
@@ -247,10 +258,40 @@ pub(crate) fn compile_attributes(
                     }
                 }
             };
-            out.push(rhp_bytecode::AttributeProto { name, args });
+            out.push(rhp_bytecode::AttributeProto {
+                name,
+                args,
+                validation_error: None,
+            });
         }
     }
+    crate::attrs::validate(cx, &mut out, target);
     Ok(out)
+}
+
+/// The attribute target of a class-like declaration.
+fn class_target<'a>(
+    kind: DeclKind,
+    name: &'a PhpStr,
+    is_abstract: bool,
+    is_readonly: bool,
+    at: u32,
+) -> AttrTarget<'a> {
+    // An anonymous class's name is printed up to its NUL byte.
+    let n = name.as_bytes();
+    let n = &n[..n.iter().position(|&b| b == 0).unwrap_or(n.len())];
+    AttrTarget {
+        target: crate::attrs::TARGET_CLASS,
+        promoted: 0,
+        class: Some(crate::attrs::ClassInfo {
+            kind,
+            name: n,
+            is_abstract,
+            is_readonly,
+        }),
+        hook: false,
+        at,
+    }
 }
 
 /// Reflection metadata of a declaration: its attributes, the doc comment
@@ -259,12 +300,13 @@ pub(crate) fn decl_meta(
     cx: &FileCtx,
     lists: &crate::parse::cst::Sequence<crate::parse::cst::AttributeList>,
     class_name: Option<&PhpStr>,
+    target: &crate::attrs::AttrTarget,
     doc_pos: u32,
     start: u32,
     end: u32,
 ) -> Result<rhp_bytecode::DeclMeta, Thrown> {
     Ok(rhp_bytecode::DeclMeta {
-        attributes: compile_attributes(cx, lists, class_name)?,
+        attributes: compile_attributes(cx, lists, class_name, target)?,
         doc_comment: cx.doc_comment_before(doc_pos),
         start_line: cx.line_of(start),
         offset: start,
@@ -353,7 +395,6 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
             at: class.class.span.start.offset,
             extends: class.extends.as_ref(),
             implements: class.implements.as_ref(),
-            attributes: &class.attribute_lists,
             is_abstract: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
             is_readonly: has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
             backing: None,
@@ -401,6 +442,13 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         cx,
         &class.attribute_lists,
         Some(&name),
+        &class_target(
+            DeclKind::Class,
+            &name,
+            has_modifier(&class.modifiers, |m| matches!(m, Modifier::Abstract(_))),
+            has_modifier(&class.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+            class.class.span.start.offset,
+        ),
         class.name.span.start.offset,
         class.class.span.start.offset,
         class.right_brace.end.offset,
@@ -466,7 +514,6 @@ pub(crate) fn compile_anon_class(
             at: ac.class.span.start.offset,
             extends: ac.extends.as_ref(),
             implements: ac.implements.as_ref(),
-            attributes: &ac.attribute_lists,
             is_abstract: false,
             is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
             backing: None,
@@ -498,6 +545,13 @@ pub(crate) fn compile_anon_class(
         cx,
         &ac.attribute_lists,
         Some(&name),
+        &class_target(
+            DeclKind::Anon,
+            &name,
+            false,
+            has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
+            ac.class.span.start.offset,
+        ),
         ac.class.span.start.offset,
         ac.class.span.start.offset,
         ac.right_brace.end.offset,
@@ -541,7 +595,6 @@ pub(crate) fn compile_enum(
             at: en.r#enum.span.start.offset,
             extends: None,
             implements: en.implements.as_ref(),
-            attributes: &en.attribute_lists,
             is_abstract: false,
             is_readonly: false,
             backing: en.backing_type_hint.as_ref().map(|h| &h.hint),
@@ -583,6 +636,13 @@ pub(crate) fn compile_enum(
         cx,
         &en.attribute_lists,
         Some(&name),
+        &class_target(
+            DeclKind::Enum,
+            &name,
+            false,
+            false,
+            en.r#enum.span.start.offset,
+        ),
         en.name.span.start.offset,
         en.r#enum.span.start.offset,
         en.right_brace.end.offset,
@@ -824,8 +884,18 @@ fn compile_member(
             let compiled = c.hint.as_ref().and_then(|h| compile_type(cx, h, false));
             let hint = compiled.as_ref().map(|t| t.hint.clone());
             let is_final = has_modifier(&c.modifiers, |m| matches!(m, Modifier::Final(_)));
-            let attributes = compile_attributes(cx, &c.attribute_lists, Some(class_name))?;
             let (cstart, cend) = span_of(c);
+            let first = c
+                .items
+                .iter()
+                .next()
+                .map_or(cstart, |i| i.name.span.start.offset);
+            let attributes = compile_attributes(
+                cx,
+                &c.attribute_lists,
+                Some(class_name),
+                &AttrTarget::new(crate::attrs::TARGET_CLASS_CONST, first),
+            )?;
             for item in c.items.iter() {
                 let value = const_init_or_thunk(cx, item.value, Some(class_name))?;
                 let value = match &compiled {
@@ -874,6 +944,7 @@ fn compile_member(
                 cx,
                 &ec.attribute_lists,
                 Some(class_name),
+                &AttrTarget::new(crate::attrs::TARGET_CLASS_CONST, cstart),
                 name_off,
                 cstart,
                 cend,
@@ -979,7 +1050,16 @@ fn compile_property_items(
 ) -> Result<(), Thrown> {
     let (pstart, pend) = p.span;
     let hint = compiled.map(|t| t.hint.clone());
-    let attributes = compile_attributes(cx, p.attribute_lists, Some(class_name))?;
+    let first = p
+        .items
+        .first()
+        .map_or(pstart, |i| i.variable().span.start.offset);
+    let attributes = compile_attributes(
+        cx,
+        p.attribute_lists,
+        Some(class_name),
+        &AttrTarget::new(crate::attrs::TARGET_PROPERTY, first),
+    )?;
     for item in p.items {
         *cx.cur_property.borrow_mut() = Some(strip_dollar(item.variable().name).to_vec());
         let (var, default) = match item {
@@ -1088,7 +1168,6 @@ pub(crate) fn compile_trait(
             at: t.r#trait.span.start.offset,
             extends: None,
             implements: None,
-            attributes: &t.attribute_lists,
             is_abstract: false,
             is_readonly: false,
             backing: None,
@@ -1109,6 +1188,13 @@ pub(crate) fn compile_trait(
         cx,
         &t.attribute_lists,
         Some(&name),
+        &class_target(
+            DeclKind::Trait,
+            &name,
+            false,
+            false,
+            t.r#trait.span.start.offset,
+        ),
         t.name.span.start.offset,
         t.r#trait.span.start.offset,
         t.right_brace.end.offset,
@@ -1146,7 +1232,6 @@ pub(crate) fn compile_interface(
             at: iface.interface.span.start.offset,
             extends: iface.extends.as_ref(),
             implements: None,
-            attributes: &iface.attribute_lists,
             is_abstract: false,
             is_readonly: false,
             backing: None,
@@ -1189,6 +1274,13 @@ pub(crate) fn compile_interface(
         cx,
         &iface.attribute_lists,
         Some(&name),
+        &class_target(
+            DeclKind::Interface,
+            &name,
+            false,
+            false,
+            iface.interface.span.start.offset,
+        ),
         iface.name.span.start.offset,
         iface.interface.span.start.offset,
         iface.right_brace.end.offset,

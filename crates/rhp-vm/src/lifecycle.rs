@@ -82,6 +82,8 @@ impl Vm {
             class_aliases: Vec::new(),
             constants,
             user_const_order: Vec::new(),
+            const_attrs: HashMap::new(),
+            const_guard: Vec::new(),
             max_depth: 1 << 16,
             timeout_prev: None,
             timeout_wait: None,

@@ -624,10 +624,21 @@ impl Vm {
         caller: Option<bool>,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
-        let argc = args.len();
-        frame.argc = argc;
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
+        if proto.flags.intersects(
+            rhp_bytecode::ProtoFlags::DEPRECATED.union(rhp_bytecode::ProtoFlags::NODISCARD),
+        ) {
+            let first = match &args {
+                Args::Slice(s) => s.first().cloned(),
+                Args::Window { top, base, argc } => {
+                    (*argc > 0).then(|| self.stack[*top].regs[*base as usize].clone())
+                }
+            };
+            self.call_attr_checks(frame, first.as_ref(), caller.is_some())?;
+        }
+        let argc = args.len();
+        frame.argc = argc;
         let count_error = self.internal_arg_count_error(&proto, frame, argc);
         let bound = match args {
             Args::Slice(s) => bind_params(

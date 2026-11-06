@@ -395,7 +395,8 @@ through `Host::assign_ref` (settype, the preg functions; extract assigns
 through the scope); the other by-ref writers do not check yet. Not done:
 by-ref foreach over an ArrayIterator backed by an object (php's
 spl_array_it_get_current_data adds the source): rhp's ArrayIterator copies
-the object's properties.
+the object's properties; unserialize() does not add sources for references
+to typed properties (php's var_unserializer does).
 
 ## 5. Object model sketch (enough for phase 7)
 

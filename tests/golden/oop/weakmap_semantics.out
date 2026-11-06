@@ -1,0 +1,68 @@
+int(1)
+bool(true)
+int(0)
+NULL
+string(2) "xy"
+bool(false)
+bool(true)
+string(4) "dflt"
+bool(false)
+bool(true)
+bool(true)
+error: Indirect modification of overloaded element of WeakMap has no effect
+array(2) {
+  ["k"]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["n"]=>
+  int(3)
+}
+Object stdClass#5 not contained in WeakMap
+visit 0
+visit 2
+visit 9
+int(3)
+int(2)
+int(1)
+int(1)
+string(16) "InternalIterator"
+int(9)
+Trying to clone an uncloneable object of class InternalIterator
+int(0)
+Direct instantiation of WeakReference is not allowed, use WeakReference::create instead
+Trying to clone an uncloneable object of class WeakReference
+Serialization of 'WeakReference' is not allowed
+array(0) {
+}
+array(0) {
+}
+array(0) {
+}
+WeakReference Object
+(
+    [object] => stdClass Object
+        (
+        )
+
+)
+
+WeakMap Object
+(
+    [0] => Array
+        (
+            [key] => stdClass Object
+                (
+                )
+
+            [value] => 9
+        )
+
+)
+
+NULL
+NULL
+bool(false)

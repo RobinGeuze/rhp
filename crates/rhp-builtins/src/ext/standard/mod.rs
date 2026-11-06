@@ -13,6 +13,7 @@ pub mod base64;
 pub mod basic_functions;
 pub mod browscap;
 pub mod crc32;
+pub mod credits;
 pub mod crypt;
 pub mod datetime;
 pub mod dir;
@@ -124,6 +125,7 @@ fn register(m: &mut crate::Registry) {
     mail::register(m);
     versioning::register(m);
     info::register(m);
+    credits::register(m);
     streamsfuncs::register(m);
     fsock::register(m);
     http::register(m);

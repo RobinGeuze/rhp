@@ -392,7 +392,10 @@ here still delete it, keeping php's order). Untyped references pay one
 Cursor writes find a typed reference inside `assign_path`, which hands the
 write back to the VM (`TypedStop`). Builtins write by-reference arguments
 through `Host::assign_ref` (settype, the preg functions; extract assigns
-through the scope); the other by-ref writers do not check yet.
+through the scope); the other by-ref writers do not check yet. Not done:
+by-ref foreach over an ArrayIterator backed by an object (php's
+spl_array_it_get_current_data adds the source): rhp's ArrayIterator copies
+the object's properties.
 
 ## 5. Object model sketch (enough for phase 7)
 

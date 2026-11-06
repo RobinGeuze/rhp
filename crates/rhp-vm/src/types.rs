@@ -419,6 +419,16 @@ impl Vm {
             let called = self.stack[top]
                 .called_class
                 .or_else(|| self.current_this(top).map(|o| o.borrow().class));
+            // Fast path (fluent `: static` methods): an instance of the
+            // called scope passes without building the resolved type.
+            if let (Some(c), Value::Object(h)) = (called, &deref(&v)) {
+                if self.classes[h.borrow().class as usize]
+                    .ancestors
+                    .contains(&c)
+                {
+                    return Ok(v);
+                }
+            }
             let mut t = ty.clone();
             t.kinds.retain(|k| *k != K::StaticType);
             t.kinds.push(match called {

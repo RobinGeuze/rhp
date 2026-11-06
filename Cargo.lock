@@ -958,6 +958,7 @@ dependencies = [
  "rhp-mbfl-sys",
  "rhp-values",
  "ripemd",
+ "rustc-hash",
  "sha1",
  "sha2",
  "sha3",

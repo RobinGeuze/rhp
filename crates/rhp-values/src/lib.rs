@@ -723,6 +723,13 @@ impl PhpArray {
         PhpArray(Rc::new(ArrayData::new()))
     }
 
+    /// An empty array with room for `n` elements (array_init_size).
+    pub fn with_capacity(n: usize) -> Self {
+        let mut d = ArrayData::new();
+        d.entries.reserve_exact(n);
+        PhpArray(Rc::new(d))
+    }
+
     /// Identity of the shared array storage (php's `zend_array *`): equal for
     /// copies that have not been written since, so a recursive array reached
     /// through a reference is recognized (`*RECURSION*` / circular-reference

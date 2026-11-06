@@ -295,8 +295,9 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
             // Closure with the closure's own signature.
             $i = __reflect('fn', $objectOrMethod);
             unset($i['closure'], $i['this'], $i['scope'], $i['calledScope'], $i['used']);
+            // zend_get_closure_invoke_method keeps the function's attributes.
             $i = ['name' => '__invoke', 'short' => '__invoke', 'ns' => '', 'class' => 'Closure', 'internal' => true,
-                  'ext' => 'Core', 'file' => false, 'start' => false, 'end' => false, 'doc' => false, 'attrs' => [],
+                  'ext' => 'Core', 'file' => false, 'start' => false, 'end' => false, 'doc' => false,
                   'vis' => 1, 'modifiers' => 1, 'static' => false, 'abstract' => false, 'final' => false,
                   'prototype' => null] + $i;
             $this->__i = $i;

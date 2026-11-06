@@ -99,19 +99,17 @@ impl Vm {
 
     /// The checks ZEND_DO_FCALL makes before entering a `#[\Deprecated]` or
     /// `#[\NoDiscard]` function: run by `bind_frame` for a proto with either
-    /// flag. `direct`: called by a call instruction (or a `call_user_func`
-    /// compiled as one), so an unused result is known.
+    /// flag.
     #[cold]
     pub(crate) fn call_attr_checks(
         &mut self,
         frame: &Frame,
         args_first: Option<&Value>,
-        direct: bool,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
         let deprecated = proto.flags.contains(ProtoFlags::DEPRECATED);
         let nodiscard =
-            proto.flags.contains(ProtoFlags::NODISCARD) && direct && self.caller_discards();
+            proto.flags.contains(ProtoFlags::NODISCARD) && self.caller_discards();
         if !deprecated && !nodiscard {
             return Ok(());
         }
@@ -124,7 +122,12 @@ impl Vm {
                 (Some(c), f) => cat(format!("Method {c}::{f}() is deprecated"), &suffix),
                 (None, f) => cat(format!("Function {f}() is deprecated"), &suffix),
             };
-            self.diag(rhp_builtins::E_USER_DEPRECATED, &msg)?;
+            let level = if proto.is_internal() {
+                rhp_builtins::E_DEPRECATED
+            } else {
+                rhp_builtins::E_USER_DEPRECATED
+            };
+            self.diag(level, &msg)?;
         }
         if nodiscard {
             let suffix =
@@ -133,7 +136,12 @@ impl Vm {
                 (Some(c), f) => cat(format!("The return value of method {c}::{f}() should either be used or intentionally ignored by casting it as (void)"), &suffix),
                 (None, f) => cat(format!("The return value of function {f}() should either be used or intentionally ignored by casting it as (void)"), &suffix),
             };
-            self.diag(rhp_builtins::E_USER_WARNING, &msg)?;
+            let level = if proto.is_internal() {
+                rhp_builtins::E_WARNING
+            } else {
+                rhp_builtins::E_USER_WARNING
+            };
+            self.diag(level, &msg)?;
         }
         Ok(())
     }
@@ -146,10 +154,24 @@ impl Vm {
         if f.proto.is_internal() || f.pc == 0 {
             return false;
         }
-        f.proto
+        let pc = f.pc - 1;
+        if f.proto
             .discard_calls
-            .binary_search(&((f.pc - 1) as rhp_bytecode::Pc))
-            .is_ok()
+            .binary_search(&(pc as rhp_bytecode::Pc))
+            .is_err()
+        {
+            return false;
+        }
+        // Not a callback of a builtin that call runs, except
+        // `call_user_func` compiled as a user call (ZEND_INIT_USER_CALL).
+        match f.proto.code[pc] {
+            rhp_bytecode::Instr::Call { flags, .. }
+                if flags.contains(rhp_bytecode::CallFlags::USER_CALL) =>
+            {
+                true
+            }
+            _ => !self.native_active_from(self.stack.len() - 1),
+        }
     }
 
     /// The class (for a method) and function name php prints for a callee.

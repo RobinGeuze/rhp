@@ -1271,7 +1271,18 @@ impl Vm {
             }
             Value::Closure(cd) => match &cd.wrapped {
                 Some(w) => {
-                    let w = (**w).clone();
+                    let mut w = (**w).clone();
+                    // `$closure->__invoke(...)`: the closure's own function.
+                    if let Some(inner) = rhp_builtins::zend::closures::closure_invoke_of(&w) {
+                        w = inner;
+                    }
+                    // `Closure::fromCallable($invokable)`: its `__invoke`.
+                    if let Value::Object(_) = &w {
+                        let mut pair = PhpArray::new();
+                        pair.push(w);
+                        pair.push(Value::str("__invoke"));
+                        w = Value::Array(pair);
+                    }
                     self.fn_subject(&w)?
                 }
                 None => self

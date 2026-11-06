@@ -168,6 +168,16 @@ pub fn std_cast_non_string(target: CastTarget) -> Option<Value> {
     }
 }
 
+/// SensitiveParameterValue's `get_properties_for`: NULL (no properties)
+/// for every purpose.
+fn sensitive_value_properties_for(
+    _: &mut dyn Host,
+    _: &ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    Ok((purpose != PropPurpose::GetObjectVars).then(PhpArray::new))
+}
+
 /// The engine's own classes with handlers (Zend/, and Reflection, which
 /// php registers like an extension but rhp keeps in its core prelude).
 const CORE: &[ClassHandlers] = &[
@@ -186,6 +196,15 @@ const CORE: &[ClassHandlers] = &[
         class: "Generator",
         handlers: &ObjectHandlers::UNCLONEABLE,
         create_object: true,
+    },
+    // attributes_object_handlers_sensitive_parameter_value
+    ClassHandlers {
+        class: "SensitiveParameterValue",
+        handlers: &ObjectHandlers {
+            get_properties_for: Some(sensitive_value_properties_for),
+            ..ObjectHandlers::STD
+        },
+        create_object: false,
     },
     ClassHandlers {
         class: "Fiber",

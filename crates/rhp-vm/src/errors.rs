@@ -137,6 +137,15 @@ impl Vm {
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
             None => (Vec::new(), 0),
+            // The user exception handler's call: php has no frame there.
+            Some(i)
+                if self.stack[i]
+                    .proto
+                    .flags
+                    .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE) =>
+            {
+                (b"Unknown".to_vec(), 0)
+            }
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
         self.raise_error_at(level, msg, file, line);
@@ -328,7 +337,7 @@ impl Vm {
 
     /// A builtin called from frame `i` is still running (so a frame above `i`
     /// was invoked by it, i.e. from `[internal function]`).
-    fn native_active_from(&self, i: usize) -> bool {
+    pub(crate) fn native_active_from(&self, i: usize) -> bool {
         self.native_calls.iter().any(|n| n.caller == i)
     }
 

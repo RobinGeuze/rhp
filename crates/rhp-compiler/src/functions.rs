@@ -197,7 +197,7 @@ pub(crate) fn compile_method(
         m.function.span.start.offset,
         span_of(m).1,
     )?;
-    crate::attrs::apply_fn_flags(cx, &mut proto, true, m.function.span.start.offset);
+    crate::attrs::apply_fn_flags(cx, &mut proto, true, false, m.function.span.start.offset);
 
     let mp = MethodProto {
         name,
@@ -266,7 +266,7 @@ pub(crate) fn compile_function(
         func.function.span.start.offset,
         span_of(func).1,
     )?;
-    crate::attrs::apply_fn_flags(cx, &mut proto, false, func.function.span.start.offset);
+    crate::attrs::apply_fn_flags(cx, &mut proto, false, false, func.function.span.start.offset);
     Ok(proto)
 }
 
@@ -549,7 +549,7 @@ impl ProtoBuilder<'_> {
         proto.return_type = return_type;
         proto.meta = meta;
         let at = proto.meta.offset;
-        crate::attrs::apply_fn_flags(self.cx, &mut proto, self.class_name.is_some(), at);
+        crate::attrs::apply_fn_flags(self.cx, &mut proto, self.class_name.is_some(), false, at);
         proto.is_generator = match body {
             ClosureBody::Block(b) => block_has_yield(&b.statements),
             ClosureBody::Arrow(e) => expr_has_yield(e),

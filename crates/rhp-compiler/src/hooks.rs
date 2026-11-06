@@ -399,5 +399,6 @@ fn compile_hook_body(
         start,
         end,
     )?;
+    crate::attrs::apply_fn_flags(cx, &mut proto, true, true, start);
     Ok(proto)
 }

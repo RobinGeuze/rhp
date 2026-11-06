@@ -237,12 +237,13 @@ pub(crate) fn nodiscard_flag(attrs: &[AttributeProto]) -> bool {
 
 /// The function flags zend_compile_func_decl derives from its attributes,
 /// and the `#[\NoDiscard]` return type check. `in_class`: php's
-/// `CG(active_class_entry)` (a method, or a closure inside one); `at`: the
-/// `function` keyword.
+/// `CG(active_class_entry)` (a method, or a closure inside one); `hook`: a
+/// property hook; `at`: the `function` keyword.
 pub(crate) fn apply_fn_flags(
     cx: &FileCtx,
     proto: &mut rhp_bytecode::FunctionProto,
     in_class: bool,
+    hook: bool,
     at: u32,
 ) {
     use rhp_bytecode::{ProtoFlags, TypeKind};
@@ -253,7 +254,8 @@ pub(crate) fn apply_fn_flags(
     if has(attrs, b"deprecated") {
         proto.flags.insert(ProtoFlags::DEPRECATED);
     }
-    if !nodiscard_flag(attrs) {
+    // The validator refuses a hook (an error, or one delayed).
+    if hook || !nodiscard_flag(attrs) {
         return;
     }
     proto.flags.insert(ProtoFlags::NODISCARD);

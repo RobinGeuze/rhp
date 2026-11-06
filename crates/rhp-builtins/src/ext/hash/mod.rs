@@ -972,7 +972,9 @@ fn fn_hash_hkdf(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let length = args.get(2).map(as_int).unwrap_or(0);
     let info = args.get(3).map(conv::to_string_bytes).unwrap_or_default();
     let salt = args.get(4).map(conv::to_string_bytes).unwrap_or_default();
-    let Some(size) = hmac_block_size(&algo).and_then(|_| digest(&algo, b"")).map(|d| d.len())
+    let Some(size) = hmac_block_size(&algo)
+        .and_then(|_| digest(&algo, b""))
+        .map(|d| d.len())
     else {
         return Err(Thrown::error(
             "ValueError",

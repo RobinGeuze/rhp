@@ -888,7 +888,15 @@ impl Vm {
             ))
         } else if let Some(ty) = self.enum_prop_type(cid, name) {
             // public protected(set) readonly
-            Some((cid, Visibility::Public, None, Some(Rc::new(ty)), true, false, Value::Null))
+            Some((
+                cid,
+                Visibility::Public,
+                None,
+                Some(Rc::new(ty)),
+                true,
+                false,
+                Value::Null,
+            ))
         } else {
             e.static_props.get(name).map(|sp| {
                 (

@@ -338,7 +338,12 @@ pub fn take_startup_diagnostics() -> Vec<(i64, String)> {
     // php_ini_register_extensions: an `extension=` library that fails to load.
     if let Some(rhp_values::Value::Str(name)) = cfg_get(b"extension") {
         if let Some(msg) = crate::ext::standard::dl::startup_extension_error(name.as_bytes()) {
-            diags.push((usize::MAX - 1, String::new(), rhp_values::E_CORE_WARNING, msg));
+            diags.push((
+                usize::MAX - 1,
+                String::new(),
+                rhp_values::E_CORE_WARNING,
+                msg,
+            ));
         }
     }
     // php_module_startup's check of removed and deprecated directives.
@@ -780,7 +785,10 @@ pub(crate) fn alter_ini_entry(
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
     }
     if name == b"auto_detect_line_endings" && ini_parse_bool(&newv) {
-        host.emit_diagnostic(crate::E_DEPRECATED, b"auto_detect_line_endings is deprecated")?;
+        host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"auto_detect_line_endings is deprecated",
+        )?;
     }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {

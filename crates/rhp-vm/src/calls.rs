@@ -1613,7 +1613,11 @@ impl Vm {
         mut named: Vec<(PhpStr, Value)>,
     ) -> Result<Vec<(PhpStr, Value)>, Thrown> {
         for (name, a) in named.iter_mut() {
-            let Some(i) = sig.params.iter().position(|p| p.name.as_bytes() == name.as_bytes()) else {
+            let Some(i) = sig
+                .params
+                .iter()
+                .position(|p| p.name.as_bytes() == name.as_bytes())
+            else {
                 continue;
             };
             let p = &sig.params[i];
@@ -2138,7 +2142,8 @@ impl Vm {
                 Some((p, cls)) => args = self.place_named_args(&p, cls, args, named)?,
                 None => match self.callable_builtin(c) {
                     Some((b, sig)) => {
-                        let args = self.callee_by_ref_args(&Callee::Builtin(b.name.to_string()), args)?;
+                        let args =
+                            self.callee_by_ref_args(&Callee::Builtin(b.name.to_string()), args)?;
                         let named = self.named_by_ref_args(sig, named)?;
                         let (args, extra) = self.place_builtin_named_args(sig, args, named)?;
                         // Z_PARAM_VARIADIC_WITH_NAMED: forwarded.

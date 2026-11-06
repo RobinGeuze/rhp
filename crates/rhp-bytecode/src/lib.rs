@@ -1483,9 +1483,9 @@ pub enum ConstInitProto {
     Thunk(Rc<FunctionProto>),
 }
 
-// The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
-// it without decoding a niche.
 /// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
 pub const PACKED_ARGS: u16 = u16::MAX;
 
+// The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
+// it without decoding a niche.
 const _: () = assert!(std::mem::size_of::<Instr>() == 24);

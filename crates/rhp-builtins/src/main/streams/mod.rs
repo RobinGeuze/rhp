@@ -652,6 +652,15 @@ impl LocalFile {
         self.file.as_raw_fd()
     }
 
+    /// `_php_stream_copy_to_stream_ex` from this freshly opened file (empty
+    /// read buffer) to `dst`, in the kernel or in chunks, never the whole
+    /// file in memory: std's copy uses copy_file_range(2) on Linux, as php
+    /// does, and falls back to read/write. False on a read or write error.
+    pub fn copy_to(&mut self, dst: &mut LocalFile) -> bool {
+        debug_assert!(self.rbuf.is_empty());
+        std::io::copy(&mut self.file, &mut dst.file).is_ok()
+    }
+
     /// Pull one chunk into the read buffer; sets eof when `read(2)` returns 0
     /// (or fails). Returns the number of bytes added.
     fn fill(&mut self) -> usize {

@@ -222,16 +222,31 @@ enum Fill {
     Error,
 }
 
+/// php's `detect_is_seekable()` for an fd's `fstat`: FIFOs never seek, nor
+/// do character devices, except on Linux the seekable memory devices (major
+/// 1: /dev/mem, kmem, null, port, zero, full).
+fn detect_is_seekable(st: &libc::stat) -> bool {
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFIFO => false,
+        #[cfg(target_os = "linux")]
+        libc::S_IFCHR => {
+            libc::major(st.st_rdev) == 1 && matches!(libc::minor(st.st_rdev), 1..=5 | 7)
+        }
+        #[cfg(not(target_os = "linux"))]
+        libc::S_IFCHR => false,
+        _ => true,
+    }
+}
+
 impl FdStream {
     pub fn new(fd: OwnedFd) -> Self {
-        // php's detect_is_seekable(): FIFOs and character devices never seek;
+        // php's detect_is_seekable(): FIFOs and character devices never seek
+        // (on Linux, the memory devices /dev/null, /dev/zero, ... do);
         // otherwise the position starts at the fd's current offset.
         let raw = fd.as_raw_fd();
         let mut seekable = unsafe {
             let mut st: libc::stat = std::mem::zeroed();
-            libc::fstat(raw, &mut st) == 0
-                && (st.st_mode & libc::S_IFMT) != libc::S_IFIFO
-                && (st.st_mode & libc::S_IFMT) != libc::S_IFCHR
+            libc::fstat(raw, &mut st) == 0 && detect_is_seekable(&st)
         };
         let mut position = -1;
         if seekable {

@@ -1083,7 +1083,7 @@ fn timezone_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<
                     .country_code
                     .iter()
                     .take_while(|&&c| c != 0)
-                    .map(|&c| c as u8)
+                    .map(|&c| c.to_ne_bytes()[0])
                     .collect();
                 let mut a = PhpArray::new();
                 assoc(&mut a, "country_code", Value::str(cc));

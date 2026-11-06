@@ -2145,6 +2145,58 @@ fn tree_root(rel: &str) -> String {
     }
 }
 
+/// The tree roots outside the tests' own that `tests` reference by a relative
+/// path (`__DIR__ . "/../../../../sapi/cli/tests/php_cli_server.inc"`): each
+/// `../`-run followed by directories up to a `tests` one, resolved against
+/// the test's directory, if that directory exists in `php_src`.
+fn helper_roots(php_src: &Path, tests: &[String]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for rel in tests {
+        let Ok(text) = fs::read(php_src.join(rel)) else {
+            continue;
+        };
+        let dir: Vec<&str> = rel.split('/').collect();
+        let dir = &dir[..dir.len() - 1];
+        let mut i = 0;
+        while let Some(p) = text[i..].windows(3).position(|w| w == b"../") {
+            let start = i + p;
+            let mut j = start;
+            let mut up = 0;
+            while text[j..].starts_with(b"../") {
+                up += 1;
+                j += 3;
+            }
+            i = j;
+            if (start > 0 && text[start - 1] == b'.') || up > dir.len() {
+                continue;
+            }
+            let mut path: Vec<&str> = dir[..dir.len() - up].to_vec();
+            loop {
+                let seg_len = text[j..]
+                    .iter()
+                    .take_while(|&&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+                    .count();
+                if seg_len == 0 || text.get(j + seg_len) != Some(&b'/') {
+                    break;
+                }
+                let Ok(seg) = std::str::from_utf8(&text[j..j + seg_len]) else {
+                    break;
+                };
+                path.push(seg);
+                j += seg_len + 1;
+                if seg == "tests" {
+                    let root = path.join("/");
+                    if php_src.join(&root).is_dir() {
+                        out.insert(root);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// What a test directory held before a run: every path under it (relative,
 /// symlinks not followed), plus a change stamp for each directory so
 /// [`restore`] only lists the directories a run touched.
@@ -3073,7 +3125,11 @@ pub fn main(args: &[String]) -> ExitCode {
         .work
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join(format!("rhp-phpt-{}", std::process::id())));
-    let roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    let mut roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    // ...and the trees they include helpers from (sapi/cli/tests'
+    // php_cli_server.inc, ext/openssl/tests' ServerClientTestCase.inc), so a
+    // --filter run sees the same files as a full one.
+    roots.extend(helper_roots(&o.php_src, &tests));
     let jobs = o.jobs.min(tests.len());
     let worker_roots = match make_worker_roots(&work, 0..jobs, &roots, &o.php_src) {
         Ok(w) => w,

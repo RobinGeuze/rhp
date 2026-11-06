@@ -1537,7 +1537,9 @@ impl Vm {
             add("name", rhp_bytecode::TypeKind::String);
             match proto.enum_backing {
                 Some(rhp_bytecode::EnumBacking::Int) => add("value", rhp_bytecode::TypeKind::Int),
-                Some(rhp_bytecode::EnumBacking::Str) => add("value", rhp_bytecode::TypeKind::String),
+                Some(rhp_bytecode::EnumBacking::Str) => {
+                    add("value", rhp_bytecode::TypeKind::String)
+                }
                 None => {}
             }
         }

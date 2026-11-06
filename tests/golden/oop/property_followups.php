@@ -27,7 +27,7 @@ var_dump($s->s);
 // A nested write fetch creates the missing dynamic property.
 $o = new stdClass;
 try { $o->a->b = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
-var_dump($o);
+var_dump((array) $o);
 try { (function () { return null; })()->x->y = 1; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 
 // Typed statics: coercion, overflow, uninitialized reads.
@@ -49,7 +49,7 @@ $p = new P;
 $p->i .= "2";
 $p->s .= 3;
 $p->f++;
-var_dump($p);
+var_dump((array) $p);
 $x = ($p->i += "4");
 var_dump($x);
 
@@ -68,3 +68,10 @@ var_dump(property_exists(E::A, 'value'), (new ReflectionProperty(E::class, 'name
 $ea = E::A;
 try { $v = &$ea->name; } catch (Error $e) { echo $e->getMessage(), "\n"; }
 foreach ((object) ["\0X\0y" => 1, "\0*\0z" => 2] as $k => $v) { var_dump($k); }
+
+// A by-reference __get running during $o->p++ after a clone with __clone.
+class CL { public $z; public function __clone() {} }
+$cl = clone new CL;
+class RG { private $v = 1; public function &__get($n) { return $this->v; } public function __set($n, $v) { echo "set $n\n"; } }
+$rg = new RG;
+$rg->p++;

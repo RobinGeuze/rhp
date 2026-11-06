@@ -243,7 +243,9 @@ impl Vm {
         let global = self.cursor_global.take();
         let nulls = self.rw_null_keys;
         let null_key = self.cursor_null_key;
+        let st = self.cursor_static.take();
         let r = f(self);
+        self.cursor_static = st;
         self.cursor_root = root;
         self.cursor_steps = steps;
         self.cursor_global = global;
@@ -1332,10 +1334,8 @@ impl Vm {
                     let steps = std::mem::take(&mut self.cursor_steps);
                     let v = if self.stack[top].regs[src as usize].is_undef()
                         && src < proto.num_cvs
-                        && matches!(
-                            self.cursor_magic_split(top, &steps),
-                            MagicSplit::Nested(..)
-                        ) {
+                        && matches!(self.cursor_magic_split(top, &steps), MagicSplit::Nested(..))
+                    {
                         self.deferred_undef_src = Some(src);
                         Value::Null
                     } else {
@@ -1397,7 +1397,9 @@ impl Vm {
                         Value::Ref(_) => v,
                         other => Value::Ref(Rc::new(RefCell::new(other))),
                     };
-                    if let Err(e) = self.cursor_static_check(top, &steps, StaticOp::Ref, Value::Null) {
+                    if let Err(e) =
+                        self.cursor_static_check(top, &steps, StaticOp::Ref, Value::Null)
+                    {
                         self.cursor_release();
                         return Err(e);
                     }
@@ -1481,9 +1483,7 @@ impl Vm {
                         self.incdec_typed_overflow(top, &steps, delta)?;
                     }
                     self.typed_write_result = None;
-                    crate::lvalue::as_incdec_write(|| {
-                        self.cursor_write(top, &steps, new.clone())
-                    })?;
+                    crate::lvalue::as_incdec_write(|| self.cursor_write(top, &steps, new.clone()))?;
                     let new = self.typed_write_result.take().unwrap_or(new);
                     self.cursor_release();
                     self.reg_set(top, dst, if pre { new } else { old });

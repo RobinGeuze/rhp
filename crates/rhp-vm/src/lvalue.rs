@@ -884,7 +884,8 @@ impl Vm {
                 } else if !matches!(v, Value::Ref(_)) {
                     if let Some((cls, decl, name, ty)) = self.cursor_leaf.take() {
                         let strict = self.stack[top].proto.strict_types;
-                        v = self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
+                        v =
+                            self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
                         self.typed_write_result = Some(v.clone());
                     }
                 }

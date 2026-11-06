@@ -98,8 +98,17 @@ impl Vm {
                             );
                             self.diag(builtins::E_NOTICE, &msg)?;
                         }
+                        // (A built-in stand-in accessor is its class's own
+                        // read_property handler: no check.)
                         match absent_slot {
-                            Some(k) if self.class(cls).props.get(&k).is_some_and(|pe| pe.ty.is_some()) => {
+                            Some(k)
+                                if !getter.proto.is_internal()
+                                    && self
+                                        .class(cls)
+                                        .props
+                                        .get(&k)
+                                        .is_some_and(|pe| pe.ty.is_some()) =>
+                            {
                                 let strict = getter.proto.strict_types;
                                 self.verify_magic_get(cls, &k, r, strict)?
                             }
@@ -177,8 +186,7 @@ impl Vm {
                 let scope = self.stack[top].defining_class;
                 // A readonly / set-restricted property (zend_std_read_property
                 // for BP_VAR_W/UNSET).
-                if let PropRes::Slot(k) = classes::resolve_prop(&self.classes, cls, scope, &pname)
-                {
+                if let PropRes::Slot(k) = classes::resolve_prop(&self.classes, cls, scope, &pname) {
                     if let Some(pe) = self.class(cls).props.get(&k) {
                         if pe.hooks.is_none()
                             && (pe.readonly
@@ -223,7 +231,9 @@ impl Vm {
                 ))
             }
         }
-        self.fetching_as(builtins::MagicFetch::Write, |vm| vm.prop_fetch(top, o, pname))
+        self.fetching_as(builtins::MagicFetch::Write, |vm| {
+            vm.prop_fetch(top, o, pname)
+        })
     }
 
     /// "Cannot indirectly modify readonly property" / "Cannot indirectly
@@ -697,7 +707,8 @@ impl Vm {
     ) -> Result<Value, Thrown> {
         let guard = (h.borrow().id, which, name.clone());
         self.prop_guards.insert(guard.clone());
-        let r = self.call_sync(m, Some(h.clone()), cls, args);
+        // The accessor may use the lvalue cursor of the write it serves.
+        let r = self.with_saved_cursor(|vm| vm.call_sync(m, Some(h.clone()), cls, args));
         self.prop_guards.remove(&guard);
         r
     }
@@ -884,7 +895,12 @@ impl Vm {
             let val = if is_dyn {
                 val
             } else {
-                let v = if self.class(cls).props.get(&key).is_some_and(|pe| pe.ty.is_some()) {
+                let v = if self
+                    .class(cls)
+                    .props
+                    .get(&key)
+                    .is_some_and(|pe| pe.ty.is_some())
+                {
                     let v = self.verify_prop_type(cls, &key, val, strict)?;
                     // The assignment's value is the coerced one (`StoreProp`).
                     if want_result {
@@ -1229,11 +1245,12 @@ impl Vm {
                 pe.name.clone(),
             )
         };
-        if ty
-            .kinds
-            .iter()
-            .any(|k| matches!(k, rhp_bytecode::TypeKind::Float | rhp_bytecode::TypeKind::Mixed))
-        {
+        if ty.kinds.iter().any(|k| {
+            matches!(
+                k,
+                rhp_bytecode::TypeKind::Float | rhp_bytecode::TypeKind::Mixed
+            )
+        }) {
             return Ok(());
         }
         let (what, end) = if delta > 0 {

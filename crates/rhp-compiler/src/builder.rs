@@ -138,6 +138,9 @@ pub(crate) struct LoopCtx {
     pub(crate) free: Option<Instr>,
     /// The loop's `goto_scope` id.
     pub(crate) scope: u32,
+    /// FE_FREEs a jump out of the loop emitted: their `end` is set to the
+    /// loop's end when it closes.
+    pub(crate) free_sites: Vec<usize>,
 }
 
 impl<'c> ProtoBuilder<'c> {

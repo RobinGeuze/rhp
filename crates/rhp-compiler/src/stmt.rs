@@ -389,7 +389,14 @@ impl ProtoBuilder<'_> {
             // try/catch with a finally, the jump runs the finally blocks it
             // leaves (JmpFinally leaves any that contain the target alone).
             Statement::Goto(g) => {
-                let n = self.loops.iter().filter(|l| l.free.is_some()).count();
+                let depth = self.finally_rets.len();
+                let n = self
+                    .loops
+                    .iter()
+                    .rev()
+                    .take_while(|l| l.finally_depth >= depth)
+                    .filter(|l| l.free.is_some())
+                    .count();
                 let pos = self.code.len() + n;
                 self.emit_goto_frees(pos);
                 if self.finally_rets.is_empty() {

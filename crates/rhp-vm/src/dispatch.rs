@@ -7,16 +7,19 @@ use std::rc::Rc;
 
 use rhp_builtins as builtins;
 use rhp_builtins::zend::object_handlers::{CastTarget, Op};
-use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
+use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg, NO_PC};
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
-use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{
+    conv, ArrayKey, ClassId, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
+};
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::StaticOp;
 use crate::lvalue::{
-    aa_key, foreach_next_ref, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
+    aa_key, foreach_next_ref, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode,
+    MagicSplit,
 };
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
@@ -1600,7 +1603,8 @@ impl Vm {
                     pos_reg,
                     by_ref,
                     clear_arr,
-                } => self.fe_free(top, arr, pos_reg, by_ref, clear_arr),
+                    end,
+                } => self.fe_free(top, arr, pos_reg, by_ref, clear_arr, end)?,
 
                 Instr::ThrowMatchError { subject } => {
                     let v = self.reg_r(top, subject)?;
@@ -2739,26 +2743,7 @@ impl Vm {
                 );
             }
         };
-        let mut it = h;
-        while self.class_implements(it.borrow().class, b"IteratorAggregate") {
-            match self.call_iter_method(&it, b"getiterator")? {
-                Value::Object(next)
-                    if self.class_implements(next.borrow().class, b"Traversable") =>
-                {
-                    it = next
-                }
-                _ => {
-                    let cls = it.borrow().class;
-                    return Err(Thrown::error(
-                        "Exception",
-                        format!(
-                            "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
-                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
-                        ),
-                    ));
-                }
-            }
-        }
+        let it = self.unwrap_aggregate(h)?;
         let id = it.borrow().id;
         let is_gen = self.generators.contains_key(&id);
         let mut out = Vec::new();
@@ -2866,6 +2851,34 @@ impl Vm {
                 .any(|s| name.eq_ignore_ascii_case(s))
     }
 
+    /// zend_user_it_get_new_iterator: follow `getIterator()` until an object
+    /// that is not an IteratorAggregate; a result that is not Traversable
+    /// (or the aggregate itself) throws.
+    fn unwrap_aggregate(&mut self, h: ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        let mut it = h;
+        while self.class_implements(it.borrow().class, b"IteratorAggregate") {
+            match self.call_iter_method(&it, b"getiterator")? {
+                Value::Object(next)
+                    if self.class_implements(next.borrow().class, b"Traversable")
+                        && !Rc::ptr_eq(&next, &it) =>
+                {
+                    it = next
+                }
+                _ => {
+                    let cls = it.borrow().class;
+                    return Err(Thrown::error(
+                        "Exception",
+                        format!(
+                            "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(it)
+    }
+
     /// `FeReset`: start a by-value foreach over `src`.
     fn fe_reset(
         &mut self,
@@ -2886,16 +2899,7 @@ impl Vm {
                 // delegates to getIterator(); Generators / Iterators drive
                 // the protocol in FeFetch; a plain object iterates its
                 // accessible properties (snapshotted to an array).
-                let mut obj = h;
-                if self.class_implements(obj.borrow().class, b"IteratorAggregate") {
-                    match self.call_iter_method(&obj, b"getiterator")? {
-                        Value::Object(it) => obj = it,
-                        _ => {
-                            self.stack[top].pc = end as usize;
-                            return Ok(());
-                        }
-                    }
-                }
+                let obj = self.unwrap_aggregate(h)?;
                 let oid = obj.borrow().id;
                 let ocls = obj.borrow().class;
                 if self.generators.contains_key(&oid) {
@@ -2905,16 +2909,19 @@ impl Vm {
                         self.gen_ensure_started(oid)?;
                     } else {
                         self.gen_check_open(oid)?;
+                        self.fe_iter_handle(top, pos_reg, ocls);
                         self.gen_rewind(oid)?;
                     }
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.class_implements(ocls, b"Iterator") {
+                    self.fe_iter_handle(top, pos_reg, ocls);
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.classes[ocls as usize].hooked {
                     let obj = self.lazy_props_object(&obj)?;
+                    self.fe_iter_handle(top, pos_reg, ocls);
                     let scope = self.stack[top].defining_class;
                     let st = self.hooked_iter_state(&obj, scope);
                     self.reg_set(top, arr_reg, Value::Object(obj));
@@ -2937,11 +2944,11 @@ impl Vm {
             // An empty array skips the loop; anything else warns too.
             v => {
                 self.reg_set(top, pos_reg, Value::Null);
-                self.stack[top].pc = end as usize;
                 // (A Closure is an object without properties.)
                 if !matches!(v, Value::Array(_) | Value::Closure(_)) {
                     self.foreach_type_warning(&v)?;
                 }
+                self.stack[top].pc = end as usize;
             }
         }
         Ok(())
@@ -3118,6 +3125,8 @@ impl Vm {
                         "You can only iterate a generator by-reference if it declared that it yields by-reference",
                     ));
                 }
+                let cls = obj.borrow().class;
+                self.fe_iter_handle(top, pos_reg, cls);
                 self.gen_rewind(oid)?;
                 let mut st = PhpArray::new();
                 st.push(Value::Object(obj));
@@ -3133,6 +3142,8 @@ impl Vm {
             if let Some(owner) = spl {
                 // `pos_reg` holds [storage reference, position].
                 let cell = self.spl_array_storage(&obj, owner)?;
+                let cls = obj.borrow().class;
+                self.fe_iter_handle(top, pos_reg, cls);
                 let mut st = PhpArray::new();
                 st.push(Value::Ref(cell));
                 st.push(Value::Int(0));
@@ -3171,6 +3182,8 @@ impl Vm {
                 // its instance, see FeFetchRef).
                 let h = self.lazy_props_object(&h)?;
                 if self.classes[h.borrow().class as usize].hooked {
+                    let cls = h.borrow().class;
+                    self.fe_iter_handle(top, pos_reg, cls);
                     let scope = self.stack[top].defining_class;
                     let st = self.hooked_iter_state(&h, scope);
                     self.reg_set(top, pos_reg, st);
@@ -3259,8 +3272,25 @@ impl Vm {
         Ok(Some((key, Value::Ref(rc))))
     }
 
+    /// The zend_object_iterator foreach over a Traversable (or a hooked
+    /// object) creates takes an object handle while the loop runs: a
+    /// placeholder object in `pos_reg + 1`, freed by FeFree.
+    fn fe_iter_handle(&mut self, top: usize, pos_reg: Reg, cls: ClassId) {
+        let id = self.alloc_object_id();
+        let o = ObjectData::new(cls, id, Default::default());
+        self.stack[top].regs[pos_reg as usize + 1] = Value::Object(Rc::new(RefCell::new(o)));
+    }
+
     /// `FeFree` (ZEND_FE_FREE): see the instruction.
-    fn fe_free(&mut self, top: usize, arr: Reg, pos_reg: Reg, by_ref: bool, clear_arr: bool) {
+    fn fe_free(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        pos_reg: Reg,
+        by_ref: bool,
+        clear_arr: bool,
+        end: Pc,
+    ) -> Result<(), Thrown> {
         if let Value::Int(id) = self.stack[top].regs[pos_reg as usize] {
             let id = id as u32;
             let cell = match &self.stack[top].regs[arr as usize] {
@@ -3279,12 +3309,22 @@ impl Vm {
         }
         let regs = &mut self.stack[top].regs;
         regs[pos_reg as usize] = Value::Null;
+        regs[pos_reg as usize + 1] = Value::Null;
         if clear_arr {
             let old = std::mem::replace(&mut regs[arr as usize], Value::Null);
             if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
-                self.dtor_check = true;
+                drop(old);
+                if end == NO_PC {
+                    self.dtor_check = true;
+                } else if let Err(t) = self.collect_released_now() {
+                    // Thrown by a free on a jump out of the loop: handled
+                    // as if thrown at the loop's end.
+                    self.stack[top].pc = end as usize + 1;
+                    return Err(t);
+                }
             }
         }
+        Ok(())
     }
 
     /// zend_hash_iterator_del for a foreach iterator on `v`.
@@ -3418,8 +3458,9 @@ impl Vm {
             Value::Array(_) => {}
             v => {
                 // The variable no longer holds an array or object.
+                self.foreach_type_warning(&v)?;
                 self.stack[top].pc = end as usize;
-                return self.foreach_type_warning(&v);
+                return Ok(());
             }
         }
         // The element at the iterator's position, promoted to a shared

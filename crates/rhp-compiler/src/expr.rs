@@ -1451,6 +1451,7 @@ impl ProtoBuilder<'_> {
         let src = self.compile_expr(iterable)?;
         let arr_reg = self.alloc_temp();
         let pos_reg = self.alloc_temp();
+        self.alloc_temp(); // pos_reg + 1: the iterator handle (see FeReset)
         let key_cv = self.alloc_temp();
         let val_cv = self.alloc_temp();
 
@@ -1483,6 +1484,11 @@ impl ProtoBuilder<'_> {
             val_cv,
             end,
         };
+        // The delegation is over: the iterator's handle goes.
+        self.emit(Instr::ClearTemps {
+            from: pos_reg + 1,
+            to: pos_reg + 2,
+        });
 
         // Result: `$src instanceof Generator ? $src->getReturn() : null`.
         let dst = self.alloc_temp();

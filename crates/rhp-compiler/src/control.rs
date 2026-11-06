@@ -4,7 +4,7 @@ use crate::parse::cst::{
     Access, Expression, ForBody, ForeachBody, ForeachTarget, IfBody, Literal, Match, MatchArm,
     Statement, SwitchBody, SwitchCase, UnaryPrefixOperator, Variable, WhileBody,
 };
-use rhp_bytecode::{CmpKind, Instr, Reg};
+use rhp_bytecode::{CmpKind, Instr, Pc, Reg, NO_PC};
 use rhp_values::{Thrown, Value};
 
 use crate::assign::{check_globals_write, globals_index};
@@ -381,6 +381,7 @@ impl ProtoBuilder<'_> {
                 key_cv
             };
             let pos_reg = self.alloc_temp();
+            self.alloc_temp(); // pos_reg + 1: the iterator handle (see FeReset)
             let saved_floor = self.temp_floor;
             self.temp_floor = self.next_temp;
 
@@ -429,6 +430,7 @@ impl ProtoBuilder<'_> {
                 pos_reg,
                 by_ref: true,
                 clear_arr: arr_cv >= self.num_cvs,
+                end: NO_PC,
             };
             self.loops.push(LoopCtx {
                 free: Some(free),
@@ -464,6 +466,7 @@ impl ProtoBuilder<'_> {
             self.temp_floor = saved_floor;
             // FE_FREE: the iterator, and an iterated temporary (a reference
             // to `$a['k']` / `$o->p`, or a value), go away with the loop.
+            self.close_loop_frees(&ctx.free_sites, ctx.scope, end);
             self.emit(free);
             return Ok(());
         }
@@ -477,6 +480,7 @@ impl ProtoBuilder<'_> {
             self.alloc_temp()
         };
         let pos_reg = self.alloc_temp();
+        self.alloc_temp(); // pos_reg + 1: the iterator handle (see FeReset)
 
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
             Expression::Variable(Variable::Direct(d)) => (self.cv(strip_dollar(d.name)), None),
@@ -529,6 +533,7 @@ impl ProtoBuilder<'_> {
             pos_reg,
             by_ref: false,
             clear_arr: true,
+            end: NO_PC,
         };
         self.loops.push(LoopCtx {
             free: Some(free),
@@ -561,6 +566,7 @@ impl ProtoBuilder<'_> {
             val_cv,
             end,
         };
+        self.close_loop_frees(&ctx.free_sites, ctx.scope, end);
         self.patch_all(ctx.break_jumps, end);
         self.patch_all(ctx.continue_jumps, fetch_label);
         self.temp_floor = saved_floor;
@@ -568,22 +574,53 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    /// FE_FREE for every enclosing foreach, innermost first (a `return`
-    /// leaving them, zend_handle_loops_and_finally).
-    pub(crate) fn emit_loop_frees(&mut self) {
-        let frees: Vec<Instr> = self.loops.iter().rev().filter_map(|l| l.free).collect();
-        for f in frees {
+    /// Point the FE_FREEs that jumps out of a closing foreach emitted at its
+    /// end (the FE_FREE at `end`).
+    fn close_loop_frees(&mut self, sites: &[usize], scope: u32, end: Pc) {
+        let set = |i: &mut Instr| {
+            if let Instr::FeFree { end: e, .. } = i {
+                *e = end;
+            }
+        };
+        for &at in sites {
+            set(&mut self.code[at]);
+        }
+        for f in self.goto_frees.iter_mut().filter(|f| f.3 == scope) {
+            set(&mut f.2);
+        }
+    }
+
+    /// Emit the FE_FREE of the open loop `idx` for a jump out of it.
+    fn emit_jump_free(&mut self, idx: usize) {
+        if let Some(f) = self.loops[idx].free {
+            let at = self.code.len();
             self.emit(f);
+            self.loops[idx].free_sites.push(at);
+        }
+    }
+
+    /// FE_FREE for the enclosing foreach loops a `return` leaves, innermost
+    /// first (zend_handle_loops_and_finally). Only those inside the
+    /// innermost try with a finally: php frees the outer ones after that
+    /// finally ran; here they go with the frame.
+    pub(crate) fn emit_loop_frees(&mut self) {
+        for idx in (0..self.loops.len()).rev() {
+            if self.loops[idx].finally_depth < self.finally_rets.len() {
+                break;
+            }
+            self.emit_jump_free(idx);
         }
     }
 
     /// Placeholders for the FE_FREEs a `goto` at `goto_pos` may need; the
     /// ones for loops it leaves are filled in when it is resolved.
     pub(crate) fn emit_goto_frees(&mut self, goto_pos: usize) {
+        let depth = self.finally_rets.len();
         let frees: Vec<(Instr, u32)> = self
             .loops
             .iter()
             .rev()
+            .take_while(|l| l.finally_depth >= depth)
             .filter_map(|l| l.free.map(|f| (f, l.scope)))
             .collect();
         for (f, sid) in frees {
@@ -848,12 +885,13 @@ impl ProtoBuilder<'_> {
         }
         let idx = self.loops.len() - n;
         // The inner loops this leaves free their temps (FE_FREE).
-        let frees: Vec<Instr> = self.loops[idx + 1..]
-            .iter()
-            .filter_map(|l| l.free)
-            .collect();
-        for f in frees.into_iter().rev() {
-            self.emit(f);
+        // (Loops outside the innermost try with a finally are not freed
+        // here; see emit_loop_frees.)
+        for i in (idx + 1..self.loops.len()).rev() {
+            if self.loops[i].finally_depth < self.finally_rets.len() {
+                break;
+            }
+            self.emit_jump_free(i);
         }
         let pos = self.code.len();
         if self.finally_rets.len() > self.loops[idx].finally_depth {

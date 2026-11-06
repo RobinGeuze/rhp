@@ -1083,6 +1083,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
@@ -1102,6 +1103,26 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// zend_execute_ex's stack limit check for the frame just pushed by a
+    /// nested run (a nested run takes machine stack): the Error is raised
+    /// in that frame before its first instruction, so its trace shows the
+    /// frame and no `catch` in it applies.
+    #[inline(always)]
+    fn check_stack_limit_entered(&mut self) -> Result<(), Thrown> {
+        if rhp_builtins::zend::call_stack::overflowed() {
+            return Err(self.stack_limit_entered_error());
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn stack_limit_entered_error(&mut self) -> Thrown {
+        let t = self.materialize(rhp_builtins::zend::call_stack::size_error(), None);
+        self.stack.pop();
+        t
     }
 
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
@@ -1137,6 +1158,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
@@ -2551,6 +2573,16 @@ impl Vm {
         let r = match self.fcall_timeout() {
             Some(e) => Err(e),
             None => r,
+        };
+        // And its interrupt function: queued async signals are dispatched
+        // with the call still on the trace.
+        let r = if r.is_ok()
+            && builtins::pcntl_interrupt_pending()
+            && !builtins::zend::timeout::timed_out()
+        {
+            builtins::pcntl_dispatch(self).and(r)
+        } else {
+            r
         };
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).

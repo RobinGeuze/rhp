@@ -33,6 +33,8 @@ Kinds:
 | where | static | kind | reset by |
 |---|---|---|---|
 | `zend/virtual_cwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `virtual_cwd::reset_state` |
+| `zend/call_stack.rs` | `BASE`, `LIMIT`, `RESERVED` (the stack limit; a fiber switch swaps `BASE` and `LIMIT`) | request | set by `call_stack::init` at request start |
+| `zend/fibers.rs` | `BLOCKING` (fiber switches blocked while tick functions or signal handlers run) | call | `SwitchBlock` guards |
 | `zend/virtual_cwd/realpath_cache.rs` | `CACHE` (php's realpath cache and its settings; php keeps it per process) | request | `realpath_cache::reset_state` |
 | `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
 | `main/fopen_wrappers.rs` | `BASEDIR`, `ACTIVE` (open_basedir, its entries expanded after an ini_set) | request | `fopen_wrappers::reset_state` |

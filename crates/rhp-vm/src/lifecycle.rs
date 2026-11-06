@@ -143,6 +143,7 @@ impl Vm {
             silence: 0,
             last_fatal_trace: None,
             silence_stack: Vec::new(),
+            active_fiber: None,
             quiet: 0,
             rw_null_keys: 0,
             rw_aborted: false,
@@ -575,14 +576,31 @@ impl Vm {
                 .into_iter()
                 .partition(|h| Rc::strong_count(h) == 1);
             self.destructibles = kept;
+            // php destroys each released object in turn: one whose
+            // destructor throws leaves the exception pending, the next
+            // destructors still run (zend_objects_destroy_object), and a
+            // later exception gets the pending one as its previous.
+            let mut pending: Option<Thrown> = None;
             let mut it = released.into_iter();
             while let Some(h) = it.next() {
-                if let Err(e) = self.call_destructor(h) {
-                    // Keep the not-yet-destructed ones tracked.
-                    let rest: Vec<_> = it.collect();
-                    self.destructibles.splice(0..0, rest);
-                    return Err(e);
+                match self.call_destructor(h) {
+                    Ok(()) => {}
+                    Err(e) if !e.is_catchable() => {
+                        let rest: Vec<_> = it.collect();
+                        self.destructibles.splice(0..0, rest);
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        let e = self.materialize(e, None);
+                        if let Some(prev) = pending.take() {
+                            self.chain_previous(&e, prev);
+                        }
+                        pending = Some(e);
+                    }
                 }
+            }
+            if let Some(e) = pending {
+                return Err(e);
             }
         }
     }

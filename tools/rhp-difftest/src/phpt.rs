@@ -221,6 +221,7 @@ const RHP_INI: &[&str] = &[
     "error_log_mode",
     "error_reporting",
     "fatal_error_backtraces",
+    "fiber.stack_size",
     "from",
     "hard_timeout",
     "highlight.comment",

@@ -159,6 +159,7 @@ const QUANTITY_DIRECTIVES: &[&str] = &[
     "pcre.backtrack_limit",
     "pcre.recursion_limit",
     "bcmath.scale",
+    "fiber.stack_size",
 ];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the
@@ -180,6 +181,11 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
+    }
+    // OnUpdateFiberStackSize.
+    if name == b"fiber.stack_size" && ini_parse_quantity(v) < 0 {
+        warnings.push("fiber.stack_size must be a positive number".to_string());
+        return (warnings, None);
     }
     // bcmath's OnUpdateScale: 0..=INT_MAX.
     if name == b"bcmath.scale" && !(0..=i64::from(i32::MAX)).contains(&ini_parse_quantity(v)) {

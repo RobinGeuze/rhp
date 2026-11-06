@@ -1,0 +1,54 @@
+object(Fiber)#1 (0) {
+}
+Fiber::__construct(): Argument #1 ($callback) must be a valid callback, no array or string given
+Serialization of 'Fiber' is not allowed
+Cannot create dynamic property Fiber::$x
+Trying to clone an uncloneable object of class Fiber
+FiberError: Cannot get fiber return value: The fiber has not been started
+Cannot resume a fiber that is not suspended
+Fiber::throw(): Argument #1 ($exception) must be of type Throwable, int given
+NULL
+int(1)
+array(2) {
+  [0]=>
+  int(2)
+  ["x"]=>
+  int(3)
+}
+Cannot start a fiber that has already been started
+int(9)
+bool(true)
+ArgumentCountError: strlen() expects exactly 1 argument, 0 given
+boom
+#0 [internal function]: {closure:F:19}()
+#1 F(20): Fiber->start()
+#2 {main}
+Cannot get fiber return value: The fiber threw an exception
+final
+Array
+(
+    [0] => __construct
+    [1] => start
+    [2] => resume
+    [3] => throw
+    [4] => isStarted
+    [5] => isSuspended
+    [6] => isRunning
+    [7] => isTerminated
+    [8] => getReturn
+    [9] => getCurrent
+    [10] => suspend
+)
+11
+in: B
+in: A
+run 5
+srun
+#0 [internal function]: A->run(5)
+#1 F(34): Fiber->resume()
+#2 {main}
+inner sees outer running: true
+i1
+error: inner notice
+inner done
+bool(true)

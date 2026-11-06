@@ -19,6 +19,7 @@ mod compare;
 mod const_link;
 mod dispatch;
 mod errors;
+mod fibers;
 mod generators;
 mod hooks;
 mod host;
@@ -364,6 +365,8 @@ pub struct Vm {
     mem: &'static rhp_values::mem::MemState,
     /// A memory_limit crossing waiting for an interrupt point.
     delayed_oom: Option<Box<memory::DelayedOom>>,
+    /// EG(active_fiber): the running Fiber object.
+    active_fiber: Option<ObjectHandle>,
     /// Last, so it drops after every value above: the request state kept
     /// outside the Vm is reset when the engine goes.
     _request_state: lifecycle::RequestStateReset,

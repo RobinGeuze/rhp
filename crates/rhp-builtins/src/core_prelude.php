@@ -37,6 +37,21 @@ interface ArrayAccess {
 }
 interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
+// Zend/zend_fibers.c: the engine switches stacks behind __fiber (op codes:
+// rhp_builtins::zend::fibers::FiberOp).
+final class Fiber {
+    public function __construct($callback) { __fiber(0, $this, $callback); }
+    public function start(mixed ...$args): mixed { return __fiber(1, $this, $args); }
+    public function resume(mixed $value = null): mixed { return __fiber(2, $this, $value); }
+    public function throw(Throwable $exception): mixed { return __fiber(3, $this, $exception); }
+    public function isStarted(): bool { return __fiber(4, $this); }
+    public function isSuspended(): bool { return __fiber(5, $this); }
+    public function isRunning(): bool { return __fiber(6, $this); }
+    public function isTerminated(): bool { return __fiber(7, $this); }
+    public function getReturn(): mixed { return __fiber(8, $this); }
+    public static function getCurrent(): ?Fiber { return __fiber(9, null); }
+    public static function suspend(mixed $value = null): mixed { return __fiber(10, null, $value); }
+}
 class stdClass {}
 final class __PHP_Incomplete_Class {}
 final class InternalIterator implements Iterator {
@@ -132,6 +147,9 @@ class ErrorException extends Exception {
     final public function getSeverity() { return $this->severity; }
 }
 class TypeError extends Error {}
+final class FiberError extends Error {
+    public function __construct() { throw new Error('The "FiberError" class is reserved for internal use and cannot be manually instantiated'); }
+}
 class ValueError extends Error {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}

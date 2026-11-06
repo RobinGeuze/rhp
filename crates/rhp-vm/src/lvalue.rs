@@ -146,6 +146,9 @@ thread_local! {
     /// The value of the last string offset assignment: the byte written,
     /// or null when none was ([`assign_string_offset`]).
     static STRING_OFFSET_RESULT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// [`assign_string_offset`] stopped at an object value: the caller
+    /// converts it with `__toString` and writes again.
+    static STRING_OFFSET_OBJECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The value of the string offset assignment the last cursor write made,
@@ -791,6 +794,8 @@ impl Vm {
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
         };
+        // An object written to a string offset is converted afterwards.
+        let obj_val = matches!(v, Value::Object(_) | Value::Closure(_)).then(|| v.clone());
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -804,6 +809,9 @@ impl Vm {
         };
         flush_deferred_writes();
         self.flush_path_diags()?;
+        if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
+            return self.string_offset_object_write(top, steps, obj_val, r);
+        }
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
         if !self.destructibles.is_empty() {
@@ -859,6 +867,46 @@ impl Vm {
         if !self.destructibles.is_empty() {
             self.dtor_check = true;
         }
+        r
+    }
+
+    /// zend_assign_to_string_offset with an object value: after the
+    /// offset's checks, the value goes through `__toString`, then the
+    /// write runs again with the string (its offset diagnostics already
+    /// shown).
+    #[cold]
+    fn string_offset_object_write(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: Option<Value>,
+        r: Result<(), Thrown>,
+    ) -> Result<(), Thrown> {
+        r?;
+        let Some(v) = v else {
+            return Ok(());
+        };
+        let s = Value::str(self.to_string_vm(&v)?);
+        let cx = PropCtx {
+            classes: &self.classes,
+            scope: self.stack[top].defining_class,
+            called: self.stack[top].called_class,
+        };
+        let r = match &self.cursor_root {
+            CursorRoot::Cv(r) => assign_path(&mut self.stack[top].regs[*r as usize], steps, s, &cx),
+            CursorRoot::Cell(rc) => {
+                let rc = rc.clone();
+                let r = assign_path(&mut rc.borrow_mut(), steps, s, &cx);
+                r
+            }
+        };
+        flush_deferred_writes();
+        // Keep only what the conversion's write adds after the offset.
+        PATH_DIAGS.with(|d| {
+            d.borrow_mut()
+                .retain(|(_, m)| m.starts_with(b"Only the first byte"))
+        });
+        self.flush_path_diags()?;
         r
     }
 
@@ -1719,10 +1767,8 @@ fn assign_string_offset(
             b"Array".to_vec()
         }
         Value::Object(_) | Value::Closure(_) => {
-            return Err(Thrown::unsupported(
-                "string offset write of an object",
-                "converting an object to string here needs __toString dispatch",
-            ))
+            STRING_OFFSET_OBJECT.with(|f| f.set(true));
+            return Ok(());
         }
         v => conv::to_string_bytes(&v),
     };

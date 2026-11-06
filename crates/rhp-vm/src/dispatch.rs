@@ -2448,7 +2448,10 @@ impl Vm {
         else {
             unreachable!("ArgSpreadRef target is the argument array")
         };
-        let mut pos = a.iter().filter(|(k, _)| matches!(k, ArrayKey::Int(_))).count();
+        let mut pos = a
+            .iter()
+            .filter(|(k, _)| matches!(k, ArrayKey::Int(_)))
+            .count();
         for (k, iv) in entries {
             let at = match &k {
                 ArrayKey::Int(_) => Some(pos),
@@ -3589,6 +3592,13 @@ impl Vm {
             {
                 self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
                 return Ok(());
+            }
+        }
+        if !self.stack[top].proto.send_kinds.is_empty() {
+            if let Some((p, scope)) = self.callable_proto(&c) {
+                if p.params.iter().any(|q| q.by_ref) {
+                    self.check_sends(top, &p, scope, base)?;
+                }
             }
         }
         // Passed raw (the window's references kept): the callee's

@@ -728,7 +728,7 @@ impl Vm {
     /// throws, a call result that is no reference notices.
     #[cold]
     #[inline(never)]
-    fn check_sends(
+    pub(crate) fn check_sends(
         &mut self,
         top: usize,
         proto: &FunctionProto,
@@ -752,6 +752,10 @@ impl Vm {
                     builtins::E_NOTICE,
                     "Only variables should be passed by reference",
                 )?;
+                // sent in a reference of its own
+                let slot = &mut self.stack[top].regs[(base + idx) as usize];
+                let v = std::mem::replace(slot, Value::Null);
+                *slot = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
                 continue;
             }
             let label = match proto.params.get(idx as usize) {

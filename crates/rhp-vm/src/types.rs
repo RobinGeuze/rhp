@@ -386,10 +386,20 @@ impl Vm {
                 Err(()) => {
                     // A named extra argument is labelled by its name.
                     let label = match &k {
-                        ArrayKey::Str(s) => format!(" (${})", String::from_utf8_lossy(s.as_bytes())),
+                        ArrayKey::Str(s) => {
+                            format!(" (${})", String::from_utf8_lossy(s.as_bytes()))
+                        }
                         ArrayKey::Int(_) => String::new(),
                     };
-                    return Err(self.arg_type_error(proto, frame, i + n, &label, &cur, caller, ctx));
+                    return Err(self.arg_type_error(
+                        proto,
+                        frame,
+                        i + n,
+                        &label,
+                        &cur,
+                        caller,
+                        ctx,
+                    ));
                 }
             }
         }

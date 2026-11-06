@@ -1292,8 +1292,6 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
-    /// zend_mark_function_as_generator's return type check. php runs it
-    /// after the parameters, at the declaration's line.
     /// zend_compile_params: "Returning by reference from a void function
     /// is deprecated" (`function &f(): void`).
     pub(crate) fn check_void_by_ref(&self, display: &str, hint: Option<&crate::parse::cst::Hint>) {
@@ -1310,6 +1308,8 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// zend_mark_function_as_generator's return type check. php runs it
+    /// after the parameters, at the declaration's line.
     pub(crate) fn check_generator_type(&self, line: u32) -> Result<(), Thrown> {
         if !self.is_generator {
             return Ok(());

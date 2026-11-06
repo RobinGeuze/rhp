@@ -222,9 +222,8 @@ impl ProtoBuilder<'_> {
                             }
                             _ => {}
                         }
-                        let r = self.emit_throw_error(
-                            "Cannot use temporary expression in write context",
-                        );
+                        let r = self
+                            .emit_throw_error("Cannot use temporary expression in write context");
                         slots.push(ArgSlot::Value(r));
                     }
                     Expression::ArrayAccess(_)

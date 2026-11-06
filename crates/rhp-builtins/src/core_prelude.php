@@ -40,7 +40,7 @@ final class Generator implements Iterator {}
 // Zend/zend_fibers.c: the engine switches stacks behind __fiber (op codes:
 // rhp_builtins::zend::fibers::FiberOp).
 final class Fiber {
-    public function __construct(callable $callback) { __fiber(0, $this, $callback); }
+    public function __construct($callback) { __fiber(0, $this, $callback); }
     public function start(mixed ...$args): mixed { return __fiber(1, $this, $args); }
     public function resume(mixed $value = null): mixed { return __fiber(2, $this, $value); }
     public function throw(Throwable $exception): mixed { return __fiber(3, $this, $exception); }

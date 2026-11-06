@@ -200,11 +200,19 @@ impl Vm {
         let blocked = || builtins::zend::fibers::switch_blocked();
         match op {
             FiberOp::Construct => {
+                // Z_PARAM_FUNC.
+                if let Some(err) = builtins::Host::check_callable(self, &arg(0))? {
+                    return Err(Thrown::type_error(format!(
+                        "Fiber::__construct(): Argument #1 ($callback) must be a valid callback, {err}"
+                    )));
+                }
                 let mut d = cell.borrow_mut();
                 if d.status != Status::Init || !d.callable.is_undef() {
                     return Err(fiber_error("Cannot call constructor twice"));
                 }
-                d.callable = arg(0);
+                drop(d);
+                let callable = self.fiber_bind_callable(arg(0));
+                cell.borrow_mut().callable = callable;
                 Ok(Value::Null)
             }
             FiberOp::Start => {
@@ -265,6 +273,27 @@ impl Vm {
             }
             FiberOp::GetCurrent | FiberOp::Suspend => unreachable!(),
         }
+    }
+
+    /// php keeps the constructor's checked fcc: a method callable stays
+    /// resolved in the scope (and with the `$this`) it was checked in.
+    fn fiber_bind_callable(&self, callable: Value) -> Value {
+        let this = match (&callable, self.resolve_callable(&callable)) {
+            (Value::Str(_) | Value::Array(_), Ok(crate::calls::Callee::Method(_, this, _))) => this,
+            _ => return callable,
+        };
+        let (scope, called, _) = self.callable_scope();
+        Value::Closure(Rc::new(rhp_values::ClosureData {
+            fnidx: u32::MAX,
+            captures: Vec::new(),
+            bound_this: this,
+            bound_class: scope,
+            bound_static: called,
+            wrapped: Some(Box::new(callable)),
+            // Not an object php makes: no handle.
+            id: 0,
+            statics: Default::default(),
+        }))
     }
 
     /// zend_fiber_init_context: the stack and the coroutine, and the
@@ -505,4 +534,29 @@ impl Vm {
             cur = d.prev.clone();
         }
     }
+}
+
+/// zend_fiber_object_gc: the values a Fiber object holds, for the cycle
+/// collector: its callable, arguments and result and, while it is
+/// suspended, every value of its suspended frames (variables,
+/// temporaries, extra arguments, variables created by name).
+#[allow(dead_code)] // the cycle collector's traversal hook
+pub(crate) fn fiber_gc_values(h: &ObjectHandle) -> Vec<Value> {
+    let Some(cell) = h.borrow().payload::<FiberCell>() else {
+        return Vec::new();
+    };
+    let d = cell.borrow();
+    let mut out = vec![d.callable.clone(), d.result.clone()];
+    out.extend(d.args.iter().cloned());
+    out.extend(d.named.iter().map(|(_, v)| v.clone()));
+    if d.status == Status::Suspended {
+        if let Some(ctx) = &d.ctx {
+            for f in &ctx.stack {
+                out.extend(f.regs.iter().cloned());
+                out.extend(f.extra_args.iter().cloned());
+                out.extend(f.dyn_vars.values().map(|c| Value::Ref(c.clone())));
+            }
+        }
+    }
+    out
 }

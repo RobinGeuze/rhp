@@ -1,0 +1,34 @@
+deferred runs first
+nested deferred
+A: start
+A:   fiber says: waiting
+  fiber says: waiting
+  C: destructor suspends
+  C: destructor got   fiber says: waiting
+tick 1
+woke@0+1
+  fiber says: waiting
+tick 2
+woke@0+2<1<2<3
+  fiber done: 'A finished'
+tick 2
+C: generator 1 => woke@1+1
+  fiber says: waiting
+tick 3
+  fiber says: waiting
+tick 4
+C: generator 2 => woke@2+2
+  fiber says: waiting
+tick 4
+B: 3:woke@0+3, 1:woke@3+1
+  fiber says: waiting
+tick 5
+C: finally
+loop stopped: C failed
+#0 [internal function]: {closure:F:97}()
+#1 F(39): Fiber->resume('woke@4+1')
+#2 F(117): Loop::run()
+#3 {main}
+parked
+abandoned fiber unwinds
+end

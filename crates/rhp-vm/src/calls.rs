@@ -2552,6 +2552,16 @@ impl Vm {
             Some(e) => Err(e),
             None => r,
         };
+        // And its interrupt function: queued async signals are dispatched
+        // with the call still on the trace.
+        let r = if r.is_ok()
+            && builtins::pcntl_interrupt_pending()
+            && !builtins::zend::timeout::timed_out()
+        {
+            builtins::pcntl_dispatch(self).and(r)
+        } else {
+            r
+        };
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);

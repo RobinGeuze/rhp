@@ -73,6 +73,19 @@ impl Vm {
     /// Advance generator `id` to its next `yield` (or completion), injecting
     /// `send` as the result of the yield expression it was suspended on.
     pub(crate) fn advance_gen(&mut self, id: u32, send: Value) -> Result<(), Thrown> {
+        self.resume_gen(id, Ok(send))
+    }
+
+    /// [`Self::advance_gen`], or raise `Err` at the suspended `yield`
+    /// (Generator::throw).
+    fn resume_gen(&mut self, id: u32, send: Result<Value, Thrown>) -> Result<(), Thrown> {
+        if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::Running) {
+            // Suspended in a fiber while it runs (zend_generator_resume).
+            return Err(Thrown::error(
+                "Error",
+                "Cannot resume an already running generator",
+            ));
+        }
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
@@ -88,8 +101,11 @@ impl Vm {
                 g.resume_dst,
             )
         };
-        if status == GenStatus::Suspended {
-            frame.regs[resume_dst as usize] = send;
+        let mut throw = None;
+        match send {
+            Ok(v) if status == GenStatus::Suspended => frame.regs[resume_dst as usize] = v,
+            Ok(_) => {}
+            Err(t) => throw = Some(t),
         }
         frame.capture = true;
         self.generators.get_mut(&id).unwrap().status = GenStatus::Running;
@@ -98,7 +114,11 @@ impl Vm {
         self.gen_stack.push(id);
         let saved_yield = self.yield_out.take();
         let result = loop {
-            match self.run_frames() {
+            let step = match throw.take() {
+                Some(t) => Err(t),
+                None => self.run_frames(),
+            };
+            match step {
                 Ok(v) => {
                     if let Some((k, val, dst)) = self.yield_out.take() {
                         let frame = self.stack.pop().unwrap();
@@ -190,6 +210,7 @@ impl Vm {
                 | b"send"
                 | b"rewind"
                 | b"getreturn"
+                | b"throw"
                 | b"__debuginfo"
         ) {
             if let Some(e) = native_method_count_error("Generator", name_lc, args.len()) {
@@ -230,6 +251,34 @@ impl Vm {
                 Ok(Value::Null)
             })(),
             b"getreturn" => Ok(self.generators[&id].return_val.clone()),
+            b"throw" => (|| {
+                let e = match args.first().map(deref) {
+                    Some(Value::Object(e))
+                        if self.class_implements(e.borrow().class, b"Throwable") =>
+                    {
+                        e
+                    }
+                    other => {
+                        let v = other.unwrap_or(Value::Null);
+                        let given = rhp_builtins::zval_type_name(self, &v);
+                        return Err(Thrown::type_error(format!(
+                            "Generator::throw(): Argument #1 ($exception) must be of type Throwable, {given} given"
+                        )));
+                    }
+                };
+                if self.generators[&id].status == GenStatus::Running {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot resume an already running generator",
+                    ));
+                }
+                self.gen_ensure_started(id)?;
+                if self.generators[&id].status == GenStatus::Finished {
+                    return Err(Thrown::Object(e));
+                }
+                self.resume_gen(id, Err(Thrown::Object(e)))?;
+                Ok(deref(&self.generators[&id].current_val))
+            })(),
             b"__debuginfo" => Ok(Value::Array(self.generator_debug_info(id))),
             _ => return None,
         })

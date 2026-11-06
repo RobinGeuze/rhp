@@ -253,7 +253,16 @@ pub(crate) fn compile_attributes(
                                 }
                             }
                             c.emit(Instr::Ret { src: dst });
-                            Some(ConstInitProto::Thunk(Rc::new(c.finish()?)))
+                            let mut proto = c.finish()?;
+                            proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR);
+                            if class_name.is_none() {
+                                // No class scope: zend_ast_evaluate_ex sets
+                                // no file/line override.
+                                proto
+                                    .flags
+                                    .insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);
+                            }
+                            Some(ConstInitProto::Thunk(Rc::new(proto)))
                         }
                     }
                 }
@@ -474,6 +483,13 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
     })
 }
 
+thread_local! {
+    /// CG(rtd_key_counter) as zend_generate_anon_class_name uses it: one
+    /// count per thread, so every compile (each eval, a file included
+    /// twice) declares classes of its own.
+    static ANON_CLASS_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Compile an anonymous class body under its generated `name`
 /// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
 pub(crate) fn compile_anon_class(
@@ -504,7 +520,11 @@ pub(crate) fn compile_anon_class(
         .unwrap_or_else(|| b"class".to_vec());
     name.extend_from_slice(b"@anonymous\0");
     name.extend_from_slice(&cx.file_name());
-    let n = cx.anon_classes.borrow().len();
+    let n = ANON_CLASS_COUNTER.with(|c| {
+        let n = c.get();
+        c.set(n.wrapping_add(1));
+        n
+    });
     name.extend_from_slice(format!(":{}${:x}", cx.line_of(ac.span().start.offset), n).as_bytes());
     let name = PhpStr::from_bytes(name);
     check_decl(
@@ -689,7 +709,16 @@ fn compile_const_thunk(
     c.freeze_cvs();
     let r = c.compile_expr(expr)?;
     c.emit(Instr::Ret { src: r });
-    Ok(Rc::new(c.finish()?))
+    let mut proto = c.finish()?;
+    proto.flags.insert(rhp_bytecode::ProtoFlags::CONST_EXPR);
+    // A plain global constant name, or no class scope (a function's
+    // parameter default): php sets no file/line override.
+    if matches!(expr, Expression::ConstantAccess(_)) || class_name.is_none() {
+        proto
+            .flags
+            .insert(rhp_bytecode::ProtoFlags::CONST_EXPR_PLAIN);
+    }
+    Ok(Rc::new(proto))
 }
 
 /// zend_is_scope_known while compiling a class member.

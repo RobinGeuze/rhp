@@ -60,10 +60,21 @@ pub(crate) fn compile_method(
         String::from_utf8_lossy(m.name.value)
     );
     // php compiles the return type before the parameters.
-    let return_type = m
+    let mut return_type = m
         .return_type_hint
         .as_ref()
         .and_then(|r| compile_type(cx, &r.hint, false).map(|t| t.hint));
+    if m.return_type_hint.is_none() && m.name.value.eq_ignore_ascii_case(b"__tostring") {
+        // zend_compile_params' fallback return type: `__toString(): string`.
+        return_type = Some(rhp_bytecode::TypeHint {
+            nullable: false,
+            intersection: false,
+            kinds: vec![rhp_bytecode::TypeKind::String],
+            groups: Vec::new(),
+            group_pos: Vec::new(),
+            explicit_null: false,
+        });
+    }
     c.ret_type = return_type.clone();
     c.is_generator = match &m.body {
         MethodBody::Concrete(block) => block.statements.iter().any(stmt_has_yield),

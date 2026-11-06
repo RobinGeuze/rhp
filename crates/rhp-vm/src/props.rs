@@ -801,7 +801,7 @@ impl Vm {
         pname: &PhpStr,
     ) -> Result<(), Thrown> {
         let e = self.class(cls);
-        let cname = String::from_utf8_lossy(e.name.as_bytes()).into_owned();
+        let cname = String::from_utf8_lossy(crate::errors::c_name(e.name.as_bytes())).into_owned();
         let p = String::from_utf8_lossy(pname.as_bytes()).into_owned();
         // Engine-internal (prelude) code manages its own objects, except
         // that a stand-in `__set` writes on behalf of the user's code.
@@ -996,7 +996,7 @@ impl Vm {
                 rhp_builtins::zval_value_name(self, &deref(&val)),
                 String::from_utf8_lossy(self.class(decl).name.as_bytes()),
                 String::from_utf8_lossy(name.as_bytes()),
-                self.type_string_resolved(&ty, Some(decl), Some(cls))
+                self.prop_type_string(&ty, decl, Some(cls))
             ))),
         }
     }

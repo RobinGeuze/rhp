@@ -332,14 +332,7 @@ impl Vm {
             }
             b"included" => {
                 let mut out = PhpArray::new();
-                // The main script counts when it is a real file (not `-r`
-                // code or a script read from stdin).
-                let main = self.main_script_path.clone().or_else(|| {
-                    let f = self.stack.first()?.proto.debug.file.as_bytes();
-                    rhp_builtins::zend::virtual_cwd::os_path(f)
-                        .is_file()
-                        .then(|| f.to_vec())
-                });
+                let main = self.main_included_path();
                 if let Some(m) = &main {
                     out.push(s(m));
                 }
@@ -1257,6 +1250,15 @@ impl Vm {
     /// `[class|object, method]` pair.
     fn fn_subject(&mut self, loc: &Value) -> Result<Option<FnSubject>, Thrown> {
         Ok(match loc {
+            // A `Class::method` string (a Closure::fromCallable() target).
+            Value::Str(n) if n.as_bytes().windows(2).any(|w| w == b"::") => {
+                let b = n.as_bytes();
+                let at = b.windows(2).position(|w| w == b"::").unwrap_or(0);
+                let mut pair = PhpArray::new();
+                pair.push(Value::str(b[..at].to_vec()));
+                pair.push(Value::str(b[at + 2..].to_vec()));
+                self.fn_subject(&Value::Array(pair))?
+            }
             Value::Str(n) => {
                 let name = n.as_bytes();
                 let name = name.strip_prefix(b"\\").unwrap_or(name);
@@ -1613,34 +1615,8 @@ impl Vm {
                 put(&mut a, "modifiers", Value::Int(mods));
                 put(&mut a, "abstract", Value::Bool(m.is_abstract));
                 put(&mut a, "final", Value::Bool(m.is_final));
-                // The prototype: the same-named method of an ancestor
-                // (parent chain first, then interfaces).
                 let lname = lc(proto.name.as_bytes());
-                let e = &self.classes[m.defining_class as usize];
-                let mut proto_cls: Option<ClassId> = None;
-                let mut cur = e.parent;
-                while let Some(pc) = cur {
-                    if let Some(pm) = self.classes[pc as usize].methods.get(&lname) {
-                        if pm.visibility != Visibility::Private {
-                            proto_cls = Some(pm.defining_class);
-                            // Keep walking to the root declaration.
-                            cur = self.classes[pm.defining_class as usize].parent;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-                if proto_cls.is_none() {
-                    for &i in &e.interfaces {
-                        if i != m.defining_class
-                            && self.classes[i as usize].methods.contains_key(&lname)
-                        {
-                            proto_cls =
-                                Some(self.classes[i as usize].methods[&lname].defining_class);
-                            break;
-                        }
-                    }
-                }
+                let proto_cls = self.method_prototype(*class, &lname);
                 put(
                     &mut a,
                     "prototype",
@@ -1812,10 +1788,66 @@ impl Vm {
     }
 
     /// `Enum::cases()` / `from()` / `tryFrom()`.
+    /// php's `common.prototype` of method `lname` as class `r` holds it
+    /// (do_inheritance_check_on_method, do_interface_implementation): the
+    /// parent's prototype (or the parent's method) for an override, the
+    /// shared function's for an inherited one, then the last interface `r`
+    /// itself declares (not one inherited through another) that has the
+    /// method. Interface methods never get one, nor do inherited ones.
+    fn method_prototype(&self, r: ClassId, lname: &[u8]) -> Option<ClassId> {
+        let e = &self.classes[r as usize];
+        if e.kind == ClassKind::Interface {
+            return None;
+        }
+        let m = e.methods.get(lname)?;
+        if self.classes[m.defining_class as usize].kind == ClassKind::Interface {
+            return None; // the interface's own function, shared
+        }
+        let mut p = None;
+        if let Some(pc) = e.parent {
+            if let Some(pm) = self.classes[pc as usize].methods.get(lname) {
+                if m.defining_class != r {
+                    p = self.method_prototype(pc, lname);
+                } else if pm.visibility != Visibility::Private {
+                    let proto = self
+                        .method_prototype(pc, lname)
+                        .unwrap_or(pm.defining_class);
+                    // A constructor only has an abstract one as prototype.
+                    let abstract_proto = self.classes[proto as usize]
+                        .methods
+                        .get(lname)
+                        .is_some_and(|m| m.is_abstract);
+                    if lname != b"__construct" || abstract_proto {
+                        p = Some(proto);
+                    }
+                }
+            }
+        }
+        // zend_do_implement_interfaces: only the declared interfaces, minus
+        // the parent's, get do_interface_implementation.
+        let inherited: &[ClassId] = match e.parent {
+            Some(pc) => &self.classes[pc as usize].interfaces,
+            None => &[],
+        };
+        for iname in &e.proto.interfaces {
+            let Some(&i) = self.class_ids.get(&lc(iname.as_bytes())[..]) else {
+                continue;
+            };
+            if inherited.contains(&i) {
+                continue;
+            }
+            if let Some(im) = self.classes[i as usize].methods.get(lname) {
+                p = Some(im.defining_class);
+            }
+        }
+        p
+    }
+
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();
-        put(&mut a, "ext", s(b"Core"));
+        // Registered with no module (zend_enum_register_funcs).
+        put(&mut a, "ext", Value::Bool(false));
         put(&mut a, "name", s(name.as_bytes()));
         put(&mut a, "short", s(name.as_bytes()));
         put(&mut a, "ns", s(b""));
@@ -1834,7 +1866,12 @@ impl Vm {
         put(&mut a, "modifiers", Value::Int(17));
         put(&mut a, "abstract", Value::Bool(false));
         put(&mut a, "final", Value::Bool(false));
-        put(&mut a, "prototype", Value::Null);
+        let iface: &[u8] = if name == "cases" {
+            b"UnitEnum"
+        } else {
+            b"BackedEnum"
+        };
+        put(&mut a, "prototype", s(iface));
         put(&mut a, "attrs", Value::Array(PhpArray::new()));
         put(&mut a, "tentative", Value::Null);
         let ret = match name {

@@ -21,10 +21,20 @@ fn sp(n: usize, out: &mut Vec<u8>) {
 
 /// Split a php-mangled property name: `"\0Class\0name"` -> (name, Some(Class)),
 /// `"\0*\0name"` -> (name, Some("*")), plain `name` -> (name, None).
+///
+/// As zend_unmangle_property_name_ex, an anonymous owner's name keeps its
+/// `\0file:line$n` tail out of the property name; the owner returned is cut
+/// at the NUL (php prints it with `%s`).
 pub fn unmangle_prop(key: &[u8]) -> (&[u8], Option<&[u8]>) {
     if key.first() == Some(&0) {
         if let Some(end) = key[1..].iter().position(|&b| b == 0) {
-            return (&key[end + 2..], Some(&key[1..end + 1]));
+            let class = &key[1..end + 1];
+            let mut prop_at = end + 2;
+            // A second NUL: the class name had one (anonymous class).
+            if let Some(more) = key[prop_at..].iter().position(|&b| b == 0) {
+                prop_at += more + 1;
+            }
+            return (&key[prop_at..], Some(class));
         }
     }
     (key, None)

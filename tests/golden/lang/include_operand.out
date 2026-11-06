@@ -1,0 +1,7 @@
+Error: Object of class stdClass could not be converted to string
+Array to string conversion
+include(Array)
+include()
+bool(false)
+bool(true)
+end

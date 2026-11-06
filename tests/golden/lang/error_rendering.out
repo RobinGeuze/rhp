@@ -1,0 +1,68 @@
+-- @ restores error_reporting set to fatal-only inside
+int(30719)
+int(30711)
+-- anonymous class names
+Cannot assign string to property class@anonymous::$i of type int
+Cannot assign int to property class@anonymous::$me of type self
+class@anonymous(): Argument #1 ($x) must be of type int, string given, called in F on line 24
+Call to private method class@anonymous::p() from global scope
+Call to undefined method class@anonymous::nope()
+object(class@anonymous)#3 (3) {
+  ["a":"class@anonymous":private]=>
+  int(1)
+  ["b":protected]=>
+  int(2)
+  ["c"]=>
+  int(3)
+}
+class@anonymous Object
+(
+    [a:class@anonymous:private] => 1
+)
+
+bool(false)
+-- trace arguments
+#0 F(36): t('abcdefghijklmno...', 1.0, Array, NULL, true)
+#1 {main}
+string(2) "15"
+#0 F(38): t('abc...')
+#1 {main}
+bool(false)
+string(1) "3"
+#0 F(42): t()
+#1 {main}
+Unhandled match case of type string
+-- constant expressions
+Undefined constant "UNDEF_X" @50
+#0 F(54): [constant expression]()
+#1 {main}
+Undefined constant "UNDEF_Y" @55
+#0 {main}
+-- throw and class names
+Error: Can only throw objects
+Error: Can only throw objects
+Error: Can only throw objects
+Error: Cannot throw objects that do not implement Throwable
+Error: Cannot throw objects that do not implement Throwable
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+Error: Class name must be a valid object or a string
+-- static return type
+SA::make(): Return value must be of type SB, SA returned
+{closure:F:70}(): Return value must be of type static, SA returned
+object(SA)#9 (0) {
+}
+-- __toString return type
+string(2) "42"
+TN::__toString(): Return value must be of type string, none returned
+-- exception string cache
+bool(true)
+warning: Line is not an int
+warning: Expected array for frame 1
+#0 x(0): f(1, 'two')
+#1 {main}

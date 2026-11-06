@@ -24,8 +24,12 @@ impl Vm {
     /// smart_str_append_zval prints it, else `of type T`.
     #[cold]
     fn match_case_desc(&self, v: &Value) -> String {
+        use rhp_builtins::zend::exceptions as ex;
         let mut out = Vec::new();
-        if !rhp_builtins::zend::exceptions::append_zval(self, v, &mut out) {
+        if ex::ignore_args()
+            || (matches!(deref(v), Value::Str(_)) && ex::string_param_max_len() == 0)
+            || !ex::append_zval(self, v, &mut out)
+        {
             return format!("of type {}", rhp_builtins::zval_type_name(self, v));
         }
         String::from_utf8_lossy(&out).into_owned()
@@ -1491,11 +1495,19 @@ impl Vm {
                             if is_throwable {
                                 return Err(Thrown::Object(h));
                             }
-                            return Err(Thrown::type_error(
-                                "Can only throw objects that implement Throwable",
+                            // zend_throw_exception_internal.
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot throw objects that do not implement Throwable",
                             ));
                         }
-                        _ => return Err(Thrown::type_error("Can only throw objects")),
+                        Value::Closure(_) => {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Cannot throw objects that do not implement Throwable",
+                            ))
+                        }
+                        _ => return Err(Thrown::error("Error", "Can only throw objects")),
                     }
                 }
                 Instr::FinallyEnd => {
@@ -1921,6 +1933,18 @@ impl Vm {
                     base,
                     argc,
                 } => {
+                    // ZEND_INIT_STATIC_METHOD_CALL checks the class first.
+                    if let ClassRef::Dynamic(r) = class {
+                        if !matches!(
+                            self.reg_r(top, r)?,
+                            Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                        ) {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Class name must be a valid object or a string",
+                            ));
+                        }
+                    }
                     let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     self.do_call_static(top, class, &mname, dst, base, argc, false)?;
                 }
@@ -1972,13 +1996,9 @@ impl Vm {
                         if self.preloaded.as_ref().is_some_and(|p| p.has_function(&lc)) {
                             continue;
                         }
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot redeclare function {}()",
-                                String::from_utf8_lossy(f.proto.name.as_bytes())
-                            ),
-                        ));
+                        // do_bind_function_error at run time: E_ERROR.
+                        let msg = self.redeclare_function_msg(&lc, &f.proto.name);
+                        return Err(self.fatal_error_here(1, msg.as_bytes()));
                     }
                     let i = self.functions.len();
                     self.functions.push(f);
@@ -2053,6 +2073,18 @@ impl Vm {
                     name,
                     args,
                 } => {
+                    // ZEND_INIT_STATIC_METHOD_CALL checks the class first.
+                    if let ClassRef::Dynamic(r) = class {
+                        if !matches!(
+                            self.reg_r(top, r)?,
+                            Value::Str(_) | Value::Object(_) | Value::Closure(_)
+                        ) {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Class name must be a valid object or a string",
+                            ));
+                        }
+                    }
                     let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     self.call_static_args(top, class, mname, args, dst, false)?;
                 }
@@ -2107,7 +2139,11 @@ impl Vm {
                     }
                 }
                 Instr::Include { dst, path, kind } => {
-                    let raw = conv::to_string_bytes(&self.reg_r(top, path)?);
+                    let pv = self.reg_r(top, path)?;
+                    let raw = match &pv {
+                        Value::Object(_) | Value::Array(_) => self.to_string_vm(&pv)?,
+                        v => conv::to_string_bytes(v),
+                    };
                     let v = self.do_include(top, raw, kind)?;
                     self.reg_set(top, dst, v);
                 }
@@ -2959,7 +2995,7 @@ impl Vm {
             // fetch (it builds the value -> case table).
             // (Not from inside a constant expression, which goes
             // through zend_get_class_constant_ex in php.)
-            let in_const_expr = proto.name.as_bytes() == b"{init}";
+            let in_const_expr = proto.flags.contains(rhp_bytecode::ProtoFlags::CONST_EXPR);
             if self.class(cls).enum_backing.is_some() && !self.class(cls).updated && !in_const_expr
             {
                 self.update_class_constants(cls)?;

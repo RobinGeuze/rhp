@@ -176,7 +176,12 @@ impl Host for Vm {
         self.last_error.clone()
     }
 
+    fn last_error_trace(&self) -> Option<Value> {
+        self.last_fatal_trace.clone().map(Value::Array)
+    }
+
     fn clear_last_error(&mut self) {
+        self.last_fatal_trace = None;
         self.last_error = None;
     }
 
@@ -985,18 +990,16 @@ impl Host for Vm {
     }
 
     fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value> {
-        let full = self.build_trace_ex(provide_object, ignore_args);
-        // Drop the running debug_backtrace()/debug_print_backtrace() frame itself.
-        let skip = usize::from(
-            self.native_calls
-                .last()
-                .is_some_and(|n| n.caller + 1 == self.stack.len()),
-        );
-        let mut out = PhpArray::new();
-        for (_, v) in full.iter().skip(skip) {
-            out.push(v.clone());
-        }
-        Some(Value::Array(out))
+        // Leave out the running debug_backtrace()/debug_print_backtrace().
+        let skip = self
+            .native_calls
+            .last()
+            .is_some_and(|n| n.caller + 1 == self.stack.len());
+        Some(Value::Array(self.build_trace_skip(
+            provide_object,
+            ignore_args,
+            skip,
+        )))
     }
 
     fn set_exception_handler(&mut self, handler: Value) -> Value {

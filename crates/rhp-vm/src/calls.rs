@@ -846,6 +846,7 @@ impl Vm {
         };
         let name = self.func_display_name(proto, frame.defining_class);
         if proto.is_internal() {
+            let name = self.func_c_name(proto, frame.defining_class);
             // A built-in implemented in the PHP prelude reports like an
             // internal function (zend_wrong_parameters_count_error).
             let which = if proto.params.iter().any(|p| p.variadic) {
@@ -2334,7 +2335,16 @@ impl Vm {
         };
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
-        if frameless || !user {
+        // One the engine calls with no frame running (a shutdown function)
+        // is.
+        let engine_called = || {
+            !self.stack.is_empty()
+                && self.stack[caller]
+                    .proto
+                    .flags
+                    .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE)
+        };
+        if frameless || !(user || engine_called()) {
             let r = match zpp_error {
                 Some(e) => Err(e),
                 None => (builtin.func)(self, &args),

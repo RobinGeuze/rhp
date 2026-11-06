@@ -18,6 +18,20 @@ use crate::util::{compile_error, dirname, strip_dollar};
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
+        if self.scope_kind == ScopeKind::Init {
+            // A constant expression reports at the line of the node being
+            // evaluated (zend_ast_evaluate_ex's EG(lineno_override)).
+            let line = self.cx.line_of(expr.span().start.offset);
+            let saved = std::mem::replace(&mut self.cur_line, line);
+            let r = self.compile_expr_at(expr);
+            self.cur_line = saved;
+            return r;
+        }
+        self.compile_expr_at(expr)
+    }
+
+    fn compile_expr_at(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
         let addr = expr as *const Expression as usize;
         let inner = self.sc_inner == addr;
         let link = chain_object(expr);
@@ -201,8 +215,9 @@ impl ProtoBuilder<'_> {
             Expression::Match(m) => self.compile_match(m),
             Expression::Instantiation(inst) => {
                 use mago_span::HasSpan;
+                // ZEND_AST_NEW takes its class name's line.
                 self.call_lines
-                    .push(self.cx.line_of(inst.span().start.offset));
+                    .push(self.cx.line_of(inst.class.span().start.offset));
                 let r = self.compile_new(inst);
                 self.call_lines.pop();
                 r
@@ -234,6 +249,11 @@ impl ProtoBuilder<'_> {
                 use crate::parse::cst::Call;
                 use mago_span::HasSpan;
                 let at = match call {
+                    // php's `callable_expr argument_list`: the line the
+                    // argument list starts on (a plain name keeps its own).
+                    Call::Function(fc) if !matches!(fc.function, Expression::Identifier(_)) => {
+                        fc.argument_list.left_parenthesis
+                    }
                     Call::Function(fc) => fc.function.span(),
                     Call::Method(mc) => mc.method.span(),
                     Call::NullSafeMethod(mc) => mc.method.span(),

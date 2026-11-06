@@ -111,6 +111,7 @@ impl Vm {
             included_files: indexmap::IndexSet::new(),
             internal_classes: 0,
             autoloaders: Vec::new(),
+            autoload_depths: Vec::new(),
             in_autoload: Default::default(),
             inherit: Default::default(),
             pending_named: None,
@@ -135,6 +136,7 @@ impl Vm {
             stream_notifiers: HashMap::new(),
             argv: Vec::new(),
             silence: 0,
+            last_fatal_trace: None,
             silence_stack: Vec::new(),
             quiet: 0,
             rw_null_keys: 0,
@@ -828,6 +830,7 @@ impl Vm {
         let mut main = FunctionProto::new(rhp_values::PhpStr::from("{main}"));
         main.debug.file = rhp_values::PhpStr::from("");
         main.flags.insert(rhp_bytecode::ProtoFlags::INTERNAL);
+        main.flags.insert(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE);
         self.stack.push(Frame::new(Rc::new(main), 0, 0));
     }
 

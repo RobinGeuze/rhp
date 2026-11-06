@@ -262,6 +262,9 @@ pub struct Vm {
     // (zend_objects_store_mark_destructed): kept, never destructed, until
     // shutdown ends.
     marked_destructed: Vec<ObjectHandle>,
+    // `__PHP_Incomplete_Class`, once linked: its objects take
+    // incomplete_class.c's property and method handlers.
+    incomplete_class: Option<ClassId>,
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,

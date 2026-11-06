@@ -1580,7 +1580,42 @@ impl Vm {
                 }
             }
         }
+        self.implement_serializable(ce)?;
         Ok(true)
+    }
+
+    /// zend_implement_serializable: a class implementing Serializable
+    /// without both __serialize and __unserialize is deprecated; an enum
+    /// may not implement it at all (zend_verify_enum_interfaces).
+    fn implement_serializable(&mut self, ce: ClassId) -> Result<(), Thrown> {
+        let e = self.class(ce);
+        if e.kind == ClassKind::Interface
+            || !e
+                .interfaces
+                .iter()
+                .any(|&i| self.class(i).name.as_bytes() == b"Serializable")
+        {
+            return Ok(());
+        }
+        let (file, line) = (e.decl_file.as_bytes().to_vec(), e.decl_line);
+        let name = lossy(cut_nul(e.name.as_bytes())).into_owned();
+        let is_enum = e.kind == ClassKind::Enum;
+        if !e.flags.is_abstract
+            && !(e.methods.contains_key(&b"__serialize"[..])
+                && e.methods.contains_key(&b"__unserialize"[..]))
+        {
+            let msg = format!(
+                "{name} implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary)"
+            );
+            self.inherit
+                .recorded
+                .push((msg.into_bytes(), file.clone(), line as i64));
+        }
+        if is_enum {
+            let msg = format!("Enum {name} cannot implement the Serializable interface");
+            return Err(self.lsp_fatal(&msg, &file, line));
+        }
+        Ok(())
     }
 
     /// load_delayed_classes: autoload what the variance checks could not

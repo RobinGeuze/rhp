@@ -928,9 +928,11 @@ impl Vm {
                     self.materialize_enum_cases(id as ClassId, &proto, unit);
                 }
             }
+            self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
             return Ok(());
         }
         self.install_classes(protos, 0)?;
+        self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),

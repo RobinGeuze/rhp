@@ -171,4 +171,5 @@ fn reset_state() {
     array::reset_state();
     string::reset_state();
     basic_functions::reset_state();
+    var::reset_state();
 }

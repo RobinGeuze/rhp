@@ -379,14 +379,6 @@ impl Host for TestHost<'_> {
     fn mangled_prop_name(&self, _class_id: u32, key: &PhpStr) -> PhpStr {
         key.clone()
     }
-    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool {
-        if let Value::Object(h) = obj {
-            h.borrow_mut()
-                .properties
-                .insert(PhpStr::from_bytes(key.to_vec()), val);
-        }
-        true
-    }
     fn object_vars(&self, _obj: &Value) -> Option<Value> {
         None
     }

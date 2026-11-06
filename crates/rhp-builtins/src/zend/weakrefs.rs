@@ -372,7 +372,10 @@ fn weakmap_read(
             return Ok(None);
         }
         let key = deref(offset);
-        let class = host.object_class_name(&key).unwrap_or_default();
+        let class = match key {
+            Value::Closure(_) => b"Closure".to_vec(),
+            _ => host.object_class_name(&key).unwrap_or_default(),
+        };
         return Err(Thrown::error(
             "Error",
             format!(
@@ -486,10 +489,16 @@ fn weakmap_clone(_: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> Re
     let mut inner = to.inner.borrow_mut();
     for e in from.entries.values() {
         register(e.id, Target::Map(Rc::downgrade(&to)));
+        // zval_add_ref: a reference nothing else holds is copied as its
+        // value, any other is shared.
+        let value = match &e.value {
+            Value::Ref(r) if Rc::strong_count(r) == 1 => r.borrow().clone(),
+            v => v.clone(),
+        };
         inner.insert(Entry {
             id: e.id,
             key: e.key.clone(),
-            value: e.value.clone(),
+            value,
             fetch_ref: false,
         });
     }

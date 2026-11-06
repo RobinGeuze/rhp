@@ -66,3 +66,7 @@ WeakMap Object
 NULL
 NULL
 bool(false)
+int(1)
+int(2)
+int(3)
+Object Closure#N not contained in WeakMap

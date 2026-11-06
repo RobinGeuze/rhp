@@ -104,3 +104,24 @@ unset($a, $m, $m3);
 var_dump($r->get());
 $n = new stdClass;
 var_dump($r->get(), WeakReference::create($n) === $r);
+
+// clone copies a reference nothing else holds as its value.
+$m5 = new WeakMap;
+$k5 = new stdClass;
+$v5 = 1;
+$m5[$k5] = 0;
+$m5[$k5] = &$v5;
+unset($v5);
+$m6 = clone $m5;
+$m6[$k5]++;
+var_dump($m5[$k5], $m6[$k5]);
+$v6 = &$m5[$k5];
+$m7 = clone $m5;
+$v6 = 3;
+var_dump($m7[$k5]);
+// A missing closure key names its class.
+try {
+    $m5[function () {}];
+} catch (Error $e) {
+    echo preg_replace('/#\d+/', '#N', $e->getMessage()), "\n";
+}

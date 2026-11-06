@@ -210,6 +210,17 @@ impl PropCtx<'_> {
     }
 }
 
+/// What a read-modify-write fetch holds while an undefined-key warning
+/// runs (see [`Vm::cursor_rw_checks`]).
+enum RwHold {
+    /// The array missing the key at path level `.0` (its clone makes a
+    /// write by the handler separate it, as php's GC_ADDREF does).
+    Array(usize, PhpArray),
+    /// A null root php turns into an array first: destroyed when the
+    /// variable no longer holds null.
+    RootNull,
+}
+
 thread_local! {
     /// Diagnostics raised inside the pure cursor-path walkers
     /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
@@ -261,6 +272,9 @@ impl Vm {
             MagicSplit::Incomplete(h) => Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_rw_checks(top, steps, incdec)?;
+                if self.rw_aborted {
+                    return Ok(Value::Null);
+                }
                 Ok(self.cursor_read_steps(top, steps))
             }
             // (A by-reference `__get` result is read as a copy.)
@@ -336,6 +350,10 @@ impl Vm {
         // `None`: the slot does not exist yet (the write creates it as null).
         let mut cur = Some(deref(&self.cursor_root_value(top)));
         let mut warnings: Vec<(i64, String)> = Vec::new();
+        // The container of the first undefined key, held while its warning
+        // runs (zend_undefined_index_write's GC_ADDREF), with the warning's
+        // index.
+        let mut hold: Option<(usize, RwHold)> = None;
         for (i, step) in steps.iter().enumerate() {
             cur = match (cur, step) {
                 // A string container: no read-modify-write through its offsets.
@@ -369,10 +387,15 @@ impl Vm {
                         Some(_) => string_offset_misuse(rest, false),
                     });
                 }
-                (None | Some(Value::Null), CursorStep::Key(k)) => {
+                (c @ (None | Some(Value::Null)), CursorStep::Key(k)) => {
                     self.rw_null_key(k, &mut warnings);
                     match ArrayKey::from_value(&deref(k)) {
-                        Some(key) => warnings.push((builtins::E_WARNING, undefined_key_msg(&key))),
+                        Some(key) => {
+                            if i == 0 && c.is_some() && hold.is_none() {
+                                hold = Some((warnings.len(), RwHold::RootNull));
+                            }
+                            warnings.push((builtins::E_WARNING, undefined_key_msg(&key)))
+                        }
                         None => {
                             self.flush_rw_warnings(warnings)?;
                             return Err(self.illegal_array_offset(top, k));
@@ -391,6 +414,9 @@ impl Vm {
                     match a.get(&key) {
                         Some(v) => Some(deref(v)),
                         None => {
+                            if hold.is_none() {
+                                hold = Some((warnings.len(), RwHold::Array(i, a.clone())));
+                            }
                             warnings.push((builtins::E_WARNING, undefined_key_msg(&key)));
                             None
                         }
@@ -438,7 +464,37 @@ impl Vm {
                 _ => break,
             };
         }
-        self.flush_rw_warnings(warnings)
+        let Some((at, hold)) = hold else {
+            return self.flush_rw_warnings(warnings);
+        };
+        for (i, (level, w)) in warnings.into_iter().enumerate() {
+            self.diag(level, &w)?;
+            if i == at {
+                let destroyed = match &hold {
+                    // php separates the held table on any write to it:
+                    // the path no longer reaches it.
+                    RwHold::Array(level, a) => {
+                        let mut v = deref(&self.cursor_root_value(top));
+                        for step in &steps[..*level] {
+                            let next = match (&v, step) {
+                                (Value::Array(x), CursorStep::Key(k)) => {
+                                    ArrayKey::from_value(k).and_then(|key| x.get(&key).map(deref))
+                                }
+                                _ => None,
+                            };
+                            v = next.unwrap_or(Value::Null);
+                        }
+                        !matches!(&v, Value::Array(x) if x.data_ptr() == a.data_ptr())
+                    }
+                    RwHold::RootNull => !matches!(deref(&self.cursor_root_value(top)), Value::Null),
+                };
+                if destroyed {
+                    self.rw_aborted = true;
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn illegal_array_offset(&self, top: usize, k: &Value) -> Thrown {
@@ -869,7 +925,12 @@ impl Vm {
                             let set =
                                 !make_ref && leaf && self.magic(&h, cls, b"__set", name).is_some();
                             if dynamic && !set {
-                                self.check_dynamic_prop(top, cls, name)?;
+                                // Held here by `h`, and by `cur` unless
+                                // that is a reference.
+                                let locals = 1 + usize::from(
+                                    matches!(&cur, Value::Object(o) if Rc::ptr_eq(o, &h)),
+                                );
+                                self.check_dynamic_prop_held(top, &h, locals, name)?;
                             }
                             return Ok(());
                         }

@@ -1361,6 +1361,10 @@ impl Vm {
                         r?;
                     }
                     let v = self.cursor_read(top)?;
+                    if self.rw_aborted {
+                        self.rw_abort_compound(top, &proto);
+                        continue;
+                    }
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
@@ -1543,6 +1547,12 @@ impl Vm {
                         }
                     }
                     let old = self.cursor_read_magic(top, &steps, true)?;
+                    if self.rw_aborted {
+                        self.rw_aborted = false;
+                        self.cursor_release();
+                        self.reg_set(top, dst, Value::Null);
+                        continue;
+                    }
                     let new = match self.inc_dec_vm(&old, delta as i64) {
                         Ok(n) => n,
                         // php writes the property even so: a readonly one
@@ -2851,6 +2861,25 @@ impl Vm {
                 .any(|s| name.eq_ignore_ascii_case(s))
     }
 
+    /// A compound assignment whose read-modify-write fetch was dropped
+    /// (see `rw_aborted`): skip the operator and its `AssignLval`; the
+    /// expression is null.
+    #[cold]
+    fn rw_abort_compound(&mut self, top: usize, proto: &FunctionProto) {
+        self.rw_aborted = false;
+        self.cursor_steps.clear();
+        self.cursor_release();
+        let mut pc = self.stack[top].pc;
+        while let Some(i) = proto.code.get(pc) {
+            pc += 1;
+            if let Instr::AssignLval { dst, .. } = *i {
+                self.reg_set(top, dst, Value::Null);
+                break;
+            }
+        }
+        self.stack[top].pc = pc;
+    }
+
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object
     /// that is not an IteratorAggregate; a result that is not Traversable
     /// (or the aggregate itself) throws.
@@ -3309,11 +3338,15 @@ impl Vm {
         }
         let regs = &mut self.stack[top].regs;
         regs[pos_reg as usize] = Value::Null;
-        regs[pos_reg as usize + 1] = Value::Null;
+        // The iterated object goes before the iterator's own handle
+        // (zend_user_it_dtor runs inside the iterator's free_obj).
+        let handle = std::mem::replace(&mut regs[pos_reg as usize + 1], Value::Null);
         if clear_arr {
             let old = std::mem::replace(&mut regs[arr as usize], Value::Null);
-            if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
-                drop(old);
+            let held = matches!(old, Value::Object(_) | Value::Array(_));
+            drop(old);
+            drop(handle);
+            if held && !self.destructibles.is_empty() {
                 if end == NO_PC {
                     self.dtor_check = true;
                 } else if let Err(t) = self.collect_released_now() {

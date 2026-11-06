@@ -143,6 +143,7 @@ impl Vm {
             silence_stack: Vec::new(),
             quiet: 0,
             rw_null_keys: 0,
+            rw_aborted: false,
             typed_write_result: None,
             want_typed_result: false,
             incdec_write: false,

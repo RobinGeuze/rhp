@@ -907,7 +907,24 @@ impl Vm {
                     .get(&key)
                     .is_some_and(|pe| pe.ty.is_some())
                 {
+                    let held = Rc::strong_count(&h);
                     let v = self.verify_prop_type(cls, &key, val, strict)?;
+                    // A `__toString` that released the object
+                    // (zend_object_released_while_assigning_to_property_error).
+                    if held > 1 && Rc::strong_count(&h) == 1 {
+                        self.dtor_check = true;
+                        let pe = &self.class(cls).props[&key];
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Object was released while assigning to property {}::${}",
+                                String::from_utf8_lossy(crate::errors::c_name(
+                                    self.class(pe.declaring_class).name.as_bytes()
+                                )),
+                                String::from_utf8_lossy(pe.name.as_bytes())
+                            ),
+                        ));
+                    }
                     // The assignment's value is the coerced one (`StoreProp`).
                     if want_result {
                         self.typed_write_result = Some(v.clone());
@@ -981,6 +998,36 @@ impl Vm {
             builtins::E_DEPRECATED,
             &format!("Creation of dynamic property {cname}::${p} is deprecated"),
         )
+    }
+
+    /// [`Vm::check_dynamic_prop`] for object `h`, which the caller holds
+    /// `locals` times: a deprecation handler that released the object
+    /// makes it php's "Cannot create dynamic property" Error
+    /// (zend_deprecated_dynamic_property).
+    pub(crate) fn check_dynamic_prop_held(
+        &mut self,
+        top: usize,
+        h: &ObjectHandle,
+        locals: usize,
+        pname: &PhpStr,
+    ) -> Result<(), Thrown> {
+        let before = Rc::strong_count(h);
+        let cls = h.borrow().class;
+        self.check_dynamic_prop(top, cls, pname)?;
+        if before > locals && Rc::strong_count(h) == locals {
+            self.dtor_check = true;
+            let cname =
+                String::from_utf8_lossy(crate::errors::c_name(self.class(cls).name.as_bytes()))
+                    .into_owned();
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot create dynamic property {cname}::${}",
+                    String::from_utf8_lossy(pname.as_bytes())
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// incomplete_class.c's message for object `h`: what the script tried,

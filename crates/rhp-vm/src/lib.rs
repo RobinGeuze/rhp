@@ -275,6 +275,9 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // An error handler destroyed the container of a read-modify-write
+    // fetch (zend_undefined_index_write failed): the operation is dropped.
+    rw_aborted: bool,
     // The value a cursor write stored in a typed property after coercion
     // (the assignment expression's value).
     typed_write_result: Option<Value>,

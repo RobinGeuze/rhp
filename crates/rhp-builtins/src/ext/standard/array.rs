@@ -2593,8 +2593,14 @@ fn sort_by_ref(
         }
         out.make_mut().set_next_free(next_free);
     }
+    let sorted = arr.data_ptr();
     drop(arr);
     let mut g = rc.borrow_mut();
+    // zend_array_sort holds the table it sorts in place: a comparison that
+    // wrote to the variable separated it, and the sorted table goes away.
+    if !dup && !matches!(&*g, Value::Array(a) if a.data_ptr() == sorted) {
+        return true;
+    }
     // An array_walk over it goes on from the same position (zend_hash_sort
     // keeps iterator positions; php_usort's zend_array_dup copies them).
     if let Value::Array(old) = &mut *g {

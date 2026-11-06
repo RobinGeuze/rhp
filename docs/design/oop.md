@@ -250,6 +250,7 @@ pub struct ClassProto {
     pub parent: Option<PhpStr>,         // `extends` (single, for classes)
     pub interfaces: Vec<PhpStr>,        // `implements` / interface `extends` (N)
     pub traits: Vec<PhpStr>,            // `use T;` to merge in
+    pub trait_rules: Option<Box<TraitRules>>, // `use T { insteadof / as }`
     pub methods: Vec<MethodProto>,
     pub props: Vec<PropProto>,
     pub static_props: Vec<StaticPropProto>,
@@ -623,7 +624,17 @@ then switch the check on — but the metadata must be stored from step 1.)*
 4. **Flatten, parent-first** (traits → parent overlay → interface-set union):
    - `methods` = clone `parent.methods`; merge trait methods (adopting the using
      class as `defining_class`); insert own methods (lowercase key), **overriding**
-     inherited (the override rules are step 4).
+     inherited (the override rules are step 4). Trait methods are bound by
+     `traits.rs` (zend_do_bind_traits): the `use T { ... }` rules
+     (`ClassProto::trait_rules`) are resolved first (precedence and alias
+     errors), then each trait method is copied once per alias (a renamed
+     `FunctionProto`, so it has its own statics) and once itself unless
+     excluded, with the rules' visibility/final applied. Two traits bringing
+     a method of one name is a fatal; the class's own method wins. Abstract
+     trait methods come after the parent's: one already present is
+     signature-checked in step 4, others are added. Trait constants and
+     properties the class or an earlier trait declares must match
+     (visibility, static, readonly, final, type, default).
    - `props` = clone `parent.props`; for each own `PropProto`, replace **in place**
      if the name exists (new default/visibility/declaring_class), else append —
      reproducing the observed order.

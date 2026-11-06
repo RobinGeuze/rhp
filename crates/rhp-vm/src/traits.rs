@@ -366,6 +366,10 @@ impl Vm {
     }
 }
 
+/// What do_trait_constant_check compares of one constant: visibility,
+/// final, type and value (`None` when it is a constant expression).
+type ConstDesc = (Visibility, bool, Option<TypeHint>, Option<Value>);
+
 /// What zend_do_traits_property_binding compares of one property.
 struct PropDesc {
     visibility: Visibility,
@@ -397,8 +401,7 @@ impl Vm {
         traits: &[Option<ClassId>],
     ) -> Result<(), Thrown> {
         // name => (visibility, final, type, value), the class's own first.
-        let mut seen: FxHashMap<Vec<u8>, (Visibility, bool, Option<TypeHint>, Option<Value>)> =
-            FxHashMap::default();
+        let mut seen: FxHashMap<Vec<u8>, ConstDesc> = FxHashMap::default();
         for c in &proto.constants {
             let v = match &c.value {
                 ConstInitProto::Const(v) => Some(v.clone()),
@@ -411,8 +414,7 @@ impl Vm {
         }
         for (i, &t) in traits.iter().enumerate() {
             let Some(t) = t else { continue };
-            let consts: Vec<(Vec<u8>, (Visibility, bool, Option<TypeHint>, Option<Value>))> = self
-                .classes[t as usize]
+            let consts: Vec<(Vec<u8>, ConstDesc)> = self.classes[t as usize]
                 .constants
                 .iter()
                 .map(|(k, c)| {

@@ -1,0 +1,52 @@
+Polite::hello
+Greeter::hello
+secret/Counter::secret
+int(1)
+int(2)
+int(1)
+int(3)
+array(3) {
+  ["greeterHello"]=>
+  string(14) "Greeter::hello"
+  ["hitAgain"]=>
+  string(12) "Counter::hit"
+  ["reveal"]=>
+  string(15) "Counter::secret"
+}
+hello: hello public declared in A
+greeterHello: greeterHello public declared in A
+reveal: reveal public declared in A
+secret: secret protected declared in A
+bye: bye protected declared in A
+hitAgain: hitAgain public static declared in A
+Array
+(
+    [0] => hitAgain
+    [1] => hit
+    [2] => reveal
+    [3] => greeterHello
+    [4] => hello
+)
+Call to protected method A::bye() from global scope
+Greeter::hello C::hello
+inner
+int(1)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+string(1) "a"
+from parent
+E8192: Accessing static trait property St::$v is deprecated, it should only be accessed on a class using the trait
+E8192: Accessing static trait property St::$v is deprecated, it should only be accessed on a class using the trait
+E8192: Calling static trait method St::m is deprecated, it should only be called on a class using the trait
+E8192: Calling static trait method St::other is deprecated, it should only be called on a class using the trait
+int(5)
+bool(true)
+string(1) "m"
+string(8) "cs:other"
+St
+Cannot access trait constant K1::X directly
+bool(false)

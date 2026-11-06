@@ -3017,6 +3017,16 @@ impl Vm {
                     if !self.check_access(self.stack[top].defining_class, decl, vis) {
                         return Err(self.access_err("constant", decl, &name_b, vis));
                     }
+                    if self.class(cls).kind == rhp_values::ClassKind::Trait {
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Cannot access trait constant {}::{} directly",
+                                String::from_utf8_lossy(&display),
+                                String::from_utf8_lossy(&name_b)
+                            ),
+                        ));
+                    }
                     if let Some(d) = deprecated {
                         self.class_const_deprecation(decl, &name_b, &d)?;
                     }

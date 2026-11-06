@@ -1493,18 +1493,8 @@ impl Vm {
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
             for pe in self.classes[tid as usize].props.values().cloned() {
-                if let Some(own) = proto.props.iter().find(|pp| pp.name == pe.name) {
-                    if own.has_hooks() || pe.hooks.is_some() {
-                        link_err.get_or_insert(format!(
-                            "{} and {} define the same hooked property (${}) in the composition of {}. \
-                             Conflict resolution between hooked properties is currently not supported. \
-                             Class was composed",
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                            String::from_utf8_lossy(self.classes[tid as usize].name.as_bytes()),
-                            String::from_utf8_lossy(pe.name.as_bytes()),
-                            String::from_utf8_lossy(proto.name.as_bytes()),
-                        ));
-                    }
+                // (Conflicts were checked by check_trait_props.)
+                if proto.props.iter().any(|pp| pp.name == pe.name) {
                     continue;
                 }
                 let hooks = pe.hooks.as_ref().map(|h| {
@@ -2200,6 +2190,14 @@ impl Vm {
             .contains_key(name)
         {
             self.update_class_constants(class_id)?;
+            if self.classes[class_id as usize].kind == ClassKind::Trait {
+                let msg = format!(
+                    "Accessing static trait property {}::${} is deprecated, it should only be accessed on a class using the trait",
+                    String::from_utf8_lossy(self.classes[class_id as usize].name.as_bytes()),
+                    String::from_utf8_lossy(name)
+                );
+                self.diag(rhp_builtins::E_DEPRECATED, msg.as_bytes())?;
+            }
         }
         self.classes[class_id as usize]
             .static_props

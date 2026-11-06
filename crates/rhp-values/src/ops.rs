@@ -695,18 +695,19 @@ fn compare_arrays(
     if x.data_ptr() == y.data_ptr() {
         return Ok(Ordering::Equal);
     }
-    if x.len() != y.len() {
-        return Ok(x.len().cmp(&y.len()));
-    }
     thread_local! {
         static COMPARING: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     }
+    // Checked before the sizes, as zend_hash_compare does.
     let p = x.data_ptr();
     if COMPARING.with(|c| c.borrow().contains(&p)) {
         return Err(Thrown::error(
             "Error",
             "Nesting level too deep - recursive dependency?",
         ));
+    }
+    if x.len() != y.len() {
+        return Ok(x.len().cmp(&y.len()));
     }
     COMPARING.with(|c| c.borrow_mut().push(p));
     let r = (|| {

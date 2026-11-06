@@ -546,13 +546,11 @@ impl Vm {
                         ));
                     }
                 }
-                b"datetimeinterface" => {
-                    if !extends(b"DateTime") && !extends(b"DateTimeImmutable") {
-                        err = Some((
-                            1,
-                            "DateTimeInterface can't be implemented by user classes".to_string(),
-                        ));
-                    }
+                b"datetimeinterface" if !extends(b"DateTime") && !extends(b"DateTimeImmutable") => {
+                    err = Some((
+                        1,
+                        "DateTimeInterface can't be implemented by user classes".to_string(),
+                    ));
                 }
                 _ => {}
             }

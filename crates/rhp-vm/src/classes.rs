@@ -311,6 +311,11 @@ pub(crate) fn resolve_prop(
         }
     }
     let Some(key) = entry.prop_visible.get(name) else {
+        if !entry.static_props.is_empty() {
+            if let Some(d) = static_as_instance_denied(classes, cls, scope, name) {
+                return PropRes::Denied(d);
+            }
+        }
         return dynamic_or_bad(name);
     };
     let pe = &entry.props[key];
@@ -327,6 +332,49 @@ pub(crate) fn resolve_prop(
         Visibility::Private if pe.declaring_class != cls => dynamic_or_bad(name),
         Visibility::Private => PropRes::Denied(Deny::Vis(Visibility::Private)),
     }
+}
+
+/// A static property reached as `$o->name`, as zend_get_property_offset
+/// finds it: `Some(Some(deny))` when the scope may not see it,
+/// `Some(None)` when it may (php then notices "Accessing static property
+/// as non static" and uses a dynamic property), `None` for no such static
+/// (or a parent's private one, which is invisible here).
+pub(crate) fn static_as_instance(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> Option<Option<Deny>> {
+    let sp = classes[cls as usize].static_props.get(name.as_bytes())?;
+    if scope == Some(sp.declaring_class) {
+        return Some(None);
+    }
+    // zend_get_parent_private_property: the scope's own private static,
+    // redeclared by a subclass.
+    if let Some(s) = scope {
+        let own = classes[s as usize].static_props.get(name.as_bytes());
+        if own.is_some_and(|p| p.declaring_class == s && p.visibility == Visibility::Private)
+            && classes[cls as usize].ancestors.contains(&s)
+        {
+            return Some(None);
+        }
+    }
+    match sp.visibility {
+        Visibility::Public => Some(None),
+        Visibility::Protected if protected_ok(classes, scope, sp.prototype) => Some(None),
+        Visibility::Protected => Some(Some(Deny::Vis(Visibility::Protected))),
+        Visibility::Private if sp.declaring_class != cls => None,
+        Visibility::Private => Some(Some(Deny::Vis(Visibility::Private))),
+    }
+}
+
+fn static_as_instance_denied(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> Option<Deny> {
+    static_as_instance(classes, cls, scope, name).flatten()
 }
 
 /// An undeclared (dynamic) property name; one starting with NUL is refused
@@ -1480,7 +1528,8 @@ impl Vm {
                     no_default: matches!(pp.default, PropDefaultProto::None),
                     hooks,
                     virt: pp.is_virtual,
-                    is_final: pp.is_final,
+                    // private(set) properties are implicitly final.
+                    is_final: pp.is_final || pp.set_visibility == Some(Visibility::Private),
                     is_abstract: pp.is_abstract,
                 },
             );

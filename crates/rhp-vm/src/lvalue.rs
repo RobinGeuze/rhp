@@ -122,6 +122,23 @@ impl PropCtx<'_> {
         rest: &[CursorStep],
     ) -> Result<PhpStr, Thrown> {
         let key = self.key(od.class, name)?;
+        let entry = &self.classes[od.class as usize];
+        if !entry.static_props.is_empty()
+            && !entry.methods.contains_key(&b"__get"[..])
+            && matches!(
+                classes::static_as_instance(self.classes, od.class, self.scope, name),
+                Some(None)
+            )
+        {
+            path_diag(
+                builtins::E_NOTICE,
+                format!(
+                    "Accessing static property {}::${} as non static",
+                    String::from_utf8_lossy(entry.name.as_bytes()),
+                    String::from_utf8_lossy(name.as_bytes())
+                ),
+            );
+        }
         if let Err(e) = classes::set_access_ok(self.classes, od.class, self.scope, &key) {
             let holds_object = !rest.is_empty()
                 && matches!(od.properties.get(&key).map(deref), Some(Value::Object(_)));
@@ -146,6 +163,17 @@ thread_local! {
     /// The value of the last string offset assignment: the byte written,
     /// or null when none was ([`assign_string_offset`]).
     static STRING_OFFSET_RESULT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// The running cursor write is a `++`/`--` (zend_throw_non_object_error
+    /// names the opcode).
+    static INCDEC_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` (a cursor write) as the write of a `++`/`--`.
+pub(crate) fn as_incdec_write<T>(f: impl FnOnce() -> T) -> T {
+    INCDEC_WRITE.with(|c| c.set(true));
+    let r = f();
+    INCDEC_WRITE.with(|c| c.set(false));
+    r
 }
 
 /// The value of the string offset assignment the last cursor write made,
@@ -188,7 +216,10 @@ impl Vm {
                 self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))
             }
-            MagicSplit::Leaf(h, name) => self.prop_fetch(top, Value::Object(h), name),
+            // (A by-reference `__get` result is read as a copy.)
+            MagicSplit::Leaf(h, name) => self
+                .prop_fetch(top, Value::Object(h), name)
+                .map(|v| deref(&v)),
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 self.with_cursor_root(cell, |vm| vm.cursor_read_magic(top, &steps[i..], incdec))
@@ -742,9 +773,20 @@ impl Vm {
         v: Value,
     ) -> Result<(), Thrown> {
         self.cursor_readonly_check(top, steps, false)?;
+        let mut v = v;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
-            MagicSplit::Plain => self.cursor_dyn_check(top, steps, false)?,
+            MagicSplit::Plain => {
+                self.cursor_dyn_check(top, steps, false)?;
+                // zend_assign_to_typed_prop / zend_binary_assign_op_typed_prop.
+                if !matches!(v, Value::Ref(_)) {
+                    if let Some((cls, key)) = self.cursor_leaf_typed(top, steps) {
+                        let strict = self.stack[top].proto.strict_types;
+                        v = self.verify_prop_type(cls, &key, v, strict)?;
+                        self.typed_write_result = Some(v.clone());
+                    }
+                }
+            }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
             // the write fetch runs the get hook, then the reference cannot be
             // made.
@@ -759,6 +801,17 @@ impl Vm {
                         self.chain_thrown(e, prev)
                     }
                 });
+            }
+            // ZEND_ASSIGN_OBJ_REF on a property served by `__get`: the
+            // write fetch reads it, then the reference cannot be made.
+            MagicSplit::Leaf(h, name) if matches!(v, Value::Ref(_)) => {
+                self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                    vm.prop_fetch(top, Value::Object(h), name)
+                })?;
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot assign by reference to overloaded object",
+                ));
             }
             MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
             MagicSplit::Lazy(i, h) => {
@@ -810,6 +863,35 @@ impl Vm {
             self.dtor_check = true;
         }
         r
+    }
+
+    /// The declared typed property the leaf of a cursor path is (php's
+    /// zend_object_fetch_property_type_info on the fetched slot): its
+    /// object's class and storage key.
+    pub(crate) fn cursor_leaf_typed(
+        &self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<(ClassId, PhpStr)> {
+        let (CursorStep::Prop(name), prefix) = steps.split_last()? else {
+            return None;
+        };
+        let parent = if prefix.is_empty() {
+            self.cursor_root_value(top)
+        } else {
+            self.cursor_read_steps(top, prefix)
+        };
+        let Value::Object(h) = deref(&parent) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        let PropRes::Slot(key) =
+            classes::resolve_prop(&self.classes, cls, self.stack[top].defining_class, name)
+        else {
+            return None;
+        };
+        self.class(cls).props.get(&key)?.ty.as_ref()?;
+        Some((cls, key))
     }
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
@@ -1827,11 +1909,17 @@ fn assign_path(
             // a write further down the path modifies it.
             other => {
                 let shown = cx.value_name(other);
+                let op = if !rest.is_empty() || matches!(value, Value::Ref(_)) {
+                    "modify"
+                } else if INCDEC_WRITE.with(|c| c.get()) {
+                    "increment/decrement"
+                } else {
+                    "assign"
+                };
                 return Err(Thrown::error(
                     "Error",
                     format!(
-                        "Attempt to {} property \"{}\" on {shown}",
-                        if rest.is_empty() { "assign" } else { "modify" },
+                        "Attempt to {op} property \"{}\" on {shown}",
                         String::from_utf8_lossy(name.as_bytes())
                     ),
                 ));

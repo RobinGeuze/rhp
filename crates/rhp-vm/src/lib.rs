@@ -264,6 +264,9 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // The value a cursor write stored in a typed property after coercion
+    // (the assignment expression's value).
+    typed_write_result: Option<Value>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.

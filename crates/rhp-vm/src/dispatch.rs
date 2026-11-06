@@ -1320,8 +1320,11 @@ impl Vm {
                         self.cursor_write(top, &steps, v)
                     } else {
                         crate::lvalue::take_string_offset_result();
+                        self.typed_write_result = None;
                         let r = self.cursor_write(top, &steps, v.clone());
-                        let res = crate::lvalue::take_string_offset_result().unwrap_or(v);
+                        let res = crate::lvalue::take_string_offset_result()
+                            .or_else(|| self.typed_write_result.take())
+                            .unwrap_or(v);
                         self.reg_set(top, dst, res);
                         r
                     };
@@ -1343,6 +1346,11 @@ impl Vm {
                         self.rebind_global(&n, rc.clone());
                         continue;
                     }
+                    // A by-value source (a call result) binds a fresh reference.
+                    let v = match v {
+                        Value::Ref(_) => v,
+                        other => Value::Ref(Rc::new(RefCell::new(other))),
+                    };
                     let r = self.cursor_write(top, &steps, v);
                     self.cursor_release();
                     r?;
@@ -1385,7 +1393,14 @@ impl Vm {
                     }
                     let old = self.cursor_read_magic(top, &steps, true)?;
                     let new = self.inc_dec_vm(&old, delta as i64)?;
-                    self.cursor_write(top, &steps, new.clone())?;
+                    if matches!((&old, &new), (Value::Int(_), Value::Float(_))) {
+                        self.incdec_typed_overflow(top, &steps, delta)?;
+                    }
+                    self.typed_write_result = None;
+                    crate::lvalue::as_incdec_write(|| {
+                        self.cursor_write(top, &steps, new.clone())
+                    })?;
+                    let new = self.typed_write_result.take().unwrap_or(new);
                     self.cursor_release();
                     self.reg_set(top, dst, if pre { new } else { old });
                 }
@@ -1665,7 +1680,15 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let val = self.reg_r(top, src)?;
+                    self.typed_write_result = None;
                     self.prop_store(top, o, pname, val)?;
+                    // A typed property coerced the value: a temporary
+                    // source is the assignment's result.
+                    if let Some(v) = self.typed_write_result.take() {
+                        if src as usize >= proto.num_cvs as usize {
+                            self.reg_set(top, src, v);
+                        }
+                    }
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true; // the old value may be released
                     }

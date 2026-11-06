@@ -66,6 +66,7 @@ impl Vm {
                         None
                     }
                     PropRes::Dynamic => {
+                        self.static_as_instance_notice(cls, scope, &pname, b"__get")?;
                         if Some(cls) == self.incomplete_class {
                             if self.pending_magic_fetch == builtins::MagicFetch::Write {
                                 return Err(self.incomplete_error(&h, "modify a property"));
@@ -85,8 +86,25 @@ impl Vm {
                 }
                 match self.magic(&h, cls, b"__get", &pname) {
                     Some(getter) => {
+                        let write = self.pending_magic_fetch == builtins::MagicFetch::Write
+                            && !getter.proto.is_internal();
                         let arg = Value::str(pname.as_bytes().to_vec());
-                        self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?
+                        let r = self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?;
+                        if write && !matches!(r, Value::Ref(_) | Value::Object(_)) {
+                            let msg = format!(
+                                "Indirect modification of overloaded property {}::${} has no effect",
+                                String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                                String::from_utf8_lossy(pname.as_bytes())
+                            );
+                            self.diag(builtins::E_NOTICE, &msg)?;
+                        }
+                        match absent_slot {
+                            Some(k) if self.class(cls).props.get(&k).is_some_and(|pe| pe.ty.is_some()) => {
+                                let strict = getter.proto.strict_types;
+                                self.verify_magic_get(cls, &k, r, strict)?
+                            }
+                            _ => r,
+                        }
                     }
                     None if denied.is_none() && self.lazy_slot(&h, absent_slot.as_ref()) => {
                         let inst = self.lazy_init(&h)?;
@@ -422,6 +440,8 @@ impl Vm {
             if let Some(pe) = self.hooked_entry(cls, k) {
                 return Err(self.hooked_unset_err(cls, pe));
             }
+        } else if matches!(res, PropRes::Dynamic) {
+            self.static_as_instance_notice(cls, scope, &pname, b"__unset")?;
         }
         let key = match &res {
             PropRes::Slot(k) => Some(k.clone()),
@@ -505,6 +525,34 @@ impl Vm {
             ));
         }
         Ok(())
+    }
+
+    /// zend_get_property_offset meeting a static property reached as
+    /// `$o->name`: "Accessing static property C::$p as non static" (then a
+    /// dynamic property is used), unless the class has the magic accessor
+    /// `magic` (php's `silent`).
+    pub(crate) fn static_as_instance_notice(
+        &mut self,
+        cls: ClassId,
+        scope: Option<ClassId>,
+        pname: &PhpStr,
+        magic: &'static [u8],
+    ) -> Result<(), Thrown> {
+        if self.classes[cls as usize].static_props.is_empty()
+            || !matches!(
+                classes::static_as_instance(&self.classes, cls, scope, pname),
+                Some(None)
+            )
+            || self.lookup_method(cls, magic).is_some()
+        {
+            return Ok(());
+        }
+        let msg = format!(
+            "Accessing static property {}::${} as non static",
+            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+            String::from_utf8_lossy(pname.as_bytes())
+        );
+        self.diag(builtins::E_NOTICE, &msg)
     }
 
     /// Is the declared slot `key` of `h` an uninitialized typed property
@@ -671,6 +719,9 @@ impl Vm {
                 _ => val,
             };
             let is_dyn = matches!(res, PropRes::Dynamic);
+            if is_dyn {
+                self.static_as_instance_notice(cls, scope, &pname, b"__set")?;
+            }
             let (key, denied) = match res {
                 PropRes::Slot(k) => (k, None),
                 PropRes::Dynamic => (pname.clone(), None),
@@ -764,7 +815,14 @@ impl Vm {
             } else {
                 let present = h.borrow().properties.contains_key(&key);
                 self.check_readonly_write(&h, &key, present, scope)?;
-                self.verify_prop_type(cls, &key, val, strict)?
+                if self.class(cls).props.get(&key).is_some_and(|pe| pe.ty.is_some()) {
+                    let v = self.verify_prop_type(cls, &key, val, strict)?;
+                    // The assignment's value is the coerced one.
+                    self.typed_write_result = Some(v.clone());
+                    v
+                } else {
+                    val
+                }
             };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
@@ -999,6 +1057,89 @@ impl Vm {
                 self.prop_type_string(&ty, decl, Some(cls))
             ))),
         }
+    }
+
+    /// zend_verify_prop_assignable_by_ref_ex in the MAGIC_GET context: what
+    /// `__get` returned for the unset typed slot `key`, coerced to its type.
+    fn verify_magic_get(
+        &mut self,
+        cls: ClassId,
+        key: &PhpStr,
+        r: Value,
+        strict: bool,
+    ) -> Result<Value, Thrown> {
+        let pe = &self.class(cls).props[key];
+        let ty = pe.ty.clone().expect("typed");
+        let decl = pe.declaring_class;
+        let name = pe.name.clone();
+        let (cell, val) = match &r {
+            Value::Ref(rc) => (Some(rc.clone()), rc.borrow().clone()),
+            v => (None, v.clone()),
+        };
+        let val = self.coerce_stringable(val, &ty, strict, Some(decl))?;
+        let val = match self.check_one(&val, &ty, strict, Some(decl)) {
+            Ok(None) => val,
+            Ok(Some(c)) => {
+                self.coercion_diag(&val, &c)?;
+                c
+            }
+            Err(()) => {
+                let dn = String::from_utf8_lossy(self.class(decl).name.as_bytes()).into_owned();
+                return Err(Thrown::type_error(format!(
+                    "Value of type {} returned from {dn}::__get() must be compatible with unset property {dn}::${} of type {}",
+                    rhp_builtins::zval_type_name(self, &val),
+                    String::from_utf8_lossy(name.as_bytes()),
+                    self.prop_type_string(&ty, decl, Some(cls))
+                )));
+            }
+        };
+        Ok(match cell {
+            Some(rc) => {
+                *rc.borrow_mut() = val;
+                Value::Ref(rc)
+            }
+            None => val,
+        })
+    }
+
+    /// `++`/`--` turned the int in a plain typed property leaf into a
+    /// float: unless the type takes floats, php's zend_throw_incdec_prop_error.
+    pub(crate) fn incdec_typed_overflow(
+        &mut self,
+        top: usize,
+        steps: &[crate::lvalue::CursorStep],
+        delta: i8,
+    ) -> Result<(), Thrown> {
+        if !matches!(
+            self.cursor_magic_split(top, steps),
+            crate::lvalue::MagicSplit::Plain
+        ) {
+            return Ok(());
+        }
+        let Some((cls, key)) = self.cursor_leaf_typed(top, steps) else {
+            return Ok(());
+        };
+        let pe = &self.class(cls).props[&key];
+        let ty = pe.ty.clone().expect("typed leaf");
+        if ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, rhp_bytecode::TypeKind::Float | rhp_bytecode::TypeKind::Mixed))
+        {
+            return Ok(());
+        }
+        let decl = pe.declaring_class;
+        let (what, end) = if delta > 0 {
+            ("increment", "maximal")
+        } else {
+            ("decrement", "minimal")
+        };
+        Err(Thrown::type_error(format!(
+            "Cannot {what} property {}::${} of type {} past its {end} value",
+            String::from_utf8_lossy(self.class(decl).name.as_bytes()),
+            String::from_utf8_lossy(pe.name.as_bytes()),
+            self.prop_type_string(&ty, decl, Some(cls))
+        )))
     }
 
     /// The readonly checks of a write to the declared slot `key` (`present`:

@@ -356,6 +356,28 @@ fn find(base: &'static str, name: &[u8]) -> Option<&'static Prop> {
         .find(|p| p.name.as_bytes() == name)
 }
 
+/// Whether DOM class `class` (or a subclass) declares property `name`
+/// (php_dom.stub.php declares them, so property_exists() sees them).
+pub(crate) fn has_declared_property(host: &dyn crate::Host, class: u32, name: &[u8]) -> bool {
+    let mut id = class;
+    for _ in 0..64 {
+        let Some(cname) = host.class_name(id) else {
+            return false;
+        };
+        if let Some(c) = DOM_CLASSES
+            .iter()
+            .find(|c| c.as_bytes().eq_ignore_ascii_case(&cname))
+        {
+            return find(c, name).is_some();
+        }
+        match host.class_parent_name(id).and_then(|p| host.resolve_class(&p)) {
+            Some(p) => id = p,
+            None => return false,
+        }
+    }
+    false
+}
+
 /// The object's state, or an empty one (php's `dom_object` of an object
 /// whose constructor never ran).
 fn state_of(v: &Value) -> Rc<DomObject> {

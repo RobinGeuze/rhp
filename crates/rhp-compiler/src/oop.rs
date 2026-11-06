@@ -492,7 +492,12 @@ impl ProtoBuilder<'_> {
     }
 
     fn fetch_prop(&mut self, obj: Reg, sel: &ClassLikeMemberSelector) -> Result<Reg, Thrown> {
-        let sel = self.compile_prop_selector(sel)?;
+        // A constant expression converts the name when it is evaluated.
+        let sel = if self.in_const_expr() {
+            self.compile_selector(sel)?
+        } else {
+            self.compile_prop_selector(sel)?
+        };
         if self.in_const_expr() {
             let name = match sel {
                 Sel::Dyn(r) => r,

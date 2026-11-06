@@ -33,3 +33,12 @@ echo (new \ReflectionFunction((new \ReflectionMethod(V::class, 'm'))->getAttribu
 // Default values print with smart_str_append_escaped (quotes unescaped).
 function d($a = "it's\\ \n\x7f\x01", $b = ["k'\t" => 1.5, 2 => null]) {}
 foreach ((new \ReflectionFunction('Foo\Bar\d'))->getParameters() as $p) echo $p, "\n";
+
+// Heredocs and nowdocs without interpolation are folded strings, nested too.
+#[A(<<<EOT
+  it's
+  EOT, ["a'b", <<<'N'
+q'
+N], "x'" . FOO)]
+function n() {}
+foreach ((new \ReflectionFunction('Foo\Bar\n'))->getAttributes() as $a) echo $a;

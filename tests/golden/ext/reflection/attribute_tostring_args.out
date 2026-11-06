@@ -54,3 +54,10 @@ Attribute [ Foo\Bar\A ] {
 {closure:Foo\Bar\V::m():29}
 Parameter #0 [ <optional> $a = 'it's\\ \n\x7F\x01' ]
 Parameter #1 [ <optional> $b = ['k'\t' => 1.5, 2 => NULL] ]
+Attribute [ Foo\Bar\A ] {
+  - Arguments [3] {
+    Argument #0 [ 'it's' ]
+    Argument #1 [ ['a'b', 'q''] ]
+    Argument #2 [ 'x\'' . Foo\Bar\FOO ]
+  }
+}

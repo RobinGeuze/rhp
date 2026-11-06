@@ -1732,16 +1732,22 @@ impl Vm {
             self.indirect_overloaded_notice(h)?;
             return Ok(Rc::new(RefCell::new(Value::Null)));
         };
+        // (zend_handle_undef_args: only a RECV_INIT takes its default; a
+        // variadic one fails too, without a name.)
         let got = match m.proto.params.first() {
-            Some(p) if p.default.is_none() && !p.variadic => {
-                let pname = m.proto.names[p.name as usize].clone();
+            Some(p) if p.default.is_none() => {
+                let pname = if p.variadic {
+                    String::new()
+                } else {
+                    let n = &m.proto.names[p.name as usize];
+                    format!(" (${})", String::from_utf8_lossy(n.as_bytes()))
+                };
                 Err(Thrown::error(
                     "ArgumentCountError",
                     format!(
-                        "{}::{}(): Argument #1 (${}) not passed",
+                        "{}::{}(): Argument #1{pname} not passed",
                         self.class_name_lossy(m.defining_class),
                         String::from_utf8_lossy(m.proto.name.as_bytes()),
-                        String::from_utf8_lossy(pname.as_bytes())
                     ),
                 ))
             }

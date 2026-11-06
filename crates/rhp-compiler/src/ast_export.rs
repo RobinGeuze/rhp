@@ -36,6 +36,22 @@ pub(crate) fn const_expr(src: &[u8], e: &Expression, ce: &dyn ConstExprNames) ->
     x.out
 }
 
+/// A heredoc, nowdoc or double-quoted string without interpolation: its
+/// value (the parser makes it a plain string zval).
+pub(crate) fn plain_string(e: &Expression) -> Option<Vec<u8>> {
+    match unparen(e) {
+        Expression::CompositeString(cs) if !matches!(cs, CompositeString::ShellExecute(_)) => {
+            let x = Ex {
+                out: Vec::new(),
+                src: b"",
+                ce: None,
+            };
+            x.plain_composite(cs)
+        }
+        _ => None,
+    }
+}
+
 /// What a compiled constant expression's export needs from the compiler.
 pub(crate) trait ConstExprNames {
     /// The value zend_eval_const_expr folds `e` to, if any.

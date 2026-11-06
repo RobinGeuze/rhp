@@ -197,8 +197,6 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
-    // Removed from php long ago, still set by ext/iconv tests: php 8.5 and
-    // rhp both ignore them.
     "allow_url_include",
     "arg_separator.input",
     "assert.active",
@@ -230,6 +228,9 @@ const RHP_INI: &[&str] = &[
     "highlight.keyword",
     "highlight.string",
     "html_errors",
+    // iconv.http_input, http_output and internal_charset were removed from
+    // php long ago but ext/iconv tests still set them: php 8.5 and rhp both
+    // ignore them.
     "iconv.http_input",
     "iconv.http_output",
     "iconv.input_encoding",

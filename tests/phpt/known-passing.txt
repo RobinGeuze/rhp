@@ -209,8 +209,11 @@ Zend/tests/attributes/constants/oss_fuzz_428053935.phpt
 Zend/tests/attributes/constants/repeatable-userland.phpt
 Zend/tests/attributes/constants/target_all_targets_const-default.phpt
 Zend/tests/attributes/constants/target_all_targets_const-explicit.phpt
+Zend/tests/attributes/delayed_target_validation/has_runtime_errors.phpt
 Zend/tests/attributes/delayed_target_validation/no_compile_errors.phpt
+Zend/tests/attributes/delayed_target_validation/opcache_validator_errors.phpt
 Zend/tests/attributes/delayed_target_validation/repetition_errors.phpt
+Zend/tests/attributes/delayed_target_validation/validator_NoDiscard.phpt
 Zend/tests/attributes/delayed_target_validation/validator_success.phpt
 Zend/tests/attributes/delayed_target_validation/with_AllowDynamicProperties.phpt
 Zend/tests/attributes/delayed_target_validation/with_Attribute.phpt
@@ -267,6 +270,7 @@ Zend/tests/attributes/deprecated/traits/trait_using_trait.phpt
 Zend/tests/attributes/deprecated/type_validation_001.phpt
 Zend/tests/attributes/deprecated/type_validation_002.phpt
 Zend/tests/attributes/deprecated/type_validation_003.phpt
+Zend/tests/attributes/deprecated/type_validation_004.phpt
 Zend/tests/attributes/gh8421.phpt
 Zend/tests/attributes/nodiscard/001.phpt
 Zend/tests/attributes/nodiscard/002.phpt
@@ -282,6 +286,7 @@ Zend/tests/attributes/nodiscard/throwing_error_handler_001.phpt
 Zend/tests/attributes/nodiscard/type_validation_001.phpt
 Zend/tests/attributes/nodiscard/type_validation_002.phpt
 Zend/tests/attributes/nodiscard/type_validation_003.phpt
+Zend/tests/attributes/nodiscard/type_validation_004.phpt
 Zend/tests/attributes/nodiscard/unsupported_clone.phpt
 Zend/tests/attributes/nodiscard/unsupported_constructor.phpt
 Zend/tests/attributes/nodiscard/unsupported_never_function.phpt
@@ -363,6 +368,7 @@ Zend/tests/backtrace/debug_backtrace_options.phpt
 Zend/tests/backtrace/debug_print_backtrace_from_main.phpt
 Zend/tests/backtrace/debug_print_backtrace_limit.phpt
 Zend/tests/backtrace/fatal_error_backtraces_001.phpt
+Zend/tests/backtrace/fatal_error_backtraces_002.phpt
 Zend/tests/backtrace/fatal_error_backtraces_003.phpt
 Zend/tests/binary.phpt
 Zend/tests/bitwise_not_precision_exception.phpt

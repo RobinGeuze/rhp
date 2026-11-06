@@ -19,7 +19,6 @@ pub(crate) enum CursorStep {
     PropDyn(Reg),
 }
 
-/// Where an lvalue cursor roots.
 /// How a cursor's root variable is fetched.
 #[derive(Clone, Copy)]
 pub(crate) enum LvalMode {
@@ -28,6 +27,7 @@ pub(crate) enum LvalMode {
     Unset,
 }
 
+/// Where an lvalue cursor roots.
 pub(crate) enum LvalRoot {
     /// A register: a CV, or a temporary holding a call result.
     Cv(Reg),

@@ -113,6 +113,20 @@ pub(crate) fn compile_method(
             }
             None => ([None, None], false),
         };
+        // php compiles the list again for the property: internal attributes
+        // that only fit a property (#[\Override]) are kept here.
+        *cx.cur_property.borrow_mut() = Some(var.to_vec());
+        let attributes = compile_attributes(
+            cx,
+            &p.attribute_lists,
+            Some(class_name),
+            &AttrTarget {
+                promoted: crate::attrs::TARGET_PARAMETER,
+                ..AttrTarget::new(crate::attrs::TARGET_PROPERTY, p.variable.span.start.offset)
+            },
+        );
+        *cx.cur_property.borrow_mut() = None;
+        let attributes = attributes?;
         promoted.push(PropProto {
             name: PhpStr::from_bytes(var.to_vec()),
             visibility: vis,
@@ -121,7 +135,7 @@ pub(crate) fn compile_method(
             default: PropDefaultProto::None,
             type_hint: info.type_hint.clone(),
             meta: rhp_bytecode::DeclMeta {
-                attributes: info.attributes.clone(),
+                attributes,
                 doc_comment: cx.doc_comment_before(p.variable.span.start.offset),
                 start_line: cx.line_of(pstart),
                 offset: pstart,

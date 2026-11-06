@@ -736,7 +736,8 @@ impl Vm {
         unset: bool,
     ) -> Result<Through, Thrown> {
         self.cursor_leaf = None;
-        if steps.is_empty() {
+        // Only properties along the path are checked.
+        if !steps.iter().any(|s| matches!(s, CursorStep::Prop(_))) {
             return Ok(Through::Plain);
         }
         let scope = self.stack[top].defining_class;
@@ -823,6 +824,9 @@ impl Vm {
         steps: &[CursorStep],
         make_ref: bool,
     ) -> Result<(), Thrown> {
+        if !steps.iter().any(|s| matches!(s, CursorStep::Prop(_))) {
+            return Ok(());
+        }
         let scope = self.stack[top].defining_class;
         let mut cur = self.cursor_root_value(top);
         for (i, step) in steps.iter().enumerate() {

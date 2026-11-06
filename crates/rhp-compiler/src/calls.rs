@@ -683,10 +683,12 @@ impl ProtoBuilder<'_> {
         };
         let ns_name = self.intern_fallback(&ns_name);
         let dst = self.alloc_temp();
+        let const_expr = self.in_const_expr();
         self.emit(Instr::MakeFcc {
             dst,
             callee,
             ns_name,
+            const_expr,
         });
         Ok(dst)
     }

@@ -551,10 +551,12 @@ impl Vm {
         // execution point, when it differs, as a `[constant expression]`
         // frame.
         if let Some((ofile, oline)) = self.const_expr_site() {
-            if let Some(i) = (0..self.stack.len())
+            // (None when an internal function evaluates it.)
+            let user = (0..self.stack.len())
                 .rev()
-                .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
-            {
+                .find(|&i| !self.is_const_expr_frame(i))
+                .filter(|&i| !self.is_internal_frame(i));
+            if let Some(i) = user {
                 let (file, line) = (self.current_file(i), self.current_line(i));
                 if file != ofile || line != oline {
                     let mut e = PhpArray::new();

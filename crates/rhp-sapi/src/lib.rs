@@ -265,6 +265,21 @@ fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, Include
     let arena = Arena::new();
     let short_tags = rhp_builtins::short_open_tag();
     let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
+    // Code php's grammar accepts but mago does not, that php then refuses
+    // to compile.
+    if parsed.has_parse_errors() && rhp_builtins::zend::syntax_error_ex(src, short_tags).is_none() {
+        let diags: Vec<_> = rhp_builtins::zend::take_parse_warnings()
+            .into_iter()
+            .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
+            .collect();
+        if let Some((message, line)) = rhp_compiler::parse::mago_gap_error(src) {
+            return Err(IncludeError::Compile {
+                message,
+                line,
+                diags,
+            });
+        }
+    }
     let parse_diags = parse_failure(&parsed, src, short_tags)?;
     let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
     if parse_diags.is_empty() {

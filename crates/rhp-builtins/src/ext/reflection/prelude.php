@@ -188,7 +188,7 @@ class ReflectionAttribute implements Reflector {
         if (!$c['internal'] && !($flags & 128) && $this->__d[2]) {
             throw new Error('Attribute "' . $cls . '" must not be repeated');
         }
-        return new $cls(...$this->getArguments());
+        return new $cls(...__reflect('attr_args', $this->__d[3]));
     }
     public static function __targets($f) {
         $n = ['class', 'function', 'method', 'property', 'class constant', 'parameter', 'constant'];

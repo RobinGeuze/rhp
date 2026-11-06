@@ -494,6 +494,8 @@ pub enum Instr {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        /// In a constant expression (no `__callStatic` callables there).
+        const_expr: bool,
     },
     Ret {
         src: Reg,

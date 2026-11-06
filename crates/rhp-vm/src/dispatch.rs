@@ -1043,8 +1043,9 @@ impl Vm {
                     dst,
                     callee,
                     ns_name,
+                    const_expr,
                 } => {
-                    self.make_fcc(top, &proto, dst, callee, ns_name)?;
+                    self.make_fcc(top, &proto, dst, callee, ns_name, const_expr)?;
                 }
                 Instr::CallDyn {
                     dst,
@@ -3266,6 +3267,7 @@ impl Vm {
         dst: Reg,
         callee: Reg,
         ns_name: NIdx,
+        const_expr: bool,
     ) -> Result<(), Thrown> {
         // A callee built in a temporary (`[$o, 'm']`) is dead
         // after this: the closure owns it.
@@ -3283,9 +3285,49 @@ impl Vm {
             self.reg_set(top, dst, cl);
             return Ok(());
         }
+        // zend_closure_from_frame: a Closure is its own first-class callable.
+        if let Value::Closure(_) = &c {
+            self.reg_set(top, dst, c);
+            return Ok(());
+        }
         if let Value::Str(name) = &c {
             if let Some(n) = self.check_fcc_name(top, name, ns_name)? {
                 c = Value::Str(n);
+            }
+        }
+        // The INIT_*_CALL opcode before ZEND_CALLABLE_CONVERT resolves the
+        // callee: its errors are raised now.
+        match &c {
+            Value::Str(name) if !name.as_bytes().windows(2).any(|w| w == b"::") => {
+                let ns = (ns_name != rhp_bytecode::NO_NAME)
+                    .then(|| proto.names[ns_name as usize].clone());
+                let known = |vm: &Self, n: &[u8]| {
+                    let n = n.strip_prefix(b"\\").unwrap_or(n);
+                    vm.fn_names.contains_key(&n.to_ascii_lowercase())
+                        || crate::calls::user_visible_builtin(n)
+                };
+                // (Like php's per-site cache, a later namespaced function
+                // does not replace the global one found.)
+                match ns {
+                    _ if known(self, name.as_bytes()) => {}
+                    Some(ns) if known(self, ns.as_bytes()) => c = Value::Str(ns),
+                    ns => {
+                        return Err(crate::calls::undefined_function(
+                            ns.as_ref().unwrap_or(name),
+                        ))
+                    }
+                }
+            }
+            _ => {
+                let check = self.fcc_class_named(top, &c);
+                let callee = self.resolve_dynamic_call(check.as_ref().unwrap_or(&c))?;
+                // zend_ast_evaluate's ZEND_AST_CALLABLE_CONVERT.
+                if const_expr && matches!(callee, crate::calls::Callee::Magic(_, None, ..)) {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Creating a callable for the magic __callStatic() method is not supported in constant expressions",
+                    ));
+                }
             }
         }
         // ZEND_CALLABLE_CONVERT keeps the call's object.
@@ -3307,6 +3349,28 @@ impl Vm {
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
+    }
+
+    /// `[self|parent|static, m]` of a first-class callable with the class
+    /// it means in frame `top` (None for any other callable).
+    fn fcc_class_named(&self, top: usize, c: &Value) -> Option<Value> {
+        let Value::Array(a) = c else { return None };
+        let Some(Value::Str(cn)) = a.get(&rhp_values::ArrayKey::Int(0)) else {
+            return None;
+        };
+        let f = &self.stack[top];
+        let cls = match cn.as_bytes().to_ascii_lowercase().as_slice() {
+            b"self" => f.defining_class?,
+            b"static" => f.called_class.or(f.defining_class)?,
+            b"parent" => self.class(f.defining_class?).parent?,
+            _ => return None,
+        };
+        let mut a = a.clone();
+        a.insert(
+            rhp_values::ArrayKey::Int(0),
+            Value::Str(self.class(cls).name.clone()),
+        );
+        Some(Value::Array(a))
     }
 
     /// `CallDyn`: `$f(...)` with the arguments in a window.

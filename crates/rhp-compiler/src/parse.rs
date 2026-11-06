@@ -48,6 +48,65 @@ pub fn tokens(source: &[u8]) -> Vec<Token> {
     out
 }
 
+/// The compile error php raises for code its grammar accepts but
+/// mago-syntax rejects: a first-class callable of `new` ("Cannot create
+/// Closure for new expression") or of a nullsafe method call. Message and
+/// 1-based line.
+pub fn mago_gap_error(source: &[u8]) -> Option<(String, u32)> {
+    let toks: Vec<Token> = tokens(source)
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .collect();
+    let line = |t: &Token| source[..t.start].iter().filter(|&&c| c == b'\n').count() as u32 + 1;
+    for (i, w) in toks.windows(3).enumerate() {
+        if !matches!(
+            [w[0].kind, w[1].kind, w[2].kind],
+            [
+                TokenKind::LeftParenthesis,
+                TokenKind::DotDotDot,
+                TokenKind::RightParenthesis
+            ]
+        ) {
+            continue;
+        }
+        // The callee: a name (namespaced, `static`) or a variable.
+        let mut j = i;
+        while j > 0
+            && matches!(
+                toks[j - 1].kind,
+                TokenKind::Identifier
+                    | TokenKind::QualifiedIdentifier
+                    | TokenKind::FullyQualifiedIdentifier
+                    | TokenKind::Static
+                    | TokenKind::Self_
+                    | TokenKind::Parent
+                    | TokenKind::Variable
+            )
+        {
+            j -= 1;
+        }
+        if j == i || j == 0 {
+            continue;
+        }
+        match toks[j - 1].kind {
+            TokenKind::New => {
+                return Some((
+                    "Cannot create Closure for new expression".into(),
+                    line(&toks[j]),
+                ))
+            }
+            TokenKind::QuestionMinusGreaterThan => {
+                return Some((
+                    "Cannot combine nullsafe operator with Closure creation".into(),
+                    line(&toks[j - 1]),
+                ))
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Owns a parse arena. Create one per source file, parse into it, use the AST,
 /// then drop it. Cheap to create.
 pub struct Arena {

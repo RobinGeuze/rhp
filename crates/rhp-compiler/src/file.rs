@@ -24,7 +24,7 @@ pub(crate) struct FileCtx<'s> {
     pub(crate) file: PhpStr,
     /// The source (empty for the prelude), for what the AST drops: doc
     /// comments and the newline a `?>` swallows.
-    src: &'s [u8],
+    pub(crate) src: &'s [u8],
     /// The source's tokens, comments included, lexed on the first doc
     /// comment lookup.
     tokens: OnceCell<Vec<crate::parse::Token>>,

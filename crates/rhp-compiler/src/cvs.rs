@@ -201,11 +201,32 @@ impl ProtoBuilder<'_> {
                 let parts = match cs {
                     CompositeString::Interpolated(i) => Some(&i.parts),
                     CompositeString::Document(d) => Some(&d.parts),
-                    CompositeString::ShellExecute(_) => None,
+                    CompositeString::ShellExecute(s) => Some(&s.parts),
                 };
                 if let Some(parts) = parts {
                     for part in parts.iter() {
                         match part {
+                            StringPart::Expression(Expression::Variable(Variable::Indirect(
+                                iv,
+                            ))) => {
+                                let src = self.cx.src;
+                                match crate::strings::dollar_brace_varname(
+                                    src,
+                                    iv.dollar_left_brace.end.offset as usize,
+                                ) {
+                                    Some(name) => {
+                                        if name != b"this" && name != b"GLOBALS" {
+                                            self.cv(name);
+                                        }
+                                        if let Expression::ArrayAccess(aa) = iv.expression {
+                                            self.scan_expr_vars(aa.index);
+                                        }
+                                    }
+                                    None => self.scan_expr_vars(&Expression::Variable(
+                                        Variable::Indirect(iv.clone()),
+                                    )),
+                                }
+                            }
                             StringPart::Expression(e) => self.scan_expr_vars(e),
                             StringPart::BracedExpression(b) => self.scan_expr_vars(b.expression),
                             StringPart::Literal(_) => {}

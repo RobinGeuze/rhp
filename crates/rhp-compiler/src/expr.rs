@@ -736,19 +736,59 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
+    /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls
+    /// `shell_exec()` (resolved like an unqualified call) with the string.
+    fn compile_shell_exec(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
+        use mago_span::HasSpan;
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            cs.span().start.offset,
+            "The backtick (`) operator is deprecated, use shell_exec() instead".into(),
+        );
+        let cmd = self.compile_composite_parts(cs)?;
+        let ns = self.cx.ns().ns.clone();
+        let (name, fallback) = if ns.is_empty() {
+            (b"shell_exec".to_vec(), None)
+        } else {
+            (
+                crate::names::join_ns(&ns, b"shell_exec"),
+                Some(b"shell_exec".to_vec()),
+            )
+        };
+        let base = self.alloc_temps(1);
+        self.emit(Instr::MovTake {
+            dst: base,
+            src: cmd,
+        });
+        let name = self.intern_name(&name);
+        let fallback = self.intern_fallback(&fallback);
+        let dst = self.alloc_temp();
+        self.emit(Instr::Call {
+            dst,
+            name,
+            base,
+            argc: 1,
+            fallback,
+            flags: rhp_bytecode::CallFlags::default(),
+        });
+        Ok(dst)
+    }
+
     /// Interpolated (`"...$x..."`) and heredoc strings: concatenate the parts,
     /// stringifying each via `Concat` (which routes to `ops::concat` →
-    /// `conv::to_string_bytes`). Backticks (`ShellExecute`) are refused.
+    /// `conv::to_string_bytes`).
     fn compile_composite(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
+        if matches!(cs, CompositeString::ShellExecute(_)) {
+            return self.compile_shell_exec(cs);
+        }
+        self.compile_composite_parts(cs)
+    }
+
+    fn compile_composite_parts(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
         let parts = match cs {
             CompositeString::Interpolated(i) => &i.parts,
             CompositeString::Document(d) => &d.parts,
-            CompositeString::ShellExecute(_) => {
-                return Err(Thrown::unsupported(
-                    "backtick shell execution",
-                    "never spawns a shell; refused by design",
-                ))
-            }
+            CompositeString::ShellExecute(s) => &s.parts,
         };
         // Start from "" so every part is stringified uniformly.
         let dst = self.alloc_temp();
@@ -801,12 +841,62 @@ impl ProtoBuilder<'_> {
                     }
                     r
                 }
+                StringPart::Expression(Expression::Variable(Variable::Indirect(iv))) => {
+                    self.compile_dollar_brace(iv)?
+                }
                 StringPart::Expression(e) => self.compile_expr(e)?,
                 StringPart::BracedExpression(b) => self.compile_expr(b.expression)?,
             };
             self.emit(Instr::Concat { dst, a: dst, b: pr });
         }
         Ok(dst)
+    }
+
+    /// `"${name}"`, `"${name[expr]}"` (php 8.2: "Using ${var} in strings is
+    /// deprecated") and `"${expr}"` (a variable variable, deprecated too).
+    fn compile_dollar_brace(
+        &mut self,
+        iv: &crate::parse::cst::IndirectVariable,
+    ) -> Result<Reg, Thrown> {
+        let at = iv.dollar_left_brace.start.offset;
+        let src = self.cx.src;
+        let name =
+            crate::strings::dollar_brace_varname(src, iv.dollar_left_brace.end.offset as usize);
+        let Some(name) = name else {
+            self.cx.diag(
+                rhp_values::E_DEPRECATED,
+                at,
+                "Using ${expr} (variable variables) in strings is deprecated, use {${expr}} instead".into(),
+            );
+            return self.compile_variable(&Variable::Indirect(iv.clone()));
+        };
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            at,
+            "Using ${var} in strings is deprecated, use {$var} instead".into(),
+        );
+        let var = |this: &mut Self| -> Reg {
+            if name == b"this" || name == b"GLOBALS" {
+                let k = this.intern_const(Value::str(name.to_vec()));
+                let n = this.alloc_temp();
+                this.emit(Instr::LoadConst { dst: n, k });
+                let dst = this.alloc_temp();
+                this.emit(Instr::FetchVarVar { dst, name: n });
+                dst
+            } else {
+                this.cv(name)
+            }
+        };
+        match iv.expression {
+            Expression::ArrayAccess(aa) => {
+                let arr = var(self);
+                let key = self.compile_expr(aa.index)?;
+                let dst = self.alloc_temp();
+                self.emit(Instr::DimFetch { dst, arr, key });
+                Ok(dst)
+            }
+            _ => Ok(var(self)),
+        }
     }
 
     fn compile_constant(&mut self, id: &Identifier) -> Result<Reg, Thrown> {

@@ -1841,7 +1841,9 @@ impl Vm {
                             v => {
                                 let s = conv::to_string_bytes(&v);
                                 if !s.is_empty() {
-                                    self.output_write(&s);
+                                    // An output handler that throws makes
+                                    // exit() throw instead (catchable).
+                                    self.echo_out(&s)?;
                                 }
                                 0
                             }

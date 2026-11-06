@@ -601,10 +601,19 @@ impl ProtoBuilder<'_> {
         let callee = match pa {
             Pa::Function(f) => match f.function {
                 // Named function: the callable is its (resolved) name string.
+                // `die` is the exit keyword (T_EXIT): `die(...)` is exit's.
+                Expression::Identifier(Identifier::Local(l))
+                    if l.value.eq_ignore_ascii_case(b"die") =>
+                {
+                    self.load_string_const(b"exit")
+                }
                 Expression::Identifier(id) => {
                     let (n, ns) = self.resolve_callable_name(id);
                     ns_name = ns;
                     self.load_string_const(&n)
+                }
+                Expression::ConstantAccess(ca) if matches!(&ca.name, Identifier::Local(l) if l.value.eq_ignore_ascii_case(b"die")) => {
+                    self.load_string_const(b"exit")
                 }
                 Expression::ConstantAccess(ca) => {
                     let (n, ns) = self.resolve_callable_name(&ca.name);

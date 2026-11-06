@@ -277,6 +277,15 @@ impl Vm {
     /// old cell).
     pub(crate) fn unset_cv(&mut self, top: usize, cv: Reg) {
         let f = &self.stack[top];
+        if !f.proto.superglobals.is_empty() {
+            // A superglobal is a global fetch: unset() drops the global.
+            let sg = f.proto.superglobals.iter().find(|(r, _)| *r == cv);
+            if let Some((_, name)) = sg.filter(|(_, n)| n.as_bytes() != b"GLOBALS") {
+                let name = name.as_bytes().to_vec();
+                self.unset_superglobal(&name);
+                return;
+            }
+        }
         if f.global_scope
             && (cv as usize) < f.proto.cv_var_names.len()
             && matches!(f.regs[cv as usize], Value::Ref(_))

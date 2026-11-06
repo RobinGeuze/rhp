@@ -311,6 +311,12 @@ impl Vm {
                     names.extend(self.classes[tid].methods.keys().cloned());
                 }
             }
+            // Trait aliases (`m as __get`) add methods too.
+            for al in proto.trait_rules.iter().flat_map(|r| r.aliases.iter()) {
+                if let Some(a) = &al.alias {
+                    names.push(lc(a.as_bytes()));
+                }
+            }
             for m in ENUM_FORBIDDEN_METHODS {
                 if names.contains(&lc(m.as_bytes())) {
                     let msg = format!("Enum {name} cannot include magic method {m}");

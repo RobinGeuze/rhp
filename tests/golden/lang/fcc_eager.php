@@ -32,3 +32,12 @@ $c = function () { return 1; };
 var_dump($c(...) === $c);
 $f = strlen(...);
 var_dump($f(...) === $f);
+// static-call syntax on $this's class: an instance method of $this
+class P2 { function m() { return "P2::m " . get_class($this); } private function pv() { return "pv"; } function getpv() { return self::pv(...); } }
+class C2 extends P2 {
+    function m() { return "C2"; }
+    function t() { return [parent::m(...), self::m(...), P2::m(...), static::m(...), $this->getpv()]; }
+}
+foreach ((new C2)->t() as $f) { var_dump($f()); }
+class Q { function f() { return P2::m(...); } }
+try { (new Q)->f(); } catch (\Error $e) { echo $e->getMessage(), "\n"; }

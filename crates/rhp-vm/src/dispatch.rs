@@ -2041,6 +2041,16 @@ impl Vm {
                 }
                 Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
                 Instr::NewObj { dst, class } => {
+                    // The temporaries from `dst` up are dead: what they held
+                    // is released first, as the arguments' window would
+                    // (php has freed it by now), so the new object can
+                    // take a freed id.
+                    let n = proto.num_registers as usize;
+                    for r in dst as usize..n {
+                        if matches!(self.stack[top].regs[r], Value::Object(_) | Value::Array(_)) {
+                            self.reg_set(top, r as Reg, Value::Null);
+                        }
+                    }
                     let obj = self.new_alloc(top, class)?;
                     self.reg_set(top, dst, Value::Object(obj));
                 }
@@ -3325,8 +3335,10 @@ impl Vm {
                 }
             }
             _ => {
-                let check = self.fcc_class_named(top, &c);
-                let callee = self.resolve_dynamic_call(check.as_ref().unwrap_or(&c))?;
+                let named = self.fcc_class_named(top, &c);
+                let named = named.as_ref().unwrap_or(&c);
+                let on_this = self.fcc_on_this(top, named);
+                let callee = self.resolve_dynamic_call(on_this.as_ref().unwrap_or(named))?;
                 // zend_ast_evaluate's ZEND_AST_CALLABLE_CONVERT.
                 if const_expr && matches!(callee, crate::calls::Callee::Magic(_, None, ..)) {
                     return Err(Thrown::error(
@@ -3376,6 +3388,24 @@ impl Vm {
             rhp_values::ArrayKey::Int(0),
             Value::Str(self.class(cls).name.clone()),
         );
+        Some(Value::Array(a))
+    }
+
+    /// ZEND_INIT_STATIC_METHOD_CALL calls a non-static method on `$this`
+    /// when it is an instance of the class: `[C, m]` checked as
+    /// `[$this, m]` then.
+    fn fcc_on_this(&self, top: usize, c: &Value) -> Option<Value> {
+        let Value::Array(a) = c else { return None };
+        let Some(Value::Str(cn)) = a.get(&rhp_values::ArrayKey::Int(0)) else {
+            return None;
+        };
+        let this = self.current_this(top)?;
+        let cls = self.resolve_class_by_name(cn.as_bytes()).ok()?;
+        if !self.instance_of(this.borrow().class, cls) {
+            return None;
+        }
+        let mut a = a.clone();
+        a.insert(rhp_values::ArrayKey::Int(0), Value::Object(this));
         Some(Value::Array(a))
     }
 

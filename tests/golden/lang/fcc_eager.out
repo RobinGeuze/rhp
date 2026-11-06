@@ -14,3 +14,9 @@ int(3)
 int(3)
 bool(true)
 bool(true)
+string(10) "P2::m N\C2"
+string(2) "C2"
+string(10) "P2::m N\C2"
+string(2) "C2"
+string(2) "pv"
+Non-static method N\P2::m() cannot be called statically

@@ -20,3 +20,4 @@ try { $x = new Dt(x: boom()); } catch (Exception $e) { echo $e->getMessage(), "\
 $ok = new Dt(new D);
 unset($ok);
 echo "end\n";
+var_dump(new class(new D) { public function __construct(public $d) {} });

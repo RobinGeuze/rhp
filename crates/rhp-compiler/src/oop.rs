@@ -223,6 +223,19 @@ impl ProtoBuilder<'_> {
         let proto = compile_anon_class(self.cx, ac)?;
         let class = ClassRef::Name(self.intern_name(proto.name.as_bytes()));
         self.cx.anon_classes.borrow_mut().push(proto);
+        // With arguments, the object exists before they run (ZEND_NEW).
+        let early = ac.argument_list.as_ref().is_some_and(|l| {
+            !l.arguments.is_empty()
+                && l.arguments
+                    .iter()
+                    .all(|a| matches!(a, PartialArgument::Positional(p) if p.ellipsis.is_none()))
+        });
+        let obj = early.then(|| {
+            let dst = self.alloc_temp();
+            let start = self.code.len() as rhp_bytecode::Pc;
+            self.emit(Instr::NewObj { dst, class });
+            (dst, start)
+        });
         let mut regs = Vec::new();
         if let Some(list) = &ac.argument_list {
             for arg in list.arguments.iter() {
@@ -252,6 +265,12 @@ impl ProtoBuilder<'_> {
                 dst: base + i as Reg,
                 src: r,
             });
+        }
+        if let Some((dst, start)) = obj {
+            self.new_ranges
+                .push((start, self.code.len() as rhp_bytecode::Pc, dst));
+            self.emit(Instr::NewCall { dst, base, argc });
+            return Ok(dst);
         }
         let dst = self.alloc_temp();
         self.emit(Instr::New {

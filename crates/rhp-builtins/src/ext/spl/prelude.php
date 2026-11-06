@@ -42,7 +42,6 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
         self::__checkData($data);
         $this->__f = $data[0];
         if (is_object($data[1])) { __spl_deprecated('ArrayIterator::__unserialize(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); }
-        if (is_object($data[1])) { __spl_deprecated('ArrayObject::__unserialize(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); }
         $this->__s = is_object($data[1]) ? get_object_vars($data[1]) : $data[1];
         $this->__loadMembers($data[2]);
     }
@@ -94,6 +93,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function __unserialize(array $data): void {
         self::__checkData($data);
         $this->__f = $data[0];
+        if (is_object($data[1])) { __spl_deprecated('ArrayObject::__unserialize(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants'); }
         $this->__s = is_object($data[1]) ? get_object_vars($data[1]) : $data[1];
         $this->__loadMembers($data[2]);
         if (isset($data[3])) {

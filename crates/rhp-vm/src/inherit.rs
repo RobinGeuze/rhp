@@ -1605,8 +1605,9 @@ impl Vm {
     /// interfaces the parent does not already implement.
     fn link_pass(&mut self, ce: ClassId, obligations: &mut Vec<Obligation>) -> Result<(), Thrown> {
         let parent = self.class(ce).parent;
-        if parent.is_some() {
+        if let Some(pid) = parent {
             for (c, p) in self.redeclared_props(ce) {
+                self.check_hooks(ce, pid, &c.name, obligations)?;
                 self.check_prop(ce, c, p, false, obligations)?;
             }
         }
@@ -1670,6 +1671,17 @@ impl Vm {
             .copied()
             .filter(|i| !inherited.contains(i))
             .collect();
+        for iface in ifaces.iter().copied() {
+            let names: Vec<PhpStr> = self
+                .class(iface)
+                .props
+                .values()
+                .map(|p| p.name.clone())
+                .collect();
+            for n in names {
+                self.check_hooks(ce, iface, &n, obligations)?;
+            }
+        }
         for iface in ifaces {
             let ims: Vec<(Vec<u8>, ResolvedMethod)> = self
                 .class(iface)
@@ -1713,6 +1725,55 @@ impl Vm {
                     self.set_prototype(ce, &k, np, child.is_ctor);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// inherit_property_hook's signature check: each hook `ce` declares
+    /// for property `name` against the same hook of `from` (the parent or
+    /// an interface).
+    fn check_hooks(
+        &mut self,
+        ce: ClassId,
+        from: ClassId,
+        name: &PhpStr,
+        obligations: &mut Vec<Obligation>,
+    ) -> Result<(), Thrown> {
+        let prop = |vm: &Vm, c: ClassId| {
+            let e = vm.class(c);
+            e.prop_visible
+                .get(name)
+                .and_then(|k| e.props.get(k))
+                .and_then(|p| p.hooks.clone().map(|h| (p.visibility, h)))
+        };
+        let (Some((_, ch)), Some((pvis, ph))) = (prop(self, ce), prop(self, from)) else {
+            return Ok(());
+        };
+        if pvis == Visibility::Private {
+            return Ok(());
+        }
+        for kind in 0..2 {
+            let (Some(c), Some(p)) = (&ch[kind], &ph[kind]) else {
+                continue;
+            };
+            if c.defining_class != ce
+                || p.visibility == Visibility::Private
+                || p.is_final
+                || Rc::ptr_eq(&c.proto, &p.proto)
+            {
+                continue;
+            }
+            let (Some(csig), Some(psig)) = (self.method_sig(c), self.method_sig(p)) else {
+                continue;
+            };
+            self.check_method(
+                &csig,
+                ce,
+                &psig,
+                p.defining_class,
+                CHECK_PROTO | CHECK_VISIBILITY,
+                obligations,
+            )?;
         }
         Ok(())
     }

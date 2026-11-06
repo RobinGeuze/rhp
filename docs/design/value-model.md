@@ -274,7 +274,9 @@ element. IndexMap compacts on removal instead, so `PhpArray::remove` (and
 `ArrayData::remove_index`) move `pos` and every registered iterator back
 by one when the removed entry was before them. A removed current element
 leaves the pointer on the next one, and the past-the-end position
-(`entries.len()`) picks up a later append, as php's `nNumUsed` does.
+(`entries.len()`) picks up a later append, as php's `nNumUsed` does. A
+copy-on-write separation restarts a past-the-end pointer at 0, as
+`zend_array_dup` does.
 `array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
 is copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked

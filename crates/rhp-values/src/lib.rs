@@ -687,7 +687,12 @@ impl Clone for ArrayData {
         ArrayData {
             entries,
             next_free: self.next_free,
-            pos: self.pos,
+            // zend_array_dup: a pointer past the end restarts at 0.
+            pos: if self.pos < self.entries.len() {
+                self.pos
+            } else {
+                0
+            },
             iters: self.iters.clone(),
         }
     }
@@ -838,6 +843,12 @@ impl PhpArray {
     /// php's nNextFreeElement (see [`ArrayData::next_free`]).
     pub fn next_free(&self) -> i64 {
         self.0.next_free
+    }
+
+    /// The internal pointer (see [`ArrayData::pos`]), read without
+    /// separating.
+    pub fn pos(&self) -> usize {
+        self.0.pos
     }
 
     /// How many values share this storage (debug_zval_dump's refcount).

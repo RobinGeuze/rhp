@@ -18,6 +18,13 @@ $a[] = 6;
 var_dump(current($a));
 next($a); next($a); next($a);
 var_dump(key($a));
+// A copy-on-write separation restarts a pointer past the end at 0
+// (zend_array_dup).
+$e = [1, 2];
+end($e); next($e);
+$copy = $e;
+$e[] = 3;
+var_dump(key($e));
 
 // The next free key.
 $b = [-3 => 'x'];
@@ -79,3 +86,13 @@ $u = [10, '9', 'abc', 1.5, true, null];
 rsort($u);
 var_dump($u);
 var_dump(array_unique([3, '3', 1, '01', 'a', 'A'], SORT_REGULAR));
+// A sort with nothing to sort leaves the table alone.
+$z = [5];
+unset($z[0]);
+sort($z);
+$z[] = 1;
+var_dump(array_keys($z));
+$z = [4 => 'x'];
+end($z); next($z);
+uasort($z, fn($p, $q) => 0);
+var_dump(key($z));

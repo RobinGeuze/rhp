@@ -2549,7 +2549,15 @@ fn sort_by_ref(
         }
         _ => return false,
     };
-    if dup && arr.is_empty() {
+    // zend_hash_sort leaves a table that needs no sorting alone (keys,
+    // pointer and next free key); php_usort still swaps in its copy.
+    if arr.is_empty() || (arr.len() == 1 && !renumber) {
+        if dup && !arr.is_empty() {
+            let mut copy = arr.clone();
+            copy.make_mut();
+            drop(arr);
+            *rc.borrow_mut() = Value::Array(copy);
+        }
         return true;
     }
     let next_free = arr.next_free();
@@ -2971,6 +2979,19 @@ fn with_array_data<R>(arg: &Value, f: impl FnOnce(&mut rhp_values::ArrayData) ->
     }
 }
 
+/// Read the array in `arg` without separating it (current/key take it by
+/// value).
+fn with_array_read<R>(arg: &Value, f: impl FnOnce(&PhpArray) -> R) -> Option<R> {
+    match arg {
+        Value::Ref(rc) => match &*rc.borrow() {
+            Value::Array(a) => Some(f(a)),
+            _ => None,
+        },
+        Value::Array(a) => Some(f(a)),
+        _ => None,
+    }
+}
+
 /// Z_PARAM_ARRAY_OR_OBJECT of the internal-pointer functions: an array
 /// (`None`), or an object (deprecated) whose property table they walk;
 /// anything else is a TypeError.
@@ -3159,16 +3180,20 @@ fn fn_current(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if let Some(h) = ptr_arg(host, "current", &args[0])? {
         return Ok(object_ptr(host, &h, PtrOp::Current));
     }
-    Ok(with_array_data(&args[0], |d| elem_at(d, d.pos)).unwrap_or(Value::Bool(false)))
+    Ok(with_array_read(&args[0], |a| {
+        a.get_index(a.pos())
+            .map(|(_, v)| deref(v).clone())
+            .unwrap_or(Value::Bool(false))
+    })
+    .unwrap_or(Value::Bool(false)))
 }
 
 fn fn_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if let Some(h) = ptr_arg(host, "key", &args[0])? {
         return Ok(object_ptr(host, &h, PtrOp::Key));
     }
-    Ok(with_array_data(&args[0], |d| {
-        d.entries
-            .get_index(d.pos)
+    Ok(with_array_read(&args[0], |a| {
+        a.get_index(a.pos())
             .map(|(k, _)| k.to_value())
             .unwrap_or(Value::Null)
     })

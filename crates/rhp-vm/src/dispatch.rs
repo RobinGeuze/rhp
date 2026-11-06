@@ -238,6 +238,7 @@ impl Vm {
         self.cursor_steps.clear();
         self.rw_null_keys = 0;
         self.cursor_null_key = false;
+        self.cursor_ref_null = 0;
         Ok(())
     }
 
@@ -264,6 +265,7 @@ impl Vm {
         self.cursor_steps.clear();
         self.rw_null_keys = 0;
         self.cursor_null_key = false;
+        self.cursor_ref_null = 0;
         Ok(())
     }
 
@@ -307,6 +309,7 @@ impl Vm {
         let global = self.cursor_global.take();
         let nulls = self.rw_null_keys;
         let null_key = self.cursor_null_key;
+        let ref_null = self.cursor_ref_null;
         let st = self.cursor_static.take();
         let r = f(self);
         self.cursor_static = st;
@@ -315,6 +318,7 @@ impl Vm {
         self.cursor_global = global;
         self.rw_null_keys = nulls;
         self.cursor_null_key = null_key;
+        self.cursor_ref_null = ref_null;
         r
     }
 
@@ -1058,7 +1062,7 @@ impl Vm {
                     }
                 }
                 Instr::BindStaticInit { cv, name, src } => {
-                    let v = self.reg_get(top, src);
+                    let v = self.reg_r(top, src)?;
                     if self.stack[top].closure.is_some() {
                         self.bind_closure_static(top, cv, &proto.names[name as usize], Some(v));
                         continue;
@@ -1212,6 +1216,7 @@ impl Vm {
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
                     self.cursor_null_key = false;
+                    self.cursor_ref_null = 0;
                 }
                 Instr::LvalCvUnset { cv } => {
                     // Unsetting below an undefined variable leaves it so.
@@ -1225,6 +1230,7 @@ impl Vm {
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
                     self.cursor_null_key = false;
+                    self.cursor_ref_null = 0;
                 }
                 // The variable is created when the write lands (after its
                 // value was read: `$a[0] = $a` reads an undefined `$a`):
@@ -1235,6 +1241,7 @@ impl Vm {
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
                     self.cursor_null_key = false;
+                    self.cursor_ref_null = 0;
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
@@ -1244,6 +1251,12 @@ impl Vm {
                     };
                     if let Value::Null = k {
                         self.cursor_null_key = true;
+                        // A reference to null: ArrayObject's write_dimension
+                        // sees a reference, not null, so it does not append.
+                        let n = self.cursor_steps.len();
+                        if n < 64 && matches!(self.stack[top].regs[key as usize], Value::Ref(_)) {
+                            self.cursor_ref_null |= 1 << n;
+                        }
                     }
                     self.cursor_steps.push(CursorStep::Key(k));
                 }
@@ -1267,6 +1280,7 @@ impl Vm {
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
                     self.cursor_null_key = false;
+                    self.cursor_ref_null = 0;
                 }
                 Instr::LvalStaticPropDyn { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
@@ -1279,6 +1293,7 @@ impl Vm {
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
                     self.cursor_null_key = false;
+                    self.cursor_ref_null = 0;
                 }
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
@@ -1910,6 +1925,11 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     if let Value::Object(h) = &a {
+                        if let Some(base) = self.spl_array_base(h) {
+                            let r = self.spl_array_has_dim(h, base, k, false)?;
+                            self.reg_set(top, dst, Value::Bool(r));
+                            continue;
+                        }
                         if self.class_implements(h.borrow().class, b"ArrayAccess") {
                             let r = self.aa_offset_exists(h, k)?;
                             self.reg_set(top, dst, Value::Bool(r));
@@ -1939,6 +1959,12 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     let v = match &a {
+                        Value::Object(h) if self.spl_array_base(h).is_some() => {
+                            let base = self.spl_array_base(h).unwrap_or_default();
+                            let r = self.spl_array_has_dim(h, base, k, true)?;
+                            self.reg_set(top, dst, Value::Bool(!r));
+                            continue;
+                        }
                         // zend_std_has_dimension(check_empty = 1).
                         Value::Object(h)
                             if self.class_implements(h.borrow().class, b"ArrayAccess") =>

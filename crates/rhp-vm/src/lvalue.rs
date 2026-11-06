@@ -607,6 +607,39 @@ impl Vm {
         Ok(Rc::new(RefCell::new(Value::Object(inst))))
     }
 
+    /// zend_std_get_property_ptr_ptr's lazy_init: initialize `h` and run `f`
+    /// on the instance's cell; a fetch the proxy's `__get` guard let through
+    /// holds the same guard on the instance.
+    fn lazy_ptr_fetch<T>(
+        &mut self,
+        h: &ObjectHandle,
+        step: &CursorStep,
+        f: impl FnOnce(&mut Self, Rc<RefCell<Value>>) -> Result<T, Thrown>,
+    ) -> Result<T, Thrown> {
+        let guard = match step {
+            CursorStep::Prop(name) => {
+                let cls = h.borrow().class;
+                let held = self.lookup_method(cls, b"__get").is_some()
+                    && self.magic(h, cls, b"__get", name).is_none();
+                held.then(|| name.clone())
+            }
+            _ => None,
+        };
+        let cell = self.lazy_cursor_cell(h)?;
+        let inst = match &*cell.borrow() {
+            Value::Object(o) if guard.is_some() => Some(o.clone()),
+            _ => None,
+        };
+        match (inst, guard) {
+            (Some(inst), Some(name)) => {
+                let icls = inst.borrow().class;
+                let has_get = self.lookup_method(icls, b"__get").is_some();
+                self.with_guard(&inst, has_get, b"__get", &name, |vm| f(vm, cell))
+            }
+            _ => f(self, cell),
+        }
+    }
+
     /// Run `f` with the cursor temporarily re-rooted at `cell`.
     fn with_cursor_root<T>(
         &mut self,
@@ -694,8 +727,9 @@ impl Vm {
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
             MagicSplit::Lazy(i, h) => {
-                let cell = self.lazy_cursor_cell(&h)?;
-                return self.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, &steps[i..]));
+                return self.lazy_ptr_fetch(&h, &steps[i], |vm, cell| {
+                    vm.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, &steps[i..]))
+                });
             }
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
@@ -939,6 +973,12 @@ impl Vm {
                 self.flush_deferred_undef(top)?;
                 return self.prop_store(top, Value::Object(h), name, v);
             }
+            // (`$o->p = &$x` is a write fetch: get_property_ptr_ptr.)
+            MagicSplit::Lazy(i, h) if matches!(v, Value::Ref(_)) => {
+                return self.lazy_ptr_fetch(&h, &steps[i], |vm, cell| {
+                    vm.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v))
+                });
+            }
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v));
@@ -951,8 +991,18 @@ impl Vm {
             // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object ->
             // offsetSet; below it, the element is fetched with offsetGet.
             MagicSplit::Offset(i, h) => {
-                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                let mut key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    // spl_array_write_dimension_ex: a reference to null is
+                    // an offset (get_hash_key's deprecation), not an append.
+                    if i < 64
+                        && self.cursor_ref_null & (1 << i) != 0
+                        && matches!(steps[i], CursorStep::Key(Value::Null))
+                        && self.spl_array_owner(&h, b"offsetset").is_some()
+                    {
+                        self.diag(builtins::E_DEPRECATED, NULL_OFFSET_DEPRECATION)?;
+                        key = Value::str(Vec::new());
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetset") {
                         self.call_sync(&m, Some(h), cls, vec![key, v])?;
@@ -1234,6 +1284,9 @@ impl Vm {
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    if let Some(base) = self.spl_array_owner(&h, b"offsetunset") {
+                        return self.spl_array_unset_dim(&h, base, &key);
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
                         self.call_sync(&m, Some(h), cls, vec![key])?;
@@ -1510,6 +1563,9 @@ impl Vm {
         if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
             return Ok(cell);
         }
+        if matches!(step, CursorStep::Append) && self.spl_array_base(h).is_some() {
+            return self.spl_array_append_fetch(h);
+        }
         let fetch = match mode {
             DimFetch::W | DimFetch::Rw => builtins::MagicFetch::Write,
             DimFetch::Unset => builtins::MagicFetch::Read,
@@ -1524,6 +1580,148 @@ impl Vm {
                 Rc::new(RefCell::new(other))
             }
         })
+    }
+
+    /// The ArrayObject / ArrayIterator class `h` is or derives from.
+    pub(crate) fn spl_array_base(&self, h: &ObjectHandle) -> Option<ClassId> {
+        let cls = h.borrow().class;
+        self.class(cls).ancestors.iter().copied().find(|&a| {
+            let n = self.class(a).name.as_bytes();
+            n == b"ArrayObject" || n == b"ArrayIterator"
+        })
+    }
+
+    /// spl_array_has_dimension_ex: `isset($ao[$k])` (`check_empty` false)
+    /// or `!empty($ao[$k])`. A user offsetExists is asked first; the
+    /// storage is read directly unless a user offsetGet must supply the
+    /// value.
+    pub(crate) fn spl_array_has_dim(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: Value,
+        check_empty: bool,
+    ) -> Result<bool, Thrown> {
+        let user_has = self.spl_array_owner(h, b"offsetexists").is_none();
+        let user_get = self.spl_array_owner(h, b"offsetget").is_none();
+        let mut value = None;
+        if user_has {
+            if !self.aa_offset_exists(h, k.clone())? {
+                return Ok(false);
+            }
+            if !check_empty {
+                return Ok(true);
+            }
+            if user_get {
+                value = Some(self.aa_offset_get(h, k.clone())?);
+            }
+        }
+        let value = match value {
+            Some(v) => v,
+            None => {
+                let storage = self.spl_array_storage(h, base)?;
+                let akey = self.spl_array_key_in(h, &k, SplKeyUse::Isset)?;
+                let found = match &*storage.borrow() {
+                    Value::Array(a) => a.get(&akey).map(deref),
+                    _ => None,
+                };
+                let Some(found) = found else {
+                    return Ok(false);
+                };
+                if check_empty && user_get {
+                    self.aa_offset_get(h, k)?
+                } else {
+                    found
+                }
+            }
+        };
+        if check_empty {
+            self.truthy(&deref(&value))
+        } else {
+            Ok(!matches!(deref(&value), Value::Null))
+        }
+    }
+
+    /// spl_array_read_dimension_ex in BP_VAR_IS (`$ao[$k] ?? ...`, a
+    /// nested isset): one key conversion, no warning for a missing key.
+    fn spl_array_read_is(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: Value,
+    ) -> Result<Value, Thrown> {
+        let user_has = self.spl_array_owner(h, b"offsetexists").is_none();
+        let user_get = self.spl_array_owner(h, b"offsetget").is_none();
+        if user_get || user_has {
+            if !self.spl_array_has_dim(h, base, k.clone(), false)? {
+                return Ok(Value::Null);
+            }
+            if user_get {
+                return self.aa_offset_get(h, k);
+            }
+        }
+        let storage = self.spl_array_storage(h, base)?;
+        let akey = self.spl_array_key_in(h, &k, SplKeyUse::Isset)?;
+        let found = match &*storage.borrow() {
+            Value::Array(a) => a.get(&akey).map(deref),
+            _ => None,
+        };
+        Ok(found.unwrap_or(Value::Null))
+    }
+
+    /// spl_array_unset_dimension_ex for the built-in offsetUnset.
+    fn spl_array_unset_dim(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: &Value,
+    ) -> Result<(), Thrown> {
+        let akey = self.spl_array_key_in(h, k, SplKeyUse::Unset)?;
+        let storage = self.spl_array_storage(h, base)?;
+        if let Value::Array(a) = &mut *storage.borrow_mut() {
+            a.remove(&akey);
+        }
+        Ok(())
+    }
+
+    /// spl_array_read_dimension_ex for `$ao[]` with a user offsetGet: it is
+    /// called with an undefined offset, so a required `$offset` fails ("not
+    /// passed") and the result is php's uninitialized_zval (the notice).
+    fn spl_array_append_fetch(&mut self, h: &ObjectHandle) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let cls = h.borrow().class;
+        let Some(m) = self.lookup_method(cls, b"offsetget") else {
+            self.indirect_overloaded_notice(h)?;
+            return Ok(Rc::new(RefCell::new(Value::Null)));
+        };
+        let got = match m.proto.params.first() {
+            Some(p) if p.default.is_none() && !p.variadic => {
+                let pname = m.proto.names[p.name as usize].clone();
+                Err(Thrown::error(
+                    "ArgumentCountError",
+                    format!(
+                        "{}::{}(): Argument #1 (${}) not passed",
+                        self.class_name_lossy(m.defining_class),
+                        String::from_utf8_lossy(m.proto.name.as_bytes()),
+                        String::from_utf8_lossy(pname.as_bytes())
+                    ),
+                ))
+            }
+            _ => self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                vm.call_sync(&m, Some(h.clone()), cls, vec![])
+            }),
+        };
+        match got {
+            Ok(Value::Ref(rc)) => Ok(rc),
+            Ok(v @ (Value::Object(_) | Value::Closure(_))) => Ok(Rc::new(RefCell::new(v))),
+            Err(e) => {
+                self.indirect_overloaded_notice(h)?;
+                Err(e)
+            }
+            Ok(v) => {
+                self.indirect_overloaded_notice(h)?;
+                Ok(Rc::new(RefCell::new(v)))
+            }
+        }
     }
 
     pub(crate) fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
@@ -1568,13 +1766,26 @@ impl Vm {
         h: &ObjectHandle,
         key: &Value,
     ) -> Result<rhp_values::ArrayKey, Thrown> {
+        self.spl_array_key_in(h, key, SplKeyUse::Access)
+    }
+
+    /// spl_array's get_hash_key, failing with zend_illegal_container_offset's
+    /// message for the fetch type.
+    fn spl_array_key_in(
+        &mut self,
+        h: &ObjectHandle,
+        key: &Value,
+        how: SplKeyUse,
+    ) -> Result<rhp_values::ArrayKey, Thrown> {
         let akey = self.dim_key(&deref(key), false)?;
         akey.ok_or_else(|| {
-            Thrown::type_error(format!(
-                "Cannot access offset of type {} on {}",
-                rhp_builtins::zval_type_name(self, key),
-                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
-            ))
+            let ty = rhp_builtins::zval_type_name(self, key);
+            let on = rhp_builtins::zval_type_name(self, &Value::Object(h.clone()));
+            Thrown::type_error(match how {
+                SplKeyUse::Access => format!("Cannot access offset of type {ty} on {on}"),
+                SplKeyUse::Isset => format!("Cannot access offset of type {ty} in isset or empty"),
+                SplKeyUse::Unset => format!("Cannot unset offset of type {ty} on {on}"),
+            })
         })
     }
 
@@ -1598,7 +1809,17 @@ impl Vm {
             return Ok(Some(Rc::new(RefCell::new(Value::Null))));
         }
         let storage = self.spl_array_storage(h, owner)?;
-        let akey = self.spl_array_key(h, key)?;
+        let akey = match mode {
+            // uninitialized_zval after the TypeError: the notice follows.
+            DimFetch::Unset => match self.spl_array_key_in(h, key, SplKeyUse::Unset) {
+                Ok(k) => k,
+                Err(e) => {
+                    self.indirect_overloaded_notice(h)?;
+                    return Err(e);
+                }
+            },
+            _ => self.spl_array_key(h, key)?,
+        };
         let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());
         if !exists {
             match mode {
@@ -1853,6 +2074,9 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
+                    if let (true, Some(base)) = (quiet, self.spl_array_base(h)) {
+                        return self.spl_array_read_is(h, base, key.clone());
+                    }
                     // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
                     if quiet && !self.aa_offset_exists(h, key.clone())? {
                         return Ok(Value::Null);
@@ -2550,4 +2774,12 @@ fn illegal_offset_on_array(k: &Value, cx: &PropCtx) -> Thrown {
         "Cannot access offset of type {} on array",
         cx.type_name(k)
     ))
+}
+
+/// What an ArrayObject offset is used for (the wording of its TypeError).
+#[derive(Clone, Copy)]
+enum SplKeyUse {
+    Access,
+    Isset,
+    Unset,
 }

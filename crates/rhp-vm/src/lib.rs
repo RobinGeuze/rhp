@@ -293,6 +293,9 @@ pub struct Vm {
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
+    /// Steps (bit per index) of the open cursor whose key is a reference
+    /// holding null.
+    cursor_ref_null: u64,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
     /// EG(last_fatal_error_backtrace): `error_get_last()['trace']`.

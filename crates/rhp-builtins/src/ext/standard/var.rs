@@ -1096,6 +1096,22 @@ thread_local! {
     static SERIALIZE_LOCK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Call a magic method of `obj` as php does (by its function handler:
+/// visibility does not matter).
+fn call_method(
+    host: &mut dyn Host,
+    obj: &Value,
+    m: &str,
+    args: Vec<Value>,
+) -> Result<Value, Thrown> {
+    let Value::Object(h) = obj else {
+        return Ok(Value::Null);
+    };
+    let cid = h.borrow().class;
+    let class = host.class_name(cid).unwrap_or_default();
+    host.reflect_invoke(obj, &class, m.as_bytes(), args)
+}
+
 /// Forget the shared serialize state (a request that bailed out mid-call).
 pub(crate) fn reset_state() {
     SER.with(|s| *s.borrow_mut() = (0, None));
@@ -1279,12 +1295,7 @@ impl Serializer {
             return Ok(());
         }
         let obj = Value::Object(h.clone());
-        let call = |host: &mut dyn Host, m: &str| {
-            let mut cb = PhpArray::new();
-            cb.push(obj.clone());
-            cb.push(Value::str(m));
-            locked(|| host.call_callable(&Value::Array(cb), &[]))
-        };
+        let call = |host: &mut dyn Host, m: &str| locked(|| call_method(host, &obj, m, Vec::new()));
         let head = |out: &mut Vec<u8>, cname: &[u8], n: usize| {
             out.extend_from_slice(format!("O:{}:\"", cname.len()).as_bytes());
             out.extend_from_slice(cname);
@@ -1311,10 +1322,7 @@ impl Serializer {
         if host.reflect_is_a(&cname, b"Serializable") {
             // zend_user_serialize: `C:len:"Class":datalen:{data}`; NULL (or
             // a failure) writes `N;` and later references to the object too.
-            let mut cb = PhpArray::new();
-            cb.push(obj.clone());
-            cb.push(Value::str("serialize"));
-            let r = host.call_callable(&Value::Array(cb), &[])?;
+            let r = call_method(host, &obj, "serialize", Vec::new())?;
             match deref(&r) {
                 Value::Str(data) => {
                     out.extend_from_slice(format!("C:{}:\"", cname.len()).as_bytes());
@@ -1638,17 +1646,10 @@ fn unser_destroy(
             host.mark_destructor_called(&obj);
             continue;
         }
-        let mut cb = PhpArray::new();
-        cb.push(Value::Object(obj.clone()));
+        let o = Value::Object(obj.clone());
         let r = match data {
-            Some(data) => {
-                cb.push(Value::str("__unserialize"));
-                locked(|| host.call_callable(&Value::Array(cb), &[data]))
-            }
-            None => {
-                cb.push(Value::str("__wakeup"));
-                locked(|| host.call_callable(&Value::Array(cb), &[]))
-            }
+            Some(data) => locked(|| call_method(host, &o, "__unserialize", vec![data])),
+            None => locked(|| call_method(host, &o, "__wakeup", Vec::new())),
         };
         if let Err(t) = r {
             failed = true;
@@ -1751,8 +1752,11 @@ impl Parser<'_, '_> {
     /// (php overwrites the zval in place).
     fn reuse(&self, v: Option<&Value>) -> Option<Cell> {
         match v {
-            // (Containers being built hold only cells.)
-            Some(Value::Ref(c)) => Some(c.clone()),
+            // (Containers being built hold only cells.) A cell an `R:` made
+            // a reference is shared: the slot gets a fresh one.
+            Some(Value::Ref(c)) if !self.d.borrow().referenced.contains_key(&ptr(c)) => {
+                Some(c.clone())
+            }
             _ => None,
         }
     }
@@ -1933,8 +1937,7 @@ impl Parser<'_, '_> {
                 if !vh {
                     return Ok(false);
                 }
-                if elements < 0
-                    || elements >= HT_MAX_SIZE
+                if !(0..HT_MAX_SIZE).contains(&elements)
                     || fake_elem_count(elements, self.max - cursor)
                 {
                     return Ok(false);
@@ -2139,7 +2142,7 @@ impl Parser<'_, '_> {
             // (Containers being built hold only cells.)
             let slot = arr.get_or_insert_mut(key);
             let cell = match slot {
-                Value::Ref(c) => {
+                Value::Ref(c) if !self.d.borrow().referenced.contains_key(&ptr(c)) => {
                     *c.borrow_mut() = Value::Null;
                     c.clone()
                 }
@@ -2519,11 +2522,7 @@ impl Parser<'_, '_> {
                         "the class does not implement Serializable yet",
                     ));
                 }
-                let mut cb = PhpArray::new();
-                cb.push(obj);
-                cb.push(Value::str("unserialize"));
-                self.host
-                    .call_callable(&Value::Array(cb), &[Value::str(data)])?;
+                call_method(self.host, &obj, "unserialize", vec![Value::str(data)])?;
             }
             _ => {
                 let msg = format!(
@@ -2742,12 +2741,10 @@ impl Unwrap<'_> {
                     }
                 }
             }
-            Value::Object(h) => {
-                if self.visit(h) {
-                    let props: Vec<Value> = h.borrow().properties.values().cloned().collect();
-                    for p in &props {
-                        self.count(p);
-                    }
+            Value::Object(h) if self.visit(h) => {
+                let props: Vec<Value> = h.borrow().properties.values().cloned().collect();
+                for p in &props {
+                    self.count(p);
                 }
             }
             _ => {}
@@ -3049,6 +3046,46 @@ fn fn_unserialize_value(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     Ok(Value::Array(out))
 }
 
+/// `__unserialize_init()` / `__unserialize_destroy()`: PHP_VAR_UNSERIALIZE_INIT
+/// / _DESTROY around an SPL `unserialize()` method, so its values share one
+/// var_hash (and the delayed calls run at the end, when outermost).
+fn fn_unserialize_init(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    unser_init();
+    Ok(Value::Null)
+}
+
+fn fn_unserialize_destroy(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    if lock_held() {
+        return Ok(Value::Null);
+    }
+    let d = UNSER.with(|s| s.borrow().1.clone());
+    if let Some(d) = d {
+        unser_destroy(host, &d, false)?;
+    }
+    Ok(Value::Null)
+}
+
+/// `__object_properties_load($object, $members)`: php's
+/// object_properties_load, as SPL's unserialize() methods restore their
+/// members (keys are mangled names; a new dynamic property is deprecated).
+fn fn_object_properties_load(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let (Value::Object(h), Value::Array(m)) = (deref(&args[0]), deref(&args[1])) else {
+        return Ok(Value::Null);
+    };
+    for (k, v) in m.iter() {
+        let key = match k {
+            ArrayKey::Int(n) => n.to_string().into_bytes(),
+            ArrayKey::Str(s) => s.as_bytes().to_vec(),
+        };
+        let storage = match host.unserialize_prop(&h, &key)? {
+            UnserProp::Declared { storage, .. } | UnserProp::Dynamic(storage) => storage,
+            UnserProp::Fail => continue,
+        };
+        host.prop_store(&h, &storage, Some(rhp_values::ops::copy_elem(v)));
+    }
+    Ok(Value::Null)
+}
+
 /// `__spl_array_unserialize($data, $fn)`: ArrayObject::unserialize()'s
 /// payload (`x:i:flags;storage;m:members`), as `[flags, storage, members]`
 /// (`storage` null with SPL_ARRAY_IS_SELF; all null for no data). A bad
@@ -3171,6 +3208,9 @@ pub fn register(m: &mut crate::Registry) {
             ("unserialize", fn_unserialize),
             ("__unserialize_value", fn_unserialize_value),
             ("__spl_array_unserialize", fn_spl_array_unserialize),
+            ("__object_properties_load", fn_object_properties_load),
+            ("__unserialize_init", fn_unserialize_init),
+            ("__unserialize_destroy", fn_unserialize_destroy),
             ("var_dump", fn_var_dump),
             ("debug_zval_dump", fn_debug_zval_dump),
             ("var_export", fn_var_export),

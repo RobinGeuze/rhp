@@ -3,7 +3,7 @@ interface SeekableIterator extends Iterator { public function seek(int $offset):
 class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
-    private $__s; private $__f = 0; private $__k; private $__p = 0;
+    private $__s = []; private $__f = 0; private $__k = []; private $__p = 0;
     public function __construct($array = [], int $flags = 0) { if (is_object($array)) { __spl_deprecated('ArrayIterator::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
     public function current(): mixed { $k = $this->__k[$this->__p] ?? null; return $k === null ? null : ($this->__s[$k] ?? null); }
     public function key(): mixed { return $this->__k[$this->__p] ?? null; }
@@ -57,15 +57,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
         }
     }
     // object_properties_load: members keyed by mangled names.
-    private function __loadMembers(array $m): void {
-        foreach ($m as $k => $v) {
-            $k = (string)$k;
-            if ($k !== '' && $k[0] === "\0") {
-                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
-            } else { $this->$k = $v; }
-        }
-    }
+    private function __loadMembers(array $m): void { __object_properties_load($this, $m); }
     public function unserialize(string $data): void {
         [$f, $s, $m] = __spl_array_unserialize($data, 'ArrayIterator::unserialize');
         if ($f === null) { return; }
@@ -77,7 +69,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
 class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
-    private $__s; private $__f = 0; private $__i = 'ArrayIterator';
+    private $__s = []; private $__f = 0; private $__i = 'ArrayIterator';
     public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
     public function getIterator(): Iterator { $c = $this->__i; return new $c($this->__s); }
     public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
@@ -104,7 +96,16 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
         $this->__f = $data[0];
         $this->__s = is_object($data[1]) ? get_object_vars($data[1]) : $data[1];
         $this->__loadMembers($data[2]);
-        if (isset($data[3])) { $this->__i = $data[3]; }
+        if (isset($data[3])) {
+            $c = $data[3];
+            if (!class_exists($c) && !interface_exists($c)) {
+                throw new UnexpectedValueException("Cannot deserialize ArrayObject with iterator class '$c'; no such class exists");
+            }
+            if (!is_a($c, 'Iterator', true)) {
+                throw new UnexpectedValueException("Cannot deserialize ArrayObject with iterator class '$c'; this class does not implement the Iterator interface");
+            }
+            $this->__i = $c;
+        }
     }
     // ArrayObject::__unserialize's checks.
     private static function __checkData(array $data): void {
@@ -117,15 +118,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
         }
     }
     // object_properties_load: members keyed by mangled names.
-    private function __loadMembers(array $m): void {
-        foreach ($m as $k => $v) {
-            $k = (string)$k;
-            if ($k !== '' && $k[0] === "\0") {
-                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                __reflect_set_prop($this, $n, $v, $c === '*' ? static::class : $c);
-            } else { $this->$k = $v; }
-        }
-    }
+    private function __loadMembers(array $m): void { __object_properties_load($this, $m); }
     public function unserialize(string $data): void {
         [$f, $s, $m] = __spl_array_unserialize($data, 'ArrayObject::unserialize');
         if ($f === null) { return; }
@@ -166,10 +159,26 @@ class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
     public function key(): mixed { return $this->__p; }
     public function next(): void { if ($this->__lifo) { $this->__p--; } else { $this->__p++; } }
     public function valid(): bool { return $this->__p >= 0 && $this->__p < count($this->__d); }
+    public function __serialize(): array {
+        $f = ($this->__lifo ? 2 : 0) | ($this->__del ? 1 : 0) | ($this instanceof SplQueue || $this instanceof SplStack ? 4 : 0);
+        return [$f, $this->__d, get_mangled_object_vars($this)];
+    }
+    public function __unserialize(array $data): void {
+        if (!isset($data[0], $data[1], $data[2]) || !is_int($data[0]) || !is_array($data[1]) || !is_array($data[2])) {
+            throw new UnexpectedValueException('Incomplete or ill-typed serialization data');
+        }
+        $this->__lifo = (bool)($data[0] & 2); $this->__del = (bool)($data[0] & 1);
+        foreach ($data[1] as $v) { $this->__d[] = $v; }
+        __object_properties_load($this, $data[2]);
+    }
     public function unserialize(string $data): void {
-        $n = strlen($data);
-        if ($n === 0) { return; }
+        if ($data === '') { return; }
         $this->__d = [];
+        __unserialize_init();
+        try { $this->__unserialize_old($data); } finally { __unserialize_destroy(); }
+    }
+    private function __unserialize_old(string $data): void {
+        $n = strlen($data);
         [$ok, $flags, $p] = __unserialize_value($data, 0, 'SplDoublyLinkedList::unserialize');
         if ($ok && is_int($flags)) {
             $this->__lifo = (bool)($flags & 2); $this->__del = (bool)($flags & 1);

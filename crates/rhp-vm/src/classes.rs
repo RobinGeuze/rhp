@@ -833,9 +833,11 @@ impl Vm {
                     self.materialize_enum_cases(id as ClassId, &proto, unit);
                 }
             }
+            self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
             return Ok(());
         }
         self.install_classes(protos, 0)?;
+        self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
@@ -1708,9 +1710,6 @@ impl Vm {
         }
         if proto.kind == ClassKind::Enum {
             self.materialize_enum_cases(id, proto, unit);
-        }
-        if proto.decl_file.is_empty() && proto.name.as_bytes() == b"__PHP_Incomplete_Class" {
-            self.incomplete_class = Some(id);
         }
         if self.internal_classes > 0
             && !proto.decl_file.is_empty()

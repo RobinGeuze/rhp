@@ -183,7 +183,7 @@ impl Vm {
         incdec: bool,
     ) -> Result<Value, Thrown> {
         match self.cursor_magic_split(top, steps) {
-            MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
+            MagicSplit::Incomplete(h) => Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_rw_checks(top, steps, incdec)?;
                 Ok(self.cursor_read_steps(top, steps))

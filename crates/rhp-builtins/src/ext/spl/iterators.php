@@ -78,9 +78,10 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         return [$s, get_mangled_object_vars($this)];
     }
     public function __unserialize(array $data): void {
-        if (!isset($data[0], $data[1]) || !is_array($data[0]) || !is_array($data[1]) || count($data[0]) % 2 !== 0) {
+        if (!isset($data[0], $data[1]) || !is_array($data[0]) || !is_array($data[1])) {
             throw new UnexpectedValueException('Incomplete or ill-typed serialization data');
         }
+        if (count($data[0]) % 2 !== 0) { throw new UnexpectedValueException('Odd number of elements'); }
         $s = array_values($data[0]);
         for ($i = 0; $i < count($s); $i += 2) {
             if (!is_object($s[$i])) { throw new UnexpectedValueException('Non-object key'); }
@@ -97,8 +98,12 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         }
     }
     public function unserialize(string $data): void {
+        if ($data === '') { return; }
+        __unserialize_init();
+        try { $this->__unserialize_old($data); } finally { __unserialize_destroy(); }
+    }
+    private function __unserialize_old(string $data): void {
         $n = strlen($data);
-        if ($n === 0) { return; }
         $fn = 'SplObjectStorage::unserialize';
         $p = 0;
         if ($data[0] !== 'x') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
@@ -132,13 +137,7 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         $p++;
         [$ok, $m, $p] = __unserialize_value($data, $p, $fn);
         if (!$ok || !is_array($m)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
-        foreach ($m as $k => $v) {
-            $k = (string)$k;
-            if ($k !== '' && $k[0] === "\0") {
-                $q = strpos($k, "\0", 1); $c = substr($k, 1, $q - 1); $nm = substr($k, $q + 1);
-                __reflect_set_prop($this, $nm, $v, $c === '*' ? static::class : $c);
-            } else { $this->$k = $v; }
-        }
+        __object_properties_load($this, $m);
     }
     public function __debugInfo() {
         $st = [];

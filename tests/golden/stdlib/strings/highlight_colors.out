@@ -12,3 +12,4 @@ string(155) "<html><?php  echo "a $b {$c->d}", 'x' . PHP_EOL; $h = <<<EOT
   EOT;
 function f(int $a = 1.5e3, ?string $s = null): void { return; } ?>
 tail <?= 1 ?>"
+string(71) "<pre><code style="color: #0000BB">x&lt;?php $a = 1; ?&gt;y</code></pre>"

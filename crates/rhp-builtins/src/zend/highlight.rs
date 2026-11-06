@@ -83,7 +83,7 @@ pub fn highlight(src: &[u8], c: &Colors) -> Vec<u8> {
     out.extend_from_slice(b"<pre><code style=\"color: ");
     out.extend_from_slice(&c.html);
     out.extend_from_slice(b"\">");
-    let mut last = Color::Html;
+    let mut last: &[u8] = &c.html;
     for t in lexer::tokenize_scanner(src) {
         let text = t.text(src);
         let next = match t.id {
@@ -102,22 +102,24 @@ pub fn highlight(src: &[u8], c: &Colors) -> Vec<u8> {
             id if has_value(id) => Color::Default,
             _ => Color::Keyword,
         };
-        // php compares the colour strings' addresses: two directives with
-        // the same value still count as different colours.
+        // php compares the colour strings' addresses. Equal ini values are
+        // the same interned string (ini files, -d, string literals), so
+        // compare the values; only a value built at run time differs.
+        let next = color_of(next);
         if last != next {
-            if last != Color::Html {
+            if last != c.html.as_slice() {
                 out.extend_from_slice(b"</span>");
             }
             last = next;
-            if last != Color::Html {
+            if last != c.html.as_slice() {
                 out.extend_from_slice(b"<span style=\"color: ");
-                out.extend_from_slice(color_of(last));
+                out.extend_from_slice(last);
                 out.extend_from_slice(b"\">");
             }
         }
         html_puts(&mut out, text);
     }
-    if last != Color::Html {
+    if last != c.html.as_slice() {
         out.extend_from_slice(b"</span>");
     }
     out.extend_from_slice(b"</code></pre>");

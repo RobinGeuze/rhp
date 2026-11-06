@@ -3599,6 +3599,10 @@ impl Vm {
                 if p.params.iter().any(|q| q.by_ref) {
                     self.check_sends(top, &p, scope, base)?;
                 }
+            } else if let Ok(crate::calls::Callee::Builtin(name)) = self.resolve_callable(&c) {
+                if let Some(sig) = rhp_bytecode::signatures::function(name.as_bytes()) {
+                    self.check_sends_builtin(top, sig, base)?;
+                }
             }
         }
         // Passed raw (the window's references kept): the callee's

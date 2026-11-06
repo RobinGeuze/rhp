@@ -724,8 +724,8 @@ impl Vm {
     }
 
     /// php's SEND_VAL_EX / SEND_VAR_NO_REF_EX for the call frame `top` is
-    /// making (its `send_kinds`): a temporary for a by-reference parameter
-    /// throws, a call result that is no reference notices.
+    /// making to `proto` (its `send_kinds`): a temporary for a by-reference
+    /// parameter throws, a call result that is no reference notices.
     #[cold]
     #[inline(never)]
     pub(crate) fn check_sends(
@@ -735,6 +735,47 @@ impl Vm {
         scope: Option<ClassId>,
         base: Reg,
     ) -> Result<(), Thrown> {
+        let label = |i: u16| match proto.params.get(i as usize) {
+            Some(p) if !p.variadic => format!(
+                " (${})",
+                String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
+            ),
+            _ => String::new(),
+        };
+        let fname = self.func_c_name(proto, scope);
+        self.check_sends_with(top, base, &fname, |i| param_is_ref(proto, i), label)
+    }
+
+    /// [`Vm::check_sends`] for a builtin called through a callable value.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn check_sends_builtin(
+        &mut self,
+        top: usize,
+        sig: &rhp_bytecode::signatures::Func,
+        base: Reg,
+    ) -> Result<(), Thrown> {
+        let param = |i: u16| {
+            sig.params
+                .get(i as usize)
+                .or_else(|| sig.params.last().filter(|p| p.variadic()))
+        };
+        let is_ref = |i: u16| param(i).is_some_and(|p| p.by_ref() && !p.prefer_ref());
+        let label = |i: u16| match param(i) {
+            Some(p) if !p.variadic() => format!(" (${})", p.name),
+            _ => String::new(),
+        };
+        self.check_sends_with(top, base, sig.name, is_ref, label)
+    }
+
+    fn check_sends_with(
+        &mut self,
+        top: usize,
+        base: Reg,
+        fname: &str,
+        is_ref: impl Fn(u16) -> bool,
+        label: impl Fn(u16) -> String,
+    ) -> Result<(), Thrown> {
         let caller = self.stack[top].proto.clone();
         let pc = self.stack[top].pc as u32 - 1;
         let start = caller.send_kinds.partition_point(|e| e.0 < pc);
@@ -742,8 +783,7 @@ impl Vm {
             if at != pc {
                 break;
             }
-            if !param_is_ref(proto, idx)
-                || matches!(self.stack[top].regs[(base + idx) as usize], Value::Ref(_))
+            if !is_ref(idx) || matches!(self.stack[top].regs[(base + idx) as usize], Value::Ref(_))
             {
                 continue;
             }
@@ -758,19 +798,12 @@ impl Vm {
                 *slot = Value::Ref(Rc::new(std::cell::RefCell::new(v)));
                 continue;
             }
-            let label = match proto.params.get(idx as usize) {
-                Some(p) if !p.variadic => format!(
-                    " (${})",
-                    String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
-                ),
-                _ => String::new(),
-            };
             return Err(Thrown::error(
                 "Error",
                 format!(
-                    "{}(): Argument #{}{label} could not be passed by reference",
-                    self.func_c_name(proto, scope),
-                    idx + 1
+                    "{fname}(): Argument #{}{} could not be passed by reference",
+                    idx + 1,
+                    label(idx)
                 ),
             ));
         }

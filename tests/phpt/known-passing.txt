@@ -6861,6 +6861,7 @@ ext/opcache/tests/jit/assign_op_007.phpt
 ext/opcache/tests/jit/assign_op_008.phpt
 ext/opcache/tests/jit/assign_op_009.phpt
 ext/opcache/tests/jit/assign_static_prop_001.phpt
+ext/opcache/tests/jit/assign_static_prop_op_001.phpt
 ext/opcache/tests/jit/bind_global_001.phpt
 ext/opcache/tests/jit/bind_static.phpt
 ext/opcache/tests/jit/bind_static_002.phpt
@@ -8140,6 +8141,7 @@ ext/reflection/tests/ReflectionProperty_hasDefaultValue.phpt
 ext/reflection/tests/ReflectionProperty_isDefault_basic.phpt
 ext/reflection/tests/ReflectionProperty_isDynamic_basic.phpt
 ext/reflection/tests/ReflectionProperty_isFinal.phpt
+ext/reflection/tests/ReflectionProperty_isInitialized.phpt
 ext/reflection/tests/ReflectionProperty_setValue_error.phpt
 ext/reflection/tests/ReflectionProperty_setValue_readonly.phpt
 ext/reflection/tests/ReflectionProperty_toString_001.phpt
@@ -8236,6 +8238,7 @@ ext/reflection/tests/closures_005.phpt
 ext/reflection/tests/default_value_leak.phpt
 ext/reflection/tests/final_property_indicated.phpt
 ext/reflection/tests/gh10623.phpt
+ext/reflection/tests/gh12856.phpt
 ext/reflection/tests/gh12908.phpt
 ext/reflection/tests/gh15902/ReflectionClass-callable.phpt
 ext/reflection/tests/gh15902/ReflectionClass-class.phpt

@@ -1656,6 +1656,9 @@ impl Vm {
         if !self.destructibles.is_empty() {
             self.dtor_check = true;
         }
+        if !self.readonly_reinit.is_empty() {
+            self.close_reinit(self.stack.len());
+        }
         self.include_writeback(&frame);
         // A synchronous (re-entrant) call returns its value to the Rust caller.
         if frame.capture {

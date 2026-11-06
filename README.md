@@ -62,7 +62,7 @@ passing, so the percentages are of all php-src tests.
 | ext/json | 80 | 94 | 85.1% | |
 | ext/libxml | 18 | 32 | 56.2% | on libxml2 |
 | ext/mbstring | 223 | 446 | 50.0% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 781 | 876 | 89.2% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/opcache | 782 | 876 | 89.3% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 23 | 66 | 34.8% | |
 | ext/pcre | 166 | 174 | 95.4% | PCRE2, linked statically |
@@ -70,7 +70,7 @@ passing, so the percentages are of all php-src tests.
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
-| ext/reflection | 410 | 540 | 75.9% | |
+| ext/reflection | 412 | 540 | 76.3% | |
 | ext/simplexml | 152 | 165 | 92.1% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
 | ext/spl | 548 | 796 | 68.8% | |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **13,384** | **22,219** | **60.2%** | |
+| **total** | **13,387** | **22,219** | **60.3%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

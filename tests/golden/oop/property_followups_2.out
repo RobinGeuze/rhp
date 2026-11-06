@@ -1,0 +1,26 @@
+Cannot modify readonly property C::$x
+int(1)
+int(3)
+Cannot indirectly modify private(set) property T::$o from global scope
+Cannot indirectly modify private(set) property T::$o from global scope
+Cannot indirectly modify private(set) property T::$a from global scope
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+Typed property U::$u must not be accessed before initialization
+string(3) "def"
+Property U::$nope does not exist
+bool(false)
+bool(true)
+Typed static property U::$u must not be accessed before initialization
+bool(true)
+int(4)
+bool(false)
+bool(true)
+int(2)
+
+Warning: Undefined variable $undefined in /Users/robing/gits/rhp/.claude/worktrees/rest/property-followups/tests/golden/oop/property_followups_2.php on line 47
+bool(false)

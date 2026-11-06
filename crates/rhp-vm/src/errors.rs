@@ -1183,6 +1183,9 @@ impl Vm {
                 self.include_writeback(f);
             }
             let depth = self.stack.len();
+            if !self.readonly_reinit.is_empty() {
+                self.close_reinit(depth);
+            }
             if let Some((_, ptr)) = self.ctor_frames.pop_if(|c| c.0 == depth) {
                 // The constructor threw: its object will never be destructed.
                 self.destructibles.retain(|d| Rc::as_ptr(d) as usize != ptr);

@@ -1413,18 +1413,11 @@ impl Vm {
                 }
                 Instr::MakeRefLval { dst } => {
                     let steps = std::mem::take(&mut self.cursor_steps);
-                    match self.cursor_static_check(top, &steps, StaticOp::Fetch, Value::Null) {
-                        Ok(Value::Null) => {}
-                        // A set-restricted static holding an object: a copy.
-                        Ok(copy) => {
-                            self.cursor_release();
-                            self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(copy))));
-                            continue;
-                        }
-                        Err(e) => {
-                            self.cursor_release();
-                            return Err(e);
-                        }
+                    if let Err(e) =
+                        self.cursor_static_check(top, &steps, StaticOp::Fetch, Value::Null)
+                    {
+                        self.cursor_release();
+                        return Err(e);
                     }
                     let cell = self.cursor_make_ref(top, &steps);
                     self.cursor_release();
@@ -1432,6 +1425,14 @@ impl Vm {
                 }
                 Instr::UnsetLval => {
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    if self.cursor_static.is_some() {
+                        if let Err(e) =
+                            self.cursor_static_check(top, &steps, StaticOp::Unset, Value::Null)
+                        {
+                            self.cursor_release();
+                            return Err(e);
+                        }
+                    }
                     let r = self.cursor_unset(top, &steps);
                     self.cursor_release();
                     r?;
@@ -1716,8 +1717,10 @@ impl Vm {
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    // A non-object container: the name is not converted.
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
                     if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
                         self.reg_set(top, dst, Value::Null);
                         continue;
                     }
@@ -1867,8 +1870,10 @@ impl Vm {
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    // A non-object container: the name is not converted.
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
                     if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
                         self.reg_set(top, dst, Value::Bool(true));
                         continue;
                     }
@@ -1878,8 +1883,10 @@ impl Vm {
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    // A non-object container: the name is not converted.
+                    // A non-object container: the name is read (an undefined
+                    // variable warns) but not converted.
                     if !matches!(deref(&o), Value::Object(_) | Value::Closure(_)) {
+                        self.reg_r(top, name)?;
                         self.reg_set(top, dst, Value::Bool(false));
                         continue;
                     }

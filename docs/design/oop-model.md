@@ -442,8 +442,9 @@ Refinements, all following `zend_object_handlers.c`:
 - **Writes through** a readonly or set-restricted property (`$o->ro[] = 1`,
   `&$o->ro`, `unset($o->ro[0])`, `$o->ro = &$x`) are php's "Cannot indirectly
   modify", checked before the uninitialized error; an object value is handed
-  out as a copy, an unset below an uninitialized one does nothing
-  (`Vm::cursor_through_check`, `Vm::prop_fetch_w`).
+  out as a copy (except `&C::$p` on a static, which php refuses), an unset
+  below an uninitialized one does nothing (`Vm::cursor_through_check`,
+  `Vm::prop_fetch_w`).
 - **Typed properties** are coerced on every write: plain assignment, compound
   assignment and `++`/`--` through a cursor (`Vm::cursor_leaf_typed`; an int
   at its limit is "Cannot increment property … past its maximal value"), and

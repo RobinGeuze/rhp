@@ -71,6 +71,8 @@ pub(crate) enum StaticOp {
     Rw,
     /// `&C::$p`, `C::$p[] = v` (ZEND_FETCH_STATIC_PROP_W).
     Fetch,
+    /// `unset(C::$p[k])` (ZEND_FETCH_STATIC_PROP_UNSET).
+    Unset,
 }
 
 /// What [`Vm::cursor_through_check`] found.
@@ -1040,9 +1042,7 @@ impl Vm {
 
     /// php's asymmetric visibility and typed checks for a cursor rooted
     /// at a static property (ZEND_ASSIGN_STATIC_PROP and friends). Returns
-    /// `v` (coerced for an assignment to a typed static), or for a
-    /// [`StaticOp::Fetch`] of a set-restricted static holding an object,
-    /// that object (the reference gets a copy); else null.
+    /// `v`.
     pub(crate) fn cursor_static_check(
         &mut self,
         top: usize,
@@ -1067,7 +1067,7 @@ impl Vm {
             CursorRoot::Cv(_) => false,
         };
         let direct = steps.is_empty();
-        let op = if direct || op == StaticOp::Fetch {
+        let op = if direct || matches!(op, StaticOp::Fetch | StaticOp::Unset) {
             op
         } else {
             StaticOp::Fetch
@@ -1084,11 +1084,15 @@ impl Vm {
                 let what = match op {
                     StaticOp::Assign => Some("modify"),
                     StaticOp::Ref | StaticOp::Rw => Some("indirectly modify"),
+                    // An object below a nested write is used as is; a
+                    // reference to the static itself is refused (php's
+                    // ZEND_FETCH_REF makes the slot a reference first).
                     StaticOp::Fetch => match deref(&cur) {
-                        Value::Object(_) if direct => return Ok(deref(&cur)),
-                        Value::Object(_) => None,
+                        Value::Object(_) if !direct => None,
                         _ => Some("indirectly modify"),
                     },
+                    StaticOp::Unset if undef || matches!(deref(&cur), Value::Object(_)) => None,
+                    StaticOp::Unset => Some("indirectly modify"),
                 };
                 if let Some(what) = what {
                     let vis = if sv == rhp_values::Visibility::Private {

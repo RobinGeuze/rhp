@@ -1338,6 +1338,13 @@ impl Vm {
         }
     }
 
+    /// The frame at stack index `depth` returned: close the `__clone`
+    /// windows it held, so a later direct `__clone()` call at the same
+    /// depth gets none.
+    pub(crate) fn close_reinit(&mut self, depth: usize) {
+        self.readonly_reinit.retain(|_, (d, _)| *d < depth);
+    }
+
     /// Open the `__clone` window of the clone `obj`, whose `__clone` frame
     /// is about to be pushed at stack index `depth`: each initialized
     /// readonly property may be modified once.

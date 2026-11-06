@@ -40,3 +40,13 @@ E8: Only variables should be passed by reference (line 68)
 E8: Only variables should be passed by reference (line 69)
 byref(): Argument #1 ($x) could not be passed by reference
 sent
+E2: Undefined variable $k (line 77)
+E8192: Using null as an array offset is deprecated, use an empty string instead (line 77)
+array(3) {
+  [0]=>
+  int(2)
+  [1]=>
+  &int(1)
+  [""]=>
+  &int(1)
+}

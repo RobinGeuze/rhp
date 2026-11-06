@@ -70,3 +70,9 @@ byref(@byval());
 function byval() { return 1; }
 try { byref(@$v); } catch (Error $e) { echo $e->getMessage(), "\n"; }
 echo "sent\n";
+
+// foreach by reference: the key is assigned after the value target
+$c = new stdClass;
+$c->a = [1, 2];
+foreach ($c->a as $k => &$c->a[$k]) {}
+var_dump($c->a);

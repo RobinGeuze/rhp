@@ -379,6 +379,14 @@ impl ProtoBuilder<'_> {
                 pattern => (self.alloc_temp(), Some(pattern)),
             };
             let (key_cv, key_target) = self.foreach_key_target(key_expr)?;
+            // php assigns the key after the value target, which may use it
+            let key_after = (ref_target.is_some() && key_target.is_none() && key_cv != Reg::MAX)
+                .then_some(key_cv);
+            let key_cv = if key_after.is_some() {
+                self.alloc_temp()
+            } else {
+                key_cv
+            };
             let pos_reg = self.alloc_temp();
             let saved_floor = self.temp_floor;
             self.temp_floor = self.next_temp;
@@ -401,6 +409,9 @@ impl ProtoBuilder<'_> {
                     self.assign_ref_to(t, val_cv)?;
                 }
                 None => {}
+            }
+            if let Some(cv) = key_after {
+                self.emit(Instr::Assign { cv, src: key_cv });
             }
             if let Some(k) = key_target {
                 self.store_to_target(k, key_cv)?;

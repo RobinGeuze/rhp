@@ -2788,6 +2788,9 @@ fn walk_entry(host: &mut dyn Host, args: &[Value], recursive: bool) -> Result<Va
             zval_value_name(host, &v)
         )));
     }
+    // Not held during the walk: a second handle would make the walk
+    // separate the array.
+    drop(v);
     // The third argument is passed on only when given.
     let userdata = args.get(2).map(deref);
     let mut active = Vec::new();

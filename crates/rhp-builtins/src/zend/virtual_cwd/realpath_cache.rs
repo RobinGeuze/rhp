@@ -69,12 +69,13 @@ thread_local! {
     static CACHE: RefCell<Cache> = const { RefCell::new(Cache::new()) };
 }
 
-/// php's realpath_cache_key (FNV-1 over the bytes).
+/// php's realpath_cache_key (FNV-1 over the bytes). It xors in a C
+/// `char`, which is signed on some targets (x86-64, Apple arm64).
 fn key(path: &[u8]) -> u64 {
     let mut h: u64 = 2166136261;
     for &b in path {
         h = h.wrapping_mul(16777619);
-        h ^= b as u64;
+        h ^= b as std::ffi::c_char as u64;
     }
     h
 }
@@ -105,15 +106,6 @@ pub(crate) fn configure(limit: Option<i64>, ttl: Option<i64>, open_basedir: Opti
             c.disabled = d;
         }
     });
-}
-
-/// Run `f` as php-cli's startup does: before php_request_startup turns
-/// the cache off for open_basedir.
-pub fn startup<R>(f: impl FnOnce() -> R) -> R {
-    let was = CACHE.with(|c| std::mem::replace(&mut c.borrow_mut().disabled, false));
-    let r = f();
-    CACHE.with(|c| c.borrow_mut().disabled = was);
-    r
 }
 
 /// realpath_cache_find: the cached `(realpath, is_dir)` of `path`,

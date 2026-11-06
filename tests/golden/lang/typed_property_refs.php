@@ -112,3 +112,24 @@ try {
 } catch (TypeError $e) {
     echo $e->getMessage(), "\n";
 }
+
+// A global bound to a typed property, written through $GLOBALS.
+$t6 = new T();
+$gref = &$t6->i;
+function write_global() {
+    try {
+        $GLOBALS['gref'] = "abc";
+    } catch (TypeError $e) {
+        echo $e->getMessage(), "\n";
+    }
+    $GLOBALS['gref'] = "7";
+    var_dump($GLOBALS['gref']);
+    $GLOBALS['gref'] = PHP_INT_MAX;
+    try {
+        $GLOBALS['gref']++;
+    } catch (TypeError $e) {
+        echo $e->getMessage(), "\n";
+    }
+}
+write_global();
+var_dump($t6->i);

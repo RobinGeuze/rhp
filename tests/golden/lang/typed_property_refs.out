@@ -34,3 +34,7 @@ array(1) {
 }
 float(0.5)
 Cannot assign Exception to reference held by property T::$s of type ?string
+Cannot assign string to reference held by property T::$i of type int
+int(7)
+Cannot increment a reference held by property T::$i of type int past its maximal value
+int(9223372036854775807)

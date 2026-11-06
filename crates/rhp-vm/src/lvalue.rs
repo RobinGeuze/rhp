@@ -1030,8 +1030,15 @@ impl Vm {
             }
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
-                r
+                // A global's cell that is itself a typed reference
+                // (`$GLOBALS['x']` bound to a typed property): written
+                // through it as a reference.
+                if cx.typed.has(&rc) && !(steps.is_empty() && matches!(v, Value::Ref(_))) {
+                    assign_path(&mut Value::Ref(rc), steps, v, &cx)
+                } else {
+                    let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
+                    r
+                }
             }
         };
         flush_deferred_writes();
@@ -1309,7 +1316,11 @@ impl Vm {
             return None;
         }
         let scope = self.stack[top].defining_class;
-        let mut cur = self.cursor_root_value(top);
+        let mut cur = match &self.cursor_root {
+            // A global's cell may be the typed reference itself.
+            CursorRoot::Cell(rc) if self.typed_refs.has(rc) => Value::Ref(rc.clone()),
+            _ => self.cursor_root_value(top),
+        };
         for step in steps {
             let next = match (deref(&cur), step) {
                 (Value::Array(a), CursorStep::Key(k)) => {

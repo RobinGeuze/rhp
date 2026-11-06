@@ -4973,7 +4973,6 @@ Zend/tests/varvars_by_ref.phpt
 Zend/tests/vm_stack_with_arg_extend.phpt
 Zend/tests/weakrefs/gh10043-006.phpt
 Zend/tests/weakrefs/gh10043-010.phpt
-Zend/tests/weakrefs/gh10043-011.phpt
 Zend/tests/weakrefs/gh10043-014.phpt
 Zend/tests/weakrefs/gh10043-016.phpt
 Zend/tests/weakrefs/gh13612.phpt

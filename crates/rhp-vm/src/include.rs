@@ -88,7 +88,7 @@ impl Vm {
     /// `eval($code)`: compile the PHP source at runtime and run it in the current
     /// variable scope (`top`). Returns the script's return value (Null if none).
     pub(crate) fn do_eval(&mut self, top: usize, src: Reg) -> Result<Value, Thrown> {
-        let code = conv::to_string_bytes(&self.reg_get(top, src));
+        let code = conv::to_string_bytes(&self.reg_r(top, src)?);
         // eval() code is already in PHP mode; prepend an open tag so the parser
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();
@@ -596,7 +596,7 @@ impl Vm {
             }
             let name = &main.cv_var_names[ci];
             if let Some(caller_ci) = caller_proto.cv_var_names.iter().position(|n| n == name) {
-                let rc = self.promote(caller_top, caller_ci as Reg);
+                let rc = self.promote_slot(caller_top, caller_ci as Reg);
                 frame.regs[ci] = Value::Ref(rc);
             } else if name.as_bytes() != b"this"
                 && !main.superglobals.iter().any(|(r, _)| *r as usize == ci)
@@ -671,7 +671,7 @@ impl Vm {
                         self.var_var_bind(caller, name.as_bytes(), rc.clone());
                     }
                 }
-                Value::Null => self.var_var_unset(caller, name.as_bytes()),
+                Value::Undef => self.var_var_unset(caller, name.as_bytes()),
                 v => {
                     let cell = Rc::new(RefCell::new(v.clone()));
                     self.var_var_bind(caller, name.as_bytes(), cell);

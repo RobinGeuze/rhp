@@ -202,7 +202,7 @@ impl Encoder {
             return Ok(self.fail(JSON_ERROR_DEPTH, out, b"null"));
         }
         match v {
-            Value::Null => out.extend_from_slice(b"null"),
+            Value::Null | Value::Undef => out.extend_from_slice(b"null"),
             Value::Bool(true) => out.extend_from_slice(b"true"),
             Value::Bool(false) => out.extend_from_slice(b"false"),
             Value::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),

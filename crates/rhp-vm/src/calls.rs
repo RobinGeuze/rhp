@@ -305,6 +305,7 @@ impl Vm {
                 self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
             }
             Some(Found::Call(magic) | Found::CallStatic(magic)) => {
+                self.bind_undef_args(top, base, argc, |_| false)?;
                 let mut arr = rhp_values::PhpArray::new();
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
@@ -460,6 +461,7 @@ impl Vm {
                 Ok(())
             }
             StaticTarget::Magic(m, this, called) => {
+                self.bind_undef_args(top, base, argc, |_| false)?;
                 let mut arr = rhp_values::PhpArray::new();
                 for i in 0..argc {
                     arr.push(self.reg_get(top, base + i));
@@ -487,7 +489,7 @@ impl Vm {
         args: Reg,
         dst: Reg,
     ) -> Result<(), Thrown> {
-        let o = self.reg_get(top, obj);
+        let o = self.reg_r(top, obj)?;
         let arr = self.reg_get(top, args);
         if let Value::Closure(_) = o {
             let (argv, named) = self.split_call_args(&arr)?;
@@ -637,6 +639,7 @@ impl Vm {
                 frame,
             ),
             Args::Window { top, base, argc } => {
+                self.bind_undef_args(top, base, argc, |i| param_is_ref(&proto, i))?;
                 // The window's temporaries move into the callee (php moves
                 // arguments into the callee's frame, so they die with it).
                 let f = &mut self.stack[top];
@@ -651,6 +654,7 @@ impl Vm {
                         }
                         match std::mem::replace(&mut w[i], Value::Null) {
                             Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                            Value::Undef => Value::Null,
                             v => v,
                         }
                     },
@@ -688,6 +692,43 @@ impl Vm {
         let mut popped = self.stack.pop().expect("pushed frame");
         std::mem::swap(&mut popped, frame);
         Err(t)
+    }
+
+    /// Arguments sent as [`Instr::MakeArgRef`] of an undefined variable: a
+    /// by-reference parameter creates it as null, a by-value one reads it
+    /// ("Undefined variable $x", in the caller, before the call).
+    #[inline]
+    fn bind_undef_args(
+        &mut self,
+        top: usize,
+        base: Reg,
+        argc: u16,
+        by_ref: impl Fn(u16) -> bool,
+    ) -> Result<(), Thrown> {
+        let w = &self.stack[top].regs[base as usize..(base + argc) as usize];
+        if !w.iter().any(|v| v.is_undef()) {
+            return Ok(());
+        }
+        for i in 0..argc {
+            let Value::Ref(rc) = &self.stack[top].regs[(base + i) as usize] else {
+                continue;
+            };
+            if !matches!(*rc.borrow(), Value::Undef) {
+                continue;
+            }
+            let rc = rc.clone();
+            if by_ref(i) {
+                crate::dispatch::cell_define(&rc);
+                continue;
+            }
+            let f = &self.stack[top];
+            let cv = (0..f.proto.num_cvs)
+                .find(|&r| matches!(&f.regs[r as usize], Value::Ref(c) if Rc::ptr_eq(c, &rc)));
+            if let Some(cv) = cv {
+                self.undef_cv(top, cv)?;
+            }
+        }
+        Ok(())
     }
 
     /// zend_std_get_constructor's visibility check for `new C` run by frame
@@ -961,7 +1002,7 @@ impl Vm {
         let proto = f.proto.clone();
         let mut frame = Frame::new(proto.clone(), f.unit, 0);
         for (i, cap) in cd.captures.iter().enumerate() {
-            frame.regs[i] = cap.clone();
+            frame.regs[i] = cap.copy_slot();
         }
         // A rebound closure (`Closure::bind`/`bindTo`) overrides the captured
         // `$this` with the new object.
@@ -2067,6 +2108,7 @@ impl Vm {
                     let v = std::mem::replace(&mut self.stack[top].regs[r], Value::Null);
                     match v {
                         Value::Ref(rc) if !by_ref => rc.borrow().clone(),
+                        Value::Undef => Value::Null,
                         v => v,
                     }
                 } else if by_ref {

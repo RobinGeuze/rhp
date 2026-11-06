@@ -66,6 +66,10 @@ impl ProtoBuilder<'_> {
 
     /// A nullsafe guard on `src` for the open chain.
     pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
+        // JMP_NULL reads its operand (an undefined variable warns).
+        if src < self.num_cvs {
+            self.emit(Instr::CheckCv { cv: src });
+        }
         let pos = self.code.len();
         self.emit(Instr::Nop);
         self.sc_jumps.push((pos, src));
@@ -441,7 +445,7 @@ impl ProtoBuilder<'_> {
     fn compile_coalesce(&mut self, b: &crate::parse::cst::Binary) -> Result<Reg, Thrown> {
         let dst = self.alloc_temp();
         let a = self.compile_quiet(b.lhs)?;
-        self.emit(Instr::Mov { dst, src: a });
+        self.emit(Instr::MovIs { dst, src: a });
         let jnn = self.code.len();
         self.emit(Instr::Nop); // JmpNotNull dst -> end
         let r = self.compile_expr(b.rhs)?;
@@ -564,7 +568,7 @@ impl ProtoBuilder<'_> {
             | Expression::Access(Access::StaticProperty(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(target, &mut steps)?;
-                self.emit_cursor(root, &steps);
+                self.emit_cursor_mode(root, &steps, crate::assign::LvalMode::Rw);
                 let dst = self.alloc_temp();
                 self.emit(Instr::IncDecLval { dst, pre, delta });
                 Ok(dst)
@@ -1000,7 +1004,14 @@ impl ProtoBuilder<'_> {
                 let r = if crate::util::is_this(e.value) {
                     self.cv(b"this")
                 } else {
-                    self.compile_quiet(e.value)?
+                    let r = self.compile_quiet(e.value)?;
+                    if r < self.num_cvs {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::MovIs { dst: t, src: r });
+                        t
+                    } else {
+                        r
+                    }
                 };
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });

@@ -164,7 +164,7 @@ impl Vm {
         // C implementation raises none): it only updates error_get_last().
         // (`silence_stack` records the stack depth at each `@`.)
         let prelude_silenced = self.silence > 0
-            && self.silence_stack.last().is_some_and(|&(depth, _)| {
+            && self.silence_stack.last().is_some_and(|&(depth, _, _)| {
                 depth
                     .checked_sub(1)
                     .and_then(|i| self.stack.get(i))
@@ -224,7 +224,7 @@ impl Vm {
             self.pending_throw = Some(Thrown::Exit(255));
             return;
         }
-        if self.silence > 0 && level & SILENCE_KEEPS == 0 {
+        if self.quiet > 0 && level & SILENCE_KEEPS == 0 {
             return;
         }
         use builtins::*;
@@ -814,13 +814,42 @@ impl Vm {
     /// An exception was caught at frame depth `depth`: end every `@` region
     /// opened at or above it (php's live-range cleanup of ZEND_END_SILENCE).
     fn unsilence_frames(&mut self, depth: usize) {
-        while let Some(&(d, lvl)) = self.silence_stack.last() {
+        while let Some(&(d, _, _)) = self.silence_stack.last() {
             if d < depth {
                 break;
             }
-            self.silence = lvl;
-            self.silence_stack.pop();
+            self.end_silence();
         }
+    }
+
+    /// ZEND_BEGIN_SILENCE: error_reporting drops to the fatal types (php
+    /// keeps the old value to put back).
+    pub(crate) fn begin_silence(&mut self) {
+        let saved = builtins::zend::builtin_functions::error_reporting_level(self);
+        self.silence_stack
+            .push((self.stack.len(), self.silence, saved));
+        self.silence += 1;
+        if saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved & SILENCE_KEEPS);
+        }
+    }
+
+    /// ZEND_END_SILENCE (also its live-range cleanup when an exception
+    /// leaves the region): the old error_reporting comes back unless the
+    /// code under `@` set one that shows more than fatal errors.
+    pub(crate) fn end_silence(&mut self) {
+        let Some((_, lvl, saved)) = self.silence_stack.pop() else {
+            return;
+        };
+        self.silence = lvl;
+        let cur = builtins::zend::builtin_functions::error_reporting_level(self);
+        if cur & !SILENCE_KEEPS == 0 && saved & !SILENCE_KEEPS != 0 {
+            self.set_error_reporting(saved);
+        }
+    }
+
+    fn set_error_reporting(&mut self, v: i64) {
+        builtins::Host::ini_set(self, b"error_reporting", v.to_string().into_bytes());
     }
 
     /// Unwind a thrown exception through the exception table: find a matching

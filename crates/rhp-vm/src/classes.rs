@@ -1903,7 +1903,7 @@ impl Vm {
                             .as_bytes()
                             .to_vec(),
                     ),
-                    ClassRef::Dynamic(reg) => match self.reg_get(top, reg) {
+                    ClassRef::Dynamic(reg) => match self.reg_r(top, reg)? {
                         crate::Value::Str(s) => Some(s.as_bytes().to_vec()),
                         _ => None,
                     },

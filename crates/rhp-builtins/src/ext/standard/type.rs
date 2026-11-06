@@ -17,7 +17,7 @@ fn fn_gettype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = match deref(&args[0]) {
-        Value::Null => "null",
+        Value::Null | Value::Undef => "null",
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",

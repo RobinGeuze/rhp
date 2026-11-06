@@ -47,8 +47,14 @@ pub const E_ALL: i64 = 30719;
 /// Two sharing disciplines, kept strictly separate:
 /// - value types with copy-on-write (`Str`, `Array`): `Rc<T>` + `make_mut`.
 /// - handle/reference types (`Object`, `Ref`): `Rc<RefCell<T>>` (aliasing).
-#[derive(Clone)]
 pub enum Value {
+    /// An undefined variable slot (php's IS_UNDEF): a CV never assigned or
+    /// unset, or a symbol-table cell in that state. Only variable slots hold
+    /// it; it is never a value. Cloning gives `Null`, so a copy read out of
+    /// an undefined slot is null and the marker cannot escape into values;
+    /// the reads that warn check the slot itself (see `rhp_vm` `reg_r`).
+    /// First, so that it and the scalars are one range of tags.
+    Undef,
     Null,
     Bool(bool),
     Int(i64),
@@ -66,6 +72,24 @@ pub enum Value {
     /// (buffers, file handles, the stdout/stderr target) lives in the VM, keyed
     /// by this id, so this crate stays I/O-free.
     Resource(ResourceHandle),
+}
+
+impl Clone for Value {
+    #[inline(always)]
+    fn clone(&self) -> Value {
+        match self {
+            Value::Null | Value::Undef => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(n) => Value::Int(*n),
+            Value::Float(f) => Value::Float(*f),
+            Value::Str(s) => Value::Str(s.clone()),
+            Value::Array(a) => Value::Array(a.clone()),
+            Value::Object(o) => Value::Object(o.clone()),
+            Value::Ref(r) => Value::Ref(r.clone()),
+            Value::Closure(c) => Value::Closure(c.clone()),
+            Value::Resource(r) => Value::Resource(r.clone()),
+        }
+    }
 }
 
 /// A resource value's identity: an id (shared with the VM's resource table) and
@@ -542,7 +566,7 @@ impl ArrayKey {
         Some(match v {
             Value::Int(n) => ArrayKey::Int(*n),
             Value::Bool(b) => ArrayKey::Int(if *b { 1 } else { 0 }),
-            Value::Null => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
+            Value::Null | Value::Undef => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
             Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
             Value::Resource(r) => ArrayKey::Int(r.id as i64),
@@ -836,10 +860,31 @@ impl Value {
         Value::Str(PhpStr::from_bytes(b))
     }
 
+    /// A copy of a variable slot that keeps it undefined (`clone` reads an
+    /// undefined slot as null).
+    #[inline]
+    pub fn copy_slot(&self) -> Value {
+        match self {
+            Value::Undef => Value::Undef,
+            v => v.clone(),
+        }
+    }
+
+    /// An undefined variable slot (see [`Value::Undef`]), also behind a
+    /// symbol-table cell.
+    #[inline]
+    pub fn is_undef(&self) -> bool {
+        match self {
+            Value::Undef => true,
+            Value::Ref(r) => matches!(r.try_borrow().as_deref(), Ok(Value::Undef)),
+            _ => false,
+        }
+    }
+
     /// The PHP type name as reported by `gettype()`.
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Null => "NULL",
+            Value::Null | Value::Undef => "NULL",
             Value::Bool(_) => "boolean",
             Value::Int(_) => "integer",
             Value::Float(_) => "double",

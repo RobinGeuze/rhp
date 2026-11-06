@@ -75,6 +75,145 @@ impl Vm {
         }
     }
 
+    /// A read of register `r` as an operand (php's BP_VAR_R fetch): an
+    /// undefined CV raises "Undefined variable $x" and reads as null.
+    #[inline(always)]
+    pub(crate) fn reg_r(&mut self, top: usize, r: Reg) -> Result<Value, Thrown> {
+        match &self.stack[top].regs[r as usize] {
+            Value::Undef => self.undef_cv(top, r),
+            Value::Ref(rc) => {
+                let v = rc.borrow().copy_slot();
+                if let Value::Undef = v {
+                    return self.undef_cv(top, r);
+                }
+                Ok(v)
+            }
+            v => Ok(v.clone()),
+        }
+    }
+
+    /// Define CV `cv` as null when it is undefined (php's BP_VAR_W fetch),
+    /// writing through the symbol-table cell of a global-scope variable.
+    #[inline]
+    pub(crate) fn cv_define(&mut self, top: usize, cv: Reg) {
+        match &mut self.stack[top].regs[cv as usize] {
+            slot @ Value::Undef => *slot = Value::Null,
+            Value::Ref(rc) => cell_define(rc),
+            _ => {}
+        }
+    }
+
+    /// [`Vm::reg_r`], inline for a scalar.
+    #[inline(always)]
+    fn reg_r_fast(&mut self, top: usize, r: Reg) -> Result<Value, Thrown> {
+        let slot = &self.stack[top].regs[r as usize];
+        if let Value::Ref(rc) = slot {
+            if let Ok(v) = rc.try_borrow() {
+                if let Some(s) = scalar_copy(&v) {
+                    return Ok(s);
+                }
+            }
+        } else if let Some(s) = scalar_copy(slot) {
+            return Ok(s);
+        }
+        self.reg_r(top, r)
+    }
+
+    /// php's zval_undefined_cv: the warning for a read of undefined CV `r`
+    /// (null after it).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn undef_cv(&mut self, top: usize, r: Reg) -> Result<Value, Thrown> {
+        let proto = &self.stack[top].proto;
+        // A temporary holding a copied undefined slot reads as null.
+        if r >= proto.num_cvs {
+            return Ok(Value::Null);
+        }
+        let name = proto
+            .cv_var_names
+            .get(r as usize)
+            .map(|n| n.as_bytes().to_vec())
+            .unwrap_or_default();
+        let msg = [b"Undefined variable $".as_slice(), &name].concat();
+        self.diag(builtins::E_WARNING, &msg)?;
+        Ok(Value::Null)
+    }
+
+    /// `LvalVarVar` / `LvalVarVarRw`: a cursor rooted at the variable named
+    /// by `name` (created; a read-modify-write warns first when undefined).
+    fn lval_var_var(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
+        let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+        if vname == b"this" {
+            return Err(Thrown::error("Error", "Cannot re-assign $this"));
+        }
+        if rw {
+            let undef = match self.var_var_lookup(top, &vname) {
+                Some(Ok(cv)) => self.stack[top].regs[cv as usize].is_undef(),
+                Some(Err(cell)) => cell.borrow().is_undef(),
+                None => true,
+            };
+            if undef {
+                let msg = [b"Undefined variable $".as_slice(), &vname].concat();
+                self.diag(builtins::E_WARNING, &msg)?;
+            }
+        }
+        self.cursor_root = match self.var_var_slot(top, &vname) {
+            Ok(cv) => {
+                self.cv_define(top, cv);
+                CursorRoot::Cv(cv)
+            }
+            Err(cell) => {
+                cell_define(&cell);
+                CursorRoot::Cell(cell)
+            }
+        };
+        self.cursor_global = None;
+        self.cursor_steps.clear();
+        Ok(())
+    }
+
+    /// `LvalGlobal` / `LvalGlobalRw`: a cursor rooted at global `name`
+    /// (`$GLOBALS[...]` as an lvalue; a read-modify-write warns first when
+    /// it is undefined).
+    fn lval_global(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
+        let n = conv::to_string_bytes(&self.reg_r(top, name)?);
+        if rw
+            && self
+                .globals
+                .get(&n[..])
+                .is_none_or(|c| c.borrow().is_undef())
+        {
+            let msg = [b"Undefined global variable $".as_slice(), &n].concat();
+            self.diag(builtins::E_WARNING, &msg)?;
+        }
+        let cell = self.global_cell(&n);
+        cell_define(&cell);
+        self.cursor_root = CursorRoot::Cell(cell);
+        self.cursor_global = Some(n);
+        self.cursor_steps.clear();
+        Ok(())
+    }
+
+    /// `unset($x)`: CV `cv` of frame `top` becomes undefined. In the global
+    /// scope the symbol-table entry is dropped (a reference to it keeps the
+    /// old cell).
+    pub(crate) fn unset_cv(&mut self, top: usize, cv: Reg) {
+        let f = &self.stack[top];
+        if f.global_scope
+            && (cv as usize) < f.proto.cv_var_names.len()
+            && matches!(f.regs[cv as usize], Value::Ref(_))
+        {
+            self.stack[top].regs[cv as usize] = Value::Undef;
+            self.sync_global_cv(top, cv);
+            self.dtor_check = true;
+        } else {
+            if matches!(self.stack[top].regs[cv as usize], Value::Ref(_)) {
+                self.dtor_check = true;
+            }
+            self.reg_set(top, cv, Value::Undef);
+        }
+    }
+
     /// Plain register write (temporaries / instruction destinations): overwrites
     /// the slot. Never writes through a stale `Ref` left in a reused temp.
     pub(crate) fn reg_set(&mut self, top: usize, r: Reg, v: Value) {
@@ -83,23 +222,6 @@ impl Vm {
             self.dtor_check = true;
         }
         *slot = v;
-    }
-
-    /// [`Vm::reg_get`], inline for a scalar (also behind a reference: a
-    /// global-scope variable).
-    #[inline(always)]
-    fn reg_get_fast(&self, top: usize, r: Reg) -> Value {
-        let slot = &self.stack[top].regs[r as usize];
-        if let Value::Ref(rc) = slot {
-            if let Ok(v) = rc.try_borrow() {
-                if let Some(s) = scalar_copy(&v) {
-                    return s;
-                }
-            }
-        } else if let Some(s) = scalar_copy(slot) {
-            return s;
-        }
-        self.reg_get(top, r)
     }
 
     /// [`Vm::reg_set`], inline when the old value is a scalar: nothing to
@@ -304,7 +426,7 @@ impl Vm {
             match instr {
                 Instr::Nop => {}
                 Instr::Mov { dst, src } => {
-                    let v = self.reg_get_fast(top, src);
+                    let v = self.reg_r_fast(top, src)?;
                     self.reg_set_fast(top, dst, v);
                 }
                 Instr::MovTake { dst, src } => {
@@ -315,25 +437,30 @@ impl Vm {
                     let v = proto.consts[k as usize].clone();
                     self.reg_set_fast(top, dst, v);
                 }
-                Instr::LoadNull { dst } => {
-                    // `unset($x)` in the global scope drops the symbol-table
-                    // entry's binding (a reference to it keeps the old cell).
-                    if self.stack[top].global_scope
-                        && (dst as usize) < proto.cv_var_names.len()
-                        && matches!(self.stack[top].regs[dst as usize], Value::Ref(_))
-                    {
-                        self.stack[top].regs[dst as usize] = Value::Null;
-                        self.sync_global_cv(top, dst);
-                        self.dtor_check = true;
-                    } else {
-                        self.reg_set(top, dst, Value::Null);
+                Instr::LoadNull { dst } => self.reg_set(top, dst, Value::Null),
+                Instr::UnsetCv { cv } => self.unset_cv(top, cv),
+                Instr::CheckCv { cv } => {
+                    if self.stack[top].regs[cv as usize].is_undef() {
+                        self.undef_cv(top, cv)?;
                     }
+                }
+                Instr::MovIs { dst, src } => {
+                    let slot = &self.stack[top].regs[src as usize];
+                    if let Some(s) = scalar_copy(slot) {
+                        self.reg_set_fast(top, dst, s);
+                        continue;
+                    }
+                    let v = match &self.stack[top].regs[src as usize] {
+                        Value::Ref(rc) => rc.borrow().copy_slot(),
+                        v => v.copy_slot(),
+                    };
+                    self.reg_set(top, dst, v);
                 }
                 Instr::LoadBool { dst, b } => self.reg_set_fast(top, dst, Value::Bool(b)),
                 Instr::LoadInt { dst, n } => self.reg_set_fast(top, dst, Value::Int(n)),
 
                 Instr::Assign { cv, src } => {
-                    let v = self.reg_get_fast(top, src);
+                    let v = self.reg_r_fast(top, src)?;
                     self.cv_assign_fast(top, cv, v);
                 }
 
@@ -362,7 +489,7 @@ impl Vm {
                     }
                 }
                 Instr::Pow { dst, a, b } => {
-                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
                     let v = self.pow_op(&x, &y)?;
                     self.reg_set(top, dst, v);
                 }
@@ -403,7 +530,7 @@ impl Vm {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
                     }
-                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
                     let slow = |v: &Value| match v {
                         Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
                         Value::Float(f) => f.is_nan(),
@@ -418,7 +545,7 @@ impl Vm {
                 }
 
                 Instr::Neg { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let r = match v {
                         Value::Int(n) if n != i64::MIN => Value::Int(-n),
                         Value::Float(f) => Value::Float(-f),
@@ -428,7 +555,7 @@ impl Vm {
                     self.reg_set(top, dst, r);
                 }
                 Instr::BitNot { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let r = match v {
                         Value::Int(n) => Value::Int(!n),
                         _ => self.bitwise_not_slow(&v)?,
@@ -436,7 +563,7 @@ impl Vm {
                     self.reg_set(top, dst, r);
                 }
                 Instr::Not { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let b = self.truthy(&v)?;
                     self.reg_set(top, dst, Value::Bool(!b));
                 }
@@ -454,14 +581,26 @@ impl Vm {
                         self.reg_set_fast(top, dst, Value::Int(r));
                         continue;
                     }
+                    // An undefined variable warns, then counts as null
+                    // even when the handler threw (zend_pre_inc_helper).
+                    let undef = if self.stack[top].regs[cv as usize].is_undef() {
+                        let r = self.undef_cv(top, cv).err();
+                        self.cv_assign(top, cv, Value::Null);
+                        r
+                    } else {
+                        None
+                    };
                     let cur = self.reg_get(top, cv);
                     let new = self.inc_dec_vm(&cur, delta as i64)?;
                     self.cv_assign(top, cv, new.clone());
                     self.reg_set(top, dst, if pre { new } else { cur });
+                    if let Some(e) = undef {
+                        return Err(e);
+                    }
                 }
 
                 Instr::CastInt { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     // zval_get_long: an object's cast_object (curl handles:
                     // the id), else a warning.
                     let n = match v {
@@ -481,7 +620,7 @@ impl Vm {
                     self.reg_set(top, dst, Value::Int(n));
                 }
                 Instr::CastFloat { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let f = match v {
                         Value::Object(_) | Value::Closure(_) => {
                             match builtins::zend::object_handlers::object_to_number(
@@ -498,17 +637,17 @@ impl Vm {
                     self.reg_set(top, dst, Value::Float(f));
                 }
                 Instr::CastString { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let s = self.to_string_vm(&v)?;
                     self.reg_set(top, dst, Value::str(s));
                 }
                 Instr::CastBool { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let b = self.truthy(&v)?;
                     self.reg_set(top, dst, Value::Bool(b));
                 }
                 Instr::CastArray { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     let out = match &v {
                         // get_properties_for(ARRAY_CAST): an internal class's
                         // view (an ArrayObject's storage).
@@ -529,7 +668,7 @@ impl Vm {
                     self.reg_set(top, dst, out);
                 }
                 Instr::CastObject { dst, a } => {
-                    let v = self.reg_get(top, a);
+                    let v = self.reg_r(top, a)?;
                     if let Value::Float(f) = v {
                         if f.is_nan() {
                             self.nan_warning("object")?;
@@ -556,22 +695,15 @@ impl Vm {
                     if self.pending_throw.is_none() && self.int_binop(top, dst, a, b, int_cmp) {
                         continue;
                     }
-                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
                     let r = self.eval_cmp(kind, &x, &y)?;
                     self.reg_set(top, dst, r);
                 }
-                Instr::BeginSilence => {
-                    self.silence_stack.push((self.stack.len(), self.silence));
-                    self.silence += 1;
-                }
-                Instr::EndSilence => {
-                    if let Some((_, lvl)) = self.silence_stack.pop() {
-                        self.silence = lvl;
-                    }
-                }
+                Instr::BeginSilence => self.begin_silence(),
+                Instr::EndSilence => self.end_silence(),
 
                 Instr::Echo { src } => {
-                    let v = self.reg_get(top, src);
+                    let v = self.reg_r(top, src)?;
                     let bytes = self.to_string_vm(&v)?;
                     self.echo_out(&bytes)?;
                 }
@@ -580,7 +712,7 @@ impl Vm {
                     self.echo_out(&bytes)?;
                 }
                 Instr::Print { dst, src } => {
-                    let v = self.reg_get(top, src);
+                    let v = self.reg_r(top, src)?;
                     let bytes = self.to_string_vm(&v)?;
                     self.echo_out(&bytes)?;
                     self.reg_set(top, dst, Value::Int(1));
@@ -601,7 +733,7 @@ impl Vm {
                             f.pc = target as usize;
                         }
                     } else {
-                        let c = self.reg_get(top, cond);
+                        let c = self.reg_r(top, cond)?;
                         if self.truthy(&c)? {
                             self.stack[top].pc = target as usize;
                         }
@@ -614,7 +746,7 @@ impl Vm {
                             f.pc = target as usize;
                         }
                     } else {
-                        let c = self.reg_get(top, cond);
+                        let c = self.reg_r(top, cond)?;
                         if !self.truthy(&c)? {
                             self.stack[top].pc = target as usize;
                         }
@@ -635,15 +767,22 @@ impl Vm {
                     self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
                 }
                 Instr::ArrPush { arr, val } => {
-                    let v = self.elem_operand(top, &proto, val);
+                    let v = self.elem_operand(top, &proto, val)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.push(v);
                     }
                 }
+                // ZEND_ADD_ARRAY_ELEMENT reads the value, then the key (an
+                // undefined variable is "" without the null deprecation).
                 Instr::ArrSet { arr, key, val } => {
-                    let k = self.reg_get(top, key);
-                    let v = self.elem_operand(top, &proto, val);
-                    let key = self.init_array_key(&k)?;
+                    let v = self.elem_operand(top, &proto, val)?;
+                    let key = if self.stack[top].regs[key as usize].is_undef() {
+                        self.reg_r(top, key)?;
+                        ArrayKey::from_bytes(b"")
+                    } else {
+                        let k = self.reg_get(top, key);
+                        self.init_array_key(&k)?
+                    };
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
                         a.insert(key, v);
                     }
@@ -655,7 +794,7 @@ impl Vm {
                     }
                 }
                 Instr::ArrSetRef { arr, key, val } => {
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let v = self.stack[top].regs[val as usize].clone();
                     let key = self.init_array_key(&k)?;
                     if let Value::Array(a) = &mut self.stack[top].regs[arr as usize] {
@@ -741,12 +880,14 @@ impl Vm {
                 Instr::BindGlobal { cv, name } => {
                     let gname = proto.names[name as usize].clone();
                     let cell = self.global_cell(gname.as_bytes());
+                    cell_define(&cell);
                     self.ref_globals.insert(gname.as_bytes().to_vec());
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
                 Instr::BindGlobalDyn { name } => {
-                    let gname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let gname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     let cell = self.global_cell(&gname);
+                    cell_define(&cell);
                     self.ref_globals.insert(gname.clone());
                     self.var_var_bind(top, &gname, cell);
                 }
@@ -813,8 +954,8 @@ impl Vm {
                     self.call_dyn(top, dst, callee, base, argc)?;
                 }
                 Instr::CallDynV { dst, callee, args } => {
-                    let c = self.reg_get(top, callee);
-                    let arr = self.reg_get(top, args);
+                    let c = self.reg_r(top, callee)?;
+                    let arr = self.reg_r(top, args)?;
                     let (argvec, named) = self.split_call_args(&arr)?;
                     let strict = self.caller_strict();
                     self.dyn_call = true;
@@ -826,14 +967,14 @@ impl Vm {
 
                 // -- array element read --
                 Instr::DimFetch { dst, arr, key } => {
-                    let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let a = self.reg_r(top, arr)?;
+                    let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchW { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let r = match deref(&a) {
                         Value::Object(h)
                             if self.class_implements(h.borrow().class, b"ArrayAccess") =>
@@ -846,13 +987,15 @@ impl Vm {
                         // The object of a property write (FETCH_DIM_W then
                         // ASSIGN_OBJ & co.): zend_wrong_string_offset_error.
                         Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
+                        // A write fetch on null makes the element (null) quietly.
+                        Value::Null => Value::Null,
                         _ => self.dim_read(&a, &k, DimMode::Read)?,
                     };
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchUnset { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let r = match deref(&a) {
                         Value::Array(_) => self.dim_read(&a, &k, DimMode::Is)?,
                         Value::Str(_) => return Err(self.string_offset_as_object(top, &k)),
@@ -878,25 +1021,48 @@ impl Vm {
                 }
                 Instr::DimFetchIs { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Is)?;
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchList { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::List)?;
                     self.reg_set(top, dst, r);
                 }
 
                 // -- lvalue cursor --
+                Instr::LvalCvRw { cv } => {
+                    if self.stack[top].regs[cv as usize].is_undef() {
+                        self.undef_cv(top, cv)?;
+                    }
+                    self.cv_define(top, cv);
+                    self.cursor_root = CursorRoot::Cv(cv);
+                    self.cursor_global = None;
+                    self.cursor_steps.clear();
+                }
+                Instr::LvalCvUnset { cv } => {
+                    // Unsetting below an undefined variable leaves it so.
+                    self.cursor_root = if self.stack[top].regs[cv as usize].is_undef() {
+                        self.undef_cv(top, cv)?;
+                        CursorRoot::Cell(Rc::new(RefCell::new(Value::Null)))
+                    } else {
+                        CursorRoot::Cv(cv)
+                    };
+                    self.cursor_global = None;
+                    self.cursor_steps.clear();
+                }
+                // The variable is created when the write lands (after its
+                // value was read: `$a[0] = $a` reads an undefined `$a`):
+                // `assign_path` / `make_ref_path` see `Undef` as null.
                 Instr::LvalCv { cv } => {
                     self.cursor_root = CursorRoot::Cv(cv);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                 }
                 Instr::LvalKey { key } => {
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     self.cursor_steps.push(CursorStep::Key(k));
                 }
                 Instr::LvalAppend => self.cursor_steps.push(CursorStep::Append),
@@ -919,27 +1085,17 @@ impl Vm {
                 }
                 Instr::LvalStaticPropDyn { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                 }
-                Instr::LvalVarVar { name } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
-                    if vname == b"this" {
-                        return Err(Thrown::error("Error", "Cannot re-assign $this"));
-                    }
-                    self.cursor_root = match self.var_var_slot(top, &vname) {
-                        Ok(cv) => CursorRoot::Cv(cv),
-                        Err(cell) => CursorRoot::Cell(cell),
-                    };
-                    self.cursor_global = None;
-                    self.cursor_steps.clear();
-                }
+                Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
+                Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
                 Instr::BindVarVarRef { name, src } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     let cell = match &self.stack[top].regs[src as usize] {
                         Value::Ref(rc) => rc.clone(),
                         v => Rc::new(RefCell::new(v.clone())),
@@ -947,10 +1103,10 @@ impl Vm {
                     self.var_var_bind(top, &vname, cell);
                 }
                 Instr::UnsetVarVar { name } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.var_var_unset(top, &vname);
                 }
-                Instr::FetchVarVar { dst, name } => {
+                Instr::FetchVarVarIs { dst, name } => {
                     let vname = conv::to_string_bytes(&self.reg_get(top, name));
                     let v = match self.var_var_lookup(top, &vname) {
                         Some(Ok(cv)) => self.reg_get(top, cv),
@@ -959,9 +1115,22 @@ impl Vm {
                     };
                     self.reg_set(top, dst, v);
                 }
+                Instr::FetchVarVar { dst, name } => {
+                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let v = match self.var_var_lookup(top, &vname) {
+                        Some(Ok(cv)) => self.reg_r(top, cv)?,
+                        Some(Err(cell)) if !cell.borrow().is_undef() => deref(&cell.borrow()),
+                        _ => {
+                            let msg = [b"Undefined variable $".as_slice(), &vname].concat();
+                            self.diag(builtins::E_WARNING, &msg)?;
+                            Value::Null
+                        }
+                    };
+                    self.reg_set(top, dst, v);
+                }
                 Instr::FetchStaticPropDyn { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
                     let v = cell.borrow().clone();
@@ -969,7 +1138,7 @@ impl Vm {
                 }
                 Instr::UnsetStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     return Err(Thrown::error(
                         "Error",
                         format!(
@@ -992,17 +1161,13 @@ impl Vm {
                     };
                     self.reg_set(top, dst, v);
                 }
-                Instr::LvalGlobal { name } => {
-                    let n = conv::to_string_bytes(&self.reg_get(top, name));
-                    self.cursor_root = CursorRoot::Cell(self.global_cell(&n));
-                    self.cursor_global = Some(n);
-                    self.cursor_steps.clear();
-                }
+                Instr::LvalGlobal { name } => self.lval_global(top, name, false)?,
+                Instr::LvalGlobalRw { name } => self.lval_global(top, name, true)?,
                 Instr::FetchGlobal { dst, name } => {
-                    let n = conv::to_string_bytes(&self.reg_get(top, name));
+                    let n = conv::to_string_bytes(&self.reg_r(top, name)?);
                     let v = match self.globals.get(&n[..]) {
-                        Some(c) => deref(&c.borrow()),
-                        None => {
+                        Some(c) if !c.borrow().is_undef() => deref(&c.borrow()),
+                        _ => {
                             let msg = format!(
                                 "Undefined global variable ${}",
                                 String::from_utf8_lossy(&n)
@@ -1018,21 +1183,22 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::UnsetGlobal { name } => {
-                    let n = conv::to_string_bytes(&self.reg_get(top, name));
-                    if self.globals.contains_key(&n[..]) {
-                        // Live global-scope frames lose the variable too.
-                        self.rebind_global(&n, Rc::new(RefCell::new(Value::Null)));
-                        self.globals.shift_remove(&n[..]);
-                        self.ref_globals.remove(&n[..]);
-                        self.dtor_check = true;
-                    }
+                    let n = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
                     let v = self.cursor_read(top)?;
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
-                    let v = self.reg_get(top, src);
+                    if self
+                        .cursor_steps
+                        .iter()
+                        .any(|s| matches!(s, CursorStep::Key(Value::Null)))
+                    {
+                        self.w_null_key_diags(top)?;
+                    }
+                    let v = self.reg_r(top, src)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
                     let r = if dst == src {
                         self.cursor_write(top, &steps, v)
@@ -1138,7 +1304,7 @@ impl Vm {
                 } => self.fe_fetch_ref(top, arr_cv, pos_reg, key_cv, val_cv, end)?,
 
                 Instr::ThrowMatchError { subject } => {
-                    let v = self.reg_get(top, subject);
+                    let v = self.reg_r(top, subject)?;
                     return Err(Thrown::error(
                         "UnhandledMatchError",
                         format!("Unhandled match case {}", self.match_case_desc(&v)),
@@ -1189,7 +1355,7 @@ impl Vm {
                     return Err(Thrown::error("Error", msg));
                 }
                 Instr::SendNoRef { dst, src } => {
-                    let v = self.reg_get(top, src);
+                    let v = self.reg_r(top, src)?;
                     self.diag(
                         builtins::E_NOTICE,
                         "Only variables should be passed by reference",
@@ -1202,7 +1368,7 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Throw { src } => {
-                    let v = self.reg_get(top, src);
+                    let v = self.reg_r(top, src)?;
                     match v {
                         Value::Object(h) => {
                             let cls = h.borrow().class;
@@ -1250,7 +1416,7 @@ impl Vm {
                     }
                 }
                 Instr::SetPendingRet { src } => {
-                    let mut v = self.reg_get(top, src);
+                    let mut v = self.reg_r(top, src)?;
                     if let (Some(ty), false) = (&proto.return_type, proto.is_generator) {
                         let ctx = self.stack[top].defining_class;
                         v = self.coerce_stringable(v, ty, proto.strict_types, ctx)?;
@@ -1277,13 +1443,13 @@ impl Vm {
                     ..
                 } => self.exec_new(top, dst, class, base, argc)?,
                 Instr::FetchProp { dst, obj, name, .. } => {
-                    let o = self.reg_get(top, obj);
+                    let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
-                    let o = self.reg_get(top, obj);
+                    let o = self.reg_r(top, obj)?;
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
@@ -1333,9 +1499,10 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::StorePropDyn { obj, name, src } => {
+                    // ZEND_ASSIGN_OBJ reads the value before the name.
                     let o = self.reg_get(top, obj);
+                    let val = self.reg_r(top, src)?;
                     let pname = self.dyn_prop_name(top, name)?;
-                    let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true; // the old value may be released
@@ -1348,8 +1515,8 @@ impl Vm {
                     base,
                     argc,
                 } => {
-                    let o = self.reg_get(top, obj);
-                    let mname = dyn_method_name(&self.reg_get(top, name))?;
+                    let o = self.reg_r(top, obj)?;
+                    let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     if let Value::Closure(_) = o {
                         let args: Vec<Value> =
                             (0..argc).map(|i| self.reg_get(top, base + i)).collect();
@@ -1373,7 +1540,7 @@ impl Vm {
                 Instr::StoreProp { obj, name, src } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let val = self.reg_get(top, src);
+                    let val = self.reg_r(top, src)?;
                     self.prop_store(top, o, pname, val)?;
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true; // the old value may be released
@@ -1381,7 +1548,7 @@ impl Vm {
                 }
                 Instr::IssetDim { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     if let Value::Object(h) = &a {
                         if self.class_implements(h.borrow().class, b"ArrayAccess") {
                             let r = self.aa_offset_exists(h, k)?;
@@ -1410,7 +1577,7 @@ impl Vm {
                 }
                 Instr::EmptyDim { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
-                    let k = self.reg_get(top, key);
+                    let k = self.reg_r(top, key)?;
                     let v = match &a {
                         // zend_std_has_dimension(check_empty = 1).
                         Value::Object(h)
@@ -1489,7 +1656,7 @@ impl Vm {
                     self.fetch_class_const(top, &proto, dst, class, n)?
                 }
                 Instr::FetchClassConstDyn { dst, class, name } => {
-                    let n = self.reg_get(top, name);
+                    let n = self.reg_r(top, name)?;
                     self.fetch_class_const(top, &proto, dst, class, n)?
                 }
                 Instr::FetchClassName {
@@ -1513,7 +1680,7 @@ impl Vm {
                     let o = if obj >= proto.num_cvs && !self.holds_destructible(top, obj) {
                         self.take_temp(top, obj)
                     } else {
-                        self.reg_get(top, obj)
+                        self.reg_r(top, obj)?
                     };
                     let mname = proto.names[name as usize].as_bytes();
                     if let Value::Closure(_) = o {
@@ -1543,7 +1710,14 @@ impl Vm {
                         Value::Object(h) => {
                             let cls = h.borrow().class;
                             let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
-                            m.is_some_and(|m| param_is_ref(&m.proto, idx))
+                            // A method the scope cannot call goes to `__call`
+                            // (zend_std_get_method's trampoline): by value.
+                            let scope = self.stack[top].defining_class;
+                            m.is_some_and(|m| {
+                                param_is_ref(&m.proto, idx)
+                                    && (self.method_accessible(&m, scope)
+                                        || self.lookup_method(cls, b"__call").is_none())
+                            })
                         }
                         _ => false,
                     };
@@ -1582,7 +1756,7 @@ impl Vm {
                     let v = if self.resolved_param_is_ref(top, func, idx) {
                         Value::Ref(self.promote(top, cv))
                     } else {
-                        self.reg_get(top, cv)
+                        self.reg_r(top, cv)?
                     };
                     self.reg_set(top, dst, v);
                 }
@@ -1635,11 +1809,11 @@ impl Vm {
                     base,
                     argc,
                 } => {
-                    let mname = dyn_method_name(&self.reg_get(top, name))?;
+                    let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     self.do_call_static(top, class, &mname, dst, base, argc, false)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
-                    let v = self.reg_get(top, val);
+                    let v = self.reg_r(top, val)?;
                     let result = match v {
                         // ZEND_INSTANCEOF never autoloads.
                         Value::Object(h) => match self.resolve_class(top, class) {
@@ -1714,6 +1888,10 @@ impl Vm {
                     let rc = self.promote(top, cv);
                     self.stack[top].regs[dst as usize] = Value::Ref(rc);
                 }
+                Instr::MakeArgRef { dst, cv } => {
+                    let rc = self.promote_slot(top, cv);
+                    self.stack[top].regs[dst as usize] = Value::Ref(rc);
+                }
                 Instr::MakeRefVal { dst, src } => {
                     let v = self.reg_get(top, src);
                     self.reg_set(top, dst, Value::Ref(Rc::new(RefCell::new(v))));
@@ -1744,7 +1922,7 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let mname = dyn_method_name(&self.reg_get(top, name))?;
+                    let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     self.call_method_args(top, obj, mname, args, dst)?;
                 }
                 Instr::CallStaticV {
@@ -1763,7 +1941,7 @@ impl Vm {
                     name,
                     args,
                 } => {
-                    let mname = dyn_method_name(&self.reg_get(top, name))?;
+                    let mname = dyn_method_name(&self.reg_r(top, name)?)?;
                     self.call_static_args(top, class, mname, args, dst, false)?;
                 }
 
@@ -1774,7 +1952,7 @@ impl Vm {
                 } => self.fetch_const(top, &proto, dst, name, fallback)?,
 
                 Instr::Ret { src } => {
-                    let mut v = self.reg_get(top, src);
+                    let mut v = self.reg_r(top, src)?;
                     // Enforce a declared return type (the callee's own file decides
                     // strict vs coercive).
                     if let (Some(ty), false) = (&proto.return_type, proto.is_generator) {
@@ -1817,7 +1995,7 @@ impl Vm {
                     }
                 }
                 Instr::Include { dst, path, kind } => {
-                    let raw = conv::to_string_bytes(&self.reg_get(top, path));
+                    let raw = conv::to_string_bytes(&self.reg_r(top, path)?);
                     let v = self.do_include(top, raw, kind)?;
                     self.reg_set(top, dst, v);
                 }
@@ -1827,7 +2005,7 @@ impl Vm {
                     let code = if arg == Reg::MAX {
                         0
                     } else {
-                        let v = deref(&self.reg_get(top, arg));
+                        let v = deref(&self.reg_r(top, arg)?);
                         let strict = proto.strict_types;
                         match self.zpp_exit_status(&v, strict)? {
                             Value::Int(n) => n as i32,
@@ -1966,7 +2144,7 @@ impl Vm {
         src: Reg,
         args: bool,
     ) -> Result<Vec<(ArrayKey, Value)>, Thrown> {
-        let v = self.reg_get(top, src);
+        let v = self.reg_r(top, src)?;
         let h = match v {
             // ZEND_ADD_ARRAY_UNPACK copies a reference only the source
             // holds as its value.
@@ -2075,7 +2253,7 @@ impl Vm {
         op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
         let v = if matches!(x, Value::Int(_) | Value::Float(_))
             && matches!(y, Value::Int(_) | Value::Float(_))
         {
@@ -2091,7 +2269,7 @@ impl Vm {
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
         let v = self.long_op(op, &x, &y)?;
         self.reg_set(top, dst, v);
         Ok(())
@@ -2129,7 +2307,7 @@ impl Vm {
         end: Pc,
         delegate: bool,
     ) -> Result<(), Thrown> {
-        match self.reg_get(top, src) {
+        match self.reg_r(top, src)? {
             Value::Array(a) if !a.is_empty() => {
                 self.reg_set(top, arr_reg, Value::Array(a));
                 self.reg_set(top, pos_reg, Value::Int(0));
@@ -2183,10 +2361,26 @@ impl Vm {
                     }
                 }
             }
-            // empty array or non-iterable: skip the loop
-            _ => self.stack[top].pc = end as usize,
+            // An empty array skips the loop; anything else warns too.
+            v => {
+                self.stack[top].pc = end as usize;
+                // (A Closure is an object without properties.)
+                if !matches!(v, Value::Array(_) | Value::Closure(_)) {
+                    self.foreach_type_warning(&v)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// ZEND_FE_RESET_R/RW on something that is neither an array nor an object.
+    #[cold]
+    fn foreach_type_warning(&mut self, v: &Value) -> Result<(), Thrown> {
+        let msg = format!(
+            "foreach() argument must be of type array|object, {} given",
+            builtins::zval_value_name(self, v)
+        );
+        self.diag(builtins::E_WARNING, &msg)
     }
 
     /// `FeFetch`: bind the next key/value of a by-value foreach, or jump to `end`.
@@ -2292,6 +2486,9 @@ impl Vm {
         pos_reg: Reg,
         end: Pc,
     ) -> Result<(), Thrown> {
+        if self.stack[top].regs[arr_cv as usize].is_undef() {
+            self.undef_cv(top, arr_cv)?;
+        }
         // A Traversable object by reference: only a by-reference
         // generator (directly or from getIterator()) can do it;
         // `pos_reg` then holds [generator, fetched-once flag].
@@ -2365,7 +2562,11 @@ impl Vm {
             // A plain object iterates its properties by reference;
             // `FeFetchRef` ends the loop when none remain accessible.
             Value::Object(_) => true,
-            _ => false,
+            Value::Closure(_) => false,
+            v => {
+                self.foreach_type_warning(&v)?;
+                false
+            }
         };
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
             // get_properties initializes a lazy object (a proxy iterates
@@ -2568,7 +2769,7 @@ impl Vm {
         let scope = self.stack[top].defining_class;
         let kind = match class {
             ClassRef::Dynamic(reg) => {
-                let v = self.reg_get(top, reg);
+                let v = self.reg_r(top, reg)?;
                 return match v {
                     Value::Object(h) => {
                         let cls = h.borrow().class;
@@ -2801,10 +3002,19 @@ fn scalar_copy(v: &Value) -> Option<Value> {
 /// A value with nothing to drop: overwriting it needs no drop glue and
 /// never releases an object or array.
 #[inline(always)]
+/// Define an undefined variable cell as null (a write through it).
+pub(crate) fn cell_define(cell: &RefCell<Value>) {
+    if let Ok(mut c) = cell.try_borrow_mut() {
+        if matches!(*c, Value::Undef) {
+            *c = Value::Null;
+        }
+    }
+}
+
 fn is_scalar(v: &Value) -> bool {
     matches!(
         v,
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Undef
     )
 }
 
@@ -2861,7 +3071,7 @@ impl Vm {
         // inside the closure reach the outer variable; by-value
         // captures were already deref'd into the window by Mov.
         let captures: Vec<Value> = (0..ncaptures)
-            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .map(|i| self.stack[top].regs[(base + i) as usize].copy_slot())
             .collect();
         // Bind the defining/static class scope so the closure body can
         // reach private members and resolve `self::`/`static::`.
@@ -2903,10 +3113,11 @@ impl Vm {
         let mut c = if callee >= proto.num_cvs {
             match std::mem::replace(&mut self.stack[top].regs[callee as usize], Value::Null) {
                 Value::Ref(rc) => rc.borrow().clone(),
+                Value::Undef => Value::Null,
                 v => v,
             }
         } else {
-            self.reg_get(top, callee)
+            self.reg_r(top, callee)?
         };
         // `$closure->__invoke(...)` is that Closure.
         if let Some(cl) = builtins::zend::closures::closure_invoke_of(&c) {
@@ -2949,7 +3160,7 @@ impl Vm {
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
-        let c = self.reg_get(top, callee);
+        let c = self.reg_r(top, callee)?;
         let strict = self.caller_strict();
         // A user closure binds by-reference parameters to the
         // variables passed (the window holds them as `Ref`s), as
@@ -3050,16 +3261,19 @@ impl Vm {
     /// An array literal's element: an object in a temporary moves into the
     /// array (the temporary is dead, and php frees it there).
     #[inline]
-    fn elem_operand(&mut self, top: usize, proto: &FunctionProto, r: Reg) -> Value {
+    fn elem_operand(&mut self, top: usize, proto: &FunctionProto, r: Reg) -> Result<Value, Thrown> {
         if r >= proto.num_cvs
             && matches!(
                 self.stack[top].regs[r as usize],
                 Value::Object(_) | Value::Closure(_)
             )
         {
-            return std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null);
+            return Ok(std::mem::replace(
+                &mut self.stack[top].regs[r as usize],
+                Value::Null,
+            ));
         }
-        self.reg_get(top, r)
+        self.reg_r(top, r)
     }
 }
 
@@ -3087,6 +3301,7 @@ impl Vm {
     fn take_temp(&mut self, top: usize, r: Reg) -> Value {
         match std::mem::replace(&mut self.stack[top].regs[r as usize], Value::Null) {
             Value::Ref(rc) => rc.borrow().clone(),
+            Value::Undef => Value::Null,
             v => v,
         }
     }

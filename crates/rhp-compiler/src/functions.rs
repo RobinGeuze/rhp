@@ -546,6 +546,10 @@ impl ProtoBuilder<'_> {
         let fnidx = self.cx.add_closure(proto);
 
         // --- emit the capture window + MakeClosure in the enclosing frame ---
+        // `use ($x)` reads the variable (php's BIND_LEXICAL warns when it is
+        // undefined); an arrow function's implicit binding leaves it
+        // undefined inside, as does `$this`'s.
+        let implicit = matches!(body, ClosureBody::Arrow(_));
         let base = self.alloc_temps(nc.max(1));
         for (i, (name, by_ref)) in captures.iter().enumerate() {
             let dst = base + i as Reg;
@@ -555,6 +559,10 @@ impl ProtoBuilder<'_> {
                 self.emit(Instr::MakeRef { dst, cv });
             } else {
                 match self.cv_map.iter().position(|n| n == name) {
+                    Some(src) if implicit || name == b"this" => self.emit(Instr::MovIs {
+                        dst,
+                        src: src as Reg,
+                    }),
                     Some(src) => self.emit(Instr::Mov {
                         dst,
                         src: src as Reg,

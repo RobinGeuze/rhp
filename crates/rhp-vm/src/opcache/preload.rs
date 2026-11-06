@@ -469,7 +469,7 @@ impl Vm {
         }
         // Linking ran (and warned) while preloading; replaying it is quiet.
         let last_error = self.last_error.clone();
-        self.silence += 1;
+        self.quiet += 1;
         let mut linked = vec![None; pre.classes.len()];
         for (i, &(p, local)) in pre.classes.iter().enumerate() {
             let slot = self.units[units[p] as usize].classes as usize + local;
@@ -493,7 +493,7 @@ impl Vm {
                 self.class_ids.entry(alias.clone()).or_insert(id);
             }
         }
-        self.silence -= 1;
+        self.quiet -= 1;
         self.last_error = last_error;
         self.preloaded = Some(pre);
     }

@@ -820,18 +820,13 @@ fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value
     Ok(Value::Null)
 }
 
-/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset.
-/// Under `@` php 8 lowers it to the fatal types only.
+/// EG(error_reporting): the `error_reporting` directive, E_ALL while unset
+/// (`@` lowers it to the fatal types while it runs).
 pub fn error_reporting_level(host: &dyn Host) -> i64 {
-    let level = match host.ini_get(b"error_reporting") {
+    match host.ini_get(b"error_reporting") {
         // OnUpdateErrorReporting: atoi.
         Some(v) if !v.is_empty() => i64::from(crate::c_atoi(&v)),
         _ => crate::E_ALL,
-    };
-    if host.silenced() {
-        level & SILENCE_MASK
-    } else {
-        level
     }
 }
 

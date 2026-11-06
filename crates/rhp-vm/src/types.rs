@@ -557,7 +557,7 @@ impl Vm {
         top: usize,
         name: rhp_bytecode::Reg,
     ) -> Result<PhpStr, Thrown> {
-        let v = self.reg_get(top, name);
+        let v = self.reg_r(top, name)?;
         match &v {
             Value::Str(s) => Ok(s.clone()),
             Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),

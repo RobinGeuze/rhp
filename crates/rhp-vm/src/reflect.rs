@@ -1655,7 +1655,7 @@ impl Vm {
                         .get(i)
                         .map(|n| n.as_bytes().to_vec())
                         .unwrap_or_default();
-                    if n == b"this" {
+                    if n == b"this" || matches!(cd.captures.get(i), Some(Value::Undef)) {
                         continue;
                     }
                     let v = cd.captures.get(i).map(deref).unwrap_or(Value::Null);

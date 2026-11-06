@@ -235,10 +235,17 @@ pub struct Vm {
     stream_notifiers: HashMap<u32, Value>,
     // CLI arguments ($argv / $_SERVER['argv']); argv[0] is the script name.
     argv: Vec<Vec<u8>>,
-    // `@` nesting depth: diagnostics are recorded but not displayed while > 0.
+    // `@` nesting depth (the error_reporting mask itself is in the ini
+    // value, as php's EG(error_reporting)).
     silence: u32,
-    // Active `@` regions: (frame depth, silence level to restore).
-    silence_stack: Vec<(usize, u32)>,
+    // Active `@` regions: (frame depth, silence level to restore, the
+    // error_reporting value before it).
+    silence_stack: Vec<(usize, u32, i64)>,
+    // Engine-internal quiet regions (preloading): nothing is displayed.
+    quiet: u32,
+    // Null-key deprecations a read-modify-write path already raised (its
+    // write converts those keys quietly).
+    rw_null_keys: u32,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
     /// `set_error_handler` stack (innermost last): (callback or null, mask).
@@ -389,7 +396,13 @@ impl Drop for Frame {
 
 impl Frame {
     fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
-        let regs = vec![Value::Null; proto.num_registers as usize];
+        // Every register starts undefined (a zero tag, so this is a fill
+        // of zeroes): a variable must be, and a temporary is written before
+        // it is read (a copy reads `Undef` as null, a move turns it into
+        // null, and `undef_cv` never warns for one).
+        let n = proto.num_registers as usize;
+        let mut regs = Vec::with_capacity(n);
+        regs.resize_with(n, || Value::Undef);
         Frame {
             proto,
             unit,

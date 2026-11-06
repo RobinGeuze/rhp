@@ -285,7 +285,7 @@ impl Vm {
             }
             v
         } else {
-            self.reg_get(top, value)
+            self.reg_r(top, value)?
         };
         let id = *self.gen_stack.last().expect("yield outside a generator");
         let key_val = if key == Reg::MAX {
@@ -294,7 +294,7 @@ impl Vm {
             g.auto_key += 1;
             k
         } else {
-            let kv = self.reg_get(top, key);
+            let kv = self.reg_r(top, key)?;
             if let Value::Int(n) = &kv {
                 let g = self.generators.get_mut(&id).unwrap();
                 if *n >= g.auto_key {

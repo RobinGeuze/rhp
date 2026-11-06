@@ -20,6 +20,14 @@ pub(crate) enum CursorStep {
 }
 
 /// Where an lvalue cursor roots.
+/// How a cursor's root variable is fetched.
+#[derive(Clone, Copy)]
+pub(crate) enum LvalMode {
+    W,
+    Rw,
+    Unset,
+}
+
 pub(crate) enum LvalRoot {
     /// A register: a CV, or a temporary holding a call result.
     Cv(Reg),
@@ -347,6 +355,10 @@ impl ProtoBuilder<'_> {
                 line,
             )
         };
+        // The source is read once (each element is fetched quietly).
+        if src < self.num_cvs {
+            self.emit(Instr::CheckCv { cv: src });
+        }
         let mut has_elems = false;
         let mut idx: i64 = 0;
         for el in elements {
@@ -495,14 +507,36 @@ impl ProtoBuilder<'_> {
     }
 
     pub(crate) fn emit_cursor(&mut self, root: LvalRoot, steps: &[CursorStep]) {
+        self.emit_cursor_mode(root, steps, LvalMode::W);
+    }
+
+    /// [`Self::emit_cursor`] for a read-modify-write or an unset, which treat
+    /// an undefined root variable differently (php's BP_VAR_RW / _UNSET).
+    pub(crate) fn emit_cursor_mode(
+        &mut self,
+        root: LvalRoot,
+        steps: &[CursorStep],
+        mode: LvalMode,
+    ) {
         match root {
+            LvalRoot::Cv(cv) if cv < self.num_cvs => self.emit(match mode {
+                LvalMode::W => Instr::LvalCv { cv },
+                LvalMode::Rw => Instr::LvalCvRw { cv },
+                LvalMode::Unset => Instr::LvalCvUnset { cv },
+            }),
             LvalRoot::Cv(cv) => self.emit(Instr::LvalCv { cv }),
             LvalRoot::StaticProp(class, name) => self.emit(Instr::LvalStaticProp { class, name }),
             LvalRoot::StaticPropDyn(class, name) => {
                 self.emit(Instr::LvalStaticPropDyn { class, name })
             }
-            LvalRoot::VarVar(name) => self.emit(Instr::LvalVarVar { name }),
-            LvalRoot::Global(name) => self.emit(Instr::LvalGlobal { name }),
+            LvalRoot::VarVar(name) => self.emit(match mode {
+                LvalMode::Rw => Instr::LvalVarVarRw { name },
+                _ => Instr::LvalVarVar { name },
+            }),
+            LvalRoot::Global(name) => self.emit(match mode {
+                LvalMode::Rw => Instr::LvalGlobalRw { name },
+                _ => Instr::LvalGlobal { name },
+            }),
         }
         for step in steps {
             match step {
@@ -732,7 +766,7 @@ impl ProtoBuilder<'_> {
                     Ok(dst)
                 }
                 op => {
-                    self.emit_cursor(root, &steps);
+                    self.emit_cursor_mode(root, &steps, LvalMode::Rw);
                     let cur = self.alloc_temp();
                     self.emit(Instr::FetchLvalRw { dst: cur });
                     let res = self.alloc_temp();
@@ -810,7 +844,7 @@ impl ProtoBuilder<'_> {
             Expression::Parenthesized(p) => return self.compile_coalesce_assign(p.expression, rhs),
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
-                self.emit(Instr::Mov { dst, src: cv });
+                self.emit(Instr::MovIs { dst, src: cv });
                 let jnn = self.code.len();
                 self.emit(Instr::Nop); // JmpNotNull dst -> end
                 let r = self.compile_expr(rhs)?;
@@ -873,7 +907,7 @@ impl ProtoBuilder<'_> {
                     }
                     LvalRoot::VarVar(name) => {
                         let t = self.alloc_temp();
-                        self.emit(Instr::FetchVarVar {
+                        self.emit(Instr::FetchVarVarIs {
                             dst: t,
                             name: *name,
                         });

@@ -1511,7 +1511,10 @@ fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
         failed(host)?;
         return Ok(Value::Bool(false));
     };
-    let html = zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
+    let html = zend::highlight::highlight(
+        zend::highlight::skip_shebang(&src),
+        &zend::highlight::Colors::from_ini(),
+    );
     if ret {
         return Ok(Value::str(html));
     }
@@ -1536,7 +1539,9 @@ fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let Some(src) = read_source(host, fname, &path)? else {
         return Ok(Value::str(""));
     };
-    Ok(Value::str(zend::highlight::strip(&src)))
+    Ok(Value::str(zend::highlight::strip(
+        zend::highlight::skip_shebang(&src),
+    )))
 }
 
 pub fn register(m: &mut crate::Registry) {

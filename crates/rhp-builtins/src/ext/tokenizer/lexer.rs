@@ -1102,7 +1102,24 @@ pub fn tokenize_ex(src: &[u8], short_tags: bool) -> Vec<Tok> {
         out: Vec::with_capacity(src.len().min(1 << 16) / 4),
         short_tags,
     };
-    lx.run_with_halt();
+    lx.run_with_halt(true);
+    lx.out
+}
+
+/// The scanner's own tokens, as zend_highlight and zend_strip see them:
+/// no ext/tokenizer `__halt_compiler` handling, the rest is scanned too.
+pub fn tokenize_scanner(src: &[u8]) -> Vec<Tok> {
+    let mut lx = Lexer {
+        s: src,
+        p: 0,
+        state: St::Initial,
+        stack: Vec::new(),
+        labels: Vec::new(),
+        line: 1,
+        out: Vec::with_capacity(src.len().min(1 << 16) / 4),
+        short_tags: short_tags(),
+    };
+    lx.run_with_halt(false);
     lx.out
 }
 
@@ -1110,7 +1127,7 @@ impl Lexer<'_> {
     /// `run`, plus ext/tokenizer's `__halt_compiler` handling: after
     /// T_HALT_COMPILER, three more significant tokens, then the rest of the
     /// input as one T_INLINE_HTML.
-    fn run_with_halt(&mut self) {
+    fn run_with_halt(&mut self, halt: bool) {
         let mut need: i32 = -1;
         while self.p < self.s.len() {
             let before = self.out.len();
@@ -1153,7 +1170,7 @@ impl Lexer<'_> {
                         return;
                     }
                 }
-            } else if id == T_HALT_COMPILER {
+            } else if halt && id == T_HALT_COMPILER {
                 need = 3;
             }
         }

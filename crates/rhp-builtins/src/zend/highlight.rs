@@ -84,7 +84,7 @@ pub fn highlight(src: &[u8], c: &Colors) -> Vec<u8> {
     out.extend_from_slice(&c.html);
     out.extend_from_slice(b"\">");
     let mut last = Color::Html;
-    for t in lexer::tokenize(src) {
+    for t in lexer::tokenize_scanner(src) {
         let text = t.text(src);
         let next = match t.id {
             T_INLINE_HTML => Color::Html,
@@ -126,7 +126,7 @@ pub fn highlight(src: &[u8], c: &Colors) -> Vec<u8> {
 
 /// zend_strip over `src`: comments dropped, whitespace runs as one space.
 pub fn strip(src: &[u8]) -> Vec<u8> {
-    let toks = lexer::tokenize(src);
+    let toks = lexer::tokenize_scanner(src);
     let mut out = Vec::with_capacity(src.len());
     let mut prev_space = false;
     let mut it = toks.iter();
@@ -157,4 +157,21 @@ pub fn strip(src: &[u8]) -> Vec<u8> {
         prev_space = false;
     }
     out
+}
+
+/// The scanner's SHEBANG state, on for a file opened for scanning
+/// (highlight_file, php_strip_whitespace): a first line `#!...` and its
+/// newline are skipped.
+pub fn skip_shebang(src: &[u8]) -> &[u8] {
+    if !src.starts_with(b"#!") {
+        return src;
+    }
+    // `"#!" .* {NEWLINE}`, longest match: `.` is anything but "\n".
+    match src.iter().position(|&c| c == b'\n') {
+        Some(i) => &src[i + 1..],
+        None => match src.iter().rposition(|&c| c == b'\r') {
+            Some(i) => &src[i + 1..],
+            None => src,
+        },
+    }
 }

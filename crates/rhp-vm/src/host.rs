@@ -393,7 +393,7 @@ impl Host for Vm {
             b"phar",
             b"zip",
         ];
-        let builtin = |s: &[u8]| matches!(s, b"php" | b"data" | b"http" | b"https");
+        let builtin = |s: &[u8]| outside_map_wrapper(s) && !self.wrappers_off.contains_key(s);
         let mut v: Vec<Vec<u8>> = ORDER
             .iter()
             .filter(|s| builtin(s) || self.wrappers.contains_key(**s))
@@ -408,6 +408,34 @@ impl Host for Vm {
         rest.sort();
         v.extend(rest);
         v
+    }
+
+    fn stream_wrapper_unregister(&mut self, scheme: &[u8]) -> bool {
+        if let Some(w) = self.wrappers.remove(scheme) {
+            // the original stays the one restore brings back
+            self.wrappers_off.entry(scheme.to_vec()).or_insert(Some(w));
+            return true;
+        }
+        if outside_map_wrapper(scheme) && !self.wrappers_off.contains_key(scheme) {
+            self.wrappers_off.insert(scheme.to_vec(), None);
+            return true;
+        }
+        false
+    }
+
+    fn stream_wrapper_restore(&mut self, scheme: &[u8]) -> builtins::WrapperRestore {
+        match self.wrappers_off.remove(scheme) {
+            Some(w) => {
+                if let Some(w) = w {
+                    self.wrappers.insert(scheme.to_vec(), w);
+                }
+                builtins::WrapperRestore::Restored
+            }
+            None if self.wrappers.contains_key(scheme) || outside_map_wrapper(scheme) => {
+                builtins::WrapperRestore::Unchanged
+            }
+            None => builtins::WrapperRestore::NeverExisted,
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -2445,4 +2473,10 @@ fn kind_word(kind: ClassKind) -> &'static str {
         ClassKind::Enum => "enum",
         ClassKind::Class => "abstract class",
     }
+}
+
+/// Built-in wrappers served outside the `wrappers` table (`php://`, `data:`,
+/// `http(s)://`).
+fn outside_map_wrapper(scheme: &[u8]) -> bool {
+    matches!(scheme, b"php" | b"data" | b"http" | b"https")
 }

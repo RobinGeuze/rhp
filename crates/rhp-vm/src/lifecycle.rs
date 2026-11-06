@@ -117,6 +117,7 @@ impl Vm {
             callable_dep_thrown: false,
             zpp_fcc: None,
             wrappers,
+            wrappers_off: HashMap::new(),
             main_script_path: None,
             auto_prepend: true,
             streams: StreamTable::default(),

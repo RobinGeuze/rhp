@@ -95,7 +95,22 @@ pub fn locate_for_open(
     fname: &str,
     path: &[u8],
 ) -> Result<Option<Vec<u8>>, Thrown> {
-    Ok(match locate_url(host, fname, path)? {
+    let located = locate_url(host, fname, path)?;
+    if matches!(located, streams::Located::Plain(_) | streams::Located::Unknown(_))
+        && !wrapper_registered(host, b"file")
+    {
+        // php falls back on the plain-files wrapper, which is unregistered
+        UNKNOWN_WRAPPER_WARNED.with(|w| w.set(false));
+        warn(host, fname, "file:// wrapper is disabled in the server configuration")?;
+        warn_arg(
+            host,
+            fname,
+            path,
+            "Failed to open stream: no suitable wrapper could be found",
+        )?;
+        return Ok(None);
+    }
+    Ok(match located {
         // the stream layer takes a file:// prefix off itself
         streams::Located::Plain(_) => Some(path.to_vec()),
         streams::Located::Wrapper(p) => Some(p),

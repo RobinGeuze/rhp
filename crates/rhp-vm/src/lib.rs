@@ -206,6 +206,9 @@ pub struct Vm {
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
+    // Built-in wrappers `stream_wrapper_unregister` took out, kept for
+    // `stream_wrapper_restore` (None: one served outside `wrappers`).
+    wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for

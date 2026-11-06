@@ -34,7 +34,9 @@ pub use diag::{
 };
 pub use ext::pcre;
 pub use ext::standard::http_fopen_wrapper;
-pub use host::{host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta};
+pub use host::{
+    host_compare, host_loose_eq, Host, MagicFetch, ObCall, StreamKind, StreamMeta, WrapperRestore,
+};
 pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 pub use registry::{
     class_constant_deprecation, constant_deprecation, constants, ct_constant, functions,

@@ -147,7 +147,12 @@ impl Vm {
     /// php's zval_try_get_tmp_string, so an array warns and an object
     /// needs `__toString`. `quiet`: an undefined `$n` reads as null
     /// without the warning (an isset fetch).
-    fn var_name(&mut self, top: usize, name: Reg, quiet: bool) -> Result<Vec<u8>, Thrown> {
+    pub(crate) fn var_name(
+        &mut self,
+        top: usize,
+        name: Reg,
+        quiet: bool,
+    ) -> Result<Vec<u8>, Thrown> {
         let v = if quiet {
             self.reg_get(top, name)
         } else {
@@ -162,8 +167,40 @@ impl Vm {
         }
     }
 
+    /// `IncDec` other than an int that does not overflow: out of the
+    /// dispatch loop.
+    #[inline(never)]
+    fn inc_dec_slow(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        cv: Reg,
+        pre: bool,
+        delta: i8,
+    ) -> Result<(), Thrown> {
+        // An undefined variable warns, then counts as null even when the
+        // handler threw (zend_pre_inc_helper).
+        let undef = if self.stack[top].regs[cv as usize].is_undef() {
+            let r = self.undef_cv(top, cv).err();
+            self.cv_assign(top, cv, Value::Null);
+            r
+        } else {
+            None
+        };
+        let cur = self.reg_get(top, cv);
+        let new = self.inc_dec_vm(&cur, delta as i64)?;
+        self.cv_assign(top, cv, new.clone());
+        self.reg_set(top, dst, if pre { new } else { cur });
+        match undef {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// `LvalVarVar` / `LvalVarVarRw`: a cursor rooted at the variable named
     /// by `name` (created; a read-modify-write warns first when undefined).
+    #[cold]
+    #[inline(never)]
     fn lval_var_var(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
         let vname = self.var_name(top, name, false)?;
         if vname == b"this" {
@@ -200,6 +237,8 @@ impl Vm {
     /// `LvalGlobal` / `LvalGlobalRw`: a cursor rooted at global `name`
     /// (`$GLOBALS[...]` as an lvalue; a read-modify-write warns first when
     /// it is undefined).
+    #[cold]
+    #[inline(never)]
     fn lval_global(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
         let n = conv::to_string_bytes(&self.reg_r(top, name)?);
         if rw
@@ -669,22 +708,7 @@ impl Vm {
                         self.reg_set_fast(top, dst, Value::Int(r));
                         continue;
                     }
-                    // An undefined variable warns, then counts as null
-                    // even when the handler threw (zend_pre_inc_helper).
-                    let undef = if self.stack[top].regs[cv as usize].is_undef() {
-                        let r = self.undef_cv(top, cv).err();
-                        self.cv_assign(top, cv, Value::Null);
-                        r
-                    } else {
-                        None
-                    };
-                    let cur = self.reg_get(top, cv);
-                    let new = self.inc_dec_vm(&cur, delta as i64)?;
-                    self.cv_assign(top, cv, new.clone());
-                    self.reg_set(top, dst, if pre { new } else { cur });
-                    if let Some(e) = undef {
-                        return Err(e);
-                    }
+                    self.inc_dec_slow(top, dst, cv, pre, delta)?;
                 }
 
                 Instr::CastInt { dst, a } => {
@@ -984,13 +1008,7 @@ impl Vm {
                     self.ref_globals.insert(gname.as_bytes().to_vec());
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
-                Instr::BindGlobalDyn { name } => {
-                    let gname = self.var_name(top, name, false)?;
-                    let cell = self.global_cell(&gname);
-                    cell_define(&cell);
-                    self.ref_globals.insert(gname.clone());
-                    self.var_var_bind(top, &gname, cell);
-                }
+                Instr::BindGlobalDyn { name } => self.bind_global_dyn(top, name)?,
                 Instr::BindStatic { cv, name, init } => {
                     self.bind_static(top, &proto, cv, name, init);
                 }
@@ -1231,40 +1249,10 @@ impl Vm {
                 }
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
-                Instr::BindVarVarRef { name, src } => {
-                    let vname = self.var_name(top, name, false)?;
-                    let cell = match &self.stack[top].regs[src as usize] {
-                        Value::Ref(rc) => rc.clone(),
-                        v => Rc::new(RefCell::new(v.clone())),
-                    };
-                    self.var_var_bind(top, &vname, cell);
-                }
-                Instr::UnsetVarVar { name } => {
-                    let vname = self.var_name(top, name, false)?;
-                    self.var_var_unset(top, &vname);
-                }
-                Instr::FetchVarVarIs { dst, name } => {
-                    let vname = self.var_name(top, name, true)?;
-                    let v = match self.var_var_lookup(top, &vname) {
-                        Some(Ok(cv)) => self.reg_get(top, cv),
-                        Some(Err(cell)) => deref(&cell.borrow()),
-                        None => Value::Null,
-                    };
-                    self.reg_set(top, dst, v);
-                }
-                Instr::FetchVarVar { dst, name } => {
-                    let vname = self.var_name(top, name, false)?;
-                    let v = match self.var_var_lookup(top, &vname) {
-                        Some(Ok(cv)) => self.reg_r(top, cv)?,
-                        Some(Err(cell)) if !cell.borrow().is_undef() => deref(&cell.borrow()),
-                        _ => {
-                            let msg = [b"Undefined variable $".as_slice(), &vname].concat();
-                            self.diag(builtins::E_WARNING, &msg)?;
-                            Value::Null
-                        }
-                    };
-                    self.reg_set(top, dst, v);
-                }
+                Instr::BindVarVarRef { name, src } => self.bind_var_var_ref(top, name, src)?,
+                Instr::UnsetVarVar { name } => self.unset_var_var(top, name)?,
+                Instr::FetchVarVarIs { dst, name } => self.fetch_var_var(top, dst, name, true)?,
+                Instr::FetchVarVar { dst, name } => self.fetch_var_var(top, dst, name, false)?,
                 Instr::FetchStaticPropDyn { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);

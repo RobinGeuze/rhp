@@ -12,6 +12,7 @@ use rhp_builtins::ScopeVar;
 use rhp_bytecode::{FunctionProto, Reg};
 use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
+use crate::dispatch::cell_define;
 use crate::{deref, Vm};
 
 /// The CV of `proto` that the variable `name` is, by name. `$this` and the
@@ -154,6 +155,85 @@ impl Vm {
         if matches!(old, Value::Object(_) | Value::Array(_)) {
             self.dtor_check = true;
         }
+    }
+
+    // The variable-variable instructions. Rare in hot code: kept out of
+    // the dispatch loop.
+
+    /// `global $$n`.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn bind_global_dyn(&mut self, top: usize, name: Reg) -> Result<(), Thrown> {
+        let gname = self.var_name(top, name, false)?;
+        let cell = self.global_cell(&gname);
+        cell_define(&cell);
+        self.ref_globals.insert(gname.clone());
+        self.var_var_bind(top, &gname, cell);
+        Ok(())
+    }
+
+    /// `$$n = &<src>`.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn bind_var_var_ref(
+        &mut self,
+        top: usize,
+        name: Reg,
+        src: Reg,
+    ) -> Result<(), Thrown> {
+        let vname = self.var_name(top, name, false)?;
+        let cell = match &self.stack[top].regs[src as usize] {
+            Value::Ref(rc) => rc.clone(),
+            v => Rc::new(RefCell::new(v.clone())),
+        };
+        self.var_var_bind(top, &vname, cell);
+        Ok(())
+    }
+
+    /// `unset($$n)`.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn unset_var_var(&mut self, top: usize, name: Reg) -> Result<(), Thrown> {
+        let vname = self.var_name(top, name, false)?;
+        self.var_var_unset(top, &vname);
+        Ok(())
+    }
+
+    /// `$$n` read: "Undefined variable" when it does not exist, unless
+    /// `quiet` (isset, empty, `??`).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn fetch_var_var(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        name: Reg,
+        quiet: bool,
+    ) -> Result<(), Thrown> {
+        let vname = self.var_name(top, name, quiet)?;
+        // A read (not isset) of `$$n` with `$n = 'this'` is `$this`
+        // (zend_fetch_var's BP_VAR_R special case).
+        if !quiet && vname == b"this" {
+            if let Some(cv) = self.stack[top].proto.this_cv {
+                if let v @ Value::Object(_) = self.reg_get(top, cv) {
+                    self.reg_set(top, dst, v);
+                    return Ok(());
+                }
+            }
+        }
+        let v = match self.var_var_lookup(top, &vname) {
+            Some(Ok(cv)) if quiet => self.reg_get(top, cv),
+            Some(Ok(cv)) => self.reg_r(top, cv)?,
+            Some(Err(cell)) if quiet || !cell.borrow().is_undef() => deref(&cell.borrow()),
+            None if quiet => Value::Null,
+            _ => {
+                let msg = [b"Undefined variable $".as_slice(), &vname].concat();
+                self.diag(rhp_builtins::E_WARNING, &msg)?;
+                Value::Null
+            }
+        };
+        self.reg_set(top, dst, v);
+        Ok(())
     }
 
     /// `$this` of the builtin's scope (compact('this')).

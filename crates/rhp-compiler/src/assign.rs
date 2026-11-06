@@ -605,7 +605,8 @@ impl ProtoBuilder<'_> {
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Access(Access::Property(_))
-            | Expression::Access(Access::StaticProperty(_)) => {
+            | Expression::Access(Access::StaticProperty(_))
+            | Expression::Variable(Variable::Indirect(_) | Variable::Nested(_)) => {
                 let mut steps = Vec::new();
                 let root = self.collect_lvalue_steps(src, &mut steps)?;
                 self.emit_cursor(root, &steps);

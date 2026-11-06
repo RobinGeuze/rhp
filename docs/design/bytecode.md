@@ -30,7 +30,7 @@ verbatim: [`value-model.md`](./value-model.md), [`php-semantics.md`](./php-seman
 Non-negotiable invariants (unchanged): single-threaded (`Rc`/`RefCell`, never
 `Arc`); `Value`s are owned `'static`; the arena holds only the AST, consumed and
 dropped at compile time (a `FunctionProto` carries **no** `'arena` borrow);
-`eval` / `extract` / `compact` / `create_function` / `include`/`require` /
+`eval` / `create_function` / `include`/`require` /
 `(unset)`-cast are **refused**, structurally in the compiler for the
 construct nodes and via `is_refused()` for function names (§4). `eval` is
 **never** implemented — no opcode interprets a string as code, by construction.
@@ -360,6 +360,20 @@ EmptyDim   { dst, arr, key }          Bool(!to_bool(element)); missing ⇒ true
 UnsetCv    { cv }                     regs[cv] = Undef  (see "Undefined variables")
 UnsetDim   { arr, key }               remove via make_mut; next free key not lowered (value-model §3c)
 ```
+
+**By-name scope (as built).** extract(), compact(), get_defined_vars() and
+`$$x` / `${expr}` / `global $$x` see a scope by name, as php's symbol table
+(zend_rebuild_symbol_table) does: a function's compiled variables in CV order
+(`scope::named_cv`; `$this` and the auto-globals are not among them), then
+the variables created by name in `Frame::dyn_vars` (insertion-ordered); the
+global scope's is the global symbol table. An include/eval frame uses its
+includer's. A builtin reaches the innermost user-code frame through the
+`Host::scope_*` methods (crates/rhp-vm/src/scope.rs). Nothing is built
+ahead: frames that never look a name up pay nothing. A direct call by name
+sets `Vm::call_direct` for the builtin it runs; any other way in (`$f()`,
+callbacks, call_user_func, `f(...)`) is php's ZEND_CALL_DYNAMIC, which the
+scope functions refuse with "Cannot call f() dynamically"
+(`Host::call_is_dynamic`).
 
 **Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
 IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts
@@ -879,11 +893,10 @@ can't swallow it):
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
 | backticks `` `…` `` | `CompositeString::ShellExecute` | compiled as a `shell_exec()` call with php 8.5's deprecation (no longer refused) |
 | `(real)` cast | `UnaryPrefixOperator::RealCast` | refuse (`(unset)` is php's compile error; `(void)` compiles, §2) |
-| `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 
 ### 4.2 Function-name refusals — `is_refused()`
 
-`extract`, `compact`, `create_function`, the string form of `assert`,
+`create_function`, the string form of `assert`,
 `exec`/`system`/`shell_exec`/`passthru`/`proc_open`/`popen`: no dedicated AST
 node. For a **statically-named** call the compiler checks
 `builtins::is_refused(name)` at call-lowering time and emits the refusal in place

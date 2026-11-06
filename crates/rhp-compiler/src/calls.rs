@@ -186,7 +186,10 @@ impl ProtoBuilder<'_> {
                 .unwrap_or(false);
             if by_ref {
                 match p.value {
-                    Expression::Variable(Variable::Direct(d)) => {
+                    // `$GLOBALS` is a read-only copy (php 8.1): a temporary.
+                    Expression::Variable(Variable::Direct(d))
+                        if strip_dollar(d.name) != b"GLOBALS" =>
+                    {
                         slots.push(ArgSlot::Ref(self.cv(strip_dollar(d.name))))
                     }
                     // `sort($a['k'])`, `array_push($this->items, …)`.

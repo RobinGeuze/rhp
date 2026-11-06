@@ -143,10 +143,29 @@ impl Vm {
         Ok(Value::Null)
     }
 
+    /// The name of a variable-variable (`$$n`, `${expr}`, `global $$n`):
+    /// php's zval_try_get_tmp_string, so an array warns and an object
+    /// needs `__toString`. `quiet`: an undefined `$n` reads as null
+    /// without the warning (an isset fetch).
+    fn var_name(&mut self, top: usize, name: Reg, quiet: bool) -> Result<Vec<u8>, Thrown> {
+        let v = if quiet {
+            self.reg_get(top, name)
+        } else {
+            self.reg_r(top, name)?
+        };
+        match v {
+            Value::Str(s) => Ok(s.as_bytes().to_vec()),
+            Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Float(_) => {
+                self.to_string_vm(&v)
+            }
+            v => Ok(conv::to_string_bytes(&v)),
+        }
+    }
+
     /// `LvalVarVar` / `LvalVarVarRw`: a cursor rooted at the variable named
     /// by `name` (created; a read-modify-write warns first when undefined).
     fn lval_var_var(&mut self, top: usize, name: Reg, rw: bool) -> Result<(), Thrown> {
-        let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+        let vname = self.var_name(top, name, false)?;
         if vname == b"this" {
             return Err(Thrown::error("Error", "Cannot re-assign $this"));
         }
@@ -966,7 +985,7 @@ impl Vm {
                     self.stack[top].regs[cv as usize] = Value::Ref(cell);
                 }
                 Instr::BindGlobalDyn { name } => {
-                    let gname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let gname = self.var_name(top, name, false)?;
                     let cell = self.global_cell(&gname);
                     cell_define(&cell);
                     self.ref_globals.insert(gname.clone());
@@ -1213,7 +1232,7 @@ impl Vm {
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
                 Instr::BindVarVarRef { name, src } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_name(top, name, false)?;
                     let cell = match &self.stack[top].regs[src as usize] {
                         Value::Ref(rc) => rc.clone(),
                         v => Rc::new(RefCell::new(v.clone())),
@@ -1221,11 +1240,11 @@ impl Vm {
                     self.var_var_bind(top, &vname, cell);
                 }
                 Instr::UnsetVarVar { name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_name(top, name, false)?;
                     self.var_var_unset(top, &vname);
                 }
                 Instr::FetchVarVarIs { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    let vname = self.var_name(top, name, true)?;
                     let v = match self.var_var_lookup(top, &vname) {
                         Some(Ok(cv)) => self.reg_get(top, cv),
                         Some(Err(cell)) => deref(&cell.borrow()),
@@ -1234,7 +1253,7 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchVarVar { dst, name } => {
-                    let vname = conv::to_string_bytes(&self.reg_r(top, name)?);
+                    let vname = self.var_name(top, name, false)?;
                     let v = match self.var_var_lookup(top, &vname) {
                         Some(Ok(cv)) => self.reg_r(top, cv)?,
                         Some(Err(cell)) if !cell.borrow().is_undef() => deref(&cell.borrow()),

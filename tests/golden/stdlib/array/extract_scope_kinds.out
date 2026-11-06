@@ -1,0 +1,48 @@
+string(3) "yes"
+array(1) {
+  ["outer"]=>
+  string(1) "o"
+}
+array(3) {
+  ["outer"]=>
+  string(1) "o"
+  ["fromInc"]=>
+  string(3) "yes"
+  ["incLocal"]=>
+  array(1) {
+    ["outer"]=>
+    string(1) "o"
+  }
+}
+1
+E2: Undefined variable $late
+|
+bool(false)
+int(2)
+array(3) {
+  ["late"]=>
+  int(2)
+  ["n"]=>
+  string(4) "late"
+  ["k"]=>
+  string(2) "kk"
+}
+array(4) {
+  [0]=>
+  string(4) "late"
+  [1]=>
+  string(1) "n"
+  [2]=>
+  string(1) "k"
+  [3]=>
+  string(2) "kk"
+}
+int(5)
+int(6)
+int(5)
+int(6)
+int(6)
+array(1) {
+  ["p1"]=>
+  &string(7) "via ref"
+}

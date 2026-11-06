@@ -365,8 +365,6 @@ pub fn stream_wrappers() -> Vec<WrapperReg> {
 pub fn is_refused(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
-        "extract" => Some("writes arbitrary variables into the local scope"),
-        "compact" => Some("resolves variable names dynamically from strings"),
         "create_function" => Some("compiles a string into a function (eval-equivalent)"),
         _ => None,
     }

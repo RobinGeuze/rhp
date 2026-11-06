@@ -119,6 +119,8 @@ impl Vm {
             unused_call_depth: usize::MAX,
             dyn_call: false,
             dyn_raw_args: false,
+            call_direct: false,
+            builtin_dynamic: false,
             callable_dep_thrown: false,
             zpp_fcc: None,
             wrappers,

@@ -1,0 +1,252 @@
+Error: Cannot re-assign $this
+mode 0: string(5) "threw"
+array(4) {
+  ["a"]=>
+  int(1)
+  ["u"]=>
+  int(3)
+  ["b"]=>
+  int(2)
+  ["n"]=>
+  string(5) "threw"
+}
+mode 1: int(2)
+array(4) {
+  ["a"]=>
+  string(4) "orig"
+  ["u"]=>
+  int(3)
+  ["b"]=>
+  int(2)
+  ["n"]=>
+  int(2)
+}
+mode 2: int(4)
+array(6) {
+  ["a"]=>
+  string(4) "orig"
+  ["u"]=>
+  int(3)
+  ["b"]=>
+  int(2)
+  ["n"]=>
+  int(4)
+  ["p_a"]=>
+  int(1)
+  ["p_this"]=>
+  int(7)
+}
+mode 3: int(6)
+array(8) {
+  ["a"]=>
+  string(4) "orig"
+  ["n"]=>
+  int(6)
+  ["p_a"]=>
+  int(1)
+  ["p_this"]=>
+  int(7)
+  ["p_b"]=>
+  int(2)
+  ["p_u"]=>
+  int(3)
+  ["p_1x"]=>
+  int(4)
+  ["p_7"]=>
+  int(5)
+}
+mode 4: int(7)
+array(11) {
+  ["a"]=>
+  int(1)
+  ["u"]=>
+  int(3)
+  ["b"]=>
+  int(2)
+  ["n"]=>
+  int(7)
+  ["p_a"]=>
+  int(1)
+  ["p_this"]=>
+  int(7)
+  ["p_b"]=>
+  int(2)
+  ["p_u"]=>
+  int(3)
+  ["p_1x"]=>
+  int(4)
+  ["p_7"]=>
+  int(5)
+  ["p_"]=>
+  int(6)
+}
+mode 5: int(3)
+array(11) {
+  ["a"]=>
+  string(4) "orig"
+  ["u"]=>
+  int(3)
+  ["b"]=>
+  int(2)
+  ["n"]=>
+  int(3)
+  ["p_a"]=>
+  int(1)
+  ["p_this"]=>
+  int(7)
+  ["p_b"]=>
+  int(2)
+  ["p_u"]=>
+  int(3)
+  ["p_1x"]=>
+  int(4)
+  ["p_7"]=>
+  int(5)
+  ["p_"]=>
+  int(6)
+}
+mode 6: int(1)
+array(9) {
+  ["a"]=>
+  int(1)
+  ["n"]=>
+  int(1)
+  ["p_a"]=>
+  int(1)
+  ["p_this"]=>
+  int(7)
+  ["p_b"]=>
+  int(2)
+  ["p_u"]=>
+  int(3)
+  ["p_1x"]=>
+  int(4)
+  ["p_7"]=>
+  int(5)
+  ["p_"]=>
+  int(6)
+}
+array(2) {
+  ["x"]=>
+  &int(10)
+  ["y"]=>
+  &int(2)
+}
+int(20)
+int(3)
+E2: compact(): Undefined variable $nope
+array(4) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  array(1) {
+    [0]=>
+    int(2)
+  }
+  ["c"]=>
+  NULL
+  ["r"]=>
+  int(1)
+}
+E2: compact(): Argument #1 must be string or array of strings, int given
+E2: compact(): Argument #2 must be string or array of strings, float given
+E2: compact(): Argument #3 must be string or array of strings, true given
+array(0) {
+}
+array(1) {
+  ["dyn"]=>
+  string(4) "made"
+}
+array(3) {
+  ["p"]=>
+  int(1)
+  ["q"]=>
+  int(2)
+  ["w"]=>
+  int(9)
+}
+array(3) {
+  ["p"]=>
+  int(1)
+  ["q"]=>
+  int(2)
+  ["w"]=>
+  int(9)
+}
+string(6) "in gen"
+array(1) {
+  ["g"]=>
+  string(6) "in gen"
+}
+array(2) {
+  ["arg"]=>
+  string(1) "A"
+  ["local"]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  string(4) "this"
+  [1]=>
+  string(5) "local"
+}
+Cannot re-assign $this
+int(0)
+int(1)
+int(1)
+int(2)
+string(4) "over"
+string(3) "new"
+string(3) "new"
+string(3) "new"
+E2: compact(): Undefined variable $undefined_global
+array(2) {
+  ["g1"]=>
+  string(4) "over"
+  ["g2"]=>
+  string(3) "new"
+}
+array(6) {
+  [0]=>
+  string(6) "_FILES"
+  [1]=>
+  string(7) "_SERVER"
+  [2]=>
+  string(2) "cl"
+  [3]=>
+  string(1) "v"
+  [4]=>
+  string(2) "g1"
+  [5]=>
+  string(2) "g2"
+}
+extract(): Argument #2 ($flags) must be a valid extract type
+extract(): Argument #3 ($prefix) is required when using this extract type
+extract(): Argument #3 ($prefix) must be a valid identifier
+int(1)
+int(1)
+Cannot call extract() dynamically
+Cannot call extract() dynamically
+Cannot call extract() dynamically
+Cannot call extract() dynamically
+Cannot call compact() dynamically
+Cannot call compact() dynamically
+Cannot call compact() dynamically
+Cannot call compact() dynamically
+get_defined_vars() expects exactly 0 arguments, 1 given
+get_defined_vars() expects exactly 0 arguments, 1 given
+get_defined_vars() expects exactly 0 arguments, 1 given
+get_defined_vars() expects exactly 0 arguments, 1 given
+func_get_args() expects exactly 0 arguments, 1 given
+func_get_args() expects exactly 0 arguments, 1 given
+func_get_args() expects exactly 0 arguments, 1 given
+func_get_args() expects exactly 0 arguments, 1 given
+func_num_args() expects exactly 0 arguments, 1 given
+func_num_args() expects exactly 0 arguments, 1 given
+func_num_args() expects exactly 0 arguments, 1 given
+func_num_args() expects exactly 0 arguments, 1 given
+func_get_args() cannot be called from the global scope
+func_get_args() expects exactly 0 arguments, 1 given
+E2: Array to string conversion
+string(3) "arr"
+string(6) "viaobj"

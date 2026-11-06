@@ -11,7 +11,7 @@ use rhp_values::{
 };
 
 use crate::classes::PropRes;
-use crate::{classes, deref, Vm};
+use crate::{classes, deref, scope, Vm};
 
 /// The open cursor's steps: inline for the usual few, so an element
 /// write allocates nothing for its path.
@@ -957,14 +957,8 @@ impl Vm {
         top: usize,
         name: &[u8],
     ) -> Option<Result<Reg, Rc<RefCell<Value>>>> {
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            return Some(Ok(i as Reg));
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            return Some(Ok(i));
         }
         // The global scope ({main}, top-level includes) is the global
         // symbol table.
@@ -991,14 +985,8 @@ impl Vm {
             self.rebind_global(name, cell);
             return;
         }
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            self.stack[top].regs[i] = Value::Ref(cell);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            self.stack[top].regs[i as usize] = Value::Ref(cell);
         } else if let Some(caller) = self.stack[top].include_caller {
             self.var_var_bind(caller, name, cell);
         } else {
@@ -1013,17 +1001,11 @@ impl Vm {
             self.unset_global(name);
             return;
         }
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            self.unset_cv(top, i as Reg);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            self.unset_cv(top, i);
         } else if let Some(caller) = self.stack[top].include_caller {
             self.var_var_unset(caller, name);
-        } else if let Some(c) = self.stack[top].dyn_vars.remove(name) {
+        } else if let Some(c) = self.stack[top].dyn_vars.shift_remove(name) {
             if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
                 self.dtor_check = true;
             }
@@ -1045,14 +1027,8 @@ impl Vm {
         top: usize,
         name: &[u8],
     ) -> Result<Reg, Rc<RefCell<Value>>> {
-        let proto = &self.stack[top].proto;
-        if let Some(i) = proto
-            .cv_var_names
-            .iter()
-            .take(proto.num_cvs as usize)
-            .position(|n| n.as_bytes() == name)
-        {
-            return Ok(i as Reg);
+        if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
+            return Ok(i);
         }
         if self.stack[top].global_scope {
             return Err(self.global_cell(name));

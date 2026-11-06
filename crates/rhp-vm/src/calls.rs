@@ -2224,6 +2224,7 @@ impl Vm {
             self.dtor_check = true;
         }
         let strict = self.stack[top].proto.strict_types;
+        self.call_direct = true;
         self.run_builtin_sig(builtin, sig, args, &[], frameless, icall, strict)
     }
 
@@ -2292,6 +2293,7 @@ impl Vm {
         icall: bool,
         strict: bool,
     ) -> Result<Value, Thrown> {
+        let dynamic = !std::mem::take(&mut self.call_direct);
         // Free streams whose last reference went away (php closes a resource
         // when its refcount drops to zero; what that throws is thrown there).
         self.reap_dropped_streams()?;
@@ -2347,7 +2349,7 @@ impl Vm {
         if frameless || !(user || engine_called()) {
             let r = match zpp_error {
                 Some(e) => Err(e),
-                None => (builtin.func)(self, &args),
+                None => self.run_builtin_fn(builtin, &args, dynamic),
             };
             self.zpp_fcc = None;
             // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
@@ -2384,7 +2386,7 @@ impl Vm {
         });
         let r = match zpp_error {
             Some(e) => Err(e),
-            None => (builtin.func)(self, &args),
+            None => self.run_builtin_fn(builtin, &args, dynamic),
         };
         self.zpp_fcc = None;
         // What a stream operation queued without reaching a host.
@@ -2410,6 +2412,21 @@ impl Vm {
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);
+        r
+    }
+
+    /// Run a builtin's body, with [`Vm::builtin_dynamic`] telling it how it
+    /// was called.
+    #[inline]
+    fn run_builtin_fn(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        args: &[Value],
+        dynamic: bool,
+    ) -> Result<Value, Thrown> {
+        let saved = std::mem::replace(&mut self.builtin_dynamic, dynamic);
+        let r = (builtin.func)(self, args);
+        self.builtin_dynamic = saved;
         r
     }
 
@@ -2533,6 +2550,7 @@ impl Vm {
                     self.place_builtin_named_args(s, argv, named)?
                 };
                 let strict = self.caller_strict();
+                self.call_direct = true;
                 let out = self.run_builtin_sig(builtin, sig, argv, &extra, false, false, strict)?;
                 self.reg_set(top, dst, out);
             }

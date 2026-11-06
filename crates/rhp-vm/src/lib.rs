@@ -34,6 +34,7 @@ mod output;
 mod props;
 mod reflect;
 mod request;
+mod scope;
 mod streams;
 mod stub_default;
 mod types;
@@ -211,6 +212,12 @@ pub struct Vm {
     /// The builtin about to run got a dynamic call's raw arguments: its
     /// by-value positions are dereferenced first.
     dyn_raw_args: bool,
+    /// Set by a direct call by name (`f(...)`) right before its builtin
+    /// runs; any other way to reach a builtin is php's ZEND_CALL_DYNAMIC.
+    call_direct: bool,
+    /// The running builtin was called dynamically (a callback, `$f()`):
+    /// the scope functions refuse that (zend_forbid_dynamic_call).
+    builtin_dynamic: bool,
     /// A callable check's deprecation threw (see `Vm::check_callable_ex`).
     callable_dep_thrown: bool,
     /// The callable argument the running builtin's zpp resolved, by its
@@ -396,7 +403,7 @@ struct Frame {
     /// runs in.
     include_caller: Option<usize>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
-    dyn_vars: HashMap<Vec<u8>, Rc<RefCell<Value>>>,
+    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
@@ -443,7 +450,7 @@ impl Frame {
             extra_args: Vec::new(),
             include_kind: None,
             include_caller: None,
-            dyn_vars: HashMap::new(),
+            dyn_vars: indexmap::IndexMap::new(),
             global_scope: false,
             closure: None,
         }

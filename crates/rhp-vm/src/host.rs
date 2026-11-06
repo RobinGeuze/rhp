@@ -1206,6 +1206,41 @@ impl Host for Vm {
         }
     }
 
+    fn call_is_dynamic(&self) -> bool {
+        self.builtin_dynamic
+    }
+
+    fn called_back_by_builtin(&self) -> bool {
+        let n = self.native_calls.len();
+        if n >= 2 && self.native_calls[n - 2].caller == self.native_calls[n - 1].caller {
+            return true;
+        }
+        self.stack
+            .len()
+            .checked_sub(1)
+            .is_none_or(|t| self.is_internal_frame(t))
+    }
+
+    fn scope_vars(&mut self) -> PhpArray {
+        Vm::scope_vars(self)
+    }
+
+    fn scope_var(&mut self, name: &[u8]) -> builtins::ScopeVar {
+        Vm::scope_var(self, name)
+    }
+
+    fn scope_assign(&mut self, name: &[u8], value: Value) -> Result<(), Thrown> {
+        Vm::scope_assign(self, name, value)
+    }
+
+    fn scope_bind(&mut self, name: &[u8], cell: Rc<std::cell::RefCell<Value>>) {
+        Vm::scope_bind(self, name, cell)
+    }
+
+    fn scope_this(&self) -> Option<Value> {
+        Vm::scope_this(self)
+    }
+
     fn stream_set_timeout(&mut self, res: &Value, timeout: Option<(i64, i64)>) -> bool {
         let Some(id) = res_id(res) else { return false };
         match self.streams.get_mut(&id) {

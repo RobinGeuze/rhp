@@ -736,8 +736,8 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
-    /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls
-    /// `shell_exec()` (resolved like an unqualified call) with the string.
+    /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls the
+    /// global `shell_exec()` (a fully qualified name) with the string.
     fn compile_shell_exec(&mut self, cs: &CompositeString) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
         self.cx.diag(
@@ -746,15 +746,7 @@ impl ProtoBuilder<'_> {
             "The backtick (`) operator is deprecated, use shell_exec() instead".into(),
         );
         let cmd = self.compile_composite_parts(cs)?;
-        let ns = self.cx.ns().ns.clone();
-        let (name, fallback) = if ns.is_empty() {
-            (b"shell_exec".to_vec(), None)
-        } else {
-            (
-                crate::names::join_ns(&ns, b"shell_exec"),
-                Some(b"shell_exec".to_vec()),
-            )
-        };
+        let (name, fallback) = (b"shell_exec".to_vec(), None);
         let base = self.alloc_temps(1);
         self.emit(Instr::MovTake {
             dst: base,

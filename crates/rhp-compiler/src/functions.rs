@@ -316,7 +316,7 @@ impl ProtoBuilder<'_> {
             .collect();
 
         let mut used = Vec::new();
-        collect_vars(af.expression, &mut used);
+        collect_vars(af.expression, self.cx.src, &mut used);
         let mut captures: Vec<(Vec<u8>, bool)> = Vec::new();
         for name in used {
             if name == b"this" {

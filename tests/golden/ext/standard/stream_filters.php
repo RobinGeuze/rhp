@@ -126,5 +126,17 @@ try {
 }
 stream_filter_register("missing", "NoSuchClass");
 var_dump(stream_filter_append($fp, "missing"));
+// the warning names the last wildcard tried: "a.b.*" fails, "a.*" is absent
+stream_filter_register("wild.b.*", "NoSuchClass");
+var_dump(stream_filter_append($fp, "wild.b.c"));
+stream_filter_register("wild.*", "NoSuchClass");
+var_dump(stream_filter_append($fp, "wild.b.c"));
+class BadArgs extends php_user_filter {}
+$f = new BadArgs;
+try {
+    $f->filter(1, 2, $c, false);
+} catch (TypeError $e) {
+    echo $e->getMessage(), "\n";
+}
 unlink($file);
 echo "done\n";

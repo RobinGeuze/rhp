@@ -132,4 +132,12 @@ stream_filter_remove(): supplied resource is not a valid stream filter resource
 E2: stream_filter_append(): User-filter "missing" requires class "NoSuchClass", but that class is not defined
 E2: stream_filter_append(): Unable to create or locate filter "missing"
 bool(false)
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): Unable to locate filter "wild.b.c"
+bool(false)
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): User-filter "wild.b.c" requires class "NoSuchClass", but that class is not defined
+E2: stream_filter_append(): Unable to create or locate filter "wild.b.c"
+bool(false)
+php_user_filter::filter(): Argument #1 ($in) must be of type resource, int given
 done

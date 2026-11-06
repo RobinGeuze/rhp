@@ -24,7 +24,8 @@ class php_user_filter {
     public mixed $params = "";
     public $stream = null;
     public function filter($in, $out, &$consumed, bool $closing): int {
-        __user_filter_check_args($in, $out);
+        __zpp_arg("php_user_filter::filter", 1, "in", "resource", $in);
+        __zpp_arg("php_user_filter::filter", 2, "out", "resource", $out);
         return PSFS_ERR_FATAL;
     }
     public function onCreate(): bool {
@@ -51,21 +52,6 @@ thread_local! {
 pub(crate) fn reset_state() {
     USER_FILTERS.with(|m| m.borrow_mut().clear());
     filter::reset_state();
-}
-
-/// `php_user_filter::filter`'s zpp ("rrzb") for the two resources.
-fn fn_user_filter_check_args(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    for (i, name) in [(0, "in"), (1, "out")] {
-        let v = args.get(i).map(deref).unwrap_or(Value::Null);
-        if !matches!(v, Value::Resource(_)) {
-            return Err(Thrown::type_error(format!(
-                "php_user_filter::filter(): Argument #{} (${name}) must be of type resource, {} given",
-                i + 1,
-                crate::zend::zpp::zval_value_name(host, &v)
-            )));
-        }
-    }
-    Ok(Value::Null)
 }
 
 /// A user filter: the object of the registered class.
@@ -395,14 +381,5 @@ pub fn register(m: &mut crate::Registry) {
             ("stream_get_filters", fn_stream_get_filters),
             ("stream_filter_register", fn_stream_filter_register),
         ],
-    );
-    crate::register_helpers(
-        m,
-        &[(
-            "__user_filter_check_args",
-            fn_user_filter_check_args,
-            2,
-            Some(2),
-        )],
     );
 }

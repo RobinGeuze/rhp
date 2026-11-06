@@ -241,9 +241,11 @@ pub fn create(host: &mut dyn Host, name: &[u8], params: Option<&Value>) -> Optio
         found = true;
         ops = f(host, name, params);
     } else {
+        // php's message depends on the last pattern looked up
         for w in wildcards(name) {
-            if let Some(f) = lookup(&w) {
-                found = true;
+            let f = lookup(&w);
+            found = f.is_some();
+            if let Some(f) = f {
                 ops = f(host, name, params);
                 if ops.is_some() {
                     break;

@@ -1,0 +1,7 @@
+includes:
+    - phpstan.neon
+parameters:
+    parallel:
+        maximumNumberOfProcesses: 2
+        minimumNumberOfJobsPerProcess: 1
+        jobSize: 1

@@ -1,0 +1,170 @@
+# PHP dev tools that rhp is measured against (see README.md, "Dev tools").
+#
+# All tools are installed together into tools/project (composer.json and
+# composer.lock are committed; `python3 tests/apps/tools.py setup`), and every
+# command runs on a fresh copy of that fixture project, first under php and
+# then under rhp.
+#
+# Fields:
+#   name      the tool, also its work directory name
+#   package   the composer package (its version comes from composer.lock)
+#   bin       the entry script, relative to the project; run as `<engine> <bin> <args>`
+#   commands  one argument string per command (shell-split; no shell runs it)
+
+[[tool]]
+name = "phpunit"
+package = "phpunit/phpunit"
+bin = "vendor/bin/phpunit"
+commands = [
+    "--version",
+    "--help",
+    "--list-suites",
+    "--list-groups",
+    "--list-tests",
+    "--list-test-files",
+    "--list-tests-xml php://stdout",
+    "--validate-configuration",
+    "--migrate-configuration",
+    "",
+    "--no-progress",
+    "--testdox",
+    "--testdox-summary",
+    "--debug",
+    "--teamcity",
+    "--display-skipped",
+    "--filter testAdd",
+    "--group failing",
+    "--exclude-group failing",
+    "--stop-on-failure",
+    "--fail-on-skipped --exclude-group failing",
+    "--order-by=reverse",
+    "--order-by=random --random-order-seed=1234",
+    "tests/CalculatorTest.php",
+    "--log-junit php://stdout --no-output",
+    "--testdox-text php://stdout --no-output",
+    "--log-events-text php://stdout --no-output",
+    "--coverage-text",
+    "--no-configuration --bootstrap vendor/autoload.php tests",
+]
+
+[[tool]]
+name = "phpstan"
+package = "phpstan/phpstan"
+bin = "vendor/bin/phpstan"
+commands = [
+    "--version",
+    "list",
+    "help analyse",
+    "diagnose",
+    "dump-parameters",
+    "analyse",
+    "analyse --no-progress",
+    "analyse --no-progress -v",
+    "analyse --no-progress --debug",
+    "analyse --no-progress -c phpstan-parallel.neon",
+    "analyse --no-progress --level=0",
+    "analyse --no-progress --level=max",
+    "analyse --no-progress src/Calculator.php",
+    "analyse --no-progress --error-format=raw",
+    "analyse --no-progress --error-format=json",
+    "analyse --no-progress --error-format=prettyJson",
+    "analyse --no-progress --error-format=checkstyle",
+    "analyse --no-progress --error-format=junit",
+    "analyse --no-progress --error-format=github",
+    "analyse --no-progress --error-format=gitlab",
+    "analyse --no-progress --error-format=teamcity",
+    "analyse --no-progress --memory-limit=512M",
+    "analyse --no-progress --generate-baseline",
+    "result-cache-info",
+    "clear-result-cache",
+]
+
+[[tool]]
+name = "psalm"
+package = "vimeo/psalm"
+bin = "vendor/bin/psalm"
+commands = [
+    "--version",
+    "--help",
+    "--no-progress --threads=1",
+    "--no-progress",
+    "--no-progress --threads=2",
+    "--threads=1",
+    "--no-progress --threads=1 --show-info=true",
+    "--no-progress --threads=1 --no-cache",
+    "--no-progress --threads=1 --stats",
+    "--no-progress --threads=1 --find-dead-code",
+    "--no-progress --threads=1 src/Calculator.php",
+    "--no-progress --threads=1 --output-format=compact",
+    "--no-progress --threads=1 --output-format=json",
+    "--no-progress --threads=1 --output-format=checkstyle",
+    "--no-progress --threads=1 --output-format=junit",
+    "--no-progress --threads=1 --output-format=github",
+    "--no-progress --threads=1 --output-format=sonarqube",
+    "--no-progress --threads=1 --output-format=codeclimate",
+    "--no-progress --threads=1 --output-format=count",
+    "--no-progress --threads=1 --output-format=xml",
+    "--no-progress --threads=1 --set-baseline=psalm-baseline.xml",
+    "--no-progress --threads=1 --alter --issues=MissingReturnType,MismatchingDocblockReturnType --dry-run",
+    "--no-progress --threads=1 --alter --issues=MissingReturnType,MismatchingDocblockReturnType",
+    "--clear-cache",
+]
+
+[[tool]]
+name = "php-cs-fixer"
+package = "friendsofphp/php-cs-fixer"
+bin = "vendor/bin/php-cs-fixer"
+commands = [
+    "--version",
+    "list",
+    "help fix",
+    "describe array_syntax",
+    "describe @PSR12",
+    "list-sets",
+    "list-files",
+    "check",
+    "check --diff",
+    "check -v",
+    "fix --dry-run --diff",
+    "fix",
+    "fix -vvv",
+    "fix --using-cache=no",
+    "fix src/Item.php",
+    "fix --rules=@PER-CS --dry-run --diff",
+    "fix --stop-on-violation --dry-run",
+    "fix --dry-run --format=json",
+    "fix --dry-run --format=junit",
+    "fix --dry-run --format=checkstyle",
+    "fix --dry-run --format=gitlab",
+    "fix --dry-run --format=xml",
+    "fix --dry-run --format=txt",
+    "check --config=.php-cs-fixer.parallel.php",
+    "fix --config=.php-cs-fixer.parallel.php",
+]
+
+[[tool]]
+name = "rector"
+package = "rector/rector"
+bin = "vendor/bin/rector"
+commands = [
+    "--version",
+    "list",
+    "help process",
+    "list-rules",
+    "list-rules --output-format=json",
+    "process --dry-run",
+    "process",
+    "process --dry-run --no-diffs",
+    "process --dry-run --output-format=json",
+    "process --dry-run --output-format=github",
+    "process --dry-run --output-format=gitlab",
+    "process --dry-run --rules-summary",
+    "process --max-changes=1",
+    "process --dry-run --debug",
+    "process --dry-run --clear-cache",
+    "process --dry-run src/Item.php",
+    "process --dry-run --only=Rector\\Php84\\Rector\\MethodCall\\NewMethodCallWithoutParenthesesRector",
+    "process --dry-run --config=rector-parallel.php",
+    "process --config=rector-parallel.php",
+    "process --dry-run --no-progress-bar",
+]

@@ -83,24 +83,17 @@ impl Node {
         })
     }
 
-    /// Note an object entering or leaving the buffer on the object (the
+    /// Note a closure entering or leaving the buffer on the closure (the
     /// release fast path reads it). The buffer is changed between
     /// instructions, when no object is borrowed.
     fn set_buffered(&self, on: bool) {
         match self {
-            Node::Obj(w) => {
-                if let Some(h) = w.upgrade() {
-                    if let Ok(o) = h.try_borrow() {
-                        o.gc_buffered.set(on);
-                    }
-                }
-            }
             Node::Closure(w) => {
                 if let Some(c) = w.upgrade() {
                     c.gc_buffered.set(on);
                 }
             }
-            Node::Arr(_) => {}
+            Node::Obj(_) | Node::Arr(_) => {}
         }
     }
 
@@ -173,6 +166,9 @@ struct State {
     /// flags: `object_freed` looks only when there are some.
     handles: Cell<u32>,
     flagged: Cell<bool>,
+    /// The object last found in the buffer (by address): a frame's `$this`
+    /// released call after call is checked here first.
+    last: Cell<usize>,
     /// Handles whose object has one reference more than php counts (the
     /// VM's destructor tracking list holds it), and handles whose
     /// destructor a collection called.
@@ -196,6 +192,7 @@ thread_local! {
             arrays: Cell::new(0),
             handles: Cell::new(0),
             flagged: Cell::new(false),
+            last: Cell::new(0),
             flags: ManuallyDrop::new(RefCell::new(Vec::new())),
             buf: ManuallyDrop::new(RefCell::new(Buf {
                 slots: Vec::new(),
@@ -365,6 +362,7 @@ impl Buf {
             }
         });
         node.set_buffered(false);
+        st.last.set(0);
         reserve(&mut self.unused, 1);
         self.unused.push(idx);
         self.num_roots -= 1;
@@ -394,10 +392,7 @@ fn key_of(node: &Node) -> Option<Key> {
 #[inline]
 pub fn possible_root(v: &Value) {
     let shared = match v {
-        // A buffered object stays buffered (php's GC_INFO test).
-        Value::Object(h) => {
-            Rc::strong_count(h) > 1 && h.try_borrow().map_or(true, |o| !o.gc_buffered.get())
-        }
+        Value::Object(h) => Rc::strong_count(h) > 1,
         Value::Array(a) => Rc::strong_count(&a.0) > 1,
         Value::Ref(r) => Rc::strong_count(r) > 1,
         Value::Closure(c) => Rc::strong_count(c) > 1 && !c.gc_buffered.get(),
@@ -413,7 +408,11 @@ pub fn possible_root(v: &Value) {
 fn possible_root_slow(v: &Value) {
     match v {
         Value::Object(h) => {
+            let addr = Rc::as_ptr(h) as usize;
             let _ = STATE.try_with(|st| {
+                if st.last.get() == addr {
+                    return;
+                }
                 let Ok(o) = h.try_borrow() else { return };
                 let id = o.id;
                 drop(o);
@@ -423,8 +422,10 @@ fn possible_root_slow(v: &Value) {
                         f.get(id as usize)
                             .is_some_and(|x| x & (TRACKED | HELD) != 0)
                     });
-                if Rc::strong_count(h) - usize::from(extra) > 1 {
-                    add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id));
+                if Rc::strong_count(h) - usize::from(extra) > 1
+                    && add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id))
+                {
+                    st.last.set(addr);
                 }
             });
         }
@@ -956,6 +957,7 @@ pub fn reset() {
             st.handles.set(0);
             st.flagged.set(false);
         });
+        st.last.set(0);
         if let Ok(mut f) = st.flags.try_borrow_mut() {
             f.clear();
         }

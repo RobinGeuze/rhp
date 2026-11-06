@@ -14,6 +14,8 @@ thread_local! {
     /// Handles freed while generators exist: a freed generator's state is
     /// dropped at the next [`Vm::drop_freed_generators`].
     static FREED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// This thread's generator table is not empty: frees are noted.
+    static LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Set once any engine made a generator: until then a free notes nothing.
@@ -23,7 +25,7 @@ static WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// handle noted for the generator table.
 pub(crate) fn object_freed(id: u32) {
     rhp_builtins::object_freed(id);
-    if WATCH.load(std::sync::atomic::Ordering::Relaxed) {
+    if WATCH.load(std::sync::atomic::Ordering::Relaxed) && LIVE.try_with(|l| l.get()) == Ok(true) {
         let _ = FREED.try_with(|f| {
             if let Ok(mut f) = f.try_borrow_mut() {
                 f.push(id);
@@ -34,6 +36,7 @@ pub(crate) fn object_freed(id: u32) {
 
 /// A new engine: nothing noted.
 pub(crate) fn reset_freed() {
+    let _ = LIVE.try_with(|l| l.set(false));
     let _ = FREED.try_with(|f| f.borrow_mut().clear());
 }
 
@@ -81,6 +84,14 @@ impl Vm {
             indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
         )));
         WATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = LIVE.try_with(|l| l.set(true));
+        // A free of an earlier object with this handle is not this
+        // generator's.
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.retain(|&x| x != id);
+            }
+        });
         self.generators.insert(
             id,
             GenState {
@@ -360,6 +371,15 @@ impl Vm {
                 }
             }
         }
+        self.gen_table_changed();
+    }
+
+    /// After states left the generator table: with none left, frees are
+    /// no longer noted.
+    pub(crate) fn gen_table_changed(&mut self) {
+        if self.generators.is_empty() {
+            reset_freed();
+        }
     }
 
     /// A suspended frame is destroyed: objects whose `new` had not called
@@ -428,6 +448,7 @@ impl Vm {
             return None;
         }
         let g = self.generators.remove(&id)?;
+        self.gen_table_changed();
         if let Some(f) = &g.frame {
             self.forget_unfinished_news(f);
         }

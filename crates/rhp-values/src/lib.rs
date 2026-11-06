@@ -171,7 +171,9 @@ pub struct ClosureData {
     /// them (php copies a closure's static variables into each Closure
     /// object). Unbound ones still have their declared initial value.
     pub statics: RefCell<Vec<(PhpStr, PhpRef)>>,
-    /// In the cycle collector's root buffer (see [`ObjectData`]).
+    /// In the cycle collector's root buffer (php's GC_INFO): a release of
+    /// a buffered closure skips the buffer lookup. (Objects have no room
+    /// for it: the slow path's `last` cache serves a repeated `$this`.)
     pub gc_buffered: std::cell::Cell<bool>,
 }
 
@@ -232,9 +234,6 @@ pub struct ObjectData {
     /// Rarely used state: the native payload and the lazy object info.
     /// Boxed so that objects with neither pay a pointer.
     extra: Option<Box<ObjectExtra>>,
-    /// In the cycle collector's root buffer (php's GC_INFO): a release of
-    /// a buffered object skips the buffer lookup.
-    pub(crate) gc_buffered: std::cell::Cell<bool>,
 }
 
 /// See [`ObjectData::payload`] and [`ObjectData::lazy`].
@@ -334,7 +333,6 @@ impl ObjectData {
             id,
             properties,
             extra: None,
-            gc_buffered: std::cell::Cell::new(false),
         }
     }
 

@@ -2361,6 +2361,7 @@ impl Vm {
         let id = rhp_values::alloc_object_id();
         if !self.generators.is_empty() {
             drop(self.generators.remove(&id));
+            self.gen_table_changed();
         }
         if !self.unset_typed_props.is_empty() {
             self.unset_typed_props.remove(&id);

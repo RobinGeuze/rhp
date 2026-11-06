@@ -28,9 +28,11 @@ dropped:
 
 A temporary's release adds no root, as php's `zval_ptr_dtor_nogc`. A
 reference adds the value it holds. The check is a tag test and
-`Rc::strong_count > 1` inline, plus a `gc_buffered` flag on objects and
-closures (php's GC_INFO), so releasing an object already in the buffer
-(a `$this` call after call) stays out of the slow path. The slow path
+`Rc::strong_count > 1` inline, plus a `gc_buffered` flag on closures
+(php's GC_INFO), so releasing a buffered closure stays out of the slow
+path. Objects have no room for the flag (an object stays in the 96-byte
+bin); the slow path remembers the object it last found buffered, so a
+`$this` released call after call is cheap. The slow path
 subtracts the reference the VM's destructor list holds (the `TRACKED`
 flag). A free looks at the buffer only when some thread has something
 buffered (one relaxed atomic load).

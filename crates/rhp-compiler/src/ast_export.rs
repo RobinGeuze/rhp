@@ -7,6 +7,7 @@
 //! follows the zend_ast.c function or case of the same name.
 
 use crate::parse::cst::*;
+use mago_span::HasSpan;
 use rhp_values::Value;
 
 /// `zend_ast_export("assert(", arg, ")")`: the message compile_assert adds
@@ -774,7 +775,14 @@ impl<'s> Ex<'s> {
             }
             Expression::Clone(c) => {
                 self.s("\\clone(");
-                self.ex(c.object, 20, indent);
+                match self.clone_arg_name(c.object) {
+                    Some((name, e)) => {
+                        self.out.extend_from_slice(name);
+                        self.s(": ");
+                        self.ex(e, 0, indent);
+                    }
+                    None => self.ex(c.object, 20, indent),
+                }
                 self.c(b')');
             }
             Expression::Call(call) => self.call(call, indent),
@@ -985,6 +993,19 @@ impl<'s> Ex<'s> {
         }
     }
 
+    /// `clone(name: $x)`: mago folds a single named argument into a
+    /// parenthesized clone operand; php keeps the call with its name.
+    fn clone_arg_name<'a>(&self, e: &'a Expression<'a>) -> Option<(&'s [u8], &'a Expression<'a>)> {
+        let Expression::Parenthesized(p) = e else {
+            return None;
+        };
+        let from = p.left_parenthesis.end.offset as usize;
+        let to = p.expression.span().start.offset as usize;
+        let head = self.src.get(from..to)?;
+        let colon = head.iter().position(|&b| b == b':')?;
+        Some((head[..colon].trim_ascii(), p.expression))
+    }
+
     /// `exit` / `die`: a call to `\exit`.
     fn exit(&mut self, args: Option<&ArgumentList>, indent: usize) {
         self.s("\\exit(");
@@ -1001,6 +1022,19 @@ impl<'s> Ex<'s> {
             Expression::Parenthesized(p) => p.expression,
             f => f,
         };
+        // `clone(...)` is the keyword: the parser names the global
+        // clone() (ZEND_NAME_FQ).
+        let id = match f {
+            Expression::Identifier(id) => Some(id),
+            Expression::ConstantAccess(ca) => Some(&ca.name),
+            _ => None,
+        };
+        if let Some(Identifier::Local(l)) = id {
+            if l.value.eq_ignore_ascii_case(b"clone") {
+                self.s("\\clone");
+                return;
+            }
+        }
         if matches!(f, Expression::Closure(_) | Expression::ArrowFunction(_)) {
             self.c(b'(');
             self.ex(f, 0, indent);

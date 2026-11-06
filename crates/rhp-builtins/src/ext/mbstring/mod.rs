@@ -299,7 +299,7 @@ pub(crate) struct GpcEnc(Enc);
 
 impl GpcEnc {
     /// php_mb_mbchar_bytes: the length of the character starting with `b`.
-    pub(crate) fn char_bytes(&self, b: u8) -> usize {
+    pub(crate) fn char_bytes(self, b: u8) -> usize {
         if let Some(t) = self.0.mblen_table() {
             t[b as usize] as usize
         } else if self.0.flag() & mbfl::ENCTYPE_WCS2 != 0 {
@@ -312,7 +312,7 @@ impl GpcEnc {
     }
 
     /// zend_multibyte_encoding_converter to the internal encoding.
-    pub(crate) fn to_internal(&self, s: &[u8]) -> Vec<u8> {
+    pub(crate) fn into_internal(self, s: &[u8]) -> Vec<u8> {
         convert_script(s, ini_internal_encoding(), self.0)
     }
 }

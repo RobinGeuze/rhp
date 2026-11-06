@@ -291,10 +291,10 @@ type InEnc = crate::ext::mbstring::GpcEnc;
 struct InEnc;
 #[cfg(not(feature = "mbstring-libmbfl"))]
 impl InEnc {
-    fn char_bytes(&self, _: u8) -> usize {
+    fn char_bytes(self, _: u8) -> usize {
         1
     }
-    fn to_internal(&self, s: &[u8]) -> Vec<u8> {
+    fn into_internal(self, s: &[u8]) -> Vec<u8> {
         s.to_vec()
     }
 }
@@ -816,7 +816,7 @@ pub fn parse(
         }
         let enc = mb.input_enc;
         let conv = |v: Vec<u8>| match enc {
-            Some(e) => e.to_internal(&v),
+            Some(e) => e.into_internal(&v),
             None => v,
         };
         while !cd.is_empty() {

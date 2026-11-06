@@ -470,6 +470,8 @@ const MAX_LINKS: u32 = 40;
 /// or `None` on failure. `save` is CWD_FILEPATH (lstat each component,
 /// following symlinks; a missing one is kept as written) against
 /// CWD_EXPAND (lexical only).
+// st_mode and the S_IF* constants are u16 on macOS and u32 on Linux.
+#[allow(clippy::unnecessary_cast)]
 fn realpath_r(
     path: &mut Vec<u8>,
     start: usize,

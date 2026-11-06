@@ -44,15 +44,15 @@ passing, so the percentages are of all php-src tests.
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
 | Zend/tests | 4,037 | 5,396 | 74.8% | no Fiber (0/113); lazy objects 211/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 694 | 895 | 77.5% | php-src's tests of the language, functions, classes and output |
+| tests | 693 | 895 | 77.4% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 20 | 117 | 17.1% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,894 | 3,880 | 74.6% | no user stream wrappers, stream filters, `mail`, `getimagesize` |
+| ext/standard | 2,890 | 3,880 | 74.5% | no user stream wrappers, stream filters, `mail`, `getimagesize` |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 7 | 27 | 25.9% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 153 | 180 | 85.0% | on libcurl |
-| ext/date | 686 | 705 | 97.3% | on timelib, compiled in (rhp-csrc) |
+| ext/date | 684 | 705 | 97.0% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 476 | 901 | 52.8% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
 | ext/filter | 40 | 129 | 31.0% | `filter_var` only |
 | ext/gmp | 95 | 99 | 96.0% | on libgmp |
@@ -60,7 +60,7 @@ passing, so the percentages are of all php-src tests.
 | ext/iconv | 75 | 82 | 91.5% | the system iconv |
 | ext/intl | 37 | 511 | 7.2% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 78 | 94 | 83.0% | |
-| ext/libxml | 18 | 32 | 56.2% | on libxml2 |
+| ext/libxml | 17 | 32 | 53.1% | on libxml2 |
 | ext/mbstring | 220 | 446 | 49.3% | on php-src's libmbfl (rhp-mbfl-sys) |
 | ext/opcache | 683 | 876 | 78.0% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 208 | 236 | 88.1% | on OpenSSL |
@@ -69,7 +69,7 @@ passing, so the percentages are of all php-src tests.
 | ext/phar | 18 | 574 | 3.1% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 17 | 69 | 24.6% | the functions only; no `Random\Randomizer` or engines |
-| ext/readline | 3 | 28 | 10.7% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
+| ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
 | ext/reflection | 347 | 540 | 64.3% | |
 | ext/simplexml | 145 | 165 | 87.9% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
@@ -80,9 +80,9 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 115 | 125 | 92.0% | `ZipArchive` on libzip |
 | ext/zlib | 81 | 161 | 50.3% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 20 | 3,953 | 0.5% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 2 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **12,279** | **22,219** | **55.3%** | |
+| **total** | **12,250** | **22,219** | **55.1%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

@@ -420,11 +420,9 @@ struct Frame {
     /// Arguments passed beyond the declared parameters (non-variadic callee):
     /// kept for `func_get_args()` and exception-trace `args`.
     extra_args: Vec<Value>,
-    /// `include`/`require`/`eval` frame: the construct name shown in traces.
-    include_kind: Option<&'static str>,
-    /// `include`/`require`/`eval` frame: the frame whose variable scope it
-    /// runs in.
-    include_caller: Option<usize>,
+    /// `include`/`require`/`eval` frame: the construct name shown in
+    /// traces, and the frame whose variable scope it runs in.
+    include: Option<(&'static str, usize)>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
     dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
     /// Runs in the global scope ({main}, or a file included from it): its
@@ -433,10 +431,20 @@ struct Frame {
     /// The Closure object this frame runs (`Closure::getCurrent()`, the
     /// closure's own static variables).
     closure: Option<Rc<rhp_values::ClosureData>>,
+    /// HashTable iterators of the running foreach loops over an object or
+    /// by reference: `(pos_reg, arr, by_ref, id)`. A loop left without its
+    /// `FeFree` (an exception, a jump through a finally) gives its iterator
+    /// up when a catch frees its temporaries or the frame goes.
+    fe_live: Option<Box<Vec<(Reg, Reg, bool, u32)>>>,
 }
 
 impl Drop for Frame {
     fn drop(&mut self) {
+        if let Some(live) = self.fe_live.take() {
+            for (_, arr, by_ref, id) in *live {
+                dispatch::release_fe_iter(&mut self.regs, arr, by_ref, id);
+            }
+        }
         // php frees a frame's variables, then its `$this`: the handles come
         // back in that order.
         if let Some(cv) = self.proto.this_cv {
@@ -450,6 +458,16 @@ impl Drop for Frame {
 }
 
 impl Frame {
+    /// See `Frame::include`.
+    fn include_kind(&self) -> Option<&'static str> {
+        self.include.map(|i| i.0)
+    }
+
+    /// See `Frame::include`.
+    fn include_caller(&self) -> Option<usize> {
+        self.include.map(|i| i.1)
+    }
+
     fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
         // Every register starts undefined (a zero tag, so this is a fill
         // of zeroes): a variable must be, and a temporary is written before
@@ -471,11 +489,11 @@ impl Frame {
             argc: 0,
             holes: 0,
             extra_args: Vec::new(),
-            include_kind: None,
-            include_caller: None,
+            include: None,
             dyn_vars: indexmap::IndexMap::new(),
             global_scope: false,
             closure: None,
+            fe_live: None,
         }
     }
 }

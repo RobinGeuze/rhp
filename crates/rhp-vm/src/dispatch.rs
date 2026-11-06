@@ -48,7 +48,7 @@ impl Vm {
     /// [`Vm::static_table`]).
     fn static_key(&self, top: usize, proto: &Rc<FunctionProto>, sname: Vec<u8>) -> StaticKey {
         let f = &self.stack[top];
-        if f.include_kind.is_some() {
+        if f.include_kind().is_some() {
             return (top, 0, None, sname);
         }
         let cls = if proto.name.as_bytes().starts_with(b"{closure") {
@@ -64,7 +64,7 @@ impl Vm {
     /// returns (see [`Vm::run_included`]).
     #[inline]
     fn static_table(&mut self, top: usize) -> &mut HashMap<StaticKey, Rc<RefCell<Value>>> {
-        if self.stack[top].include_kind.is_some() {
+        if self.stack[top].include_kind().is_some() {
             &mut self.include_statics
         } else {
             &mut self.statics
@@ -2967,6 +2967,7 @@ impl Vm {
                         obj.borrow_mut().prop_iter_set(id, 0);
                         self.reg_set(top, arr_reg, Value::Object(obj));
                         self.reg_set(top, pos_reg, Value::Int(id as i64));
+                        self.fe_track(top, pos_reg, arr_reg, false, id);
                     }
                 }
             }
@@ -3226,6 +3227,7 @@ impl Vm {
                     None => add(&mut self.stack[top].regs[arr_cv as usize]),
                 }
                 self.reg_set(top, pos_reg, Value::Int(id as i64));
+                self.fe_track(top, pos_reg, arr_cv, true, id);
             }
             Some(Value::Object(h)) => {
                 // get_properties initializes a lazy object (a proxy iterates
@@ -3245,6 +3247,7 @@ impl Vm {
                 } else {
                     h.borrow_mut().prop_iter_set(id, 0);
                     self.reg_set(top, pos_reg, Value::Int(id as i64));
+                    self.fe_track(top, pos_reg, arr_cv, true, id);
                 }
             }
             Some(v) => {
@@ -3322,6 +3325,19 @@ impl Vm {
         Ok(Some((key, Value::Ref(rc))))
     }
 
+    /// Record iterator `id` of the loop with `pos_reg` as live in the frame.
+    /// A record left for the same loop (by a jump through a finally) is an
+    /// earlier run of it: its iterator goes now.
+    fn fe_track(&mut self, top: usize, pos_reg: Reg, arr: Reg, by_ref: bool, id: u32) {
+        let f = &mut self.stack[top];
+        let live = f.fe_live.get_or_insert_default();
+        if let Some(i) = live.iter().position(|l| l.0 == pos_reg) {
+            let (_, arr, by_ref, old) = live.swap_remove(i);
+            release_fe_iter(&mut f.regs, arr, by_ref, old);
+        }
+        live.push((pos_reg, arr, by_ref, id));
+    }
+
     /// The zend_object_iterator foreach over a Traversable (or a hooked
     /// object) creates takes an object handle while the loop runs: a
     /// placeholder object in `pos_reg + 1`, freed by FeFree.
@@ -3359,6 +3375,9 @@ impl Vm {
                     self.stack[top].regs[arr as usize] = v;
                 }
             }
+        }
+        if let Some(live) = self.stack[top].fe_live.as_deref_mut() {
+            live.retain(|l| l.0 != pos_reg);
         }
         let regs = &mut self.stack[top].regs;
         regs[pos_reg as usize] = Value::Null;
@@ -4326,4 +4345,32 @@ fn loop_body_start(code: &[Instr], pc: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Drop HashTable iterator `id` of a foreach left without its `FeFree` (an
+/// exception, or a jump through a finally) from the array or object in
+/// `arr`: php's live range cleanup. See `Frame::fe_live`.
+pub(crate) fn release_fe_iter(regs: &mut [Value], arr: Reg, by_ref: bool, id: u32) {
+    let release = |v: &mut Value| match v {
+        Value::Array(a) if by_ref => {
+            if a.has_iters() && a.ref_count() == 1 {
+                a.make_mut().iter_del(id);
+            }
+        }
+        Value::Object(h) => {
+            if let Ok(mut o) = rhp_values::lazy_target(h).try_borrow_mut() {
+                o.prop_iter_del(id);
+            }
+        }
+        _ => {}
+    };
+    match regs.get_mut(arr as usize) {
+        Some(Value::Ref(rc)) if by_ref => {
+            if let Ok(mut v) = rc.try_borrow_mut() {
+                release(&mut v);
+            }
+        }
+        Some(v) => release(v),
+        None => {}
+    }
 }

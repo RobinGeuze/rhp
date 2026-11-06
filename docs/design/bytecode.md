@@ -454,7 +454,10 @@ and `goto` leave the loop (only loops inside the innermost try/finally; outer
 ones are left to the frame). On a jump `end` is the loop end: an exception a
 destructor throws there is handled as if thrown at the loop end
 (ZEND_FREE_ON_RETURN). A temporary is not freed on exception unwinding until the
-frame goes (php's live ranges are not modelled).
+frame goes (php's live ranges are not modelled). Its HashTable iterator does go:
+the frame records each running loop's iterator (`Frame::fe_live`), and a catch
+that frees the try's temporaries, the frame going, or the same loop starting
+again drops one its loop left without `FeFree`.
 
 **References / scope (phase 6)** — reuse `Value::Ref`, no new machinery.
 ```

@@ -344,7 +344,7 @@ impl Vm {
     /// out (see [`Self::dispatched_method`]).
     fn is_plumbing_frame(&self, i: usize) -> bool {
         let f = &self.stack[i];
-        f.include_kind.is_none()
+        f.include_kind().is_none()
             && f.proto.is_internal()
             && (is_engine_helper_name(f.proto.name.as_bytes())
                 || f.defining_class.is_some_and(|c| {
@@ -651,7 +651,7 @@ impl Vm {
                 e.insert(k(b"file"), file_of(caller));
                 e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
-            if let Some(kind) = f.include_kind {
+            if let Some(kind) = f.include_kind() {
                 if kind != "eval" {
                     if let Some(file) = &include_file {
                         let mut a = PhpArray::new();
@@ -693,7 +693,7 @@ impl Vm {
             // A frame the engine called (an error handler, an autoloader)
             // while its caller runs an include that has not started a frame
             // yet: php adds the include as a frame of its own.
-            if f.include_kind.is_none() && !self.is_internal_frame(caller) {
+            if f.include_kind().is_none() && !self.is_internal_frame(caller) {
                 let cf = &self.stack[caller];
                 let at = cf.pc.checked_sub(1).and_then(|pc| cf.proto.code.get(pc));
                 if let Some(rhp_bytecode::Instr::Include { kind, .. }) = at {
@@ -1270,6 +1270,13 @@ impl Vm {
     /// The temporaries of an unwound try body (from `from` up), freed in
     /// order before its handler runs.
     fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
+        // The loops inside the try give up their iterators.
+        let f = &mut self.stack[top];
+        if let Some(live) = f.fe_live.as_deref_mut() {
+            for (_, arr, by_ref, id) in live.extract_if(.., |l| l.0 >= from) {
+                crate::dispatch::release_fe_iter(&mut f.regs, arr, by_ref, id);
+            }
+        }
         let n = self.stack[top].regs.len();
         let mut freed = false;
         for r in from as usize..n {

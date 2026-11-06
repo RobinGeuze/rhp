@@ -1198,7 +1198,7 @@ impl Host for Vm {
         else {
             return false;
         };
-        if self.stack[top].global_scope || self.stack[top].include_caller.is_some() {
+        if self.stack[top].global_scope || self.stack[top].include_caller().is_some() {
             match self.var_var_slot(top, name) {
                 Ok(cv) => self.stack[top].regs[cv as usize] = value,
                 Err(cell) => *cell.borrow_mut() = value,

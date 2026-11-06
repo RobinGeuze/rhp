@@ -1475,7 +1475,7 @@ impl Vm {
         }
         // An include/eval frame has no scope of its own: a variable it has no
         // slot for lives in the including scope.
-        if let Some(caller) = self.stack[top].include_caller {
+        if let Some(caller) = self.stack[top].include_caller() {
             return match self.var_var_lookup(caller, name)? {
                 Ok(cv) => Some(Err(self.slot_cell_ro(caller, cv))),
                 Err(cell) => Some(Err(cell)),
@@ -1495,7 +1495,7 @@ impl Vm {
         }
         if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
             self.stack[top].regs[i as usize] = Value::Ref(cell);
-        } else if let Some(caller) = self.stack[top].include_caller {
+        } else if let Some(caller) = self.stack[top].include_caller() {
             self.var_var_bind(caller, name, cell);
         } else {
             self.stack[top].dyn_vars.insert(name.to_vec(), cell);
@@ -1511,7 +1511,7 @@ impl Vm {
         }
         if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
             self.unset_cv(top, i);
-        } else if let Some(caller) = self.stack[top].include_caller {
+        } else if let Some(caller) = self.stack[top].include_caller() {
             self.var_var_unset(caller, name);
         } else if let Some(c) = self.stack[top].dyn_vars.shift_remove(name) {
             if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
@@ -1541,7 +1541,7 @@ impl Vm {
         if self.stack[top].global_scope {
             return Err(self.global_cell(name));
         }
-        if let Some(caller) = self.stack[top].include_caller {
+        if let Some(caller) = self.stack[top].include_caller() {
             return Err(match self.var_var_slot(caller, name) {
                 Ok(cv) => self.promote_slot(caller, cv),
                 Err(cell) => cell,

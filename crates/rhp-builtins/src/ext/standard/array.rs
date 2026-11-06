@@ -3713,6 +3713,10 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     for v in vals {
         out.push(v);
     }
+    // Shuffled in place: iterators (array_walk) keep their positions.
+    for (id, p) in arr.iters() {
+        out.make_mut().iter_add(id, p);
+    }
     *r.borrow_mut() = Value::Array(out);
     Ok(Value::Bool(true))
 }
@@ -3895,8 +3899,15 @@ fn fn_array_multisort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
         out.make_mut().set_next_free(size as i64);
         if let Value::Ref(r) = &args[slot] {
             let mut g = r.borrow_mut();
-            if matches!(&*g, Value::Array(a) if a.data_ptr() == tables[c].data_ptr()) {
-                *g = Value::Array(out);
+            if let Value::Array(a) = &*g {
+                if a.data_ptr() == tables[c].data_ptr() {
+                    // Sorted in place: iterators (array_walk) keep their
+                    // positions.
+                    for (id, p) in a.iters() {
+                        out.make_mut().iter_add(id, p);
+                    }
+                    *g = Value::Array(out);
+                }
             }
         }
     }

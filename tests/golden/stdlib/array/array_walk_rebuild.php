@@ -19,6 +19,9 @@ w(['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4], function (&$a, $k) { if ($k === 'b')
 w([3, 1, 2], function (&$a, $k) { if ($k === 0) sort($a); });
 w(['b' => 2, 'a' => 1, 'c' => 3], function (&$a, $k) { static $d = 0; if (!$d++) ksort($a); });
 w([5, 3, 4], function (&$a, $k) { static $d = 0; if ($d++ < 3) uasort($a, fn($x, $y) => $x <=> $y); });
+w([3, 1, 2], function (&$a, $k) { if ($k === 0) array_multisort($a); });
+mt_srand(3);
+w([1, 2, 3, 4, 5, 6], function (&$a, $k) { if ($k === 1) shuffle($a); });
 // Recursion is caught on the arrays recursed into, not the one the walk
 // started from.
 $r = [1, [2, 3]];

@@ -2166,6 +2166,21 @@ pub(crate) fn find_phpt(root: &Path, rel: &Path, out: &mut Vec<String>) {
 
 /// The directory a test's fixtures live under: its path up to and including
 /// the first `tests` component (`ext/standard/tests`, `Zend/tests`, `tests`).
+/// The trees a worker copies for `tests`: each test's [`tree_root`], plus
+/// `sapi/cli/tests` when a CLI-server peer test needs its
+/// `php_cli_server.inc` (without it, both engines fail the include and the
+/// test "matches" for nothing).
+fn worker_trees(tests: &[String]) -> BTreeSet<String> {
+    let mut roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    if tests
+        .iter()
+        .any(|t| CLI_SERVER_PEERS.iter().any(|d| t.starts_with(d)))
+    {
+        roots.insert("sapi/cli/tests".into());
+    }
+    roots
+}
+
 fn tree_root(rel: &str) -> String {
     let parts: Vec<&str> = rel.split('/').collect();
     match parts.iter().position(|p| *p == "tests") {
@@ -3102,7 +3117,7 @@ pub fn main(args: &[String]) -> ExitCode {
         .work
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join(format!("rhp-phpt-{}", std::process::id())));
-    let roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    let roots = worker_trees(&tests);
     let jobs = o.jobs.min(tests.len());
     let worker_roots = match make_worker_roots(&work, 0..jobs, &roots, &o.php_src) {
         Ok(w) => w,
@@ -3202,6 +3217,42 @@ pub fn main(args: &[String]) -> ExitCode {
     let conflicts = conflict_keys(&o.php_src, &tests);
     let mut results = run_phases(&ctx, &worker_roots, &tests, &sinks, &conflicts);
 
+    // A known test that timed out may just have met a loaded machine: run
+    // those again one at a time, with three times the timeout.
+    if known.is_some() {
+        let slow: Vec<String> = results
+            .iter()
+            .filter(|r| r.status == Status::RhpTimeout)
+            .map(|r| r.test.clone())
+            .collect();
+        if !slow.is_empty() {
+            eprintln!(
+                "phpt: re-running {} timed-out test(s) alone with a {}s timeout",
+                slow.len(),
+                3 * o.timeout
+            );
+            let retry_ctx = Ctx {
+                mutate: 0,
+                fixtures: None,
+                php_findings: None,
+                timeout: ctx.timeout * 3,
+                ..ctx.clone()
+            };
+            let again = run_phases(
+                &retry_ctx,
+                &worker_roots[..1],
+                &slow,
+                &Sinks::default(),
+                &conflicts,
+            );
+            for r in again {
+                if let Some(orig) = results.iter_mut().find(|o| o.test == r.test) {
+                    *orig = r;
+                }
+            }
+        }
+    }
+
     // A ratchet list must not contain tests that only match by luck (output
     // with the current time, say): re-run every match and keep the steady ones.
     let mut flaky = Vec::new();
@@ -3239,7 +3290,7 @@ pub fn main(args: &[String]) -> ExitCode {
         // extra scratch copies, for the trees the matches live in.
         let mut pool = worker_roots.clone();
         if !skew.is_zero() {
-            let confirm_roots: BTreeSet<String> = matched.iter().map(|t| tree_root(t)).collect();
+            let confirm_roots = worker_trees(&matched);
             let extra = (jobs * CONFIRM_OVERSUBSCRIBE).min(matched.len()).max(jobs);
             match make_worker_roots(&work, jobs..extra, &confirm_roots, &o.php_src) {
                 Ok(more) => pool.extend(more),

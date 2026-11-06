@@ -67,7 +67,8 @@ How it compares, mirroring `run-tests.php`:
   which rhp lacks) are skipped, except where the server is only the HTTP
   peer of the client code under test (ext/curl, and ext/standard's `http`,
   `streams` and `url` tests): both engines get `TEST_PHP_EXECUTABLE=php`
-  there.
+  there, and the workers copy `sapi/cli/tests` for its
+  `php_cli_server.inc`, also when only those tests are selected.
 - `--CONFLICTS--` (or a `CONFLICTS` file in the test's directory) is
   scheduled as run-tests schedules it: two tests sharing a key never run at
   once, and tests that conflict with `all` run one by one after the rest.
@@ -90,7 +91,8 @@ git -C ../php-src checkout "$(grep -v '^#' tests/phpt/php-src.ref)"
 target/release/rhp-difftest phpt --php-src ../php-src --filter Zend/tests
 
 # Ratchet: what CI runs, split across three runners (--shard 1/3, 2/3, 3/3:
-# every third test).
+# every third test). A listed test that times out is run again alone with
+# three times the timeout, so a loaded machine doesn't fail the ratchet.
 target/release/rhp-difftest phpt --php-src ../php-src --check-known tests/phpt/known-passing.txt
 
 # Regenerate the list (after fixing things) from the whole corpus, as the

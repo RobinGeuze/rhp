@@ -1334,6 +1334,7 @@ impl Vm {
                 let saved_this = self.fcc_this.replace(cd.bound_this.clone());
                 // A dynamic call's raw arguments, as plain values.
                 let args = if dynamic {
+                    let args = self.settle_undef_args(args, |_| false)?;
                     args.iter().map(deref).collect()
                 } else {
                     args
@@ -1369,7 +1370,7 @@ impl Vm {
         };
         // zend_call_function: a value for a by-reference parameter.
         let args = if dynamic {
-            args
+            self.settle_dyn_undef_args(&callee, args)?
         } else {
             self.callee_by_ref_args(&callee, args)?
         };
@@ -1446,6 +1447,71 @@ impl Vm {
             }
         }
         self.call_callable_value_mode(callable, args, None)
+    }
+
+    /// A dynamic call's raw arguments (`$f($x)`): an undefined variable
+    /// sent to a by-reference parameter is created, to a by-value one it
+    /// warns (php's SEND_VAR_EX, which knows the callee).
+    fn settle_dyn_undef_args(
+        &mut self,
+        callee: &Callee,
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, Thrown> {
+        if !args.iter().any(|a| a.is_undef()) {
+            return Ok(args);
+        }
+        match callee {
+            Callee::Closure(cd) => {
+                let proto = self.closures[cd.fnidx as usize].proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Function(f) => {
+                let proto = f.proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Method(m, ..) => {
+                let proto = m.proto.clone();
+                self.settle_undef_args(args, |i| param_is_ref(&proto, i as u16))
+            }
+            Callee::Builtin(name) => {
+                use rhp_bytecode::signatures::Signature;
+                let sig = rhp_bytecode::signatures::function(name.as_bytes());
+                self.settle_undef_args(args, |i| sig.is_some_and(|s| s.by_ref(i)))
+            }
+            Callee::Magic(..) | Callee::EnumStatic(..) => self.settle_undef_args(args, |_| false),
+        }
+    }
+
+    /// Arguments that are a reference to an undefined variable of the
+    /// calling frame: a by-reference parameter creates it as null, a
+    /// by-value one gets null after "Undefined variable $x".
+    fn settle_undef_args(
+        &mut self,
+        mut args: Vec<Value>,
+        by_ref: impl Fn(usize) -> bool,
+    ) -> Result<Vec<Value>, Thrown> {
+        let Some(top) = self.stack.len().checked_sub(1) else {
+            return Ok(args);
+        };
+        for (i, a) in args.iter_mut().enumerate() {
+            let Value::Ref(rc) = a else { continue };
+            if !matches!(*rc.borrow(), Value::Undef) {
+                continue;
+            }
+            if by_ref(i) {
+                crate::dispatch::cell_define(rc);
+                continue;
+            }
+            let rc = rc.clone();
+            *a = Value::Null;
+            let f = &self.stack[top];
+            let cv = (0..f.proto.num_cvs)
+                .find(|&r| matches!(&f.regs[r as usize], Value::Ref(c) if Rc::ptr_eq(c, &rc)));
+            if let Some(cv) = cv {
+                self.undef_cv(top, cv)?;
+            }
+        }
+        Ok(args)
     }
 
     /// [`Vm::wrap_by_ref_args`] for a resolved callee.

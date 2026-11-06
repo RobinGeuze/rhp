@@ -385,7 +385,9 @@ as in php, each instruction decides how it fetches its operands.
 - A method's argument window passes variables as `MakeArgRef` (the callee
   is only known when the call runs): an undefined one stays undefined in a
   shared cell, and binding decides (`bind_undef_args`): a by-reference
-  parameter creates it as null, a by-value one (or `__call`) warns.
+  parameter creates it as null, a by-value one (or `__call`) warns. A
+  dynamic call (`$f($x)`) to a function, builtin or method by name does the
+  same once it has resolved the callee (`settle_dyn_undef_args`).
 - A user error handler run in the middle of an lvalue write keeps the open
   cursor (`with_saved_cursor`); when the handler replaces the variable under
   an undefined key, the write goes to the container php had fetched
@@ -394,7 +396,9 @@ as in php, each instruction decides how it fetches its operands.
   (a `list()` source, a `match` subject php puts in a jump table, the
   operand of a `?->` guard).
 - `$GLOBALS` (`globals_array`) and a closure's static variables leave
-  undefined entries out; `unset($GLOBALS['x'])` keeps the symbol-table entry
+  undefined entries out; `$GLOBALS` keeps a global that is a PHP reference
+  shared with something else (not a global-scope frame's own slot) as a
+  reference; `unset($GLOBALS['x'])` keeps the symbol-table entry
   (an `Undef` cell), as php keeps the bucket of an IS_INDIRECT slot.
 - An include shares the including function's variables by name through cells
   (`promote_slot`), which keep `Undef`; an arrow function's implicit capture

@@ -209,7 +209,14 @@ impl<'s> Ex<'s> {
             Expression::Identifier(id) => self.b(id.value()),
             Expression::ConstantAccess(c) => self.b(c.name.value()),
             Expression::Self_(k) | Expression::Static(k) | Expression::Parent(k) => self.b(k.value),
-            e => self.ex(e, 0, indent),
+            // A string literal's attr is ZEND_NAME_FQ (0): `'f'()` prints `\f()`.
+            e => match self.zval_str(e) {
+                Some(s) => {
+                    self.b(b"\\");
+                    self.b(&s);
+                }
+                None => self.ex(e, 0, indent),
+            },
         }
     }
 

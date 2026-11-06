@@ -87,6 +87,7 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         if (self.cx.builtins.assertions)() < 0 {
             self.call_result_unused = false;
+            self.scanner_diags(crate::parse::cst::Node::ArgumentList(&fc.argument_list));
             let dst = self.alloc_temp();
             self.emit(Instr::LoadBool { dst, b: true });
             return Ok(dst);
@@ -98,6 +99,14 @@ impl ProtoBuilder<'_> {
             .collect::<Vec<_>>()
             .as_slice()
         {
+            // The description goes after the spread: php's argument order check.
+            [Argument::Positional(p)] if p.ellipsis.is_some() => {
+                self.cx.fatal(
+                    p.span().start.offset,
+                    "Cannot use positional argument after argument unpacking".to_string(),
+                );
+                None
+            }
             [arg] => Some((
                 matches!(arg, Argument::Named(_)),
                 crate::ast_export::assert_message(self.cx.src, arg),

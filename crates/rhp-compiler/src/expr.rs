@@ -78,6 +78,60 @@ impl ProtoBuilder<'_> {
         }
     }
 
+    /// The scanner's 8.5 deprecation of the long cast spellings.
+    fn cast_deprecation(&self, op: &UnaryPrefixOperator) {
+        use mago_span::HasSpan;
+        use UnaryPrefixOperator as Op;
+        let (from, to) = match op {
+            Op::BinaryCast(..) => ("binary", "string"),
+            Op::BooleanCast(..) => ("boolean", "bool"),
+            Op::DoubleCast(..) => ("double", "float"),
+            Op::IntegerCast(..) => ("integer", "int"),
+            _ => return,
+        };
+        self.cx.diag(
+            rhp_values::E_DEPRECATED,
+            op.span().start.offset,
+            format!("Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"),
+        );
+    }
+
+    /// The scanner's diagnostics in code php scans but never compiles
+    /// (the right side of `false && ...`, assert() under
+    /// zend.assertions=-1): long cast spellings and octal overflows.
+    pub(crate) fn scanner_diags(&self, node: crate::parse::cst::Node) {
+        use crate::parse::cst::DocumentKind;
+        use mago_span::HasSpan;
+        match node {
+            Node::UnaryPrefix(u) => self.cast_deprecation(&u.operator),
+            Node::LiteralString(s) if matches!(s.raw.first(), Some(b'"' | b'b' | b'B')) => {
+                self.octal_overflow_warnings(s.raw, s.span().start.offset)
+            }
+            Node::CompositeString(cs) => {
+                let (parts, escapes) = match cs {
+                    CompositeString::Interpolated(i) => (&i.parts, true),
+                    CompositeString::Document(d) => (&d.parts, d.kind != DocumentKind::Nowdoc),
+                    CompositeString::ShellExecute(s) => (&s.parts, true),
+                };
+                for part in parts.iter() {
+                    match part {
+                        StringPart::Literal(l) => {
+                            if escapes {
+                                self.octal_overflow_warnings(l.raw, l.span.start.offset);
+                            }
+                        }
+                        p => self.scanner_diags(Node::StringPart(p)),
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        for child in node.children() {
+            self.scanner_diags(child);
+        }
+    }
+
     /// A read of a chain of dimensions and properties on a variable
     /// (`$a->$b->{$c[1]}`, `$a[f()][g()]`) as php's delayed compilation
     /// orders it: every key and name first, then the fetches, so a key's
@@ -523,6 +577,7 @@ impl ProtoBuilder<'_> {
         // the result leaves the right side uncompiled (no diagnostics).
         if let Some(v) = literal_bool(b.lhs) {
             if v != is_and {
+                self.scanner_diags(crate::parse::cst::Node::Expression(b.rhs));
                 let dst = self.alloc_temp();
                 self.emit(Instr::LoadBool { dst, b: v });
                 return Ok(dst);
@@ -582,21 +637,7 @@ impl ProtoBuilder<'_> {
                 ))
             }
             Op::BinaryCast(..) | Op::BooleanCast(..) | Op::DoubleCast(..) | Op::IntegerCast(..) => {
-                // The scanner's 8.5 deprecation of the long cast spellings.
-                use mago_span::HasSpan;
-                let (from, to) = match &u.operator {
-                    Op::BinaryCast(..) => ("binary", "string"),
-                    Op::BooleanCast(..) => ("boolean", "bool"),
-                    Op::DoubleCast(..) => ("double", "float"),
-                    _ => ("integer", "int"),
-                };
-                self.cx.diag(
-                    rhp_values::E_DEPRECATED,
-                    u.operator.span().start.offset,
-                    format!(
-                        "Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"
-                    ),
-                );
+                self.cast_deprecation(&u.operator)
             }
             // Only a statement (php's grammar refuses it elsewhere): see
             // `compile_discarded`.

@@ -111,8 +111,13 @@ pub use ext::opcache::{
 /// applied to the engine state it drives (precision, ...). Unknown names are
 /// ignored. Call after [`reset_request_state`].
 pub fn ini_startup_set(name: &[u8], value: &[u8]) {
+    main::ini::config_define(name, value);
     main::ini::ini_startup(name, value);
 }
+
+/// The short_open_tag ini: whether `<?` opens PHP code.
+pub use ext::tokenizer::lexer::short_tags as short_open_tag;
+pub use main::ini::{config_load_file, config_set_opened_path, config_set_scanned_files};
 
 pub use main::ini::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 pub use module::{output_handler_alias, OutputHandlerAlias, OutputHandlerCtx, OutputHandlerFn};

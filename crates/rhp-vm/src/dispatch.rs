@@ -9,7 +9,7 @@ use rhp_builtins as builtins;
 use rhp_builtins::zend::object_handlers::{CastTarget, Op};
 use rhp_bytecode::{CallFlags, ClassRef, CmpKind, FunctionProto, Instr, NIdx, Pc, Reg};
 use rhp_values::ops::{self, cast_to_array, inc_dec_value};
-use rhp_values::{conv, ArrayKey, ClassKind, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
 use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
@@ -261,11 +261,44 @@ impl Vm {
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.
             if builtins::pcntl_interrupt_pending() {
-                // A throwing handler raises at this (not yet run) instruction;
-                // otherwise the instruction then runs as usual.
-                builtins::pcntl_dispatch(self)?;
-                self.stack[top].pc = pc;
-                continue;
+                // max_execution_time ran out (zend_timeout): the fatal error
+                // comes where a jump lands or a user function starts.
+                if builtins::zend::timeout::timed_out() {
+                    if !proto.is_internal() {
+                        let landed = match self.timeout_prev {
+                            Some((d, p)) if d == top => pc != p + 1,
+                            Some((d, _)) => d < top && pc == 0,
+                            None => false,
+                        };
+                        let mut at_check = self.timeout_wait == Some((top, pc));
+                        if landed && !at_check {
+                            match loop_body_start(&proto.code, pc) {
+                                Some(body) if body != pc => {
+                                    self.timeout_wait = Some((top, body));
+                                }
+                                _ => at_check = true,
+                            }
+                        }
+                        if at_check {
+                            self.timeout_wait = None;
+                            if let Some(msg) = builtins::zend::timeout::take_timed_out() {
+                                self.timeout_prev = None;
+                                // Located at this instruction (pc + 1, as
+                                // when it runs).
+                                self.stack[top].pc = pc + 1;
+                                return Err(self.fatal_error_here(1, msg.as_bytes()));
+                            }
+                        }
+                        self.timeout_prev = Some((top, pc));
+                    }
+                } else {
+                    // A throwing handler raises at this (not yet run)
+                    // instruction; otherwise the instruction then runs as
+                    // usual.
+                    builtins::pcntl_dispatch(self)?;
+                    self.stack[top].pc = pc;
+                    continue;
+                }
             }
 
             match instr {
@@ -328,7 +361,11 @@ impl Vm {
                         self.bin_inf(top, dst, a, b, Op::Mod)?
                     }
                 }
-                Instr::Pow { dst, a, b } => self.bin(top, dst, a, b, Op::Pow, ops::pow)?,
+                Instr::Pow { dst, a, b } => {
+                    let (x, y) = (self.reg_get(top, a), self.reg_get(top, b));
+                    let v = self.pow_op(&x, &y)?;
+                    self.reg_set(top, dst, v);
+                }
                 // Int operands (shift counts 0..63): what ops::bitwise
                 // returns for them.
                 Instr::BitAnd { dst, a, b } => {
@@ -480,7 +517,7 @@ impl Vm {
                             match builtins::zend::object_handlers::properties_for(self, h, purpose)?
                             {
                                 Some(a) => Value::Array(a),
-                                None => self.object_to_array_mangled(h),
+                                None => self.object_cast_array(h),
                             }
                         }
                         Value::Float(f) if f.is_nan() => {
@@ -780,7 +817,10 @@ impl Vm {
                     let arr = self.reg_get(top, args);
                     let (argvec, named) = self.split_call_args(&arr)?;
                     let strict = self.caller_strict();
-                    let out = self.call_named(&c, argvec, named, Some(strict))?;
+                    self.dyn_call = true;
+                    let out = self.call_named(&c, argvec, named, Some(strict));
+                    self.dyn_call = false;
+                    let out = out?;
                     self.reg_set(top, dst, out);
                 }
 
@@ -865,7 +905,7 @@ impl Vm {
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
                 Instr::LvalPropDyn { name } => {
-                    let p = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let p = self.dyn_prop_name(top, name)?;
                     self.cursor_steps.push(CursorStep::Prop(p));
                 }
                 Instr::LvalStaticProp { class, name } => {
@@ -888,6 +928,9 @@ impl Vm {
                 }
                 Instr::LvalVarVar { name } => {
                     let vname = conv::to_string_bytes(&self.reg_get(top, name));
+                    if vname == b"this" {
+                        return Err(Thrown::error("Error", "Cannot re-assign $this"));
+                    }
                     self.cursor_root = match self.var_var_slot(top, &vname) {
                         Ok(cv) => CursorRoot::Cv(cv),
                         Err(cell) => CursorRoot::Cell(cell),
@@ -923,6 +966,18 @@ impl Vm {
                     let cell = self.static_prop_cell(cls, &pname)?;
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
+                }
+                Instr::UnsetStaticProp { class, name } => {
+                    let cls = self.resolve_class_autoload(top, class)?;
+                    let pname = conv::to_string_bytes(&self.reg_get(top, name));
+                    return Err(Thrown::error(
+                        "Error",
+                        format!(
+                            "Attempt to unset static property {}::${}",
+                            String::from_utf8_lossy(self.class(cls).name.as_bytes()),
+                            String::from_utf8_lossy(&pname)
+                        ),
+                    ));
                 }
                 Instr::FetchStaticPropDynIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
@@ -1089,6 +1144,50 @@ impl Vm {
                         format!("Unhandled match case {}", self.match_case_desc(&v)),
                     ));
                 }
+                Instr::CheckThis { cv } => {
+                    let ok = match &self.stack[top].regs[cv as usize] {
+                        Value::Object(_) => true,
+                        Value::Ref(rc) => matches!(*rc.borrow(), Value::Object(_)),
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Using $this when not in object context",
+                        ));
+                    }
+                }
+                Instr::ConstExprProp { obj, name } => {
+                    if name != Reg::MAX {
+                        let n = self.reg_get(top, name);
+                        let s = self.to_string_vm(&n)?;
+                        self.reg_set(top, name, Value::str(s));
+                    }
+                    if let Value::Object(h) = self.reg_get(top, obj) {
+                        let cls = h.borrow().class;
+                        if self.class(cls).kind != rhp_values::ClassKind::Enum {
+                            return Err(Thrown::error(
+                                "Error",
+                                "Fetching properties on non-enums in constant expressions is not allowed",
+                            ));
+                        }
+                    }
+                }
+                Instr::ConstExprDim { arr } => {
+                    if let Value::Object(_) = self.reg_get(top, arr) {
+                        return Err(Thrown::error(
+                            "Error",
+                            "Cannot use [] on objects in constant expression",
+                        ));
+                    }
+                }
+                Instr::ThrowError { k } => {
+                    let msg = match &proto.consts[k as usize] {
+                        Value::Str(m) => String::from_utf8_lossy(m.as_bytes()).into_owned(),
+                        _ => String::new(),
+                    };
+                    return Err(Thrown::error("Error", msg));
+                }
                 Instr::SendNoRef { dst, src } => {
                     let v = self.reg_get(top, src);
                     self.diag(
@@ -1185,7 +1284,7 @@ impl Vm {
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
@@ -1199,7 +1298,7 @@ impl Vm {
                 }
                 Instr::FetchPropDynW { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.fetching_as(builtins::MagicFetch::Write, |vm| {
                         vm.prop_fetch(top, o, pname)
                     })?;
@@ -1213,7 +1312,7 @@ impl Vm {
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
                     self.reg_set(top, dst, v);
                 }
@@ -1235,7 +1334,7 @@ impl Vm {
                 }
                 Instr::StorePropDyn { obj, name, src } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let val = self.reg_get(top, src);
                     self.prop_store(top, o, pname, val)?;
                     if !self.destructibles.is_empty() {
@@ -1347,13 +1446,13 @@ impl Vm {
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
                     self.reg_set(top, dst, Value::Bool(r));
                 }
@@ -1367,7 +1466,7 @@ impl Vm {
                 }
                 Instr::UnsetPropDyn { obj, name } => {
                     let o = self.reg_get(top, obj);
-                    let pname = PhpStr::from_bytes(conv::to_string_bytes(&self.reg_get(top, name)));
+                    let pname = self.dyn_prop_name(top, name)?;
                     self.prop_unset(top, o, pname)?;
                     if !self.destructibles.is_empty() {
                         self.dtor_check = true;
@@ -1385,7 +1484,22 @@ impl Vm {
                 }
                 Instr::FetchClassConst {
                     dst, class, name, ..
-                } => self.fetch_class_const(top, &proto, dst, class, name)?,
+                } => {
+                    let n = Value::Str(proto.names[name as usize].clone());
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
+                Instr::FetchClassConstDyn { dst, class, name } => {
+                    let n = self.reg_get(top, name);
+                    self.fetch_class_const(top, &proto, dst, class, n)?
+                }
+                Instr::FetchClassName {
+                    dst,
+                    class,
+                    const_expr,
+                } => {
+                    let name = self.fetch_class_name(top, class, const_expr)?;
+                    self.reg_set(top, dst, Value::Str(name));
+                }
                 Instr::CallMethod {
                     dst,
                     obj,
@@ -1453,6 +1567,13 @@ impl Vm {
                         .map_or(-1, |&i| i as i64);
                     self.reg_set(top, dst, Value::Int(f));
                 }
+                Instr::ValueArgIsRef { dst, callee, idx } => {
+                    let c = self.reg_get(top, callee);
+                    let r = self
+                        .callable_proto(&c)
+                        .is_some_and(|(p, _)| crate::calls::param_is_ref(&p, idx));
+                    self.reg_set(top, dst, Value::Bool(r));
+                }
                 Instr::FuncArgIsRef { dst, func, idx } => {
                     let r = self.resolved_param_is_ref(top, func, idx);
                     self.reg_set(top, dst, Value::Bool(r));
@@ -1489,7 +1610,8 @@ impl Vm {
                     ..
                 } => {
                     let mname = proto.names[name as usize].as_bytes();
-                    self.do_call_static(top, class, mname, dst, base, argc)?;
+                    let ctor = mname.eq_ignore_ascii_case(b"__construct");
+                    self.do_call_static(top, class, mname, dst, base, argc, ctor)?;
                 }
                 Instr::CallParentHook {
                     dst,
@@ -1499,7 +1621,12 @@ impl Vm {
                     argc,
                 } => {
                     let pname = proto.names[name as usize].clone();
-                    self.exec_parent_hook(top, dst, pname, kind, base, argc)?;
+                    let args = if argc == rhp_bytecode::PACKED_ARGS {
+                        crate::hooks::HookArgs::Array(base)
+                    } else {
+                        crate::hooks::HookArgs::Window { base, argc }
+                    };
+                    self.exec_parent_hook(top, dst, pname, kind, args)?;
                 }
                 Instr::CallStaticDyn {
                     dst,
@@ -1509,13 +1636,26 @@ impl Vm {
                     argc,
                 } => {
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
-                    self.do_call_static(top, class, &mname, dst, base, argc)?;
+                    self.do_call_static(top, class, &mname, dst, base, argc, false)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_get(top, val);
                     let result = match v {
-                        Value::Object(h) => match self.resolve_class_autoload(top, class) {
+                        // ZEND_INSTANCEOF never autoloads.
+                        Value::Object(h) => match self.resolve_class(top, class) {
                             Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                            // self/parent/static without a scope throw
+                            // (zend_fetch_class).
+                            Err(e)
+                                if matches!(
+                                    class,
+                                    ClassRef::SelfClass
+                                        | ClassRef::ParentClass
+                                        | ClassRef::StaticClass
+                                ) =>
+                            {
+                                return Err(e)
+                            }
                             Err(_) => false,
                         },
                         // Closures / arrow fns / first-class callables are
@@ -1588,30 +1728,7 @@ impl Vm {
                     let target = self.call_target(top, &proto, pc, name, fallback)?;
                     self.call_v(top, dst, args, target, &proto.names[name as usize])?;
                 }
-                Instr::NewV { dst, class, args } => {
-                    let cls = self.resolve_class_autoload(top, class)?;
-                    let entry = self.class(cls);
-                    if entry.kind != ClassKind::Class || entry.flags.is_abstract {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot instantiate {}",
-                                String::from_utf8_lossy(entry.name.as_bytes())
-                            ),
-                        ));
-                    }
-                    self.check_ctor_access(top, cls)?;
-                    self.update_class_constants(cls)?;
-                    let obj = self.new_object(cls);
-                    self.reg_set(top, dst, Value::Object(obj.clone()));
-                    if let Some(m) = self.lookup_method(cls, b"__construct") {
-                        let arr = self.reg_get(top, args);
-                        let (argv, named) = self.split_call_args(&arr)?;
-                        let argv =
-                            self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
-                        self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
-                    }
-                }
+                Instr::NewV { dst, class, args } => self.exec_new_v(top, dst, class, args)?,
                 Instr::CallMethodV {
                     dst,
                     obj,
@@ -1637,7 +1754,8 @@ impl Vm {
                     args,
                 } => {
                     let mname = proto.names[name as usize].as_bytes().to_vec();
-                    self.call_static_args(top, class, mname, args, dst)?;
+                    let ctor = mname.eq_ignore_ascii_case(b"__construct");
+                    self.call_static_args(top, class, mname, args, dst, ctor)?;
                 }
                 Instr::CallStaticDynV {
                     dst,
@@ -1646,7 +1764,7 @@ impl Vm {
                     args,
                 } => {
                     let mname = dyn_method_name(&self.reg_get(top, name))?;
-                    self.call_static_args(top, class, mname, args, dst)?;
+                    self.call_static_args(top, class, mname, args, dst, false)?;
                 }
 
                 Instr::FetchConst {
@@ -1704,19 +1822,22 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::Exit { arg } => {
-                    // A string message is printed through the output buffers (code
-                    // 0); an int is the code.
-                    let code = match self.reg_get(top, arg) {
-                        Value::Int(n) => n as i32,
-                        Value::Str(s) => {
-                            self.output_write(s.as_bytes());
-                            0
-                        }
-                        Value::Null => 0,
-                        other => {
-                            let s = conv::to_string_bytes(&other);
-                            self.output_write(&s);
-                            0
+                    // php 8.4's exit(): no argument is status 0; otherwise
+                    // Z_PARAM_STR_OR_LONG (a string is printed, status 0).
+                    let code = if arg == Reg::MAX {
+                        0
+                    } else {
+                        let v = deref(&self.reg_get(top, arg));
+                        let strict = proto.strict_types;
+                        match self.zpp_exit_status(&v, strict)? {
+                            Value::Int(n) => n as i32,
+                            v => {
+                                let s = conv::to_string_bytes(&v);
+                                if !s.is_empty() {
+                                    self.output_write(&s);
+                                }
+                                0
+                            }
                         }
                     };
                     return Err(Thrown::Exit(code));
@@ -1847,6 +1968,14 @@ impl Vm {
     ) -> Result<Vec<(ArrayKey, Value)>, Thrown> {
         let v = self.reg_get(top, src);
         let h = match v {
+            // ZEND_ADD_ARRAY_UNPACK copies a reference only the source
+            // holds as its value.
+            Value::Array(a) if !args => {
+                return Ok(a
+                    .iter()
+                    .map(|(k, v)| (k.clone(), rhp_values::ops::copy_elem(v)))
+                    .collect())
+            }
             Value::Array(a) => return Ok(a.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
             Value::Object(h) if self.class_implements(h.borrow().class, b"Traversable") => h,
             other => {
@@ -2038,11 +2167,13 @@ impl Vm {
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.classes[ocls as usize].hooked {
+                    let obj = self.lazy_props_object(&obj)?;
                     let scope = self.stack[top].defining_class;
                     let st = self.hooked_iter_state(&obj, scope);
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, st);
                 } else {
+                    let obj = self.lazy_props_object(&obj)?;
                     let arr = self.object_prop_array(&obj, top);
                     if arr.is_empty() {
                         self.stack[top].pc = end as usize;
@@ -2237,6 +2368,9 @@ impl Vm {
             _ => false,
         };
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
+            // get_properties initializes a lazy object (a proxy iterates
+            // its instance, see FeFetchRef).
+            let h = self.lazy_props_object(&h)?;
             if self.classes[h.borrow().class as usize].hooked {
                 let scope = self.stack[top].defining_class;
                 let st = self.hooked_iter_state(&h, scope);
@@ -2273,6 +2407,7 @@ impl Vm {
                     self.stack[top].pc = end as usize;
                     return Ok(());
                 };
+                let h = self.lazy_target(&h);
                 match self.hooked_iter_next(&h, &Value::Array(st), true)? {
                     Some((st, k, Value::Ref(rc))) => {
                         self.bind_ref_cv(top, val_cv, rc);
@@ -2345,6 +2480,7 @@ impl Vm {
         // accessible property slot so writes through the loop var are
         // visible on the object (matches PHP).
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
+            let h = self.lazy_props_object(&h)?;
             let caller = self.stack[top].defining_class;
             let cls = h.borrow().class;
             let mut b = h.borrow_mut();
@@ -2422,16 +2558,84 @@ impl Vm {
     }
 
     /// `FetchClassConst`: `Class::NAME` (and `Class::class`) into `dst`.
+    /// ZEND_FETCH_CLASS_NAME / ZEND_AST_CLASS_NAME.
+    fn fetch_class_name(
+        &mut self,
+        top: usize,
+        class: ClassRef,
+        const_expr: bool,
+    ) -> Result<PhpStr, Thrown> {
+        let scope = self.stack[top].defining_class;
+        let kind = match class {
+            ClassRef::Dynamic(reg) => {
+                let v = self.reg_get(top, reg);
+                return match v {
+                    Value::Object(h) => {
+                        let cls = h.borrow().class;
+                        Ok(self.class(cls).name.clone())
+                    }
+                    other => Err(Thrown::type_error(format!(
+                        "Cannot use \"::class\" on {}",
+                        rhp_builtins::zval_value_name(self, &other)
+                    ))),
+                };
+            }
+            ClassRef::Name(n) => {
+                return Ok(self.stack[top].proto.names[n as usize].clone());
+            }
+            ClassRef::SelfClass => "self",
+            ClassRef::ParentClass => "parent",
+            ClassRef::StaticClass => "static",
+        };
+        let Some(scope) = scope else {
+            return Err(Thrown::error(
+                "Error",
+                if const_expr {
+                    "Cannot use \"self\" when no class scope is active".to_string()
+                } else {
+                    format!("Cannot use \"{kind}\" in the global scope")
+                },
+            ));
+        };
+        let cls = match class {
+            ClassRef::SelfClass => scope,
+            ClassRef::ParentClass => self.class(scope).parent.ok_or_else(|| {
+                Thrown::error(
+                    "Error",
+                    "Cannot use \"parent\" when current class scope has no parent",
+                )
+            })?,
+            _ => self.stack[top].called_class.unwrap_or(scope),
+        };
+        Ok(self.class(cls).name.clone())
+    }
+
     fn fetch_class_const(
         &mut self,
         top: usize,
         proto: &FunctionProto,
         dst: Reg,
         class: ClassRef,
-        name: NIdx,
+        name: Value,
     ) -> Result<(), Thrown> {
-        let name_b = proto.names[name as usize].as_bytes().to_vec();
         let cls = self.resolve_class_autoload(top, class)?;
+        let name_b = match name {
+            Value::Str(s) => s.as_bytes().to_vec(),
+            // zend_invalid_class_constant_type_error.
+            other => {
+                return Err(Thrown::type_error(format!(
+                    "Cannot use value of type {} as class constant name",
+                    match other {
+                        Value::Null => "null",
+                        Value::Bool(_) => "bool",
+                        Value::Int(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::Array(_) => "array",
+                        _ => "object",
+                    }
+                )))
+            }
+        };
         if name_b == b"class" {
             let v = Value::str(self.class(cls).name.as_bytes().to_vec());
             self.reg_set(top, dst, v);
@@ -2714,10 +2918,17 @@ impl Vm {
                 c = Value::Str(n);
             }
         }
+        // ZEND_CALLABLE_CONVERT keeps the call's object.
+        let this = match self.resolve_callable(&c) {
+            Ok(
+                crate::calls::Callee::Method(_, this, _) | crate::calls::Callee::Magic(_, this, ..),
+            ) => this,
+            _ => None,
+        };
         let cd = Rc::new(rhp_values::ClosureData {
             fnidx: u32::MAX,
             captures: Vec::new(),
-            bound_this: None,
+            bound_this: this,
             bound_class: self.stack[top].defining_class,
             bound_static: self.stack[top].called_class,
             wrapped: Some(Box::new(c)),
@@ -2778,8 +2989,15 @@ impl Vm {
                 return Ok(());
             }
         }
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-        let out = self.call_callable_value_mode(&c, args, Some(strict))?;
+        // Passed raw (the window's references kept): the callee's
+        // by-reference parameters bind them, by-value ones dereference.
+        let args: Vec<Value> = (0..argc)
+            .map(|i| self.stack[top].regs[(base + i) as usize].clone())
+            .collect();
+        self.dyn_call = true;
+        let out = self.call_callable_value_mode(&c, args, Some(strict));
+        self.dyn_call = false;
+        let out = out?;
         self.reg_set(top, dst, out);
         Ok(())
     }
@@ -2930,4 +3148,28 @@ impl Vm {
         self.stack[top].regs[cv as usize] = Value::Ref(cell);
         true
     }
+}
+
+/// Where php's code for the loop whose head (condition) is at `pc` starts
+/// its body: rhp tests a while/for condition at the top, behind a
+/// `Jmp` to the next instruction, and leaves through a `JmpFalse` to just
+/// past the back edge; php tests it at the bottom. `None`: not a loop head.
+fn loop_body_start(code: &[Instr], pc: usize) -> Option<usize> {
+    let back_edge = |i: &Instr| matches!(i, Instr::Jmp { target } if *target as usize == pc);
+    if pc == 0 || !back_edge(&code[pc - 1]) {
+        return None;
+    }
+    for (k, i) in code.iter().enumerate().skip(pc) {
+        match i {
+            Instr::JmpFalse { target, .. }
+                if (*target as usize) > 0
+                    && code.get(*target as usize - 1).is_some_and(back_edge) =>
+            {
+                return Some(k + 1);
+            }
+            i if back_edge(i) => return Some(pc),
+            _ => {}
+        }
+    }
+    None
 }

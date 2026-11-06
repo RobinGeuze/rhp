@@ -131,7 +131,7 @@ echo error_reporting(), ' dirty';
 const CHECK: &[u8] = br#"<?php
 echo 1/3, ' ', json_encode(0.1), ' ', http_build_query(['a' => 1, 'b' => 2]), ' ',
     ini_get('precision'), ' ', error_reporting(), ' ',
-    date_default_timezone_get(), ' ', var_export(strtok(' '), true), ' ',
+    date_default_timezone_get(), ' ', var_export(@strtok(' '), true), ' ',
     preg_last_error(), ' ', json_last_error(), ' ',
     var_export(getenv('RHP_REQUEST_STATE_TEST'), true);
 "#;

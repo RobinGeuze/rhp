@@ -311,6 +311,17 @@ variant.** There is no separate "is_ref" flag: an aliased slot *is* a
 aliasing-violation bug at runtime (e.g. simultaneous `&mut` into one ref during
 evaluation) instead of letting it be silent UB.
 
+**Reference counts are observable.** `var_dump` marks a slot `&` when its
+reference has refcount > 1 (`Rc::strong_count`), and `debug_zval_dump` prints
+the counts. So copies follow php: `ArrayData::clone` (zend_array_dup) and the
+builtins that build arrays from other arrays' elements (`array_values`,
+`array_merge`, `array_slice`, …, array spread) copy a reference nothing else
+holds as its value (`ops::copy_elem`), and a temporary reference (the one a
+by-reference `foreach` over `$a['k']` holds) is released when php frees it.
+Where rhp keeps a second holder php does not have (a global's cell: the
+globals table and main's CV; an enum case: its constant and the case list),
+`Host::shadow_holders` reports it and the dumpers leave it out.
+
 ## 5. Object model sketch (enough for phase 7)
 
 Objects are **handle types**: a variable holds a handle, and `$b = $a` copies the

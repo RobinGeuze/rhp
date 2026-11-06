@@ -18,8 +18,57 @@ use crate::util::{compile_error, dirname, strip_dollar};
 impl ProtoBuilder<'_> {
     pub(crate) fn compile_expr(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
         use mago_span::HasSpan;
-        self.compile_expr_inner(expr)
-            .map_err(|e| self.cx.locate(e, expr.span().start.offset))
+        let addr = expr as *const Expression as usize;
+        let inner = self.sc_inner == addr;
+        let link = chain_object(expr);
+        if let Some(obj) = link {
+            self.sc_inner = obj as *const Expression as usize;
+        } else if inner {
+            self.sc_inner = 0;
+        }
+        if link.is_none() || inner {
+            return self
+                .compile_expr_inner(expr)
+                .map_err(|e| self.cx.locate(e, expr.span().start.offset));
+        }
+        // The outermost link of a chain: a nullsafe guard anywhere in it
+        // makes the whole chain null.
+        let saved = std::mem::take(&mut self.sc_jumps);
+        let r = self.compile_expr_inner(expr);
+        let jumps = std::mem::replace(&mut self.sc_jumps, saved);
+        let r = r.map_err(|e| self.cx.locate(e, expr.span().start.offset))?;
+        if jumps.is_empty() {
+            return Ok(r);
+        }
+        let jend = self.code.len();
+        self.emit(Instr::Nop);
+        let lnull = self.here();
+        self.emit(Instr::LoadNull { dst: r });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        for (pos, src) in jumps {
+            self.code[pos] = Instr::JmpNull { src, target: lnull };
+        }
+        Ok(r)
+    }
+
+    /// The scanner's "Octal escape sequence overflow" warnings for a string
+    /// body starting at source `offset`.
+    fn octal_overflow_warnings(&self, raw: &[u8], offset: u32) {
+        for (at, digits) in crate::strings::octal_overflows(raw) {
+            self.cx.diag(
+                rhp_values::E_COMPILE_WARNING,
+                offset + at as u32,
+                format!("Octal escape sequence overflow \\{digits} is greater than \\377"),
+            );
+        }
+    }
+
+    /// A nullsafe guard on `src` for the open chain.
+    pub(crate) fn nullsafe_guard(&mut self, src: Reg) {
+        let pos = self.code.len();
+        self.emit(Instr::Nop);
+        self.sc_jumps.push((pos, src));
     }
 
     fn compile_expr_inner(&mut self, expr: &Expression) -> Result<Reg, Thrown> {
@@ -30,6 +79,9 @@ impl ProtoBuilder<'_> {
                 let dst = self.alloc_temp();
                 self.emit(Instr::FetchGlobals { dst });
                 Ok(dst)
+            }
+            Expression::Variable(Variable::Direct(d)) if strip_dollar(d.name) == b"this" => {
+                Ok(self.this_reg())
             }
             Expression::Variable(Variable::Direct(d)) => Ok(self.cv(strip_dollar(d.name))),
             Expression::Variable(v) => self.compile_variable(v),
@@ -49,6 +101,9 @@ impl ProtoBuilder<'_> {
             Expression::ArrayAccess(aa) => {
                 let arr = self.compile_expr(aa.array)?;
                 let key = self.compile_expr(aa.index)?;
+                if self.in_const_expr() {
+                    self.emit(Instr::ConstExprDim { arr });
+                }
                 let dst = self.alloc_temp();
                 self.emit(Instr::DimFetch { dst, arr, key });
                 Ok(dst)
@@ -97,6 +152,13 @@ impl ProtoBuilder<'_> {
                     Call::NullSafeMethod(mc) => mc.method.span(),
                     Call::StaticMethod(smc) => smc.method.span(),
                 };
+                let args = match call {
+                    Call::Function(fc) => &fc.argument_list,
+                    Call::Method(mc) => &mc.argument_list,
+                    Call::NullSafeMethod(mc) => &mc.argument_list,
+                    Call::StaticMethod(smc) => &smc.argument_list,
+                };
+                self.check_arg_order(args);
                 self.call_lines.push(self.cx.line_of(at.start.offset));
                 let r = self.compile_call(call);
                 self.call_lines.pop();
@@ -107,6 +169,18 @@ impl ProtoBuilder<'_> {
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),
+            Expression::ArrayAppend(_) if self.func_arg_read => {
+                let k = self.intern_const(Value::str("Cannot use [] for reading"));
+                self.emit(Instr::ThrowError { k });
+                Ok(self.alloc_temp())
+            }
+            Expression::ArrayAppend(_) => {
+                Err(compile_error("Cannot use [] for reading", self.cur_line))
+            }
+            Expression::List(_) => Err(compile_error(
+                "Cannot use list() as standalone expression",
+                self.cur_line,
+            )),
             other => Err(Thrown::unsupported(
                 format!("{} expression", expr_kind(other)),
                 "not implemented",
@@ -202,6 +276,12 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_literal(&mut self, lit: &Literal) -> Result<Reg, Thrown> {
+        if let Literal::String(s) = lit {
+            if matches!(s.raw.first(), Some(b'"') | Some(b'b' | b'B')) {
+                use mago_span::HasSpan;
+                self.octal_overflow_warnings(s.raw, s.span().start.offset);
+            }
+        }
         let dst = self.alloc_temp();
         match literal_value(lit) {
             Value::Null => self.emit(Instr::LoadNull { dst }),
@@ -379,7 +459,30 @@ impl ProtoBuilder<'_> {
         match &u.operator {
             Op::PreIncrement(_) => return self.compile_inc_dec(u.operand, true, 1),
             Op::PreDecrement(_) => return self.compile_inc_dec(u.operand, true, -1),
-            Op::UnsetCast(..) | Op::VoidCast(..) | Op::RealCast(..) => {
+            Op::UnsetCast(..) => {
+                return Err(compile_error(
+                    "The (unset) cast is no longer supported",
+                    self.cur_line,
+                ))
+            }
+            Op::BinaryCast(..) | Op::BooleanCast(..) | Op::DoubleCast(..) | Op::IntegerCast(..) => {
+                // The scanner's 8.5 deprecation of the long cast spellings.
+                use mago_span::HasSpan;
+                let (from, to) = match &u.operator {
+                    Op::BinaryCast(..) => ("binary", "string"),
+                    Op::BooleanCast(..) => ("boolean", "bool"),
+                    Op::DoubleCast(..) => ("double", "float"),
+                    _ => ("integer", "int"),
+                };
+                self.cx.diag(
+                    rhp_values::E_DEPRECATED,
+                    u.operator.span().start.offset,
+                    format!(
+                        "Non-canonical cast ({from}) is deprecated, use the ({to}) cast instead"
+                    ),
+                );
+            }
+            Op::VoidCast(..) | Op::RealCast(..) => {
                 return Err(Thrown::unsupported(
                     "(unset)/(void)/(real) cast",
                     "removed/refused in PHP 8",
@@ -440,6 +543,7 @@ impl ProtoBuilder<'_> {
         delta: i8,
     ) -> Result<Reg, Thrown> {
         check_globals_write(target, self.cur_line)?;
+        self.check_write_target(target, self.cur_line)?;
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
@@ -454,6 +558,7 @@ impl ProtoBuilder<'_> {
             }
             Expression::Parenthesized(p) => self.compile_inc_dec(p.expression, pre, delta),
             Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
             | Expression::Variable(_)
             | Expression::Access(Access::Property(_))
             | Expression::Access(Access::StaticProperty(_)) => {
@@ -483,6 +588,18 @@ impl ProtoBuilder<'_> {
     }
 
     fn compile_conditional(&mut self, c: &crate::parse::cst::Conditional) -> Result<Reg, Thrown> {
+        // zend_compile_conditional: nested unparenthesized ternaries.
+        if let Expression::Conditional(inner) = c.condition {
+            let msg = match (inner.then.is_some(), c.then.is_some()) {
+                (true, true) => Some("Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`"),
+                (true, false) => Some("Unparenthesized `a ? b : c ?: d` is not supported. Use either `(a ? b : c) ?: d` or `a ? b : (c ?: d)`"),
+                (false, true) => Some("Unparenthesized `a ?: b ? c : d` is not supported. Use either `(a ?: b) ? c : d` or `a ?: (b ? c : d)`"),
+                (false, false) => None,
+            };
+            if let Some(msg) = msg {
+                return Err(compile_error(msg, self.cur_line));
+            }
+        }
         let dst = self.alloc_temp();
         let cond = self.compile_expr(c.condition)?;
         let jf = self.code.len();
@@ -511,10 +628,71 @@ impl ProtoBuilder<'_> {
         Ok(dst)
     }
 
+    /// zend_try_ct_eval_array: "Cannot use empty array elements in arrays",
+    /// at the line of the last element before the gap.
+    pub(crate) fn check_no_empty_elements<'a>(
+        &self,
+        els: impl Iterator<Item = &'a ArrayElement<'a>>,
+    ) -> Result<(), Thrown> {
+        use mago_span::HasSpan;
+        let mut line = self.cur_line;
+        for el in els {
+            if let ArrayElement::Missing(_) = el {
+                return Err(compile_error(
+                    "Cannot use empty array elements in arrays",
+                    line,
+                ));
+            }
+            line = self.cx.line_of(el.span().start.offset);
+        }
+        Ok(())
+    }
+
     fn compile_array<'a>(
         &mut self,
         els: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
     ) -> Result<Reg, Thrown> {
+        self.check_no_empty_elements(els.clone())?;
+        // zend_try_ct_eval_array: a constant array unpacking a non-array.
+        let has_spread = els
+            .clone()
+            .any(|el| matches!(el, ArrayElement::Variadic(_)));
+        let folded: Option<Vec<(bool, rhp_values::Value)>> = has_spread
+            .then(|| els.clone())
+            .into_iter()
+            .flatten()
+            .map(|el| match el {
+                ArrayElement::Value(v) if as_reference(v.value).is_none() => {
+                    crate::fold::fold_const(self.cx, v.value)
+                        .ok()
+                        .map(|x| (false, x))
+                }
+                ArrayElement::KeyValue(kv) if as_reference(kv.value).is_none() => {
+                    crate::fold::fold_const(self.cx, kv.key).ok()?;
+                    crate::fold::fold_const(self.cx, kv.value)
+                        .ok()
+                        .map(|x| (false, x))
+                }
+                ArrayElement::Variadic(v) => crate::fold::fold_const(self.cx, v.value)
+                    .ok()
+                    .map(|x| (true, x)),
+                _ => None,
+            })
+            .collect();
+        if let Some(vals) = folded.filter(|_| has_spread) {
+            if let Some((_, v)) = vals
+                .iter()
+                .find(|(spread, v)| *spread && !matches!(v, rhp_values::Value::Array(_)))
+            {
+                return Err(compile_error(
+                    format!(
+                        "Only arrays and Traversables can be unpacked, {} given",
+                        crate::oop::value_name(v)
+                    ),
+                    self.cur_line,
+                ));
+            }
+        }
         // An array of plain literals (CallMap-style data files) is one
         // constant: no per-element temporaries, no runtime building.
         if let Some(v) = literal_array(els.clone()) {
@@ -529,20 +707,22 @@ impl ProtoBuilder<'_> {
             match el {
                 ArrayElement::KeyValue(kv) => {
                     let key = self.compile_expr(kv.key)?;
-                    if let Some(inner) = as_reference(kv.value) {
+                    if let Some(inner) = as_reference(kv.value).filter(|i| !is_this_var(i)) {
                         let val = self.compile_ref_source(inner)?;
                         self.emit(Instr::ArrSetRef { arr: dst, key, val });
                     } else {
-                        let val = self.compile_expr(kv.value)?;
+                        let v = as_reference(kv.value).unwrap_or(kv.value);
+                        let val = self.compile_expr(v)?;
                         self.emit(Instr::ArrSet { arr: dst, key, val });
                     }
                 }
                 ArrayElement::Value(v) => {
-                    if let Some(inner) = as_reference(v.value) {
+                    if let Some(inner) = as_reference(v.value).filter(|i| !is_this_var(i)) {
                         let val = self.compile_ref_source(inner)?;
                         self.emit(Instr::ArrPushRef { arr: dst, val });
                     } else {
-                        let val = self.compile_expr(v.value)?;
+                        let e = as_reference(v.value).unwrap_or(v.value);
+                        let val = self.compile_expr(e)?;
                         self.emit(Instr::ArrPush { arr: dst, val });
                     }
                 }
@@ -574,11 +754,30 @@ impl ProtoBuilder<'_> {
         let dst = self.alloc_temp();
         let empty = self.intern_const(Value::str(""));
         self.emit(Instr::LoadConst { dst, k: empty });
+        use crate::parse::cst::{DocumentIndentation, DocumentKind};
+        let (heredoc, flat) = match cs {
+            CompositeString::Document(d) => (
+                d.kind == DocumentKind::Heredoc,
+                matches!(d.indentation, DocumentIndentation::None),
+            ),
+            _ => (false, false),
+        };
+        let escapes = !matches!(cs, CompositeString::Document(d) if d.kind == DocumentKind::Nowdoc);
         for part in parts.iter() {
             let pr = match part {
                 StringPart::Literal(l) => {
+                    if escapes {
+                        self.octal_overflow_warnings(l.raw, l.span.start.offset);
+                    }
+                    let mut v = l.value.unwrap_or(l.raw).to_vec();
+                    // A heredoc keeps `\"` as written.
+                    if heredoc && flat {
+                        if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
+                            v = fixed;
+                        }
+                    }
                     let r = self.alloc_temp();
-                    let k = self.intern_const(Value::str(l.value.unwrap_or(l.raw).to_vec()));
+                    let k = self.intern_const(Value::str(v));
                     self.emit(Instr::LoadConst { dst: r, k });
                     r
                 }
@@ -613,6 +812,29 @@ impl ProtoBuilder<'_> {
     fn compile_constant(&mut self, id: &Identifier) -> Result<Reg, Thrown> {
         let name = identifier_name(id);
         let dst = self.alloc_temp();
+        // `namespace\true` and `a\true` are ordinary constants.
+        if matches!(id, Identifier::Qualified(_)) {
+            let (primary, _) = self.cx.resolve_name(id, NameKind::Const);
+            let n = self.intern_name(&primary);
+            self.emit(Instr::FetchConst {
+                dst,
+                name: n,
+                fallback: rhp_bytecode::NO_NAME,
+            });
+            return Ok(dst);
+        }
+        // zend_get_halt_offset_constant: the file's own halt offset.
+        if let Some(n) = self.cx.halt_offset {
+            let halt = match id {
+                Identifier::Local(l) => l.value == b"__COMPILER_HALT_OFFSET__",
+                Identifier::FullyQualified(f) => f.value == b"\\__COMPILER_HALT_OFFSET__",
+                Identifier::Qualified(_) => false,
+            };
+            if halt {
+                self.emit(Instr::LoadInt { dst, n });
+                return Ok(dst);
+            }
+        }
         match name {
             b"true" | b"TRUE" | b"True" => self.emit(Instr::LoadBool { dst, b: true }),
             b"false" | b"FALSE" | b"False" => self.emit(Instr::LoadBool { dst, b: false }),
@@ -664,6 +886,18 @@ impl ProtoBuilder<'_> {
             Construct::RequireOnce(i) => self.compile_include(i.value, IncludeKind::RequireOnce),
             Construct::Isset(i) => {
                 // AND over each operand: true iff every value is non-null.
+                for v in i.values.iter() {
+                    let mut e: &Expression = v;
+                    while let Expression::Parenthesized(p) = e {
+                        e = p.expression;
+                    }
+                    if !crate::assign::is_variable(e) {
+                        return Err(compile_error(
+                            "Cannot use isset() on the result of an expression (you can use \"null !== expression\" instead)",
+                            self.cur_line,
+                        ));
+                    }
+                }
                 let dst = self.alloc_temp();
                 let mut jumps = Vec::new();
                 for v in i.values.iter() {
@@ -701,7 +935,12 @@ impl ProtoBuilder<'_> {
                         jumps.push((pos, r, true));
                         continue;
                     }
-                    let r = self.compile_quiet(v)?; // null if absent (DimFetch returns null)
+                    // isset($this): ZEND_ISSET_ISEMPTY_THIS, no error.
+                    let r = if crate::util::is_this(v) {
+                        self.cv(b"this")
+                    } else {
+                        self.compile_quiet(v)? // null if absent (DimFetch returns null)
+                    };
                     let pos = self.code.len();
                     self.emit(Instr::Nop); // JmpNull r -> false
                     jumps.push((pos, r, false));
@@ -758,7 +997,11 @@ impl ProtoBuilder<'_> {
                     }
                 }
                 // empty(x) == !to_bool(x); absent/null -> true (Not handles it).
-                let r = self.compile_quiet(e.value)?;
+                let r = if crate::util::is_this(e.value) {
+                    self.cv(b"this")
+                } else {
+                    self.compile_quiet(e.value)?
+                };
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });
                 Ok(dst)
@@ -774,13 +1017,11 @@ impl ProtoBuilder<'_> {
         &mut self,
         arguments: Option<&crate::parse::cst::ArgumentList>,
     ) -> Result<Reg, Thrown> {
+        // php 8.4: exit(int|string $status = 0), named arguments included.
         let arg = match arguments.and_then(|a| a.arguments.first()) {
             Some(Argument::Positional(p)) => self.compile_expr(p.value)?,
-            _ => {
-                let r = self.alloc_temp();
-                self.emit(Instr::LoadNull { dst: r });
-                r
-            }
+            Some(Argument::Named(n)) if n.name.value == b"status" => self.compile_expr(n.value)?,
+            _ => Reg::MAX,
         };
         self.emit(Instr::Exit { arg });
         // `exit` never returns a value, but expressions expect a result register.
@@ -793,6 +1034,7 @@ impl ProtoBuilder<'_> {
     /// value sent in via `Generator::send()` when execution resumes.
     fn compile_yield(&mut self, y: &crate::parse::cst::Yield) -> Result<Reg, Thrown> {
         use crate::parse::cst::Yield;
+        self.mark_generator()?;
         let (key, value) = match y {
             Yield::Value(v) => {
                 let value = match v.value {
@@ -836,6 +1078,47 @@ impl ProtoBuilder<'_> {
         let dst = self.alloc_temp();
         self.emit(Instr::Yield { dst, key, value });
         Ok(dst)
+    }
+
+    /// zend_mark_function_as_generator: `yield` needs a function whose
+    /// return type admits a Generator.
+    fn mark_generator(&mut self) -> Result<(), Thrown> {
+        if self.scope_kind == ScopeKind::Main {
+            return Err(compile_error(
+                "The \"yield\" expression can only be used inside a function",
+                self.cur_line,
+            ));
+        }
+        Ok(())
+    }
+
+    /// zend_mark_function_as_generator's return type check. php runs it
+    /// after the parameters, at the declaration's line.
+    pub(crate) fn check_generator_type(&self, line: u32) -> Result<(), Thrown> {
+        if !self.is_generator {
+            return Ok(());
+        }
+        let Some(t) = &self.ret_type else {
+            return Ok(());
+        };
+        let (mask, _) = crate::checks::type_mask(t);
+        let named = t.kinds.iter().any(|k| match k {
+            rhp_bytecode::TypeKind::Named(n) => [&b"traversable"[..], b"iterator", b"generator"]
+                .iter()
+                .any(|g| n.as_bytes().eq_ignore_ascii_case(g)),
+            rhp_bytecode::TypeKind::Iterable => true,
+            _ => false,
+        });
+        if mask & crate::checks::OBJECT == 0 && !named {
+            return Err(compile_error(
+                format!(
+                    "Generator return type must be a supertype of Generator, {} given",
+                    crate::checks::type_string(t)
+                ),
+                line,
+            ));
+        }
+        Ok(())
     }
 
     /// The value a by-reference generator yields: a reference to a variable
@@ -992,6 +1275,22 @@ fn node_has_yield(node: Node) -> bool {
     found
 }
 
+/// The object (or class, or array) of a chain link that nullsafe
+/// short-circuiting runs through.
+fn chain_object<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
+    use crate::parse::cst::Call;
+    match e {
+        Expression::Access(Access::Property(p)) => Some(p.object),
+        Expression::Access(Access::NullSafeProperty(p)) => Some(p.object),
+        Expression::Access(Access::StaticProperty(p)) => Some(p.class),
+        Expression::Call(Call::Method(c)) => Some(c.object),
+        Expression::Call(Call::NullSafeMethod(c)) => Some(c.object),
+        Expression::Call(Call::StaticMethod(c)) => Some(c.class),
+        Expression::ArrayAccess(a) => Some(a.array),
+        _ => None,
+    }
+}
+
 fn expr_kind(e: &Expression) -> &'static str {
     match e {
         Expression::CompositeString(_) => "interpolated-string",
@@ -1001,4 +1300,10 @@ fn expr_kind(e: &Expression) -> &'static str {
         Expression::Throw(_) => "throw",
         _ => "this",
     }
+}
+
+/// `$this`: php's `&$this` (ZEND_FETCH_THIS) yields a plain value, so an
+/// array element `&$this` is not a reference.
+fn is_this_var(e: &Expression) -> bool {
+    matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == b"$this")
 }

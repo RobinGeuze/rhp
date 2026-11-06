@@ -1,0 +1,6 @@
+
+Warning: Unknown: Failed to open stream: No such file or directory in Unknown on line 0
+
+Fatal error: Failed opening required '{DIR}/no-such-file.inc' (include_path='.') in Unknown on line 0
+Stack trace:
+#0 {main}

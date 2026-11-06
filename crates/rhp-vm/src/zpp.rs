@@ -64,6 +64,57 @@ impl Vm {
         }
     }
 
+    /// Z_PARAM_FUNC / Z_PARAM_FUNC_OR_NULL: zend_fcall_info_init's check,
+    /// deprecations included.
+    #[cold]
+    fn zpp_callable(
+        &mut self,
+        name: &str,
+        sp: &rhp_bytecode::signatures::ScalarParam,
+        i: usize,
+        v: &Value,
+    ) -> Result<(), Thrown> {
+        match deref(v) {
+            Value::Null if sp.nullable => return Ok(()),
+            // A Closure is callable as is (no lookup, no deprecation).
+            Value::Closure(_) => return Ok(()),
+            _ => {}
+        }
+        self.callable_dep_thrown = false;
+        // An error handler run by a deprecation would consume it.
+        let cuf = self.cuf_caller;
+        let checked = self.check_callable_ex(v, false);
+        self.cuf_caller = cuf;
+        let why = match checked {
+            Ok(Ok(callee)) => {
+                // Kept for the builtin's call of this argument (php's fcc).
+                self.zpp_fcc = Some((v as *const Value, callee));
+                return Ok(());
+            }
+            Ok(Err(why)) => why,
+            // A user error handler threw from a deprecation. zpp keeps
+            // just that exception; `call_user_func[_array]` compiled as
+            // ZEND_INIT_USER_CALL still raises its TypeError (with no
+            // reason), chained to it.
+            Err(t) if std::mem::take(&mut self.callable_dep_thrown) && cuf.is_some() => {
+                let e = Thrown::type_error(format!(
+                    "{name}(): Argument #{}{} must be a valid callback{}, (null)",
+                    i + 1,
+                    arg_label(sp),
+                    if sp.nullable { " or null" } else { "" }
+                ));
+                return Err(rhp_builtins::Host::chain_thrown(self, e, t));
+            }
+            Err(t) => return Err(t),
+        };
+        Err(Thrown::type_error(format!(
+            "{name}(): Argument #{}{} must be a valid callback{}, {why}",
+            i + 1,
+            arg_label(sp),
+            if sp.nullable { " or null" } else { "" }
+        )))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn coerce_args(
         &mut self,
@@ -94,6 +145,10 @@ impl Vm {
                 // earlier argument's __toString may have changed it.
                 if user && !sp.by_ref && matches!(args[i], Value::Ref(_)) {
                     args[i] = deref(&args[i]);
+                }
+                if sp.kind == Zpp::Callable {
+                    self.zpp_callable(name, sp, i, &args[i])?;
+                    continue;
                 }
                 let got = if sp.by_ref {
                     // `array &$array` (sort, usort, array_push, …): the
@@ -226,7 +281,9 @@ impl Vm {
                 Long | Number | StrOrLong | NumberOrStr | ArrayOrLong => Got::Set(Value::Int(0)),
                 Double => Got::Set(Value::Float(0.0)),
                 Bool => Got::Set(Value::Bool(false)),
-                Str | ArrayOrStr | Array | Class | Resource | Stream | Other => Got::Keep,
+                Str | ArrayOrStr | Array | Class | Resource | Stream | Callable | Other => {
+                    Got::Keep
+                }
             });
         }
         let ok = match (sp.kind, v) {
@@ -298,7 +355,7 @@ impl Vm {
                 Value::Bool(b) => Got::Set(Value::Int(*b as i64)),
                 _ => self.zpp_str_object(v)?,
             },
-            Array | Class | Resource | Stream | Other => Got::Fail,
+            Array | Class | Resource | Stream | Callable | Other => Got::Fail,
         })
     }
 
@@ -547,6 +604,38 @@ impl Vm {
         Ok(match out {
             Value::Int(n) if !int => Value::str(n.to_string().into_bytes()),
             other => other,
+        })
+    }
+}
+
+impl Vm {
+    /// exit()'s `Z_PARAM_STR_OR_LONG` status: an Int (the exit status) or a
+    /// Str (printed), in the caller's typing mode.
+    pub(crate) fn zpp_exit_status(&mut self, v: &Value, strict: bool) -> Result<Value, Thrown> {
+        let sp = ScalarParam {
+            pos: 0,
+            name: "status",
+            ty: "string|int",
+            kind: Zpp::StrOrLong,
+            variadic: false,
+            nullable: false,
+            has_str: true,
+            has_arr: false,
+            by_ref: false,
+        };
+        Ok(match self.zpp_arg("exit", &sp, 0, v, strict)? {
+            Got::Keep => match v {
+                Value::Null => Value::Int(0),
+                other => other.clone(),
+            },
+            Got::KeepStr => Value::str(conv::to_string_bytes(v)),
+            Got::Set(n) => n,
+            Got::Fail => {
+                let given = rhp_builtins::zval_value_name(self, v);
+                return Err(Thrown::type_error(format!(
+                    "exit(): Argument #1 ($status) must be of type string|int, {given} given"
+                )));
+            }
         })
     }
 }

@@ -12,6 +12,20 @@ use crate::errors::is_docref_message;
 use crate::streams::{res_id, MemMode, StreamState};
 use crate::{classes, deref, Vm};
 
+impl Vm {
+    /// Whether a compiled property default satisfies `hit` (debug_zval_dump's
+    /// interned / shadow-holder checks; a scan).
+    fn is_prop_default(&self, hit: impl Fn(&Value) -> bool) -> bool {
+        use rhp_bytecode::PropDefaultProto;
+        self.decl_classes.iter().any(|d| {
+            d.proto
+                .props
+                .iter()
+                .any(|p| matches!(&p.default, PropDefaultProto::Const(v) if hit(v)))
+        })
+    }
+}
+
 impl Host for Vm {
     fn raise_diagnostic(&mut self, level: i64, msg: &[u8]) {
         // A builtin's `php_error_docref` ("func(): …") goes through
@@ -28,6 +42,50 @@ impl Host for Vm {
         }
         let msg = self.docref_html(msg);
         self.raise_error(level, &msg);
+    }
+
+    fn fatal_error(&mut self, msg: &[u8]) -> Thrown {
+        self.fatal_error_here(builtins::E_ERROR, msg)
+    }
+
+    fn shadow_holders(&self, v: &Value) -> usize {
+        match v {
+            Value::Ref(r) => self.globals.values().filter(|g| Rc::ptr_eq(g, r)).count(),
+            Value::Object(h) => {
+                let cls = h.borrow().class;
+                self.classes[cls as usize]
+                    .enum_cases
+                    .iter()
+                    .any(|c| Rc::ptr_eq(c, h)) as usize
+            }
+            // A property default: the compiled class and the linked one.
+            Value::Array(a) => self
+                .is_prop_default(|d| matches!(d, Value::Array(d) if d.data_ptr() == a.data_ptr()))
+                as usize,
+            Value::Str(s) => {
+                self.is_prop_default(|d| matches!(d, Value::Str(d) if d.ptr_eq(s))) as usize
+            }
+            _ => 0,
+        }
+    }
+
+    fn is_interned_str(&self, s: &PhpStr) -> bool {
+        // A literal is a string constant of a compiled function (php's
+        // compiler interns the literal table). Rare (debug_zval_dump), so
+        // a scan.
+        let lit = |p: &rhp_bytecode::FunctionProto| {
+            p.consts
+                .iter()
+                .any(|c| matches!(c, Value::Str(c) if c.ptr_eq(s)))
+        };
+        self.stack.iter().any(|f| lit(&f.proto))
+            || self.functions.iter().any(|f| lit(&f.proto))
+            || self.closures.iter().any(|f| lit(&f.proto))
+            || self.decl_classes.iter().any(|d| {
+                d.proto.methods.iter().any(|m| lit(&m.proto))
+                    || d.proto.enum_cases.iter().any(|c| c.name.ptr_eq(s))
+            })
+            || self.is_prop_default(|d| matches!(d, Value::Str(d) if d.ptr_eq(s)))
     }
 
     fn take_pending_throw(&mut self) -> Option<Thrown> {
@@ -168,16 +226,19 @@ impl Host for Vm {
         purpose: builtins::zend::object_handlers::PropPurpose,
     ) -> Result<Option<PhpArray>, Thrown> {
         use builtins::zend::object_handlers::PropPurpose as P;
-        let cls = obj.borrow().class;
-        if !self.classes[cls as usize].hooked {
-            return Ok(None);
+        if purpose == P::Debug {
+            let id = obj.borrow().id;
+            if self.generators.contains_key(&id) {
+                return Ok(Some(self.generator_debug_info(id)));
+            }
+        } else if obj.borrow().is_lazy() {
+            return self.lazy_properties_for(obj, purpose);
         }
-        let scope = match purpose {
-            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
-            P::Json | P::VarExport => None,
-            _ => return Ok(None),
-        };
-        self.hooked_props_table(obj, scope).map(Some)
+        self.hooked_view(obj, purpose)
+    }
+
+    fn lazy_props_object(&mut self, obj: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        Vm::lazy_props_object(self, obj)
     }
 
     fn std_cast_object(
@@ -238,6 +299,13 @@ impl Host for Vm {
         self.constants
             .get(&*builtins::zend::builtin_functions::const_key(name))
             .cloned()
+            // zend_get_special_const: true/false/null in any case.
+            .or_else(|| match name.to_ascii_lowercase().as_slice() {
+                b"true" => Some(Value::Bool(true)),
+                b"false" => Some(Value::Bool(false)),
+                b"null" => Some(Value::Null),
+                _ => None,
+            })
     }
 
     fn register_autoloader(&mut self, callback: Value, prepend: bool) {
@@ -366,10 +434,7 @@ impl Host for Vm {
         let id = self.next_resource_id;
         self.next_resource_id += 1;
         self.stream_contexts.insert(id, options);
-        Value::Resource(Rc::new(rhp_values::ResourceData {
-            id,
-            type_name: "stream-context",
-        }))
+        self.listed_resource(id, "stream-context")
     }
 
     fn stream_context_options(&self, ctx: &Value) -> Value {
@@ -410,20 +475,31 @@ impl Host for Vm {
         }
     }
 
-    fn current_arg_count(&self) -> i64 {
-        self.stack.last().map(|f| f.argc as i64).unwrap_or(0)
+    fn current_arg_count(&self) -> Option<i64> {
+        self.caller_function_frame().map(|f| f.argc as i64)
     }
-    fn current_args(&self) -> Vec<Value> {
-        let Some(f) = self.stack.last() else {
-            return Vec::new();
-        };
-        let n = (f.argc).min(f.proto.params.len());
-        let mut out = Vec::new();
-        for p in f.proto.params.iter().take(n) {
-            out.push(deref(&f.regs[p.cv as usize]).clone());
+    fn current_args(&self) -> Option<Vec<Value>> {
+        let f = self.caller_function_frame()?;
+        let mut out = Vec::with_capacity(f.argc);
+        for p in &f.proto.params {
+            if out.len() == f.argc {
+                break;
+            }
+            let v = deref(&f.regs[p.cv as usize]);
+            if !p.variadic {
+                out.push(v);
+            } else if let Value::Array(a) = &v {
+                // The variadic array's positional entries (named extras
+                // are not counted).
+                for (k, v) in a.iter() {
+                    if matches!(k, rhp_values::ArrayKey::Int(_)) {
+                        out.push(deref(v));
+                    }
+                }
+            }
         }
         out.extend(f.extra_args.iter().cloned());
-        out
+        Some(out)
     }
 
     fn running_main_path(&self) -> Option<Vec<u8>> {
@@ -886,6 +962,28 @@ impl Host for Vm {
         callback: Value,
         args: Vec<Value>,
     ) -> Result<(), Thrown> {
+        // php keeps the checked callable's fcc: a method callable bound to
+        // the registering frame's `$this` keeps it.
+        let callback = match (&callback, self.resolve_callable(&callback)) {
+            (
+                Value::Str(_) | Value::Array(_),
+                Ok(crate::calls::Callee::Method(_, Some(this), _)),
+            ) => {
+                let (scope, called, _) = self.callable_scope();
+                Value::Closure(Rc::new(rhp_values::ClosureData {
+                    fnidx: u32::MAX,
+                    captures: Vec::new(),
+                    bound_this: Some(this),
+                    bound_class: scope,
+                    bound_static: called,
+                    wrapped: Some(Box::new(callback.clone())),
+                    // Not an object php makes: no handle.
+                    id: 0,
+                    statics: Default::default(),
+                }))
+            }
+            _ => callback,
+        };
         self.shutdown_functions.push((callback, args));
         Ok(())
     }
@@ -996,20 +1094,14 @@ impl Host for Vm {
 
     fn resolve_stream_context(&mut self, res: &Value) -> Option<Value> {
         let id = res_id(res)?;
-        let ctx = |id: u32| {
-            Value::Resource(Rc::new(rhp_values::ResourceData {
-                id,
-                type_name: "stream-context",
-            }))
-        };
         if self.stream_contexts.contains_key(&id) {
-            return Some(ctx(id));
+            return Some(self.listed_resource(id, "stream-context"));
         }
         if !self.streams.contains_key(&id) {
             return None;
         }
         if let Some(c) = self.streams.record(id).and_then(|s| s.ctx) {
-            return Some(ctx(c));
+            return Some(self.listed_resource(c, "stream-context"));
         }
         // php_stream_context_alloc, attached to the stream
         let c = self.create_stream_context(Value::Array(PhpArray::new()));
@@ -1018,6 +1110,8 @@ impl Host for Vm {
     }
 
     fn stream_context_of(&self, res: &Value) -> Option<Value> {
+        // (A stream's context is listed by get_resources() while the stream
+        // is open.)
         let id = self.streams.record(res_id(res)?)?.ctx?;
         Some(Value::Resource(Rc::new(rhp_values::ResourceData {
             id,
@@ -1134,7 +1228,7 @@ impl Host for Vm {
         let id = self.next_resource_id;
         self.next_resource_id += 1;
         self.native_resources.insert(id, data);
-        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+        self.listed_resource(id, type_name)
     }
 
     fn resource_get(&mut self, res: &Value) -> Option<&mut dyn std::any::Any> {
@@ -1658,10 +1752,7 @@ impl Host for Vm {
                 id
             }
         };
-        Value::Resource(Rc::new(rhp_values::ResourceData {
-            id,
-            type_name: "stream-context",
-        }))
+        self.listed_resource(id, "stream-context")
     }
 
     fn last_dir(&self) -> Option<Value> {
@@ -1680,10 +1771,78 @@ impl Host for Vm {
             .map(|c| c.value.clone())
     }
 
-    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
-        let Ok(cid) = self.resolve_class_by_name(class) else {
-            return Ok(None);
+    fn class_constant_eval(
+        &mut self,
+        class: &[u8],
+        name: &[u8],
+        silent: bool,
+    ) -> Result<Option<Value>, Thrown> {
+        let fail = |msg: String| -> Result<Option<Value>, Thrown> {
+            if silent {
+                Ok(None)
+            } else {
+                Err(Thrown::error("Error", msg))
+            }
         };
+        let s = String::from_utf8_lossy;
+        // A builtin runs on its caller's frame.
+        let (scope, called) = self
+            .stack
+            .last()
+            .map_or((None, None), |f| (f.defining_class, f.called_class));
+        let cid = if class.eq_ignore_ascii_case(b"self") {
+            match scope {
+                Some(c) => c,
+                None => return fail("Cannot access \"self\" when no class scope is active".into()),
+            }
+        } else if class.eq_ignore_ascii_case(b"parent") {
+            match scope.map(|c| self.classes[c as usize].parent) {
+                None => {
+                    return fail("Cannot access \"parent\" when no class scope is active".into())
+                }
+                Some(None) => {
+                    return fail(
+                        "Cannot access \"parent\" when current class scope has no parent".into(),
+                    )
+                }
+                Some(Some(p)) => p,
+            }
+        } else if class.eq_ignore_ascii_case(b"static") {
+            match called {
+                Some(c) => c,
+                None => {
+                    return fail("Cannot access \"static\" when no class scope is active".into())
+                }
+            }
+        } else {
+            match Host::resolve_class_autoload(self, class)? {
+                Some(c) => c,
+                None => return fail(format!("Class \"{}\" not found", s(class))),
+            }
+        };
+        let Some(c) = self.classes[cid as usize].constants.get(name) else {
+            return fail(format!("Undefined constant {}::{}", s(class), s(name)));
+        };
+        let (vis, decl) = (c.visibility, c.declaring_class);
+        if !self.check_access(scope, decl, vis) {
+            let v = match vis {
+                rhp_values::Visibility::Private => "private",
+                rhp_values::Visibility::Protected => "protected",
+                rhp_values::Visibility::Public => "public",
+            };
+            return fail(format!(
+                "Cannot access {v} constant {}::{}",
+                s(class),
+                s(name)
+            ));
+        }
+        if self.classes[cid as usize].kind == ClassKind::Trait {
+            return fail(format!(
+                "Cannot access trait constant {}::{} directly",
+                s(class),
+                s(name)
+            ));
+        }
         if self.classes[cid as usize].enum_backing.is_some() {
             self.update_class_constants(cid)?;
         }
@@ -1833,6 +1992,11 @@ impl Host for Vm {
         Some(Value::Array(arr))
     }
 
+    fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        let (a, b) = (rhp_values::ops::deref(a), rhp_values::ops::deref(b));
+        Vm::pow_op(self, &a, &b)
+    }
+
     fn reflect_op(&mut self, op: &[u8], args: &[Value]) -> Result<Value, Thrown> {
         Vm::reflect_op(self, op, args)
     }
@@ -1872,6 +2036,11 @@ impl Host for Vm {
         // `call_user_func[_array]` compiled as a user call (see `cuf_caller`).
         let caller = self.cuf_caller.take();
         self.call_callable_value_mode(callable, args.to_vec(), caller)
+    }
+
+    fn call_callable_forward(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown> {
+        self.cuf_caller.take();
+        Vm::call_callable_forward(self, callable, args.to_vec())
     }
 
     fn call_callable_named(
@@ -1952,6 +2121,8 @@ impl Host for Vm {
         if self.class_ids.contains_key(&key) {
             return Ok(false);
         }
+        self.class_aliases
+            .push((key.clone(), class_id, self.decl_classes.len()));
         self.class_ids.insert(key, class_id);
         Ok(true)
     }
@@ -1973,6 +2144,14 @@ impl Host for Vm {
     fn caller_scope(&self) -> Option<u32> {
         // A builtin runs on its caller's frame.
         self.stack.last().and_then(|f| f.defining_class)
+    }
+
+    fn live_resources(&mut self) -> Vec<Value> {
+        Vm::live_resources(self)
+    }
+
+    fn caller_called_scope(&self) -> Option<u32> {
+        self.stack.last().and_then(|f| f.called_class)
     }
 
     fn object_scoped_props(&self, obj: &Value) -> Vec<(PhpStr, Value)> {
@@ -2004,6 +2183,12 @@ impl Host for Vm {
             Some(m) => !(m.proto.is_internal() && is_engine_helper_name(method)),
             None => false,
         }
+    }
+
+    fn class_method_private_inherited(&self, class_id: u32, method: &[u8]) -> bool {
+        self.lookup_method(class_id, method).is_some_and(|m| {
+            m.visibility == rhp_values::Visibility::Private && m.defining_class != class_id
+        })
     }
 
     fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool {
@@ -2227,19 +2412,22 @@ impl Host for Vm {
     }
 
     fn check_callable(&mut self, callable: &Value) -> Result<Option<String>, Thrown> {
-        self.autoload_callable_class(callable)?;
-        let Err(e) = self.resolve_callable(callable) else {
-            return Ok(None);
-        };
-        Ok(Some(String::from_utf8_lossy(&e).into_owned()))
+        Ok(self.check_callable_ex(callable, false)?.err())
     }
 
     fn wrap_callable(&self, callable: Value) -> Value {
         let (scope, called, _) = self.callable_scope();
+        // zend_create_closure_from_callable binds the fcc's object.
+        let this = match self.resolve_callable(&callable) {
+            Ok(
+                crate::calls::Callee::Method(_, this, _) | crate::calls::Callee::Magic(_, this, ..),
+            ) => this,
+            _ => None,
+        };
         Value::Closure(Rc::new(rhp_values::ClosureData {
             fnidx: u32::MAX,
             captures: Vec::new(),
-            bound_this: None,
+            bound_this: this,
             bound_class: scope,
             bound_static: called,
             wrapped: Some(Box::new(callable)),

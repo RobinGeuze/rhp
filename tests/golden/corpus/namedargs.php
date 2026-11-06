@@ -18,5 +18,7 @@ class Point {
 echo new Point(y: 5), "\n";
 echo new Point(1, z: 9), "\n";
 
-// Named arguments to builtins: rhp refuses them for now (RHP_UNSUPPORTED).
+// Named arguments to builtins.
 echo array_sum([1, 2, 3]), "\n";
+echo str_replace(search: 'a', replace: 'o', subject: 'banana'), "\n";
+echo implode(separator: '-', array: array_slice([1, 2, 3, 4], offset: 1, length: 2)), "\n";

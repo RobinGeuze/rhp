@@ -1,0 +1,97 @@
+int(1)
+array(2) {
+  [0]=>
+  array(2) {
+    [0]=>
+    string(1) "b"
+    [1]=>
+    int(1)
+  }
+  [1]=>
+  array(2) {
+    [0]=>
+    string(1) "b"
+    [1]=>
+    int(1)
+  }
+}
+Error: Unknown named parameter $str
+Error: Named parameter $string overwrites previous argument
+ArgumentCountError: sprintf() does not accept unknown named parameters
+ArgumentCountError: array_keys(): Argument #2 ($filter_value) must be passed explicitly, because the default value is not known
+ArgumentCountError: array_keys(): Argument #1 ($array) not passed
+ArgumentCountError: str_replace() expects at least 3 arguments, 2 given
+int(3)
+string(4) "---a"
+string(4) " a  "
+string(9) "[
+    1
+]"
+array(2) {
+  [0]=>
+  string(1) "v"
+  [1]=>
+  string(1) "v"
+}
+string(9) "&lt;a&gt;"
+string(5) "1 235"
+bool(false)
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+float(1.6)
+int(3)
+bool(true)
+int(0)
+ArgumentCountError: array_merge() does not accept unknown named parameters
+int(5)
+int(5)
+int(9)
+Error: r(): Argument #1 ($a) could not be passed by reference
+array(2) {
+  [0]=>
+  int(2)
+  ["k"]=>
+  int(3)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+Error: Unknown named parameter $x
+Error: Named parameter $a overwrites previous argument
+Error: Named parameter $b overwrites previous argument
+got v
+int(2)
+int(1)
+array(1) {
+  ["z"]=>
+  int(2)
+}
+int(5)
+array(1) {
+  ["q"]=>
+  int(1)
+}
+bool(true)
+Error: Unknown named parameter $foo
+int(7)
+int(8)
+int(9)
+int(1)
+int(4)
+A B
+A B
+int(1)
+int(1)
+int(2)
+int(1)
+int(1)
+int(5)

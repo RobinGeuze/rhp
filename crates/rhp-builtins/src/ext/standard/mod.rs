@@ -13,7 +13,9 @@ pub mod base64;
 pub mod basic_functions;
 pub mod crc32;
 pub mod crypt;
+pub mod datetime;
 pub mod dir;
+pub mod dl;
 pub mod dns;
 pub mod exec;
 pub mod file;
@@ -21,30 +23,39 @@ pub mod filestat;
 pub mod formatted_print;
 pub mod fsock;
 pub mod head;
+pub mod hebrev;
 pub mod hrtime;
 pub mod html;
 #[rustfmt::skip]
 pub mod html_tables;
 pub mod http;
 pub mod http_fopen_wrapper;
+pub mod image;
 pub mod info;
+pub mod iptc;
 pub mod levenshtein;
 pub mod link;
 pub mod math;
 pub mod md5;
+pub mod meta_tags;
+pub mod metaphone;
 pub mod microtime;
+pub mod net;
 pub mod pack;
 pub mod pageinfo;
 pub mod password;
 pub mod proc_open;
+pub mod quot_print;
 pub mod scanf;
 pub mod sha1;
 pub mod soundex;
 pub mod streamsfuncs;
 pub mod string;
+pub mod syslog;
 pub mod r#type;
 pub mod uniqid;
 pub mod url;
+pub mod uuencode;
 pub mod var;
 pub mod versioning;
 
@@ -87,6 +98,11 @@ fn register(m: &mut crate::Registry) {
     formatted_print::register(m);
     scanf::register(m);
     soundex::register(m);
+    metaphone::register(m);
+    hebrev::register(m);
+    quot_print::register(m);
+    uuencode::register(m);
+    meta_tags::register(m);
     levenshtein::register(m);
     pack::register(m);
     uniqid::register(m);
@@ -95,6 +111,10 @@ fn register(m: &mut crate::Registry) {
     assert::register(m);
     pageinfo::register(m);
     dns::register(m);
+    syslog::register(m);
+    net::register(m);
+    datetime::register(m);
+    iptc::register(m);
     versioning::register(m);
     info::register(m);
     streamsfuncs::register(m);
@@ -124,15 +144,26 @@ fn constants() -> Vec<(&'static str, Value)> {
         crypt::constants(),
         streamsfuncs::constants(),
         password::constants(),
+        assert::constants(),
+        image::constants(),
+        dns::constants(),
+        syslog::constants(),
     ]
     .concat()
 }
 
-/// The module's PHP source: dir.c's `Directory` class, then string.c's
-/// prelude functions.
+/// The module's PHP source: dir.c's `Directory` class, string.c's
+/// prelude functions and math.c's `RoundingMode` enum.
 fn prelude() -> &'static str {
     static PRELUDE: OnceLock<String> = OnceLock::new();
-    PRELUDE.get_or_init(|| format!("{}\n{}", dir::PRELUDE_PHP, string::PRELUDE_PHP))
+    PRELUDE.get_or_init(|| {
+        format!(
+            "{}\n{}\n{}",
+            dir::PRELUDE_PHP,
+            string::PRELUDE_PHP,
+            math::PRELUDE_PHP
+        )
+    })
 }
 
 fn reset_state() {

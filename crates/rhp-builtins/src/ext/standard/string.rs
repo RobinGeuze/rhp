@@ -11,7 +11,6 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::random::mt_range;
 use crate::ext::standard::file::path_arg;
-use crate::main::php_variables::{register_variable, url_decode};
 use crate::zend::builtin_functions::{binary_strncasecmp, binary_strncmp};
 use crate::zend::zpp::{bool_param, str_or_null_param, str_param, zval_get_string};
 use crate::{deprecated, Host, Thrown};
@@ -51,25 +50,38 @@ fn replace_all(subject: &[u8], search: &[u8], replace: &[u8], n: &mut i64) -> Ve
     out
 }
 
-/// Build php's `php_charmask` set (supports the `a..z` range syntax).
-fn charmask(chars: &[u8]) -> [bool; 256] {
+/// php's `php_charmask`: the bytes of `chars` with `a..z` ranges; a bad
+/// range warns and its dots are taken one by one.
+pub(crate) fn charmask(host: &mut dyn Host, chars: &[u8]) -> Result<[bool; 256], Thrown> {
     let mut mask = [false; 256];
     let len = chars.len();
     let mut i = 0;
     while i < len {
         let c = chars[i];
-        // range: c '.' '.' d  (needs a 4th char present, and d >= c)
         if i + 3 < len && chars[i + 1] == b'.' && chars[i + 2] == b'.' && chars[i + 3] >= c {
             for b in c..=chars[i + 3] {
                 mask[b as usize] = true;
             }
             i += 4;
+            continue;
+        }
+        if i + 1 < len && c == b'.' && chars[i + 1] == b'.' {
+            let msg: &[u8] = if i == 0 {
+                b"Invalid '..'-range, no character to the left of '..'"
+            } else if i + 2 >= len {
+                b"Invalid '..'-range, no character to the right of '..'"
+            } else if chars[i - 1] > chars[i + 2] {
+                b"Invalid '..'-range, '..'-range needs to be incrementing"
+            } else {
+                b"Invalid '..'-range"
+            };
+            host.docref_diagnostic(crate::E_WARNING, msg)?;
         } else {
             mask[c as usize] = true;
-            i += 1;
         }
+        i += 1;
     }
-    mask
+    Ok(mask)
 }
 
 /// Default trim charlist: " \t\n\r\0\x0B".
@@ -366,13 +378,26 @@ fn fn_str_pad(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // trim / ltrim / rtrim
 // ---------------------------------------------------------------------------
 
-fn trim_impl(args: &[Value], left: bool, right: bool) -> Value {
+/// `php_trim_int`: one byte is matched directly, more go through
+/// [`charmask`].
+fn trim_impl(
+    host: &mut dyn Host,
+    args: &[Value],
+    left: bool,
+    right: bool,
+) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     let chars = match args.get(1) {
         Some(v) => conv::to_string_bytes(v),
         None => TRIM_DEFAULT.to_vec(),
     };
-    let mask = charmask(&chars);
+    let mask = if chars.len() == 1 {
+        let mut m = [false; 256];
+        m[chars[0] as usize] = true;
+        m
+    } else {
+        charmask(host, &chars)?
+    };
     let mut start = 0;
     let mut end = s.len();
     if left {
@@ -385,17 +410,17 @@ fn trim_impl(args: &[Value], left: bool, right: bool) -> Value {
             end -= 1;
         }
     }
-    Value::str(s[start..end].to_vec())
+    Ok(Value::str(s[start..end].to_vec()))
 }
 
-fn fn_trim(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(trim_impl(args, true, true))
+fn fn_trim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    trim_impl(host, args, true, true)
 }
-fn fn_ltrim(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(trim_impl(args, true, false))
+fn fn_ltrim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    trim_impl(host, args, true, false)
 }
-fn fn_rtrim(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(trim_impl(args, false, true))
+fn fn_rtrim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    trim_impl(host, args, false, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,13 +443,13 @@ fn fn_lcfirst(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
-fn fn_ucwords(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_ucwords(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut s = conv::to_string_bytes(&args[0]);
     let delims = match args.get(1) {
         Some(v) => conv::to_string_bytes(v),
         None => b" \t\r\n\x0c\x0b".to_vec(),
     };
-    let mask = charmask_plain(&delims);
+    let mask = charmask(host, &delims)?;
     let mut cap_next = true;
     for b in s.iter_mut() {
         if cap_next {
@@ -433,15 +458,6 @@ fn fn_ucwords(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         cap_next = mask[*b as usize];
     }
     Ok(Value::str(s))
-}
-
-/// ucwords uses a plain char set (no `a..z` range interpretation).
-fn charmask_plain(chars: &[u8]) -> [bool; 256] {
-    let mut mask = [false; 256];
-    for &c in chars {
-        mask[c as usize] = true;
-    }
-    mask
 }
 
 fn fn_strrev(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -463,32 +479,32 @@ fn fn_substr_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "substr_count(): Argument #2 ($needle) must not be empty",
         ));
     }
-    let len = haystack.len() as i64;
-    let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    if off < -len || off > len {
+    let mut off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if off < 0 {
+        off += haystack.len() as i64;
+    }
+    if off < 0 || off > haystack.len() as i64 {
         return Err(Thrown::error(
             "ValueError",
             "substr_count(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
         ));
     }
-    let start = if off < 0 {
-        (len + off) as usize
-    } else {
-        off as usize
-    };
+    let start = off as usize;
+    let rest = (haystack.len() - start) as i64;
     let end = match args.get(3).map(deref) {
         None | Some(Value::Null) => haystack.len(),
         Some(v) => {
-            let l = conv::to_int(&v);
-            let avail = (haystack.len() - start) as i64;
-            let window = if l < 0 { avail + l } else { l.min(avail) };
-            if window < 0 {
+            let mut l = conv::to_int(&v);
+            if l < 0 {
+                l += rest;
+            }
+            if l < 0 || l > rest {
                 return Err(Thrown::error(
                     "ValueError",
                     "substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)",
                 ));
             }
-            start + window as usize
+            start + l as usize
         }
     };
     let slice = &haystack[start..end];
@@ -551,7 +567,7 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if width == 0 && cut {
         return Err(Thrown::error(
             "ValueError",
-            "wordwrap(): Argument #2 ($width) must be greater than 0 when argument #4 ($cut) is set to true",
+            "wordwrap(): Argument #4 ($cut_long_words) cannot be true when argument #2 ($width) is 0",
         ));
     }
 
@@ -610,9 +626,9 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 /// `addcslashes($string, $characters)`: backslash-escape every byte present in
 /// `$characters` (control bytes become `\n`, `\t`, … or a 3-digit octal escape).
-fn fn_addcslashes(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_addcslashes(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
-    let mask = charmask(&conv::to_string_bytes(&args[1]));
+    let mask = charmask(host, &conv::to_string_bytes(&args[1]))?;
     let mut out = Vec::with_capacity(s.len());
     for &c in &s {
         if mask[c as usize] {
@@ -797,14 +813,15 @@ fn fn_substr_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     } else {
         conv::to_int(&deref(&args[3]))
     };
-    if !len_default && len_val < 0 {
+    if !len_default && len_val <= 0 {
+        if len_val == 0 {
+            return Ok(Value::Int(0));
+        }
         return Err(Thrown::error(
             "ValueError",
             "substr_compare(): Argument #4 ($length) must be greater than or equal to 0",
         ));
     }
-
-    // resolve offset
     let mlen = main.len() as i64;
     let off = if offset < 0 {
         (mlen + offset).max(0)
@@ -818,19 +835,11 @@ fn fn_substr_compare(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         ));
     }
     let off = off as usize;
-    let remain = main.len() - off;
-
-    let cmp_len = if len_default {
-        needle.len().max(remain)
-    } else if (len_val as usize) > remain {
-        remain
-    } else {
+    let cmp_len = if len_val != 0 {
         len_val as usize
+    } else {
+        needle.len().max(main.len() - off)
     };
-    if cmp_len == 0 && !len_default {
-        return Ok(Value::Int(0));
-    }
-
     let ci = args.get(4).map(conv::to_bool).unwrap_or(false);
     let main_sub = &main[off..];
     let r = if ci {
@@ -1248,18 +1257,25 @@ pub(crate) fn reset_state() {
 fn fn_strtok(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = str_param(host, args, 0, "strtok", "string")?;
     let tok = str_or_null_param(host, args, 1, "strtok", "token")?;
+    let started = STRTOK.with(|st| {
+        let mut st = st.borrow_mut();
+        if tok.is_some() {
+            st.string = Some(s.clone());
+            st.last = 0;
+        }
+        st.string.is_some()
+    });
+    if !started {
+        host.docref_diagnostic(
+            crate::E_WARNING,
+            b"Both arguments must be provided when starting tokenization",
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    let tok = tok.unwrap_or(s);
     STRTOK.with(|st| {
         let mut st = st.borrow_mut();
-        let tok = match tok {
-            None => s,
-            Some(t) => {
-                st.string = Some(s);
-                st.last = 0;
-                t
-            }
-        };
         let Some(string) = st.string.as_ref() else {
-            // php: Warning "Both arguments must be provided when starting tokenization"
             return Ok(Value::Bool(false));
         };
         let pe = string.len();
@@ -1309,27 +1325,6 @@ fn key_bytes(k: &ArrayKey) -> Vec<u8> {
     }
 }
 
-/// Build php's `php_charmask` set (supports the `a..z` range syntax). Used by
-/// `str_word_count`'s additional-characters argument.
-fn word_charmask(chars: &[u8]) -> [bool; 256] {
-    let mut mask = [false; 256];
-    let len = chars.len();
-    let mut i = 0;
-    while i < len {
-        let c = chars[i];
-        if i + 3 < len && chars[i + 1] == b'.' && chars[i + 2] == b'.' && chars[i + 3] >= c {
-            for b in c..=chars[i + 3] {
-                mask[b as usize] = true;
-            }
-            i += 4;
-        } else {
-            mask[c as usize] = true;
-            i += 1;
-        }
-    }
-    mask
-}
-
 // ---------------------------------------------------------------------------
 // str_split
 // ---------------------------------------------------------------------------
@@ -1359,60 +1354,97 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_strtr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     if args.len() == 2 {
-        // Pairs form: longest matching key at each position wins.
         let Value::Array(pairs) = deref(&args[1]) else {
             return Err(Thrown::type_error(format!(
                 "strtr(): Argument #2 ($from) must be of type array, {} given",
                 crate::zend::zpp::zval_value_name(host, &args[1])
             )));
         };
-        let mut table: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(pairs.len());
-        for (k, v) in pairs.iter() {
-            let kb = key_bytes(k);
-            // php ignores empty-string keys (and emits a warning to stderr).
-            if !kb.is_empty() {
-                table.push((kb, zval_get_string(host, v)?));
-            }
-        }
-        let maxlen = table.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        if maxlen == 0 {
+        if s.is_empty() {
             return Ok(Value::str(s));
         }
-        let mut out = Vec::with_capacity(s.len());
-        let mut i = 0;
-        while i < s.len() {
-            let mut matched = false;
-            let upper = maxlen.min(s.len() - i);
-            for len in (1..=upper).rev() {
-                let sub = &s[i..i + len];
-                if let Some((_, rep)) = table.iter().find(|(k, _)| k.as_slice() == sub) {
-                    out.extend_from_slice(rep);
-                    i += len;
-                    matched = true;
-                    break;
-                }
-            }
-            if !matched {
-                out.push(s[i]);
-                i += 1;
-            }
-        }
-        Ok(Value::str(out))
+        strtr_array(host, s, &pairs)
     } else {
-        // from/to form: byte-for-byte over the common prefix length.
+        if s.is_empty() {
+            return Ok(Value::str(s));
+        }
+        // php_strtr: for a byte listed twice in $from the last mapping wins.
         let from = conv::to_string_bytes(&args[1]);
         let to = conv::to_string_bytes(&args[2]);
         let n = from.len().min(to.len());
-        let mut map: [Option<u8>; 256] = [None; 256];
+        let mut map: [u8; 256] = std::array::from_fn(|i| i as u8);
         for i in 0..n {
-            // php: first mapping for a given source byte wins.
-            if map[from[i] as usize].is_none() {
-                map[from[i] as usize] = Some(to[i]);
-            }
+            map[from[i] as usize] = to[i];
         }
-        let out: Vec<u8> = s.iter().map(|&b| map[b as usize].unwrap_or(b)).collect();
+        let out: Vec<u8> = s.iter().map(|&b| map[b as usize]).collect();
         Ok(Value::str(out))
     }
+}
+
+/// `php_strtr_array`: the longest key matching at each position is
+/// replaced; replacements are converted when used.
+fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Value, Thrown> {
+    const EMPTY_KEY: &[u8] = b"Ignoring replacement of empty string";
+    if pairs.is_empty() {
+        return Ok(Value::str(s));
+    }
+    if pairs.len() == 1 {
+        let (k, v) = pairs.iter().next().expect("one pair");
+        let key = key_bytes(k);
+        let rep = zval_get_string(host, v)?;
+        if key.is_empty() {
+            host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
+            return Ok(Value::str(s));
+        }
+        let mut n = 0;
+        return Ok(Value::str(replace_all(&s, &key, &rep, &mut n)));
+    }
+    let slen = s.len();
+    let mut table: std::collections::HashMap<Vec<u8>, Value> =
+        std::collections::HashMap::with_capacity(pairs.len());
+    let mut first = [false; 256];
+    let (mut minlen, mut maxlen) = (usize::MAX, 0usize);
+    for (k, v) in pairs.iter() {
+        let key = key_bytes(k);
+        if key.is_empty() {
+            if matches!(k, ArrayKey::Str(_)) {
+                host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
+            }
+            continue;
+        }
+        if key.len() > slen {
+            continue;
+        }
+        minlen = minlen.min(key.len());
+        maxlen = maxlen.max(key.len());
+        first[key[0] as usize] = true;
+        table.entry(key).or_insert_with(|| v.clone());
+    }
+    if minlen > maxlen {
+        return Ok(Value::str(s));
+    }
+    let mut out = Vec::with_capacity(slen);
+    let (mut pos, mut old_pos) = (0usize, 0usize);
+    while pos + minlen <= slen {
+        if first[s[pos] as usize] {
+            let mut len = maxlen.min(slen - pos);
+            while len >= minlen {
+                if let Some(v) = table.get(&s[pos..pos + len]) {
+                    let v = v.clone();
+                    let rep = zval_get_string(host, &v)?;
+                    out.extend_from_slice(&s[old_pos..pos]);
+                    out.extend_from_slice(&rep);
+                    old_pos = pos + len;
+                    pos = old_pos - 1;
+                    break;
+                }
+                len -= 1;
+            }
+        }
+        pos += 1;
+    }
+    out.extend_from_slice(&s[old_pos..]);
+    Ok(Value::str(out))
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,7 +1600,9 @@ fn fn_similar_text(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 // str_word_count
 // ---------------------------------------------------------------------------
 
-fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+/// `str_word_count`: words of letters, `'` and `-` (plus `$characters`);
+/// a leading `'` or `-` and a trailing `-` are not part of a word.
+fn fn_str_word_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = conv::to_string_bytes(&args[0]);
     let format = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if !matches!(format, 0..=2) {
@@ -1577,38 +1611,51 @@ fn fn_str_word_count(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             "str_word_count(): Argument #2 ($format) must be a valid format value",
         ));
     }
-    let extra = args.get(2).map(conv::to_string_bytes);
-    let extra_mask = extra.map(|e| word_charmask(&e)).unwrap_or([false; 256]);
-    let is_word =
-        |b: u8| b.is_ascii_alphabetic() || b == b'\'' || b == b'-' || extra_mask[b as usize];
-
-    let mut count = 0i64;
     let mut words = PhpArray::new();
-    let mut i = 0;
-    while i < s.len() {
-        if is_word(s[i]) {
-            let start = i;
-            while i < s.len() && is_word(s[i]) {
-                i += 1;
-            }
-            count += 1;
+    if s.is_empty() {
+        return Ok(if format == 0 {
+            Value::Int(0)
+        } else {
+            Value::Array(words)
+        });
+    }
+    let ch = match args.get(2).map(deref) {
+        None | Some(Value::Null) => [false; 256],
+        Some(v) => charmask(host, &conv::to_string_bytes(&v))?,
+    };
+    let mut p = 0;
+    let mut e = s.len();
+    if (s[0] == b'\'' && !ch[b'\'' as usize]) || (s[0] == b'-' && !ch[b'-' as usize]) {
+        p += 1;
+    }
+    if s[e - 1] == b'-' && !ch[b'-' as usize] {
+        e -= 1;
+    }
+    let mut count = 0i64;
+    while p < e {
+        let start = p;
+        while p < e
+            && (s[p].is_ascii_alphabetic() || ch[s[p] as usize] || s[p] == b'\'' || s[p] == b'-')
+        {
+            p += 1;
+        }
+        if p > start {
             match format {
-                1 => words.push(Value::str(s[start..i].to_vec())),
+                1 => words.push(Value::str(s[start..p].to_vec())),
                 2 => words.insert(
                     ArrayKey::Int(start as i64),
-                    Value::str(s[start..i].to_vec()),
+                    Value::str(s[start..p].to_vec()),
                 ),
-                _ => {}
+                _ => count += 1,
             }
-        } else {
-            i += 1;
         }
+        p += 1;
     }
-    if format == 0 {
-        Ok(Value::Int(count))
+    Ok(if format == 0 {
+        Value::Int(count)
     } else {
-        Ok(Value::Array(words))
-    }
+        Value::Array(words)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,19 +2033,28 @@ fn fn_str_repeat(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_implode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    implode(host, args, "implode")
+}
+
+/// `join`: implode under its own name.
+fn fn_join(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    implode(host, args, "join")
+}
+
+fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thrown> {
     // implode($array) or implode($separator, $array)
     let (glue, arr) = match (deref(&args[0]), args.get(1).map(deref)) {
         (Value::Array(a), None | Some(Value::Null)) => (Vec::new(), a),
         (Value::Array(_), Some(_)) => {
-            return Err(Thrown::type_error(
-                "implode(): Argument #1 ($separator) must be of type string, array given",
-            ))
+            return Err(Thrown::type_error(format!(
+                "{func}(): Argument #1 ($separator) must be of type string, array given"
+            )))
         }
         (g, Some(Value::Array(a))) => (conv::to_string_bytes(&g), a),
         _ => {
-            return Err(Thrown::type_error(
-                "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
-            ))
+            return Err(Thrown::type_error(format!(
+                "{func}(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given"
+            )))
         }
     };
     // php_implode: arrays warn, objects use their string cast (or throw).
@@ -2249,14 +2305,92 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
         ("PATHINFO_EXTENSION", Value::Int(4)),
         ("PATHINFO_FILENAME", Value::Int(8)),
         ("PATHINFO_ALL", Value::Int(15)),
-        ("LC_CTYPE", Value::Int(0)),
-        ("LC_NUMERIC", Value::Int(1)),
-        ("LC_TIME", Value::Int(2)),
-        ("LC_COLLATE", Value::Int(3)),
-        ("LC_MONETARY", Value::Int(4)),
-        ("LC_MESSAGES", Value::Int(5)),
-        ("LC_ALL", Value::Int(6)),
+        ("LC_CTYPE", Value::Int(libc::LC_CTYPE as i64)),
+        ("LC_NUMERIC", Value::Int(libc::LC_NUMERIC as i64)),
+        ("LC_TIME", Value::Int(libc::LC_TIME as i64)),
+        ("LC_COLLATE", Value::Int(libc::LC_COLLATE as i64)),
+        ("LC_MONETARY", Value::Int(libc::LC_MONETARY as i64)),
+        ("LC_MESSAGES", Value::Int(libc::LC_MESSAGES as i64)),
+        ("LC_ALL", Value::Int(libc::LC_ALL as i64)),
     ]
+    .into_iter()
+    .chain(langinfo_constants())
+    .collect()
+}
+
+/// The nl_langinfo() items (basic_functions.stub.php): the C library's
+/// values, which differ per platform.
+fn langinfo_constants() -> Vec<(&'static str, Value)> {
+    use libc as l;
+    #[cfg(target_os = "linux")]
+    let (yesstr, nostr) = (0x50002, 0x50003);
+    #[cfg(not(target_os = "linux"))]
+    let (yesstr, nostr) = (l::YESSTR, l::NOSTR);
+    let items: [(&'static str, l::nl_item); 56] = [
+        ("ABDAY_1", l::ABDAY_1),
+        ("ABDAY_2", l::ABDAY_2),
+        ("ABDAY_3", l::ABDAY_3),
+        ("ABDAY_4", l::ABDAY_4),
+        ("ABDAY_5", l::ABDAY_5),
+        ("ABDAY_6", l::ABDAY_6),
+        ("ABDAY_7", l::ABDAY_7),
+        ("DAY_1", l::DAY_1),
+        ("DAY_2", l::DAY_2),
+        ("DAY_3", l::DAY_3),
+        ("DAY_4", l::DAY_4),
+        ("DAY_5", l::DAY_5),
+        ("DAY_6", l::DAY_6),
+        ("DAY_7", l::DAY_7),
+        ("ABMON_1", l::ABMON_1),
+        ("ABMON_2", l::ABMON_2),
+        ("ABMON_3", l::ABMON_3),
+        ("ABMON_4", l::ABMON_4),
+        ("ABMON_5", l::ABMON_5),
+        ("ABMON_6", l::ABMON_6),
+        ("ABMON_7", l::ABMON_7),
+        ("ABMON_8", l::ABMON_8),
+        ("ABMON_9", l::ABMON_9),
+        ("ABMON_10", l::ABMON_10),
+        ("ABMON_11", l::ABMON_11),
+        ("ABMON_12", l::ABMON_12),
+        ("MON_1", l::MON_1),
+        ("MON_2", l::MON_2),
+        ("MON_3", l::MON_3),
+        ("MON_4", l::MON_4),
+        ("MON_5", l::MON_5),
+        ("MON_6", l::MON_6),
+        ("MON_7", l::MON_7),
+        ("MON_8", l::MON_8),
+        ("MON_9", l::MON_9),
+        ("MON_10", l::MON_10),
+        ("MON_11", l::MON_11),
+        ("MON_12", l::MON_12),
+        ("AM_STR", l::AM_STR),
+        ("PM_STR", l::PM_STR),
+        ("D_T_FMT", l::D_T_FMT),
+        ("D_FMT", l::D_FMT),
+        ("T_FMT", l::T_FMT),
+        ("T_FMT_AMPM", l::T_FMT_AMPM),
+        ("ERA", l::ERA),
+        ("ERA_D_T_FMT", l::ERA_D_T_FMT),
+        ("ERA_D_FMT", l::ERA_D_FMT),
+        ("ERA_T_FMT", l::ERA_T_FMT),
+        ("ALT_DIGITS", l::ALT_DIGITS),
+        ("CRNCYSTR", l::CRNCYSTR),
+        ("RADIXCHAR", l::RADIXCHAR),
+        ("THOUSEP", l::THOUSEP),
+        ("YESEXPR", l::YESEXPR),
+        ("NOEXPR", l::NOEXPR),
+        ("YESSTR", yesstr),
+        ("NOSTR", nostr),
+    ];
+    let mut v: Vec<(&'static str, Value)> = items
+        .into_iter()
+        .map(|(n, i)| (n, Value::Int(i as i64)))
+        .collect();
+    v.push(("CODESET", Value::Int(l::CODESET as i64)));
+    v.push(("CHAR_MAX", Value::Int(libc::c_char::MAX as i64)));
+    v
 }
 
 /// `__stdext_deprecated($message)`: E_DEPRECATED from a prelude function.
@@ -2285,20 +2419,22 @@ fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Some(p) => s[..p].to_vec(),
         None => s,
     };
-    let mut out = PhpArray::new();
-    let mut count = 0usize;
-    for var in s.split(|&b| b == b'&').filter(|t| !t.is_empty()) {
-        count += 1;
-        if count > 1000 {
-            // php: Warning "Input variables exceeded 1000 ..."
-            break;
-        }
-        let (name, val) = match var.iter().position(|&b| b == b'=') {
-            Some(p) => (&var[..p], url_decode(&var[p + 1..])),
-            None => (var, Vec::new()),
-        };
-        let name = url_decode(name);
-        register_variable(&mut out, &name, val);
+    // php_default_treat_data(PARSE_STRING): arg_separator.input and
+    // max_input_vars apply.
+    let ini = |n: &[u8]| crate::ini_value(n).flatten().unwrap_or_default();
+    let max_vars = crate::main::ini::c_atol(&ini(b"max_input_vars"));
+    let (out, exceeded) = crate::main::php_variables::treat_data(
+        crate::main::php_variables::TreatData::Form,
+        &s,
+        &ini(b"arg_separator.input"),
+        max_vars,
+    );
+    if exceeded {
+        crate::warn(
+            host,
+            "parse_str",
+            &format!("Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."),
+        )?;
     }
     if let Some(Value::Ref(r)) = args.get(1) {
         *r.borrow_mut() = Value::Array(out);
@@ -2560,7 +2696,7 @@ pub fn register(m: &mut crate::Registry) {
             ("str_getcsv", fn_str_getcsv),
             ("str_repeat", fn_str_repeat),
             ("implode", fn_implode),
-            ("join", fn_implode),
+            ("join", fn_join),
             ("explode", fn_explode),
             ("strtoupper", fn_strtoupper),
             ("strtolower", fn_strtolower),

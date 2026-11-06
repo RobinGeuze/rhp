@@ -19,9 +19,7 @@ use crate::zend::builtin_functions::resolve_const;
 use crate::zend::ini_parser::{syntax_error, Event, Parser};
 use crate::zend::ini_scanner::{lexer, trim_ws, MODE_NORMAL, MODE_RAW, MODE_TYPED};
 use crate::zend::virtual_cwd::os_path;
-use crate::zend::zpp::{
-    bool_param, int_param, require_callback, str_or_null_param, str_param, zpp_long,
-};
+use crate::zend::zpp::{bool_param, int_param, str_or_null_param, str_param, zpp_long};
 use crate::{ext, zend, Host, Thrown};
 
 fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -47,22 +45,15 @@ fn fn_print_r(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_constant(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = conv::to_string_bytes(&deref(&args[0]));
-    resolve_const(host, &name)?.ok_or_else(|| {
-        let shown = name.strip_prefix(b"\\").unwrap_or(&name);
-        Thrown::error(
-            "Error",
-            format!("Undefined constant \"{}\"", String::from_utf8_lossy(shown)),
-        )
-    })
+    Ok(resolve_const(host, &name, false)?.unwrap_or(Value::Null))
 }
 
+// The engine's zpp checked the callback (Z_PARAM_FUNC).
 fn fn_call_user_func(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func", 1, &args[0])?;
     host.call_callable(&args[0], &args[1..])
 }
 
 fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    require_callback(host, "call_user_func_array", 1, &args[0])?;
     let params = as_array(&args[1], "call_user_func_array")?;
     let mut argv: Vec<Value> = Vec::new();
     let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
@@ -84,6 +75,108 @@ fn fn_call_user_func_array(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     host.call_callable_named(&args[0], &argv, named)
 }
 
+/// basic_functions.c's check that forward_static_call runs in a method.
+fn forward_scope_check(host: &dyn Host, func: &str) -> Result<(), Thrown> {
+    if host.caller_scope().is_none() {
+        return Err(Thrown::error(
+            "Error",
+            format!("Cannot call {func}() when no class scope is active"),
+        ));
+    }
+    Ok(())
+}
+
+// The engine's zpp checked the callback (Z_PARAM_FUNC).
+fn fn_forward_static_call(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    forward_scope_check(host, "forward_static_call")?;
+    host.call_callable_forward(&args[0], &args[1..])
+}
+
+fn fn_forward_static_call_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let params = as_array(&args[1], "forward_static_call_array")?;
+    // (No class-scope check here, unlike forward_static_call.)
+    let mut argv: Vec<Value> = Vec::new();
+    let mut named: Vec<(rhp_values::PhpStr, Value)> = Vec::new();
+    for (k, v) in params.iter() {
+        match k {
+            ArrayKey::Int(_) if !named.is_empty() => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use positional argument after named argument",
+                ))
+            }
+            ArrayKey::Int(_) => argv.push(v.clone()),
+            ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+        }
+    }
+    if !named.is_empty() {
+        return host.call_callable_named(&args[0], &argv, named);
+    }
+    host.call_callable_forward(&args[0], &argv)
+}
+
+/// getservbyname(3) and friends return static storage: one caller at a
+/// time.
+static NETDB: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn c_str(b: &[u8]) -> std::ffi::CString {
+    // path_param has rejected NUL bytes.
+    std::ffi::CString::new(b).unwrap_or_default()
+}
+
+/// `getservbyname($service, $protocol)`: the port, or false.
+fn fn_getservbyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = path_param(host, args, 0, "getservbyname", "service")?;
+    let proto = path_param(host, args, 1, "getservbyname", "protocol")?;
+    let (name, proto) = (c_str(&name), c_str(&proto));
+    let _g = NETDB.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: NUL-terminated arguments; the entry is read under NETDB.
+    let port = unsafe {
+        let se = libc::getservbyname(name.as_ptr(), proto.as_ptr());
+        (!se.is_null()).then(|| u16::from_be((*se).s_port as u16))
+    };
+    Ok(port.map_or(Value::Bool(false), |p| Value::Int(p as i64)))
+}
+
+/// `getservbyport($port, $protocol)`: the service name, or false.
+fn fn_getservbyport(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let port = conv::to_int(&deref(&args[0]));
+    let proto = path_param(host, args, 1, "getservbyport", "protocol")?;
+    let proto = c_str(&proto);
+    let _g = NETDB.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: as in getservbyname; the name is copied under NETDB.
+    let name = unsafe {
+        let se = libc::getservbyport((port as u16).to_be() as libc::c_int, proto.as_ptr());
+        (!se.is_null()).then(|| std::ffi::CStr::from_ptr((*se).s_name).to_bytes().to_vec())
+    };
+    Ok(name.map_or(Value::Bool(false), Value::str))
+}
+
+/// `getprotobyname($protocol)`: the protocol number, or false.
+fn fn_getprotobyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = path_param(host, args, 0, "getprotobyname", "protocol")?;
+    let name = c_str(&name);
+    let _g = NETDB.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: as in getservbyname.
+    let n = unsafe {
+        let pe = libc::getprotobyname(name.as_ptr());
+        (!pe.is_null()).then(|| (*pe).p_proto)
+    };
+    Ok(n.map_or(Value::Bool(false), |n| Value::Int(n as i64)))
+}
+
+/// `getprotobynumber($protocol)`: the protocol name, or false.
+fn fn_getprotobynumber(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let n = conv::to_int(&deref(&args[0]));
+    let _g = NETDB.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: as in getservbyport.
+    let name = unsafe {
+        let pe = libc::getprotobynumber(n as libc::c_int);
+        (!pe.is_null()).then(|| std::ffi::CStr::from_ptr((*pe).p_name).to_bytes().to_vec())
+    };
+    Ok(name.map_or(Value::Bool(false), Value::str))
+}
+
 fn fn_flush(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     ob(host, crate::ObCall::SapiFlush)
 }
@@ -100,7 +193,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// basic_functions.c's `INI_SCANNER_*` and `CONNECTION_*`.
+/// basic_functions.c's `INI_SCANNER_*`, `CONNECTION_*` and `INI_*`.
 pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
         ("INI_SCANNER_NORMAL", Value::Int(MODE_NORMAL)),
@@ -109,6 +202,10 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
         ("CONNECTION_ABORTED", Value::Int(1)),
         ("CONNECTION_NORMAL", Value::Int(0)),
         ("CONNECTION_TIMEOUT", Value::Int(2)),
+        ("INI_USER", Value::Int(1)),
+        ("INI_PERDIR", Value::Int(2)),
+        ("INI_SYSTEM", Value::Int(4)),
+        ("INI_ALL", Value::Int(7)),
     ]
 }
 
@@ -245,7 +342,8 @@ fn fn_error_clear_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 /// `register_shutdown_function(callable $callback, mixed ...$args): void`.
 fn fn_register_shutdown_function(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let cb = deref(&args[0]);
-    if let Some(why) = host.check_callable(&cb)? {
+    // Checked by the engine's zpp already.
+    if let Some(why) = host.callable_error(&cb) {
         return Err(Thrown::type_error(format!(
             "register_shutdown_function(): Argument #1 ($callback) must be a valid callback, {why}"
         )));
@@ -337,9 +435,11 @@ fn fn_ini_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     let details = bool_param(host, args, 1, "ini_get_all", "details", true)?;
     let ext_lc = ext.as_ref().map(|e| e.to_ascii_lowercase());
     if let Some(e) = &ext_lc {
-        let e = String::from_utf8_lossy(e);
-        if !module_loaded(&e) {
-            // php: Warning "Extension "X" cannot be found"
+        if !module_loaded(&String::from_utf8_lossy(e)) {
+            let shown = ext.as_deref().unwrap_or_default();
+            let shown = &shown[..shown.iter().position(|&b| b == 0).unwrap_or(shown.len())];
+            let msg = [b"Extension \"".as_slice(), shown, b"\" cannot be found"].concat();
+            crate::warn(host, "ini_get_all", &msg)?;
             return Ok(Value::Bool(false));
         }
     }
@@ -411,7 +511,8 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(b"] ");
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
-                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, 0o644);
+                    let mode = crate::main::ini::error_log_mode();
+                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, mode);
                 }
                 _ => host.log_message(&msg),
             }
@@ -696,9 +797,8 @@ fn fn_long2ip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_get_cfg_var(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    // No php.ini is loaded, so the configuration hash is empty.
-    let _ = str_param(host, args, 0, "get_cfg_var", "option")?;
-    Ok(Value::Bool(false))
+    let name = str_param(host, args, 0, "get_cfg_var", "option")?;
+    Ok(crate::main::ini::cfg_get(&name).unwrap_or(Value::Bool(false)))
 }
 
 fn fn_get_include_path(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -784,6 +884,111 @@ fn fn_sleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     // php's sleep(3): returns the unslept seconds when a signal interrupts.
     Ok(Value::Int(unsafe { libc::sleep(s as libc::c_uint) } as i64))
+}
+
+/// `ini_parse_quantity($shorthand)`: zend_ini_parse_quantity, its
+/// complaint as a plain warning.
+fn fn_ini_parse_quantity(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let s = str_param(host, args, 0, "ini_parse_quantity", "shorthand")?;
+    let n = crate::main::ini::ini_parse_quantity(&s);
+    if let Some(e) = crate::main::ini::quantity_error(&s) {
+        host.emit_diagnostic(crate::E_WARNING, e.as_bytes())?;
+    }
+    Ok(Value::Int(n))
+}
+
+/// `time_nanosleep($seconds, $nanoseconds)`: true, or the remainder when a
+/// signal cut the sleep short.
+fn fn_time_nanosleep(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let sec = zpp_long(host, args, 0, "time_nanosleep", "seconds")?;
+    let nsec = zpp_long(host, args, 1, "time_nanosleep", "nanoseconds")?;
+    for (n, v, p) in [(1, sec, "seconds"), (2, nsec, "nanoseconds")] {
+        if v < 0 {
+            return Err(Thrown::error(
+                "ValueError",
+                format!(
+                    "time_nanosleep(): Argument #{n} (${p}) must be greater than or equal to 0"
+                ),
+            ));
+        }
+    }
+    let req = libc::timespec {
+        tv_sec: sec as libc::time_t,
+        tv_nsec: nsec as _,
+    };
+    let mut rem = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: both point at live timespecs.
+    if unsafe { libc::nanosleep(&req, &mut rem) } == 0 {
+        return Ok(Value::Bool(true));
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EINTR) => {
+            let mut a = PhpArray::new();
+            a.insert(ArrayKey::from_bytes(b"seconds"), Value::Int(rem.tv_sec));
+            a.insert(
+                ArrayKey::from_bytes(b"nanoseconds"),
+                Value::Int(rem.tv_nsec),
+            );
+            Ok(Value::Array(a))
+        }
+        Some(libc::EINVAL) => Err(Thrown::error(
+            "ValueError",
+            "Nanoseconds was not in the range 0 to 999 999 999 or seconds was negative",
+        )),
+        _ => Ok(Value::Bool(false)),
+    }
+}
+
+/// `time_sleep_until($timestamp)`: sleep until a time of day.
+fn fn_time_sleep_until(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    const NS: u64 = 1_000_000_000;
+    let target =
+        crate::zend::zpp::zpp_double_or_null(host, args, 0, "time_sleep_until", "timestamp")?
+            .unwrap_or(0.0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let top = (u64::MAX / NS) as f64;
+    if !(target >= 0.0 && target <= top) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "time_sleep_until(): Argument #1 ($timestamp) must be between 0 and {}",
+                u64::MAX / NS
+            ),
+        ));
+    }
+    let target_ns = (target * NS as f64) as u64;
+    // gettimeofday's microseconds.
+    let current_ns = now.as_secs() * NS + now.subsec_micros() as u64 * 1000;
+    if target_ns < current_ns {
+        crate::warn(
+            host,
+            "time_sleep_until",
+            "Argument #1 ($timestamp) must be greater than or equal to the current time",
+        )?;
+        return Ok(Value::Bool(false));
+    }
+    let diff = target_ns - current_ns;
+    let mut req = libc::timespec {
+        tv_sec: (diff / NS) as libc::time_t,
+        tv_nsec: (diff % NS) as _,
+    };
+    let mut rem = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: both point at live timespecs.
+    while unsafe { libc::nanosleep(&req, &mut rem) } != 0 {
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return Ok(Value::Bool(false));
+        }
+        req = rem;
+    }
+    Ok(Value::Bool(true))
 }
 
 /// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
@@ -1003,7 +1208,12 @@ fn report_syntax_error(
 }
 
 /// Parse ini text; `None` = syntax error (php returns false).
-fn parse_ini(host: &dyn Host, src: &[u8], sections: bool, mode: i64) -> Option<PhpArray> {
+pub(crate) fn parse_ini(
+    host: &dyn Host,
+    src: &[u8],
+    sections: bool,
+    mode: i64,
+) -> Option<PhpArray> {
     let mut lx = lexer(src, mode);
     let first = lx.next();
     let mut p = Parser {
@@ -1119,6 +1329,15 @@ pub fn register(m: &mut crate::Registry) {
             ("print_r", fn_print_r),
             ("constant", fn_constant),
             ("call_user_func", fn_call_user_func),
+            ("forward_static_call", fn_forward_static_call),
+            ("getservbyname", fn_getservbyname),
+            ("time_nanosleep", fn_time_nanosleep),
+            ("ini_parse_quantity", fn_ini_parse_quantity),
+            ("time_sleep_until", fn_time_sleep_until),
+            ("getservbyport", fn_getservbyport),
+            ("getprotobyname", fn_getprotobyname),
+            ("getprotobynumber", fn_getprotobynumber),
+            ("forward_static_call_array", fn_forward_static_call_array),
             ("call_user_func_array", fn_call_user_func_array),
             ("flush", fn_flush),
             ("getenv", fn_getenv),

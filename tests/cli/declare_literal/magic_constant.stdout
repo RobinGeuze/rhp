@@ -1,0 +1,4 @@
+
+Fatal error: declare(ticks) value must be a literal in {DIR}/magic_constant.php on line 3
+Stack trace:
+#0 {main}

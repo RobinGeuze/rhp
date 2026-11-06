@@ -6,6 +6,13 @@ use rhp_values::{conv, Value};
 use crate::ext::random::rand_range;
 use crate::{Host, Thrown};
 
+thread_local! {
+    /// The last time handed out: uniqid waits for the microsecond to change.
+    static PREV: std::cell::Cell<(u64, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// `uniqid(string $prefix = "", bool $more_entropy = false)`: "%s%08x%05x",
+/// plus "%.8F" of a random seed in [0, 10] with more entropy.
 fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let prefix = args
         .first()
@@ -15,21 +22,22 @@ fn fn_uniqid(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(1)
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let (sec, usec) = loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let t = (now.as_secs(), now.subsec_micros());
+        if t != PREV.with(|p| p.get()) {
+            PREV.with(|p| p.set(t));
+            break t;
+        }
+    };
     let mut s = prefix;
-    // php: 8 hex of seconds + 5 hex of microseconds.
-    s.extend_from_slice(
-        format!(
-            "{:08x}{:05x}",
-            now.as_secs() & 0xffff_ffff,
-            now.subsec_micros() & 0xf_ffff
-        )
-        .as_bytes(),
-    );
+    s.extend_from_slice(format!("{:08x}{:05x}", sec as u32, usec % 0x10_0000).as_bytes());
     if more {
-        s.extend_from_slice(format!(".{:08}", rand_range(0, 99999999)).as_bytes());
+        let bytes = rand_range(0, u32::MAX as i64) as u32;
+        let seed = (bytes as f64 / u32::MAX as f64) * 10.0;
+        s.extend_from_slice(format!("{seed:.8}").as_bytes());
     }
     Ok(Value::str(s))
 }

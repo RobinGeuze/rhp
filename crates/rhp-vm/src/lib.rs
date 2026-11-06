@@ -10,6 +10,7 @@
 //! diagnostics and unwinds exceptions; `lifecycle` builds the engine and runs
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
+mod callables;
 mod calls;
 mod classes;
 mod closures;
@@ -22,6 +23,7 @@ mod hooks;
 mod host;
 mod include;
 mod inherit;
+mod lazy;
 mod lifecycle;
 mod link_checks;
 mod lvalue;
@@ -100,10 +102,20 @@ pub struct Vm {
     /// at compile time and renames it in place when it is declared), so
     /// `get_declared_classes()` lists classes in compile order.
     class_order: Vec<usize>,
+    /// `class_alias()` entries of the class table: (lowercased alias, class,
+    /// `decl_classes.len()` when added), for `get_declared_classes()`.
+    class_aliases: Vec<(Vec<u8>, ClassId, usize)>,
     constants: HashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
     max_depth: usize,
+    /// After max_execution_time ran out: the (frame, pc) of the last user
+    /// instruction run. php raises the timeout where a jump lands or a
+    /// function starts (its VM interrupt checks).
+    timeout_prev: Option<(usize, usize)>,
+    /// A jump landed on a loop head: php's layout tests the condition at
+    /// the bottom, so its landing is the body start, here (frame, pc).
+    timeout_wait: Option<(usize, usize)>,
     /// Builtin calls in progress (innermost last), for exception traces.
     native_calls: Vec<NativeCall>,
     /// `set_exception_handler` stack (innermost last; null = none).
@@ -155,6 +167,9 @@ pub struct Vm {
     /// The scope a first-class callable was created in, while its wrapped
     /// callable is resolved (php resolves `$this->priv(...)` at creation).
     fcc_scope: std::cell::Cell<Option<(Option<ClassId>, Option<ClassId>)>>,
+    /// The `$this` that goes with `fcc_scope` (a callable bound when it was
+    /// checked, such as a shutdown function's).
+    fcc_this: std::cell::RefCell<Option<ObjectHandle>>,
     // Resolved real paths already included (for the `_once` variants), in
     // inclusion order (`get_included_files`).
     included_files: indexmap::IndexSet<Vec<u8>>,
@@ -175,11 +190,27 @@ pub struct Vm {
     /// Set while a statically resolved `call_user_func[_array]()` builtin runs:
     /// the caller's `strict_types`, consumed by its single callback dispatch.
     cuf_caller: Option<bool>,
+    /// Set by `$f(...)` right before its callable dispatch, which then
+    /// resolves the value as a dynamic call (zend_init_dynamic_call_*).
+    dyn_call: bool,
+    /// The builtin about to run got a dynamic call's raw arguments: its
+    /// by-value positions are dereferenced first.
+    dyn_raw_args: bool,
+    /// A callable check's deprecation threw (see `Vm::check_callable_ex`).
+    callable_dep_thrown: bool,
+    /// The callable argument the running builtin's zpp resolved, by its
+    /// address in the builtin's argument vector (alive and unmodified for
+    /// the call), so calling it needs no second lookup. Cleared before
+    /// each builtin's zpp and after it returns.
+    zpp_fcc: Option<(*const Value, calls::Callee)>,
     // Stream wrappers by scheme (`file`, `phar`, …), installed at startup from
     // the module list; runtime-mutable later via `stream_wrapper_register`.
     wrappers: HashMap<Vec<u8>, Rc<dyn builtins::StreamWrapper>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
+    /// Whether auto_prepend_file runs before the main script (not for
+    /// `-r` code, which php evaluates without php_execute_script).
+    auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
     /// Readonly properties already reinitialized inside a `__clone`
@@ -189,6 +220,9 @@ pub struct Vm {
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
     next_resource_id: u32,
+    /// The resource values made, by id, for `get_resources()` (php's
+    /// EG(regular_list)): a resource is listed while a value holds it.
+    resource_list: std::collections::BTreeMap<u32, Vec<std::rc::Weak<rhp_values::ResourceData>>>,
     // The most recently opened directory stream (`readdir()` with no handle).
     // The last opened directory handle (php's DIRG(default_dir), which holds
     // a reference so the handle stays open).

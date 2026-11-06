@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use rhp_values::ops::deref;
+use rhp_values::ops::{copy_elem, deref};
 use rhp_values::{conv, ops, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::random::mt_range;
@@ -88,15 +88,13 @@ fn fn_array_slice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         }
     };
 
-    let entries: Vec<(ArrayKey, Value)> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut out = PhpArray::new();
-    let begin = start as usize;
-    let end = (start + cnt) as usize;
-    for (k, v) in &entries[begin..end] {
+    for (k, v) in a.iter().skip(start as usize).take(cnt as usize) {
+        let v = copy_elem(v);
         match k {
-            ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
-            ArrayKey::Int(_) if preserve => out.insert(k.clone(), v.clone()),
-            ArrayKey::Int(_) => out.push(v.clone()),
+            ArrayKey::Str(_) => out.insert(k.clone(), v),
+            ArrayKey::Int(_) if preserve => out.insert(k.clone(), v),
+            ArrayKey::Int(_) => out.push(v),
         }
     }
     Ok(Value::Array(out))
@@ -256,7 +254,7 @@ fn fn_array_unique(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     for (k, v) in a.iter() {
         let s = conv::to_string_bytes(v);
         if seen.insert(s) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -447,8 +445,9 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             }
         } else {
             let Value::Array(ref ra) = row else { continue };
+            // array_column_fetch_prop: ZVAL_DEREF.
             match column_ak.as_ref().and_then(|k| ra.get(k)) {
-                Some(v) => v.clone(),
+                Some(v) => deref(v),
                 None => continue,
             }
         };
@@ -544,6 +543,7 @@ fn count_recursive(
     a: &rhp_values::PhpArray,
     seen: &mut Vec<usize>,
 ) -> Result<i64, Thrown> {
+    crate::zend::call_stack::check()?;
     if seen.contains(&a.data_ptr()) {
         host.emit_diagnostic(
             E_WARNING,
@@ -844,7 +844,7 @@ fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let mut out = PhpArray::new();
     for (_, v) in a.iter() {
-        out.push(v.clone());
+        out.push(copy_elem(v));
     }
     Ok(Value::Array(out))
 }
@@ -860,8 +860,8 @@ fn fn_array_merge(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         for (k, v) in a.iter() {
             match k {
                 // integer keys are renumbered; string keys overwrite
-                rhp_values::ArrayKey::Int(_) => out.push(v.clone()),
-                rhp_values::ArrayKey::Str(_) => out.insert(k.clone(), v.clone()),
+                rhp_values::ArrayKey::Int(_) => out.push(copy_elem(v)),
+                rhp_values::ArrayKey::Str(_) => out.insert(k.clone(), copy_elem(v)),
             }
         }
     }
@@ -965,7 +965,7 @@ fn fn_array_reverse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let preserve = args.get(1).map(conv::to_bool).unwrap_or(false);
     let mut out = PhpArray::new();
-    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let entries: Vec<_> = a.iter().map(|(k, v)| (k.clone(), copy_elem(v))).collect();
     for (k, v) in entries.into_iter().rev() {
         match k {
             rhp_values::ArrayKey::Int(_) if !preserve => out.push(v),
@@ -1650,20 +1650,10 @@ fn parse_args(
     let narr = args.len() - ncb;
     let cbs: Vec<Value> = args[narr..].iter().map(deref).collect();
     for (i, cb) in cbs.iter().enumerate() {
-        if !host.is_callable_value(cb) {
+        if let Some(why) = host.check_callable(cb)? {
             return Err(Thrown::type_error(format!(
-                "{func}(): Argument #{} must be a valid callback, {}",
+                "{func}(): Argument #{} must be a valid callback, {why}",
                 narr + i + 1,
-                match cb {
-                    Value::Str(s) => format!(
-                        "function \"{}\" not found or invalid function name",
-                        String::from_utf8_lossy(s.as_bytes())
-                    ),
-                    other => format!(
-                        "no array or string given ({} given)",
-                        zval_value_name(host, other)
-                    ),
-                }
             )));
         }
     }
@@ -1704,7 +1694,8 @@ enum Behavior {
 fn sorted_lists(ctx: &mut Ctx, arrays: &[PhpArray], behavior: Behavior) -> Vec<Vec<Elem>> {
     let mut lists = Vec::with_capacity(arrays.len());
     for arr in arrays {
-        let mut list: Vec<Elem> = arr.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        // Values, not references: the result copies from the arrays.
+        let mut list: Vec<Elem> = arr.iter().map(|(k, v)| (k.clone(), deref(v))).collect();
         if list.len() > 1 {
             if behavior == Behavior::Normal {
                 zend_sort(&mut list, &mut |x, y| ctx.data_cmp(x, y));
@@ -1722,9 +1713,10 @@ fn finish(ctx: Ctx, base: &PhpArray, deleted: HashSet<ArrayKey>) -> Result<Value
         return Err(e);
     }
     let mut out = PhpArray::new();
+    // php copies the first array (zend_array_dup) and deletes from it.
     for (k, v) in base.iter() {
         if !deleted.contains(k) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -1970,7 +1962,7 @@ fn assoc_by_key(
             }
         }
         if ok {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2099,7 +2091,7 @@ fn fn_array_diff_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
             .iter()
             .any(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
         if !present {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2119,7 +2111,7 @@ fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value
             .iter()
             .all(|o| o.get(k).is_some_and(|ov| conv::to_string_bytes(ov) == s));
         if in_all {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2134,12 +2126,13 @@ fn fn_array_intersect_assoc(host: &mut dyn Host, args: &[Value]) -> Result<Value
 // ---------------------------------------------------------------------------
 
 /// Fold `src` into `dest` per php's `php_array_replace_recursive`.
-fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
+fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) -> Result<(), Thrown> {
+    crate::zend::call_stack::check()?;
     for (k, v) in src.iter() {
         let recurse = match (dest.get(k), deref(v)) {
             (Some(Value::Array(cur)), Value::Array(src_arr)) => {
                 let mut merged = cur.clone();
-                replace_recursive_into(&mut merged, &src_arr);
+                replace_recursive_into(&mut merged, &src_arr)?;
                 Some(merged)
             }
             _ => None,
@@ -2153,13 +2146,14 @@ fn replace_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
             }
         }
     }
+    Ok(())
 }
 
 fn fn_array_replace_recursive(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = array_param(host, args, 0, "array_replace_recursive")?;
     for i in 1..args.len() {
         let a = array_param(host, args, i, "array_replace_recursive")?;
-        replace_recursive_into(&mut out, &a);
+        replace_recursive_into(&mut out, &a)?;
     }
     Ok(Value::Array(out))
 }
@@ -2433,25 +2427,65 @@ fn usort_impl(
         return Ok(Value::Bool(false));
     };
     let cmp = args[1].clone();
-    let mut pairs = pairs;
+    // zend_sort with php_array_user_compare: the user's result, a `false`
+    // retried with the operands swapped, ties kept in order.
+    let mut items: Vec<(usize, (ArrayKey, Value))> = pairs.into_iter().enumerate().collect();
     let mut err: Option<Thrown> = None;
-    pairs.sort_by(|a, b| {
-        if err.is_some() {
-            return Ordering::Equal;
-        }
-        let (x, y) = if by_key {
-            (a.0.to_value(), b.0.to_value())
-        } else {
-            (a.1.clone(), b.1.clone())
-        };
-        match host.call_callable(&cmp, &[x, y]) {
-            Ok(v) => conv::to_int(&v).cmp(&0),
-            Err(e) => {
-                err = Some(e);
-                Ordering::Equal
+    let mut warned = false;
+    zend_sort(&mut items, &mut |a, b| {
+        let operands = |a: &(usize, (ArrayKey, Value))| {
+            if by_key {
+                a.1 .0.to_value()
+            } else {
+                a.1 .1.clone()
             }
+        };
+        let call = |host: &mut dyn Host, x: Value, y: Value, err: &mut Option<Thrown>| {
+            if err.is_some() {
+                return None;
+            }
+            match host.call_callable(&cmp, &[x, y]) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    *err = Some(e);
+                    None
+                }
+            }
+        };
+        let r = match call(host, operands(a), operands(b), &mut err) {
+            None => 0,
+            Some(Value::Bool(v)) => {
+                if !warned {
+                    warned = true;
+                    if let Err(e) = host.emit_diagnostic(
+                        crate::E_DEPRECATED,
+                        format!(
+                            "{}(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero",
+                            if by_key { "uksort" } else if preserve_keys { "uasort" } else { "usort" }
+                        )
+                        .as_bytes(),
+                    ) {
+                        err.get_or_insert(e);
+                    }
+                }
+                if v {
+                    1
+                } else {
+                    match call(host, operands(b), operands(a), &mut err) {
+                        None => 0,
+                        Some(v) => -normalize(conv::to_int(&v)),
+                    }
+                }
+            }
+            Some(v) => normalize(conv::to_int(&v)),
+        };
+        if r == 0 {
+            (a.0 as i64 - b.0 as i64).signum() as i32
+        } else {
+            r
         }
     });
+    let pairs: Vec<(ArrayKey, Value)> = items.into_iter().map(|(_, p)| p).collect();
     if let Some(e) = err {
         return Err(e);
     }
@@ -2549,6 +2583,7 @@ fn walk_rec_pairs(
     extra: &Value,
     pairs: Vec<(rhp_values::ArrayKey, Value)>,
 ) -> Result<PhpArray, Thrown> {
+    crate::zend::call_stack::check()?;
     let mut out = PhpArray::new();
     for (k, v) in pairs {
         match deref(&v) {
@@ -2841,7 +2876,7 @@ fn rebuild_reindex_ints(pairs: impl Iterator<Item = (ArrayKey, Value)>) -> PhpAr
 /// `array_splice(&$array, $offset, $length?, $replacement?)`: remove a slice
 /// (reindexed), optionally splicing in `$replacement`, and return the removed
 /// elements (reindexed). The array is passed by reference (arg 0).
-fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(pairs) = snapshot(&args[0]) else {
         return Ok(Value::Array(PhpArray::new()));
     };
@@ -2870,14 +2905,19 @@ fn fn_array_splice(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
 
     // replacement: an array splices its values; a scalar splices as one element.
-    let replacement: Vec<Value> = match args.get(3) {
+    let replacement: Vec<Value> = match args.get(3).map(deref) {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(a)) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
-        Some(Value::Ref(r)) => match &*r.borrow() {
-            Value::Array(a) => a.iter().map(|(_, v)| deref(v).clone()).collect(),
-            other => vec![deref(other).clone()],
-        },
-        Some(v) => vec![deref(v).clone()],
+        // convert_to_array: the object's properties (ARRAY_CAST).
+        Some(Value::Object(h)) => {
+            let purpose = crate::zend::object_handlers::PropPurpose::ArrayCast;
+            let a = match crate::zend::object_handlers::properties_for(host, &h, purpose)? {
+                Some(a) => a,
+                None => host.object_props_mangled(&h),
+            };
+            a.iter().map(|(_, v)| deref(v).clone()).collect()
+        }
+        Some(v) => vec![v],
     };
 
     let end = (offset + remove).min(pairs.len());
@@ -2922,7 +2962,7 @@ fn fn_array_diff_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
         if !others.iter().any(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2937,7 +2977,7 @@ fn fn_array_intersect_key(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     let mut out = PhpArray::new();
     for (k, v) in base.iter() {
         if others.iter().all(|o| o.get(k).is_some()) {
-            out.insert(k.clone(), v.clone());
+            out.insert(k.clone(), copy_elem(v));
         }
     }
     Ok(Value::Array(out))
@@ -2967,17 +3007,18 @@ fn merge_recursive_into(dest: &mut PhpArray, src: &PhpArray) {
     for (k, v) in src.iter() {
         match k {
             // Integer keys are always appended (renumbered), never merged.
-            ArrayKey::Int(_) => dest.push(v.clone()),
+            ArrayKey::Int(_) => dest.push(copy_elem(v)),
             ArrayKey::Str(_) => {
                 let existing = dest.get(k).cloned();
                 match existing {
                     None => {
-                        dest.insert(k.clone(), v.clone());
+                        dest.insert(k.clone(), copy_elem(v));
                     }
                     Some(cur) => {
                         // Coerce the existing value to an array (scalars wrap as
                         // a single-element list), then fold in the new value.
-                        let mut cur_arr = match cur {
+                        // SEPARATE_ZVAL: a reference gives up its value.
+                        let mut cur_arr = match deref(&cur) {
                             Value::Array(a) => a,
                             other => {
                                 let mut a = PhpArray::new();
@@ -3231,6 +3272,14 @@ fn fn_array_last(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// array.c's constants: `COUNT_*`, `SORT_*`, `CASE_*`, `ARRAY_FILTER_*`.
 pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
+        ("EXTR_OVERWRITE", Value::Int(0)),
+        ("EXTR_SKIP", Value::Int(1)),
+        ("EXTR_PREFIX_SAME", Value::Int(2)),
+        ("EXTR_PREFIX_ALL", Value::Int(3)),
+        ("EXTR_PREFIX_INVALID", Value::Int(4)),
+        ("EXTR_PREFIX_IF_EXISTS", Value::Int(5)),
+        ("EXTR_IF_EXISTS", Value::Int(6)),
+        ("EXTR_REFS", Value::Int(0x100)),
         ("COUNT_NORMAL", Value::Int(0)),
         ("COUNT_RECURSIVE", Value::Int(1)),
         ("SORT_REGULAR", Value::Int(0)),

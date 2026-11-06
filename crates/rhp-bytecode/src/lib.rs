@@ -481,6 +481,28 @@ pub enum Instr {
     ThrowMatchError {
         subject: Reg,
     },
+    /// A read of `$this` where it may be missing: throw php's "Using $this
+    /// when not in object context" unless `cv` holds an object.
+    CheckThis {
+        cv: Reg,
+    },
+    /// A property fetch in a constant expression (zend_ast_evaluate's
+    /// ZEND_AST_PROP): the runtime name (`Reg::MAX` for none) must convert
+    /// to a string, and an object must be an enum. Replaces `name` with
+    /// its string.
+    ConstExprProp {
+        obj: Reg,
+        name: Reg,
+    },
+    /// A dimension read in a constant expression: not on an object.
+    ConstExprDim {
+        arr: Reg,
+    },
+    /// Throw an `Error` whose message is the string constant `k`: a form
+    /// php compiles but always rejects when it runs.
+    ThrowError {
+        k: CIdx,
+    },
     /// A call result passed for a by-reference parameter: raise php's notice
     /// "Only variables should be passed by reference" and pass the value.
     SendNoRef {
@@ -621,11 +643,33 @@ pub enum Instr {
         class: ClassRef,
         name: NIdx,
     },
+    /// `self::class` / `parent::class` / `static::class` / `$obj::class`
+    /// (ZEND_FETCH_CLASS_NAME; with `const_expr`, zend_ast_evaluate's
+    /// ZEND_AST_CLASS_NAME).
+    FetchClassName {
+        dst: Reg,
+        class: ClassRef,
+        const_expr: bool,
+    },
     /// `C::K` / `C::class`.
     FetchClassConst {
         dst: Reg,
         class: ClassRef,
         name: NIdx,
+    },
+    /// `C::{expr}`: `FetchClassConst` with a runtime name, which must be a
+    /// string.
+    FetchClassConstDyn {
+        dst: Reg,
+        class: ClassRef,
+        name: Reg,
+    },
+    /// SEND_FUNC_ARG's question for a call of a callable value (`$f(...)`):
+    /// whether parameter `idx` of what `callee` calls is by reference.
+    ValueArgIsRef {
+        dst: Reg,
+        callee: Reg,
+        idx: u16,
     },
     /// SEND_FUNC_ARG's question for a call resolved at run time: whether
     /// parameter `idx` of method `name` on the object in `obj` is by
@@ -694,6 +738,8 @@ pub enum Instr {
     /// `parent::$prop::get()` / `parent::$prop::set($v)` inside a hook of
     /// `$prop` (php's INIT_PARENT_PROPERTY_HOOK_CALL): the parent class's
     /// hook, or a plain read / write of the backing value when it has none.
+    /// `argc` [`PACKED_ARGS`]: `base` holds the packed arguments array (a
+    /// call with named arguments).
     CallParentHook {
         dst: Reg,
         /// The property name.
@@ -848,6 +894,12 @@ pub enum Instr {
         class: ClassRef,
         name: Reg,
     },
+    /// `unset(C::$p)`: resolve the class (autoloading it), then throw
+    /// "Attempt to unset static property".
+    UnsetStaticProp {
+        class: ClassRef,
+        name: Reg,
+    },
     /// `FetchStaticPropIs` with a runtime name.
     FetchStaticPropDynIs {
         dst: Reg,
@@ -958,8 +1010,9 @@ pub enum Instr {
         from: Reg,
         to: Reg,
     },
-    /// `exit`/`die`: a string `arg` is printed (code 0), an int `arg` is the exit
-    /// code, null/absent is code 0. Terminates the script via the SAPI exit path.
+    /// `exit`/`die`: `arg` is php 8.4's `int|string $status` (`Reg::MAX`: no
+    /// argument, status 0); a string is printed (status 0). Terminates the
+    /// script via the SAPI exit path.
     Exit {
         arg: Reg,
     },
@@ -1479,6 +1532,9 @@ pub enum ConstInitProto {
     Const(Value),
     Thunk(Rc<FunctionProto>),
 }
+
+/// [`Instr::CallParentHook`]'s `argc` for a packed arguments array.
+pub const PACKED_ARGS: u16 = u16::MAX;
 
 // The plain u16 tag (`repr(u16)`) costs no space: the dispatch loop reads
 // it without decoding a niche.

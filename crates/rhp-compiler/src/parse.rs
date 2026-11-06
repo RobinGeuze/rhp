@@ -76,6 +76,29 @@ impl Arena {
         let program = parse_file_content(&self.arena, file_id, source);
         Parsed { program }
     }
+
+    /// [`Arena::parse`] with `<?` opening PHP code or not (short_open_tag).
+    pub fn parse_with_short_tags<'a>(
+        &'a self,
+        logical_name: &[u8],
+        source: &[u8],
+        short_tags: bool,
+    ) -> Parsed<'a> {
+        let file_id = FileId::new(logical_name);
+        let settings = mago_syntax::settings::ParserSettings {
+            lexer: LexerSettings {
+                enable_short_tags: short_tags,
+            },
+            ..Default::default()
+        };
+        let program = mago_syntax::parser::parse_file_content_with_settings(
+            &self.arena,
+            file_id,
+            source,
+            settings,
+        );
+        Parsed { program }
+    }
 }
 
 /// A parsed program borrowing its [`Arena`].

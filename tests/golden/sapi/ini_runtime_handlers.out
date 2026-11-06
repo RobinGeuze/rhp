@@ -1,0 +1,17 @@
+bool(true)
+string(1) "5"
+string(1) "5"
+string(1) "0"
+string(5) "UTF-8"
+string(10) "ISO-8859-1"
+[2] ini_set(): Unknown encoding "no-such-encoding" in ini setting
+string(5) "UTF-8"
+string(6) "EUC-JP"
+[8192] ini_set(): Use of mbstring.internal_encoding is deprecated
+string(4) "SJIS"
+string(4) "SJIS"
+[8192] ini_set(): Directive 'report_memleaks' is deprecated
+bool(false)
+bool(false)
+bool(false)
+bool(false)

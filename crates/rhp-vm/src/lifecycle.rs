@@ -79,9 +79,12 @@ impl Vm {
             decl_classes: Vec::new(),
             decl_runtime: std::collections::HashSet::new(),
             class_order: Vec::new(),
+            class_aliases: Vec::new(),
             constants,
             user_const_order: Vec::new(),
             max_depth: 1 << 16,
+            timeout_prev: None,
+            timeout_wait: None,
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),
@@ -101,6 +104,7 @@ impl Vm {
             gen_stack: Vec::new(),
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
+            fcc_this: std::cell::RefCell::new(None),
             included_files: indexmap::IndexSet::new(),
             internal_classes: 0,
             autoloaders: Vec::new(),
@@ -108,14 +112,20 @@ impl Vm {
             inherit: Default::default(),
             pending_named: None,
             cuf_caller: None,
+            dyn_call: false,
+            dyn_raw_args: false,
+            callable_dep_thrown: false,
+            zpp_fcc: None,
             wrappers,
             main_script_path: None,
+            auto_prepend: true,
             streams: StreamTable::default(),
             readonly_reinit: Default::default(),
             hook_bypass: false,
             last_dir: None,
             default_context: None,
             next_resource_id: 1,
+            resource_list: Default::default(),
             stream_contexts: HashMap::new(),
             stream_notifiers: HashMap::new(),
             argv: Vec::new(),
@@ -156,6 +166,12 @@ impl Vm {
     /// A startup ini setting (`-d key=value`); unknown directives are ignored.
     pub fn set_ini(&mut self, name: &[u8], value: &[u8]) {
         builtins::ini_startup_set(name, value);
+    }
+
+    /// Load an ini file into the configuration hash (php_init_config);
+    /// false on a syntax error.
+    pub fn load_ini_file(&mut self, src: &[u8]) -> bool {
+        builtins::config_load_file(self, src)
     }
 
     /// Set the CLI argument vector (`$argv`; `argv[0]` is the script name).
@@ -270,6 +286,13 @@ impl Vm {
         let argc = self.argv.len() as i64;
         let script = self.argv.first().cloned().unwrap_or_default();
 
+        // variables_order: $_SERVER needs 'S', $_ENV 'E'.
+        let order = builtins::ini_value(b"variables_order")
+            .flatten()
+            .unwrap_or_default();
+        let has = |c: u8| order.iter().any(|b| b.eq_ignore_ascii_case(&c));
+        // sapi_cli_register_variables: the environment, then the script
+        // names, then the request time; argv/argc come last.
         let mut server = PhpArray::new();
         for (k, v) in std::env::vars() {
             server.insert(
@@ -277,34 +300,34 @@ impl Vm {
                 Value::str(v.into_bytes()),
             );
         }
+        // `-r` code / a script read from stdin has no script file.
+        let script_fn = self.main_script_path.clone().unwrap_or_default();
+        for (k, v) in [
+            (&b"PHP_SELF"[..], &script[..]),
+            (b"SCRIPT_NAME", &script),
+            (b"SCRIPT_FILENAME", &script_fn),
+            (b"PATH_TRANSLATED", &script_fn),
+            (b"DOCUMENT_ROOT", b""),
+        ] {
+            server.insert(ArrayKey::from_bytes(k), Value::str(v.to_vec()));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        server.insert(
+            ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"),
+            Value::Float(now),
+        );
+        server.insert(
+            ArrayKey::from_bytes(b"REQUEST_TIME"),
+            Value::Int(now as i64),
+        );
         server.insert(
             ArrayKey::from_bytes(b"argv"),
             Value::Array(argv_arr.clone()),
         );
         server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argc));
-        server.insert(
-            ArrayKey::from_bytes(b"PHP_SELF"),
-            Value::str(script.clone()),
-        );
-        server.insert(
-            ArrayKey::from_bytes(b"SCRIPT_NAME"),
-            Value::str(script.clone()),
-        );
-        // `-r` code / a script read from stdin has no script file.
-        let script_fn = self.main_script_path.clone().unwrap_or_default();
-        server.insert(
-            ArrayKey::from_bytes(b"SCRIPT_FILENAME"),
-            Value::str(script_fn),
-        );
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        server.insert(ArrayKey::from_bytes(b"REQUEST_TIME"), Value::Int(now));
-        server.insert(
-            ArrayKey::from_bytes(b"REQUEST_TIME_FLOAT"),
-            Value::Float(now as f64),
-        );
 
         let set = |vm: &mut Vm, name: &[u8], v: Value| {
             *vm.global_cell(name).borrow_mut() = v;
@@ -316,9 +339,12 @@ impl Vm {
         for empty in [&b"_GET"[..], b"_POST", b"_COOKIE", b"_FILES"] {
             set(self, empty, Value::Array(PhpArray::new()));
         }
+        if !has(b'S') {
+            server = PhpArray::new();
+        }
         set(self, b"_SERVER", Value::Array(server));
         let mut env = PhpArray::new();
-        for (k, v) in std::env::vars() {
+        for (k, v) in std::env::vars().filter(|_| has(b'E')) {
             env.insert(
                 ArrayKey::from_bytes(k.as_bytes()),
                 Value::str(v.into_bytes()),
@@ -355,6 +381,11 @@ impl Vm {
         self.main_script_path = Some(path.into());
     }
 
+    /// Skip auto_prepend_file (`-r` code).
+    pub fn disable_auto_prepend(&mut self) {
+        self.auto_prepend = false;
+    }
+
     /// A fatal error bailed out (php_error_cb's
     /// zend_objects_store_mark_destructed): no object alive now runs its
     /// destructor. Objects created later (by shutdown functions) still do.
@@ -380,7 +411,7 @@ impl Vm {
     /// most once): the class's native `dtor_obj` first, then `__destruct`
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
-    fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
+    pub(crate) fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
         let cls = h.borrow().class;
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
@@ -388,7 +419,9 @@ impl Vm {
             None => Ok(()),
         };
         let mut kept = false;
-        if let Some(m) = self.lookup_method(cls, b"__destruct") {
+        // zend_objects_destroy_object: a lazy object is not destructed.
+        let lazy = h.borrow().is_lazy();
+        if let Some(m) = self.lookup_method(cls, b"__destruct").filter(|_| !lazy) {
             let before = Rc::strong_count(&h);
             self.call_sync(&m, Some(h.clone()), cls, Vec::new())?;
             kept = Rc::strong_count(&h) > before;
@@ -690,9 +723,21 @@ impl Vm {
         // {main}'s variables are the global symbol table's entries.
         self.bind_global_scope(&mut main_frame);
         self.stack.push(main_frame);
+        // auto_prepend_file runs first, required in the global scope
+        // (php_execute_script's zend_execute_scripts).
+        let prepend = builtins::ini_value(b"auto_prepend_file")
+            .flatten()
+            .filter(|p| !p.is_empty() && self.auto_prepend);
+        let prepended = match prepend {
+            Some(path) => self.run_auto_prepend(path),
+            None => Ok(()),
+        };
         // zend_execute_script raises an out-of-memory error still pending
         // when the script ends.
-        match self.run_loop().and_then(|_| self.oom_interrupt()) {
+        match prepended
+            .and_then(|_| self.run_loop())
+            .and_then(|_| self.oom_interrupt())
+        {
             Ok(()) => Ok(self.sapi.startup_status),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
@@ -714,6 +759,39 @@ impl Vm {
     /// handler or is reported, then the shutdown functions run (a fatal or
     /// `exit` in one stops the rest), then every output buffer is flushed.
     /// Returns the exit status; `Err` only for an engine refusal.
+    /// auto_prepend_file, required with no script running: a file that
+    /// won't open is reported "in Unknown on line 0", and the failed
+    /// require is an E_ERROR (zend_throw_error outside execution).
+    fn run_auto_prepend(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
+        let depth = self.stack.len();
+        let path_str = String::from_utf8_lossy(&path).into_owned();
+        builtins::main::streams::clear_errno();
+        if !builtins::main::streams::is_data_url(&path)
+            && self.resolve_include_file(depth - 1, &path_str).is_none()
+        {
+            let errno = builtins::main::streams::last_errno().unwrap_or(2);
+            let reason = builtins::main::streams::strerror(errno);
+            let warning = format!("Unknown: Failed to open stream: {reason}");
+            self.raise_error_at(
+                builtins::E_WARNING,
+                warning.as_bytes(),
+                b"Unknown".to_vec(),
+                0,
+            );
+            let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
+            let msg = format!(
+                "Failed opening required '{path_str}' (include_path='{}')",
+                String::from_utf8_lossy(&ip)
+            );
+            return Err(self.fatal_error_at(1, msg.as_bytes(), b"Unknown".to_vec(), 0));
+        }
+        let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+        if r.is_err() {
+            self.stack.truncate(depth - 1);
+        }
+        r.map(|_| ())
+    }
+
     pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
         let status = match self.run(prog) {
             Ok(c) => c,

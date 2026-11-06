@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_bytecode::{FunctionProto, Reg};
-use rhp_values::{ObjectData, Thrown, Value};
+use rhp_values::{ArrayKey, ObjectData, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::native_method_count_error;
 use crate::errors::UnwindResult;
@@ -34,6 +34,8 @@ pub(crate) struct GenState {
     /// php's ZEND_GENERATOR_AT_FIRST_YIELD: started, and not resumed since
     /// (only then can it be rewound).
     at_first_yield: bool,
+    /// The generator function and its class (Generator::__debugInfo).
+    func: (Rc<FunctionProto>, Option<rhp_values::ClassId>),
 }
 
 impl Vm {
@@ -41,6 +43,7 @@ impl Vm {
     /// runs lazily under the generator protocol.
     pub(crate) fn make_generator(&mut self, mut frame: Frame) -> Value {
         frame.ret_dst = Reg::MAX;
+        let func = (frame.proto.clone(), frame.defining_class);
         let cls = self
             .resolve_class_by_name(b"Generator")
             .expect("Generator prelude class");
@@ -61,6 +64,7 @@ impl Vm {
                 auto_key: 0,
                 resume_dst: 0,
                 at_first_yield: false,
+                func,
             },
         );
         Value::Object(obj)
@@ -179,7 +183,14 @@ impl Vm {
     ) -> Option<Result<Value, Thrown>> {
         if matches!(
             name_lc,
-            b"current" | b"key" | b"valid" | b"next" | b"send" | b"rewind" | b"getreturn"
+            b"current"
+                | b"key"
+                | b"valid"
+                | b"next"
+                | b"send"
+                | b"rewind"
+                | b"getreturn"
+                | b"__debuginfo"
         ) {
             if let Some(e) = native_method_count_error("Generator", name_lc, args.len()) {
                 return Some(Err(e));
@@ -219,8 +230,29 @@ impl Vm {
                 Ok(Value::Null)
             })(),
             b"getreturn" => Ok(self.generators[&id].return_val.clone()),
+            b"__debuginfo" => Ok(Value::Array(self.generator_debug_info(id))),
             _ => return None,
         })
+    }
+
+    /// Generator::__debugInfo: `["function" => name]`, `Class::name` for
+    /// a function with a class scope.
+    pub(crate) fn generator_debug_info(&self, id: u32) -> PhpArray {
+        let mut a = PhpArray::new();
+        if let Some(g) = self.generators.get(&id) {
+            let (proto, class) = &g.func;
+            let name = match class {
+                Some(c) => {
+                    let mut n = self.class(*c).name.as_bytes().to_vec();
+                    n.extend_from_slice(b"::");
+                    n.extend_from_slice(proto.name.as_bytes());
+                    PhpStr::from_bytes(n)
+                }
+                None => proto.name.clone(),
+            };
+            a.insert(ArrayKey::Str(PhpStr::from("function")), Value::Str(name));
+        }
+        a
     }
 
     /// `Yield`: hand (key, value, resume register) to the generator driver in

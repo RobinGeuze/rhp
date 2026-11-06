@@ -30,6 +30,8 @@ pub(crate) struct SapiState {
     /// The exit status when the script ends without `exit`: 255 after an
     /// E_ERROR at module startup (`EG(exit_status)`).
     pub(crate) startup_status: i32,
+    /// Module startup failed (an E_CORE_ERROR): the request doesn't run.
+    pub(crate) startup_failed: bool,
     /// What has been read of the request body, and this request's uploads
     /// (deleted when the request ends).
     pub(crate) body: BodyState,
@@ -52,6 +54,7 @@ impl SapiState {
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
             startup_status: 0,
+            startup_failed: false,
             body: BodyState::default(),
         }
     }
@@ -79,6 +82,8 @@ impl Vm {
     /// php_request_startup's header step: `X-Powered-By` when expose_php.
     /// Call after ini settings are applied, before running the script.
     pub fn start_request(&mut self) {
+        builtins::zend::call_stack::init();
+        builtins::zend::timeout::request_startup();
         // opcache's own log (its ini handlers' warnings at module startup).
         let (lines, dest) = builtins::take_accel_log();
         for line in lines {
@@ -92,6 +97,10 @@ impl Vm {
         // status but does not bail out; the script still runs.
         if diags.iter().any(|d| d.0 == 1) {
             self.sapi.startup_status = 255;
+        }
+        // An E_CORE_ERROR fails module startup: nothing runs.
+        if diags.iter().any(|d| d.0 == rhp_builtins::E_CORE_ERROR) {
+            self.sapi.startup_failed = true;
         }
         if builtins::main::sapi::is_cgi() {
             self.sapi.deferred_startup_diags = diags;
@@ -125,6 +134,12 @@ impl Vm {
         }
     }
 
+    /// Whether module startup failed (php exits with status 1 before
+    /// running anything).
+    pub fn startup_failed(&self) -> bool {
+        self.sapi.startup_failed
+    }
+
     /// A warning raised during request startup ("PHP Request Startup: …"
     /// in Unknown on line 0, as php's docref reports it with no function
     /// running).
@@ -145,22 +160,21 @@ impl Vm {
             crate::errors::display_errors_mode(&ini(self, b"display_errors")),
             crate::errors::DisplayErrors::Off
         ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
-        if level != rhp_builtins::E_ERROR {
-            if shown {
-                self.display_error(
-                    rhp_builtins::E_WARNING,
-                    "Warning",
-                    msg.as_bytes(),
-                    b"Unknown",
-                    0,
-                );
+        if level != rhp_builtins::E_ERROR && level != rhp_builtins::E_CORE_ERROR {
+            let (level, label) = if level == rhp_builtins::E_DEPRECATED {
+                (level, "Deprecated")
             } else {
-                let line = format!("PHP Warning:  {msg} in Unknown on line 0\n");
+                (rhp_builtins::E_WARNING, "Warning")
+            };
+            if shown {
+                self.display_error(level, label, msg.as_bytes(), b"Unknown", 0);
+            } else {
+                let line = format!("PHP {label}:  {msg} in Unknown on line 0\n");
                 self.write_stderr(line.as_bytes());
             }
             return;
         }
-        if builtins::zend::builtin_functions::error_reporting_level(self) & 1 == 0 {
+        if builtins::zend::builtin_functions::error_reporting_level(self) & level == 0 {
             return;
         }
         let mut msg = msg.as_bytes().to_vec();
@@ -237,6 +251,7 @@ impl Vm {
     /// php_request_shutdown's tail: send the headers if no output did, then
     /// flush the SAPI. Call after [`Vm::run_main`].
     pub fn finish_request(&mut self) {
+        builtins::zend::timeout::unset_timeout();
         // zend_ini_deactivate restores startup values changed at runtime
         // (re-running their handlers); php-cgi's deferred startup warnings
         // come out with them.
@@ -438,6 +453,21 @@ impl Vm {
                 let a = argv_array(argv);
                 server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(a));
                 server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argv.len() as i64));
+            } else if crate::ini_bool(&ini(self, b"register_argc_argv")) {
+                // php_build_argv from the query string, split on '+'.
+                self.raise_error(
+                    builtins::E_DEPRECATED,
+                    "Deriving $_SERVER['argv'] from the query string is deprecated. Configure register_argc_argv=0 to turn this message off",
+                );
+                let mut a = PhpArray::new();
+                if let Some(q) = req.query_string.as_deref().filter(|q| !q.is_empty()) {
+                    for part in q.split(|&b| b == b'+') {
+                        a.push(Value::str(part.to_vec()));
+                    }
+                }
+                let argc = a.len() as i64;
+                server.insert(ArrayKey::from_bytes(b"argv"), Value::Array(a));
+                server.insert(ArrayKey::from_bytes(b"argc"), Value::Int(argc));
             }
             check_http_proxy(&mut server, &req.env);
         }

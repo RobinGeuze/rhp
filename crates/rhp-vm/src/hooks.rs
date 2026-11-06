@@ -70,7 +70,14 @@ impl Vm {
             .proto
             .this_cv
             .and_then(|cv| match f.regs.get(cv as usize) {
-                Some(Value::Object(o)) => Some(Rc::ptr_eq(o, h)),
+                // Also inside the hook of an initialized proxy whose
+                // instance is `h`.
+                Some(Value::Object(o)) => Some(
+                    Rc::ptr_eq(o, h)
+                        || o.borrow()
+                            .lazy_instance()
+                            .is_some_and(|i| Rc::ptr_eq(&i, h)),
+                ),
                 _ => None,
             })
             .unwrap_or(false);
@@ -300,8 +307,7 @@ impl Vm {
         dst: Reg,
         pname: PhpStr,
         kind: HookKind,
-        base: Reg,
-        argc: u16,
+        args: HookArgs,
     ) -> Result<(), Thrown> {
         let f = &self.stack[top];
         let this = f.proto.this_cv.and_then(|cv| match &f.regs[cv as usize] {
@@ -333,8 +339,49 @@ impl Vm {
         };
         if let Some(hook) = pe.hooks.as_ref().and_then(|h| h[kind as usize].clone()) {
             let cls = called.unwrap_or_else(|| obj.borrow().class);
-            return self.enter_method(top, &hook, Some(obj), cls, dst, base, argc);
+            return match args {
+                HookArgs::Window { base, argc } => {
+                    self.enter_method(top, &hook, Some(obj), cls, dst, base, argc)
+                }
+                HookArgs::Array(r) => {
+                    let arr = self.reg_get(top, r);
+                    let (argv, named) = self.split_call_args(&arr)?;
+                    let argv =
+                        self.place_named_args(&hook.proto, Some(hook.defining_class), argv, named)?;
+                    self.push_method_frame(
+                        &hook,
+                        Some(obj),
+                        cls,
+                        crate::calls::Args::Slice(&argv),
+                        dst,
+                    )
+                }
+            };
         }
+        // php's trampoline takes one parameter, `$value`, for `set`.
+        let argv: Vec<Value> = match args {
+            HookArgs::Window { base, argc } => {
+                (0..argc).map(|i| self.reg_get(top, base + i)).collect()
+            }
+            HookArgs::Array(r) => {
+                let arr = self.reg_get(top, r);
+                let (mut argv, named) = self.split_call_args(&arr)?;
+                for (n, v) in named {
+                    let shown = String::from_utf8_lossy(n.as_bytes()).into_owned();
+                    if kind != HookKind::Set || n.as_bytes() != b"value" {
+                        return Err(err(format!("Unknown named parameter ${shown}")));
+                    }
+                    if !argv.is_empty() {
+                        return Err(err(format!(
+                            "Named parameter ${shown} overwrites previous argument"
+                        )));
+                    }
+                    argv.push(v);
+                }
+                argv
+            }
+        };
+        let argc = argv.len();
         let decl =
             String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()).into_owned();
         let want = match kind {
@@ -355,7 +402,7 @@ impl Vm {
         let r = match kind {
             HookKind::Get => self.prop_fetch(top, Value::Object(obj), pname),
             HookKind::Set => {
-                let v = self.reg_get(top, base);
+                let v = deref(&argv[0]);
                 self.prop_store(top, Value::Object(obj), pname, v.clone())
                     .map(|()| v)
             }
@@ -366,6 +413,26 @@ impl Vm {
             self.reg_set(top, dst, v);
         }
         Ok(())
+    }
+
+    /// The table a hooked class shows for `purpose` (see
+    /// `Host::hooked_properties_for`).
+    pub(crate) fn hooked_view(
+        &mut self,
+        obj: &ObjectHandle,
+        purpose: rhp_builtins::zend::object_handlers::PropPurpose,
+    ) -> Result<Option<PhpArray>, Thrown> {
+        use rhp_builtins::zend::object_handlers::PropPurpose as P;
+        let cls = obj.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return Ok(None);
+        }
+        let scope = match purpose {
+            P::GetObjectVars => Some(self.stack.last().and_then(|f| f.defining_class)),
+            P::Json | P::VarExport => None,
+            _ => return Ok(None),
+        };
+        self.hooked_props_table(obj, scope).map(Some)
     }
 
     /// php's zho_build_properties_ex + the readers of get_object_vars /
@@ -919,4 +986,12 @@ impl Vm {
         }
         None
     }
+}
+
+/// A parent hook call's arguments: a window, or a packed arguments array
+/// (with named arguments).
+#[derive(Clone, Copy)]
+pub(crate) enum HookArgs {
+    Window { base: Reg, argc: u16 },
+    Array(Reg),
 }

@@ -4,7 +4,7 @@
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::Host;
 use rhp_bytecode::FunctionProto;
-use rhp_values::{conv, ArrayKey, ClassId, Thrown, Value};
+use rhp_values::{conv, ArrayKey, ClassId, PhpStr, Thrown, Value};
 
 use crate::{deref, Frame, Vm};
 
@@ -36,7 +36,14 @@ impl Vm {
             K::False => matches!(v, Value::Bool(false)),
             K::Array => matches!(v, Value::Array(_)),
             K::Object => matches!(v, Value::Object(_) | Value::Closure(_)),
-            K::Callable => self.is_callable_value(v),
+            K::Callable => {
+                // zend_verify_arg_type checks a callable in the callee's
+                // scope (its private methods count).
+                let saved = self.fcc_scope.replace(Some((ctx, ctx)));
+                let ok = self.is_callable_value(v);
+                self.fcc_scope.set(saved);
+                ok
+            }
             K::Iterable => matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable"),
             K::Null => matches!(v, Value::Null),
             K::Named(n) => self.value_instanceof(v, n.as_bytes()),
@@ -208,7 +215,34 @@ impl Vm {
                 continue;
             }
             let cur = frame.regs[p.cv as usize].clone();
-            match self.check_one(&cur, ty, strict, ctx) {
+            // zend_check_type_slow's zend_is_callable runs in the callee's
+            // frame (its scope and `$this`), deprecations included.
+            let callable = ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
+                && matches!(deref(&cur), Value::Str(_) | Value::Array(_));
+            let checked = if callable {
+                let this = proto.this_cv.and_then(|cv| match &frame.regs[cv as usize] {
+                    Value::Object(h) => Some(h.clone()),
+                    _ => None,
+                });
+                let saved = self
+                    .fcc_scope
+                    .replace(Some((frame.defining_class, frame.called_class)));
+                let saved_this = self.fcc_this.replace(this);
+                let mut deps = Vec::new();
+                let _ = self.resolve_callable_ex(&cur, proto.is_internal(), &mut deps);
+                let r = self.check_one(&cur, ty, strict, ctx);
+                self.fcc_scope.set(saved);
+                *self.fcc_this.borrow_mut() = saved_this;
+                for d in deps {
+                    if let Err(t) = self.diag(rhp_builtins::E_DEPRECATED, &d) {
+                        return Err((i, t));
+                    }
+                }
+                r
+            } else {
+                self.check_one(&cur, ty, strict, ctx)
+            };
+            match checked {
                 Ok(None) => {}
                 Ok(Some(coerced)) => {
                     let at = || {
@@ -513,6 +547,21 @@ impl Vm {
         match self.resolve_class_by_name(name) {
             Ok(target) => self.classes[class_id as usize].ancestors.contains(&target),
             Err(_) => false,
+        }
+    }
+
+    /// The name of `$o->$name` (an object name converts through
+    /// `__toString`).
+    pub(crate) fn dyn_prop_name(
+        &mut self,
+        top: usize,
+        name: rhp_bytecode::Reg,
+    ) -> Result<PhpStr, Thrown> {
+        let v = self.reg_get(top, name);
+        match &v {
+            Value::Str(s) => Ok(s.clone()),
+            Value::Object(_) => Ok(PhpStr::from_bytes(self.to_string_vm(&v)?)),
+            _ => Ok(PhpStr::from_bytes(conv::to_string_bytes(&v))),
         }
     }
 

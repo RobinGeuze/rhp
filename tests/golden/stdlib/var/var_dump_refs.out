@@ -1,0 +1,202 @@
+array(2) {
+  [0]=>
+  &int(1)
+  [1]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(2) {
+  ["k"]=>
+  &string(1) "v"
+  ["n"]=>
+  NULL
+}
+object(stdClass)#1 (2) {
+  ["p"]=>
+  &string(1) "v"
+  ["q"]=>
+  int(3)
+}
+object(stdClass)#1 (2) {
+  ["p"]=>
+  &string(1) "v"
+  ["q"]=>
+  int(3)
+}
+array(2) {
+  ["k"]=>
+  &string(1) "v"
+  ["n"]=>
+  NULL
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  &int(3)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  &int(3)
+}
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  &int(3)
+}
+array(3) {
+  [0]=>
+  &int(3)
+  [1]=>
+  int(2)
+  [2]=>
+  int(1)
+}
+array(4) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  &int(3)
+  ["x"]=>
+  &int(3)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [2]=>
+  &int(3)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [2]=>
+  &int(3)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  &int(3)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+array(2) {
+  ["a"]=>
+  &array(1) {
+    [0]=>
+    int(1)
+  }
+  ["b"]=>
+  array(1) {
+    [0]=>
+    &array(1) {
+      [0]=>
+      int(1)
+    }
+  }
+}
+object(Closure)#1 (4) {
+  ["name"]=>
+  string "{closure:FILE:40}"
+  ["file"]=>
+  string "FILE"
+  ["line"]=>
+  int(40)
+  ["static"]=>
+  array(2) {
+    ["cap"]=>
+    &int(5)
+    ["s"]=>
+    int(0)
+  }
+}
+object(Closure)#2 (4) {
+  ["name"]=>
+  string "{closure:FILE:49}"
+  ["file"]=>
+  string "FILE"
+  ["line"]=>
+  int(49)
+  ["static"]=>
+  array(1) {
+    ["cap"]=>
+    int(5)
+  }
+}
+object(D)#3 (2) {
+  ["p"]=>
+  &int(1)
+  ["c"]=>
+  int(2)
+}
+array(1) {
+  [0]=>
+  &enum(E::A)
+}
+array(2) {
+  ["in"]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["x"]=>
+  int(0)
+}
+object(stdClass)#4 (1) {
+  ["list"]=>
+  array(1) {
+    [0]=>
+    int(1)
+  }
+}
+array(1) {
+  [0]=>
+  int(1)
+}
+array(2) {
+  ["r"]=>
+  &int(1)
+  ["v"]=>
+  int(2)
+}
+array(1) {
+  ["a"]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+}

@@ -826,6 +826,10 @@ pub(crate) fn hint_class_names(cx: &FileCtx, hint: &Hint) -> Result<Vec<PhpStr>,
                 collect(cx, u.right, out)
             }
             Hint::Parenthesized(p) => collect(cx, p.hint, out),
+            Hint::Static(k) | Hint::Self_(k) | Hint::Parent(k) => Err(crate::util::compile_error(
+                "Bad class name in the catch statement",
+                cx.line_of(k.span.start.offset),
+            )),
             _ => Err(Thrown::unsupported(
                 "catch type",
                 "only class-name catch types",

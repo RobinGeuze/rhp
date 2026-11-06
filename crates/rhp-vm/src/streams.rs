@@ -275,7 +275,54 @@ impl Vm {
         let id = self.next_resource_id;
         self.next_resource_id += 1;
         self.streams.insert(id, state);
-        Value::Resource(Rc::new(rhp_values::ResourceData { id, type_name }))
+        self.listed_resource(id, type_name)
+    }
+
+    /// A new resource value, kept in [`Vm::resource_list`].
+    pub(crate) fn listed_resource(&mut self, id: u32, type_name: &'static str) -> Value {
+        let r = Rc::new(rhp_values::ResourceData { id, type_name });
+        if self.resource_list.len() >= 64 && self.resource_list.len().is_power_of_two() {
+            self.resource_list.retain(|_, ws| {
+                ws.retain(|w| w.strong_count() > 0);
+                !ws.is_empty()
+            });
+        }
+        let ws = self.resource_list.entry(id).or_default();
+        ws.retain(|w| w.strong_count() > 0);
+        ws.push(Rc::downgrade(&r));
+        Value::Resource(r)
+    }
+
+    /// `get_resources()`: the live resources in id order. A stream context
+    /// also lives while a stream uses it, and the default one always.
+    pub(crate) fn live_resources(&mut self) -> Vec<Value> {
+        let mut out: std::collections::BTreeMap<u32, Value> = self
+            .resource_list
+            .iter()
+            .filter_map(|(&id, ws)| {
+                ws.iter()
+                    .find_map(|w| w.upgrade())
+                    .map(|r| (id, Value::Resource(r)))
+            })
+            .collect();
+        let held: Vec<u32> = self
+            .stream_contexts
+            .keys()
+            .copied()
+            .filter(|id| {
+                Some(*id) == self.default_context
+                    || self.streams.0.values().any(|s| s.ctx == Some(*id))
+            })
+            .collect();
+        for id in held {
+            out.entry(id).or_insert_with(|| {
+                Value::Resource(Rc::new(rhp_values::ResourceData {
+                    id,
+                    type_name: "stream-context",
+                }))
+            });
+        }
+        out.into_values().collect()
     }
 
     /// A wrapper's own opener (`zip://`), given the call's stream context

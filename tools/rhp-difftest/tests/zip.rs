@@ -12,7 +12,9 @@ fn check(name: &str, body: &str) {
         eprintln!("[{name}] no php — skipping");
         return;
     }
-    let src = PRELUDE.replace("%NAME%", name) + body + EPILOGUE;
+    // The pid keeps concurrent checkouts running this test apart.
+    let dir = format!("{name}_{}", std::process::id());
+    let src = PRELUDE.replace("%NAME%", &dir) + body + EPILOGUE;
     if let Some(why) = diff_source(src.as_bytes()).failure() {
         panic!("[{name}] {why}");
     }

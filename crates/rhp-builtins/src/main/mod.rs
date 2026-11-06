@@ -19,8 +19,13 @@ pub mod streams;
 
 fn fn_set_time_limit(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let secs = crate::zend::zpp::int_param(host, args, 0, "set_time_limit", "seconds", 0)?;
-    ini::ini_store(b"max_execution_time", secs.to_string().into_bytes());
-    Ok(Value::Bool(true))
+    let ok = ini::alter_ini_entry(
+        host,
+        b"max_execution_time",
+        secs.to_string().into_bytes(),
+        "set_time_limit",
+    )?;
+    Ok(Value::Bool(ok.is_some()))
 }
 
 pub fn register(m: &mut crate::Registry) {

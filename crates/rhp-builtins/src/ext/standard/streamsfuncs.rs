@@ -898,6 +898,39 @@ fn fn_stream_get_transports(_host: &mut dyn Host, _args: &[Value]) -> Result<Val
 pub fn constants() -> Vec<(&'static str, Value)> {
     let i = |n: i64| Value::Int(n);
     vec![
+        // file.c / user_filters.c (php_stream.h, php_stream_filter_api.h).
+        ("STREAM_FILTER_READ", i(1)),
+        ("STREAM_FILTER_WRITE", i(2)),
+        ("STREAM_FILTER_ALL", i(3)),
+        ("STREAM_USE_PATH", i(1)),
+        ("STREAM_IGNORE_URL", i(2)),
+        ("STREAM_REPORT_ERRORS", i(8)),
+        ("STREAM_MUST_SEEK", i(16)),
+        ("STREAM_URL_STAT_LINK", i(1)),
+        ("STREAM_URL_STAT_QUIET", i(2)),
+        ("STREAM_MKDIR_RECURSIVE", i(1)),
+        ("STREAM_IS_URL", i(1)),
+        ("STREAM_OPTION_BLOCKING", i(1)),
+        ("STREAM_OPTION_READ_TIMEOUT", i(4)),
+        ("STREAM_OPTION_READ_BUFFER", i(2)),
+        ("STREAM_OPTION_WRITE_BUFFER", i(3)),
+        ("STREAM_BUFFER_NONE", i(0)),
+        ("STREAM_BUFFER_LINE", i(1)),
+        ("STREAM_BUFFER_FULL", i(2)),
+        ("STREAM_CAST_AS_STREAM", i(0)),
+        ("STREAM_CAST_FOR_SELECT", i(3)),
+        ("STREAM_META_TOUCH", i(1)),
+        ("STREAM_META_OWNER_NAME", i(2)),
+        ("STREAM_META_OWNER", i(3)),
+        ("STREAM_META_GROUP_NAME", i(4)),
+        ("STREAM_META_GROUP", i(5)),
+        ("STREAM_META_ACCESS", i(6)),
+        ("PSFS_PASS_ON", i(2)),
+        ("PSFS_FEED_ME", i(1)),
+        ("PSFS_ERR_FATAL", i(0)),
+        ("PSFS_FLAG_NORMAL", i(0)),
+        ("PSFS_FLAG_FLUSH_INC", i(1)),
+        ("PSFS_FLAG_FLUSH_CLOSE", i(2)),
         ("STREAM_CLIENT_PERSISTENT", i(STREAM_CLIENT_PERSISTENT)),
         (
             "STREAM_CLIENT_ASYNC_CONNECT",
@@ -1171,13 +1204,10 @@ fn fn_stream_context_get_default(host: &mut dyn Host, args: &[Value]) -> Result<
     Ok(ctx)
 }
 
-/// `stream_context_set_default(array $options)`: the options merged into the
-/// default context (allocated on first use), which is returned.
+/// `stream_context_set_default(array $options)`: the default context, with
+/// `$options` applied.
 fn fn_stream_context_set_default(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let opts = crate::zend::zpp::array_param(host, args, 0, "stream_context_set_default")?;
-    let ctx = host.default_stream_context();
-    parse_context_options(host, &ctx, &opts)?;
-    Ok(ctx)
+    fn_stream_context_get_default(host, args)
 }
 
 fn fn_stream_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

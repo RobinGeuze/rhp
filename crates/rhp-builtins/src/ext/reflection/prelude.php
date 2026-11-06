@@ -434,7 +434,17 @@ class ReflectionParameter implements Reflector {
         return $s === null ? null : new ReflectionClass($s);
     }
     public function getClass(): ?ReflectionClass {
+        __reflect('deprecated', 'Method ReflectionParameter::getClass() is deprecated since 8.0, use ReflectionParameter::getType() instead');
         $t = $this->__p['type'];
+        // ZEND_TYPE_HAS_NAME: one class name, maybe beside builtin types.
+        if ($t !== null && $t['kind'] === 'union') {
+            $names = [];
+            foreach ($t['types'] as $u) {
+                if ($u['kind'] !== 'named') { return null; }
+                if (!$u['builtin']) { $names[] = $u; }
+            }
+            $t = count($names) === 1 ? $names[0] : null;
+        }
         if ($t === null || $t['kind'] !== 'named' || $t['builtin']) { return null; }
         $n = $t['name'];
         if ($n === 'self' || $n === 'static') { return $this->getDeclaringClass(); }
@@ -443,8 +453,8 @@ class ReflectionParameter implements Reflector {
     }
     public function hasType(): bool { return $this->__p['type'] !== null; }
     public function getType(): ?ReflectionType { return Reflection::__type($this->__p['type']); }
-    public function isArray(): bool { $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'array'; }
-    public function isCallable(): bool { $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'callable'; }
+    public function isArray(): bool { __reflect('deprecated', 'Method ReflectionParameter::isArray() is deprecated since 8.0, use ReflectionParameter::getType() instead'); $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'array'; }
+    public function isCallable(): bool { __reflect('deprecated', 'Method ReflectionParameter::isCallable() is deprecated since 8.0, use ReflectionParameter::getType() instead'); $t = $this->__p['type']; return $t !== null && $t['kind'] === 'named' && $t['name'] === 'callable'; }
     public function allowsNull(): bool { return $this->__p['type'] === null || $this->__p['type']['nullable']; }
     public function getPosition(): int { return $this->__p['pos']; }
     public function isOptional(): bool { return $this->__p['optional']; }
@@ -623,14 +633,44 @@ class ReflectionClass implements Reflector {
         $cls = $this->name;
         return new $cls(...$args);
     }
-    public function newLazyGhost(callable $initializer, int $options = 0): object { throw new Error('Lazy objects are not supported'); }
-    public function newLazyProxy(callable $factory, int $options = 0): object { throw new Error('Lazy objects are not supported'); }
-    public function resetAsLazyGhost(object $object, callable $initializer, int $options = 0): void { throw new Error('Lazy objects are not supported'); }
-    public function resetAsLazyProxy(object $object, callable $factory, int $options = 0): void { throw new Error('Lazy objects are not supported'); }
-    public function isUninitializedLazyObject(object $object): bool { return false; }
-    public function initializeLazyObject(object $object): object { return $object; }
-    public function markLazyObjectAsInitialized(object $object): object { return $object; }
-    public function getLazyInitializer(object $object): ?callable { return null; }
+    public function newLazyGhost(callable $initializer, int $options = 0): object {
+        if ($options & ~24) { throw new ReflectionException('ReflectionClass::newLazyGhost(): Argument #2 ($options) contains invalid flags'); }
+        if ($options & 16) { throw new ReflectionException('ReflectionClass::newLazyGhost(): Argument #2 ($options) does not accept ReflectionClass::SKIP_DESTRUCTOR'); }
+        return __reflect('lazy_make', $this->name, null, $initializer, 2 | $options);
+    }
+    public function newLazyProxy(callable $factory, int $options = 0): object {
+        if ($options & ~24) { throw new ReflectionException('ReflectionClass::newLazyProxy(): Argument #2 ($options) contains invalid flags'); }
+        if ($options & 16) { throw new ReflectionException('ReflectionClass::newLazyProxy(): Argument #2 ($options) does not accept ReflectionClass::SKIP_DESTRUCTOR'); }
+        return __reflect('lazy_make', $this->name, null, $factory, 1 | $options);
+    }
+    public function resetAsLazyGhost(object $object, callable $initializer, int $options = 0): void {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::resetAsLazyGhost(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        if ($options & ~24) { throw new ReflectionException('ReflectionClass::resetAsLazyGhost(): Argument #3 ($options) contains invalid flags'); }
+        if (__reflect('lazy_state', $object) === 1) { throw new ReflectionException('Object is already lazy'); }
+        __reflect('lazy_make', $this->name, $object, $initializer, 2 | $options);
+    }
+    public function resetAsLazyProxy(object $object, callable $factory, int $options = 0): void {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::resetAsLazyProxy(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        if ($options & ~24) { throw new ReflectionException('ReflectionClass::resetAsLazyProxy(): Argument #3 ($options) contains invalid flags'); }
+        if (__reflect('lazy_state', $object) === 1) { throw new ReflectionException('Object is already lazy'); }
+        __reflect('lazy_make', $this->name, $object, $factory, 1 | $options);
+    }
+    public function isUninitializedLazyObject(object $object): bool {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::isUninitializedLazyObject(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        return __reflect('lazy_state', $object) === 1;
+    }
+    public function initializeLazyObject(object $object): object {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::initializeLazyObject(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        return __reflect('lazy_init', $object);
+    }
+    public function markLazyObjectAsInitialized(object $object): object {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::markLazyObjectAsInitialized(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        return __reflect('lazy_mark', $object);
+    }
+    public function getLazyInitializer(object $object): ?callable {
+        if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::getLazyInitializer(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
+        return __reflect('lazy_initializer', $object);
+    }
     public function getParentClass(): ReflectionClass|false { return $this->__c['parent'] === false ? false : new ReflectionClass($this->__c['parent']); }
     public function isSubclassOf(ReflectionClass|string $class): bool {
         if ($class instanceof ReflectionClass) { $class = $class->name; }
@@ -730,7 +770,30 @@ class ReflectionProperty implements Reflector {
         $this->name = $i['name'];
         $this->class = $i['class'];
     }
-    public function __toString(): string { return 'Property [ ' . implode(' ', Reflection::getModifierNames($this->__i['modifiers'])) . ' $' . $this->name . " ]\n"; }
+    public function __toString(): string {
+        if (isset($this->__i['dynamic'])) { return 'Property [ <dynamic> public $' . $this->name . " ]\n"; }
+        $m = $this->__i['modifiers'];
+        $s = 'Property [ ';
+        if ($m & 64) { $s .= 'abstract '; }
+        if ($m & 32) { $s .= 'final '; }
+        $s .= ($m & 4) ? 'private ' : (($m & 2) ? 'protected ' : 'public ');
+        if ($m & 4096) { $s .= 'private(set) '; } elseif ($m & 2048) { $s .= 'protected(set) '; }
+        if ($m & 16) { $s .= 'static '; }
+        if ($m & 128) { $s .= 'readonly '; }
+        if ($m & 512) { $s .= 'virtual '; }
+        if ($this->__i['type'] !== null) { $s .= Reflection::__type($this->__i['type']) . ' '; }
+        $s .= '$' . $this->name;
+        if ($this->__i['hasDefault'] && !($m & 512)) { $s .= ' = ' . Reflection::__fmt($this->__i['default']); }
+        $hooks = $this->__i['hooks'] ?? [];
+        if ($hooks !== []) {
+            $s .= ' {';
+            foreach (['get', 'set'] as $k) {
+                if (in_array($k, $hooks, true)) { $s .= (ReflectionMethod::__hook($this->class, $this->name, $k)->isFinal() ? ' final ' : ' ') . $k . ';'; }
+            }
+            $s .= ' }';
+        }
+        return $s . " ]\n";
+    }
     public function getName(): string { return $this->name; }
     public function getMangledName(): string {
         $v = $this->__i['vis'];
@@ -772,12 +835,17 @@ class ReflectionProperty implements Reflector {
         __reflect('raw_set', $object, $this->class, $this->name, $value);
     }
     public function setRawValueWithoutLazyInitialization(object $object, mixed $value): void {
-        if ($this->__i['static']) { throw new ReflectionException('Can not use setRawValueWithoutLazyInitialization on static property ' . $this->class . '::$' . $this->name); }
-        if (($this->__i['modifiers'] & 512) !== 0) { throw new ReflectionException('Can not use setRawValueWithoutLazyInitialization on virtual property ' . $this->class . '::$' . $this->name); }
-        __reflect('raw_set', $object, $this->class, $this->name, $value);
+        if (!($object instanceof $this->class)) { throw new TypeError('ReflectionProperty::setRawValueWithoutLazyInitialization(): Argument #1 ($object) must be of type ' . $this->class . ', ' . get_debug_type($object) . ' given'); }
+        __reflect('lazy_prop', 'set', $object, $this->class, $this->name, $value);
     }
-    public function skipLazyInitialization(object $object): void {}
-    public function isLazy(object $object): bool { return false; }
+    public function skipLazyInitialization(object $object): void {
+        if (!($object instanceof $this->class)) { throw new TypeError('ReflectionProperty::skipLazyInitialization(): Argument #1 ($object) must be of type ' . $this->class . ', ' . get_debug_type($object) . ' given'); }
+        __reflect('lazy_prop', 'skip', $object, $this->class, $this->name);
+    }
+    public function isLazy(object $object): bool {
+        if (!($object instanceof $this->class)) { throw new TypeError('ReflectionProperty::isLazy(): Argument #1 ($object) must be of type ' . $this->class . ', ' . get_debug_type($object) . ' given'); }
+        return __reflect('lazy_prop', 'is', $object, $this->class, $this->name);
+    }
     public function isInitialized(?object $object = null): bool {
         if ($this->__i['static']) { return true; }
         if ($object === null) { throw new TypeError('ReflectionProperty::isInitialized(): Argument #1 ($object) must be provided for instance properties'); }

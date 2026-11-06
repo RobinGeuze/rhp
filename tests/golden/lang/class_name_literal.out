@@ -1,0 +1,18 @@
+string(3) "Foo"
+string(3) "N\A"
+array(6) {
+  [0]=>
+  string(3) "Foo"
+  [1]=>
+  string(7) "Foo\Bar"
+  [2]=>
+  string(3) "N\A"
+  [3]=>
+  string(3) "N\P"
+  [4]=>
+  string(3) "N\B"
+  [5]=>
+  string(3) "x y"
+}
+N\f(): Argument #1 ($x) must be of type int, string given, called in F on line 23
+int(786)

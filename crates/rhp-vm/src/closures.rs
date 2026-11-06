@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use rhp_bytecode::{FunctionProto, Instr};
-use rhp_values::ops::deref;
+use rhp_values::ops::{copy_elem, deref};
 use rhp_values::{ClosureData, ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::Vm;
@@ -119,13 +119,15 @@ impl Vm {
                         continue;
                     }
                     if let Some(n) = p.cv_var_names.get(i) {
-                        st.insert(rhp_values::ArrayKey::Str(n.clone()), deref(v));
+                        // zend_array_dup of the static variables.
+                        st.insert(rhp_values::ArrayKey::Str(n.clone()), copy_elem(v));
                     }
                 }
                 let own = cd.statics.borrow();
                 for (n, init) in declared_statics(p) {
                     let v = match own.iter().find(|(k, _)| *k == n) {
-                        Some((_, c)) => deref(&c.borrow()),
+                        Some((_, c)) if Rc::strong_count(c) == 1 => c.borrow().clone(),
+                        Some((_, c)) => Value::Ref(c.clone()),
                         None => init,
                     };
                     st.insert(rhp_values::ArrayKey::Str(n), v);

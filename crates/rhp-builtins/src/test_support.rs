@@ -136,11 +136,23 @@ impl Host for TestHost<'_> {
     fn caller_scope(&self) -> Option<u32> {
         None
     }
-    fn current_arg_count(&self) -> i64 {
-        0
+    fn call_callable_forward(&mut self, c: &Value, args: &[Value]) -> Result<Value, Thrown> {
+        self.call_callable(c, args)
     }
-    fn current_args(&self) -> Vec<Value> {
+    fn class_method_private_inherited(&self, _: u32, _: &[u8]) -> bool {
+        false
+    }
+    fn live_resources(&mut self) -> Vec<Value> {
         Vec::new()
+    }
+    fn caller_called_scope(&self) -> Option<u32> {
+        None
+    }
+    fn current_arg_count(&self) -> Option<i64> {
+        None
+    }
+    fn current_args(&self) -> Option<Vec<Value>> {
+        None
     }
     fn set_local_var(&mut self, _name: &[u8], _value: Value) -> bool {
         false
@@ -273,7 +285,12 @@ impl Host for TestHost<'_> {
     fn class_constant(&self, _class: &[u8], _name: &[u8]) -> Option<Value> {
         None
     }
-    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown> {
+    fn class_constant_eval(
+        &mut self,
+        class: &[u8],
+        name: &[u8],
+        _silent: bool,
+    ) -> Result<Option<Value>, Thrown> {
         Ok(self.class_constant(class, name))
     }
 

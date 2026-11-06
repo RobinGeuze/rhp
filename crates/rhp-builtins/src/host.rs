@@ -216,6 +216,9 @@ pub trait Host {
     /// `get_debug_type` then report `resource (closed)`.
     fn resource_closed(&self, res: &Value) -> bool;
 
+    /// The live resources in id order (`get_resources`).
+    fn live_resources(&mut self) -> Vec<Value>;
+
     /// Whether a class id names an enum (for `var_dump` rendering).
     fn is_enum_class(&self, class_id: u32) -> bool;
 
@@ -237,6 +240,12 @@ pub trait Host {
         _purpose: object_handlers::PropPurpose,
     ) -> Result<Option<PhpArray>, Thrown> {
         Ok(None)
+    }
+
+    /// php's get_properties on a lazy object: initialize it; the object
+    /// whose properties to read (an initialized proxy's instance).
+    fn lazy_props_object(&mut self, obj: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+        Ok(obj.clone())
     }
 
     /// php's `zend_std_cast_object_tostring` for `obj`: `__toString()` for a
@@ -274,10 +283,18 @@ pub trait Host {
     /// enum cases), or None if the class or constant does not exist.
     fn class_constant(&self, class: &[u8], name: &[u8]) -> Option<Value>;
 
-    /// Like [`Host::class_constant`], but first evaluates the constant's
-    /// initializer if it is still a pending constant expression (which can
-    /// throw, e.g. on an undefined constant inside it).
-    fn class_constant_eval(&mut self, class: &[u8], name: &[u8]) -> Result<Option<Value>, Thrown>;
+    /// zend_get_class_constant_ex for `constant()` / `defined()`: `class`
+    /// may be `self`/`parent`/`static` (the caller's), is autoloaded, and
+    /// the constant must be visible from the caller's scope; its pending
+    /// initializer is evaluated. With `silent`, a missing class or
+    /// constant or an inaccessible one is `Ok(None)`; otherwise php's
+    /// Error.
+    fn class_constant_eval(
+        &mut self,
+        class: &[u8],
+        name: &[u8],
+        silent: bool,
+    ) -> Result<Option<Value>, Thrown>;
 
     /// Run the destructors of objects nothing references any more, now: php
     /// destructs when the refcount reaches zero, rhp before the next statement.
@@ -294,6 +311,10 @@ pub trait Host {
         args: &[Value],
         named: Vec<(rhp_values::PhpStr, Value)>,
     ) -> Result<Value, Thrown>;
+
+    /// [`Host::call_callable`] forwarding the caller's called scope to a
+    /// static method (`forward_static_call`).
+    fn call_callable_forward(&mut self, callable: &Value, args: &[Value]) -> Result<Value, Thrown>;
 
     /// Whether a value is callable (`is_callable`): closures, function names,
     /// `[obj_or_class, method]` pairs, and `__invoke` objects.
@@ -337,6 +358,10 @@ pub trait Host {
     /// (`zend_get_executed_scope`), if any.
     fn caller_scope(&self) -> Option<u32>;
 
+    /// The late-static-binding class of the code calling the builtin
+    /// (`zend_get_called_scope`), if any.
+    fn caller_called_scope(&self) -> Option<u32>;
+
     /// An object's properties accessible from the calling code's class scope
     /// (`zend_check_property_access`), in property-table order — for
     /// `http_build_query` on objects.
@@ -371,6 +396,11 @@ pub trait Host {
     /// Whether a class id declares a method (case-insensitive, flattened over
     /// the inheritance chain).
     fn class_has_method(&self, class_id: u32, method: &[u8]) -> bool;
+
+    /// Whether a class's method `method` is private and declared by
+    /// another class (a parent's private method, which `method_exists()`
+    /// on a class name does not count).
+    fn class_method_private_inherited(&self, class_id: u32, method: &[u8]) -> bool;
 
     /// Whether a class id declares a property — instance or static
     /// (case-sensitive, flattened over the inheritance chain).
@@ -533,12 +563,14 @@ pub trait Host {
     /// any other value.
     fn resolve_stream_context(&mut self, res: &Value) -> Option<Value>;
 
-    /// Number of arguments passed to the currently-executing user function
-    /// (`func_num_args`).
-    fn current_arg_count(&self) -> i64;
-    /// The argument values passed to the currently-executing user function
-    /// (`func_get_args`), best-effort (declared params only).
-    fn current_args(&self) -> Vec<Value>;
+    /// Number of arguments passed to the calling function
+    /// (`func_num_args`); None when the caller is top-level code (the
+    /// script, an include or eval: php's ZEND_CALL_CODE).
+    fn current_arg_count(&self) -> Option<i64>;
+    /// The arguments passed to the calling function (`func_get_args`),
+    /// with the declared parameters' current values; None as for
+    /// [`Host::current_arg_count`].
+    fn current_args(&self) -> Option<Vec<Value>>;
 
     /// The filesystem path of the top-level script being executed (for
     /// `Phar::mapPhar`, which parses the running phar itself).
@@ -740,9 +772,40 @@ pub trait Host {
             None => Ok(()),
         }
     }
+    /// An E_ERROR a builtin raises (zend_error_noreturn): reported at the
+    /// innermost user frame with the backtrace, then the request bails out
+    /// with the returned value.
+    fn fatal_error(&mut self, msg: &[u8]) -> Thrown {
+        Thrown::error("Error", String::from_utf8_lossy(msg).into_owned())
+    }
+    /// Whether php holds `s` as an interned string: a string literal of
+    /// the compiled code (debug_zval_dump prints `interned`).
+    fn is_interned_str(&self, _s: &rhp_values::PhpStr) -> bool {
+        false
+    }
+    /// Holders of `v` rhp keeps where php has one slot, left out of the
+    /// refcounts var_dump and debug_zval_dump show: a global variable's
+    /// cell (held by the globals table and by main's CV), an enum case
+    /// (held by its class constant and the case list).
+    fn shadow_holders(&self, _v: &Value) -> usize {
+        0
+    }
     /// `php_error_docref(NULL, level, msg)` raised outside a builtin of its
     /// own (an object or resource freed): prefixed with php's active
     /// function (the running builtin, else the innermost user function,
     /// `main` at top level, else `PHP Request Shutdown` in Unknown on line 0).
     fn docref_diagnostic(&mut self, level: i64, msg: &[u8]) -> Result<(), Thrown>;
+    /// `pow_function` (the `**` operator) with the engine's diagnostics and
+    /// object handlers.
+    fn pow_op(&mut self, a: &Value, b: &Value) -> Result<Value, Thrown> {
+        use rhp_values::ops;
+        let (x, y) = ops::arith_pair(a, b, "**")?;
+        if ops::pow_base0_neg_exp(x, y) {
+            self.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"Power of base 0 and negative exponent is deprecated",
+            )?;
+        }
+        Ok(ops::pow_num(x, y))
+    }
 }

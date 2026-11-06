@@ -855,10 +855,10 @@ fn fn_hash_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if digest(&algo, b"").is_none() {
         return Err(invalid_algo("hash_file"));
     }
-    let Some(data) = host.stream_get_contents(&path) else {
+    let Some(data) = crate::ext::standard::md5::read_file_for_hash(host, "hash_file", &path)?
+    else {
         return Ok(Value::Bool(false));
     };
-    host.consume_resource_ids(1);
     let init = hash_options(host, "hash_file", &algo, args.get(3))?;
     let raw = digest_init(&algo, &data, init.as_ref()).unwrap_or_default();
     Ok(Value::str(if binary { raw } else { to_hex(&raw) }))

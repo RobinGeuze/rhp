@@ -40,6 +40,18 @@ pub(crate) struct FileCtx<'s> {
     /// Function name (fully qualified, lowercase) -> per-parameter by-ref
     /// flags, so a call site can pass by reference to a function it names.
     pub(crate) sigs: HashMap<Vec<u8>, Vec<bool>>,
+    /// Same keys: the parameter names (no `$`), and whether the last one
+    /// is variadic (a by-reference variadic covers every later position;
+    /// the names place named arguments at compile time).
+    pub(crate) sig_names: HashMap<Vec<u8>, (Vec<Vec<u8>>, bool)>,
+    /// The same functions that return by reference.
+    pub(crate) ref_returning: std::collections::HashSet<Vec<u8>>,
+    /// The end offset of each function in `sigs`: php knows a function
+    /// at compile time only after its declaration was compiled.
+    pub(crate) sig_ends: HashMap<Vec<u8>, u32>,
+    /// The byte offset after `__halt_compiler();`: this file's
+    /// `__COMPILER_HALT_OFFSET__`.
+    pub(crate) halt_offset: Option<i64>,
     /// Method name (lowercase) -> per-position "could be by-reference" mask:
     /// true at position i if ANY method of that name declares `&` there. A
     /// call site passes those positions by reference; by-value callees simply
@@ -79,6 +91,9 @@ pub(crate) struct FileCtx<'s> {
     /// Diagnostics php raises while compiling (level, message, line):
     /// `Program::compile_diags`.
     pub(crate) compile_diags: RefCell<Vec<(i64, String, u32)>>,
+    /// The leading run of top-level `declare`s (zend_is_first_statement):
+    /// each one's offset, and whether an empty statement came before it.
+    pub(crate) first_declares: Vec<(u32, bool)>,
 }
 
 /// The class-like a declaration sits in, as type compilation needs it.
@@ -110,6 +125,10 @@ impl<'s> FileCtx<'s> {
             is_prelude: false,
             strict_types: false,
             sigs: HashMap::new(),
+            sig_names: HashMap::new(),
+            ref_returning: Default::default(),
+            sig_ends: HashMap::new(),
+            halt_offset: None,
             method_ref: HashMap::new(),
             ns: RefCell::new(Rc::new(NsContext::default())),
             in_trait: Cell::new(false),
@@ -123,6 +142,7 @@ impl<'s> FileCtx<'s> {
             num_top_classes: 0,
             fatal: RefCell::new(None),
             compile_diags: RefCell::new(Vec::new()),
+            first_declares: Vec::new(),
         }
     }
 
@@ -137,6 +157,7 @@ impl<'s> FileCtx<'s> {
         let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
+        cx.first_declares = first_declares(&cx, program);
         cx.line_starts = build_line_starts(src);
         // Keyed by fully qualified name (lowercased), as call sites resolve.
         for (ns, stmt) in flat {
@@ -148,10 +169,41 @@ impl<'s> FileCtx<'s> {
                     .iter()
                     .map(|p| p.ampersand.is_some())
                     .collect();
+                let params = &func.parameter_list.parameters;
+                let names = params
+                    .iter()
+                    .map(|p| crate::util::strip_dollar(p.variable.name).to_vec())
+                    .collect();
+                let variadic = params.iter().last().is_some_and(|p| p.ellipsis.is_some());
+                cx.sig_names.insert(fqn.clone(), (names, variadic));
+                if func.ampersand.is_some() {
+                    cx.ref_returning.insert(fqn.clone());
+                }
+                use mago_span::HasSpan;
+                cx.sig_ends.insert(fqn.clone(), func.span().end.offset);
                 cx.sigs.insert(fqn, flags);
             }
         }
         cx.method_ref = collect_method_refs(flat);
+        cx.halt_offset = flat.iter().find_map(|(_, st)| match st {
+            Statement::HaltCompiler(h) => {
+                use mago_span::HasSpan;
+                let end = h.span().end.offset as usize;
+                // A closing `?>` takes one newline with it.
+                let rest = &src[end.min(src.len())..];
+                let nl = if !src[..end.min(src.len())].ends_with(b"?>") {
+                    0
+                } else if rest.starts_with(b"\r\n") {
+                    2
+                } else if rest.starts_with(b"\n") || rest.starts_with(b"\r") {
+                    1
+                } else {
+                    0
+                };
+                Some((end + nl) as i64)
+            }
+            _ => None,
+        });
         cx.num_top_classes = flat.iter().filter(|(_, st)| is_class_like(st)).count() as u32;
         cx
     }
@@ -245,6 +297,22 @@ impl<'s> FileCtx<'s> {
         )
     }
 
+    /// Inline text that is no statement for php: empty after the newline
+    /// folded into `?>`, or the shebang line of the file.
+    pub(crate) fn inline_is_empty(&self, i: &crate::parse::cst::Inline) -> bool {
+        use mago_span::HasSpan;
+        let at = i.span().start.offset;
+        if at == 0 && i.value.starts_with(b"#!") {
+            let rest = i
+                .value
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(&b""[..], |p| &i.value[p + 1..]);
+            return rest.is_empty();
+        }
+        self.strip_close_tag_newline(at, i.value).is_empty()
+    }
+
     /// php's lexer folds one newline (`\n`, `\r\n` or `\r`) right after `?>`
     /// into the closing tag: drop it from inline text that starts there.
     pub(crate) fn strip_close_tag_newline<'t>(&self, offset: u32, text: &'t [u8]) -> &'t [u8] {
@@ -309,24 +377,45 @@ fn is_class_like(st: &Statement) -> bool {
     )
 }
 
-/// Whether the program's leading statement is `declare(strict_types=1)`.
+/// Whether the program's leading declares set `declare(strict_types=1)`.
 fn detect_strict_types(cx: &FileCtx, program: &AstProgram) -> bool {
     for stmt in program.statements.iter() {
         match stmt {
             // skip the opening `<?php` / inline-html prelude
-            Statement::OpeningTag(_) | Statement::Inline(_) | Statement::Noop(_) => continue,
+            Statement::OpeningTag(_) | Statement::ClosingTag(_) | Statement::Noop(_) => continue,
+            Statement::Inline(i) if cx.inline_is_empty(i) => continue,
             Statement::Declare(d) => {
+                // Other declares may come first (zend_is_first_statement).
                 for item in d.items.iter() {
                     if item.name.value.eq_ignore_ascii_case(b"strict_types") {
                         return matches!(fold_const(cx, item.value), Ok(Value::Int(1)));
                     }
                 }
-                return false;
             }
             _ => return false, // strict_types must be the first statement
         }
     }
     false
+}
+
+/// The top-level `declare`s before any other statement, with whether an
+/// empty statement (`;`, `?>`) came before each.
+fn first_declares(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, bool)> {
+    let mut out = Vec::new();
+    let mut nop = false;
+    for stmt in program.statements.iter() {
+        match stmt {
+            // The scanner skips a leading `#!` line.
+            Statement::OpeningTag(_) => {}
+            Statement::Inline(i) if matches!(i.kind, crate::parse::cst::InlineKind::Shebang) => {}
+            // `?>` takes its newline, so `?>\n<?php` leaves no text.
+            Statement::Inline(i) if cx.inline_is_empty(i) => {}
+            Statement::Noop(_) | Statement::ClosingTag(_) => nop = true,
+            Statement::Declare(d) => out.push((d.declare.span.start.offset, nop)),
+            _ => break,
+        }
+    }
+    out
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').

@@ -11,7 +11,7 @@ use crate::assign::{check_globals_write, globals_index};
 use crate::builder::{LoopCtx, ProtoBuilder};
 use crate::hints::hint_class_names;
 use crate::oop::Sel;
-use crate::util::strip_dollar;
+use crate::util::{compile_error, is_this, reassign_this, strip_dollar};
 
 impl ProtoBuilder<'_> {
     /// Compile a single statement or a colon-delimited statement sequence.
@@ -95,10 +95,7 @@ impl ProtoBuilder<'_> {
         let cond = self.compile_expr(w.condition)?;
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse cond -> end
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         match &w.body {
             WhileBody::Statement(s) => self.compile_stmt(s)?,
@@ -119,10 +116,7 @@ impl ProtoBuilder<'_> {
         d: &crate::parse::cst::DoWhile,
     ) -> Result<(), Thrown> {
         let top = self.here();
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         self.compile_stmt(d.statement)?;
         let ctx = self.loops.pop().unwrap();
@@ -154,10 +148,7 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::Nop); // JmpFalse last -> end
             Some((last.unwrap(), pos))
         };
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
         self.enter_goto_scope(false);
         match &f.body {
             ForBody::Statement(s) => self.compile_stmt(s)?,
@@ -190,6 +181,33 @@ impl ProtoBuilder<'_> {
             SwitchBody::ColonDelimited(b) => b.cases.iter().collect(),
         };
 
+        // zend_compile_switch's per-case checks.
+        let mut has_default = false;
+        for case in &cases {
+            use crate::parse::cst::SwitchCaseSeparator;
+            use mago_span::HasSpan;
+            let (sep, is_default) = match case {
+                SwitchCase::Expression(c) => (&c.separator, false),
+                SwitchCase::Default(c) => (&c.separator, true),
+            };
+            let at = case.span().start.offset;
+            if matches!(sep, SwitchCaseSeparator::SemiColon(_)) {
+                self.cx.diag(
+                    rhp_values::E_DEPRECATED,
+                    at,
+                    "Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead".into(),
+                );
+            }
+            if is_default {
+                if has_default {
+                    return Err(compile_error(
+                        "Switch statements may only contain one default clause",
+                        self.cx.line_of(at),
+                    ));
+                }
+                has_default = true;
+            }
+        }
         // Dispatch: compare the subject against each case (loose ==), in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new(); // (case idx, jmp pos, cond reg)
         for (idx, case) in cases.iter().enumerate() {
@@ -214,10 +232,7 @@ impl ProtoBuilder<'_> {
         self.emit(Instr::Nop); // Jmp -> default body or end
 
         // Case bodies in source order (fall-through: no jumps between them).
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        }); // switch is one break/continue level
+        self.loops.push(self.loop_ctx(true)); // switch is one break/continue level
         self.enter_goto_scope(false);
         let mut starts = vec![0u32; cases.len()];
         for (idx, case) in cases.iter().enumerate() {
@@ -260,6 +275,38 @@ impl ProtoBuilder<'_> {
             ForeachTarget::Value(t) => (None, t.value),
             ForeachTarget::KeyValue(t) => (Some(t.key), t.value),
         };
+        match key_expr {
+            Some(Expression::UnaryPrefix(u))
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                return Err(compile_error(
+                    "Key element cannot be a reference",
+                    self.cur_line,
+                ));
+            }
+            Some(Expression::Array(_) | Expression::List(_) | Expression::LegacyArray(_)) => {
+                return Err(compile_error(
+                    "Cannot use list as key element",
+                    self.cur_line,
+                ));
+            }
+            _ => {}
+        }
+        let inner_val = match val_expr {
+            Expression::UnaryPrefix(u)
+                if matches!(u.operator, UnaryPrefixOperator::Reference(_)) =>
+            {
+                u.operand
+            }
+            e => e,
+        };
+        if is_this(inner_val) || key_expr.is_some_and(is_this) {
+            return Err(reassign_this(self.cur_line));
+        }
+        check_globals_write(inner_val, self.cur_line)?;
+        if let Some(k) = key_expr {
+            check_globals_write(k, self.cur_line)?;
+        }
 
         // By-reference foreach: `foreach ($a as &$v)` / `... as $k => &$v`.
         let by_ref = matches!(
@@ -281,6 +328,13 @@ impl ProtoBuilder<'_> {
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
             // `FeFetchRef` derefs an `arr_cv` that holds a `Ref`).
+            let lval_source = matches!(
+                fe.expression,
+                Expression::ArrayAccess(_)
+                    | Expression::ArrayAppend(_)
+                    | Expression::Access(Access::Property(_))
+                    | Expression::Access(Access::StaticProperty(_))
+            );
             let arr_cv = match fe.expression {
                 Expression::Variable(Variable::Direct(sd)) => self.cv(strip_dollar(sd.name)),
                 Expression::ArrayAccess(_)
@@ -315,8 +369,8 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::Nop); // FeFetchRef
 
             self.loops.push(LoopCtx {
-                finally_depth: self.finally_rets.len(),
-                ..LoopCtx::default()
+                free: lval_source.then_some(arr_cv),
+                ..self.loop_ctx(false)
             });
 
             self.enter_goto_scope(false);
@@ -345,6 +399,14 @@ impl ProtoBuilder<'_> {
             self.patch_all(ctx.break_jumps, end);
             self.patch_all(ctx.continue_jumps, fetch_label);
             self.temp_floor = saved_floor;
+            if lval_source {
+                // FE_FREE: the iterated temporary (a reference to the
+                // source) goes away with the loop.
+                self.emit(Instr::ClearTemps {
+                    from: arr_cv,
+                    to: arr_cv + 1,
+                });
+            }
             return Ok(());
         }
 
@@ -384,8 +446,12 @@ impl ProtoBuilder<'_> {
         // Destructure the fetched element into the pattern, if any.
         if let Some(pattern) = val_pattern {
             match pattern {
-                Expression::Array(arr) => self.destructure_into(arr.elements.iter(), val_cv)?,
-                Expression::List(lst) => self.destructure_into(lst.elements.iter(), val_cv)?,
+                Expression::Array(arr) => {
+                    self.destructure_into(arr.elements.iter(), val_cv, false)?
+                }
+                Expression::List(lst) => {
+                    self.destructure_into(lst.elements.iter(), val_cv, true)?
+                }
                 other => self.store_to_target(other, val_cv)?,
             }
         }
@@ -393,10 +459,7 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::Assign { cv, src: fetch_key });
         }
 
-        self.loops.push(LoopCtx {
-            finally_depth: self.finally_rets.len(),
-            ..LoopCtx::default()
-        });
+        self.loops.push(self.loop_ctx(false));
 
         self.enter_goto_scope(false);
         match &fe.body {
@@ -449,7 +512,15 @@ impl ProtoBuilder<'_> {
 
     pub(crate) fn compile_unset(&mut self, u: &crate::parse::cst::Unset) -> Result<(), Thrown> {
         for v in u.values.iter() {
+            self.ensure_writable(v, self.cur_line)?;
+            if matches!(v, Expression::ArrayAppend(ap) if crate::assign::is_globals_var(ap.array)) {
+                return Err(compile_error("Cannot use [] for unsetting", self.cur_line));
+            }
             check_globals_write(v, self.cur_line)?;
+            if is_this(v) {
+                return Err(compile_error("Cannot unset $this", self.cur_line));
+            }
+            self.check_write_chain(v, true, self.cur_line)?;
             match v {
                 Expression::Variable(Variable::Direct(d)) => {
                     // A CV can't be removed; null is observably equivalent to
@@ -479,6 +550,21 @@ impl ProtoBuilder<'_> {
                         Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }
                 }
+                Expression::Access(Access::StaticProperty(spa)) => {
+                    let class = self.class_ref(spa.class)?;
+                    let name = match self.static_prop_sel(&spa.property)? {
+                        Sel::Dyn(r) => r,
+                        Sel::Static(n) => {
+                            let r = self.alloc_temp();
+                            let k = self.intern_const(rhp_values::Value::Str(
+                                self.names[n as usize].clone(),
+                            ));
+                            self.emit(Instr::LoadConst { dst: r, k });
+                            r
+                        }
+                    };
+                    self.emit(Instr::UnsetStaticProp { class, name });
+                }
                 _ => {
                     return Err(Thrown::unsupported(
                         "unset target",
@@ -493,6 +579,14 @@ impl ProtoBuilder<'_> {
     pub(crate) fn compile_try(&mut self, t: &crate::parse::cst::Try) -> Result<(), Thrown> {
         use rhp_bytecode::{CatchArm, ExRegion};
         let has_finally = t.finally_clause.is_some();
+        if !has_finally && t.catch_clauses.is_empty() {
+            use mago_span::HasSpan;
+            let line = self.cx.line_of(t.span().start.offset);
+            return Err(compile_error(
+                "Cannot use try without catch or finally",
+                line,
+            ));
+        }
         if has_finally {
             self.finally_rets.push(Vec::new());
         }
@@ -508,6 +602,14 @@ impl ProtoBuilder<'_> {
         for clause in t.catch_clauses.iter() {
             let target = self.here();
             let classes = hint_class_names(self.cx, &clause.hint)?;
+            if clause
+                .variable
+                .as_ref()
+                .is_some_and(|v| strip_dollar(v.name) == b"this")
+            {
+                use mago_span::HasSpan;
+                return Err(reassign_this(self.cx.line_of(clause.span().start.offset)));
+            }
             let var_reg = clause
                 .variable
                 .as_ref()
@@ -570,29 +672,85 @@ impl ProtoBuilder<'_> {
         Ok(())
     }
 
+    /// zend_compile_break_continue: the level must be a positive integer
+    /// literal within the enclosing loops (compile errors otherwise).
     pub(crate) fn compile_break_continue(
         &mut self,
         level: Option<&Expression>,
         is_break: bool,
+        offset: u32,
     ) -> Result<(), Thrown> {
-        let n = match level {
-            None => 1usize,
-            Some(Expression::Literal(Literal::Integer(i))) => i.value.unwrap_or(1).max(1) as usize,
+        let kw = if is_break { "break" } else { "continue" };
+        let line = self.cx.line_of(offset);
+        let mut lit = level;
+        while let Some(Expression::Parenthesized(p)) = lit {
+            lit = Some(p.expression);
+        }
+        let n: u64 = match lit {
+            None => 1,
+            Some(Expression::Literal(Literal::Integer(i))) => match i.value {
+                Some(v) if v >= 1 && v <= i64::MAX as u64 => v,
+                _ => {
+                    return Err(compile_error(
+                        format!("'{kw}' operator accepts only positive integers"),
+                        line,
+                    ))
+                }
+            },
+            Some(Expression::Literal(_)) => {
+                return Err(compile_error(
+                    format!("'{kw}' operator accepts only positive integers"),
+                    line,
+                ))
+            }
             Some(_) => {
-                return Err(Thrown::error(
-                    "Error",
-                    "'break'/'continue' operator accepts only a constant integer level",
+                return Err(compile_error(
+                    format!("'{kw}' operator with non-integer operand is no longer supported"),
+                    line,
                 ))
             }
         };
-        let kw = if is_break { "break" } else { "continue" };
-        if n == 0 || self.loops.len() < n {
-            return Err(Thrown::error(
-                "Error",
-                format!("Cannot '{kw}' {n} level(s)"),
+        if self.loops.is_empty() {
+            return Err(compile_error(
+                format!("'{kw}' not in the 'loop' or 'switch' context"),
+                line,
             ));
         }
+        if (self.loops.len() as u64) < n {
+            let s = if n == 1 { "" } else { "s" };
+            return Err(compile_error(format!("Cannot '{kw}' {n} level{s}"), line));
+        }
+        let n = n as usize;
+        let target = &self.loops[self.loops.len() - n];
+        if target.finally_bodies < self.finally_bodies() {
+            // pass_two's zend_check_finally_breakout.
+            return Err(compile_error(
+                "jump out of a finally block is disallowed",
+                line,
+            ));
+        }
+        if !is_break && target.is_switch {
+            let outer = self.loops.len() > n;
+            let msg = match (n, outer) {
+                (1, false) => "\"continue\" targeting switch is equivalent to \"break\"".to_string(),
+                (1, true) => "\"continue\" targeting switch is equivalent to \"break\". Did you mean to use \"continue 2\"?".to_string(),
+                (n, false) => format!("\"continue {n}\" targeting switch is equivalent to \"break {n}\""),
+                (n, true) => format!(
+                    "\"continue {n}\" targeting switch is equivalent to \"break {n}\". Did you mean to use \"continue {}\"?",
+                    n + 1
+                ),
+            };
+            self.cx.diag(rhp_values::E_WARNING, offset, msg);
+        }
         let idx = self.loops.len() - n;
+        // The inner loops this leaves free their temps (FE_FREE).
+        let frees: Vec<Reg> = self.loops[idx + 1..]
+            .iter()
+            .filter_map(|l| l.free)
+            .collect();
+        for r in frees.into_iter().rev() {
+            self.emit(Instr::ClearTemps { from: r, to: r + 1 });
+        }
         let pos = self.code.len();
         if self.finally_rets.len() > self.loops[idx].finally_depth {
             self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close
@@ -617,6 +775,19 @@ impl ProtoBuilder<'_> {
         let subject = self.compile_expr(m.expression)?;
         let dst = self.alloc_temp();
         let arms: Vec<&MatchArm> = m.arms.iter().collect();
+        let mut has_default = false;
+        for arm in &arms {
+            if let MatchArm::Default(d) = arm {
+                if has_default {
+                    use mago_span::HasSpan;
+                    return Err(compile_error(
+                        "Match expressions may only contain one default arm",
+                        self.cx.line_of(d.span().start.offset),
+                    ));
+                }
+                has_default = true;
+            }
+        }
 
         // Dispatch: strict === against each arm condition, in order.
         let mut dispatch: Vec<(usize, usize, Reg)> = Vec::new();

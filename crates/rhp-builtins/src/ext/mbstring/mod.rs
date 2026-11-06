@@ -5,10 +5,12 @@
 //! around them: argument handling, the per-request settings (MBSTRG), the
 //! substring/position logic and encoding detection.
 //!
+//! The internal encoding follows the ini (mbstring.internal_encoding,
+//! internal_encoding, default_charset) through php's handlers and hook.
 //! Not ported yet: the functions rhp does not register (mb_ereg* and the
-//! other mbstring.c functions without a counterpart here), the mbstring.*
-//! ini handlers and php's internal-encoding hook (the internal encoding
-//! starts as UTF-8 and doesn't follow default_charset), and php's
+//! other mbstring.c functions without a counterpart here), the other
+//! mbstring.* ini handlers (detect_order, language, encoding_translation's
+//! request input conversion, substitute_character), and php's
 //! `IS_STR_VALID_UTF8` string flag (a shortcut
 //! that gives the same result for UTF-8 itself; for the UTF-8-Mobile
 //! variants php's answer can depend on it, and rhp takes the path php
@@ -65,6 +67,13 @@ struct State {
     /// `all_encodings_list`: the array `mb_list_encodings()` returns, kept
     /// so passing it back can be recognised.
     all_encodings: Option<PhpArray>,
+    /// `MBSTRG(internal_encoding)`: the ini's internal encoding (also
+    /// Zend's, for zend.multibyte).
+    ini_internal: Enc,
+    /// `internal_encoding_set` / `http_input_set`: mbstring.internal_encoding
+    /// / mbstring.http_input have a value of their own.
+    internal_encoding_set: bool,
+    http_input_set: bool,
 }
 
 impl State {
@@ -77,6 +86,9 @@ impl State {
             last_used: None,
             detect_order: default_detect_order(),
             all_encodings: None,
+            ini_internal: encodings::utf8(),
+            internal_encoding_set: false,
+            http_input_set: false,
         }
     }
 }
@@ -96,6 +108,195 @@ pub(crate) fn reset_state() {
 
 fn internal() -> Enc {
     st(|s| s.internal)
+}
+
+/// `MBSTRG(internal_encoding)`: the internal encoding the ini settings
+/// give (what zend.multibyte converts scripts to).
+pub(crate) fn ini_internal_encoding() -> Enc {
+    st(|s| s.ini_internal)
+}
+
+// ---------------------------------------------------------------------------
+// ini handlers
+// ---------------------------------------------------------------------------
+
+/// A directive's value (`None`: null).
+fn ini(name: &[u8]) -> Option<Vec<u8>> {
+    crate::ini_value(name).flatten()
+}
+
+/// php_get_internal_encoding / php_get_input_encoding (main.c): the
+/// directive, else default_charset, else UTF-8.
+fn php_encoding(name: &[u8]) -> Vec<u8> {
+    [ini(name), ini(b"default_charset")]
+        .into_iter()
+        .flatten()
+        .find(|v| !v.is_empty())
+        .unwrap_or_else(|| b"UTF-8".to_vec())
+}
+
+/// _php_mb_ini_mbstring_internal_encoding_set: an unknown name warns and
+/// falls back to UTF-8.
+fn internal_encoding_from(v: &[u8], diags: &mut Vec<(i64, String)>) -> Enc {
+    match Encoding::by_name(c_str(v)).filter(|_| !v.is_empty()) {
+        Some(enc) => enc,
+        None => {
+            let shown = String::from_utf8_lossy(c_str(v));
+            diags.push((
+                crate::E_WARNING,
+                format!("Unknown encoding \"{shown}\" in ini setting"),
+            ));
+            encodings::utf8()
+        }
+    }
+}
+
+/// _php_mb_ini_mbstring_http_input_set's check of the list.
+fn http_input_check(v: &[u8], diags: &mut Vec<(i64, String)>) {
+    if v == b"pass" {
+        return;
+    }
+    if let Err(item) = parse_encoding_list_raw(v) {
+        let shown = String::from_utf8_lossy(&item);
+        diags.push((
+            crate::E_WARNING,
+            format!("INI setting contains invalid encoding \"{shown}\""),
+        ));
+    }
+}
+
+/// mbstring's MINIT as far as the ini goes: the handlers of
+/// mbstring.http_input, http_output and internal_encoding (registration
+/// order), then mbstring_internal_encoding_changed_hook, then
+/// zend_multibyte_set_functions re-reading zend.script_encoding. Returns
+/// the diagnostics they raise (level, message).
+pub(crate) fn startup() -> Vec<(i64, String)> {
+    let mut d = Vec::new();
+    let deprecated = |d: &mut Vec<(i64, String)>, name: &str| {
+        d.push((
+            crate::E_DEPRECATED,
+            format!("Use of mbstring.{name} is deprecated"),
+        ));
+    };
+    let http_input = ini(b"mbstring.http_input");
+    if http_input.is_some() {
+        deprecated(&mut d, "http_input");
+    }
+    let http_input_set = http_input.as_ref().is_some_and(|v| !v.is_empty());
+    match &http_input {
+        Some(v) if http_input_set => http_input_check(v, &mut d),
+        _ => http_input_check(&php_encoding(b"input_encoding"), &mut d),
+    }
+    if ini(b"mbstring.http_output").is_some() {
+        deprecated(&mut d, "http_output");
+    }
+    let internal = ini(b"mbstring.internal_encoding");
+    if internal.is_some() {
+        deprecated(&mut d, "internal_encoding");
+    }
+    let internal_set = internal.as_ref().is_some_and(|v| !v.is_empty());
+    let mut enc = match &internal {
+        Some(v) if internal_set => internal_encoding_from(v, &mut d),
+        _ => internal_encoding_from(&php_encoding(b"internal_encoding"), &mut d),
+    };
+    // mbstring_internal_encoding_changed_hook
+    if !internal_set {
+        enc = internal_encoding_from(&php_encoding(b"internal_encoding"), &mut d);
+    }
+    if !http_input_set {
+        http_input_check(&php_encoding(b"input_encoding"), &mut d);
+    }
+    st(|s| {
+        s.internal = enc;
+        s.ini_internal = enc;
+        s.internal_encoding_set = internal_set;
+        s.http_input_set = http_input_set;
+    });
+    if crate::zend::multibyte::enabled() {
+        if let Some(v) = ini(b"zend.script_encoding") {
+            if let Err(item) = parse_encoding_list_raw(&v) {
+                let shown = String::from_utf8_lossy(&item);
+                d.push((
+                    crate::E_WARNING,
+                    format!("INI setting contains invalid encoding \"{shown}\""),
+                ));
+            }
+        }
+    }
+    d
+}
+
+/// mbstring_internal_encoding_changed_hook at runtime: internal_encoding,
+/// input_encoding, output_encoding or default_charset changed (`ini_set`),
+/// or mbstring.internal_encoding did. The handlers' diagnostics.
+pub(crate) fn ini_changed(name: &[u8]) -> Vec<(i64, String)> {
+    let mut d = Vec::new();
+    if name == b"mbstring.internal_encoding" {
+        deprecated_ini(&mut d, "internal_encoding");
+        let v = ini(name).unwrap_or_default();
+        let set = !v.is_empty();
+        let src = if set {
+            v
+        } else {
+            php_encoding(b"internal_encoding")
+        };
+        let enc = internal_encoding_from(&src, &mut d);
+        st(|s| {
+            s.internal = enc;
+            s.ini_internal = enc;
+            s.internal_encoding_set = set;
+        });
+        return d;
+    }
+    if !matches!(
+        name,
+        b"internal_encoding" | b"input_encoding" | b"output_encoding" | b"default_charset"
+    ) {
+        return d;
+    }
+    if !st(|s| s.internal_encoding_set) {
+        let enc = internal_encoding_from(&php_encoding(b"internal_encoding"), &mut d);
+        st(|s| {
+            s.internal = enc;
+            s.ini_internal = enc;
+        });
+    }
+    if !st(|s| s.http_input_set) {
+        http_input_check(&php_encoding(b"input_encoding"), &mut d);
+    }
+    d
+}
+
+// ---------------------------------------------------------------------------
+// zend.multibyte (php_mb_zend_encoding_* callbacks)
+// ---------------------------------------------------------------------------
+
+/// The script encodings zend.script_encoding lists (`None`: unset or
+/// invalid).
+pub(crate) fn script_encoding_list() -> Option<Vec<Enc>> {
+    let v = ini(b"zend.script_encoding")?;
+    parse_encoding_list_raw(&v).ok().filter(|l| !l.is_empty())
+}
+
+/// php_mb_zend_encoding_detector over `list`.
+pub(crate) fn detect_script_encoding(src: &[u8], list: &[Enc]) -> Option<Enc> {
+    if list.len() == 1 && list[0] == encodings::pass() {
+        return None;
+    }
+    guess_encoding(&[src], list, false, false)
+}
+
+/// php_mb_zend_encoding_converter.
+pub(crate) fn convert_script(src: &[u8], to: Enc, from: Enc) -> Vec<u8> {
+    let (mode, subst) = illegal_settings();
+    mbfl::fast_convert(src, from, to, subst, mode).0
+}
+
+fn deprecated_ini(d: &mut Vec<(i64, String)>, name: &str) {
+    d.push((
+        crate::E_DEPRECATED,
+        format!("Use of mbstring.{name} is deprecated"),
+    ));
 }
 
 fn illegal_settings() -> (u32, u32) {
@@ -275,6 +476,21 @@ fn enc_arg(host: &mut dyn Host, args: &[Value], i: usize, fname: &str) -> Result
 /// enclosing double quotes allowed); "auto" (or any prefix of it, as php's
 /// strncasecmp compares) adds the default detect order once.
 fn parse_encoding_list(list: &[u8], fname: &str, i: usize) -> Result<Vec<Enc>, Thrown> {
+    parse_encoding_list_raw(list).map_err(|item| {
+        value_error(
+            fname,
+            i,
+            &format!(
+                "contains invalid encoding \"{}\"",
+                String::from_utf8_lossy(c_str(&item))
+            ),
+        )
+    })
+}
+
+/// php_mb_parse_encoding_list: the encodings, or the first item that
+/// names none.
+fn parse_encoding_list_raw(list: &[u8]) -> Result<Vec<Enc>, Vec<u8>> {
     if list.is_empty() {
         return Ok(Vec::new());
     }
@@ -305,14 +521,7 @@ fn parse_encoding_list(list: &[u8], fname: &str, i: usize) -> Result<Vec<Enc>, T
             }
         } else {
             let Some(enc) = Encoding::by_name_ex(item) else {
-                return Err(value_error(
-                    fname,
-                    i,
-                    &format!(
-                        "contains invalid encoding \"{}\"",
-                        String::from_utf8_lossy(c_str(item))
-                    ),
-                ));
+                return Err(item.to_vec());
             };
             out.push(enc);
         }

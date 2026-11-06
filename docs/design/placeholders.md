@@ -31,7 +31,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 4 | `error_reporting` — always returns `32767` | `php_fns.rs:154` | reads/writes of the mask; no effect either way | low | low |
 | 5 | ~~`register_shutdown_function` — accepted, never invoked~~ **done**: run by `Vm::run_main` (then destructors, then `ob_*` flush) | — | shutdown hooks, fatal-error handlers, flush-on-exit | — | — |
 | 6 | `memory_get_usage`/`_peak_usage` — fixed `2097152` | `php_fns.rs:167` | memory probes, `ini` memory-limit logic | low | low |
-| 7 | `gc_*`, `set_time_limit` — no-ops | `php_fns.rs:445` | none observable (cosmetic) | low | low |
+| 7 | `gc_*` — no-ops (~~`set_time_limit`~~ **done**: max_execution_time, `zend/timeout.rs`) | `php_fns.rs:445` | none observable (cosmetic) | low | low |
 | 8 | `setlocale` — always `"C"` | `php_fns.rs:187` | locale-dependent formatting | low | low |
 | 9 | `php_uname` — hardcoded Darwin/arm64 strings | `php_fns.rs:81` | platform probes on non-macOS hosts | low | low |
 | 10 | `extension_loaded('reflection')` → true, **no Reflection class exists** | `php_fns.rs:42` | `class_exists`/Reflection-gated code paths lie | med | high |
@@ -61,8 +61,8 @@ priority order rather than rediscovered one framework crash at a time.
 | 34 | Named args to functions whose defaults don't fold — refused | `compiler/lib.rs:3284` | named-arg calls skipping non-constant-default params | med | med |
 | 35 | ~~Arithmetic on a leading-numeric string — no "A non-numeric value encountered" warning~~ — RESOLVED (§7.2) | VM arithmetic | — | — | — |
 | 36 | ~~Builtin `int`/`int\|float` parameters accept leading-numeric strings~~ — RESOLVED (the VM's zpp, `vm/zpp.rs`) | builtin argument parsing | — | — | — |
-| 37 | Named arguments to builtins — refused (`RHP_UNSUPPORTED`) | `vm/lib.rs` (call setup) | `str_replace(search: …)` and every other named builtin call | med | high |
-| 38 | `metaphone()` — not implemented | — | callers get "Call to undefined function" | low | low |
+| 37 | ~~Named arguments to builtins — refused (`RHP_UNSUPPORTED`)~~ RESOLVED (§8.4) | `vm/calls.rs` | — | — | — |
+| 38 | ~~`metaphone()` — not implemented~~ — **done** (`ext/standard/metaphone.rs`) | — | — | — | — |
 | 39 | Typed class constant compatibility — no autoload, types only for traits (§8.5) | `vm/const_link.rs` | a redeclaration whose check needs a class an autoloader would load | low | low |
 
 ---
@@ -166,10 +166,11 @@ The original notes:
   — document it as "best-effort, not php-identical" rather than chase parity.
 - **Effort/priority:** low / low.
 
-### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`, `set_time_limit`
-- **Now:** no-ops (`true`/`true`/`0`/`true`) (`php_fns.rs:445-448`).
-- **OK because:** rhp uses `Rc` + the planned cycle story is separate; there is no
-  settable time limit.
+### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`
+- **Now:** no-ops (`true`/`true`/`0`) (`php_fns.rs:445-448`). `set_time_limit`
+  is real now: it sets max_execution_time, whose timer
+  (`rhp_builtins::zend::timeout`) the command-line SAPIs arm.
+- **OK because:** rhp uses `Rc` + the planned cycle story is separate.
 - **Full impl:** `gc_collect_cycles` could return a real freed-count if/when a
   cycle collector exists; otherwise these are permanently cosmetic. Leave as-is.
 - **Effort/priority:** low / low (likely never).
@@ -261,9 +262,9 @@ The original notes:
   is global/unsafe). Simple map on the `Vm`.
 - **Effort/priority:** low / med.
 
-### 1.14 `metaphone()` — not implemented
-- **Now:** "Call to undefined function metaphone()". `tests/golden/corpus/strings.php`
-  leaves it out; add it back with the function.
+### 1.14 `metaphone()` — RESOLVED
+- Ported from ext/standard/metaphone.c (`ext/standard/metaphone.rs`);
+  `tests/golden/stdlib/strings/codecs_misc.php` covers it.
 
 ---
 
@@ -610,14 +611,16 @@ The module is deliberately "READ-ONLY, native format only"
   into a string in place reaches the builtin unconverted (a string per
   call costs too much); a trace taken during the call shows the string.
 - **Left:** past the first parameter whose checks are still a builtin
-  body's (a callable, an object or class type, an iterable, a function
-  whose parse is in a helper or follows code that may raise), the VM only
+  body's (an object or class type, an iterable, a function whose parse
+  is in a helper or follows code that may raise), the VM only
   does the object, array and null checks, so php's order of errors holds;
   the body coerces the rest itself. There a null argument still gets the
   weak-mode deprecation under `strict_types` (`array_filter($a, null,
   null)`, `preg_replace_callback(…, null)`; php throws the TypeError), and
-  a scalar is not coerced or checked strictly. Modelling `Z_PARAM_FUNC`
-  and the object parses in the VM would lift most of it. Bodies that
+  a scalar is not coerced or checked strictly. A `callable`/`?callable`
+  parameter is the VM's (`Z_PARAM_FUNC`: zend_is_callable_ex with its
+  deprecations, "must be a valid callback[ or null], …"); modelling the
+  object parses in the VM would lift most of the rest. Bodies that
   still differ from php for values zpp accepts: `number_format()` of NAN,
   INF and huge floats, and `iterator_to_array()` of a scalar (the golden
   skips those).
@@ -632,16 +635,22 @@ The module is deliberately "READ-ONLY, native format only"
   `xml_parser_free`, …) raise it in the body, so a prelude parameter's
   TypeError still comes first there (`utf8_encode([])`).
 
-### 8.4 Named arguments to builtins — refused
-- **Now:** a call with named arguments to a builtin function stops with
-  `RHP_UNSUPPORTED: named arguments to a builtin function is not supported
-  (deferred)` (`vm/lib.rs`, both call paths).
-- **Workaround:** `tests/golden/corpus/namedargs.php` keeps only named
-  arguments to user functions; restore the `str_replace(search: …)` lines
-  when this lands.
-- **Full impl:** map names to positions with the builtin's arginfo (the
-  generated signatures already hold parameter names) and fill skipped
-  optional parameters with their defaults.
+### 8.4 Named arguments to builtins — RESOLVED
+- `Vm::place_builtin_named_args` places them from the stub arginfo
+  (zend_handle_named_arg + zend_handle_undef_args): a skipped optional
+  parameter gets its stub default (evaluated as Reflection does), `= UNKNOWN`
+  ones raise "must be passed explicitly, because the default value is not
+  known". Unknown names to a variadic builtin are kept and refused by zpp
+  after the count check (they show in the trace); `call_user_func` forwards
+  them. Native `Closure` and `Generator` methods use their `m(...)` rows.
+  Goldens `lang/named_args_builtins`, `corpus/namedargs`.
+- By-reference parameters by name are resolved at compile time for a
+  function the compiler knows (a function of the file or a builtin). For
+  any other callee a plain variable travels as a reference, as in a
+  method's argument window, unless a later argument may change it (then
+  by value). **Left:** a property or element passed by name to such a
+  callee, or a variable followed by such an argument, goes by value (php's
+  CHECK_FUNC_ARG by name).
 
 ### 8.5 Typed class constant compatibility — no autoload
 - **Now:** linking checks a redeclared typed constant (and a trait's

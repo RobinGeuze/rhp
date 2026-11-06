@@ -251,6 +251,7 @@ fn request(front: &Path, opcache: &str) -> Vec<u8> {
             }),
             php_binary: None,
             cwd: None,
+            ini_files: None,
         },
     );
     assert_eq!(outcome, Outcome::Exit(0));

@@ -264,6 +264,7 @@ Rules: `array (` on one line. Indent = 2 spaces × depth. Every element line end
 - `2 ** 0.5` → `float(1.4142135623730951)`
 - `2 ** 63` → `float(9.223372036854776E+18)` (exceeds int range → float)
 - `-2 ** 2` → `int(-4)` (parsed as `-(2 ** 2)`)
+- `0 ** -1` → `float(INF)` + `Deprecated: Power of base 0 and negative exponent is deprecated` (also `pow()`; never folded at compile time). `pow()` is the operator: same errors and overloads.
 
 **Bitwise** (integer):
 - `5 & 3` → `int(1)`, `5 | 2` → `int(7)`, `5 ^ 1` → `int(4)`

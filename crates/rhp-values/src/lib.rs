@@ -198,9 +198,48 @@ pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
     pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
-    /// Native state (see [`Payload`]). Boxed so that objects without one
-    /// pay a pointer.
-    native: Option<Box<Payload>>,
+    /// Rarely used state: the native payload and the lazy object info.
+    /// Boxed so that objects with neither pay a pointer.
+    extra: Option<Box<ObjectExtra>>,
+}
+
+/// See [`ObjectData::payload`] and [`ObjectData::lazy`].
+#[derive(Default)]
+struct ObjectExtra {
+    /// Native state (see [`Payload`]).
+    native: Option<Payload>,
+    /// Lazy object state (php's IS_OBJ_LAZY_* flags plus its
+    /// `zend_lazy_object_info`).
+    lazy: Option<LazyInfo>,
+}
+
+/// A lazy object's state (Zend/zend_lazy_objects.c). php keeps the info in
+/// a table keyed by handle; here it lives with the object, so it goes away
+/// with it.
+pub struct LazyInfo {
+    /// php's object flags: [`LazyInfo::UNINIT`] and [`LazyInfo::PROXY`].
+    /// Both are clear while the initializer runs (re-entrancy guard), which
+    /// is when the info exists but the object is not lazy.
+    pub obj_flags: u8,
+    /// php's `zend_lazy_object_flags_t` (`STRATEGY_*`, `INITIALIZED`,
+    /// `SKIP_*`).
+    pub flags: u8,
+    /// The initializer or factory (until a proxy is initialized).
+    pub initializer: Value,
+    /// An initialized proxy's real instance.
+    pub instance: Option<ObjectHandle>,
+    /// Storage keys of the declared slots still lazy (IS_PROP_LAZY).
+    pub lazy_props: Vec<PhpStr>,
+}
+
+impl LazyInfo {
+    pub const UNINIT: u8 = 1;
+    pub const PROXY: u8 = 2;
+    pub const STRATEGY_PROXY: u8 = 1 << 0;
+    pub const STRATEGY_GHOST: u8 = 1 << 1;
+    pub const INITIALIZED: u8 = 1 << 2;
+    pub const SKIP_INITIALIZATION_ON_SERIALIZE: u8 = 1 << 3;
+    pub const SKIP_DESTRUCTOR: u8 = 1 << 4;
 }
 
 /// The native state an internal class keeps with each of its objects: what
@@ -239,35 +278,90 @@ impl ObjectData {
             class,
             id,
             properties,
-            native: None,
+            extra: None,
+        }
+    }
+
+    /// The lazy object state; `None` for ordinary objects.
+    #[inline]
+    pub fn lazy(&self) -> Option<&LazyInfo> {
+        self.extra.as_deref()?.lazy.as_ref()
+    }
+
+    /// The lazy object state, mutably.
+    #[inline]
+    pub fn lazy_mut(&mut self) -> Option<&mut LazyInfo> {
+        self.extra.as_deref_mut()?.lazy.as_mut()
+    }
+
+    /// Make the object lazy with `info`, returning the previous state.
+    pub fn set_lazy(&mut self, info: LazyInfo) -> Option<LazyInfo> {
+        self.extra
+            .get_or_insert_with(Default::default)
+            .lazy
+            .replace(info)
+    }
+
+    /// Drop the lazy state (returned, to drop after the borrow ends).
+    pub fn take_lazy(&mut self) -> Option<LazyInfo> {
+        let extra = self.extra.as_deref_mut()?;
+        let l = extra.lazy.take();
+        if extra.native.is_none() {
+            self.extra = None;
+        }
+        l
+    }
+
+    /// php's zend_object_is_lazy (uninitialized, or a proxy).
+    #[inline]
+    pub fn is_lazy(&self) -> bool {
+        self.lazy().is_some_and(|l| l.obj_flags != 0)
+    }
+
+    /// An uninitialized lazy object (`!zend_lazy_object_initialized`).
+    #[inline]
+    pub fn is_lazy_uninit(&self) -> bool {
+        self.lazy()
+            .is_some_and(|l| l.obj_flags & LazyInfo::UNINIT != 0)
+    }
+
+    /// An initialized lazy proxy's real instance.
+    pub fn lazy_instance(&self) -> Option<ObjectHandle> {
+        let l = self.lazy()?;
+        if l.obj_flags == LazyInfo::PROXY {
+            l.instance.clone()
+        } else {
+            None
         }
     }
 
     /// The object's native state, when it is a `T`.
     pub fn payload<T: std::any::Any>(&self) -> Option<Rc<T>> {
-        self.native.as_deref()?.clone().downcast::<T>().ok()
+        self.extra.as_deref()?.native.clone()?.downcast::<T>().ok()
     }
 
     /// Whether the object carries native state.
     pub fn has_payload(&self) -> bool {
-        self.native.is_some()
+        self.extra.as_deref().is_some_and(|e| e.native.is_some())
     }
 
     /// Attach native state, returning the previous one. Drop that after the
     /// object borrow is released: its `Drop` may touch other objects.
     pub fn set_payload(&mut self, state: Payload) -> Option<Payload> {
-        match &mut self.native {
-            Some(slot) => Some(std::mem::replace(&mut **slot, state)),
-            None => {
-                self.native = Some(Box::new(state));
-                None
-            }
-        }
+        self.extra
+            .get_or_insert_with(Default::default)
+            .native
+            .replace(state)
     }
 
     /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
     pub fn take_payload(&mut self) -> Option<Payload> {
-        self.native.take().map(|b| *b)
+        let extra = self.extra.as_deref_mut()?;
+        let p = extra.native.take();
+        if extra.lazy.is_none() {
+            self.extra = None;
+        }
+        p
     }
 }
 
@@ -278,6 +372,19 @@ thread_local! {
     static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
 }
 
+/// The object an initialized lazy proxy forwards to (php's
+/// zend_get_properties_no_lazy_init target); `h` itself otherwise.
+pub fn lazy_target(h: &ObjectHandle) -> ObjectHandle {
+    let mut cur = h.clone();
+    loop {
+        let next = cur.borrow().lazy_instance();
+        match next {
+            Some(i) => cur = i,
+            None => return cur,
+        }
+    }
+}
+
 /// Install the object free hook (see [`ObjectData`]'s `Drop`).
 pub fn set_object_free_hook(f: fn(u32)) {
     OBJECT_FREE_HOOK.with(|h| h.set(Some(f)));
@@ -285,8 +392,12 @@ pub fn set_object_free_hook(f: fn(u32)) {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
-        // php's free_obj: the native state goes first, then the properties.
-        drop(self.native.take());
+        // php's free_obj: the native state goes first, then the lazy
+        // info (zend_object_std_dtor), then the properties.
+        if let Some(mut extra) = self.extra.take() {
+            drop(extra.native.take());
+            drop(extra.lazy.take());
+        }
         // `try_with`: thread-local teardown may already have run.
         if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
             f(self.id);
@@ -372,6 +483,16 @@ impl PhpStr {
     /// Mutable access when this is the only handle to the buffer.
     pub fn get_mut(&mut self) -> Option<&mut BString> {
         Rc::get_mut(&mut self.0)
+    }
+
+    /// How many values share this buffer (debug_zval_dump's refcount).
+    pub fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+
+    /// Whether both share one buffer.
+    pub fn ptr_eq(&self, other: &PhpStr) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -612,6 +733,11 @@ impl PhpArray {
 
     pub fn len(&self) -> usize {
         self.0.entries.len()
+    }
+
+    /// How many values share this storage (debug_zval_dump's refcount).
+    pub fn ref_count(&self) -> usize {
+        Rc::strong_count(&self.0)
     }
 
     pub fn is_empty(&self) -> bool {

@@ -9,7 +9,7 @@ use rhp_values::Thrown;
 
 use crate::builder::ProtoBuilder;
 use crate::oop::Sel;
-use crate::util::{compile_error, strip_dollar};
+use crate::util::{compile_error, is_this, reassign_this, strip_dollar};
 
 /// A step in an lvalue path (compiler-side; key regs are pre-evaluated).
 pub(crate) enum CursorStep {
@@ -64,6 +64,179 @@ pub(crate) fn check_globals_write(target: &Expression, line: u32) -> Result<(), 
     }
 }
 
+/// zend_verify_list_assign_target.
+fn verify_list_target(target: &Expression, list_style: bool, line: u32) -> Result<(), Thrown> {
+    match target {
+        Expression::LegacyArray(_) => Err(compile_error(
+            "Cannot assign to array(), use [] instead",
+            line,
+        )),
+        Expression::Array(_) if list_style => Err(compile_error("Cannot mix [] and list()", line)),
+        Expression::List(_) if !list_style => Err(compile_error("Cannot mix [] and list()", line)),
+        Expression::Array(_) | Expression::List(_) => Ok(()),
+        // `[&$x]`: by-reference elements are checked where they are compiled.
+        e if as_reference(e).is_some() => Ok(()),
+        e if !can_write_to_variable(e) => Err(compile_error(
+            "Assignments can only happen to writable values",
+            line,
+        )),
+        _ => Ok(()),
+    }
+}
+
+impl ProtoBuilder<'_> {
+    /// A call php compiles to an opcode with a temporary result in a write
+    /// context (zend_try_compile_special_func with BP_VAR_W): no container
+    /// to write to. Each builtin has its own shape; any other call returns
+    /// a VAR that php separates.
+    pub(crate) fn is_builtin_call(&self, e: &Expression) -> bool {
+        use crate::parse::cst::{Argument, Call, Identifier, Literal};
+        let Expression::Call(Call::Function(fc)) = e else {
+            return false;
+        };
+        let name: &[u8] = match fc.function {
+            Expression::Identifier(Identifier::FullyQualified(f)) => &f.value[1..],
+            Expression::Identifier(Identifier::Local(l)) if self.cx.cur_ns().is_empty() => l.value,
+            _ => return false,
+        };
+        let mut args = Vec::new();
+        for a in fc.argument_list.arguments.iter() {
+            match a {
+                Argument::Positional(p) if p.ellipsis.is_none() => args.push(p.value),
+                _ => return false,
+            }
+        }
+        let n = args.len();
+        let in_function = self.scope_kind != crate::builder::ScopeKind::Main;
+        let lit = |e: &Expression| matches!(e, Expression::Literal(_));
+        match name.to_ascii_lowercase().as_slice() {
+            b"strlen" | b"is_null" | b"is_bool" | b"is_long" | b"is_int" | b"is_integer"
+            | b"is_float" | b"is_double" | b"is_string" | b"is_array" | b"is_object"
+            | b"is_resource" | b"is_scalar" | b"boolval" | b"intval" | b"floatval"
+            | b"doubleval" | b"strval" | b"count" | b"sizeof" | b"gettype" => n == 1,
+            b"defined" => {
+                n == 1
+                    && match args[0] {
+                        Expression::Literal(Literal::String(s)) => !s
+                            .value
+                            .unwrap_or(s.raw)
+                            .iter()
+                            .any(|&b| b == b'\\' || b == b':'),
+                        other => lit(other),
+                    }
+            }
+            b"get_class" => n <= 1,
+            b"get_called_class" => n == 0,
+            b"func_num_args" | b"func_get_args" => n == 0 && in_function,
+            b"array_key_exists" => n == 2,
+            b"array_slice" => {
+                in_function
+                    && n == 2
+                    && matches!(args[1], Expression::Literal(Literal::Integer(_)))
+                    && matches!(args[0], Expression::Call(Call::Function(inner))
+                        if inner.argument_list.arguments.is_empty()
+                            && matches!(inner.function, Expression::Identifier(id)
+                                if { let n = crate::names::identifier_name(id);
+                                    n.strip_prefix(b"\\").unwrap_or(n)
+                                        .eq_ignore_ascii_case(b"func_get_args") }))
+            }
+            b"in_array" => {
+                let strict = match n {
+                    2 => false,
+                    3 => match args[2] {
+                        Expression::Literal(l) => {
+                            rhp_values::conv::to_bool(&crate::fold::literal_value(l))
+                        }
+                        Expression::ConstantAccess(ca) => match self.ct_constant(&ca.name) {
+                            Some(v) => rhp_values::conv::to_bool(&v),
+                            None => return false,
+                        },
+                        _ => return false,
+                    },
+                    _ => return false,
+                };
+                self.in_array_haystack_ok(args[1], strict)
+            }
+            b"sprintf" => n >= 1 && sprintf_is_rope(self.cx, args[0], n - 1),
+            _ => false,
+        }
+    }
+}
+
+/// zend_compile_func_sprintf's shape: a constant format under 256 bytes of
+/// only `%s`, `%d` and `%%`, with one value per placeholder.
+fn sprintf_is_rope(cx: &crate::file::FileCtx, format: &Expression, values: usize) -> bool {
+    let Ok(rhp_values::Value::Str(f)) = crate::fold::fold_const(cx, format) else {
+        return false;
+    };
+    let f = f.as_bytes();
+    if f.len() >= 256 {
+        return false;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i < f.len() {
+        if f[i] == b'%' {
+            match f.get(i + 1) {
+                Some(b's' | b'd') => count += 1,
+                Some(b'%') => {}
+                _ => return false,
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    count == values
+}
+
+/// zend_is_variable.
+pub(crate) fn is_variable(e: &Expression) -> bool {
+    matches!(
+        e,
+        Expression::Variable(_)
+            | Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(
+                Access::Property(_) | Access::NullSafeProperty(_) | Access::StaticProperty(_)
+            )
+    )
+}
+
+/// zend_is_call.
+pub(crate) fn is_call(e: &Expression) -> bool {
+    matches!(e, Expression::Call(_) | Expression::Pipe(_))
+}
+
+/// zend_ast_is_short_circuited: a nullsafe operator in the chain.
+pub(crate) fn is_short_circuited(e: &Expression) -> bool {
+    use crate::parse::cst::Call;
+    match e {
+        Expression::ArrayAccess(aa) => is_short_circuited(aa.array),
+        Expression::ArrayAppend(ap) => is_short_circuited(ap.array),
+        Expression::Access(Access::Property(pa)) => is_short_circuited(pa.object),
+        Expression::Access(Access::StaticProperty(sp)) => is_short_circuited(sp.class),
+        Expression::Access(Access::NullSafeProperty(_)) => true,
+        Expression::Call(Call::NullSafeMethod(_)) => true,
+        Expression::Call(Call::Method(mc)) => is_short_circuited(mc.object),
+        Expression::Call(Call::StaticMethod(sc)) => is_short_circuited(sc.class),
+        _ => false,
+    }
+}
+
+/// zend_can_write_to_variable.
+pub(crate) fn can_write_to_variable(mut e: &Expression) -> bool {
+    loop {
+        match e {
+            Expression::ArrayAccess(aa) => e = aa.array,
+            Expression::ArrayAppend(ap) => e = ap.array,
+            Expression::Access(Access::Property(pa)) => e = pa.object,
+            _ => break,
+        }
+    }
+    (is_variable(e) || is_call(e)) && !is_short_circuited(e)
+}
+
 /// If `e` is a `&$lvalue` reference-prefix expression, return the referenced
 /// operand (used for by-reference array elements `[k => &$v]`).
 pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'a>> {
@@ -77,19 +250,127 @@ pub(crate) fn as_reference<'a>(e: &'a Expression<'a>) -> Option<&'a Expression<'
 }
 
 impl ProtoBuilder<'_> {
-    /// Assign the elements of `src` (an array value) to a destructuring pattern.
+    /// zend_ensure_writable_variable.
+    pub(crate) fn ensure_writable(&self, e: &Expression, line: u32) -> Result<(), Thrown> {
+        use crate::parse::cst::Call;
+        match e {
+            Expression::Call(Call::Function(_)) | Expression::Pipe(_) => Err(compile_error(
+                "Can't use function return value in write context",
+                line,
+            )),
+            Expression::Call(_) => Err(compile_error(
+                "Can't use method return value in write context",
+                line,
+            )),
+            e if is_short_circuited(e) => Err(compile_error(
+                "Can't use nullsafe operator in write context",
+                line,
+            )),
+            e if is_globals_var(e) => Err(compile_error(
+                "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax",
+                line,
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The container checks of compiling `e` for writing (BP_VAR_W, or
+    /// BP_VAR_UNSET when `unset`): zend_delayed_compile_dim/prop on their
+    /// base, zend_separate_if_call_and_write.
+    pub(crate) fn check_write_chain(
+        &self,
+        e: &Expression,
+        unset: bool,
+        line: u32,
+    ) -> Result<(), Thrown> {
+        let base = match e {
+            Expression::Parenthesized(p) => {
+                return self.check_write_chain(p.expression, unset, line)
+            }
+            Expression::ArrayAccess(aa) => aa.array,
+            Expression::ArrayAppend(ap) => {
+                if unset {
+                    return Err(compile_error("Cannot use [] for unsetting", line));
+                }
+                ap.array
+            }
+            Expression::Access(Access::Property(pa)) => pa.object,
+            _ => return Ok(()),
+        };
+        self.check_write_base(base, unset, line)
+    }
+
+    fn check_write_base(&self, b: &Expression, unset: bool, line: u32) -> Result<(), Thrown> {
+        match b {
+            Expression::Parenthesized(p) => self.check_write_base(p.expression, unset, line),
+            Expression::Variable(_) | Expression::Access(Access::StaticProperty(_)) => Ok(()),
+            Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+            | Expression::Access(Access::Property(_)) => self.check_write_chain(b, unset, line),
+            // Reported by ensure_writable on the whole target.
+            Expression::Access(Access::NullSafeProperty(_)) => Ok(()),
+            e if self.is_builtin_call(e) => Err(compile_error(
+                "Cannot use result of built-in function in write context",
+                line,
+            )),
+            Expression::Call(_) | Expression::Pipe(_) => Ok(()),
+            _ => Err(compile_error(
+                "Cannot use temporary expression in write context",
+                line,
+            )),
+        }
+    }
+
+    /// Both checks for an assignment-like target.
+    pub(crate) fn check_write_target(&self, e: &Expression, line: u32) -> Result<(), Thrown> {
+        self.ensure_writable(e, line)?;
+        self.check_write_chain(e, false, line)
+    }
+
+    /// Assign the elements of `src` (an array value) to a destructuring
+    /// pattern, with zend_compile_list_assign's compile-time checks;
+    /// `list_style` is `list(...)` rather than `[...]`.
     pub(crate) fn destructure_into<'a>(
         &mut self,
-        elements: impl Iterator<Item = &'a ArrayElement<'a>>,
+        elements: impl Iterator<Item = &'a ArrayElement<'a>> + Clone,
         src: Reg,
+        list_style: bool,
     ) -> Result<(), Thrown> {
+        let line = self.cur_line;
+        let is_keyed = elements
+            .clone()
+            .find(|e| !matches!(e, ArrayElement::Missing(_)))
+            .is_some_and(|e| matches!(e, ArrayElement::KeyValue(_)));
+        let mixed = || {
+            compile_error(
+                "Cannot mix keyed and unkeyed array entries in assignments",
+                line,
+            )
+        };
+        let mut has_elems = false;
         let mut idx: i64 = 0;
         for el in elements {
             match el {
+                ArrayElement::Missing(_) if is_keyed => {
+                    return Err(compile_error(
+                        "Cannot use empty array entries in keyed array assignment",
+                        line,
+                    ))
+                }
                 ArrayElement::Missing(_) => idx += 1,
+                ArrayElement::Variadic(_) => {
+                    return Err(compile_error(
+                        "Spread operator is not supported in assignments",
+                        line,
+                    ))
+                }
+                ArrayElement::Value(_) if is_keyed => return Err(mixed()),
+                ArrayElement::KeyValue(_) if !is_keyed => return Err(mixed()),
                 ArrayElement::Value(v) => {
+                    has_elems = true;
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadInt { dst: key, n: idx });
+                    verify_list_target(v.value, list_style, line)?;
                     let val = self.alloc_temp();
                     self.emit(Instr::DimFetchList {
                         dst: val,
@@ -100,7 +381,9 @@ impl ProtoBuilder<'_> {
                     idx += 1;
                 }
                 ArrayElement::KeyValue(kv) => {
+                    has_elems = true;
                     let key = self.compile_expr(kv.key)?;
+                    verify_list_target(kv.value, list_style, line)?;
                     let val = self.alloc_temp();
                     self.emit(Instr::DimFetchList {
                         dst: val,
@@ -109,10 +392,10 @@ impl ProtoBuilder<'_> {
                     });
                     self.store_to_target(kv.value, val)?;
                 }
-                ArrayElement::Variadic(_) => {
-                    return Err(Thrown::unsupported("spread in destructuring", "deferred"))
-                }
             }
+        }
+        if !has_elems {
+            return Err(compile_error("Cannot use empty list", line));
         }
         Ok(())
     }
@@ -121,13 +404,19 @@ impl ProtoBuilder<'_> {
     /// array element, or property).
     pub(crate) fn store_to_target(&mut self, target: &Expression, src: Reg) -> Result<(), Thrown> {
         check_globals_write(target, self.cur_line)?;
+        if is_this(target) {
+            return Err(reassign_this(self.cur_line));
+        }
+        if !matches!(target, Expression::Array(_) | Expression::List(_)) {
+            self.check_write_target(target, self.cur_line)?;
+        }
         match target {
             Expression::Variable(Variable::Direct(d)) => {
                 let cv = self.cv(strip_dollar(d.name));
                 self.emit(Instr::Assign { cv, src });
             }
-            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src)?,
-            Expression::List(lst) => self.destructure_into(lst.elements.iter(), src)?,
+            Expression::Array(arr) => self.destructure_into(arr.elements.iter(), src, false)?,
+            Expression::List(lst) => self.destructure_into(lst.elements.iter(), src, true)?,
             Expression::ArrayAccess(_)
             | Expression::ArrayAppend(_)
             | Expression::Variable(_)
@@ -198,9 +487,9 @@ impl ProtoBuilder<'_> {
             // at the temporary; objects are handles, so writes through one land
             // in the shared object (an `ArrayAccess` root goes to `offsetSet`).
             Expression::Call(_) => Ok(LvalRoot::Cv(self.compile_expr(target)?)),
-            _ => Err(Thrown::error(
-                "Error",
+            _ => Err(compile_error(
                 "Cannot use temporary expression in write context",
+                self.cur_line,
             )),
         }
     }
@@ -235,6 +524,20 @@ impl ProtoBuilder<'_> {
             ));
         }
         check_globals_write(src, self.cur_line)?;
+        if is_variable(src) {
+            if is_short_circuited(src) {
+                return Err(compile_error(
+                    "Cannot take reference of a nullsafe chain",
+                    self.cur_line,
+                ));
+            }
+            self.check_write_chain(src, false, self.cur_line)?;
+        } else if self.is_builtin_call(src) {
+            return Err(compile_error(
+                "Cannot use result of built-in function in write context",
+                self.cur_line,
+            ));
+        }
         match src {
             Expression::Variable(Variable::Direct(v)) => {
                 let name = strip_dollar(v.name);
@@ -276,16 +579,27 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         let result_unused = std::mem::take(&mut self.result_unused);
         check_globals_write(a.lhs, self.cur_line)?;
+        if is_this(a.lhs)
+            && matches!(
+                a.operator,
+                AssignmentOperator::Assign(_) | AssignmentOperator::Coalesce(_)
+            )
+        {
+            return Err(reassign_this(self.cur_line));
+        }
+        if !matches!(a.lhs, Expression::Array(_) | Expression::List(_)) {
+            self.check_write_target(a.lhs, self.cur_line)?;
+        }
         // Destructuring: `[$a, $b] = ...` / `list($a, $b) = ...`.
         if matches!(a.operator, AssignmentOperator::Assign(_)) {
             if let Expression::Array(arr) = a.lhs {
                 let rhs = self.compile_expr(a.rhs)?;
-                self.destructure_into(arr.elements.iter(), rhs)?;
+                self.destructure_into(arr.elements.iter(), rhs, false)?;
                 return Ok(rhs);
             }
             if let Expression::List(lst) = a.lhs {
                 let rhs = self.compile_expr(a.rhs)?;
-                self.destructure_into(lst.elements.iter(), rhs)?;
+                self.destructure_into(lst.elements.iter(), rhs, true)?;
                 return Ok(rhs);
             }
         }

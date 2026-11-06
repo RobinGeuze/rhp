@@ -5,6 +5,7 @@
 
 pub mod bison;
 pub mod builtin_functions;
+pub mod call_stack;
 pub mod closures;
 pub(crate) mod constants;
 pub mod exceptions;
@@ -13,11 +14,13 @@ pub(crate) mod ini_parser;
 pub mod ini_parser_tables;
 pub(crate) mod ini_scanner;
 mod language_parser;
+pub mod multibyte;
 #[rustfmt::skip]
 mod language_parser_tables;
 pub mod object_handlers;
 pub mod operators;
+pub mod timeout;
 pub mod virtual_cwd;
 pub(crate) mod zpp;
 
-pub use language_parser::{syntax_error, ParseFailure};
+pub use language_parser::{syntax_error, syntax_error_ex, take_parse_warnings, ParseFailure};

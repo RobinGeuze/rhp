@@ -80,15 +80,17 @@ fn ini_noops_run_others_skip() {
     let test_ini = |p: &Phpt| rules.test_ini(p, dir, false);
     let p = Phpt::parse(b"--INI--\nprecision=14\nopcache.enable=0\n--FILE--\n");
     assert_eq!(test_ini(&p).unwrap().len(), 2);
-    let p = Phpt::parse(b"--INI--\nvariables_order=GPS\n--FILE--\n");
-    assert_eq!(test_ini(&p).unwrap_err(), "ini:variables_order");
+    let p = Phpt::parse(b"--INI--\nmbstring.encoding_translation=On\n--FILE--\n");
+    assert_eq!(
+        test_ini(&p).unwrap_err(),
+        "ini:mbstring.encoding_translation"
+    );
     let p = Phpt::parse(b"--INI--\noutput_buffering=0\ndisplay_errors=On\n--FILE--\n");
     assert_eq!(test_ini(&p).unwrap().len(), 2);
-    let p = Phpt::parse(b"--INI--\noutput_buffering=4096\n--FILE--\n");
-    assert_eq!(test_ini(&p).unwrap_err(), "ini:output_buffering");
+    let p = Phpt::parse(b"--INI--\nauto_append_file=tail.inc\n--FILE--\n");
+    assert_eq!(test_ini(&p).unwrap_err(), "ini:auto_append_file");
     // Directives rhp applies run, and only those reach rhp.
-    let p =
-        Phpt::parse(b"--INI--\npcre.jit=0\noutput_buffering=0\nopcache.jit=tracing\n--FILE--\n");
+    let p = Phpt::parse(b"--INI--\npcre.jit=0\nauto_append_file=\nopcache.jit=tracing\n--FILE--\n");
     let ini = test_ini(&p).unwrap();
     assert_eq!(ini.len(), 3);
     let to_rhp: Vec<&String> = ini.iter().filter(|kv| rules.rhp_applies(kv)).collect();

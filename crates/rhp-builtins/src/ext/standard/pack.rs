@@ -1,357 +1,538 @@
-//! ext/standard/pack.c: `pack` and `unpack`.
+//! ext/standard/pack.c: `pack` and `unpack`, ported function by function.
+//! rhp runs on little-endian machines with a 4-byte C `int`.
 
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
+use crate::ext::standard::formatted_print::zval_get_double;
+use crate::zend::zpp::{zval_get_long, zval_get_string};
 use crate::{Host, Thrown};
 
-// ---------------------------------------------------------------------------
-// is_iterable / is_countable
-// ---------------------------------------------------------------------------
+const INT_MAX: i64 = i32::MAX as i64;
 
-// ---------------------------------------------------------------------------
-// pack / unpack  (subset of format codes — enough for Composer)
-// ---------------------------------------------------------------------------
-
-/// Read `n` bytes at `off` as an unsigned integer, big- or little-endian.
-fn read_uint(data: &[u8], off: usize, n: usize, be: bool) -> Option<u64> {
-    if off + n > data.len() {
-        return None;
-    }
-    let mut v: u64 = 0;
-    if be {
-        for i in 0..n {
-            v = (v << 8) | data[off + i] as u64;
-        }
-    } else {
-        for i in 0..n {
-            v |= (data[off + i] as u64) << (8 * i);
-        }
-    }
-    Some(v)
+fn value_error(msg: String) -> Thrown {
+    Thrown::error("ValueError", msg)
 }
 
-fn sign_extend(v: u64, n: usize) -> i64 {
-    let bits = n * 8;
-    let shift = 64 - bits;
-    ((v << shift) as i64) >> shift
+fn warn(host: &mut dyn Host, msg: String) -> Result<(), Thrown> {
+    host.docref_diagnostic(crate::E_WARNING, msg.as_bytes())
 }
 
-/// `unpack(string $format, string $data, int $offset = 0): array|false`
-fn fn_unpack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let format = conv::to_string_bytes(&deref(&args[0]));
-    let data = conv::to_string_bytes(&deref(&args[1]));
-    let mut pos = args
-        .get(2)
-        .map(|v| conv::to_int(&deref(v)))
-        .unwrap_or(0)
-        .max(0) as usize;
-
-    let mut out = PhpArray::new();
-    let fmt = String::from_utf8_lossy(&format);
-    for part in fmt.split('/') {
-        if part.is_empty() {
-            continue;
-        }
-        let bytes = part.as_bytes();
-        let code = bytes[0] as char;
-        // optional repeat count (digits or '*'), then the name.
-        let mut i = 1;
-        let mut star = false;
-        let mut count_str = String::new();
-        if i < bytes.len() && bytes[i] == b'*' {
-            star = true;
-            i += 1;
-        } else {
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                count_str.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-        let name = &part[i..];
-        let count: usize = if star {
-            0 // resolved per-code below
-        } else if count_str.is_empty() {
-            1
-        } else {
-            count_str.parse().unwrap_or(1)
-        };
-
-        // size (bytes) + endianness + signedness per code.
-        let (size, be, signed) = match code {
-            'C' => (1usize, false, false),
-            'c' => (1, false, true),
-            'n' => (2, true, false),
-            'v' => (2, false, false),
-            's' => (2, false, true),
-            'S' => (2, false, false),
-            'N' => (4, true, false),
-            'V' => (4, false, false),
-            'l' => (4, false, true),
-            'L' | 'I' => (4, false, false),
-            'i' => (4, false, true),
-            'J' => (8, true, false),
-            'P' => (8, false, false),
-            'q' => (8, false, true),
-            'Q' => (8, false, false),
-            'a' | 'A' | 'Z' => {
-                // string: count = length (or rest for '*').
-                let len = if star {
-                    data.len().saturating_sub(pos)
-                } else {
-                    count
-                };
-                let end = (pos + len).min(data.len());
-                let mut s = data[pos..end].to_vec();
-                pos = end;
-                if code == 'A' {
-                    while matches!(s.last(), Some(b' ') | Some(0)) {
-                        s.pop();
-                    }
-                } else if code == 'Z' {
-                    if let Some(z) = s.iter().position(|&b| b == 0) {
-                        s.truncate(z);
-                    }
-                }
-                let key = if name.is_empty() {
-                    "1".to_string()
-                } else {
-                    name.to_string()
-                };
-                out.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(s));
-                continue;
-            }
-            'H' | 'h' => {
-                // php's unpack(): hex digits, high (H) or low (h) nibble first
-                let rest = data.len().saturating_sub(pos);
-                let size = if star { rest } else { count.div_ceil(2) };
-                if pos + size > data.len() {
-                    host.emit_diagnostic(
-                        crate::E_WARNING,
-                        format!(
-                            "unpack(): Type {code}: not enough input values, need {size} values but only {rest} were provided"
-                        ).as_bytes(),
-                    )?;
-                    return Ok(Value::Bool(false));
-                }
-                let mut len = size * 2;
-                if !star && count % 2 == 1 {
-                    len -= 1;
-                }
-                let mut shift = if code == 'h' { 0 } else { 4 };
-                let mut s = Vec::with_capacity(len);
-                for o in 0..len {
-                    let c = (data[pos + o / 2] >> shift) & 0xf;
-                    s.push(if c < 10 { b'0' + c } else { b'a' + c - 10 });
-                    shift = (shift + 4) & 7;
-                }
-                pos += size;
-                let key = if name.is_empty() { "1" } else { name };
-                out.insert(ArrayKey::from_bytes(key.as_bytes()), Value::str(s));
-                continue;
-            }
-            _ => return Ok(Value::Bool(false)),
-        };
-
-        let n = if star {
-            (data.len().saturating_sub(pos)) / size
-        } else {
-            count
-        };
-        for idx in 0..n {
-            let raw = match read_uint(&data, pos, size, be) {
-                Some(v) => v,
-                None => break,
-            };
-            pos += size;
-            let val = if signed {
-                Value::Int(sign_extend(raw, size))
-            } else {
-                Value::Int(raw as i64)
-            };
-            let key = if name.is_empty() {
-                (idx + 1).to_string()
-            } else if star || count > 1 {
-                format!("{}{}", name, idx + 1)
-            } else {
-                name.to_string()
-            };
-            out.insert(ArrayKey::from_bytes(key.as_bytes()), val);
-        }
+/// C `atoi` as php's pack() uses it: `strtol` truncated to `int`.
+fn atoi(s: &[u8]) -> i64 {
+    let mut n: i64 = 0;
+    for &c in s.iter().take_while(|c| c.is_ascii_digit()) {
+        n = n.saturating_mul(10).saturating_add((c - b'0') as i64);
     }
-    Ok(Value::Array(out))
+    n as i32 as i64
 }
 
-/// `pack(string $format, mixed ...$values): string` — subset of codes.
+#[derive(Clone, Copy, PartialEq)]
+enum Endian {
+    Little,
+    Big,
+}
+
+/// `php_pack`: the low `size` bytes of the integer in `endian` order.
+fn pack_long(
+    host: &mut dyn Host,
+    out: &mut [u8],
+    pos: usize,
+    v: &Value,
+    size: usize,
+    endian: Endian,
+) -> Result<(), Thrown> {
+    let zl = zval_get_long(host, v)?;
+    match endian {
+        Endian::Little => out[pos..pos + size].copy_from_slice(&zl.to_le_bytes()[..size]),
+        Endian::Big => out[pos..pos + size].copy_from_slice(&zl.to_be_bytes()[8 - size..]),
+    }
+    Ok(())
+}
+
+/// `pack(string $format, mixed ...$values): string`.
 fn fn_pack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let format = conv::to_string_bytes(&deref(&args[0]));
-    let vals = &args[1..];
-    let mut vi = 0usize;
-    let mut out: Vec<u8> = Vec::new();
-    let fmt = String::from_utf8_lossy(&format).into_owned();
-    let chars: Vec<char> = fmt.chars().collect();
-    // (code, '*', count)
-    let mut codes: Vec<(char, bool, usize)> = Vec::new();
-    let mut ci = 0;
-    while ci < chars.len() {
-        let code = chars[ci];
-        ci += 1;
-        let mut star = false;
-        let mut count_str = String::new();
-        if ci < chars.len() && chars[ci] == '*' {
-            star = true;
-            ci += 1;
-        } else {
-            while ci < chars.len() && chars[ci].is_ascii_digit() {
-                count_str.push(chars[ci]);
-                ci += 1;
+    let format = conv::to_string_bytes(&args[0]);
+    let mut argv: Vec<Value> = args[1..].iter().map(deref).collect();
+    let num_args = argv.len() as i64;
+    let mut codes: Vec<(u8, i64)> = Vec::new();
+    let mut currentarg: i64 = 0;
+    let mut i = 0;
+    while i < format.len() {
+        let code = format[i];
+        i += 1;
+        let mut arg: i64 = 1;
+        if i < format.len() {
+            let c = format[i];
+            if c == b'*' {
+                arg = -1;
+                i += 1;
+            } else if c.is_ascii_digit() {
+                arg = atoi(&format[i..]);
+                while i < format.len() && format[i].is_ascii_digit() {
+                    i += 1;
+                }
             }
         }
-        let count: usize = if count_str.is_empty() {
-            1
-        } else {
-            count_str.parse().unwrap_or(1)
-        };
-        codes.push((code, star, count));
-    }
-    // php's first pass: each code's arguments must be there before anything
-    // is packed.
-    let mut used = 0usize;
-    let mut checked = true;
-    for &(code, star, count) in &codes {
         match code {
-            'a' | 'A' | 'Z' | 'h' | 'H' => {
-                if used >= vals.len() {
-                    return Err(Thrown::error(
-                        "ValueError",
-                        format!("Type {code}: not enough arguments"),
-                    ));
-                }
-                used += 1;
-            }
-            'C' | 'c' | 'n' | 'v' | 's' | 'S' | 'N' | 'V' | 'l' | 'L' | 'i' | 'I' | 'J' | 'P'
-            | 'q' | 'Q' => {
-                used = used.saturating_add(if star { vals.len() - used } else { count });
-                if used > vals.len() {
-                    return Err(Thrown::error(
-                        "ValueError",
-                        format!("Type {code}: too few arguments"),
-                    ));
+            b'x' | b'X' | b'@' => {
+                if arg < 0 {
+                    warn(host, format!("Type {}: '*' ignored", code as char))?;
+                    arg = 1;
                 }
             }
-            // Not implemented here: the packing loop gives up on it.
+            b'a' | b'A' | b'Z' | b'h' | b'H' => {
+                if currentarg >= num_args {
+                    return Err(value_error(format!(
+                        "Type {}: not enough arguments",
+                        code as char
+                    )));
+                }
+                if arg < 0 {
+                    let s = zval_get_string(host, &argv[currentarg as usize])?;
+                    arg = s.len() as i64;
+                    if code == b'Z' {
+                        // Z is always NUL-terminated.
+                        arg += 1;
+                    }
+                    argv[currentarg as usize] = Value::str(s);
+                }
+                currentarg += 1;
+            }
+            b'q' | b'Q' | b'J' | b'P' | b'c' | b'C' | b's' | b'S' | b'i' | b'I' | b'l' | b'L'
+            | b'n' | b'N' | b'v' | b'V' | b'f' | b'g' | b'G' | b'd' | b'e' | b'E' => {
+                if arg < 0 {
+                    arg = num_args - currentarg;
+                }
+                if currentarg > INT_MAX - arg || currentarg + arg > num_args {
+                    return Err(value_error(format!(
+                        "Type {}: too few arguments",
+                        code as char
+                    )));
+                }
+                currentarg += arg;
+            }
             _ => {
-                checked = false;
-                break;
+                return Err(value_error(format!(
+                    "Type {}: unknown format code",
+                    code as char
+                )))
             }
         }
+        codes.push((code, arg));
     }
-    if checked && used < vals.len() {
-        crate::warn(
-            host,
-            "pack",
-            &format!("{} arguments unused", vals.len() - used),
-        )?;
+    if currentarg < num_args {
+        warn(host, format!("{} arguments unused", num_args - currentarg))?;
     }
-    for &(code, star, count) in &codes {
-        let push_int = |out: &mut Vec<u8>, v: u64, size: usize, be: bool| {
-            if be {
-                for i in (0..size).rev() {
-                    out.push((v >> (8 * i)) as u8);
+
+    // The output length's upper bound.
+    let mut outputpos: i64 = 0;
+    let mut outputsize: i64 = 0;
+    for &(code, arg) in &codes {
+        let unit: i64 = match code {
+            b'h' | b'H' => {
+                let a = arg / 2 + arg % 2;
+                inc_outputpos(&mut outputpos, a, 1, code)?;
+                0
+            }
+            b'a' | b'A' | b'Z' | b'c' | b'C' | b'x' => 1,
+            b's' | b'S' | b'n' | b'v' => 2,
+            b'i' | b'I' | b'l' | b'L' | b'N' | b'V' | b'f' | b'g' | b'G' => 4,
+            b'q' | b'Q' | b'J' | b'P' | b'd' | b'e' | b'E' => 8,
+            b'X' => {
+                outputpos -= arg;
+                if outputpos < 0 {
+                    warn(host, format!("Type {}: outside of string", code as char))?;
+                    outputpos = 0;
                 }
-            } else {
-                for i in 0..size {
-                    out.push((v >> (8 * i)) as u8);
-                }
+                0
+            }
+            _ => {
+                // '@'
+                outputpos = arg;
+                0
             }
         };
-        let (size, be) = match code {
-            'C' | 'c' => (1, false),
-            'n' => (2, true),
-            'v' => (2, false),
-            's' | 'S' => (2, false),
-            'N' => (4, true),
-            'V' => (4, false),
-            'l' | 'L' | 'i' | 'I' => (4, false),
-            'J' => (8, true),
-            'P' | 'q' | 'Q' => (8, false),
-            'a' | 'A' | 'Z' => {
-                let s = vals
-                    .get(vi)
-                    .map(|v| conv::to_string_bytes(&deref(v)))
-                    .unwrap_or_default();
-                vi += 1;
-                let len = if star {
-                    s.len() + if code == 'Z' { 1 } else { 0 }
-                } else {
-                    count
-                };
-                let pad = if code == 'A' { b' ' } else { 0u8 };
-                for i in 0..len {
-                    out.push(*s.get(i).unwrap_or(&pad));
-                }
-                continue;
+        if unit > 0 {
+            inc_outputpos(&mut outputpos, arg, unit, code)?;
+        }
+        outputsize = outputsize.max(outputpos);
+    }
+
+    let mut out = vec![0u8; outputsize as usize + 1];
+    let mut pos: i64 = 0;
+    let mut cur = 0usize;
+    for &(code, arg) in &codes {
+        let mut arg = arg;
+        match code {
+            b'a' | b'A' | b'Z' => {
+                let arg_cp = if code != b'Z' { arg } else { (arg - 1).max(0) } as usize;
+                let s = zval_get_string(host, &argv[cur])?;
+                cur += 1;
+                let p = pos as usize;
+                let fill = if code == b'A' { b' ' } else { 0 };
+                out[p..p + arg as usize].fill(fill);
+                let n = s.len().min(arg_cp);
+                out[p..p + n].copy_from_slice(&s[..n]);
+                pos += arg;
             }
-            'H' | 'h' => {
-                // php's pack(): hex digits, high (H) or low (h) nibble first
-                let s = vals
-                    .get(vi)
-                    .map(|v| conv::to_string_bytes(&deref(v)))
-                    .unwrap_or_default();
-                vi += 1;
-                let mut n = if star { s.len() } else { count };
-                if n > s.len() {
-                    host.emit_diagnostic(
-                        crate::E_WARNING,
-                        format!("pack(): Type {code}: not enough characters in string").as_bytes(),
-                    )?;
-                    n = s.len();
-                }
-                let mut shift = if code == 'h' { 0 } else { 4 };
+            b'h' | b'H' => {
+                let mut nibbleshift = if code == b'h' { 0 } else { 4 };
                 let mut first = true;
-                for &c in &s[..n] {
-                    let d = match c {
+                let s = zval_get_string(host, &argv[cur])?;
+                cur += 1;
+                pos -= 1;
+                if arg as usize > s.len() {
+                    warn(
+                        host,
+                        format!("Type {}: not enough characters in string", code as char),
+                    )?;
+                    arg = s.len() as i64;
+                }
+                for &c in &s[..arg as usize] {
+                    let n = match c {
                         b'0'..=b'9' => c - b'0',
                         b'A'..=b'F' => c - b'A' + 10,
                         b'a'..=b'f' => c - b'a' + 10,
                         _ => {
                             let mut m =
-                                format!("pack(): Type {code}: illegal hex digit ").into_bytes();
+                                format!("Type {}: illegal hex digit ", code as char).into_bytes();
                             m.push(c);
-                            host.emit_diagnostic(crate::E_WARNING, &m)?;
+                            host.docref_diagnostic(crate::E_WARNING, &m)?;
                             0
                         }
                     };
                     if first {
-                        out.push(0);
+                        pos += 1;
+                        out[pos as usize] = 0;
+                        first = false;
+                    } else {
+                        first = true;
                     }
-                    first = !first;
-                    if let Some(last) = out.last_mut() {
-                        *last |= d << shift;
-                    }
-                    shift = (shift + 4) & 7;
+                    out[pos as usize] |= n << nibbleshift;
+                    nibbleshift = (nibbleshift + 4) & 7;
                 }
-                continue;
+                pos += 1;
             }
-            _ => return Ok(Value::Bool(false)),
-        };
-        let reps = if star {
-            vals.len().saturating_sub(vi)
-        } else {
-            count
-        };
-        for _ in 0..reps {
-            let v = match vals.get(vi) {
-                Some(x) => crate::zend::zpp::zval_get_long(host, x)?,
-                None => 0,
-            } as u64;
-            vi += 1;
-            push_int(&mut out, v, size, be);
+            b'c' | b'C' | b's' | b'S' | b'n' | b'v' | b'i' | b'I' | b'l' | b'L' | b'N' | b'V'
+            | b'q' | b'Q' | b'J' | b'P' => {
+                let (size, endian) = match code {
+                    b'c' | b'C' => (1, Endian::Little),
+                    b'n' => (2, Endian::Big),
+                    b's' | b'S' | b'v' => (2, Endian::Little),
+                    b'N' => (4, Endian::Big),
+                    b'i' | b'I' | b'l' | b'L' | b'V' => (4, Endian::Little),
+                    b'J' => (8, Endian::Big),
+                    _ => (8, Endian::Little),
+                };
+                for _ in 0..arg {
+                    let v = argv[cur].clone();
+                    cur += 1;
+                    pack_long(host, &mut out, pos as usize, &v, size, endian)?;
+                    pos += size as i64;
+                }
+            }
+            b'f' | b'g' | b'G' => {
+                for _ in 0..arg {
+                    let v = argv[cur].clone();
+                    cur += 1;
+                    let f = zval_get_double(host, &v)? as f32;
+                    let b = if code == b'G' {
+                        f.to_be_bytes()
+                    } else {
+                        f.to_le_bytes()
+                    };
+                    out[pos as usize..pos as usize + 4].copy_from_slice(&b);
+                    pos += 4;
+                }
+            }
+            b'd' | b'e' | b'E' => {
+                for _ in 0..arg {
+                    let v = argv[cur].clone();
+                    cur += 1;
+                    let d = zval_get_double(host, &v)?;
+                    let b = if code == b'E' {
+                        d.to_be_bytes()
+                    } else {
+                        d.to_le_bytes()
+                    };
+                    out[pos as usize..pos as usize + 8].copy_from_slice(&b);
+                    pos += 8;
+                }
+            }
+            b'x' => {
+                out[pos as usize..(pos + arg) as usize].fill(0);
+                pos += arg;
+            }
+            b'X' => {
+                pos = (pos - arg).max(0);
+            }
+            _ => {
+                // '@'
+                if arg > pos {
+                    out[pos as usize..arg as usize].fill(0);
+                }
+                pos = arg;
+            }
         }
     }
+    out.truncate(pos as usize);
     Ok(Value::str(out))
 }
 
+/// `INC_OUTPUTPOS`: grow the bound by `a * b` within INT_MAX.
+fn inc_outputpos(outputpos: &mut i64, a: i64, b: i64, code: u8) -> Result<(), Thrown> {
+    if a < 0 || (INT_MAX - *outputpos) / b < a {
+        return Err(value_error(format!(
+            "Type {}: integer overflow in format string",
+            code as char
+        )));
+    }
+    *outputpos += a * b;
+    Ok(())
+}
+
+/// C `strtol(s, NULL, 10)` on leading digits, with its ERANGE overflow.
+fn strtol10(s: &[u8]) -> Option<i64> {
+    let mut n: i64 = 0;
+    for &c in s.iter().take_while(|c| c.is_ascii_digit()) {
+        n = n.checked_mul(10)?.checked_add((c - b'0') as i64)?;
+    }
+    Some(n)
+}
+
+/// `unpack(string $format, string $string, int $offset = 0): array|false`.
+fn fn_unpack(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let format = conv::to_string_bytes(&args[0]);
+    let data = conv::to_string_bytes(&args[1]);
+    let offset = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
+    if offset < 0 || offset > data.len() as i64 {
+        return Err(value_error(
+            "unpack(): Argument #3 ($offset) must be contained in argument #2 ($data)".into(),
+        ));
+    }
+    let input = &data[offset as usize..];
+    let inputlen = input.len() as i64;
+    let mut inputpos: i64 = 0;
+    let mut result = PhpArray::new();
+    let mut f = 0usize;
+    while f < format.len() {
+        let ty = format[f];
+        f += 1;
+        let mut repetitions: i64 = 1;
+        if f < format.len() {
+            let c = format[f];
+            if c.is_ascii_digit() {
+                match strtol10(&format[f..]) {
+                    Some(n) if n <= INT_MAX => repetitions = n,
+                    _ => {
+                        warn(host, format!("Type {}: integer overflow", ty as char))?;
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                while f < format.len() && format[f].is_ascii_digit() {
+                    f += 1;
+                }
+            } else if c == b'*' {
+                repetitions = -1;
+                f += 1;
+            }
+        }
+        let name_start = f;
+        let argb = repetitions;
+        while f < format.len() && format[f] != b'/' {
+            f += 1;
+        }
+        let name = &format[name_start..name_start + (f - name_start).min(200)];
+        let mut size: i64 = match ty {
+            b'X' => {
+                if repetitions < 0 {
+                    warn(host, format!("Type {}: '*' ignored", ty as char))?;
+                    repetitions = 1;
+                }
+                -1
+            }
+            b'@' => 0,
+            b'a' | b'A' | b'Z' => {
+                let s = repetitions;
+                repetitions = 1;
+                s
+            }
+            b'h' | b'H' => {
+                let s = if repetitions > 0 {
+                    (repetitions + 1) / 2
+                } else {
+                    repetitions
+                };
+                repetitions = 1;
+                s
+            }
+            b'c' | b'C' | b'x' => 1,
+            b's' | b'S' | b'n' | b'v' => 2,
+            b'i' | b'I' | b'l' | b'L' | b'N' | b'V' | b'f' | b'g' | b'G' => 4,
+            b'q' | b'Q' | b'J' | b'P' | b'd' | b'e' | b'E' => 8,
+            _ => {
+                return Err(value_error(format!("Invalid format type {}", ty as char)));
+            }
+        };
+        let mut i: i64 = 0;
+        while i != repetitions {
+            if size != 0 && size != -1 && INT_MAX - size + 1 < inputpos {
+                warn(host, format!("Type {}: integer overflow", ty as char))?;
+                return Ok(Value::Bool(false));
+            }
+            if inputpos + size <= inputlen {
+                let key = if name.is_empty() {
+                    ArrayKey::Int(i + 1)
+                } else if repetitions == 1 {
+                    ArrayKey::from_bytes(name)
+                } else {
+                    let mut n = name.to_vec();
+                    n.extend_from_slice((i + 1).to_string().as_bytes());
+                    ArrayKey::from_bytes(&n)
+                };
+                let p = inputpos as usize;
+                let rest = (inputlen - inputpos) as usize;
+                let le = |n: usize| {
+                    let mut b = [0u8; 8];
+                    b[..n].copy_from_slice(&input[p..p + n]);
+                    u64::from_le_bytes(b)
+                };
+                let be = |n: usize| {
+                    let mut b = [0u8; 8];
+                    b[8 - n..].copy_from_slice(&input[p..p + n]);
+                    u64::from_be_bytes(b)
+                };
+                let mut output = true;
+                let val = match ty {
+                    b'a' | b'A' | b'Z' => {
+                        let mut len = rest;
+                        if size >= 0 && len as i64 > size {
+                            len = size as usize;
+                        }
+                        size = len as i64;
+                        let s = &input[p..p + len];
+                        Value::str(match ty {
+                            b'a' => s.to_vec(),
+                            b'A' => {
+                                let end = s
+                                    .iter()
+                                    .rposition(|&c| !matches!(c, 0 | b' ' | b'\t' | b'\r' | b'\n'))
+                                    .map_or(0, |e| e + 1);
+                                s[..end].to_vec()
+                            }
+                            _ => {
+                                let end = s.iter().position(|&c| c == 0).unwrap_or(len);
+                                s[..end].to_vec()
+                            }
+                        })
+                    }
+                    b'h' | b'H' => {
+                        if size > INT_MAX / 2 {
+                            return Err(value_error(format!(
+                                "unpack(): Argument #1 ($format) repeater must be less than or equal to {}",
+                                INT_MAX / 2
+                            )));
+                        }
+                        let mut len = rest as i64 * 2;
+                        if size >= 0 && len > size * 2 {
+                            len = size * 2;
+                        }
+                        if len > 0 && argb > 0 {
+                            len -= argb % 2;
+                        }
+                        let mut nibbleshift = if ty == b'h' { 0 } else { 4 };
+                        let mut first = true;
+                        let mut ipos = 0usize;
+                        let mut buf = Vec::with_capacity(len.max(0) as usize);
+                        for _ in 0..len {
+                            let cc =
+                                (input.get(p + ipos).copied().unwrap_or(0) >> nibbleshift) & 0xf;
+                            buf.push(if cc < 10 { cc + b'0' } else { cc - 10 + b'a' });
+                            nibbleshift = (nibbleshift + 4) & 7;
+                            if first {
+                                first = false;
+                            } else {
+                                ipos += 1;
+                                first = true;
+                            }
+                        }
+                        Value::str(buf)
+                    }
+                    b'c' => Value::Int(input[p] as i8 as i64),
+                    b'C' => Value::Int(input[p] as i64),
+                    b's' => Value::Int(le(2) as u16 as i16 as i64),
+                    b'S' | b'v' => Value::Int(le(2) as i64),
+                    b'n' => Value::Int(be(2) as i64),
+                    b'i' | b'l' => Value::Int(le(4) as u32 as i32 as i64),
+                    b'I' | b'L' | b'V' => Value::Int(le(4) as i64),
+                    b'N' => Value::Int(be(4) as i64),
+                    b'q' | b'Q' | b'P' => Value::Int(le(8) as i64),
+                    b'J' => Value::Int(be(8) as i64),
+                    b'f' | b'g' => Value::Float(f32::from_bits(le(4) as u32) as f64),
+                    b'G' => Value::Float(f32::from_bits(be(4) as u32) as f64),
+                    b'd' | b'e' => Value::Float(f64::from_bits(le(8))),
+                    b'E' => Value::Float(f64::from_bits(be(8))),
+                    b'x' => {
+                        output = false;
+                        Value::Null
+                    }
+                    b'X' => {
+                        if inputpos < size {
+                            inputpos = -size;
+                            i = repetitions - 1;
+                            if repetitions >= 0 {
+                                warn(host, format!("Type {}: outside of string", ty as char))?;
+                            }
+                        }
+                        output = false;
+                        Value::Null
+                    }
+                    _ => {
+                        // '@'
+                        if repetitions <= inputlen {
+                            inputpos = repetitions;
+                        } else {
+                            warn(host, format!("Type {}: outside of string", ty as char))?;
+                        }
+                        i = repetitions - 1;
+                        output = false;
+                        Value::Null
+                    }
+                };
+                if output {
+                    result.insert(key, val);
+                }
+                inputpos += size;
+                if inputpos < 0 {
+                    if size != -1 {
+                        warn(host, format!("Type {}: outside of string", ty as char))?;
+                    }
+                    inputpos = 0;
+                }
+            } else if repetitions < 0 {
+                break;
+            } else {
+                let left = inputlen - inputpos;
+                warn(
+                    host,
+                    format!(
+                        "Type {}: not enough input values, need {size} values but only {left} {} provided",
+                        ty as char,
+                        if left == 1 { "was" } else { "were" }
+                    ),
+                )?;
+                return Ok(Value::Bool(false));
+            }
+            i += 1;
+        }
+        if f < format.len() {
+            f += 1; // the '/'
+        }
+    }
+    Ok(Value::Array(result))
+}
+
 pub fn register(m: &mut crate::Registry) {
-    crate::register(m, &[("unpack", fn_unpack), ("pack", fn_pack)]);
+    crate::register(m, &[("pack", fn_pack), ("unpack", fn_unpack)]);
 }

@@ -46,20 +46,32 @@ fn mode_for(p: i64) -> Mode {
     match p {
         p if p < 0 => Mode::Shortest,
         0 => Mode::Precision(1),
-        // zend_dtoa yields at most ~767 significant digits; cap the request.
-        p => Mode::Precision(p.min(500) as usize),
+        // A double has at most 767 significant digits: a larger request
+        // prints the same.
+        p => Mode::Precision(p.min(800) as usize),
     }
 }
 
 /// Format a float the way `echo`/`(string)` does (`precision`, default 14).
 pub fn float_echo(f: f64) -> Vec<u8> {
-    gcvt(f, mode_for(PRECISION.with(|c| c.get())))
+    gcvt(f, mode_for(PRECISION.with(|c| c.get())), b'E')
 }
 
 /// Format a float the way `var_dump`/`var_export` does (`serialize_precision`,
 /// default -1 = shortest round-trip).
 pub fn float_serialize(f: f64) -> Vec<u8> {
-    gcvt(f, mode_for(SERIALIZE_PRECISION.with(|c| c.get())))
+    gcvt(f, mode_for(SERIALIZE_PRECISION.with(|c| c.get())), b'E')
+}
+
+/// `zend_gcvt(value, ndigit, '.', exponent, buf)`: `ndigit < 0` is the
+/// shortest round trip (mode 0), else `ndigit` significant digits.
+pub fn zend_gcvt(f: f64, ndigit: i64, exponent: u8) -> Vec<u8> {
+    let mode = if ndigit < 0 {
+        Mode::Shortest
+    } else {
+        Mode::Precision(ndigit.clamp(1, 800) as usize)
+    };
+    gcvt(f, mode, exponent)
 }
 
 enum Mode {
@@ -71,7 +83,7 @@ enum Mode {
 
 /// PHP's `zend_gcvt`-equivalent: produce the significant digits + decimal
 /// exponent per `mode`, then reshape into PHP's canonical textual form.
-fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
+fn gcvt(f: f64, mode: Mode, exponent: u8) -> Vec<u8> {
     if f.is_nan() {
         return b"NAN".to_vec();
     }
@@ -113,7 +125,7 @@ fn gcvt(f: f64, mode: Mode) -> Vec<u8> {
 
     let trimmed = trim_trailing_zeros(&digits); // keep >= 1 digit
     let body = if exp10 < -4 || exp10 >= cutoff {
-        format_exponential(trimmed, exp10)
+        format_exponential(trimmed, exp10, exponent)
     } else {
         format_fixed(trimmed, exp10)
     };
@@ -178,8 +190,8 @@ fn trim_trailing_zeros(digits: &[u8]) -> &[u8] {
     &digits[..end]
 }
 
-/// Exponential form: `d.ddddE±XX`, always at least one fractional digit.
-fn format_exponential(digits: &[u8], exp10: i32) -> Vec<u8> {
+/// Exponential form: `d.dddde±XX`, always at least one fractional digit.
+fn format_exponential(digits: &[u8], exp10: i32, exponent: u8) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(digits[0]);
     out.push(b'.');
@@ -188,7 +200,7 @@ fn format_exponential(digits: &[u8], exp10: i32) -> Vec<u8> {
     } else {
         out.push(b'0');
     }
-    out.push(b'E');
+    out.push(exponent);
     out.push(if exp10 < 0 { b'-' } else { b'+' });
     out.extend_from_slice(exp10.unsigned_abs().to_string().as_bytes());
     out

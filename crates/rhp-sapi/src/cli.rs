@@ -97,6 +97,7 @@ pub fn main(args: &[String]) -> i32 {
     // main(): the ini settings, help, and invalid options, which only this
     // pass reports. -i, -v and -m end it.
     let mut ini = Vec::new();
+    let mut ini_files = crate::IniFiles::default();
     let mut server = false;
     let mut g = PhpGetopt::new(args, OPTIONS);
     loop {
@@ -111,13 +112,14 @@ pub fn main(args: &[String]) -> i32 {
                 return 0;
             }
             Opt::Char(b'd', Some(kv)) => ini.push(crate::ini_define(&kv)),
+            Opt::Char(b'c', Some(path)) => ini_files.path_override = Some(path),
+            Opt::Char(b'n', _) => ini_files.ignore = true,
             Opt::Char(b'S', _) => server = true,
             Opt::Char(b'i' | b'v' | b'm', _) => {
                 server = false;
                 break;
             }
-            // -c (php.ini path) and -n: rhp never reads a php.ini. -e:
-            // extended info for debuggers.
+            // -e: extended info for debuggers.
             Opt::Char(..) => {}
         }
     }
@@ -295,5 +297,5 @@ pub fn main(args: &[String]) -> i32 {
         .iter()
         .map(|s| s.as_bytes().to_vec())
         .collect();
-    crate::run_cli(script, ini, rest)
+    crate::run_cli(script, ini, rest, ini_files)
 }

@@ -413,17 +413,28 @@ An `Init` block is guarded by `JmpIfArg { index, target }`; for a typed
 parameter it ends in `RecvInitCheck { index }`, php's RECV_INIT check of the
 evaluated default (a constant default was checked, and an int one widened
 for a float type, at compile time).
-Named args against a statically-known callee are resolved to positions at compile
-time; dynamic callee reorders at the call site via `proto.params`. The fixed-arity
-register-window path is the fast path; spread uses the `_V` path.
+A call with an unpack or a named argument marshals its arguments into an
+array (int keys positional, string keys named) and uses the `_V` path
+(`CallV`, `CallMethodV`, `NewV`, …; `CallParentHook` with `argc ==
+PACKED_ARGS`): the VM places the names with the callee's `proto.params`
+(`place_named_args`) or a builtin's stub arginfo (`place_builtin_named_args`).
+The compiler only resolves by-reference parameters by name, for a callee it
+knows. The fixed-arity register-window path is the fast path.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:
 ```
 Throw           { src }               begin unwinding with deref(src) as the in-flight Throwable
 ThrowMatchError { subject }           throw \UnhandledMatchError (message from deref(subject)); for match fall-off
+ThrowError      { k }                 throw \Error with the constant message k (a form php compiles but rejects when run)
+CheckThis       { cv }                ZEND_FETCH_THIS: "Using $this when not in object context" unless cv holds an object
 FinallyEnd      {}                    pop Frame.pending and perform it (resume after a finally); §3.5
 ```
+`CheckThis` precedes a read of `$this` wherever the object is not
+guaranteed: everywhere but instance methods and hooks (closures, static
+methods, functions, top-level code). Compile-time errors (php's
+E_COMPILE_ERROR) are recorded with `FileCtx::fatal` or returned with
+`compile_error`; the earliest in the file wins, as php stops at the first.
 Catch *matching* is ordinary code at the landing pad (the unwinder puts the
 thrown value in the catch var reg; the pad does class tests — phase 7 — or
 rethrows).
@@ -434,6 +445,7 @@ FetchConst { dst, name: NIdx }        read a user/engine constant (Err "Undefine
 DeclareFn  { fnidx }                  install functions[fnidx] into the live table (conditional/non-hoisted declarations)
 MagicConst { dst, which: u8 }         __LINE__/__FILE__/__FUNCTION__/… from frame/proto
 Halt       {}                         __halt_compiler(): stop this proto as top-level return
+                                      (__COMPILER_HALT_OFFSET__ is folded to the file's offset at compile time)
 Refuse     { feature: NIdx, reason: NIdx }  emitted ONLY for a structurally-refused node reachable at runtime (§4); raises Thrown::Unsupported
 ```
 OOP opcodes (`New`, `FetchProp`/`AssignProp`, `CallMethod`, `CallStatic`,
@@ -796,7 +808,7 @@ can't swallow it):
 | `eval(...)` | `Construct::Eval` | **refuse — no `Eval` opcode exists, ever** |
 | `include`/`require`(`_once`) | `Construct::{Include,IncludeOnce,Require,RequireOnce}` | refuse (filesystem/code-load) |
 | backticks `` `…` `` | `CompositeString::ShellExecute` | refuse — never spawn a shell |
-| `(unset)`/`(real)`/`(void)` cast | `UnaryPrefixOperator::{UnsetCast,RealCast,VoidCast}` | refuse — fatal in PHP 8.5 |
+| `(real)`/`(void)` cast | `UnaryPrefixOperator::{RealCast,VoidCast}` | refuse (`(unset)` is php's compile error) |
 | `$$x = …` (variable-variable write) | `Variable::{Indirect,Nested}` as an assignment target | refuse the write form |
 
 ### 4.2 Function-name refusals — `is_refused()`

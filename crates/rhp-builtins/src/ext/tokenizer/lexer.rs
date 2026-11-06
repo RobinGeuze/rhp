@@ -61,6 +61,8 @@ struct Lexer<'a> {
     labels: Vec<Label>,
     line: i64,
     out: Vec<Tok>,
+    /// `CG(short_tags)`: the short_open_tag ini.
+    short_tags: bool,
 }
 
 /// Newlines in `t` the way HANDLE_NEWLINES counts them (`\n`, lone `\r`).
@@ -302,6 +304,16 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Whether the `<?` at `i` opens PHP code: always with short tags,
+    /// else only as `<?=` or `<?php` before whitespace or the end.
+    fn opens_code(&self, i: usize) -> bool {
+        if self.short_tags || self.at(i + 2) == b'=' {
+            return true;
+        }
+        self.starts_ci(i, b"<?php")
+            && (i + 5 == self.s.len() || matches!(self.at(i + 5), b' ' | b'\t' | b'\n' | b'\r'))
+    }
+
     fn initial(&mut self) {
         let p = self.p;
         if self.s[p..].starts_with(b"<?=") {
@@ -328,10 +340,12 @@ impl<'a> Lexer<'a> {
                 return self.push(T_OPEN_TAG, e);
             }
             // <?phpX → <? then phpX (short tags)
-            self.state = St::Scripting;
-            return self.push(T_OPEN_TAG, p + 2);
+            if self.short_tags {
+                self.state = St::Scripting;
+                return self.push(T_OPEN_TAG, p + 2);
+            }
         }
-        if self.s[p..].starts_with(b"<?") {
+        if self.short_tags && self.s[p..].starts_with(b"<?") {
             self.state = St::Scripting;
             return self.push(T_OPEN_TAG, p + 2);
         }
@@ -348,7 +362,7 @@ impl<'a> Lexer<'a> {
                 }
                 Some(k) => {
                     i += k;
-                    if self.at(i + 1) == b'?' {
+                    if self.at(i + 1) == b'?' && self.opens_code(i) {
                         break;
                     }
                     i += 1;
@@ -1061,8 +1075,20 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// The short_open_tag ini (`<?` opens PHP code).
+pub fn short_tags() -> bool {
+    crate::ini_value(b"short_open_tag")
+        .flatten()
+        .is_none_or(|v| crate::main::ini::ini_parse_bool(&v))
+}
+
 /// Tokenize `src` exactly as `token_get_all($src)` does (without TOKEN_PARSE).
 pub fn tokenize(src: &[u8]) -> Vec<Tok> {
+    tokenize_ex(src, short_tags())
+}
+
+/// [`tokenize`] with short_open_tag given.
+pub fn tokenize_ex(src: &[u8], short_tags: bool) -> Vec<Tok> {
     let mut lx = Lexer {
         s: src,
         p: 0,
@@ -1074,6 +1100,7 @@ pub fn tokenize(src: &[u8]) -> Vec<Tok> {
         // token (a string, inline HTML) mustn't charge memory_limit 10
         // bytes per source byte.
         out: Vec::with_capacity(src.len().min(1 << 16) / 4),
+        short_tags,
     };
     lx.run_with_halt();
     lx.out

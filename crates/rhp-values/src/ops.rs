@@ -19,6 +19,17 @@ pub fn deref(v: &Value) -> Value {
     }
 }
 
+/// A copy of an array element as php makes one (zend_array_dup_element,
+/// and the builtins that build arrays from other arrays' elements): a
+/// reference nothing else holds (refcount 1) becomes its value.
+#[inline]
+pub fn copy_elem(v: &Value) -> Value {
+    match v {
+        Value::Ref(r) if std::rc::Rc::strong_count(r) == 1 => r.borrow().clone(),
+        other => other.clone(),
+    }
+}
+
 /// `(array)` cast: arrays pass through, null → empty, scalars → single element.
 pub fn cast_to_array(v: Value) -> Value {
     match deref(&v) {
@@ -174,30 +185,67 @@ pub fn modulo(a: &Value, b: &Value) -> Result<Value, Thrown> {
     long_binop(BitOp::Mod, p, q)
 }
 
+/// `**` without an engine. `0 ** negative` is an error here: php deprecates
+/// it at run time, so constant folding must leave it alone.
 pub fn pow(a: &Value, b: &Value) -> Result<Value, Thrown> {
     let x = arith_num(a, "**")?;
     let y = arith_num(b, "**")?;
+    if pow_base0_neg_exp(x, y) {
+        return Err(unsupported("**"));
+    }
+    Ok(pow_num(x, y))
+}
+
+/// Both operands of `op` as numbers, without an engine (see [`arith_num`]).
+pub fn arith_pair(a: &Value, b: &Value, op: &str) -> Result<(Num, Num), Thrown> {
+    Ok((arith_num(a, op)?, arith_num(b, op)?))
+}
+
+/// `safe_pow`'s condition for "Power of base 0 and negative exponent is
+/// deprecated".
+pub fn pow_base0_neg_exp(x: Num, y: Num) -> bool {
+    match (x, y) {
+        (Num::Int(_), Num::Int(e)) if e >= 0 => false,
+        _ => x.as_f64() == 0.0 && y.as_f64() < 0.0,
+    }
+}
+
+/// pow_function_base on two numbers: an int power by squaring while it fits,
+/// else a float.
+pub fn pow_num(x: Num, y: Num) -> Value {
     if let (Num::Int(base), Num::Int(exp)) = (x, y) {
         if exp >= 0 {
-            // integer power with overflow → float
-            let mut acc: i64 = 1;
-            let mut overflow = false;
-            for _ in 0..exp {
-                match acc.checked_mul(base) {
-                    Some(v) => acc = v,
-                    None => {
-                        overflow = true;
-                        break;
+            let (mut l1, mut l2, mut i) = (1i64, base, exp);
+            if i == 0 {
+                return Value::Int(1);
+            } else if l2 == 0 {
+                return Value::Int(0);
+            }
+            while i >= 1 {
+                if i % 2 != 0 {
+                    i -= 1;
+                    match l1.checked_mul(l2) {
+                        Some(v) => l1 = v,
+                        None => {
+                            let d = l1 as f64 * l2 as f64;
+                            return Value::Float(d * (l2 as f64).powf(i as f64));
+                        }
+                    }
+                } else {
+                    i /= 2;
+                    match l2.checked_mul(l2) {
+                        Some(v) => l2 = v,
+                        None => {
+                            let d = l2 as f64 * l2 as f64;
+                            return Value::Float(l1 as f64 * d.powf(i as f64));
+                        }
                     }
                 }
             }
-            if !overflow {
-                return Ok(Value::Int(acc));
-            }
-            return Ok(Value::Float((base as f64).powf(exp as f64)));
+            return Value::Int(l1);
         }
     }
-    Ok(Value::Float(x.as_f64().powf(y.as_f64())))
+    Value::Float(x.as_f64().powf(y.as_f64()))
 }
 
 /// `| & ^ << >> %` on two plain values (no diagnostics: see [`arith_num`]).
@@ -365,6 +413,11 @@ pub trait CompareCx {
     fn is_internal_prop(&self, _class: crate::ClassId, _name: &PhpStr) -> bool {
         false
     }
+    /// The object whose properties a comparison reads (php's
+    /// get_properties: a lazy object initializes, a proxy forwards).
+    fn props_object(&mut self, obj: &crate::ObjectHandle) -> Result<crate::ObjectHandle, Thrown> {
+        Ok(obj.clone())
+    }
     /// The class name (for the conversion notice).
     fn class_name(&self, _class: crate::ClassId) -> Vec<u8> {
         b"object".to_vec()
@@ -488,6 +541,11 @@ pub fn compare(a: &Value, b: &Value, cx: &mut dyn CompareCx) -> Result<Ordering,
                 Ordering::Equal
             } else if lt_true(&b) {
                 Ordering::Greater
+            } else if matches!(a, Array(_)) {
+                // An array stays an array after the conversion: greater.
+                Ordering::Greater
+            } else if matches!(b, Array(_)) {
+                Ordering::Less
             } else {
                 cmp_num(conv::to_number(&a).0, conv::to_number(&b).0)
             }
@@ -568,9 +626,62 @@ fn num_vs_str(n: &Value, s: &[u8]) -> Ordering {
 /// `zendi_smart_strcmp`: numeric strings compare as numbers.
 fn smart_strcmp(x: &[u8], y: &[u8]) -> Ordering {
     match (conv::numeric_string(x), conv::numeric_string(y)) {
+        (Some(Num::Int(a)), Some(Num::Int(b))) => a.cmp(&b),
+        // An integer string past the int range against an int: its side.
+        (Some(nx @ Num::Int(_)), Some(ny)) => match int_overflow(y, ny) {
+            0 => cmp_num(nx, ny),
+            o => (-o).cmp(&0),
+        },
+        (Some(nx), Some(ny @ Num::Int(_))) => match int_overflow(x, nx) {
+            0 => cmp_num(nx, ny),
+            o => o.cmp(&0),
+        },
+        // Equal as doubles but overflowed integers (or infinities): the
+        // double compare lost the difference.
+        (Some(nx), Some(ny)) if nx.as_f64() == ny.as_f64() => {
+            let o1 = int_overflow(x, nx);
+            if (o1 != 0 && o1 == int_overflow(y, ny)) || !nx.as_f64().is_finite() {
+                cmp_bytes(x, y)
+            } else {
+                Ordering::Equal
+            }
+        }
         (Some(nx), Some(ny)) => cmp_num(nx, ny),
         _ => cmp_bytes(x, y),
     }
+}
+
+/// `is_numeric_string_ex`'s `oflow`: 1 or -1 when `s` (parsed as the float
+/// `n`) has 20 or more integer digits after leading zeros, or is an integer
+/// string past the int range; else 0.
+fn int_overflow(s: &[u8], n: Num) -> i8 {
+    let Num::Float(f) = n else { return 0 };
+    let ws = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c');
+    let mut it = s.iter().skip_while(|c| ws(c)).peekable();
+    if matches!(it.peek(), Some(b'-' | b'+')) {
+        it.next();
+    }
+    while it.peek() == Some(&&b'0') {
+        it.next();
+    }
+    let sign = if f < 0.0 { -1 } else { 1 };
+    let mut digits = 0;
+    while let Some(c) = it.peek() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        it.next();
+        digits += 1;
+        // MAX_LENGTH_OF_LONG digits: php stops and parses a double.
+        if digits >= 20 {
+            return sign;
+        }
+    }
+    // Fewer digits followed by '.' or 'e' is a plain double.
+    if digits == 0 || !it.all(ws) {
+        return 0;
+    }
+    sign
 }
 
 /// `zend_hash_compare(.., ordered=0)` over two arrays.
@@ -765,6 +876,15 @@ fn std_compare_objects(
     if xc != yc {
         return Ok(Ordering::Greater); // different classes: uncomparable
     }
+    // A lazy object initializes (a proxy compares its instance).
+    let lazy;
+    let (x, y, xc, yc) = if x.borrow().is_lazy() || y.borrow().is_lazy() {
+        lazy = (cx.props_object(x)?, cx.props_object(y)?);
+        let (xc, yc) = (lazy.0.borrow().class, lazy.1.borrow().class);
+        (&lazy.0, &lazy.1, xc, yc)
+    } else {
+        (x, y, xc, yc)
+    };
     // Snapshot the property tables: comparing nested values may run user code
     // (`__toString`) that touches these objects.
     let xp: Vec<(PhpStr, Value)> = x

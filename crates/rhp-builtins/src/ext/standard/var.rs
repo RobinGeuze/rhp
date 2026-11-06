@@ -30,6 +30,17 @@ pub fn unmangle_prop(key: &[u8]) -> (&[u8], Option<&[u8]>) {
     (key, None)
 }
 
+/// php_var_dump_object_prefix: "lazy ghost " / "lazy proxy " for a lazy
+/// object.
+pub fn lazy_prefix(h: &rhp_values::ObjectHandle) -> &'static str {
+    let b = h.borrow();
+    match b.lazy() {
+        Some(l) if l.obj_flags & rhp_values::LazyInfo::PROXY != 0 => "lazy proxy ",
+        Some(l) if l.obj_flags != 0 => "lazy ghost ",
+        _ => "",
+    }
+}
+
 /// An object's properties keyed by their php-mangled names (debug view).
 /// Engine-internal slots of built-in classes are left out.
 fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
@@ -71,6 +82,10 @@ fn resolve_in(
     seen_arrays: &mut Vec<usize>,
     seen_objects: &mut Vec<u32>,
 ) -> Result<(), Thrown> {
+    // Past the stack limit the dump itself stops ("nesting level too deep").
+    if crate::zend::call_stack::overflowed() {
+        return Ok(());
+    }
     match deref(v) {
         Value::Array(a) => {
             if seen_arrays.contains(&a.data_ptr()) {
@@ -96,6 +111,16 @@ fn resolve_in(
                     && host.class_has_method(class, b"__debuginfo") =>
                 {
                     Some(debug_info(host, &h, class)?)
+                }
+                // zend_lazy_object_debug_info: an initialized proxy shows
+                // its instance.
+                None if purpose == PropPurpose::Debug => {
+                    let inst = h.borrow().lazy_instance();
+                    inst.map(|i| {
+                        let mut a = rhp_values::PhpArray::new();
+                        a.insert(ArrayKey::from_bytes(b"instance"), Value::Object(i));
+                        a
+                    })
                 }
                 None => None,
             };
@@ -147,36 +172,6 @@ fn closure_view(host: &dyn crate::Host, v: &Value) -> Vec<(ArrayKey, Value)> {
     })
 }
 
-/// `var_dump` of a Closure: `object(Closure)#N (n) {` and its debug view.
-fn var_dump_closure(
-    host: &dyn crate::Host,
-    out: &mut Vec<u8>,
-    v: &Value,
-    amp: &str,
-    indent: usize,
-    seen: &mut Seen,
-) {
-    let Value::Closure(c) = v else { return };
-    if seen.objects.contains(&c.id) {
-        out.extend_from_slice(b"*RECURSION*\n");
-        return;
-    }
-    let entries = closure_view(host, v);
-    out.extend_from_slice(
-        format!("{amp}object(Closure)#{} ({}) {{\n", c.id, entries.len()).as_bytes(),
-    );
-    seen.objects.push(c.id);
-    for (k, val) in &entries {
-        sp(indent + 2, out);
-        dump_key(out, k);
-        out.extend_from_slice(b"=>\n");
-        var_dump_value(host, out, val, false, indent + 2, seen);
-    }
-    seen.objects.pop();
-    sp(indent, out);
-    out.extend_from_slice(b"}\n");
-}
-
 /// zend_std_get_debug_info: the object's `__debugInfo()` result.
 fn debug_info(
     host: &mut dyn crate::Host,
@@ -189,8 +184,6 @@ fn debug_info(
     match deref(&host.call_callable(&Value::Array(cb), &[])?) {
         Value::Array(a) => Ok(a),
         Value::Null => {
-            // php raises this mid-dump; rhp formats after resolving, so it
-            // comes before the dump output.
             let cname = host.class_name(class).unwrap_or_default();
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
@@ -201,7 +194,8 @@ fn debug_info(
             )?;
             Ok(rhp_values::PhpArray::new())
         }
-        _ => Err(Thrown::error("Error", "__debuginfo() must return an array")),
+        // zend_std_get_debug_info: E_ERROR, no exception.
+        _ => Err(host.fatal_error(b"__debuginfo() must return an array")),
     }
 }
 
@@ -240,18 +234,485 @@ fn key_bytes(k: &ArrayKey) -> Vec<u8> {
     }
 }
 
-/// `var_dump` of one value at the given indentation (spaces). `host` supplies
-/// class names / enum-ness for object rendering.
-pub fn var_dump(host: &dyn crate::Host, out: &mut Vec<u8>, v: &Value, indent: usize) {
-    let mut seen = Seen::default();
-    var_dump_value(host, out, &deref(v), false, indent, &mut seen);
+/// The state every running var_dump / debug_zval_dump shares: php keeps
+/// its recursion guards on the values, so a dump that `__debugInfo()`
+/// starts sees them too.
+#[derive(Default)]
+struct Dumping {
+    /// Arrays (by storage identity) and objects (by id) being printed.
+    arrays: Vec<usize>,
+    objects: Vec<u32>,
+    /// Copies the dumpers hold, by storage identity: left out of the
+    /// refcounts they print (php reads the values in place).
+    held: HashMap<usize, usize>,
 }
 
-/// Whether a slot holds a PHP reference that php's `var_dump` marks with `&`.
-/// Not rendered yet: many builtins still copy reference wrappers out of
-/// arrays where php copies the plain value, so the mark would be spurious.
-fn is_shared_ref(_host: &dyn crate::Host, _v: &Value) -> bool {
-    false
+thread_local! {
+    static DUMPING: RefCell<Dumping> = RefCell::new(Dumping::default());
+}
+
+fn guard<T>(f: impl FnOnce(&mut Dumping) -> T) -> T {
+    DUMPING.with(|g| f(&mut g.borrow_mut()))
+}
+
+/// The storage `v` shares with its copies (`None` for a scalar), and how
+/// many values share it.
+fn storage(v: &Value) -> Option<(usize, usize)> {
+    Some(match v {
+        Value::Str(s) => (s.as_bytes().as_ptr() as usize, s.ref_count()),
+        Value::Array(a) => (a.data_ptr(), a.ref_count()),
+        Value::Object(h) => (Rc::as_ptr(h) as usize, Rc::strong_count(h)),
+        Value::Closure(c) => (Rc::as_ptr(c) as usize, Rc::strong_count(c)),
+        Value::Resource(r) => (Rc::as_ptr(r) as usize, Rc::strong_count(r)),
+        Value::Ref(r) => (Rc::as_ptr(r) as usize, Rc::strong_count(r)),
+        _ => return None,
+    })
+}
+
+/// A copy of `v` the dumper holds while printing (see [`Dumping::held`]);
+/// [`Held::release`] gives it back.
+struct Held(Vec<Value>);
+
+impl Held {
+    fn new() -> Held {
+        Held(Vec::new())
+    }
+
+    fn hold(&mut self, v: Value) -> &Value {
+        if let Some((p, _)) = storage(&v) {
+            guard(|g| *g.held.entry(p).or_insert(0) += 1);
+        }
+        self.0.push(v);
+        self.0.last().unwrap()
+    }
+
+    fn release(self) {
+        for v in &self.0 {
+            if let Some((p, _)) = storage(v) {
+                guard(|g| {
+                    if let Some(n) = g.held.get_mut(&p) {
+                        *n -= 1;
+                        if *n == 0 {
+                            g.held.remove(&p);
+                        }
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// `v`'s refcount as php has it: the values sharing its storage, less the
+/// copies dumpers hold.
+fn refcount(v: &Value) -> usize {
+    match storage(v) {
+        Some((p, n)) => n.saturating_sub(guard(|g| g.held.get(&p).copied().unwrap_or(0))),
+        None => 0,
+    }
+}
+
+/// php_var_dump / php_debug_zval_dump: the output so far. With `stream`,
+/// it is flushed before user code runs (`__debugInfo()`, a class's
+/// handler), so what that code prints lands where php prints it.
+struct Dumper<'h> {
+    host: &'h mut dyn Host,
+    out: Vec<u8>,
+    stream: bool,
+    /// debug_zval_dump: refcount / interned / packed annotations.
+    zval: bool,
+}
+
+impl Dumper<'_> {
+    fn new(host: &mut dyn Host, stream: bool, zval: bool) -> Dumper<'_> {
+        Dumper {
+            host,
+            out: Vec::new(),
+            stream,
+            zval,
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.stream && !self.out.is_empty() {
+            self.host.write_out(&self.out);
+            self.out.clear();
+        }
+    }
+
+    fn put(&mut self, b: &[u8]) {
+        self.out.extend_from_slice(b);
+    }
+
+    fn pad(&mut self, level: usize) {
+        if level > 1 {
+            sp(level - 1, &mut self.out);
+        }
+    }
+
+    /// `v`'s refcount, less what [`Host::shadow_holders`] reports (var_dump
+    /// only reads a reference's).
+    fn rc(&self, v: &Value) -> usize {
+        let shadow = if self.zval || matches!(v, Value::Ref(_)) {
+            self.host.shadow_holders(v)
+        } else {
+            0
+        };
+        refcount(v).saturating_sub(shadow)
+    }
+
+    /// One value at php's `level` (1 at the top).
+    fn value(&mut self, v: &Value, level: usize) -> Result<(), Thrown> {
+        self.pad(level);
+        let Value::Ref(r) = v else {
+            return self.plain(v, "", level);
+        };
+        let rc = self.rc(v);
+        let mut held = Held::new();
+        let inner = held.hold(r.borrow().clone());
+        let res = if self.zval {
+            self.put(format!("reference refcount({rc}) {{\n").as_bytes());
+            let res = self.value(inner, level + 2);
+            if res.is_ok() {
+                self.pad(level);
+                self.put(b"}\n");
+            }
+            res
+        } else {
+            // php hides a reference nothing else holds.
+            self.plain(inner, if rc > 1 { "&" } else { "" }, level)
+        };
+        held.release();
+        res
+    }
+
+    /// A value that is not a reference; `amp` is var_dump's marker.
+    fn plain(&mut self, v: &Value, amp: &str, level: usize) -> Result<(), Thrown> {
+        match v {
+            Value::Null => self.put(format!("{amp}NULL\n").as_bytes()),
+            Value::Bool(b) => self.put(format!("{amp}bool({b})\n").as_bytes()),
+            Value::Int(n) => self.put(format!("{amp}int({n})\n").as_bytes()),
+            Value::Float(f) => {
+                self.put(format!("{amp}float(").as_bytes());
+                self.put(&fmt::float_serialize(*f));
+                self.put(b")\n");
+            }
+            Value::Str(s) => {
+                self.put(format!("{amp}string({}) \"", s.len()).as_bytes());
+                self.put(s.as_bytes());
+                if !self.zval {
+                    self.put(b"\"\n");
+                } else if s.len() <= 1 || self.host.is_interned_str(s) {
+                    self.put(b"\" interned\n");
+                } else {
+                    let rc = self.rc(v);
+                    self.put(format!("\" refcount({rc})\n").as_bytes());
+                }
+            }
+            Value::Array(a) => {
+                let id = a.data_ptr();
+                if guard(|g| g.arrays.contains(&id)) {
+                    self.put(b"*RECURSION*\n");
+                    return Ok(());
+                }
+                if self.zval {
+                    let rc = self.rc(v);
+                    if a.is_empty() {
+                        self.put(b"array(0) interned {\n");
+                    } else {
+                        let packed = if is_packed(a) { "packed " } else { "" };
+                        self.put(
+                            format!("array({}) {packed}refcount({rc}){{\n", a.len()).as_bytes(),
+                        );
+                    }
+                } else {
+                    self.put(format!("{amp}array({}) {{\n", a.len()).as_bytes());
+                }
+                // Held for the dump (php's GC_ADDREF), so user code that
+                // drops the original cannot free what is being printed.
+                let mut held = Held::new();
+                let Value::Array(a) = held.hold(v.clone()) else {
+                    unreachable!()
+                };
+                guard(|g| g.arrays.push(id));
+                let mut res = Ok(());
+                for (k, val) in a.iter() {
+                    sp(level + 1, &mut self.out);
+                    if crate::zend::call_stack::overflowed() {
+                        self.put(b"nesting level too deep");
+                        continue;
+                    }
+                    dump_key(&mut self.out, k);
+                    self.put(b"=>\n");
+                    res = self.value(val, level + 2);
+                    if res.is_err() {
+                        break;
+                    }
+                }
+                guard(|g| g.arrays.pop());
+                held.release();
+                res?;
+                self.pad(level);
+                self.put(b"}\n");
+            }
+            Value::Object(h) => self.object(h, v, amp, level)?,
+            Value::Closure(c) => {
+                if guard(|g| g.objects.contains(&c.id)) {
+                    self.put(b"*RECURSION*\n");
+                    return Ok(());
+                }
+                let refcount = self.refcount_suffix(v);
+                let view = self.host.closure_debug_info(v).unwrap_or_default();
+                self.put(
+                    format!(
+                        "{amp}object(Closure)#{} ({}){refcount}{{\n",
+                        c.id,
+                        view.len()
+                    )
+                    .as_bytes(),
+                );
+                guard(|g| g.objects.push(c.id));
+                let entries: Vec<_> = view.iter().map(|(k, v)| (k.clone(), v)).collect();
+                let res = self.entries(&entries, &[], level);
+                guard(|g| g.objects.pop());
+                res?;
+                self.pad(level);
+                self.put(b"}\n");
+            }
+            Value::Resource(r) => {
+                let ty = if self.host.resource_closed(v) {
+                    "Unknown"
+                } else {
+                    r.type_name
+                };
+                self.put(format!("{amp}resource({}) of type ({ty})", r.id).as_bytes());
+                if self.zval {
+                    let rc = self.rc(v);
+                    self.put(format!(" refcount({rc})").as_bytes());
+                }
+                self.put(b"\n");
+            }
+            Value::Ref(_) => unreachable!("a reference holds no reference"),
+        }
+        Ok(())
+    }
+
+    /// The ` refcount(N)` debug_zval_dump puts after an object's count
+    /// (var_dump: a plain space).
+    fn refcount_suffix(&self, v: &Value) -> String {
+        if self.zval {
+            format!(" refcount({})", self.rc(v))
+        } else {
+            " ".to_string()
+        }
+    }
+
+    /// An object: `enum(...)` for an enum case (var_dump), else the header
+    /// and the debug view (zend_get_properties_for(DEBUG)).
+    fn object(
+        &mut self,
+        h: &rhp_values::ObjectHandle,
+        v: &Value,
+        amp: &str,
+        level: usize,
+    ) -> Result<(), Thrown> {
+        let (class, id) = {
+            let b = h.borrow();
+            (b.class, b.id)
+        };
+        // php prints the name as a C string: an anonymous class's
+        // `X@anonymous\0file…` shows as `X@anonymous`.
+        let cname = c_str(
+            self.host
+                .class_name(class)
+                .unwrap_or_else(|| b"class".to_vec()),
+        );
+        if !self.zval && self.host.is_enum_class(class) {
+            let case = h
+                .borrow()
+                .properties
+                .get(&PhpStr::from("name"))
+                .map(conv::to_string_bytes)
+                .unwrap_or_default();
+            self.put(format!("{amp}enum(").as_bytes());
+            self.put(&cname);
+            self.put(b"::");
+            self.put(&case);
+            self.put(b")\n");
+            return Ok(());
+        }
+        if guard(|g| g.objects.contains(&id)) {
+            self.put(b"*RECURSION*\n");
+            return Ok(());
+        }
+        guard(|g| g.objects.push(id));
+        let res = self.object_body(h, v, class, id, &cname, amp, level);
+        guard(|g| g.objects.pop());
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn object_body(
+        &mut self,
+        h: &rhp_values::ObjectHandle,
+        v: &Value,
+        class: u32,
+        id: u32,
+        cname: &[u8],
+        amp: &str,
+        level: usize,
+    ) -> Result<(), Thrown> {
+        let user_code = self.host.class_has_method(class, b"__debuginfo")
+            || self
+                .host
+                .object_handlers(class)
+                .is_some_and(|t| t.get_properties_for.is_some());
+        if user_code {
+            self.flush();
+        }
+        let view =
+            match zend::object_handlers::properties_for(&mut *self.host, h, PropPurpose::Debug)? {
+                Some(table) => Some(table),
+                None if self.host.class_has_method(class, b"__debuginfo") => {
+                    Some(debug_info(&mut *self.host, h, class)?)
+                }
+                // zend_lazy_object_debug_info: an initialized proxy shows
+                // its instance.
+                None => h.borrow().lazy_instance().map(|i| {
+                    let mut a = PhpArray::new();
+                    a.insert(ArrayKey::from_bytes(b"instance"), Value::Object(i));
+                    a
+                }),
+            };
+        // The header's refcount is read before the properties are copied.
+        let refcount = self.refcount_suffix(v);
+        // A view lists only its own entries; the properties also show the
+        // uninitialized typed ones. The properties are copied (user code
+        // may change them while they print), and the copies held.
+        let mut held = Held::new();
+        let (keys, uninit) = match &view {
+            Some(_) => (Vec::new(), Vec::new()),
+            None => {
+                let b = h.borrow();
+                let host = &*self.host;
+                let mut keys = Vec::new();
+                for (k, v) in b.properties.iter() {
+                    if !host.is_internal_slot(b.class, k) {
+                        keys.push(ArrayKey::Str(host.mangled_prop_name(b.class, k)));
+                        held.hold(v.clone());
+                    }
+                }
+                (keys, host.uninit_props(h))
+            }
+        };
+        let entries: Vec<(ArrayKey, &Value)> = match &view {
+            // The view is a table of its own (php's too): read in place.
+            Some(t) => t.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            None => keys.into_iter().zip(held.0.iter()).collect(),
+        };
+        self.put(format!("{amp}{}object(", lazy_prefix(h)).as_bytes());
+        self.put(cname);
+        self.put(format!(")#{id} ({}){refcount}{{\n", entries.len()).as_bytes());
+        let res = self.entries(&entries, &uninit, level);
+        drop(entries);
+        held.release();
+        res?;
+        self.pad(level);
+        self.put(b"}\n");
+        Ok(())
+    }
+
+    /// An object's entries (php_object_property_dump), the uninitialized
+    /// typed properties at their declaration positions.
+    fn entries(
+        &mut self,
+        entries: &[(ArrayKey, &Value)],
+        uninit: &[(PhpStr, String, usize)],
+        level: usize,
+    ) -> Result<(), Thrown> {
+        let mut next = 0usize;
+        for i in 0..=entries.len() {
+            while let Some((k, ty, pos)) = uninit.get(next) {
+                if *pos > i && i < entries.len() {
+                    break;
+                }
+                self.prop_key(&ArrayKey::Str(k.clone()), level);
+                sp(level + 1, &mut self.out);
+                self.put(format!("uninitialized({ty})\n").as_bytes());
+                next += 1;
+            }
+            let Some((k, val)) = entries.get(i) else {
+                break;
+            };
+            if crate::zend::call_stack::overflowed() {
+                sp(level + 1, &mut self.out);
+                self.put(b"nesting level too deep");
+                continue;
+            }
+            self.prop_key(k, level);
+            self.value(val, level + 2)?;
+        }
+        Ok(())
+    }
+
+    /// `["name"]=>`, `["name":protected]=>`, `["name":"Class":private]=>`.
+    fn prop_key(&mut self, k: &ArrayKey, level: usize) {
+        sp(level + 1, &mut self.out);
+        let k = match k {
+            ArrayKey::Int(n) => {
+                self.put(format!("[{n}]=>\n").as_bytes());
+                return;
+            }
+            ArrayKey::Str(s) => s,
+        };
+        self.put(b"[\"");
+        let (name, owner) = unmangle_prop(k.as_bytes());
+        self.put(name);
+        self.put(b"\"");
+        match owner {
+            None => {}
+            Some(b"*") => self.put(b":protected"),
+            Some(class) => {
+                self.put(b":\"");
+                self.put(class);
+                self.put(b"\":private");
+            }
+        }
+        self.put(b"]=>\n");
+    }
+}
+
+/// Whether php would hold `a` as a packed array (HT_IS_PACKED): integer
+/// keys in ascending order that a packed table of php's sizes (8, then
+/// doubling while at least half full) can hold.
+fn is_packed(a: &PhpArray) -> bool {
+    let mut size: i64 = 8;
+    let mut used: i64 = 0;
+    for (i, (k, _)) in a.iter().enumerate() {
+        let ArrayKey::Int(k) = *k else {
+            return false;
+        };
+        if k < used {
+            return false;
+        }
+        while k >= size {
+            if (i as i64) <= size / 2 || k >= size * 2 {
+                return false;
+            }
+            size *= 2;
+        }
+        used = k + 1;
+    }
+    true
+}
+
+/// `var_dump` of one value, without streaming: the output is returned in
+/// `out` (user code a view runs prints straight to the host).
+#[cfg(test)]
+pub fn var_dump(host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
+    let mut d = Dumper::new(host, false, false);
+    let r = d.value(&deref(v), 1);
+    out.extend_from_slice(&d.out);
+    r
 }
 
 /// The arrays (by storage identity) and objects (by id) currently being
@@ -262,178 +723,6 @@ struct Seen {
     objects: Vec<u32>,
     /// Cycles `var_export` cut short (each one is a php warning).
     circular: usize,
-}
-
-/// One `var_dump` value; `shared` marks a nested PHP reference with `&`.
-fn var_dump_value(
-    host: &dyn crate::Host,
-    out: &mut Vec<u8>,
-    v: &Value,
-    shared: bool,
-    indent: usize,
-    seen: &mut Seen,
-) {
-    let amp = if shared { "&" } else { "" };
-    let v = deref(v);
-    sp(indent, out);
-    match &v {
-        Value::Null => out.extend_from_slice(format!("{amp}NULL\n").as_bytes()),
-        Value::Bool(b) => out.extend_from_slice(format!("{amp}bool({b})\n").as_bytes()),
-        Value::Int(n) => out.extend_from_slice(format!("{amp}int({n})\n").as_bytes()),
-        Value::Float(f) => {
-            out.extend_from_slice(format!("{amp}float(").as_bytes());
-            out.extend_from_slice(&fmt::float_serialize(*f));
-            out.extend_from_slice(b")\n");
-        }
-        Value::Str(s) => {
-            out.extend_from_slice(format!("{amp}string({}) \"", s.len()).as_bytes());
-            out.extend_from_slice(s.as_bytes());
-            out.extend_from_slice(b"\"\n");
-        }
-        Value::Array(a) => {
-            let id = a.data_ptr();
-            if seen.arrays.contains(&id) {
-                out.extend_from_slice(b"*RECURSION*\n");
-                return;
-            }
-            seen.arrays.push(id);
-            out.extend_from_slice(format!("{amp}array({}) {{\n", a.len()).as_bytes());
-            for (k, val) in a.iter() {
-                sp(indent + 2, out);
-                dump_key(out, k);
-                out.extend_from_slice(b"=>\n");
-                let shared = is_shared_ref(host, val);
-                var_dump_value(host, out, val, shared, indent + 2, seen);
-            }
-            sp(indent, out);
-            out.extend_from_slice(b"}\n");
-            seen.arrays.pop();
-        }
-        Value::Object(h) => {
-            // Snapshot under a short borrow so recursion can't double-borrow
-            // (reference-ness is read before the snapshot adds a holder).
-            let (class_id, obj_id, shared) = {
-                let b = h.borrow();
-                let shared: Vec<bool> = b
-                    .properties
-                    .iter()
-                    .filter(|(k, _)| !host.is_internal_slot(b.class, k))
-                    .map(|(_, v)| is_shared_ref(host, v))
-                    .collect();
-                (b.class, b.id, shared)
-            };
-            let props = debug_props(host, h);
-            // php prints the name as a C string: an anonymous class's
-            // `X@anonymous\0file…` shows as `X@anonymous`.
-            let cname = c_str(
-                host.class_name(class_id)
-                    .unwrap_or_else(|| b"class".to_vec()),
-            );
-            if host.is_enum_class(class_id) {
-                // `enum(Name::Case)` — the case is the object's `name` property.
-                let case = props
-                    .iter()
-                    .find(|(k, _)| matches!(k, ArrayKey::Str(s) if s.as_bytes() == b"name"))
-                    .map(|(_, v)| conv::to_string_bytes(v))
-                    .unwrap_or_default();
-                out.extend_from_slice(format!("{amp}enum(").as_bytes());
-                out.extend_from_slice(&cname);
-                out.extend_from_slice(b"::");
-                out.extend_from_slice(&case);
-                out.extend_from_slice(b")\n");
-            } else {
-                if seen.objects.contains(&obj_id) {
-                    out.extend_from_slice(b"*RECURSION*\n");
-                    return;
-                }
-                seen.objects.push(obj_id);
-                out.extend_from_slice(
-                    format!(
-                        "{amp}object({})#{} ({}) {{\n",
-                        String::from_utf8_lossy(&cname),
-                        obj_id,
-                        props.len()
-                    )
-                    .as_bytes(),
-                );
-                // A view (a handler's or __debugInfo()'s) lists only its own
-                // entries.
-                let uninit = if VIEWS.with(|m| m.borrow().contains_key(&obj_id)) {
-                    Vec::new()
-                } else {
-                    host.uninit_props(h)
-                };
-                let mut next_uninit = 0usize;
-                let dump_uninit = |out: &mut Vec<u8>, upto: usize, next: &mut usize| {
-                    while let Some((k, ty, pos)) = uninit.get(*next) {
-                        if *pos > upto {
-                            break;
-                        }
-                        sp(indent + 2, out);
-                        out.extend_from_slice(b"[\"");
-                        let (name, owner) = unmangle_prop(k.as_bytes());
-                        out.extend_from_slice(name);
-                        out.push(b'"');
-                        match owner {
-                            None => {}
-                            Some(b"*") => out.extend_from_slice(b":protected"),
-                            Some(class) => {
-                                out.extend_from_slice(b":\"");
-                                out.extend_from_slice(class);
-                                out.extend_from_slice(b"\":private");
-                            }
-                        }
-                        out.extend_from_slice(b"]=>\n");
-                        sp(indent + 2, out);
-                        out.extend_from_slice(format!("uninitialized({ty})\n").as_bytes());
-                        *next += 1;
-                    }
-                };
-                for (i, (k, val)) in props.iter().enumerate() {
-                    dump_uninit(out, i, &mut next_uninit);
-                    sp(indent + 2, out);
-                    let k = match k {
-                        ArrayKey::Int(n) => {
-                            out.extend_from_slice(format!("[{n}]=>\n").as_bytes());
-                            var_dump_value(host, out, val, false, indent + 2, seen);
-                            continue;
-                        }
-                        ArrayKey::Str(s) => s,
-                    };
-                    out.extend_from_slice(b"[\"");
-                    let (name, owner) = unmangle_prop(k.as_bytes());
-                    out.extend_from_slice(name);
-                    out.push(b'"');
-                    match owner {
-                        None => {}
-                        Some(b"*") => out.extend_from_slice(b":protected"),
-                        Some(class) => {
-                            out.extend_from_slice(b":\"");
-                            out.extend_from_slice(class);
-                            out.extend_from_slice(b"\":private");
-                        }
-                    }
-                    out.extend_from_slice(b"]=>\n");
-                    let shared = shared.get(i).copied().unwrap_or(false);
-                    var_dump_value(host, out, val, shared, indent + 2, seen);
-                }
-                dump_uninit(out, usize::MAX, &mut next_uninit);
-                sp(indent, out);
-                out.extend_from_slice(b"}\n");
-                seen.objects.pop();
-            }
-        }
-        Value::Closure(_) => var_dump_closure(host, out, &v, amp, indent, seen),
-        Value::Resource(r) => {
-            let ty = if host.resource_closed(&v) {
-                "Unknown"
-            } else {
-                r.type_name
-            };
-            out.extend_from_slice(format!("{amp}resource({}) of type ({})\n", r.id, ty).as_bytes());
-        }
-        Value::Ref(_) => unreachable!("deref'd above"),
-    }
 }
 
 fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
@@ -835,6 +1124,7 @@ impl Serializer {
     }
 
     fn value(&mut self, host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
+        crate::zend::call_stack::check()?;
         match self.add_var_hash(v) {
             0 => {}
             -1 => {
@@ -983,9 +1273,20 @@ impl Serializer {
                     return Ok(());
                 }
             };
-            // (__sleep may have changed the properties.)
+            // (__sleep may have changed the properties.) A lazy object
+            // initializes unless SKIP_INITIALIZATION_ON_SERIALIZE.
+            let skip = h.borrow().lazy().is_some_and(|l| {
+                l.flags & rhp_values::LazyInfo::SKIP_INITIALIZATION_ON_SERIALIZE != 0
+            });
+            let src = if skip {
+                let i = h.borrow().lazy_instance();
+                i.unwrap_or_else(|| h.clone())
+            } else {
+                host.lazy_props_object(h)?
+            };
+            let uninit = host.uninit_props(&src);
             let props: Vec<(PhpStr, Value)> = {
-                let b = h.borrow();
+                let b = src.borrow();
                 b.properties
                     .iter()
                     .filter(|(k, _)| !host.is_internal_slot(class_id, k))
@@ -1021,6 +1322,10 @@ impl Serializer {
                             )?;
                         }
                     }
+                    // An uninitialized typed property is skipped silently.
+                    None if uninit.iter().any(|(k, _, _)| {
+                        [&n[..], &priv_[..], &prot[..]].contains(&k.as_bytes())
+                    }) => {}
                     None => host.emit_diagnostic(
                         crate::E_WARNING,
                         &[
@@ -1900,6 +2205,7 @@ pub fn register(m: &mut crate::Registry) {
             ("serialize", fn_serialize),
             ("unserialize", fn_unserialize),
             ("var_dump", fn_var_dump),
+            ("debug_zval_dump", fn_debug_zval_dump),
             ("var_export", fn_var_export),
             ("memory_get_usage", fn_memory_get_usage),
             ("memory_get_peak_usage", fn_memory_get_peak_usage),
@@ -1912,20 +2218,35 @@ pub fn register(m: &mut crate::Registry) {
 mod tests;
 
 fn fn_var_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut out = Vec::new();
+    dump_args(host, args, false)
+}
+
+/// `debug_zval_dump(mixed $value, mixed ...$values)`.
+fn fn_debug_zval_dump(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    dump_args(host, args, true)
+}
+
+/// php_var_dump / php_debug_zval_dump of each argument, streamed.
+fn dump_args(host: &mut dyn Host, args: &[Value], zval: bool) -> Result<Value, Thrown> {
+    let mut d = Dumper::new(host, true, zval);
+    let mut r = Ok(());
     for a in args {
-        let r = resolve_views(host, a, zend::object_handlers::PropPurpose::Debug);
-        if r.is_ok() {
-            var_dump(host, &mut out, a, 0);
-        }
-        clear_views();
-        if let Err(t) = r {
-            host.write_out(&out);
-            return Err(t);
+        // Arguments come by value (a reference's value, held once more).
+        r = match a {
+            Value::Ref(_) => {
+                let mut held = Held::new();
+                let r = d.value(held.hold(deref(a)), 1);
+                held.release();
+                r
+            }
+            _ => d.value(a, 1),
+        };
+        if r.is_err() {
+            break;
         }
     }
-    host.write_out(&out);
-    Ok(Value::Null)
+    d.flush();
+    r.map(|_| Value::Null)
 }
 
 fn fn_var_export(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

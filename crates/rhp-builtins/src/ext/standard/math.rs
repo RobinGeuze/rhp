@@ -7,10 +7,9 @@
 //!
 //! Notes on fidelity:
 //! - `floor`/`ceil`/`round`/`sqrt`/trig/… always return `float`, as in PHP.
-//! - `round()` ports php 8.5's `_php_math_round` with every rounding mode
-//!   (RoundingMode itself is not implemented, its int values are).
-//! - `pow()` returns `int` only for an int base with a non-negative int
-//!   exponent that does not overflow `i64`; otherwise `float`.
+//! - `round()` ports php 8.5's `_php_math_round` with every rounding mode;
+//!   the `RoundingMode` enum is PHP source ([`PRELUDE_PHP`]).
+//! - `pow()` is the `**` operator (`Host::pow_op`).
 //! - `hexdec`/`bindec`/`octdec`/`base_convert` reproduce PHP's `_php_math_*`
 //!   routines exactly, including the int→float switch on overflow and the
 //!   lossy float→base rendering used by `base_convert` for large values.
@@ -18,7 +17,7 @@
 //!   (use `log($x, 2)`), so defining it would diverge from the oracle.
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, fmt, Value};
+use rhp_values::{conv, Value};
 
 use crate::{Host, Thrown};
 
@@ -41,14 +40,67 @@ fn fn_ceil(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(f(&args[0]).ceil()))
 }
 
-fn fn_round(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+/// math.c's `RoundingMode` enum.
+pub const PRELUDE_PHP: &str = include_str!("math/prelude.php");
+
+/// round()'s `RoundingMode|int $mode` (`Z_PARAM_OBJ_OF_CLASS_OR_LONG`):
+/// `php_math_round_mode_from_enum` for the enum, else a weak int.
+pub(crate) fn rounding_mode(host: &mut dyn Host, v: &Value) -> Result<i64, Thrown> {
+    let v = deref(v);
+    let type_error = |host: &mut dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "round(): Argument #3 ($mode) must be of type RoundingMode|int, {} given",
+            crate::zend::zpp::zval_value_name(host, v)
+        ))
+    };
+    match &v {
+        Value::Object(_) => {
+            let is_mode = host
+                .object_class_name(&v)
+                .is_some_and(|c| c.eq_ignore_ascii_case(b"RoundingMode"));
+            if !is_mode {
+                return Err(type_error(host, &v));
+            }
+            let name = host
+                .object_prop(&v, b"name")
+                .map(|n| conv::to_string_bytes(&n))
+                .unwrap_or_default();
+            Ok(match name.as_slice() {
+                b"HalfAwayFromZero" => PHP_ROUND_HALF_UP,
+                b"HalfTowardsZero" => PHP_ROUND_HALF_DOWN,
+                b"HalfEven" => PHP_ROUND_HALF_EVEN,
+                b"HalfOdd" => PHP_ROUND_HALF_ODD,
+                b"TowardsZero" => PHP_ROUND_TOWARD_ZERO,
+                b"AwayFromZero" => PHP_ROUND_AWAY_FROM_ZERO,
+                b"NegativeInfinity" => PHP_ROUND_FLOOR,
+                _ => PHP_ROUND_CEILING,
+            })
+        }
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                b"round(): Passing null to parameter #3 ($mode) of type RoundingMode|int is deprecated",
+            )?;
+            Ok(0)
+        }
+        _ => match crate::zend::zpp::zpp_long(host, std::slice::from_ref(&v), 0, "round", "mode") {
+            Ok(n) => Ok(n),
+            Err(_) => Err(type_error(host, &v)),
+        },
+    }
+}
+
+fn fn_round(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     let value = deref(&args[0]);
     let places = args
         .get(1)
         .map(conv::to_int)
         .unwrap_or(0)
         .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    let mode = args.get(2).map(conv::to_int).unwrap_or(PHP_ROUND_HALF_UP);
+    let mode = match args.get(2) {
+        Some(v) => rounding_mode(host, v)?,
+        None => PHP_ROUND_HALF_UP,
+    };
     if !(1..=8).contains(&mode) {
         return Err(Thrown::error(
             "ValueError",
@@ -70,6 +122,7 @@ const PHP_ROUND_HALF_ODD: i64 = 4;
 const PHP_ROUND_CEILING: i64 = 5;
 const PHP_ROUND_FLOOR: i64 = 6;
 const PHP_ROUND_TOWARD_ZERO: i64 = 7;
+const PHP_ROUND_AWAY_FROM_ZERO: i64 = 8;
 
 /// `php_intpow10`: an exact table for 0..=22, else C `pow`.
 fn php_intpow10(power: i32) -> f64 {
@@ -240,47 +293,14 @@ fn fn_atanh(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Float(unsafe { atanh(f(&args[0])) }))
 }
 
-/// Integer exponentiation by squaring with overflow detection.
-fn ipow(mut base: i64, mut exp: u64) -> Option<i64> {
-    let mut result: i64 = 1;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = result.checked_mul(base)?;
-        }
-        exp >>= 1;
-        if exp > 0 {
-            base = base.checked_mul(base)?;
-        }
-    }
-    Some(result)
+/// `pow()` is `pow_function`, the `**` operator.
+fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    host.pow_op(&args[0], &args[1])
 }
 
-fn fn_pow(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    // pow_function: ZEND_TRY_BINARY_OBJECT_OPERATION(ZEND_POW), op1's
-    // handler, then op2's.
-    for v in [&args[0], &args[1]] {
-        if let Some(f) =
-            crate::zend::object_handlers::handlers_of(host, v).and_then(|t| t.do_operation)
-        {
-            if let Some(r) = f(
-                host,
-                crate::zend::object_handlers::Op::Pow,
-                &args[0],
-                Some(&args[1]),
-            )? {
-                return Ok(r);
-            }
-        }
-    }
-    let base = conv::to_number(&deref(&args[0])).0;
-    let exp = conv::to_number(&deref(&args[1])).0;
-    match (base, exp) {
-        (conv::Num::Int(b), conv::Num::Int(e)) if e >= 0 => match ipow(b, e as u64) {
-            Some(r) => Ok(Value::Int(r)),
-            None => Ok(Value::Float((b as f64).powf(e as f64))),
-        },
-        _ => Ok(Value::Float(base.as_f64().powf(exp.as_f64()))),
-    }
+/// `fpow()`: C `pow` on two floats, no deprecation.
+fn fn_fpow(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Float(f(&args[0]).powf(f(&args[1]))))
 }
 
 // ---------------------------------------------------------------------------
@@ -396,42 +416,64 @@ fn long_to_base(arg: i64, base: u64) -> Vec<u8> {
     out
 }
 
-/// PHP's `_php_math_basetozval`: parse `s` in `base`, ignoring invalid chars,
-/// switching from i64 to f64 accumulation on overflow. Returns a numeric Value.
-fn base_to_value(s: &[u8], base: i64) -> Value {
+/// PHP's `_php_math_basetozval`: parse `s` in `base` (surrounding
+/// whitespace and a 0x/0o/0b prefix skipped), switching from i64 to f64 on
+/// overflow. Invalid characters are skipped with one deprecation.
+fn base_to_value(host: &mut dyn Host, s: &[u8], base: i64) -> Result<Value, Thrown> {
     let mut num: i64 = 0;
     let mut fnum: f64 = 0.0;
-    let mut mode = 0u8; // 0 = integer, 1 = float
+    let mut float_mode = false;
     let cutoff = i64::MAX / base;
     let cutlim = i64::MAX % base;
-
+    let is_space = |c: &u8| matches!(c, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r');
+    let start = s.iter().position(|c| !is_space(c)).unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|c| !is_space(c))
+        .map_or(start, |e| e + 1);
+    let mut s = &s[start..end.max(start)];
+    if s.len() >= 2 && s[0] == b'0' {
+        let p = s[1].to_ascii_lowercase();
+        if (base == 16 && p == b'x') || (base == 8 && p == b'o') || (base == 2 && p == b'b') {
+            s = &s[2..];
+        }
+    }
+    let mut invalid = false;
     for &ch in s {
         let c = match ch {
             b'0'..=b'9' => (ch - b'0') as i64,
             b'A'..=b'Z' => (ch - b'A' + 10) as i64,
             b'a'..=b'z' => (ch - b'a' + 10) as i64,
-            _ => continue,
+            _ => {
+                invalid = true;
+                continue;
+            }
         };
         if c >= base {
+            invalid = true;
             continue;
         }
-        if mode == 0 {
+        if !float_mode {
             if num < cutoff || (num == cutoff && c <= cutlim) {
                 num = num * base + c;
                 continue;
-            } else {
-                fnum = num as f64;
-                mode = 1;
             }
+            fnum = num as f64;
+            float_mode = true;
         }
         fnum = fnum * base as f64 + c as f64;
     }
-
-    if mode == 0 {
-        Value::Int(num)
-    } else {
-        Value::Float(fnum)
+    if invalid {
+        host.emit_diagnostic(
+            crate::E_DEPRECATED,
+            b"Invalid characters passed for attempted conversion, these have been ignored",
+        )?;
     }
+    Ok(if float_mode {
+        Value::Float(fnum)
+    } else {
+        Value::Int(num)
+    })
 }
 
 /// PHP's `_php_math_zvaltobase`: render a (non-negative) numeric Value in
@@ -482,19 +524,19 @@ fn fn_decoct(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(long_to_base(conv::to_int(&args[0]), 8)))
 }
 
-fn fn_hexdec(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(base_to_value(&conv::to_string_bytes(&deref(&args[0])), 16))
+fn fn_hexdec(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    base_to_value(host, &conv::to_string_bytes(&deref(&args[0])), 16)
 }
 
-fn fn_bindec(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(base_to_value(&conv::to_string_bytes(&deref(&args[0])), 2))
+fn fn_bindec(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    base_to_value(host, &conv::to_string_bytes(&deref(&args[0])), 2)
 }
 
-fn fn_octdec(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(base_to_value(&conv::to_string_bytes(&deref(&args[0])), 8))
+fn fn_octdec(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+    base_to_value(host, &conv::to_string_bytes(&deref(&args[0])), 8)
 }
 
-fn fn_base_convert(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
+fn fn_base_convert(host: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thrown> {
     let from_base = conv::to_int(&args[1]);
     let to_base = conv::to_int(&args[2]);
     if !(2..=36).contains(&from_base) {
@@ -510,7 +552,13 @@ fn fn_base_convert(_: &mut dyn crate::Host, args: &[Value]) -> Result<Value, Thr
         ));
     }
     let s = conv::to_string_bytes(&deref(&args[0]));
-    let num = base_to_value(&s, from_base);
+    let num = base_to_value(host, &s, from_base)?;
+    if matches!(num, Value::Float(f) if f.is_infinite()) {
+        return Err(Thrown::error(
+            "ValueError",
+            format!("An infinite value cannot be converted to base {to_base}"),
+        ));
+    }
     Ok(Value::str(value_to_base(&num, to_base)))
 }
 
@@ -527,6 +575,7 @@ pub fn register(m: &mut crate::Registry) {
             ("round", fn_round),
             ("sqrt", fn_sqrt),
             ("pow", fn_pow),
+            ("fpow", fn_fpow),
             ("exp", fn_exp),
             ("expm1", fn_expm1),
             ("log1p", fn_log1p),
@@ -614,146 +663,134 @@ fn fn_abs(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
 }
 
-/// Increment a big-endian ascii-digit string (`"199"` -> `"200"`),
-/// growing at the front on carry (`"99"` -> `"100"`).
-fn increment_digits(d: &mut Vec<u8>) {
-    let mut i = d.len();
-    loop {
-        if i == 0 {
-            d.insert(0, b'1');
-            return;
+/// Group `digits` by three with `sep` (the integral part of number_format).
+fn group_thousands(out: &mut Vec<u8>, digits: &[u8], sep: &[u8]) {
+    let n = digits.len();
+    for (i, &d) in digits.iter().enumerate() {
+        if i > 0 && (n - i).is_multiple_of(3) {
+            out.extend_from_slice(sep);
         }
-        i -= 1;
-        if d[i] == b'9' {
-            d[i] = b'0';
-        } else {
-            d[i] += 1;
-            return;
-        }
+        out.push(d);
     }
 }
 
-/// Round |value| (given as decimal digit strings) to `dec` decimal places using
-/// half-away-from-zero, operating on the shortest decimal representation.
-/// Returns (int_digits, frac_digits) where frac has length `max(dec,0)`.
-fn round_decimal(int_digits: &[u8], frac_digits: &[u8], dec: i64) -> (Vec<u8>, Vec<u8>) {
-    let int_len = int_digits.len() as i64;
-    let mut all: Vec<u8> = Vec::with_capacity(int_digits.len() + frac_digits.len());
-    all.extend_from_slice(int_digits);
-    all.extend_from_slice(frac_digits);
-
-    let keep = int_len + dec; // number of leading digits to retain
-    let round_up = if keep < 0 || keep as usize >= all.len() {
-        false
-    } else {
-        all[keep as usize] >= b'5'
-    };
-
-    let kept_len = keep.max(0) as usize;
-    let mut kept: Vec<u8> = all.iter().take(kept_len).copied().collect();
-    while kept.len() < kept_len {
-        kept.push(b'0'); // value had fewer digits than requested
+/// `_php_math_number_format_ex`: round half up, print with `%.*F` (at most
+/// NDIG - 2 = 318 places, the rest zero-padded), then group.
+fn number_format_double(d: f64, dec: i32, dec_point: &[u8], thousand_sep: &[u8]) -> Vec<u8> {
+    let mut is_negative = d < 0.0;
+    let d = php_math_round(d.abs(), dec, PHP_ROUND_HALF_UP);
+    let dec = dec.max(0) as usize;
+    if d.is_nan() {
+        return b"nan".to_vec();
     }
-    if round_up {
-        increment_digits(&mut kept);
+    if d.is_infinite() {
+        return b"inf".to_vec();
     }
-    // normalize kept to a plain integer (strip leading zeros, keep >= "0")
-    let first_nonzero = kept.iter().position(|&b| b != b'0').unwrap_or(kept.len());
-    let kept_int: Vec<u8> = if first_nonzero == kept.len() {
-        vec![b'0']
-    } else {
-        kept[first_nonzero..].to_vec()
+    let tmp = format!("{d:.*}", dec.min(318));
+    if is_negative && d == 0.0 {
+        is_negative = false;
+    }
+    let (integral, frac) = match tmp.split_once('.') {
+        Some((i, f)) => (i.as_bytes(), f.as_bytes()),
+        None => (tmp.as_bytes(), &b""[..]),
     };
-    let is_zero = kept_int == *b"0";
+    let mut out = Vec::with_capacity(integral.len() * 2 + dec + dec_point.len() + 1);
+    if is_negative {
+        out.push(b'-');
+    }
+    group_thousands(&mut out, integral, thousand_sep);
+    if dec > 0 {
+        out.extend_from_slice(dec_point);
+        out.extend_from_slice(frac);
+        out.extend(std::iter::repeat_n(b'0', dec - frac.len()));
+    }
+    out
+}
 
-    if dec <= 0 {
-        // No fractional output. For dec<0 the kept integer scales by 10^(-dec).
-        let mut int_str = kept_int;
-        if !is_zero && dec < 0 {
-            int_str.extend(std::iter::repeat_n(b'0', (-dec) as usize));
-        }
-        (int_str, Vec::new())
-    } else {
-        let dec = dec as usize;
-        let mut kint = kept_int;
-        while kint.len() <= dec {
-            kint.insert(0, b'0'); // ensure at least one integer digit
-        }
-        let split = kint.len() - dec;
-        let int_str = kint[..split].to_vec();
-        let frac_str = kint[split..].to_vec();
-        // strip leading zeros of int part (keep one)
-        let fnz = int_str
-            .iter()
-            .position(|&b| b != b'0')
-            .unwrap_or(int_str.len());
-        let int_str = if fnz == int_str.len() {
-            vec![b'0']
+/// `_php_math_number_format_long`: exact digits; a negative `dec` rounds
+/// half up on the integer.
+fn number_format_long(num: i64, dec: i64, dec_point: &[u8], thousand_sep: &[u8]) -> Vec<u8> {
+    let mut is_negative = num < 0;
+    let mut tmpnum = num.unsigned_abs();
+    if dec < 0 {
+        if dec < -19 {
+            tmpnum = 0;
         } else {
-            int_str[fnz..].to_vec()
-        };
-        (int_str, frac_str)
+            let power = 10u64.pow((-dec) as u32);
+            let rest = tmpnum % power;
+            tmpnum /= power;
+            tmpnum = if rest >= power / 2 {
+                tmpnum.wrapping_mul(power).wrapping_add(power)
+            } else {
+                tmpnum.wrapping_mul(power)
+            };
+        }
+        if tmpnum == 0 {
+            is_negative = false;
+        }
     }
+    let digits = tmpnum.to_string();
+    let mut out = Vec::new();
+    if is_negative {
+        out.push(b'-');
+    }
+    group_thousands(&mut out, digits.as_bytes(), thousand_sep);
+    if dec > 0 {
+        out.extend_from_slice(dec_point);
+        out.extend(std::iter::repeat_n(b'0', dec as usize));
+    }
+    out
 }
 
 pub(crate) fn fn_number_format(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let num = conv::to_float(&deref(&args[0]));
+    let num = deref(&args[0]);
     let dec = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
-    let dec_point = match args.get(2) {
-        Some(v) => conv::to_string_bytes(v),
-        None => b".".to_vec(),
+    let sep = |i: usize, default: &[u8]| match args.get(i).map(deref) {
+        None | Some(Value::Null) => default.to_vec(),
+        Some(v) => conv::to_string_bytes(&v),
     };
-    let thousands = match args.get(3) {
-        Some(v) => conv::to_string_bytes(v),
-        None => b",".to_vec(),
-    };
-
-    if !num.is_finite() {
-        // php emits "nan"/"inf"; rare, keep it simple.
-        return Ok(Value::str(fmt::float_echo(num)));
-    }
-
-    let negative = num < 0.0;
-    let abs = num.abs();
-    // Shortest decimal (Rust's Display is always non-exponential for f64).
-    let s = format!("{abs}");
-    let (int_part, frac_part) = match s.split_once('.') {
-        Some((a, b)) => (a.as_bytes().to_vec(), b.as_bytes().to_vec()),
-        None => (s.as_bytes().to_vec(), Vec::new()),
-    };
-
-    let (int_digits, frac_digits) = round_decimal(&int_part, &frac_part, dec);
-
-    let value_is_zero = int_digits == *b"0" && frac_digits.iter().all(|&b| b == b'0');
-
-    // Group the integer part with the thousands separator.
-    let mut grouped: Vec<u8> = Vec::new();
-    let n = int_digits.len();
-    for (i, &d) in int_digits.iter().enumerate() {
-        if i > 0 && (n - i) % 3 == 0 {
-            grouped.extend_from_slice(&thousands);
+    let dec_point = sep(2, b".");
+    let thousand_sep = sep(3, b",");
+    let out = match num {
+        Value::Int(n) => number_format_long(n, dec, &dec_point, &thousand_sep),
+        v => {
+            let d = conv::to_float(&v);
+            // A double of 2^52 or more has no fraction left.
+            if d.abs() >= 4503599627370496.0
+                && (-9223372036854775808.0..9223372036854775808.0).contains(&d)
+            {
+                number_format_long(d as i64, dec, &dec_point, &thousand_sep)
+            } else {
+                let dec = dec.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                number_format_double(d, dec, &dec_point, &thousand_sep)
+            }
         }
-        grouped.push(d);
-    }
-
-    let mut out = Vec::new();
-    if negative && !value_is_zero {
-        out.push(b'-');
-    }
-    out.extend_from_slice(&grouped);
-    if dec > 0 {
-        out.extend_from_slice(&dec_point);
-        out.extend_from_slice(&frac_digits);
-    }
+    };
     Ok(Value::str(out))
 }
 
-/// math.c's constants: `M_*`, `NAN`, `INF`, `PHP_ROUND_HALF_*`.
+/// math.c's constants (the stub's values): `M_*`, `NAN`, `INF`,
+/// `PHP_ROUND_HALF_*`.
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
-        ("M_PI", Value::Float(std::f64::consts::PI)),
-        ("M_E", Value::Float(std::f64::consts::E)),
-        ("M_SQRT2", Value::Float(std::f64::consts::SQRT_2)),
+        ("M_E", Value::Float(2.718281828459045)),
+        ("M_LOG2E", Value::Float(1.4426950408889634074)),
+        ("M_LOG10E", Value::Float(0.43429448190325182765)),
+        ("M_LN2", Value::Float(0.69314718055994530942)),
+        ("M_LN10", Value::Float(2.30258509299404568402)),
+        ("M_PI", Value::Float(3.14159265358979323846)),
+        ("M_PI_2", Value::Float(1.57079632679489661923)),
+        ("M_PI_4", Value::Float(0.78539816339744830962)),
+        ("M_1_PI", Value::Float(0.31830988618379067154)),
+        ("M_2_PI", Value::Float(0.63661977236758134308)),
+        ("M_SQRTPI", Value::Float(1.77245385090551602729)),
+        ("M_2_SQRTPI", Value::Float(1.12837916709551257390)),
+        ("M_LNPI", Value::Float(1.14472988584940017414)),
+        ("M_EULER", Value::Float(0.57721566490153286061)),
+        ("M_SQRT2", Value::Float(1.41421356237309504880)),
+        ("M_SQRT1_2", Value::Float(0.70710678118654752440)),
+        ("M_SQRT3", Value::Float(1.73205080756887729352)),
         ("NAN", Value::Float(f64::NAN)),
         ("INF", Value::Float(f64::INFINITY)),
         ("PHP_ROUND_HALF_UP", Value::Int(PHP_ROUND_HALF_UP)),

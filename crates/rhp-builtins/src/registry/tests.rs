@@ -18,10 +18,23 @@ fn no_duplicate_builtins() {
             m.into_values().map(|b| (b.name, b.func)).collect();
         (md.name, fns)
     });
-    for (owner_name, fns) in modules.chain(sapis) {
+    for (owner_name, fns) in modules {
         for (name, _) in fns {
             if let Some(prev) = owner.insert(name, owner_name) {
                 dups.push(format!("{name}: {prev} and {owner_name}"));
+            }
+        }
+    }
+    // Only one SAPI runs: two SAPIs may share a function (php-cli's and
+    // php-cgi's `dl`), but not with a module.
+    for (owner_name, fns) in sapis {
+        let mut own: HashMap<&'static str, ()> = HashMap::new();
+        for (name, _) in fns {
+            if let Some(prev) = owner.get(name) {
+                dups.push(format!("{name}: {prev} and {owner_name}"));
+            }
+            if own.insert(name, ()).is_some() {
+                dups.push(format!("{name}: {owner_name} twice"));
             }
         }
     }

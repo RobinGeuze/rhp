@@ -1,0 +1,36 @@
+int(1)
+bool(false)
+Error: Using $this when not in object context
+Error: Using $this when not in object context
+bool(false)
+bool(true)
+NULL
+NULL
+int(1)
+string(1) "B"
+string(1) "A"
+TypeError: Cannot use "::class" on null
+string(1) "B"
+TypeError: Cannot use "::class" on string
+string(1) "k"
+string(2) "kk"
+TypeError: Cannot use value of type int as class constant name
+Error: Undefined constant A::NOPE
+Error: Attempt to unset static property A::$s
+Error: Cannot access "self" when no class scope is active
+Error: Cannot access "static" when no class scope is active
+Error: Cannot access "parent" when no class scope is active
+string(8) "appended"
+array(0) {
+}
+Error: Cannot use [] for reading
+handler: opt(): Optional parameter $a declared before required parameter $b is implicitly treated as a required parameter
+ArgumentCountError: opt(): Argument #1 ($a) not passed
+array(2) {
+  [0]=>
+  int(5)
+  [1]=>
+  int(6)
+}
+required
+bool(true)

@@ -1,0 +1,84 @@
+P::secret
+P::secret
+P::secret
+P::__call(missing)
+P::__call(missing2)
+P::__call(missing3)
+Non-static method P::inst() cannot be called statically
+Non-static method P::inst() cannot be called statically
+P::stat P
+P::inst C
+P::inst C
+
+Deprecated: Callables of the form ["C", "parent::inst"] are deprecated in F on line 33
+P::inst C
+
+Deprecated: Use of "parent" in callables is deprecated in F on line 34
+bool(true)
+C::prot
+P::__call(nope)
+P::__callStatic(nope)
+P::__callStatic(a)
+array_map(): Argument #1 ($callback) must be a valid callback or null, non-static method Q::hidden() cannot be called statically
+array_map(): Argument #1 ($callback) must be a valid callback or null, cannot access protected method Q::hs()
+array_map(): Argument #1 ($callback) must be a valid callback or null, non-static method Q::hidden() cannot be called statically
+array_map(): Argument #1 ($callback) must be a valid callback or null, cannot access private method Q::hidden()
+array_map(): Argument #1 ($callback) must be a valid callback or null, class Q does not have a method "none"
+array_map(): Argument #1 ($callback) must be a valid callback or null, class "NoClass" not found
+array_map(): Argument #1 ($callback) must be a valid callback or null, invalid function name
+array_map(): Argument #1 ($callback) must be a valid callback or null, first array member is not a valid class name or object
+array_map(): Argument #1 ($callback) must be a valid callback or null, array callback must have exactly two members
+array_map(): Argument #1 ($callback) must be a valid callback or null, array callback has to contain indices 0 and 1
+Call to private method Q::hidden() from global scope
+Call to private method Q::hidden() from global scope
+Call to undefined method Q::none()
+Array callback must have exactly two elements
+Array callback has to contain indices 0 and 1
+strlen() expects exactly 1 argument, 0 given
+Cannot call abstract method Ab::f()
+
+Deprecated: Calling static trait method T::ts is deprecated, it should only be called on a class using the trait in F on line 62
+T::ts
+
+Warning: refd(): Argument #1 ($a) must be passed by reference, value given in F on line 68
+
+Warning: R::byRef(): Argument #1 ($x) must be passed by reference, value given in F on line 69
+
+Warning: R::byRef(): Argument #2 must be passed by reference, value given in F on line 69
+
+Warning: R::byRef(): Argument #3 must be passed by reference, value given in F on line 69
+
+Warning: sort(): Argument #1 ($array) must be passed by reference, value given in F on line 70
+string(7) "changed"
+string(3) "set"
+string(3) "set"
+
+Deprecated: uasort(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero in F on line 79
+array(3) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  ["c"]=>
+  int(3)
+}
+a<>b
+b<>c
+array(3) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  ["c"]=>
+  int(3)
+}
+
+Deprecated: Use of "self" in callables is deprecated in F on line 87
+down: S
+TypeError
+string(4) "Base"
+bool(false)
+FcP::m FcA
+FcA::m
+end
+down: S

@@ -99,6 +99,13 @@ pub struct ResolvedMethod {
     /// php's `common.prototype` for a constructor: the class whose abstract
     /// or interface constructor this one implements (see `inherit`).
     pub prototype: Option<ClassId>,
+    /// zend_get_function_root_class for a method other than a constructor:
+    /// the class of the declaration it overrides at the top of its chain,
+    /// else its own. Protected access is checked against it.
+    pub root: ClassId,
+    /// php's ZEND_ACC_CHANGED: it overrides a private (or changed) parent
+    /// method, so a call from that parent's scope may run the parent's.
+    pub changed: bool,
 }
 
 #[derive(Clone)]
@@ -1170,14 +1177,26 @@ impl Vm {
         let mut methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].methods.clone())
             .unwrap_or_default();
+        let parent_methods = parent.map(|p| &self.classes[p as usize].methods);
         let insert_method = |methods: &mut IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
                              k: Vec<u8>,
-                             m: ResolvedMethod| {
+                             mut m: ResolvedMethod| {
             if m.is_abstract {
                 if let Some(existing) = methods.get(&k) {
                     if !existing.is_abstract {
                         return; // keep the concrete method
                     }
+                }
+            }
+            // do_inheritance_check_on_method: the prototype and the
+            // ZEND_ACC_CHANGED flag against the parent's method.
+            m.root = id;
+            m.changed = false;
+            if let Some(pm) = parent_methods.and_then(|pms| pms.get(&k)) {
+                let private = pm.visibility == Visibility::Private;
+                m.changed = private || pm.changed;
+                if !(private && !pm.is_abstract) && k != b"__construct" {
+                    m.root = pm.root;
                 }
             }
             methods.insert(k, m);
@@ -1211,6 +1230,8 @@ impl Vm {
                     is_abstract: m.is_abstract,
                     is_final: m.is_final,
                     prototype: None,
+                    root: id,
+                    changed: false,
                 },
             );
         }
@@ -1297,6 +1318,8 @@ impl Vm {
                         is_abstract: h.is_abstract,
                         is_final: h.is_final,
                         prototype: None,
+                        root: id,
+                        changed: false,
                     })
                 }))
             });
@@ -1462,8 +1485,16 @@ impl Vm {
 
         // Class constants.
         self.check_const_types(proto, parent)?;
+        // A parent's private constants are not inherited (do_inherit_constant).
         let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
-            .map(|p| self.classes[p as usize].constants.clone())
+            .map(|p| {
+                self.classes[p as usize]
+                    .constants
+                    .iter()
+                    .filter(|(_, c)| c.visibility != Visibility::Private)
+                    .map(|(k, c)| (k.clone(), c.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
@@ -1817,19 +1848,32 @@ impl Vm {
             ClassRef::Name(nidx) => {
                 self.resolve_class_by_name(self.stack[top].proto.names[nidx as usize].as_bytes())
             }
-            ClassRef::SelfClass => self.stack[top]
-                .defining_class
-                .ok_or_else(|| Thrown::error("Error", "Cannot use \"self\" outside class context")),
+            // zend_fetch_class's messages.
+            ClassRef::SelfClass => self.stack[top].defining_class.ok_or_else(|| {
+                Thrown::error(
+                    "Error",
+                    "Cannot access \"self\" when no class scope is active",
+                )
+            }),
             ClassRef::ParentClass => {
-                let d = self.stack[top]
-                    .defining_class
-                    .ok_or_else(|| Thrown::error("Error", "Cannot use \"parent\" outside class"))?;
-                self.classes[d as usize]
-                    .parent
-                    .ok_or_else(|| Thrown::error("Error", "Cannot use \"parent\" when no parent"))
+                let d = self.stack[top].defining_class.ok_or_else(|| {
+                    Thrown::error(
+                        "Error",
+                        "Cannot access \"parent\" when no class scope is active",
+                    )
+                })?;
+                self.classes[d as usize].parent.ok_or_else(|| {
+                    Thrown::error(
+                        "Error",
+                        "Cannot access \"parent\" when current class scope has no parent",
+                    )
+                })
             }
             ClassRef::StaticClass => self.stack[top].called_class.ok_or_else(|| {
-                Thrown::error("Error", "Cannot use \"static\" outside class context")
+                Thrown::error(
+                    "Error",
+                    "Cannot access \"static\" when no class scope is active",
+                )
             }),
             ClassRef::Dynamic(reg) => {
                 let v = self.reg_get(top, reg);

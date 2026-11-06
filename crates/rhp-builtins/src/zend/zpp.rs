@@ -121,17 +121,18 @@ pub(crate) fn zval_get_long(host: &mut dyn Host, v: &Value) -> Result<i64, Throw
             Some((conv::Num::Float(f), _)) => f as i64,
             None => 0,
         }),
-        o @ (Value::Object(_) | Value::Closure(_)) => {
-            host.emit_diagnostic(
-                crate::E_WARNING,
-                format!(
-                    "Object of class {} could not be converted to int",
-                    zval_value_name(host, &o)
-                )
-                .as_bytes(),
-            )?;
-            Ok(1)
-        }
+        // The object's cast_object (GMP takes the low bits), else the
+        // warning and 1.
+        o @ (Value::Object(_) | Value::Closure(_)) => Ok(
+            match crate::zend::object_handlers::object_to_number(
+                host,
+                &o,
+                crate::zend::object_handlers::CastTarget::Int,
+            )? {
+                Some(n) => conv::to_int(&n),
+                None => 1,
+            },
+        ),
         other => Ok(conv::to_int(&other)),
     }
 }

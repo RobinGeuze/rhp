@@ -89,6 +89,20 @@ pub struct Request {
     /// the process's directory, as php-cgi opens the script before its
     /// chdir. The process's own directory never changes.
     pub cwd: Option<Vec<u8>>,
+    /// Which ini files to load (php_init_config); `None`: none at all.
+    pub ini_files: Option<IniFiles>,
+}
+
+/// php_init_config's inputs: php-cli's `-c` and `-n`. The php.ini is the
+/// `-c` file (or `php-<sapi>.ini` / `php.ini` in that directory), else
+/// `$PHPRC`'s; then, unless `-n`, the `.ini` files in `$PHP_INI_SCAN_DIR`.
+/// rhp has no built-in search path or scan directory of its own.
+#[derive(Clone, Debug, Default)]
+pub struct IniFiles {
+    /// `-c <path>`.
+    pub path_override: Option<String>,
+    /// `-n`.
+    pub ignore: bool,
 }
 
 impl Request {
@@ -102,6 +116,7 @@ impl Request {
             info: None,
             php_binary: None,
             cwd: None,
+            ini_files: None,
         }
     }
 }
@@ -162,8 +177,8 @@ impl Sapi for CliSapi {
 /// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
 /// does not (mago's bugs, or its recursion limit on deeply nested code),
 /// mago's error, which is not php's.
-fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
-    rhp_builtins::zend::syntax_error(src).or_else(|| {
+fn parse_error(parsed: &Parsed, src: &[u8], short_tags: bool) -> Option<ParseFailure> {
+    rhp_builtins::zend::syntax_error_ex(src, short_tags).or_else(|| {
         let (message, line) = parsed.parse_error()?;
         Some(ParseFailure {
             class: "ParseError",
@@ -173,13 +188,27 @@ fn parse_error(parsed: &Parsed, src: &[u8]) -> Option<ParseFailure> {
     })
 }
 
-/// [`parse_error`] as the includer reports it.
-fn parse_failure(parsed: &Parsed, src: &[u8]) -> Option<IncludeError> {
-    parse_error(parsed, src).map(|f| IncludeError::Parse {
-        class: f.class,
-        message: f.message,
-        line: f.line,
-    })
+/// [`parse_error`] as the includer reports it, with the warnings php's
+/// parser raised before it.
+fn parse_failure(
+    parsed: &Parsed,
+    src: &[u8],
+    short_tags: bool,
+) -> Result<Vec<(i64, String, u32)>, IncludeError> {
+    let failure = parse_error(parsed, src, short_tags);
+    let diags = rhp_builtins::zend::take_parse_warnings()
+        .into_iter()
+        .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
+        .collect();
+    match failure {
+        Some(f) => Err(IncludeError::Parse {
+            class: f.class,
+            message: f.message,
+            line: f.line,
+            diags,
+        }),
+        None => Ok(diags),
+    }
 }
 
 /// rhp-builtins as the compiler sees it.
@@ -195,12 +224,72 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
 /// compiler. Every script, include, eval and preload goes through here, and
 /// `rhp-difftest lint` too.
 pub fn compile_file(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
-    let arena = Arena::new();
-    let parsed = arena.parse(file.as_bytes(), src);
-    if let Some(e) = parse_failure(&parsed, src) {
-        return Err(e);
+    // zend.multibyte: the scanner reads the script converted.
+    let filtered = rhp_builtins::zend::multibyte::filter(src);
+    let src = filtered
+        .as_ref()
+        .and_then(|f| f.source.as_deref())
+        .unwrap_or(src);
+    let mut r = compile_source(file, src, mode);
+    if let (Ok(p), Some(out)) = (&mut r, filtered.and_then(|f| f.output)) {
+        output_filter(p, &out);
     }
-    rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode).map_err(include_error)
+    r
+}
+
+/// The scanner's output filter (zend.multibyte) over a compiled program:
+/// its string constants converted to the internal encoding.
+fn output_filter(p: &mut Program, f: &rhp_builtins::zend::multibyte::OutputFilter) {
+    let proto = |rc: &mut std::rc::Rc<rhp_bytecode::FunctionProto>| {
+        if let Some(proto) = std::rc::Rc::get_mut(rc) {
+            for c in &mut proto.consts {
+                if let Value::Str(s) = c {
+                    *c = Value::str(f.apply(s.as_bytes()));
+                }
+            }
+        }
+    };
+    proto(&mut p.main);
+    p.functions.iter_mut().for_each(proto);
+    p.closures.iter_mut().for_each(proto);
+    for class in p.classes.iter_mut().chain(p.cond_classes.iter_mut()) {
+        if let Some(class) = std::rc::Rc::get_mut(class) {
+            for m in &mut class.methods {
+                proto(&mut m.proto);
+            }
+        }
+    }
+}
+
+fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
+    let arena = Arena::new();
+    let short_tags = rhp_builtins::short_open_tag();
+    let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
+    let parse_diags = parse_failure(&parsed, src, short_tags)?;
+    let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
+    if parse_diags.is_empty() {
+        return r.map_err(include_error);
+    }
+    // The parser's warnings come before the compiler's diagnostics.
+    match r.map_err(include_error) {
+        Ok(mut p) => {
+            p.compile_diags.splice(0..0, parse_diags);
+            Ok(p)
+        }
+        Err(IncludeError::Compile {
+            message,
+            line,
+            mut diags,
+        }) => {
+            diags.splice(0..0, parse_diags);
+            Err(IncludeError::Compile {
+                message,
+                line,
+                diags,
+            })
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The includer every SAPI installs: compile an included or eval'd file.
@@ -282,6 +371,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Some(dir) = &req.cwd {
         vm.set_cwd(dir);
     }
+    if let Some(files) = &req.ini_files {
+        load_ini_files(&mut vm, files);
+    }
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
@@ -289,6 +381,10 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         vm.set_request(info);
     }
     vm.start_request();
+    if vm.startup_failed() {
+        vm.finish_request();
+        return Outcome::Exit(1);
+    }
 
     // Compile to owned bytecode (the arena is dropped after this). A script
     // file goes through the compiled-script cache; `-r` code and standard
@@ -304,7 +400,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             class,
             message,
             line,
+            diags,
         }) => {
+            vm.emit_parse_diags(file.as_bytes(), &diags);
             // line 0: php raised it outside any file
             let at = if line == 0 { "[no active file]" } else { &file };
             vm.report_parse_error(class, &message, at, line);
@@ -339,6 +437,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     let mut argv = vec![argv0.into_bytes()];
     argv.extend(req.args);
     vm.set_argv(argv);
+    if let Script::Code(_) = req.script {
+        vm.disable_auto_prepend();
+    }
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {
         Ok(code) => code,
@@ -346,6 +447,83 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     };
     vm.finish_request();
     Outcome::Exit(code)
+}
+
+/// php_init_config: the php.ini, then the scanned `.ini` files, into the
+/// configuration hash (the `-d` settings come after).
+fn load_ini_files(vm: &mut Vm, files: &IniFiles) {
+    use std::path::{Path, PathBuf};
+    let sapi_name = rhp_builtins::main::sapi::sapi_name();
+    let (file_name, search) = match &files.path_override {
+        Some(p) => (Some(p.clone()), Some(p.clone())),
+        None if !files.ignore => match std::env::var("PHPRC") {
+            Ok(p) if !p.is_empty() => (Some(p.clone()), Some(p)),
+            _ => (None, None),
+        },
+        None => (None, None),
+    };
+    let mut opened: Option<(PathBuf, Vec<u8>)> = None;
+    if let Some(f) = file_name.filter(|f| Path::new(f).is_file()) {
+        if let Ok(src) = std::fs::read(&f) {
+            let abs = std::path::absolute(&f).unwrap_or_else(|_| PathBuf::from(&f));
+            opened = Some((abs, src));
+        }
+    }
+    if opened.is_none() {
+        let dirs: Vec<String> = search
+            .map(|s| s.split(':').map(str::to_string).collect())
+            .unwrap_or_default();
+        'search: for name in [format!("php-{sapi_name}.ini"), "php.ini".to_string()] {
+            for d in dirs.iter().filter(|d| !d.is_empty()) {
+                let p = Path::new(d).join(&name);
+                if p.is_file() {
+                    if let Ok(src) = std::fs::read(&p) {
+                        opened = Some((p, src));
+                        break 'search;
+                    }
+                }
+            }
+        }
+    }
+    if let Some((path, src)) = opened {
+        vm.load_ini_file(&src);
+        use std::os::unix::ffi::OsStrExt;
+        rhp_builtins::config_set_opened_path(path.as_os_str().as_bytes());
+    }
+    if files.ignore {
+        return;
+    }
+    let Ok(scan) = std::env::var("PHP_INI_SCAN_DIR") else {
+        return;
+    };
+    let mut scanned = Vec::new();
+    for dir in scan.split(':').filter(|d| !d.is_empty()) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        names.sort();
+        for name in names {
+            use std::os::unix::ffi::OsStrExt;
+            if !name.as_bytes().ends_with(b".ini") {
+                continue;
+            }
+            let path = if dir.ends_with('/') {
+                format!("{dir}{}", name.to_string_lossy())
+            } else {
+                format!("{dir}/{}", name.to_string_lossy())
+            };
+            if !Path::new(&path).is_file() {
+                continue;
+            }
+            if let Ok(src) = std::fs::read(&path) {
+                if vm.load_ini_file(&src) {
+                    scanned.push(path.into_bytes());
+                }
+            }
+        }
+    }
+    rhp_builtins::config_set_scanned_files(&scanned);
 }
 
 /// The SAPI `opcache.preload` runs under: the request's SAPI name and ini
@@ -677,7 +855,12 @@ fn ini_constant(name: &str) -> Option<String> {
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
-pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -> i32 {
+pub fn run_cli(
+    script: Script,
+    ini: Vec<(String, String)>,
+    args: Vec<Vec<u8>>,
+    ini_files: IniFiles,
+) -> i32 {
     // PHP_BINARY is this engine's own executable (composer re-invokes it for
     // `@php` scripts).
     let php_binary = std::env::current_exe().ok().map(|exe| {
@@ -694,6 +877,7 @@ pub fn run_cli(script: Script, ini: Vec<(String, String)>, args: Vec<Vec<u8>>) -
         info: None,
         php_binary,
         cwd: None,
+        ini_files: Some(ini_files),
     };
     match run_request(Box::new(CliSapi), req) {
         Outcome::Exit(code) => code,

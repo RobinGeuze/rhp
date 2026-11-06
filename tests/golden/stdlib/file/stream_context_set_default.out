@@ -1,0 +1,27 @@
+string(14) "stream-context"
+bool(true)
+array(1) {
+  ["http"]=>
+  array(2) {
+    ["method"]=>
+    string(4) "HEAD"
+    ["timeout"]=>
+    int(5)
+  }
+}
+array(2) {
+  ["http"]=>
+  array(2) {
+    ["method"]=>
+    string(3) "GET"
+    ["timeout"]=>
+    int(5)
+  }
+  ["ftp"]=>
+  array(1) {
+    ["overwrite"]=>
+    bool(true)
+  }
+}
+Options should have the form ["wrappername"]["optionname"] = $value
+stream_context_set_default(): Argument #1 ($options) must be of type array, string given

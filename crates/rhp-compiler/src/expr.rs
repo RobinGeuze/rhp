@@ -128,8 +128,9 @@ impl ProtoBuilder<'_> {
             Expression::Match(m) => self.compile_match(m),
             Expression::Instantiation(inst) => {
                 use mago_span::HasSpan;
+                // ZEND_AST_NEW takes its class name's line.
                 self.call_lines
-                    .push(self.cx.line_of(inst.span().start.offset));
+                    .push(self.cx.line_of(inst.class.span().start.offset));
                 let r = self.compile_new(inst);
                 self.call_lines.pop();
                 r
@@ -161,6 +162,11 @@ impl ProtoBuilder<'_> {
                 use crate::parse::cst::Call;
                 use mago_span::HasSpan;
                 let at = match call {
+                    // php's `callable_expr argument_list`: the line the
+                    // argument list starts on (a plain name keeps its own).
+                    Call::Function(fc) if !matches!(fc.function, Expression::Identifier(_)) => {
+                        fc.argument_list.left_parenthesis
+                    }
                     Call::Function(fc) => fc.function.span(),
                     Call::Method(mc) => mc.method.span(),
                     Call::NullSafeMethod(mc) => mc.method.span(),

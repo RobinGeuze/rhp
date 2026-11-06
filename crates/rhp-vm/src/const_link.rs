@@ -547,7 +547,12 @@ impl Vm {
             vm.classes[id as usize]
                 .constants
                 .iter()
-                .map(|(k, c)| (k.clone(), (Some(c.declaring_class), c.visibility, c.is_final)))
+                .map(|(k, c)| {
+                    (
+                        k.clone(),
+                        (Some(c.declaring_class), c.visibility, c.is_final),
+                    )
+                })
                 .collect()
         };
         let mut err = None;

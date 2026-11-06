@@ -458,7 +458,11 @@ fn access_level_error(class: &str, prop: &str, parent_vis: Visibility, parent: &
 /// do_inherit_property's static rules for `proto`'s properties against
 /// the parent's: static and non-static may not redeclare each other, and a
 /// static may not narrow its access level.
-fn static_prop_errors(classes: &[ClassEntry], proto: &ClassProto, parent: &ClassEntry) -> Option<String> {
+fn static_prop_errors(
+    classes: &[ClassEntry],
+    proto: &ClassProto,
+    parent: &ClassEntry,
+) -> Option<String> {
     let cn = String::from_utf8_lossy(proto.name.as_bytes());
     let cn = cn.split('\0').next().unwrap_or_default().to_string();
     let rank = |v: Visibility| match v {
@@ -1394,8 +1398,8 @@ impl Vm {
                 props.insert(key, pe);
                 Ok(())
             };
-        let mut link_err: Option<String> =
-            parent.and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
+        let mut link_err: Option<String> = parent
+            .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),

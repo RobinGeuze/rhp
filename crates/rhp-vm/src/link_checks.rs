@@ -361,10 +361,9 @@ impl Vm {
             };
             let by_trait = || {
                 e.traits.iter().any(|&t| {
-                    self.classes[t as usize]
-                        .methods
-                        .get(k)
-                        .is_some_and(|tm| tm.is_abstract && !std::rc::Rc::ptr_eq(&tm.proto, &m.proto))
+                    self.classes[t as usize].methods.get(k).is_some_and(|tm| {
+                        tm.is_abstract && !std::rc::Rc::ptr_eq(&tm.proto, &m.proto)
+                    })
                 })
             };
             if by_parent || by_iface() || by_trait() {
@@ -474,14 +473,21 @@ impl Vm {
         }
         let name = shown(&e.name);
         let has = |n: &[u8]| {
-            e.interfaces
-                .iter()
-                .any(|&i| self.classes[i as usize].name.as_bytes().eq_ignore_ascii_case(n))
+            e.interfaces.iter().any(|&i| {
+                self.classes[i as usize]
+                    .name
+                    .as_bytes()
+                    .eq_ignore_ascii_case(n)
+            })
         };
         let extends = |n: &[u8]| {
             let mut c = Some(ce);
             while let Some(id) = c {
-                if self.classes[id as usize].name.as_bytes().eq_ignore_ascii_case(n) {
+                if self.classes[id as usize]
+                    .name
+                    .as_bytes()
+                    .eq_ignore_ascii_case(n)
+                {
                     return true;
                 }
                 c = self.classes[id as usize].parent;
@@ -490,7 +496,10 @@ impl Vm {
         };
         let mut err: Option<(i64, String)> = None;
         for &i in &e.interfaces {
-            let iname = self.classes[i as usize].name.as_bytes().to_ascii_lowercase();
+            let iname = self.classes[i as usize]
+                .name
+                .as_bytes()
+                .to_ascii_lowercase();
             match iname.as_slice() {
                 b"traversable" => {
                     if !e.flags.is_abstract && !has(b"Iterator") && !has(b"IteratorAggregate") {

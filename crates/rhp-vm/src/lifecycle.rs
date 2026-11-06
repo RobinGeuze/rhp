@@ -435,7 +435,12 @@ impl Vm {
                     let msg = format!(
                         "Call to {vis} {cname}::__destruct() from global scope during shutdown ignored"
                     );
-                    self.raise_error_at(rhp_values::E_WARNING, msg.as_bytes(), b"Unknown".to_vec(), 0);
+                    self.raise_error_at(
+                        rhp_values::E_WARNING,
+                        msg.as_bytes(),
+                        b"Unknown".to_vec(),
+                        0,
+                    );
                     dtor = None;
                 } else {
                     let scope = self.stack.last().and_then(|f| f.defining_class);

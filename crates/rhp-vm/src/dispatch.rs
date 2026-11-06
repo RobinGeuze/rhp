@@ -138,7 +138,13 @@ impl Vm {
             .get(r as usize)
             .map(|n| n.as_bytes().to_vec())
             .unwrap_or_default();
-        let msg = [b"Undefined variable $".as_slice(), &name].concat();
+        // A superglobal is a global fetch in php ("Undefined global variable").
+        let what: &[u8] = if proto.superglobals.iter().any(|(cv, _)| *cv == r) {
+            b"Undefined global variable $"
+        } else {
+            b"Undefined variable $"
+        };
+        let msg = [what, &name].concat();
         self.diag(builtins::E_WARNING, &msg)?;
         Ok(Value::Null)
     }

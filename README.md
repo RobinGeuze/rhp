@@ -47,7 +47,7 @@ passing, so the percentages are of all php-src tests.
 | tests | 693 | 895 | 77.4% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 21 | 117 | 17.9% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 2,891 | 3,880 | 74.5% | no user stream wrappers, stream filters, `mail`, `getimagesize` |
+| ext/standard | 2,891 | 3,880 | 74.5% | no user stream wrappers, stream filters, `ob_gzhandler`; locales are process-wide, as in php |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 8 | 27 | 29.6% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |

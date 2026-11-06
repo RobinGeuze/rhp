@@ -96,6 +96,50 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
             } else { $this->$k = $v; }
         }
     }
+    public function unserialize(string $data): void {
+        $n = strlen($data);
+        if ($n === 0) { return; }
+        $fn = 'SplObjectStorage::unserialize';
+        $p = 0;
+        if ($data[0] !== 'x') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p = 1;
+        if (($data[1] ?? '') !== ':') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p = 2;
+        [$ok, $count, $p] = __unserialize_value($data, $p, $fn);
+        if (!$ok || !is_int($count)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p--;
+        if ($count < 0) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        while ($count-- > 0) {
+            if (($data[$p] ?? '') !== ';') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+            $p++;
+            if (!in_array($data[$p] ?? '', ['O', 'C', 'r'], true)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+            [$ok, $obj, $p] = __unserialize_value($data, $p, $fn);
+            if (!$ok) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+            $inf = null;
+            if (($data[$p] ?? '') === ',') {
+                $p++;
+                [$ok, $inf, $p] = __unserialize_value($data, $p, $fn);
+                if (!$ok) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+            }
+            if (!is_object($obj)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+            $this->offsetSet($obj, $inf);
+        }
+        if (($data[$p] ?? '') !== ';') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p++;
+        if (($data[$p] ?? '') !== 'm') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p++;
+        if (($data[$p] ?? '') !== ':') { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        $p++;
+        [$ok, $m, $p] = __unserialize_value($data, $p, $fn);
+        if (!$ok || !is_array($m)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
+        foreach ($m as $k => $v) {
+            $k = (string)$k;
+            if ($k !== '' && $k[0] === "\0") {
+                $q = strpos($k, "\0", 1); $c = substr($k, 1, $q - 1); $nm = substr($k, $q + 1);
+                __reflect_set_prop($this, $nm, $v, $c === '*' ? static::class : $c);
+            } else { $this->$k = $v; }
+        }
+    }
     public function __debugInfo() {
         $st = [];
         foreach ($this->__o as $h => $o) { $st[] = ['obj' => $o, 'inf' => $this->__v[$h]]; }

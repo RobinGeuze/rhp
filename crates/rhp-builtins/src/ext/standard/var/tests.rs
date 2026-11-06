@@ -233,3 +233,48 @@ fn unserialize_trailing_data_tolerated() {
         _ => panic!(),
     }
 }
+
+// --- unserialize: error offsets (php 8.5.12) ----------------------------
+
+#[test]
+fn unserialize_error_offsets() {
+    // (input, the "Error at offset" / "Extra data" offset php reports)
+    let cases: &[(&[u8], &str)] = &[
+        (b"i:1", "Error at offset 0 of 3 bytes"),
+        (b"i:1;x", "Extra data starting at offset 4 of 5 bytes"),
+        (b"s:5:\"abc\";", "Error at offset 10 of 10 bytes"),
+        (b"s:3:\"abc\"x", "Error at offset 9 of 10 bytes"),
+        (b"a:1:{i:0;i:1;", "Error at offset 13 of 13 bytes"),
+        (b"a:2:{i:0;i:1;}", "Error at offset 13 of 14 bytes"),
+        (b"a:1:{i:0;}", "Error at offset 9 of 10 bytes"),
+        (b"b:2;", "Error at offset 0 of 4 bytes"),
+        (b"N", "Error at offset 0 of 1 bytes"),
+        (b"R:1;", "Error at offset 4 of 4 bytes"),
+        (b"a:1:{i:0;R:5;}", "Error at offset 13 of 14 bytes"),
+        (b"a:1:{N;i:1;}", "Error at offset 7 of 12 bytes"),
+        (b"d:1.5e;", "Error at offset 0 of 7 bytes"),
+        (b"a:-1:{}", "Error at offset 0 of 7 bytes"),
+        (b"a:1:{i:0;i:1}", "Error at offset 9 of 13 bytes"),
+    ];
+    for (input, want) in cases {
+        let (_, diags) = crate::test_support::run(fn_unserialize, &[Value::str(input.to_vec())]);
+        let last = diags.last().cloned().unwrap_or_default();
+        assert_eq!(
+            last,
+            format!("Warning: unserialize(): {want}"),
+            "input {:?}",
+            String::from_utf8_lossy(input)
+        );
+    }
+}
+
+#[test]
+fn unserialize_uppercase_s_escapes() {
+    let (r, diags) =
+        crate::test_support::run(fn_unserialize, &[Value::str(&b"S:3:\"\\61bc\";"[..])]);
+    assert!(matches!(r, Ok(Value::Str(s)) if s.as_bytes() == b"abc"));
+    assert_eq!(
+        diags,
+        vec!["Deprecated: unserialize(): Unserializing the 'S' format is deprecated".to_string()]
+    );
+}

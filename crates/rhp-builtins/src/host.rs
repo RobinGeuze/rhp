@@ -3,6 +3,19 @@
 
 use rhp_values::{ObjectHandle, PhpArray, Value};
 
+/// See [`Host::unserialize_prop`].
+pub enum UnserProp {
+    /// A declared property's storage key; `typed`: it has a type.
+    Declared {
+        storage: rhp_values::PhpStr,
+        typed: bool,
+    },
+    /// A dynamic property's key.
+    Dynamic(rhp_values::PhpStr),
+    /// Unserialization fails.
+    Fail,
+}
+
 use crate::main::streams::{ops, plain_wrapper};
 use crate::main::{ini, rfc1867, sapi};
 use crate::zend::object_handlers;
@@ -453,19 +466,50 @@ pub trait Host {
     /// properties under their mangled key already.
     fn mangled_prop_name(&self, class_id: u32, key: &rhp_values::PhpStr) -> rhp_values::PhpStr;
 
-    /// Store a property read by `unserialize` on `obj` like php's
-    /// `process_nested_object_data`: a plain name, or one mangled for `*` / the
-    /// object's own class, lands on the declared property of that name (at its
-    /// storage key); any other name is kept as is. Returns false for a
-    /// malformed mangled name (a leading NUL without a second one).
-    fn unserialize_set_prop(&mut self, obj: &Value, key: &[u8], val: Value) -> bool;
-
-    /// php's object_set_property check: the declared property `key` names
-    /// (resolved as [`Host::unserialize_set_prop`] does) is virtual; returns
-    /// `Class::$name` for the warning.
-    fn unserialize_virtual_prop(&self, _obj: &Value, _key: &[u8]) -> Option<Vec<u8>> {
-        None
+    /// process_nested_object_data's lookup of property `key` read by
+    /// `unserialize` for `obj`: a declared property (also through a plain or
+    /// `*` / own-class mangled name), else a dynamic one (creating it raises
+    /// php's deprecation, or throws for classes without dynamic properties).
+    /// `UnserProp::Fail` after a malformed mangled name or the virtual
+    /// property warning.
+    fn unserialize_prop(&mut self, obj: &ObjectHandle, key: &[u8]) -> Result<UnserProp, Thrown> {
+        let _ = obj;
+        Ok(UnserProp::Dynamic(rhp_values::PhpStr::from_bytes(
+            key.to_vec(),
+        )))
     }
+
+    /// zend_verify_prop_assignable_by_ref (strict) for the declared property
+    /// `storage` of `obj`. `source`: the value is a reference already bound
+    /// to that typed property, so it must match exactly. Returns the value
+    /// converted (int to float), if it changed.
+    fn unserialize_prop_type(
+        &mut self,
+        obj: &ObjectHandle,
+        storage: &rhp_values::PhpStr,
+        val: &Value,
+        source: Option<(&ObjectHandle, &rhp_values::PhpStr)>,
+    ) -> Result<Option<Value>, Thrown> {
+        let _ = (obj, storage, val, source);
+        Ok(None)
+    }
+
+    /// Write (`Some`) or remove (`None`) the property slot `storage` of
+    /// `obj`, keeping declared slots in declaration order.
+    fn prop_store(&mut self, obj: &ObjectHandle, storage: &rhp_values::PhpStr, val: Option<Value>) {
+        let mut o = obj.borrow_mut();
+        match val {
+            Some(v) => {
+                o.properties.insert(storage.clone(), v);
+            }
+            None => {
+                o.properties.shift_remove(storage);
+            }
+        }
+    }
+
+    /// GC_ADD_FLAGS(obj, IS_OBJ_DESTRUCTOR_CALLED): its destructor never runs.
+    fn mark_destructor_called(&mut self, _obj: &ObjectHandle) {}
 
     /// `get_object_vars($obj)` as seen from the calling scope (unmangled names
     /// of the properties accessible there, in slot order). `None` = the host has

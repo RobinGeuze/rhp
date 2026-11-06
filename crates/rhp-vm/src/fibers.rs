@@ -206,11 +206,13 @@ impl Vm {
                         "Fiber::__construct(): Argument #1 ($callback) must be a valid callback, {err}"
                     )));
                 }
-                let mut d = cell.borrow_mut();
-                if d.status != Status::Init || !d.callable.is_undef() {
+                let constructed = {
+                    let d = cell.borrow();
+                    d.status != Status::Init || !d.callable.is_undef()
+                };
+                if constructed {
                     return Err(fiber_error("Cannot call constructor twice"));
                 }
-                drop(d);
                 let callable = self.fiber_bind_callable(arg(0));
                 cell.borrow_mut().callable = callable;
                 Ok(Value::Null)

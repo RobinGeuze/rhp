@@ -6,7 +6,6 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, PhpArray, Value};
 
 use crate::ext::standard::array::as_array;
-use crate::ext::standard::file::path_arg;
 use crate::ext::standard::pageinfo::script_stat;
 use crate::main::ini::{
     alter_ini_entry, ini_apply, ini_default_value, ini_parse_uquantity, ini_value, module_loaded,
@@ -1105,17 +1104,6 @@ fn fn_move_uploaded_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     Ok(Value::Bool(ok))
 }
 
-/// `php_strip_whitespace($filename)` — php returns the source with comments and
-/// whitespace removed (via the tokenizer). Composer only uses it to feed its own
-/// comment-stripping classmap scanner, so returning the raw source is correct
-/// for that purpose (and `''` only for a missing/empty file).
-fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match host.stream_get_contents(&path_arg(args, 0)) {
-        Some(bytes) => Ok(Value::str(bytes)),
-        None => Ok(Value::str("")),
-    }
-}
-
 /// symtable key: canonical decimal ints become int keys.
 fn sym_key(k: &[u8]) -> ArrayKey {
     ArrayKey::from_bytes(k)
@@ -1322,10 +1310,77 @@ fn fn_parse_ini_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     })
 }
 
+/// The source behind `path` for highlighting / stripping
+/// (php_stream_open_for_zend: include_path, open errors reported).
+fn read_source(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Option<Vec<u8>>, Thrown> {
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
+    let target = ext::standard::file::include_path_target(host, path);
+    ext::standard::md5::read_file_for_hash(host, fname, &target)
+}
+
+fn fn_highlight_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    highlight_file(host, args, "highlight_file")
+}
+
+fn fn_show_source(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    highlight_file(host, args, "show_source")
+}
+
+/// highlight_file() and its alias show_source().
+fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
+    let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
+    let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    let failed = |host: &mut dyn Host| {
+        let mut m = b"Failed opening '".to_vec();
+        m.extend_from_slice(&path);
+        m.extend_from_slice(b"' for highlighting");
+        crate::warn(host, fname, &m)
+    };
+    if path.is_empty() {
+        failed(host)?;
+    }
+    let Some(src) = read_source(host, fname, &path)? else {
+        failed(host)?;
+        return Ok(Value::Bool(false));
+    };
+    let html = zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
+    if ret {
+        return Ok(Value::str(html));
+    }
+    host.write_out(&html);
+    Ok(Value::Bool(true))
+}
+
+fn fn_highlight_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let src = conv::to_string_bytes(&deref(&args[0]));
+    let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
+    let html = zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
+    if ret {
+        return Ok(Value::str(html));
+    }
+    host.write_out(&html);
+    Ok(Value::Bool(true))
+}
+
+fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let fname = "php_strip_whitespace";
+    let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
+    let Some(src) = read_source(host, fname, &path)? else {
+        return Ok(Value::str(""));
+    };
+    Ok(Value::str(zend::highlight::strip(&src)))
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("highlight_file", fn_highlight_file),
+            ("show_source", fn_show_source),
+            ("highlight_string", fn_highlight_string),
+            ("php_strip_whitespace", fn_php_strip_whitespace),
             ("print_r", fn_print_r),
             ("constant", fn_constant),
             ("call_user_func", fn_call_user_func),
@@ -1368,7 +1423,6 @@ pub fn register(m: &mut crate::Registry) {
             ("connection_aborted", fn_connection_status),
             ("is_uploaded_file", fn_is_uploaded_file),
             ("move_uploaded_file", fn_move_uploaded_file),
-            ("php_strip_whitespace", fn_php_strip_whitespace),
             ("parse_ini_string", fn_parse_ini_string),
             ("parse_ini_file", fn_parse_ini_file),
         ],

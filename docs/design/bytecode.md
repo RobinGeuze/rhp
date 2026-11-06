@@ -360,7 +360,7 @@ UnsetDim   { arr, key }               remove via make_mut; next_int high-water n
 
 **Undefined variables (as built).** A CV slot holds `Value::Undef` (php's
 IS_UNDEF) until it is assigned and again after `unset()`; `Frame::new` starts
-every CV undefined. In the global scope a CV is a `Ref` to the symbol-table
+every register undefined (temporaries are written before they are read). In the global scope a CV is a `Ref` to the symbol-table
 cell, and the cell holds `Undef` instead. There is no compile-time analysis:
 as in php, each instruction decides how it fetches its operands.
 
@@ -386,6 +386,10 @@ as in php, each instruction decides how it fetches its operands.
   is only known when the call runs): an undefined one stays undefined in a
   shared cell, and binding decides (`bind_undef_args`): a by-reference
   parameter creates it as null, a by-value one (or `__call`) warns.
+- A user error handler run in the middle of an lvalue write keeps the open
+  cursor (`with_saved_cursor`); when the handler replaces the variable under
+  an undefined key, the write goes to the container php had fetched
+  (`lval_undef_key`).
 - `CheckCv` warns once where php reads once but rhp fetches several times
   (a `list()` source, a `match` subject php puts in a jump table, the
   operand of a `?->` guard).

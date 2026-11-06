@@ -1087,14 +1087,15 @@ impl ProtoBuilder<'_> {
                 let r = if crate::util::is_this(e.value) {
                     self.cv(b"this")
                 } else {
-                    let r = self.compile_quiet(e.value)?;
-                    if r < self.num_cvs {
-                        let t = self.alloc_temp();
-                        self.emit(Instr::MovIs { dst: t, src: r });
-                        t
-                    } else {
-                        r
-                    }
+                    self.compile_quiet(e.value)?
+                };
+                // A variable is read quietly (ZEND_ISSET_ISEMPTY_CV / _THIS).
+                let r = if r < self.num_cvs {
+                    let t = self.alloc_temp();
+                    self.emit(Instr::MovIs { dst: t, src: r });
+                    t
+                } else {
+                    r
                 };
                 let dst = self.alloc_temp();
                 self.emit(Instr::Not { dst, a: r });

@@ -246,6 +246,8 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // The open cursor has a null key (set by `LvalKey`).
+    cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
     /// `set_error_handler` stack (innermost last): (callback or null, mask).

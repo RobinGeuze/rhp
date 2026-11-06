@@ -317,13 +317,14 @@ pub fn password_snippet() -> String {
     ];
     let mut s = String::from("<?php\n");
     s.push_str("echo implode(\",\", password_algos()), \"\\n\";\n");
+    // Single quotes: a hash's `$...` must not interpolate.
     for (h, pw) in known {
-        s.push_str(&format!("print_r(password_get_info(\"{h}\"));\n"));
+        s.push_str(&format!("print_r(password_get_info('{h}'));\n"));
         s.push_str(&format!(
-            "var_dump(password_verify(\"{pw}\",\"{h}\"), password_verify(\"wrong\",\"{h}\"));\n"
+            "var_dump(password_verify('{pw}','{h}'), password_verify('wrong','{h}'));\n"
         ));
         s.push_str(&format!(
-            "var_dump(password_needs_rehash(\"{h}\", PASSWORD_BCRYPT, [\"cost\"=>10]));\n"
+            "var_dump(password_needs_rehash('{h}', PASSWORD_BCRYPT, ['cost'=>10]));\n"
         ));
     }
     s

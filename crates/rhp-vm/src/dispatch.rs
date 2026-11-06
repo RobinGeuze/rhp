@@ -170,6 +170,7 @@ impl Vm {
         self.cursor_global = None;
         self.cursor_steps.clear();
         self.rw_null_keys = 0;
+        self.cursor_null_key = false;
         Ok(())
     }
 
@@ -193,6 +194,7 @@ impl Vm {
         self.cursor_global = Some(n);
         self.cursor_steps.clear();
         self.rw_null_keys = 0;
+        self.cursor_null_key = false;
         Ok(())
     }
 
@@ -235,11 +237,13 @@ impl Vm {
         let steps = std::mem::take(&mut self.cursor_steps);
         let global = self.cursor_global.take();
         let nulls = self.rw_null_keys;
+        let null_key = self.cursor_null_key;
         let r = f(self);
         self.cursor_root = root;
         self.cursor_steps = steps;
         self.cursor_global = global;
         self.rw_null_keys = nulls;
+        self.cursor_null_key = null_key;
         r
     }
 
@@ -1091,6 +1095,7 @@ impl Vm {
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
+                    self.cursor_null_key = false;
                 }
                 Instr::LvalCvUnset { cv } => {
                     // Unsetting below an undefined variable leaves it so.
@@ -1103,6 +1108,7 @@ impl Vm {
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
+                    self.cursor_null_key = false;
                 }
                 // The variable is created when the write lands (after its
                 // value was read: `$a[0] = $a` reads an undefined `$a`):
@@ -1112,6 +1118,7 @@ impl Vm {
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
+                    self.cursor_null_key = false;
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
@@ -1119,6 +1126,9 @@ impl Vm {
                     } else {
                         self.reg_get(top, key)
                     };
+                    if let Value::Null = k {
+                        self.cursor_null_key = true;
+                    }
                     self.cursor_steps.push(CursorStep::Key(k));
                 }
                 Instr::LvalAppend => self.cursor_steps.push(CursorStep::Append),
@@ -1139,6 +1149,7 @@ impl Vm {
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
+                    self.cursor_null_key = false;
                 }
                 Instr::LvalStaticPropDyn { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
@@ -1149,6 +1160,7 @@ impl Vm {
                     self.cursor_global = None;
                     self.cursor_steps.clear();
                     self.rw_null_keys = 0;
+                    self.cursor_null_key = false;
                 }
                 Instr::LvalVarVar { name } => self.lval_var_var(top, name, false)?,
                 Instr::LvalVarVarRw { name } => self.lval_var_var(top, name, true)?,
@@ -1251,12 +1263,7 @@ impl Vm {
                 Instr::AssignLval { src, dst } => {
                     // (After a compound assignment's FetchLvalRw raised them
                     // already, `rw_null_keys` counts them.)
-                    if self.rw_null_keys == 0
-                        && self
-                            .cursor_steps
-                            .iter()
-                            .any(|s| matches!(s, CursorStep::Key(Value::Null)))
-                    {
+                    if self.cursor_null_key && self.rw_null_keys == 0 {
                         self.w_null_key_diags(top)?;
                     }
                     let v = self.reg_r(top, src)?;

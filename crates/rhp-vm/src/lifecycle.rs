@@ -133,6 +133,7 @@ impl Vm {
             silence_stack: Vec::new(),
             quiet: 0,
             rw_null_keys: 0,
+            cursor_null_key: false,
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,

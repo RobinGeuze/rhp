@@ -134,7 +134,7 @@ pub(crate) fn graceful_exit() -> Thrown {
 
 /// zend_is_graceful_exit.
 pub(crate) fn is_graceful_exit(t: &Thrown) -> bool {
-    matches!(t, Thrown::Error { class, .. } if std::ptr::eq(*class, GRACEFUL_EXIT) || *class == GRACEFUL_EXIT)
+    matches!(t, Thrown::Error { class, .. } if *class == GRACEFUL_EXIT)
 }
 
 fn fiber_error(msg: &str) -> Thrown {

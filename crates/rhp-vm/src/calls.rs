@@ -1068,6 +1068,9 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
+        // zend_call_function's stack limit check (a nested run takes
+        // machine stack).
+        rhp_builtins::zend::call_stack::check()?;
         let proto = f.proto;
         let mut frame = Frame::new(proto.clone(), f.unit, 0);
         if let (Some(cv), Some(obj)) = (proto.this_cv, this) {
@@ -1115,6 +1118,9 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
+        // zend_call_function's stack limit check (a nested run takes
+        // machine stack).
+        rhp_builtins::zend::call_stack::check()?;
         let f = &self.closures[cd.fnidx as usize];
         let proto = f.proto.clone();
         let mut frame = Frame::new(proto.clone(), f.unit, 0);

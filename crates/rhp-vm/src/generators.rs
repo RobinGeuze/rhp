@@ -89,6 +89,7 @@ impl Vm {
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
+        rhp_builtins::zend::call_stack::check()?;
         let (mut frame, status, resume_dst) = {
             let g = self.generators.get_mut(&id).unwrap();
             if g.status == GenStatus::Finished {

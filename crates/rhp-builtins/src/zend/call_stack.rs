@@ -115,7 +115,10 @@ pub fn fiber_bounds(base: usize, size: usize) -> (usize, usize) {
     if LIMIT.with(Cell::get) == 0 {
         return (0, 0);
     }
-    (base, limit(base, size, RESERVED.with(Cell::get)))
+    // php doubles the reserve on Apple (its stack probes reach twice as
+    // far on an alternative stack).
+    let reserved = RESERVED.with(Cell::get) * if cfg!(target_vendor = "apple") { 2 } else { 1 };
+    (base, limit(base, size, reserved))
 }
 
 /// zend_call_stack_overflowed: the stack has grown past the limit.

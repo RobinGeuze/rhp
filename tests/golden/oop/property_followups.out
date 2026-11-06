@@ -1,0 +1,32 @@
+int(5)
+Cannot modify readonly property RO::$open
+int(2)
+Cannot modify readonly property RO::$implicit
+string(5) "get s"
+Attempt to assign property "b" on null
+object(stdClass)#5 (1) {
+  ["a"]=>
+  NULL
+}
+Attempt to modify property "x" on null
+float(9.223372036854776E+18)
+Cannot increment property T::$i of type int past its maximal value
+Typed static property T::$u must not be accessed before initialization
+bool(false)
+string(1) "1"
+object(P)#6 (3) {
+  ["i"]=>
+  int(12)
+  ["s"]=>
+  string(2) "a3"
+  ["f"]=>
+  float(1)
+}
+int(16)
+int(1)
+int(2)
+bool(true)
+bool(true)
+Cannot indirectly modify readonly property E::$name
+string(1) "y"
+string(1) "z"

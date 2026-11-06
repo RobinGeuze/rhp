@@ -727,7 +727,14 @@ impl ProtoBuilder<'_> {
             if let ClassLikeMemberSelector::Identifier(li) = &pa.property {
                 let obj = self.compile_write_object(pa.object)?;
                 let name = self.intern_name(li.value);
-                let rhs = self.compile_expr(a.rhs)?;
+                let mut rhs = self.compile_expr(a.rhs)?;
+                // The assignment's value is a copy taken before the write
+                // (which may run code that changes the variable).
+                if !result_unused && rhs < self.num_cvs {
+                    let t = self.alloc_temp();
+                    self.emit(Instr::Mov { dst: t, src: rhs });
+                    rhs = t;
+                }
                 self.emit(Instr::StoreProp {
                     obj,
                     name,

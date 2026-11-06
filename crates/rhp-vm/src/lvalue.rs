@@ -46,6 +46,19 @@ pub(crate) enum MagicSplit {
     Incomplete(ObjectHandle),
 }
 
+/// A cursor rooted at a static property with a type or set visibility:
+/// what its checks need.
+#[derive(Clone)]
+pub(crate) struct StaticRoot {
+    pub(crate) cell: Rc<RefCell<Value>>,
+    /// The class the property was reached through.
+    pub(crate) cls: ClassId,
+    pub(crate) name: PhpStr,
+    pub(crate) decl: ClassId,
+    pub(crate) set_vis: Option<rhp_values::Visibility>,
+    pub(crate) ty: Option<Rc<rhp_bytecode::TypeHint>>,
+}
+
 /// The operation on a cursor rooted at a static property, for its
 /// asymmetric visibility and type checks.
 #[derive(Clone, Copy, PartialEq)]
@@ -147,9 +160,21 @@ impl PropCtx<'_> {
         leaf_op: &str,
         rest: &[CursorStep],
     ) -> Result<PhpStr, Thrown> {
-        let key = self.key(od.class, name)?;
+        let (key, dynamic) = match classes::resolve_prop(self.classes, od.class, self.scope, name) {
+            PropRes::Slot(k) => (k, false),
+            PropRes::Dynamic => (name.clone(), true),
+            PropRes::Denied(vis) => {
+                return Err(classes::prop_access_err(
+                    self.classes,
+                    od.class,
+                    name.as_bytes(),
+                    vis,
+                ))
+            }
+        };
         let entry = &self.classes[od.class as usize];
-        if !entry.static_props.is_empty()
+        if dynamic
+            && !entry.static_props.is_empty()
             && !entry.methods.contains_key(&b"__get"[..])
             && matches!(
                 classes::static_as_instance(self.classes, od.class, self.scope, name),
@@ -291,6 +316,8 @@ impl Vm {
     pub(crate) fn cursor_release(&mut self) {
         self.rw_null_keys = 0;
         self.cursor_static = None;
+        self.deferred_undef_src = None;
+        self.typed_write_result = None;
         if matches!(self.cursor_root, CursorRoot::Cell(_)) {
             self.cursor_root = CursorRoot::Cv(0);
         }
@@ -713,6 +740,7 @@ impl Vm {
         unset: bool,
     ) -> Result<Through, Thrown> {
         let scope = self.stack[top].defining_class;
+        self.cursor_leaf = None;
         let mut cur = self.cursor_root_value(top);
         for (i, step) in steps.iter().enumerate() {
             let next = match (deref(&cur), step) {
@@ -732,7 +760,19 @@ impl Vm {
                     let Some(pe) = self.class(cls).props.get(&key) else {
                         return Ok(Through::Plain);
                     };
-                    if pe.readonly || pe.set_visibility.is_some() {
+                    // The typed property a write to the leaf lands in.
+                    let typed_leaf = match &pe.ty {
+                        Some(ty) if i + 1 == steps.len() => {
+                            Some((cls, pe.declaring_class, pe.name.clone(), ty.clone()))
+                        }
+                        _ => None,
+                    };
+                    let checked = pe.readonly || pe.set_visibility.is_some();
+                    if typed_leaf.is_some() {
+                        self.cursor_leaf = typed_leaf;
+                    }
+                    if checked {
+                        let ro = self.class(cls).props[&key].readonly;
                         let last = i + 1 == steps.len();
                         if last && !make_ref {
                             if !unset {
@@ -745,8 +785,12 @@ impl Vm {
                                     called,
                                     "modify",
                                 )?;
+                                // The write uses up the `__clone` window.
+                                if ro && val.is_some() {
+                                    self.consume_reinit(&h, &key);
+                                }
                             }
-                        } else if pe.readonly
+                        } else if ro
                             || classes::set_access_ok(&self.classes, cls, scope, &key).is_err()
                         {
                             match val.as_ref().map(deref) {
@@ -832,14 +876,15 @@ impl Vm {
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
+                self.flush_deferred_undef(top)?;
                 self.cursor_dyn_check(top, steps, false)?;
                 // zend_assign_to_typed_prop / zend_binary_assign_op_typed_prop.
                 if steps.is_empty() && !matches!(v, Value::Ref(_)) && self.cursor_static.is_some() {
                     v = self.cursor_static_coerce(top, v)?;
                 } else if !matches!(v, Value::Ref(_)) {
-                    if let Some((cls, key)) = self.cursor_leaf_typed(top, steps) {
+                    if let Some((cls, decl, name, ty)) = self.cursor_leaf.take() {
                         let strict = self.stack[top].proto.strict_types;
-                        v = self.verify_prop_type(cls, &key, v, strict)?;
+                        v = self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
                         self.typed_write_result = Some(v.clone());
                     }
                 }
@@ -870,7 +915,10 @@ impl Vm {
                     "Cannot assign by reference to overloaded object",
                 ));
             }
-            MagicSplit::Leaf(h, name) => return self.prop_store(top, Value::Object(h), name, v),
+            MagicSplit::Leaf(h, name) => {
+                self.flush_deferred_undef(top)?;
+                return self.prop_store(top, Value::Object(h), name, v);
+            }
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v));
@@ -922,12 +970,44 @@ impl Vm {
         r
     }
 
-    /// The static property the open cursor is rooted at, while the root
-    /// is still its cell: the class it was reached through and its name.
-    pub(crate) fn cursor_static_prop(&self) -> Option<(ClassId, Vec<u8>)> {
-        let (cell, cls, name) = self.cursor_static.as_ref()?;
+    /// The warning of an undefined assigned variable whose read was put
+    /// off until the containers were fetched.
+    fn flush_deferred_undef(&mut self, top: usize) -> Result<(), Thrown> {
+        match self.deferred_undef_src.take() {
+            Some(r) => self.undef_cv(top, r).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Remember the static property a cursor is rooted at, when it has a
+    /// type or a set visibility to check.
+    pub(crate) fn note_cursor_static(
+        &mut self,
+        cell: &Rc<RefCell<Value>>,
+        cls: ClassId,
+        name: &[u8],
+    ) {
+        let Some(sp) = self.class(cls).static_props.get(name) else {
+            return;
+        };
+        if sp.ty.is_some() || sp.set_visibility.is_some() {
+            self.cursor_static = Some(StaticRoot {
+                cell: cell.clone(),
+                cls,
+                name: PhpStr::from_bytes(name),
+                decl: sp.declaring_class,
+                set_vis: sp.set_visibility,
+                ty: sp.ty.clone(),
+            });
+        }
+    }
+
+    /// The static property the open cursor is rooted at, while the root is
+    /// still its cell.
+    pub(crate) fn cursor_static_prop(&self) -> Option<StaticRoot> {
+        let st = self.cursor_static.as_ref()?;
         match &self.cursor_root {
-            CursorRoot::Cell(rc) if Rc::ptr_eq(rc, cell) => Some((*cls, name.clone())),
+            CursorRoot::Cell(rc) if Rc::ptr_eq(rc, &st.cell) => Some(st.clone()),
             _ => None,
         }
     }
@@ -962,13 +1042,17 @@ impl Vm {
         op: StaticOp,
         v: Value,
     ) -> Result<Value, Thrown> {
-        let Some((cls, name)) = self.cursor_static_prop() else {
+        let Some(StaticRoot {
+            cls,
+            name,
+            decl,
+            set_vis,
+            ty,
+            ..
+        }) = self.cursor_static_prop()
+        else {
             return Ok(v);
         };
-        let Some(sp) = self.class(cls).static_props.get(&name[..]) else {
-            return Ok(v);
-        };
-        let (decl, set_vis, ty) = (sp.declaring_class, sp.set_visibility, sp.ty.clone());
         let cur = self.cursor_root_value(top);
         let undef = match &self.cursor_root {
             CursorRoot::Cell(rc) => rc.borrow().is_undef(),
@@ -1016,14 +1100,14 @@ impl Vm {
                         format!(
                             "Cannot {what} {vis} property {}::${} from {from}",
                             String::from_utf8_lossy(self.class(decl).name.as_bytes()),
-                            String::from_utf8_lossy(&name)
+                            String::from_utf8_lossy(name.as_bytes())
                         ),
                     ));
                 }
             }
         }
         if ty.is_some() && op == StaticOp::Rw && undef {
-            return Err(self.uninit_static_err(cls, &name));
+            return Err(self.uninit_static_err(cls, name.as_bytes()));
         }
         Ok(v)
     }
@@ -1031,18 +1115,18 @@ impl Vm {
     /// `v` coerced to the type of the typed static property the cursor is
     /// rooted at (zend_verify_property_type), for a write to the root.
     fn cursor_static_coerce(&mut self, top: usize, v: Value) -> Result<Value, Thrown> {
-        let Some((cls, name)) = self.cursor_static_prop() else {
+        let Some(StaticRoot {
+            cls,
+            name,
+            decl,
+            ty: Some(ty),
+            ..
+        }) = self.cursor_static_prop()
+        else {
             return Ok(v);
         };
-        let Some(sp) = self.class(cls).static_props.get(&name[..]) else {
-            return Ok(v);
-        };
-        let Some(ty) = sp.ty.clone() else {
-            return Ok(v);
-        };
-        let decl = sp.declaring_class;
         let strict = self.stack[top].proto.strict_types;
-        let v = self.verify_type_for_prop(&ty, decl, cls, &name, v, strict)?;
+        let v = self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
         self.typed_write_result = Some(v.clone());
         Ok(v)
     }

@@ -737,6 +737,14 @@ impl Vm {
     fn prop_order_ex(&self, cid: ClassId, with_private: bool) -> Vec<(PhpStr, ClassId, bool)> {
         let e = &self.classes[cid as usize];
         let mut out: Vec<(PhpStr, ClassId, bool)> = Vec::new();
+        // An enum's `name` / `value` come first (zend_enum_register_props).
+        if e.kind == rhp_values::ClassKind::Enum {
+            for n in ["name", "value"] {
+                if e.prop_visible.contains_key(&PhpStr::from(n)) {
+                    out.push((PhpStr::from(n), cid, false));
+                }
+            }
+        }
         let own = own_props_ordered(&e.proto);
         let internal = self.is_internal_class(cid);
         // A built-in class's table is filled by inheritance first.

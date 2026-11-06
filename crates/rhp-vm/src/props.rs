@@ -765,6 +765,8 @@ impl Vm {
         called: Option<ClassId>,
         strict: bool,
     ) -> Result<(), Thrown> {
+        // Only the write `StoreProp` itself asked for reports its value.
+        let want_result = std::mem::take(&mut self.want_typed_result);
         if let Value::Object(h) = o {
             let cls = h.borrow().class;
             if Some(cls) == self.incomplete_class {
@@ -884,8 +886,10 @@ impl Vm {
             } else {
                 let v = if self.class(cls).props.get(&key).is_some_and(|pe| pe.ty.is_some()) {
                     let v = self.verify_prop_type(cls, &key, val, strict)?;
-                    // The assignment's value is the coerced one.
-                    self.typed_write_result = Some(v.clone());
+                    // The assignment's value is the coerced one (`StoreProp`).
+                    if want_result {
+                        self.typed_write_result = Some(v.clone());
+                    }
                     v
                 } else {
                     val
@@ -1058,7 +1062,7 @@ impl Vm {
             }
             if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
                 // Property names iterate as string keys, even numeric ones.
-                arr.insert(ArrayKey::Str(name), deref(val).clone());
+                arr.insert(ArrayKey::Str(classes::unmangle(&name)), deref(val).clone());
             }
         }
         arr
@@ -1196,16 +1200,17 @@ impl Vm {
         delta: i8,
     ) -> Result<(), Thrown> {
         let (ty, decl, cls, name) = if steps.is_empty() {
-            let Some((cls, name)) = self.cursor_static_prop() else {
+            let Some(crate::lvalue::StaticRoot {
+                cls,
+                name,
+                decl,
+                ty: Some(ty),
+                ..
+            }) = self.cursor_static_prop()
+            else {
                 return Ok(());
             };
-            let Some(sp) = self.class(cls).static_props.get(&name[..]) else {
-                return Ok(());
-            };
-            let Some(ty) = sp.ty.clone() else {
-                return Ok(());
-            };
-            (ty, sp.declaring_class, cls, PhpStr::from_bytes(name))
+            (ty, decl, cls, name)
         } else {
             if !matches!(
                 self.cursor_magic_split(top, steps),

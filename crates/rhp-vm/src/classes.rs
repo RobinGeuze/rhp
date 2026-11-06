@@ -794,6 +794,9 @@ pub(crate) fn slot_accessible(
     let entry = &classes[cls as usize];
     let name = match entry.props.get(key) {
         Some(pe) => pe.name.clone(),
+        // A dynamic property under a mangled name (`(object)["\0A\0b" => 1]`)
+        // is accessible (zend_check_property_access).
+        None if key.as_bytes().first() == Some(&0) => return Some(key.clone()),
         None => key.clone(), // dynamic property
     };
     let ok = match resolve_prop(classes, cls, scope, &name) {
@@ -802,6 +805,18 @@ pub(crate) fn slot_accessible(
         PropRes::Denied(_) => false,
     };
     ok.then_some(name)
+}
+
+/// zend_unmangle_property_name: `"\0A\0b"` -> `b`; other names unchanged.
+pub(crate) fn unmangle(name: &PhpStr) -> PhpStr {
+    let b = name.as_bytes();
+    if b.first() != Some(&0) {
+        return name.clone();
+    }
+    match b[1..].iter().position(|&c| c == 0) {
+        Some(i) => PhpStr::from_bytes(b[i + 2..].to_vec()),
+        None => name.clone(),
+    }
 }
 
 /// php's visibility-mangled form of an object's storage key (what `(array)`,
@@ -1484,6 +1499,48 @@ impl Vm {
             };
         let mut link_err: Option<String> = parent
             .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
+        // zend_enum_register_props: `name` (and a backed enum's `value`) are
+        // public readonly properties.
+        if proto.kind == ClassKind::Enum {
+            let mut add = |name: &str, kind: rhp_bytecode::TypeKind| {
+                let ty = TypeHint {
+                    nullable: false,
+                    intersection: false,
+                    kinds: vec![kind],
+                    groups: Vec::new(),
+                    group_pos: Vec::new(),
+                    explicit_null: false,
+                };
+                let r = declare(
+                    &mut props,
+                    PropEntry {
+                        name: PhpStr::from(name),
+                        default: Value::Null,
+                        init: None,
+                        visibility: Visibility::Public,
+                        set_visibility: Some(Visibility::Protected),
+                        declaring_class: id,
+                        prototype: id,
+                        ty: Some(Rc::new(ty)),
+                        readonly: true,
+                        no_default: true,
+                        hooks: None,
+                        virt: false,
+                        is_final: false,
+                        is_abstract: false,
+                    },
+                );
+                if let Err(e) = r {
+                    link_err.get_or_insert(e);
+                }
+            };
+            add("name", rhp_bytecode::TypeKind::String);
+            match proto.enum_backing {
+                Some(rhp_bytecode::EnumBacking::Int) => add("value", rhp_bytecode::TypeKind::Int),
+                Some(rhp_bytecode::EnumBacking::Str) => add("value", rhp_bytecode::TypeKind::String),
+                None => {}
+            }
+        }
         for pp in &proto.props {
             let (default, init) = match &pp.default {
                 PropDefaultProto::Const(v) => (v.clone(), None),

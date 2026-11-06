@@ -1194,7 +1194,7 @@ impl Vm {
                     let pname = proto.names[name as usize].as_bytes().to_vec();
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
-                    self.cursor_static = Some((cell.clone(), cls, pname));
+                    self.note_cursor_static(&cell, cls, &pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1206,7 +1206,7 @@ impl Vm {
                     let pname = conv::to_string_bytes(&self.reg_r(top, name)?);
                     self.check_static_prop_access(top, cls, &pname)?;
                     let cell = self.static_prop_cell(cls, &pname)?;
-                    self.cursor_static = Some((cell.clone(), cls, pname));
+                    self.note_cursor_static(&cell, cls, &pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1329,8 +1329,24 @@ impl Vm {
                     if self.cursor_null_key && self.rw_null_keys == 0 {
                         self.w_null_key_diags(top)?;
                     }
-                    let v = self.reg_r(top, src)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
+                    let v = if self.stack[top].regs[src as usize].is_undef()
+                        && src < proto.num_cvs
+                        && matches!(
+                            self.cursor_magic_split(top, &steps),
+                            MagicSplit::Nested(..)
+                        ) {
+                        self.deferred_undef_src = Some(src);
+                        Value::Null
+                    } else {
+                        match self.reg_r(top, src) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.cursor_steps = steps;
+                                return Err(e);
+                            }
+                        }
+                    };
                     let v = match self.cursor_static_check(top, &steps, StaticOp::Assign, v) {
                         Ok(v) => v,
                         Err(e) => {
@@ -1339,7 +1355,15 @@ impl Vm {
                         }
                     };
                     let r = if dst == src {
-                        self.cursor_write(top, &steps, v)
+                        let r = self.cursor_write(top, &steps, v);
+                        // A typed property coerced the value: a temporary
+                        // source is the assignment's result.
+                        if let Some(c) = self.typed_write_result.take() {
+                            if src as usize >= proto.num_cvs as usize {
+                                self.reg_set(top, src, c);
+                            }
+                        }
+                        r
                     } else {
                         crate::lvalue::take_string_offset_result();
                         self.typed_write_result = None;
@@ -1751,7 +1775,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let val = self.reg_r(top, src)?;
-                    self.typed_write_result = None;
+                    self.want_typed_result = true;
                     self.prop_store(top, o, pname, val)?;
                     // A typed property coerced the value: a temporary
                     // source is the assignment's result.
@@ -2938,7 +2962,7 @@ impl Vm {
             while idx < n {
                 let key = b.properties.get_index(idx).unwrap().0;
                 if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                    found = Some(name);
+                    found = Some(classes::unmangle(&name));
                     break;
                 }
                 idx += 1;

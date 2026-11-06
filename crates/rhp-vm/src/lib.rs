@@ -267,9 +267,17 @@ pub struct Vm {
     // The value a cursor write stored in a typed property after coercion
     // (the assignment expression's value).
     typed_write_result: Option<Value>,
+    // `StoreProp` wants `typed_write_result` from the write it runs.
+    want_typed_result: bool,
     // The static property an open cursor is rooted at: its cell, the class
     // it was reached through and its name (valid while the root is that cell).
-    cursor_static: Option<(Rc<RefCell<Value>>, ClassId, Vec<u8>)>,
+    cursor_static: Option<lvalue::StaticRoot>,
+    // An undefined variable assigned below a `__get` property: php reads
+    // it (and warns) after fetching the container.
+    deferred_undef_src: Option<Reg>,
+    // The typed property the open cursor's leaf is, as the last
+    // `cursor_through_check` found it.
+    cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.

@@ -427,9 +427,34 @@ Refinements, all following `zend_object_handlers.c`:
   (`PropEntry.prototype`, the root of a redeclared public/protected chain), so
   a sibling may read a cousin's redeclared property.
 - **Asymmetric visibility** (`private(set)` / `protected(set)`) lives in
-  `PropEntry.set_visibility` and is enforced on every write path (`StoreProp`,
-  cursor writes, compound assign, `++`, `&`, `unset`) with php's
-  `Cannot (indirectly) modify|unset X(set) property C::$p from scope|global scope`.
+  `PropEntry.set_visibility` (and `StaticProp.set_visibility`) and is enforced
+  on every write path (`StoreProp`, cursor writes, compound assign, `++`, `&`,
+  `unset`) with php's
+  `Cannot (indirectly) modify|unset X(set) property C::$p from scope|global scope`
+  (the called scope). At link time a public readonly property gets
+  `protected(set)` unless it says `public(set)`, as zend_declare_typed_property
+  does; `private(set)` makes a property final.
+- **Readonly** (`Vm::check_readonly_write`): an initialized slot cannot be
+  modified or unset, the rest is the set visibility. `clone` opens a window
+  (`Vm::readonly_reinit`, keyed by the clone and its `__clone` frame) in which
+  each initialized readonly slot may be modified or unset once; calling
+  `__clone()` directly does not.
+- **Writes through** a readonly or set-restricted property (`$o->ro[] = 1`,
+  `&$o->ro`, `unset($o->ro[0])`, `$o->ro = &$x`) are php's "Cannot indirectly
+  modify", checked before the uninitialized error; an object value is handed
+  out as a copy, an unset below an uninitialized one does nothing
+  (`Vm::cursor_through_check`, `Vm::prop_fetch_w`).
+- **Typed properties** are coerced on every write: plain assignment, compound
+  assignment and `++`/`--` through a cursor (`Vm::cursor_leaf_typed`; an int
+  at its limit is "Cannot increment property … past its maximal value"), and
+  typed statics (`Vm::cursor_static_check`). A typed static without a default
+  starts as `Undef` ("must not be accessed before initialization"). The
+  assignment's value is the coerced one (`Vm::typed_write_result`).
+- **`$o->p` on a static property** is php's "Accessing static property C::$p
+  as non static" notice (silent when the class has the matching magic
+  accessor), then a dynamic property; an inaccessible one is an access error
+  (`classes::static_as_instance`).
+- **Enum cases** declare `name` (and `value`) as public readonly properties.
 - A name starting with NUL that is not declared is refused
   (`Cannot access property starting with "\0"`), so mangled private keys are
   unreachable by name.
@@ -439,7 +464,14 @@ Refinements, all following `zend_object_handlers.c`:
 - **Magic indirect writes:** a cursor path (nested write, compound assign,
   `++`, reference) through a missing/inaccessible property of a class with an
   unguarded `__get` goes through `__get` (`MagicSplit`), writing into its
-  by-ref result or a temporary — never creating a real property.
+  by-ref result or a temporary — never creating a real property. A non-ref,
+  non-object result gets php's "Indirect modification of overloaded property"
+  notice; `$o->p = &$x` on such a property throws "Cannot assign by reference
+  to overloaded object" after the fetch.
+- **FETCH_OBJ_W:** the object of a nested write that is not a variable
+  (`f()->a->b = 1`) is fetched by `FetchPropW` (`FetchPropUnset` under
+  `unset`): a non-object is "Attempt to modify property", an absent dynamic
+  property is created as null.
 
 ---
 

@@ -635,8 +635,7 @@ impl ProtoBuilder<'_> {
                     ));
                 }
                 let obj = self.compile_expr(m.object)?;
-                let name = self.selector_string(&m.method)?;
-                self.build_pair(obj, &name)
+                self.build_pair_sel(obj, &m.method)?
             }
             Pa::StaticMethod(s) if is_parent_hook_call(s.class, &s.method) => {
                 use mago_span::HasSpan;
@@ -662,8 +661,7 @@ impl ProtoBuilder<'_> {
                     Expression::Parent(_) => self.load_string_const(b"parent"),
                     other => self.compile_expr(other)?,
                 };
-                let name = self.selector_string(&s.method)?;
-                self.build_pair(class, &name)
+                self.build_pair_sel(class, &s.method)?
             }
         };
         let ns_name = self.intern_fallback(&ns_name);

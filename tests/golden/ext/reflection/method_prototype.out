@@ -1,0 +1,14 @@
+Method I2::f does not have a prototype
+Method I3::f does not have a prototype
+Method I2::g does not have a prototype
+A::f -> I2::f
+Method A::g does not have a prototype
+K::h -> J1::h
+Method L::f does not have a prototype
+B::f -> I2::f
+B::g -> I2::g
+B::__construct -> A::__construct
+C::f -> I2::f
+C::count -> Countable::count
+C::g -> I2::g
+S::__toString -> Stringable::__toString

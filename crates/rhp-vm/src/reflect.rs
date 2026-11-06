@@ -1753,10 +1753,17 @@ impl Vm {
     /// (do_inheritance_check_on_method, do_interface_implementation): the
     /// parent's prototype (or the parent's method) for an override, the
     /// shared function's for an inherited one, then the last interface `r`
-    /// adds that declares it.
+    /// itself declares (not one inherited through another) that has the
+    /// method. Interface methods never get one, nor do inherited ones.
     fn method_prototype(&self, r: ClassId, lname: &[u8]) -> Option<ClassId> {
         let e = &self.classes[r as usize];
+        if e.kind == ClassKind::Interface {
+            return None;
+        }
         let m = e.methods.get(lname)?;
+        if self.classes[m.defining_class as usize].kind == ClassKind::Interface {
+            return None; // the interface's own function, shared
+        }
         let mut p = None;
         if let Some(pc) = e.parent {
             if let Some(pm) = self.classes[pc as usize].methods.get(lname) {
@@ -1777,20 +1784,21 @@ impl Vm {
                 }
             }
         }
+        // zend_do_implement_interfaces: only the declared interfaces, minus
+        // the parent's, get do_interface_implementation.
         let inherited: &[ClassId] = match e.parent {
             Some(pc) => &self.classes[pc as usize].interfaces,
             None => &[],
         };
-        // An interface shares (does not copy) what it inherits.
-        if m.defining_class != r && e.kind == ClassKind::Interface {
-            return p;
-        }
-        for &i in &e.interfaces {
-            if i == r || inherited.contains(&i) {
+        for iname in &e.proto.interfaces {
+            let Some(&i) = self.class_ids.get(&lc(iname.as_bytes())[..]) else {
+                continue;
+            };
+            if inherited.contains(&i) {
                 continue;
             }
             if let Some(im) = self.classes[i as usize].methods.get(lname) {
-                p = Some(self.method_prototype(i, lname).unwrap_or(im.defining_class));
+                p = Some(im.defining_class);
             }
         }
         p

@@ -416,7 +416,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
     public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
     public function getPrototype(): ReflectionMethod {
         $p = $this->__i['prototype'];
-        if ($p === null) { throw new ReflectionException('Method ' . $this->class . '::' . $this->name . ' does not have a prototype'); }
+        if ($p === null) { throw new ReflectionException('Method ' . ($this->__i['reflClass'] ?? $this->class) . '::' . $this->name . ' does not have a prototype'); }
         return new ReflectionMethod($p, $this->name);
     }
     public function hasPrototype(): bool { return $this->__i['prototype'] !== null; }

@@ -704,6 +704,8 @@ FetchClassConstDyn { dst, class, name: Reg }              C::{expr} (name must b
 FetchClassName   { dst, class, const_expr }               self/parent/static/$obj ::class (ZEND_FETCH_CLASS_NAME)
 UnsetStaticProp  { class, name: Reg }                     unset(C::$p): resolve C, then throw
 ConstExprProp    { obj, name: Reg }                       -> in a constant expression: enums only
+ConstExprDim     { arr }                                  [] in a constant expression: "Cannot use [] on objects in constant expression"
+ValueArgIsRef    { dst, callee, idx }                     is parameter idx of what $f calls by reference (SEND_FUNC_ARG)
 InstanceOf   { dst, obj, class: NIdx|ClassId }            Bool via interfaces set + parent chain
 ```
 

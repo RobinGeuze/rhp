@@ -1153,7 +1153,15 @@ impl Vm {
                     }
                 }
             }
-            if let Some(region) = handler {
+            // The innermost try first; one whose catches do not match and
+            // that has no finally passes the exception to the next one out.
+            let regions: Vec<rhp_bytecode::ExRegion> = proto
+                .exception_table
+                .iter()
+                .filter(in_try)
+                .cloned()
+                .collect();
+            for region in regions {
                 if self.free_try_temps(top, region.temps) && !self.destructibles.is_empty() {
                     // Destructed as they are freed, before the handler.
                     match self.collect_released() {

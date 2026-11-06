@@ -385,7 +385,9 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
         o.row(&["Build Date", version::BUILD_DATE]);
         o.row(&["Build System", version::BUILD_SYSTEM]);
         o.row(&["Build Provider", version::BUILD_PROVIDER]);
-        o.row(&["Configure Command", " './configure' "]);
+        if version::HAS_CONFIGURE_COMMAND {
+            o.row(&["Configure Command", " './configure' "]);
+        }
         let api = if o.1 {
             "CGI/FastCGI"
         } else {

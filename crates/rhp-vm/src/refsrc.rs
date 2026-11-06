@@ -53,6 +53,75 @@ impl TypedRefs {
         !self.map.is_empty() && self.map.contains_key(&addr(rc))
     }
 
+    /// The live type sources of `rc`, in php's order.
+    pub(crate) fn sources(
+        &self,
+        classes: &[crate::classes::ClassEntry],
+        rc: &Rc<RefCell<Value>>,
+    ) -> Vec<SrcInfo> {
+        let Some(e) = self.map.get(&addr(rc)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for s in &e.sources {
+            let info = match &s.obj {
+                Some(w) => {
+                    let Some(h) = w.upgrade() else { continue };
+                    // A slot that no longer holds this reference.
+                    if let Ok(od) = h.try_borrow() {
+                        match od.properties.get(&s.key) {
+                            Some(Value::Ref(r)) if Rc::ptr_eq(r, rc) => {}
+                            _ => continue,
+                        }
+                    }
+                    let Some(pe) = classes
+                        .get(s.cls as usize)
+                        .and_then(|c| c.props.get(&s.key))
+                    else {
+                        continue;
+                    };
+                    let Some(ty) = pe.ty.clone() else { continue };
+                    SrcInfo {
+                        ty,
+                        decl: pe.declaring_class,
+                        cls: s.cls,
+                        name: pe.name.clone(),
+                    }
+                }
+                None => {
+                    let Some(sp) = classes[s.cls as usize].static_props.get(s.key.as_bytes())
+                    else {
+                        continue;
+                    };
+                    if let Ok(v) = sp.cell.try_borrow() {
+                        match &*v {
+                            Value::Ref(r) if Rc::ptr_eq(r, rc) => {}
+                            _ => continue,
+                        }
+                    }
+                    let Some(ty) = sp.ty.clone() else { continue };
+                    SrcInfo {
+                        ty,
+                        decl: sp.declaring_class,
+                        cls: s.cls,
+                        name: s.key.clone(),
+                    }
+                }
+            };
+            out.push(info);
+        }
+        out
+    }
+
+    /// Whether every source of `rc` takes an array.
+    pub(crate) fn accepts_array(
+        &self,
+        classes: &[crate::classes::ClassEntry],
+        rc: &Rc<RefCell<Value>>,
+    ) -> bool {
+        self.sources(classes, rc).iter().all(|s| takes_array(&s.ty))
+    }
+
     fn purge(&mut self) {
         self.map.retain(|_, t| {
             t.cell.strong_count() > 0
@@ -200,58 +269,7 @@ impl Vm {
 
     /// The live type sources of `rc`, in php's order.
     pub(crate) fn ref_sources(&self, rc: &Rc<RefCell<Value>>) -> Vec<SrcInfo> {
-        let Some(e) = self.typed_refs.map.get(&addr(rc)) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for s in &e.sources {
-            let info = match &s.obj {
-                Some(w) => {
-                    let Some(h) = w.upgrade() else { continue };
-                    // A slot that no longer holds this reference.
-                    if let Ok(od) = h.try_borrow() {
-                        match od.properties.get(&s.key) {
-                            Some(Value::Ref(r)) if Rc::ptr_eq(r, rc) => {}
-                            _ => continue,
-                        }
-                    }
-                    let Some(pe) = self
-                        .classes
-                        .get(s.cls as usize)
-                        .and_then(|c| c.props.get(&s.key))
-                    else {
-                        continue;
-                    };
-                    let Some(ty) = pe.ty.clone() else { continue };
-                    SrcInfo {
-                        ty,
-                        decl: pe.declaring_class,
-                        cls: s.cls,
-                        name: pe.name.clone(),
-                    }
-                }
-                None => {
-                    let Some(sp) = self.class(s.cls).static_props.get(s.key.as_bytes()) else {
-                        continue;
-                    };
-                    if let Ok(v) = sp.cell.try_borrow() {
-                        match &*v {
-                            Value::Ref(r) if Rc::ptr_eq(r, rc) => {}
-                            _ => continue,
-                        }
-                    }
-                    let Some(ty) = sp.ty.clone() else { continue };
-                    SrcInfo {
-                        ty,
-                        decl: sp.declaring_class,
-                        cls: s.cls,
-                        name: s.key.clone(),
-                    }
-                }
-            };
-            out.push(info);
-        }
-        out
+        self.typed_refs.sources(&self.classes, rc)
     }
 
     /// The first live source of `rc` (ZEND_REF_FIRST_SOURCE).
@@ -437,13 +455,10 @@ impl Vm {
                 Fit::No => {}
             }
         } else {
-            match self.verify_type_for_prop(&s.ty, s.decl, s.cls, s.name.as_bytes(), val, strict) {
-                Ok(c) => {
-                    *rc.borrow_mut() = c;
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            }
+            let c =
+                self.verify_type_for_prop(&s.ty, s.decl, s.cls, s.name.as_bytes(), val, strict)?;
+            *rc.borrow_mut() = c;
+            return Ok(());
         }
         Err(self.prop_type_error(s, &val))
     }
@@ -506,6 +521,14 @@ impl Vm {
             self.prop_type_string(&b.ty, b.decl, Some(b.cls)),
         ))
     }
+}
+
+/// Whether type `ty` accepts an array.
+pub(crate) fn takes_array(ty: &rhp_bytecode::TypeHint) -> bool {
+    use rhp_bytecode::TypeKind as K;
+    ty.kinds
+        .iter()
+        .any(|k| matches!(k, K::Array | K::Iterable | K::Mixed))
 }
 
 fn same_source(a: &RefSource, b: &RefSource) -> bool {

@@ -408,36 +408,65 @@ impl Vm {
         true
     }
 
-    /// Write `v` to CV `cv` as [`Vm::cv_assign`] does, inline when the old
-    /// value (behind a reference too) is a scalar.
-    /// `false` (nothing written): the slot is a typed reference, for
-    /// [`Vm::cv_assign_typed`].
+    /// `Assign` to a reference while typed references exist: through a
+    /// typed one, the value is checked, and a temporary source becomes the
+    /// coerced result.
+    #[inline(never)]
+    fn assign_maybe_typed(
+        &mut self,
+        top: usize,
+        cv: Reg,
+        src: Reg,
+        v: Value,
+    ) -> Result<(), Thrown> {
+        let typed = match &self.stack[top].regs[cv as usize] {
+            Value::Ref(rc) => self.typed_refs.has(rc),
+            _ => false,
+        };
+        if !typed {
+            self.cv_assign_fast(top, cv, v);
+            return Ok(());
+        }
+        let v = self.cv_assign_typed(top, cv, v)?;
+        if src >= self.stack[top].proto.num_cvs {
+            self.reg_set(top, src, v);
+        }
+        Ok(())
+    }
+
+    /// Write `v` to CV `cv` as [`Vm::cv_assign_raw`] does (no typed
+    /// reference check), inline when the old value (behind a reference
+    /// too) is a scalar.
     #[inline(always)]
-    fn cv_assign_fast(&mut self, top: usize, cv: Reg, v: Value) -> Option<Value> {
+    fn cv_assign_fast(&mut self, top: usize, cv: Reg, v: Value) {
         let slot = &mut self.stack[top].regs[cv as usize];
         if let Value::Ref(rc) = slot {
-            if self.typed_refs.has(rc) {
-                return Some(v);
-            }
             if let Ok(mut cell) = rc.try_borrow_mut() {
                 if is_scalar(&cell) {
                     std::mem::forget(std::mem::replace(&mut *cell, v));
-                    return None;
+                    return;
                 }
             }
         } else if is_scalar(slot) {
             std::mem::forget(std::mem::replace(slot, v));
-            return None;
+            return;
         }
         self.cv_assign_raw(top, cv, v);
-        None
     }
 
     /// Assign to a PHP *variable* (a CV): if the slot is a reference, write
     /// through it (so by-ref aliases see the change, checked against the
     /// typed properties it is bound to); otherwise overwrite.
     pub(crate) fn cv_assign(&mut self, top: usize, cv: Reg, v: Value) -> Result<(), Thrown> {
-        self.cv_assign_typed(top, cv, v).map(|_| ())
+        if !self.typed_refs.is_empty() {
+            if let Value::Ref(rc) = &self.stack[top].regs[cv as usize] {
+                if self.typed_refs.has(rc) {
+                    return self.cv_assign_typed(top, cv, v).map(|_| ());
+                }
+            }
+        }
+        self.cv_assign_raw(top, cv, v);
+        Ok(())
     }
 
     /// [`Vm::cv_assign`], giving the stored value (a typed reference
@@ -667,13 +696,12 @@ impl Vm {
 
                 Instr::Assign { cv, src } => {
                     let v = self.reg_r_fast(top, src)?;
-                    if let Some(v) = self.cv_assign_fast(top, cv, v) {
-                        // A typed reference: a temporary source is the
-                        // assignment's result, coerced.
-                        let v = self.cv_assign_typed(top, cv, v)?;
-                        if src >= proto.num_cvs {
-                            self.reg_set(top, src, v);
-                        }
+                    if self.typed_refs.is_empty()
+                        || !matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+                    {
+                        self.cv_assign_fast(top, cv, v);
+                    } else {
+                        self.assign_maybe_typed(top, cv, src, v)?;
                     }
                 }
 

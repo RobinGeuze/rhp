@@ -1,0 +1,36 @@
+int(42)
+TypeError: Cannot assign string to reference held by property T::$i of type int
+int(1)
+int(2)
+TypeError: Cannot assign string to reference held by property T::$i of type int
+int(2)
+TypeError: Cannot assign array to reference held by property T::$i of type int
+int(7)
+TypeError: Cannot assign int to reference held by property T::$s of type ?string and property T::$u of type string|int, as this would result in an inconsistent type conversion
+string(1) "5"
+TypeError: Cannot assign float to reference held by property T::$s of type ?string and property T::$u of type string|int, as this would result in an inconsistent type conversion
+string(1) "5"
+int(5)
+TypeError: Cannot assign string to reference held by property T::$i of type int
+string(3) "yes"
+TypeError: Cannot assign array to reference held by property T::$si of type int
+int(9)
+float(2)
+TypeError: Cannot assign string to reference held by property T::$f of type float
+TypeError: Cannot assign null to reference held by property T::$i of type int
+int(1)
+TypeError: Cannot auto-initialize an array inside a reference held by property T::$s of type ?string
+NULL
+array(1) {
+  [0]=>
+  int(1)
+}
+float(3)
+TypeError: Cannot assign array to reference held by property T::$i of type int
+int(1)
+array(1) {
+  [0]=>
+  string(1) "a"
+}
+float(0.5)
+Cannot assign Exception to reference held by property T::$s of type ?string

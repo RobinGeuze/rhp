@@ -126,6 +126,8 @@ pub(crate) enum DimMode {
 /// same visibility errors) as a plain `$o->p`.
 struct PropCtx<'a> {
     classes: &'a [classes::ClassEntry],
+    /// The typed references (writes through one go back to the VM).
+    typed: &'a crate::refsrc::TypedRefs,
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
@@ -216,6 +218,20 @@ impl PropCtx<'_> {
     }
 }
 
+/// Where [`assign_path`] stopped for the VM: a write through a typed
+/// reference (done by the VM, with the value), or an array that cannot be
+/// auto-initialized inside a typed reference / typed property.
+enum TypedStop {
+    Leaf(Rc<RefCell<Value>>, Value),
+    RefInit(Rc<RefCell<Value>>),
+    PropInit(ClassId, PhpStr),
+}
+
+/// php's promotes_to_array: null, false (and an undefined slot).
+fn promotes_to_array(v: &Value) -> bool {
+    matches!(v, Value::Null | Value::Undef | Value::Bool(false))
+}
+
 thread_local! {
     /// Diagnostics raised inside the pure cursor-path walkers
     /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
@@ -296,6 +312,7 @@ impl Vm {
                 }
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -356,6 +373,7 @@ impl Vm {
                     self.flush_rw_warnings(warnings)?;
                     let cx = PropCtx {
                         classes: &self.classes,
+                        typed: &self.typed_refs,
                         scope: self.stack[top].defining_class,
                         called: self.stack[top].called_class,
                         incdec: false,
@@ -450,6 +468,7 @@ impl Vm {
     fn illegal_array_offset(&self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -689,6 +708,7 @@ impl Vm {
                 };
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -740,6 +760,7 @@ impl Vm {
     fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -931,16 +952,10 @@ impl Vm {
                         self.typed_write_result = Some(v.clone());
                     }
                 }
-                if !matches!(v, Value::Ref(_))
-                    && (!self.typed_refs.is_empty() || self.cursor_may_auto_init(steps))
-                {
-                    let (c, typed) = self.cursor_typed_ref_check(top, steps, v)?;
-                    if typed {
-                        self.typed_write_result = Some(c.clone());
-                    }
-                    v = c;
-                } else if matches!(v, Value::Ref(_)) {
+                if matches!(v, Value::Ref(_)) {
                     bind = self.cursor_bind_ref_check(top, steps, &v)?;
+                } else if self.cursor_static.is_some() {
+                    self.cursor_static_auto_init(top, steps)?;
                 }
             }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
@@ -1000,6 +1015,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1019,6 +1035,7 @@ impl Vm {
             }
         };
         flush_deferred_writes();
+        let r = self.finish_typed_stop(top, r);
         if let (Some(b), Some(bv), true) = (bind, &bound, r.is_ok()) {
             self.finish_ref_bind(b, bv);
         }
@@ -1249,22 +1266,35 @@ impl Vm {
         Some((h, key))
     }
 
-    /// The typed-reference checks of a cursor write (zend_assign_to_variable
-    /// on the leaf, zend_verify_ref_array_assignable along the path): `v`
-    /// coerced for the typed reference the leaf holds, and whether it is
-    /// one.
-    fn cursor_typed_ref_check(
+    /// What [`assign_path`] left to the VM (see [`TypedStop`]): the write
+    /// through a typed reference, or the auto-initialization error.
+    #[inline]
+    fn finish_typed_stop(
         &mut self,
         top: usize,
-        steps: &[CursorStep],
-        v: Value,
-    ) -> Result<(Value, bool), Thrown> {
-        match self.cursor_walk_refs(top, steps, true)? {
-            Some(rc) => {
+        r: Result<Option<Box<TypedStop>>, Thrown>,
+    ) -> Result<(), Thrown> {
+        match r? {
+            None => Ok(()),
+            Some(stop) => self.typed_stop(top, *stop),
+        }
+    }
+
+    #[cold]
+    fn typed_stop(&mut self, top: usize, stop: TypedStop) -> Result<(), Thrown> {
+        match stop {
+            TypedStop::Leaf(rc, v) => {
                 let strict = self.stack[top].proto.strict_types;
-                Ok((self.verify_ref_assignable(&rc, deref(&v), strict)?, true))
+                let (c, old) = self.assign_to_ref(&rc, v, strict)?;
+                self.typed_write_result = Some(c);
+                drop(old);
+                Ok(())
             }
-            None => Ok((v, false)),
+            TypedStop::RefInit(rc) => self.verify_ref_array_assignable(&rc),
+            TypedStop::PropInit(cls, key) => match self.prop_src_info(cls, &key) {
+                Some(info) => self.check_auto_init(&info),
+                None => Ok(()),
+            },
         }
     }
 
@@ -1277,36 +1307,9 @@ impl Vm {
         if self.typed_refs.is_empty() {
             return None;
         }
-        self.cursor_walk_refs(top, steps, false).ok().flatten()
-    }
-
-    /// Walk a cursor path to its leaf's typed reference; `vivify`: check
-    /// that typed references along it may become arrays.
-    fn cursor_walk_refs(
-        &mut self,
-        top: usize,
-        steps: &[CursorStep],
-        vivify: bool,
-    ) -> Result<Option<Rc<RefCell<Value>>>, Thrown> {
         let scope = self.stack[top].defining_class;
         let mut cur = self.cursor_root_value(top);
-        let promotes = |v: &Value| matches!(v, Value::Null | Value::Undef | Value::Bool(false));
-        // A typed static property at the root (ZEND_FETCH_DIM_WRITE).
-        if vivify && matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
-            if let Some(st) = self.cursor_static_prop() {
-                if promotes(&deref(&cur)) {
-                    if let Some(info) = self.static_src_info(st.cls, st.name.as_bytes()) {
-                        self.check_auto_init(&info)?;
-                    }
-                }
-            }
-        }
-        for (i, step) in steps.iter().enumerate() {
-            if let (Value::Ref(rc), true) = (&cur, vivify) {
-                if promotes(&rc.borrow()) && !matches!(step, CursorStep::Prop(_)) {
-                    self.verify_ref_array_assignable(rc)?;
-                }
-            }
+        for step in steps {
             let next = match (deref(&cur), step) {
                 (Value::Array(a), CursorStep::Key(k)) => {
                     ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned())
@@ -1316,42 +1319,38 @@ impl Vm {
                     let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
                         PropRes::Slot(k) => k,
                         PropRes::Dynamic => name.clone(),
-                        PropRes::Denied(_) => return Ok(None),
+                        PropRes::Denied(_) => return None,
                     };
-                    let val = h.borrow().properties.get(&key).cloned();
-                    // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE).
-                    let below = matches!(
-                        steps.get(i + 1),
-                        Some(CursorStep::Key(_) | CursorStep::Append)
-                    );
-                    if vivify && below && val.as_ref().is_none_or(|v| promotes(&deref(v))) {
-                        if let Some(info) = self.prop_src_info(cls, &key) {
-                            self.check_auto_init(&info)?;
-                        }
-                    }
-                    val
+                    let v = h.borrow().properties.get(&key).cloned();
+                    v
                 }
                 _ => None,
             };
-            match next {
-                Some(n) => cur = n,
-                None => return Ok(None),
-            }
+            cur = next?;
         }
-        Ok(match cur {
+        match cur {
             Value::Ref(rc) if self.typed_refs.has(&rc) => Some(rc),
             _ => None,
-        })
+        }
     }
 
-    /// Whether a write along `steps` may auto-initialize an array in a
-    /// (typed) property.
-    fn cursor_may_auto_init(&self, steps: &[CursorStep]) -> bool {
-        let nested = |s: &CursorStep| matches!(s, CursorStep::Key(_) | CursorStep::Append);
-        (self.cursor_static.is_some() && steps.first().is_some_and(nested))
-            || steps
-                .windows(2)
-                .any(|w| matches!(w[0], CursorStep::Prop(_)) && nested(&w[1]))
+    /// A write below a typed static property at the cursor root that would
+    /// make it an array (ZEND_FETCH_STATIC_PROP_W with ZEND_FETCH_DIM_WRITE).
+    fn cursor_static_auto_init(&self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
+        if !matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            return Ok(());
+        }
+        let Some(st) = self.cursor_static_prop() else {
+            return Ok(());
+        };
+        let cur = self.cursor_root_value(top);
+        if !promotes_to_array(&deref(&cur)) {
+            return Ok(());
+        }
+        match self.static_src_info(st.cls, st.name.as_bytes()) {
+            Some(info) => self.check_auto_init(&info),
+            None => Ok(()),
+        }
     }
 
     /// zend_throw_auto_init_in_prop_error unless typed property `s` takes
@@ -1466,6 +1465,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1505,6 +1505,7 @@ impl Vm {
         let s = Value::str(self.to_string_vm(&v)?);
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: false,
@@ -1524,7 +1525,7 @@ impl Vm {
                 .retain(|(_, m)| m.starts_with(b"Only the first byte"))
         });
         self.flush_path_diags()?;
-        r
+        r.map(|_| ())
     }
 
     /// `$str[$k]->…` written: the offset's own checks, then "Cannot use
@@ -1532,6 +1533,7 @@ impl Vm {
     pub(crate) fn string_offset_as_object(&mut self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1772,6 +1774,7 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -1840,6 +1843,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -2429,7 +2433,7 @@ fn assign_path(
     steps: &[CursorStep],
     value: Value,
     cx: &PropCtx,
-) -> Result<(), Thrown> {
+) -> Result<Option<Box<TypedStop>>, Thrown> {
     // An undefined variable at the root is created by the write (not by a
     // property write, which fails on it).
     if let Value::Undef = slot {
@@ -2441,17 +2445,29 @@ fn assign_path(
     // does not write through a reference the slot already held.
     if steps.is_empty() && matches!(value, Value::Ref(_)) {
         *slot = value;
-        return Ok(());
+        return Ok(None);
     }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
+        if cx.typed.has(rc) {
+            if steps.is_empty() {
+                return Ok(Some(Box::new(TypedStop::Leaf(rc.clone(), value))));
+            }
+            let nested = matches!(steps[0], CursorStep::Key(_) | CursorStep::Append);
+            if nested
+                && rc.try_borrow().is_ok_and(|v| promotes_to_array(&v))
+                && !cx.typed.accepts_array(cx.classes, rc)
+            {
+                return Ok(Some(Box::new(TypedStop::RefInit(rc.clone()))));
+            }
+        }
         let Ok(mut inner) = rc.try_borrow_mut() else {
             // The reference is to a container this write is inside (an array
             // holding a reference to itself): the value is stored once the
             // path is released.
             if steps.is_empty() {
                 DEFERRED_WRITE.with(|d| d.borrow_mut().push((rc.clone(), value)));
-                return Ok(());
+                return Ok(None);
             }
             return Err(Thrown::error(
                 "Error",
@@ -2462,7 +2478,7 @@ fn assign_path(
     }
     let Some((head, rest)) = steps.split_first() else {
         *slot = value;
-        return Ok(());
+        return Ok(None);
     };
     if let CursorStep::Prop(name) = head {
         // Descend into an object property (handle semantics: no COW).
@@ -2491,6 +2507,27 @@ fn assign_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "modify", rest)?;
+        // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE): a typed
+        // property that would become an array.
+        if matches!(rest.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            let at = od.properties.get_index_of(&key);
+            let promotes = at.is_none_or(|i| match &od.properties[i] {
+                Value::Ref(r) => r.try_borrow().is_ok_and(|v| promotes_to_array(&v)),
+                v => promotes_to_array(v),
+            });
+            if promotes
+                && cx.classes[od.class as usize]
+                    .props
+                    .get(&key)
+                    .and_then(|pe| pe.ty.as_ref())
+                    .is_some_and(|t| !crate::refsrc::takes_array(t))
+            {
+                return Ok(Some(Box::new(TypedStop::PropInit(od.class, key))));
+            }
+            if let Some(i) = at {
+                return assign_path(&mut od.properties[i], rest, value, cx);
+            }
+        }
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
@@ -2502,7 +2539,7 @@ fn assign_path(
             ));
         };
         if rest.is_empty() && !matches!(value, Value::Ref(_)) {
-            return assign_string_offset(slot, k, &value, cx);
+            return assign_string_offset(slot, k, &value, cx).map(|_| None);
         }
         string_offset(k, false, cx)?;
         // `$str[k] =& $v`

@@ -319,10 +319,12 @@ impl ProtoBuilder<'_> {
                         Some(e) => {
                             let src = self.compile_expr(e)?;
                             self.check_return(r.value, line)?;
+                            self.emit_loop_frees();
                             self.emit(Instr::Ret { src });
                         }
                         None => {
                             self.check_return(None, line)?;
+                            self.emit_loop_frees();
                             self.emit(Instr::RetNull)
                         }
                     }
@@ -331,6 +333,7 @@ impl ProtoBuilder<'_> {
                     if self.returns_ref && !self.is_generator {
                         let (src, kind) = self.return_ref_operand(r.value)?;
                         self.check_return(r.value, line)?;
+                        self.emit_loop_frees();
                         self.emit(Instr::SetPendingRetRef { src, kind });
                     } else {
                         let src = match r.value {
@@ -342,6 +345,7 @@ impl ProtoBuilder<'_> {
                             }
                         };
                         self.check_return(r.value, line)?;
+                        self.emit_loop_frees();
                         self.emit(Instr::SetPendingRet { src });
                     }
                     let pos = self.code.len();
@@ -385,7 +389,9 @@ impl ProtoBuilder<'_> {
             // try/catch with a finally, the jump runs the finally blocks it
             // leaves (JmpFinally leaves any that contain the target alone).
             Statement::Goto(g) => {
-                let pos = self.code.len();
+                let n = self.loops.iter().filter(|l| l.free.is_some()).count();
+                let pos = self.code.len() + n;
+                self.emit_goto_frees(pos);
                 if self.finally_rets.is_empty() {
                     self.emit(Instr::Nop);
                 } else {
@@ -418,6 +424,7 @@ impl ProtoBuilder<'_> {
     fn compile_return_ref(&mut self, value: Option<&Expression>, line: u32) -> Result<(), Thrown> {
         let (src, kind) = self.return_ref_operand(value)?;
         self.check_return(value, line)?;
+        self.emit_loop_frees();
         self.emit(Instr::RetRef { src, kind });
         Ok(())
     }

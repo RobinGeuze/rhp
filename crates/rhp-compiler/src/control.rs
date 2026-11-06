@@ -342,13 +342,6 @@ impl ProtoBuilder<'_> {
             // simple variable uses its slot directly; a property / array-element /
             // static-property is promoted to a reference held in a temp (the VM's
             // `FeFetchRef` derefs an `arr_cv` that holds a `Ref`).
-            let lval_source = matches!(
-                fe.expression,
-                Expression::ArrayAccess(_)
-                    | Expression::ArrayAppend(_)
-                    | Expression::Access(Access::Property(_))
-                    | Expression::Access(Access::StaticProperty(_))
-            );
             let arr_cv = match fe.expression {
                 Expression::Variable(Variable::Direct(sd)) => self.cv(strip_dollar(sd.name)),
                 Expression::ArrayAccess(_)
@@ -431,12 +424,19 @@ impl ProtoBuilder<'_> {
                 }
             }
 
+            let free = Instr::FeFree {
+                arr: arr_cv,
+                pos_reg,
+                by_ref: true,
+                clear_arr: arr_cv >= self.num_cvs,
+            };
             self.loops.push(LoopCtx {
-                free: lval_source.then_some(arr_cv),
+                free: Some(free),
                 ..self.loop_ctx(false)
             });
 
             self.enter_goto_scope(false);
+            self.loops.last_mut().unwrap().scope = *self.goto_scope.last().unwrap();
             match &fe.body {
                 ForeachBody::Statement(s) => self.compile_stmt(s)?,
                 ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -462,19 +462,20 @@ impl ProtoBuilder<'_> {
             self.patch_all(ctx.break_jumps, end);
             self.patch_all(ctx.continue_jumps, fetch_label);
             self.temp_floor = saved_floor;
-            if lval_source {
-                // FE_FREE: the iterated temporary (a reference to the
-                // source) goes away with the loop.
-                self.emit(Instr::ClearTemps {
-                    from: arr_cv,
-                    to: arr_cv + 1,
-                });
-            }
+            // FE_FREE: the iterator, and an iterated temporary (a reference
+            // to `$a['k']` / `$o->p`, or a value), go away with the loop.
+            self.emit(free);
             return Ok(());
         }
 
         let src = self.compile_expr(fe.expression)?;
-        let arr_reg = self.alloc_temp();
+        // FE_RESET_R moves a temporary into the loop variable: the loop
+        // holds the only copy, freed by FE_FREE.
+        let arr_reg = if src >= self.num_cvs {
+            src
+        } else {
+            self.alloc_temp()
+        };
         let pos_reg = self.alloc_temp();
 
         let (val_cv, val_pattern): (Reg, Option<&Expression>) = match val_expr {
@@ -523,9 +524,19 @@ impl ProtoBuilder<'_> {
             self.store_to_target(k, fetch_key)?;
         }
 
-        self.loops.push(self.loop_ctx(false));
+        let free = Instr::FeFree {
+            arr: arr_reg,
+            pos_reg,
+            by_ref: false,
+            clear_arr: true,
+        };
+        self.loops.push(LoopCtx {
+            free: Some(free),
+            ..self.loop_ctx(false)
+        });
 
         self.enter_goto_scope(false);
+        self.loops.last_mut().unwrap().scope = *self.goto_scope.last().unwrap();
         match &fe.body {
             ForeachBody::Statement(s) => self.compile_stmt(s)?,
             ForeachBody::ColonDelimited(b) => self.compile_stmts(b.statements.iter())?,
@@ -553,7 +564,33 @@ impl ProtoBuilder<'_> {
         self.patch_all(ctx.break_jumps, end);
         self.patch_all(ctx.continue_jumps, fetch_label);
         self.temp_floor = saved_floor;
+        self.emit(free);
         Ok(())
+    }
+
+    /// FE_FREE for every enclosing foreach, innermost first (a `return`
+    /// leaving them, zend_handle_loops_and_finally).
+    pub(crate) fn emit_loop_frees(&mut self) {
+        let frees: Vec<Instr> = self.loops.iter().rev().filter_map(|l| l.free).collect();
+        for f in frees {
+            self.emit(f);
+        }
+    }
+
+    /// Placeholders for the FE_FREEs a `goto` at `goto_pos` may need; the
+    /// ones for loops it leaves are filled in when it is resolved.
+    pub(crate) fn emit_goto_frees(&mut self, goto_pos: usize) {
+        let frees: Vec<(Instr, u32)> = self
+            .loops
+            .iter()
+            .rev()
+            .filter_map(|l| l.free.map(|f| (f, l.scope)))
+            .collect();
+        for (f, sid) in frees {
+            let at = self.code.len();
+            self.emit(Instr::Nop);
+            self.goto_frees.push((goto_pos, at, f, sid));
+        }
     }
 
     /// The register a foreach key lands in: the variable, or a temporary
@@ -811,12 +848,12 @@ impl ProtoBuilder<'_> {
         }
         let idx = self.loops.len() - n;
         // The inner loops this leaves free their temps (FE_FREE).
-        let frees: Vec<Reg> = self.loops[idx + 1..]
+        let frees: Vec<Instr> = self.loops[idx + 1..]
             .iter()
             .filter_map(|l| l.free)
             .collect();
-        for r in frees.into_iter().rev() {
-            self.emit(Instr::ClearTemps { from: r, to: r + 1 });
+        for f in frees.into_iter().rev() {
+            self.emit(f);
         }
         let pos = self.code.len();
         if self.finally_rets.len() > self.loops[idx].finally_depth {

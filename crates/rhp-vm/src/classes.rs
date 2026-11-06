@@ -782,7 +782,7 @@ pub(crate) fn prop_slot_mut<'o>(
             .count(),
         None => od.properties.len(),
     };
-    od.properties.shift_insert(pos, key, Value::Null);
+    od.insert_prop_at(pos, key, Value::Null);
     &mut od.properties[pos]
 }
 

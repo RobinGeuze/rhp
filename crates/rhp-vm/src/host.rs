@@ -2391,7 +2391,7 @@ impl Host for Vm {
                 .map(|(k, _)| k.clone())
                 .collect();
             for k in declared {
-                obj.borrow_mut().properties.shift_remove(&k);
+                obj.borrow_mut().remove_prop(&k);
                 self.mark_typed_unset(&obj, &k);
             }
         }
@@ -2546,7 +2546,7 @@ impl Host for Vm {
         match val {
             Some(v) => *classes::prop_slot_mut(&self.classes, &mut od, storage.clone()) = v,
             None => {
-                od.properties.shift_remove(storage);
+                od.remove_prop(storage);
             }
         }
     }

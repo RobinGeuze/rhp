@@ -235,6 +235,16 @@ struct ObjectExtra {
     /// Lazy object state (php's IS_OBJ_LAZY_* flags plus its
     /// `zend_lazy_object_info`).
     lazy: Option<LazyInfo>,
+    /// HashTable iterators on the property table (foreach over the
+    /// object): (id, position), kept on the same property by
+    /// [`ObjectData::remove_prop`] and [`ObjectData::insert_prop_at`].
+    iters: Vec<(u32, usize)>,
+}
+
+impl ObjectExtra {
+    fn is_empty(&self) -> bool {
+        self.native.is_none() && self.lazy.is_none() && self.iters.is_empty()
+    }
 }
 
 /// A lazy object's state (Zend/zend_lazy_objects.c). php keeps the info in
@@ -330,7 +340,7 @@ impl ObjectData {
     pub fn take_lazy(&mut self) -> Option<LazyInfo> {
         let extra = self.extra.as_deref_mut()?;
         let l = extra.lazy.take();
-        if extra.native.is_none() {
+        if extra.is_empty() {
             self.extra = None;
         }
         l
@@ -382,11 +392,77 @@ impl ObjectData {
     pub fn take_payload(&mut self) -> Option<Payload> {
         let extra = self.extra.as_deref_mut()?;
         let p = extra.native.take();
-        if extra.lazy.is_none() {
+        if extra.is_empty() {
             self.extra = None;
         }
         p
     }
+
+    /// Remove property `key`, keeping the property table's iterators on
+    /// the same properties (php leaves a hole the iterators skip).
+    pub fn remove_prop(&mut self, key: &PhpStr) -> Option<Value> {
+        let (i, _, v) = self.properties.shift_remove_full(key)?;
+        if let Some(e) = self.extra.as_deref_mut() {
+            for (_, p) in e.iters.iter_mut() {
+                if *p > i {
+                    *p -= 1;
+                }
+            }
+        }
+        Some(v)
+    }
+
+    /// Insert property `key` at index `pos` (a declared slot coming back
+    /// after unset); an iterator at `pos` sees it.
+    pub fn insert_prop_at(&mut self, pos: usize, key: PhpStr, v: Value) {
+        self.properties.shift_insert(pos, key, v);
+        if let Some(e) = self.extra.as_deref_mut() {
+            for (_, p) in e.iters.iter_mut() {
+                if *p > pos {
+                    *p += 1;
+                }
+            }
+        }
+    }
+
+    /// Register (or move) property-table iterator `id` at `pos`.
+    pub fn prop_iter_set(&mut self, id: u32, pos: usize) {
+        let it = &mut self.extra.get_or_insert_with(Default::default).iters;
+        match it.iter_mut().find(|(i, _)| *i == id) {
+            Some(e) => e.1 = pos,
+            None => it.push((id, pos)),
+        }
+    }
+
+    /// The position of property-table iterator `id`.
+    pub fn prop_iter_pos(&self, id: u32) -> Option<usize> {
+        let e = self.extra.as_deref()?;
+        e.iters.iter().find(|(i, _)| *i == id).map(|e| e.1)
+    }
+
+    /// Drop property-table iterator `id`.
+    pub fn prop_iter_del(&mut self, id: u32) {
+        if let Some(e) = self.extra.as_deref_mut() {
+            e.iters.retain(|(i, _)| *i != id);
+            if e.is_empty() {
+                self.extra = None;
+            }
+        }
+    }
+}
+
+thread_local! {
+    static HT_ITER_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh HashTable iterator id (php's zend_hash_iterator_add slot), for
+/// foreach and array_walk; never 0.
+pub fn next_ht_iter_id() -> u32 {
+    HT_ITER_ID.with(|c| {
+        let n = c.get().wrapping_add(1).max(1);
+        c.set(n);
+        n
+    })
 }
 
 thread_local! {

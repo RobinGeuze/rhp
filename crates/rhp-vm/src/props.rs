@@ -591,7 +591,7 @@ impl Vm {
         if present {
             let key = key.unwrap();
             self.consume_reinit(&h, &key);
-            h.borrow_mut().properties.shift_remove(&key);
+            h.borrow_mut().remove_prop(&key);
             self.mark_typed_unset(&h, &key);
         } else if was_uninit {
             // Reset IS_PROP_UNINIT, bypassing __unset().
@@ -1069,25 +1069,6 @@ impl Vm {
             a.insert(ArrayKey::from_bytes(key.as_bytes()), v);
         }
         Value::Array(a)
-    }
-
-    /// Snapshot an object's accessible (public from `caller` scope) properties as
-    /// an array, for `foreach` over a plain object.
-    pub(crate) fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
-        let caller = self.stack[top].defining_class;
-        let b = h.borrow();
-        let cls = b.class;
-        let mut arr = PhpArray::new();
-        for (key, val) in &b.properties {
-            if self.internal_slot(cls, key) {
-                continue;
-            }
-            if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                // Property names iterate as string keys, even numeric ones.
-                arr.insert(ArrayKey::Str(classes::unmangle(&name)), deref(val).clone());
-            }
-        }
-        arr
     }
 
     /// Whether class `c` is a built-in class implemented in the PHP prelude.

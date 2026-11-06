@@ -2436,7 +2436,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 return Ok(());
             };
             if rest.is_empty() {
-                od.properties.shift_remove(&key);
+                od.remove_prop(&key);
             } else if let Some(child) = od.properties.get_mut(&key) {
                 unset_path(child, rest, cx)?;
             }
@@ -2518,6 +2518,37 @@ pub(crate) fn foreach_promote(
         return None;
     }
     let data = arr.make_mut();
+    let (k, v) = data.entries.get_index_mut(pos)?;
+    let key = k.clone();
+    let rc = match v {
+        Value::Ref(rc) => rc.clone(),
+        other => {
+            let inner = std::mem::replace(other, Value::Null);
+            let rc = Rc::new(RefCell::new(inner));
+            *other = Value::Ref(rc.clone());
+            rc
+        }
+    };
+    Some((key, rc))
+}
+
+/// FE_FETCH_RW over the array in `slot`: the element at HashTable iterator
+/// `id`'s position (the internal pointer when the array does not carry the
+/// iterator: the variable was given another array), promoted to a shared
+/// cell; the iterator moves past it. `None` at the end.
+pub(crate) fn foreach_next_ref(
+    slot: &mut Value,
+    id: u32,
+) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
+    let Value::Array(arr) = slot else { return None };
+    let data = arr.make_mut();
+    let len = data.entries.len();
+    let pos = data.iter_pos(id).unwrap_or(data.pos.min(len));
+    if pos >= len {
+        data.iter_add(id, len);
+        return None;
+    }
+    data.iter_add(id, pos + 1);
     let (k, v) = data.entries.get_index_mut(pos)?;
     let key = k.clone();
     let rc = match v {

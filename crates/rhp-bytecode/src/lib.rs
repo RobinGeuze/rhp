@@ -459,6 +459,17 @@ pub enum Instr {
         val_cv: Reg,
         end: Pc,
     },
+    /// ZEND_FE_FREE: the loop is left (its end, `break`, `return`, `goto`).
+    /// Drops the HashTable iterator held in `pos_reg` (by-reference loops
+    /// and plain objects) from the array or object in `arr`, then clears
+    /// `pos_reg` and, with `clear_arr`, the iterated temporary `arr` (its
+    /// destructor runs here).
+    FeFree {
+        arr: Reg,
+        pos_reg: Reg,
+        by_ref: bool,
+        clear_arr: bool,
+    },
 
     // -- calls / return --
     /// Resolve `name` (case-insensitive): a user function pushes a frame, a

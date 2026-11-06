@@ -16,7 +16,7 @@ use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::StaticOp;
 use crate::lvalue::{
-    aa_key, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
+    aa_key, foreach_next_ref, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode, MagicSplit,
 };
 use crate::{classes, deref, StaticKey, UnitBase, Vm};
 
@@ -1595,6 +1595,12 @@ impl Vm {
                     val_cv,
                     end,
                 } => self.fe_fetch_ref(top, arr_cv, pos_reg, key_cv, val_cv, end)?,
+                Instr::FeFree {
+                    arr,
+                    pos_reg,
+                    by_ref,
+                    clear_arr,
+                } => self.fe_free(top, arr, pos_reg, by_ref, clear_arr),
 
                 Instr::ThrowMatchError { subject } => {
                     let v = self.reg_r(top, subject)?;
@@ -2914,18 +2920,23 @@ impl Vm {
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, st);
                 } else {
+                    // A plain object iterates its live property table
+                    // through a HashTable iterator (FE_RESET_R).
                     let obj = self.lazy_props_object(&obj)?;
-                    let arr = self.object_prop_array(&obj, top);
-                    if arr.is_empty() {
+                    if obj.borrow().properties.is_empty() {
+                        self.reg_set(top, pos_reg, Value::Null);
                         self.stack[top].pc = end as usize;
                     } else {
-                        self.reg_set(top, arr_reg, Value::Array(arr));
-                        self.reg_set(top, pos_reg, Value::Int(0));
+                        let id = rhp_values::next_ht_iter_id();
+                        obj.borrow_mut().prop_iter_set(id, 0);
+                        self.reg_set(top, arr_reg, Value::Object(obj));
+                        self.reg_set(top, pos_reg, Value::Int(id as i64));
                     }
                 }
             }
             // An empty array skips the loop; anything else warns too.
             v => {
+                self.reg_set(top, pos_reg, Value::Null);
                 self.stack[top].pc = end as usize;
                 // (A Closure is an object without properties.)
                 if !matches!(v, Value::Array(_) | Value::Closure(_)) {
@@ -3014,6 +3025,21 @@ impl Vm {
                 }
                 return Ok(());
             }
+            // A plain object: the next accessible property (see FeReset).
+            let Value::Int(id) = self.reg_get(top, pos_reg) else {
+                self.stack[top].pc = end as usize;
+                return Ok(());
+            };
+            match self.prop_iter_next(top, &h, id as u32, false)? {
+                Some((k, v)) => {
+                    self.cv_assign(top, val_cv, v);
+                    if key_cv != Reg::MAX {
+                        self.cv_assign(top, key_cv, k);
+                    }
+                }
+                None => self.stack[top].pc = end as usize,
+            }
+            return Ok(());
         }
         let pos = match self.reg_get(top, pos_reg) {
             Value::Int(n) => n as usize,
@@ -3120,34 +3146,165 @@ impl Vm {
                 ));
             }
         }
-        let nonempty = match deref(&self.stack[top].regs[arr_cv as usize]) {
-            Value::Array(a) => !a.is_empty(),
-            // A plain object iterates its properties by reference;
-            // `FeFetchRef` ends the loop when none remain accessible.
-            Value::Object(_) => true,
-            Value::Closure(_) => false,
+        let id = rhp_values::next_ht_iter_id();
+        match deref(&self.stack[top].regs[arr_cv as usize]) {
+            Value::Array(a) if !a.is_empty() => {
+                // FE_RESET_RW separates the array and puts a HashTable
+                // iterator on it; FeFetchRef follows it.
+                let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
+                    Value::Ref(rc) => Some(rc.clone()),
+                    _ => None,
+                };
+                let add = |slot: &mut Value| {
+                    if let Value::Array(a) = slot {
+                        a.make_mut().iter_add(id, 0);
+                    }
+                };
+                match rc_opt {
+                    Some(rc) => add(&mut rc.borrow_mut()),
+                    None => add(&mut self.stack[top].regs[arr_cv as usize]),
+                }
+                self.reg_set(top, pos_reg, Value::Int(id as i64));
+            }
+            Value::Object(h) => {
+                // get_properties initializes a lazy object (a proxy iterates
+                // its instance, see FeFetchRef).
+                let h = self.lazy_props_object(&h)?;
+                if self.classes[h.borrow().class as usize].hooked {
+                    let scope = self.stack[top].defining_class;
+                    let st = self.hooked_iter_state(&h, scope);
+                    self.reg_set(top, pos_reg, st);
+                    return Ok(());
+                }
+                if h.borrow().properties.is_empty() {
+                    self.reg_set(top, pos_reg, Value::Null);
+                    self.stack[top].pc = end as usize;
+                } else {
+                    h.borrow_mut().prop_iter_set(id, 0);
+                    self.reg_set(top, pos_reg, Value::Int(id as i64));
+                }
+            }
             v => {
-                self.foreach_type_warning(&v)?;
-                false
+                if !matches!(v, Value::Array(_) | Value::Closure(_)) {
+                    self.foreach_type_warning(&v)?;
+                }
+                self.reg_set(top, pos_reg, Value::Null);
+                self.stack[top].pc = end as usize;
             }
-        };
-        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
-            // get_properties initializes a lazy object (a proxy iterates
-            // its instance, see FeFetchRef).
-            let h = self.lazy_props_object(&h)?;
-            if self.classes[h.borrow().class as usize].hooked {
-                let scope = self.stack[top].defining_class;
-                let st = self.hooked_iter_state(&h, scope);
-                self.reg_set(top, pos_reg, st);
-                return Ok(());
-            }
-        }
-        if nonempty {
-            self.reg_set(top, pos_reg, Value::Int(0));
-        } else {
-            self.stack[top].pc = end as usize;
         }
         Ok(())
+    }
+
+    /// The next accessible property of plain object `h` for property-table
+    /// iterator `id` (zend_fe_fetch_object_helper / FE_FETCH_RW): its
+    /// unmangled name and value, the slot promoted to a reference when
+    /// `by_ref`. `None` at the end.
+    fn prop_iter_next(
+        &mut self,
+        top: usize,
+        h: &ObjectHandle,
+        id: u32,
+        by_ref: bool,
+    ) -> Result<Option<(Value, Value)>, Thrown> {
+        let caller = self.stack[top].defining_class;
+        let mut b = h.borrow_mut();
+        let cls = b.class;
+        // A table the iterator is not on starts over (php restarts at the
+        // internal pointer of a table it lost track of).
+        let mut idx = b.prop_iter_pos(id).unwrap_or(0);
+        let n = b.properties.len();
+        let mut found = None;
+        while idx < n {
+            let (key, val) = b.properties.get_index(idx).unwrap();
+            idx += 1;
+            if val.is_undef() || self.internal_slot(cls, key) {
+                continue;
+            }
+            if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
+                found = Some((idx - 1, name));
+                break;
+            }
+        }
+        b.prop_iter_set(id, idx);
+        let Some((i, name)) = found else {
+            return Ok(None);
+        };
+        let key = Value::Str(classes::unmangle(&name));
+        if !by_ref {
+            return Ok(Some((key, deref(&b.properties[i]))));
+        }
+        let skey = b.properties.get_index(i).unwrap().0.clone();
+        if !matches!(b.properties[i], Value::Ref(_)) {
+            if let Some(pe) = self.class(cls).props.get(&skey).filter(|pe| pe.readonly) {
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot acquire reference to readonly property {}::${}",
+                        String::from_utf8_lossy(self.class(pe.declaring_class).name.as_bytes()),
+                        String::from_utf8_lossy(pe.name.as_bytes())
+                    ),
+                ));
+            }
+        }
+        let slot = &mut b.properties[i];
+        let rc = match slot {
+            Value::Ref(rc) => rc.clone(),
+            other => {
+                let inner = std::mem::replace(other, Value::Null);
+                let rc = Rc::new(RefCell::new(inner));
+                *other = Value::Ref(rc.clone());
+                rc
+            }
+        };
+        Ok(Some((key, Value::Ref(rc))))
+    }
+
+    /// `FeFree` (ZEND_FE_FREE): see the instruction.
+    fn fe_free(&mut self, top: usize, arr: Reg, pos_reg: Reg, by_ref: bool, clear_arr: bool) {
+        if let Value::Int(id) = self.stack[top].regs[pos_reg as usize] {
+            let id = id as u32;
+            let cell = match &self.stack[top].regs[arr as usize] {
+                Value::Ref(rc) if by_ref => Some(rc.clone()),
+                _ => None,
+            };
+            match cell {
+                Some(rc) => self.fe_free_iter(&mut rc.borrow_mut(), id, by_ref),
+                None => {
+                    let slot = &mut self.stack[top].regs[arr as usize];
+                    let mut v = std::mem::replace(slot, Value::Null);
+                    self.fe_free_iter(&mut v, id, by_ref);
+                    self.stack[top].regs[arr as usize] = v;
+                }
+            }
+        }
+        let regs = &mut self.stack[top].regs;
+        regs[pos_reg as usize] = Value::Null;
+        if clear_arr {
+            let old = std::mem::replace(&mut regs[arr as usize], Value::Null);
+            if !self.destructibles.is_empty() && matches!(old, Value::Object(_) | Value::Array(_)) {
+                self.dtor_check = true;
+            }
+        }
+    }
+
+    /// zend_hash_iterator_del for a foreach iterator on `v`.
+    fn fe_free_iter(&self, v: &mut Value, id: u32, by_ref: bool) {
+        match v {
+            // A by-value loop over an array iterates a snapshot by position.
+            Value::Array(a) if by_ref => {
+                if a.has_iters() && a.ref_count() == 1 {
+                    a.make_mut().iter_del(id);
+                }
+            }
+            Value::Object(h) => {
+                let h = rhp_values::lazy_target(h);
+                let cls = h.borrow().class;
+                if !self.class_implements(cls, b"Traversable") {
+                    h.borrow_mut().prop_iter_del(id);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `FeFetchRef`: alias the loop variable to the next element of a by-reference
@@ -3236,77 +3393,44 @@ impl Vm {
             self.reg_set(top, pos_reg, Value::Array(st));
             return Ok(());
         }
-        let pos = match self.reg_get(top, pos_reg) {
-            Value::Int(n) => n as usize,
-            _ => 0,
+        let Value::Int(id) = self.reg_get(top, pos_reg) else {
+            self.stack[top].pc = end as usize;
+            return Ok(());
         };
+        let id = id as u32;
         // By-reference foreach over a plain object: alias each
         // accessible property slot so writes through the loop var are
         // visible on the object (matches PHP).
-        if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]).clone() {
-            let h = self.lazy_props_object(&h)?;
-            let caller = self.stack[top].defining_class;
-            let cls = h.borrow().class;
-            let mut b = h.borrow_mut();
-            let n = b.properties.len();
-            let mut idx = pos;
-            let mut found: Option<PhpStr> = None;
-            while idx < n {
-                let key = b.properties.get_index(idx).unwrap().0;
-                if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                    found = Some(classes::unmangle(&name));
-                    break;
-                }
-                idx += 1;
-            }
-            match found {
-                Some(name) => {
-                    let key = b.properties.get_index(idx).unwrap().0.clone();
-                    if let Some(pe) = self.class(cls).props.get(&key).filter(|pe| pe.readonly) {
-                        return Err(Thrown::error(
-                            "Error",
-                            format!(
-                                "Cannot acquire reference to readonly property {}::${}",
-                                String::from_utf8_lossy(
-                                    self.class(pe.declaring_class).name.as_bytes()
-                                ),
-                                String::from_utf8_lossy(pe.name.as_bytes())
-                            ),
-                        ));
-                    }
-                    let slot = b.properties.get_index_mut(idx).unwrap().1;
-                    let rc = match slot {
-                        Value::Ref(rc) => rc.clone(),
-                        other => {
-                            let inner = std::mem::replace(other, Value::Null);
-                            let rc = Rc::new(RefCell::new(inner));
-                            *other = Value::Ref(rc.clone());
-                            rc
+        match deref(&self.stack[top].regs[arr_cv as usize]) {
+            Value::Object(h) => {
+                let h = self.lazy_props_object(&h)?;
+                match self.prop_iter_next(top, &h, id, true)? {
+                    Some((k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k);
                         }
-                    };
-                    drop(b);
-                    self.bind_ref_cv(top, val_cv, rc);
-                    if key_cv != Reg::MAX {
-                        self.cv_assign(top, key_cv, Value::str(name.as_bytes().to_vec()));
                     }
-                    self.reg_set(top, pos_reg, Value::Int((idx + 1) as i64));
+                    _ => self.stack[top].pc = end as usize,
                 }
-                None => {
-                    drop(b);
-                    self.stack[top].pc = end as usize;
-                }
+                return Ok(());
             }
-            return Ok(());
+            Value::Array(_) => {}
+            v => {
+                // The variable no longer holds an array or object.
+                self.stack[top].pc = end as usize;
+                return self.foreach_type_warning(&v);
+            }
         }
-        // Promote the element at `pos` to a shared cell (through a
-        // Ref if the source variable itself is a reference).
+        // The element at the iterator's position, promoted to a shared
+        // cell (through a Ref if the source variable itself is one).
         let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
             Value::Ref(rc) => Some(rc.clone()),
             _ => None,
         };
         let fetched = match rc_opt {
-            Some(rc) => foreach_promote(&mut rc.borrow_mut(), pos),
-            None => foreach_promote(&mut self.stack[top].regs[arr_cv as usize], pos),
+            Some(rc) => foreach_next_ref(&mut rc.borrow_mut(), id),
+            None => foreach_next_ref(&mut self.stack[top].regs[arr_cv as usize], id),
         };
         match fetched {
             Some((k, elem_rc)) => {
@@ -3314,7 +3438,6 @@ impl Vm {
                 if key_cv != Reg::MAX {
                     self.cv_assign(top, key_cv, k.to_value());
                 }
-                self.reg_set(top, pos_reg, Value::Int((pos + 1) as i64));
             }
             None => self.stack[top].pc = end as usize,
         }

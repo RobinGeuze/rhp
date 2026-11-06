@@ -2130,6 +2130,7 @@ Zend/tests/list/bug27598.phpt
 Zend/tests/list/bug39304.phpt
 Zend/tests/list/bug40899.phpt
 Zend/tests/list/bug65969.phpt
+Zend/tests/list/bug71030.phpt
 Zend/tests/list/bug72395.phpt
 Zend/tests/list/bug73663_2.phpt
 Zend/tests/list/destruct_bool.phpt
@@ -2168,6 +2169,7 @@ Zend/tests/list/list_keyed_trailing_comma.phpt
 Zend/tests/list/list_keyed_undefined.phpt
 Zend/tests/list/list_mixed_keyed_unkeyed.phpt
 Zend/tests/list/list_mixed_nested_keyed_unkeyed.phpt
+Zend/tests/list/list_self_assign.phpt
 Zend/tests/live_range_phi_leak.phpt
 Zend/tests/loop_free_on_return.phpt
 Zend/tests/lsb/bug47699.phpt

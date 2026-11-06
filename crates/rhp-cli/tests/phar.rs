@@ -27,7 +27,7 @@ fn write(path: &Path, contents: &str) {
 }
 
 fn case_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp_phar_{name}"));
+    let dir = std::env::temp_dir().join(format!("rhp_phar_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     dir

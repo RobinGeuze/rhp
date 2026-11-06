@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 use rhp_difftest::{php_available, php_bin};
 
 fn script(name: &str, code: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp_memory_limit_{name}"));
+    let dir = std::env::temp_dir().join(format!("rhp_memory_limit_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     // php reports resolved real paths (e.g. /private/var on macOS).
@@ -307,7 +307,8 @@ fn file_get_contents_refuses_a_file_past_the_limit() {
     if !php_available() {
         return;
     }
-    let dir = std::env::temp_dir().join("rhp_memory_limit_fgc_data");
+    let dir =
+        std::env::temp_dir().join(format!("rhp_memory_limit_fgc_data_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let big = dir.canonicalize().expect("canonical dir").join("big.bin");
     std::fs::write(&big, vec![b'z'; 20 << 20]).expect("write data");

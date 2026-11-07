@@ -309,6 +309,7 @@ path = "/c"
     for bad in [
         "[[pass]]\nname = \"default\"",
         "[[pass]]\nname = \"Debug\"",
+        "[[pass]]\nname = \"php-cgi\"",
         "[[pass]]\nname = \"x\"\nwarmup = \"later\"",
         "[[mask]]\nname = \"m\"\npattern = \"x\"\npass = [\"nope\"]",
     ] {

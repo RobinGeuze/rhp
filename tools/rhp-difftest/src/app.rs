@@ -241,7 +241,9 @@ fn load_corpus(app: &App, path: &Path) -> Result<Corpus, String> {
             && name
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !ok || passes.iter().any(|q| q.name == name) {
+        // php-cgi and candidate are --out's folder names for the default pass.
+        let reserved = matches!(name.as_str(), "php-cgi" | "candidate");
+        if !ok || reserved || passes.iter().any(|q| q.name == name) {
             return Err(format!(
                 "pass {name:?}: duplicate, reserved or not [a-z0-9-]+"
             ));

@@ -458,7 +458,7 @@ pub(super) fn fn_strlen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let u = match utf8_to_utf16(&s) {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting input string to UTF-16");
+            super::error::set(host, f, st, "Error converting input string to UTF-16")?;
             return Ok(Value::Null);
         }
     };
@@ -581,7 +581,7 @@ pub(super) fn fn_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if ascii_check(&s) {
         // grapheme_substr_ascii
         if s.len() > i32::MAX as usize {
-            error_set(f, sys::U_ILLEGAL_ARGUMENT_ERROR, "invalid parameters");
+            super::error::set(host, f, sys::U_ILLEGAL_ARGUMENT_ERROR, "invalid parameters")?;
             return Ok(Value::Bool(false));
         }
         let slen = s.len() as i32;
@@ -602,7 +602,7 @@ pub(super) fn fn_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let u = match utf8_to_utf16(&s) {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting input string to UTF-16");
+            super::error::set(host, f, st, "Error converting input string to UTF-16")?;
             return Ok(Value::Bool(false));
         }
     };
@@ -731,7 +731,7 @@ pub(super) fn fn_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     }
     let mut status = sys::U_ZERO_ERROR;
     let Some(ut) = Utf8Text::open(&s, &mut status) else {
-        error_set(f, status, "Error opening UTF-8 text");
+        super::error::set(host, f, status, "Error opening UTF-8 text")?;
         return Ok(Value::Bool(false));
     };
     status = sys::U_ZERO_ERROR;
@@ -791,11 +791,12 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         ));
     }
     if lstart > i32::MAX as i64 || lstart < 0 || lstart as usize >= s.len() {
-        error_set(
+        super::error::set(
+            host,
             f,
             sys::U_ILLEGAL_ARGUMENT_ERROR,
             "start not contained in string",
-        );
+        )?;
         return Ok(Value::Bool(false));
     }
     if size < 0 {
@@ -818,11 +819,12 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     while !single_or_lead(s[start]) {
         start += 1;
         if start >= s.len() {
-            error_set(
+            super::error::set(
+                host,
                 f,
                 sys::U_ILLEGAL_ARGUMENT_ERROR,
                 "grapheme_extract: invalid input string",
-            );
+            )?;
             return Ok(Value::Bool(false));
         }
     }
@@ -838,7 +840,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     }
     let mut status = sys::U_ZERO_ERROR;
     let Some(ut) = Utf8Text::open(p, &mut status) else {
-        error_set(f, status, "Error opening UTF-8 text");
+        super::error::set(host, f, status, "Error opening UTF-8 text")?;
         return Ok(Value::Bool(false));
     };
     status = sys::U_ZERO_ERROR;
@@ -989,7 +991,7 @@ pub(super) fn fn_levenshtein(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     let u1 = match u1 {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting input string to UTF-16");
+            super::error::set(host, f, st, "Error converting input string to UTF-16")?;
             return Ok(Value::Bool(false));
         }
     };
@@ -1000,7 +1002,7 @@ pub(super) fn fn_levenshtein(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     let u2 = match u2 {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting input string to UTF-16");
+            super::error::set(host, f, st, "Error converting input string to UTF-16")?;
             return Ok(Value::Bool(false));
         }
     };
@@ -1017,45 +1019,49 @@ pub(super) fn fn_levenshtein(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     let mut status = sys::U_ZERO_ERROR;
     let bi1 = Bi::get(&mut status);
     let Some(mut bi1) = bi1.filter(|_| !sys::failure(status)) else {
-        error_set(
+        super::error::set(
+            host,
             f,
             status,
             "Error on grapheme_get_break_iterator for argument #1 ($string1)",
-        );
+        )?;
         return Ok(Value::Bool(false));
     };
     let bi2 = Bi::get(&mut status);
     let Some(mut bi2) = bi2.filter(|_| !sys::failure(status)) else {
-        error_set(
+        super::error::set(
+            host,
             f,
             status,
             "Error on grapheme_get_break_iterator for argument #2 ($string2)",
-        );
+        )?;
         return Ok(Value::Bool(false));
     };
     bi1.set_text(&u1, &mut status);
     if sys::failure(status) {
-        error_set(
+        super::error::set(
+            host,
             f,
             status,
             "Error on ubrk_setText for argument #1 ($string1)",
-        );
+        )?;
         return Ok(Value::Bool(false));
     }
     bi2.set_text(&u2, &mut status);
     if sys::failure(status) {
-        error_set(
+        super::error::set(
+            host,
             f,
             status,
             "Error on ubrk_setText for argument #2 ($string2)",
-        );
+        )?;
         return Ok(Value::Bool(false));
     }
     let loc = c_locale(&locale);
     // SAFETY: a C string locale.
     let coll = Collator(unsafe { sys::ucol_open(loc.as_ptr(), &mut status) });
     if sys::failure(status) {
-        error_set(f, status, "Error on ucol_open");
+        super::error::set(host, f, status, "Error on ucol_open")?;
         return Ok(Value::Bool(false));
     }
 

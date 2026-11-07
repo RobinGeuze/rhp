@@ -2345,12 +2345,16 @@ impl Frame {
                 a.make_mut().entries.get_index_mut(i).map(|(_, v)| take(v))
             }
             Frame::Object(h, pos) => {
-                let i = *pos;
-                *pos += 1;
-                h.borrow_mut()
-                    .props_mut()
-                    .get_index_mut(i)
-                    .map(|(_, v)| take(v))
+                let mut b = h.borrow_mut();
+                loop {
+                    let i = *pos;
+                    *pos += 1;
+                    let (_, v) = b.props_mut().get_index_mut(i)?;
+                    // (An empty declared slot is no property.)
+                    if !v.is_undef() {
+                        return Some(take(v));
+                    }
+                }
             }
             Frame::Cell(_, inner, visited) => {
                 (!std::mem::replace(visited, true)).then(|| take(inner))

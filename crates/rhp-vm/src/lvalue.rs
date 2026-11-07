@@ -3055,7 +3055,7 @@ fn assign_path(
                 return assign_path(&mut od.props_mut()[i], rest, value, cx);
             }
         }
-        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        let child = od.props_mut().get_or_insert_null(key);
         return assign_path(child, rest, value, cx);
     }
     if let Value::Str(_) = slot {
@@ -3183,7 +3183,7 @@ fn make_ref_path(
                 }
             }
         }
-        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        let child = od.props_mut().get_or_insert_null(key);
         return make_ref_path(child, rest, cx);
     }
     if let Value::Str(_) = slot {

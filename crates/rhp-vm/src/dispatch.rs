@@ -3744,7 +3744,7 @@ impl Vm {
         // A table the iterator is not on starts over (php restarts at the
         // internal pointer of a table it lost track of).
         let mut idx = b.prop_iter_pos(id).unwrap_or(0);
-        let n = b.props().len();
+        let n = b.props().pos_len();
         let mut found = None;
         while idx < n {
             let (key, val) = b.props().get_index(idx).unwrap();

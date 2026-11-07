@@ -2632,7 +2632,7 @@ impl Host for Vm {
     fn prop_store(&mut self, obj: &ObjectHandle, storage: &PhpStr, val: Option<Value>) {
         let mut od = obj.borrow_mut();
         match val {
-            Some(v) => *classes::prop_slot_mut(&self.classes, &mut od, storage.clone()) = v,
+            Some(v) => *od.props_mut().get_or_insert_null(storage.clone()) = v,
             None => {
                 od.remove_prop(storage);
             }

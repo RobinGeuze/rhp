@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use rhp_values::{ClassId, ClassKind, LazyInfo, ObjectData, ObjectHandle, PhpStr, Thrown, Value};
 
-use crate::{classes, deref, Vm};
+use crate::{deref, Vm};
 
 fn cname(vm: &Vm, cls: ClassId) -> String {
     String::from_utf8_lossy(vm.class(cls).name.as_bytes()).into_owned()
@@ -220,7 +220,7 @@ impl Vm {
                 continue;
             }
             let v = pe.default.clone();
-            *classes::prop_slot_mut(&self.classes, &mut b, k.clone()) = v;
+            *b.props_mut().get_or_insert_null(k.clone()) = v;
         }
     }
 
@@ -686,7 +686,7 @@ impl Vm {
         let val = self.verify_prop_type(cls, key, val, false)?;
         let old = {
             let mut b = h.borrow_mut();
-            let slot = classes::prop_slot_mut(&self.classes, &mut b, key.clone());
+            let slot = b.props_mut().get_or_insert_null(key.clone());
             match slot {
                 Value::Ref(rc) => {
                     let rc = rc.clone();

@@ -2860,10 +2860,14 @@ fn walk_next_object(
 ) -> Option<(Cell, Value)> {
     let mut b = h.borrow_mut();
     let class = b.class;
-    while *pos < b.props().len() {
+    while *pos < b.props().pos_len() {
         let i = *pos;
         *pos += 1;
-        let key = b.props().get_index(i).expect("in range").0.clone();
+        let (key, v) = b.props().get_index(i).expect("in range");
+        if v.is_undef() {
+            continue;
+        }
+        let key = key.clone();
         if host.is_internal_slot(class, &key) {
             continue;
         }

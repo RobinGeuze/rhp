@@ -23,7 +23,7 @@ pub mod props;
 pub mod thrown;
 
 pub use handles::{alloc_object_id, release_object_id};
-pub use props::PropTable;
+pub use props::{PropLayout, PropTable};
 pub use thrown::Thrown;
 
 // php's error levels (Zend/zend_errors.h).
@@ -258,7 +258,7 @@ struct ObjectExtra {
     weak: bool,
     /// HashTable iterators on the property table (foreach over the
     /// object): (id, position), kept on the same property by
-    /// [`ObjectData::remove_prop`] and [`ObjectData::insert_prop_at`].
+    /// [`ObjectData::remove_prop`].
     iters: Vec<(u32, usize)>,
 }
 
@@ -473,10 +473,11 @@ impl ObjectData {
     }
 
     /// Remove property `key`, keeping the property table's iterators on
-    /// the same properties (php leaves a hole the iterators skip).
+    /// the same properties (php leaves a hole the iterators skip; a
+    /// declared slot stays, empty).
     pub fn remove_prop(&mut self, key: &PhpStr) -> Option<Value> {
-        let (i, v) = self.properties.remove_full(key)?;
-        if let Some(e) = self.extra.as_deref_mut() {
+        let (pos, v) = self.properties.remove(key)?;
+        if let (Some(i), Some(e)) = (pos, self.extra.as_deref_mut()) {
             for (_, p) in e.iters.iter_mut() {
                 if *p > i {
                     *p -= 1;
@@ -484,19 +485,6 @@ impl ObjectData {
             }
         }
         Some(v)
-    }
-
-    /// Insert property `key` at index `pos` (a declared slot coming back
-    /// after unset); an iterator at `pos` sees it.
-    pub fn insert_prop_at(&mut self, pos: usize, key: PhpStr, v: Value) {
-        self.properties.insert_at(pos, key, v);
-        if let Some(e) = self.extra.as_deref_mut() {
-            for (_, p) in e.iters.iter_mut() {
-                if *p > pos {
-                    *p += 1;
-                }
-            }
-        }
     }
 
     /// Register (or move) property-table iterator `id` at `pos`.
@@ -621,7 +609,7 @@ impl ObjectData {
             for v in self.properties.values() {
                 gc::possible_root(v);
             }
-            self.properties = PropTable::new();
+            self.properties = PropTable::default();
         }
         release_object_id(id);
     }

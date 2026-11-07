@@ -47,14 +47,15 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 let mut absent_slot = None;
-                let denied = match classes::resolve_prop(&self.classes, cls, scope, &pname) {
+                let (res, at) = classes::resolve_prop_at(&self.classes, cls, scope, &pname);
+                let denied = match res {
                     PropRes::Slot(k) => {
                         if self.classes[cls as usize].hooked {
                             if let Some(r) = self.hooked_read(&h, cls, &k) {
                                 return r.map(|v| deref(&v));
                             }
                         }
-                        if let Some(v) = h.borrow().props().get(&k) {
+                        if let Some(v) = h.borrow().props().get_at(at, &k) {
                             return Ok(deref(v));
                         }
                         // A lazy slot skips __get() and initializes.
@@ -805,7 +806,7 @@ impl Vm {
                     },
                 ));
             }
-            let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+            let (res, at) = classes::resolve_prop_at(&self.classes, cls, scope, &pname);
             let val = match &res {
                 PropRes::Slot(k) if self.classes[cls as usize].hooked => {
                     match self.hooked_store(&h, cls, k, scope, called, val)? {
@@ -824,7 +825,7 @@ impl Vm {
                 PropRes::Dynamic => (pname.clone(), None),
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
             };
-            let present = denied.is_none() && h.borrow().props().contains_key(&key);
+            let present = denied.is_none() && h.borrow().props().get_at(at, &key).is_some();
             if !present && denied.is_none() {
                 // A lazy slot (bypassing __set()) or an undefined property
                 // with no unguarded __set() initializes the object, and the
@@ -908,8 +909,8 @@ impl Vm {
                 let v = if self
                     .class(cls)
                     .props
-                    .get(&key)
-                    .is_some_and(|pe| pe.ty.is_some())
+                    .get_index(at)
+                    .is_some_and(|(_, pe)| pe.ty.is_some())
                 {
                     let held = Rc::strong_count(&h);
                     let v = self.verify_prop_type(cls, &key, val, strict)?;
@@ -943,7 +944,7 @@ impl Vm {
                 v
             };
             let mut od = h.borrow_mut();
-            let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
+            let slot = od.props_mut().get_or_insert_null_at(at, key);
             let old = match slot {
                 Value::Ref(rc) => {
                     let rc = rc.clone();

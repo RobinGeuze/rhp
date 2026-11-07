@@ -287,7 +287,7 @@ impl Vm {
         };
         let cls = h.borrow().class;
         let scope = self.stack[top].defining_class;
-        let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
+        let (res, at) = classes::resolve_prop_at(&self.classes, cls, scope, &pname);
         let present = match &res {
             PropRes::Slot(k)
                 if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
@@ -297,7 +297,7 @@ impl Vm {
                     None => h.borrow().props().get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) => h.borrow().props().get(k).cloned(),
+            PropRes::Slot(k) => h.borrow().props().get_at(at, k).cloned(),
             PropRes::Dynamic if Some(cls) == self.incomplete_class => {
                 self.incomplete_warning(&h)?;
                 return Ok(false);

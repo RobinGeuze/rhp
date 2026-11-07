@@ -304,6 +304,18 @@ pub(crate) fn ini_update(
     v: &[u8],
     func: &str,
 ) -> Result<bool, Thrown> {
+    // OnUpdate_zlib_output_handler
+    if name == b"zlib.output_handler" {
+        if host.response().is_some_and(|r| r.sent) {
+            crate::warn(
+                host,
+                func,
+                "Cannot change zlib.output_handler - headers already sent",
+            )?;
+            return Ok(false);
+        }
+        return Ok(true);
+    }
     if name != b"zlib.output_compression" {
         return Ok(true);
     }

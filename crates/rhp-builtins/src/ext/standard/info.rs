@@ -478,49 +478,7 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
         let mut exts: Vec<&str> = crate::zend::builtin_functions::loaded_extension_names();
         exts.sort_by_key(|e| e.to_ascii_lowercase());
         for e in &exts {
-            o.module_section(e);
-            o.table_start();
-            if e.eq_ignore_ascii_case("core") {
-                o.row(&["PHP Version", version::PHP_VERSION]);
-                o.table_end();
-                print_core_ini(&mut o);
-            } else if *e == "pcre" {
-                print_pcre(&mut o);
-            } else if *e == "openssl" {
-                print_openssl(&mut o);
-            } else if *e == "curl" {
-                print_curl(&mut o);
-            } else if *e == "iconv" {
-                print_iconv(&mut o);
-            } else if *e == "gmp" {
-                o.row(&["gmp support", "enabled"]);
-                o.row(&["GMP version", crate::ext::gmp::sys::version()]);
-            } else if *e == "mbstring" {
-                print_mbstring(&mut o);
-            } else if *e == "date" {
-                print_date(&mut o);
-            } else if *e == "session" {
-                print_session(&mut o);
-            } else if *e == "PDO" || *e == "pdo_sqlite" {
-                let rows = if *e == "PDO" {
-                    crate::ext::pdo::info_rows()
-                } else {
-                    crate::ext::pdo_sqlite::info_rows()
-                };
-                for (k, v) in rows {
-                    o.row(&[&k, &v]);
-                }
-            } else if *e == "fileinfo" {
-                o.row(&["fileinfo support", "enabled"]);
-                o.row(&["libmagic", &crate::ext::fileinfo::libmagic_version()]);
-            } else if *e == "zip" {
-                for (k, v) in crate::ext::zip::info_rows() {
-                    o.row(&[&k, &v]);
-                }
-            } else {
-                o.row(&[&format!("{e} support"), "enabled"]);
-            }
-            o.table_end();
+            print_module(&mut o, e);
         }
         o.section("Additional Modules");
         o.table_start();
@@ -591,6 +549,173 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
     if o.1 {
         o.print("</div></body></html>");
     }
+    o.0
+}
+
+/// php_info_print_module: one loaded module's heading and its MINFO
+/// section.
+fn print_module(o: &mut Info, e: &str) {
+    o.module_section(e);
+    o.table_start();
+    if e.eq_ignore_ascii_case("core") {
+        o.row(&["PHP Version", version::PHP_VERSION]);
+        o.table_end();
+        print_core_ini(o);
+    } else if e == "pcre" {
+        print_pcre(o);
+    } else if e == "openssl" {
+        print_openssl(o);
+    } else if e == "curl" {
+        print_curl(o);
+    } else if e == "iconv" {
+        print_iconv(o);
+    } else if e == "gmp" {
+        o.row(&["gmp support", "enabled"]);
+        o.row(&["GMP version", crate::ext::gmp::sys::version()]);
+    } else if e == "mbstring" {
+        print_mbstring(o);
+    } else if e == "date" {
+        print_date(o);
+    } else if e == "session" {
+        print_session(o);
+    } else if e == "PDO" || e == "pdo_sqlite" {
+        let rows = if e == "PDO" {
+            crate::ext::pdo::info_rows()
+        } else {
+            crate::ext::pdo_sqlite::info_rows()
+        };
+        for (k, v) in rows {
+            o.row(&[&k, &v]);
+        }
+    } else if e == "fileinfo" {
+        o.row(&["fileinfo support", "enabled"]);
+        o.row(&["libmagic", &crate::ext::fileinfo::libmagic_version()]);
+    } else if e == "zip" {
+        for (k, v) in crate::ext::zip::info_rows() {
+            o.row(&[&k, &v]);
+        }
+    } else if e == "bz2" {
+        for (k, v) in crate::ext::bz2::info_rows() {
+            o.row(&[k, &v]);
+        }
+    } else if let Some(rows) = static_minfo(e) {
+        for (k, v) in rows {
+            o.row(&[k, &v]);
+        }
+    } else if e == "hash" {
+        o.row(&["hash support", "enabled"]);
+        let mut engines = String::new();
+        for a in crate::ext::hash::algo_names() {
+            engines.push_str(a);
+            engines.push(' ');
+        }
+        o.row(&["Hashing Engines", &engines]);
+    } else if e == "zlib" {
+        // SAFETY: zlibVersion returns a static NUL-terminated string.
+        let linked = unsafe { std::ffi::CStr::from_ptr(libz_sys::zlibVersion()) };
+        o.row(&["ZLib Support", "enabled"]);
+        o.row(&["Stream Wrapper", "compress.zlib://"]);
+        o.row(&["Stream Filter", "zlib.inflate, zlib.deflate"]);
+        o.row(&["Compiled Version", version::ZLIB_VERSION]);
+        o.row(&["Linked Version", &linked.to_string_lossy()]);
+        o.table_end();
+        print_ini(
+            o,
+            &[
+                "zlib.output_compression",
+                "zlib.output_compression_level",
+                "zlib.output_handler",
+            ],
+            &["zlib.output_compression"],
+        );
+    } else {
+        o.row(&[&format!("{e} support"), "enabled"]);
+    }
+    let ini: &[&str] = match e {
+        "bcmath" => &["bcmath.scale"],
+        "filter" => &["filter.default", "filter.default_flags"],
+        _ => &[],
+    };
+    if !ini.is_empty() {
+        o.table_end();
+        print_ini(o, ini, &[]);
+    }
+    o.table_end();
+}
+
+/// The rows of the PHP_MINFO functions that print fixed text and
+/// versions, then their ini entries (DISPLAY_INI_ENTRIES).
+fn static_minfo(e: &str) -> Option<Vec<(&'static str, String)>> {
+    let s = |v: &str| v.to_string();
+    let xml = || s(crate::ext::libxml::header_dotted_version());
+    Some(match e {
+        "bcmath" => vec![("BCMath support", s("enabled"))],
+        "ctype" => vec![("ctype functions", s("enabled"))],
+        "filter" => vec![("Input Validation and Filtering", s("enabled"))],
+        "posix" => vec![("POSIX support", s("enabled"))],
+        "random" => vec![("Version", s(version::PHP_VERSION))],
+        "Reflection" => vec![("Reflection", s("enabled"))],
+        "tokenizer" => vec![("Tokenizer Support", s("enabled"))],
+        "xmlreader" => vec![("XMLReader", s("enabled"))],
+        "xmlwriter" => vec![("XMLWriter", s("enabled"))],
+        "SimpleXML" => vec![
+            ("SimpleXML support", s("enabled")),
+            ("Schema support", s("enabled")),
+        ],
+        "libxml" => vec![
+            ("libXML support", s("active")),
+            ("libXML Compiled Version", xml()),
+            (
+                "libXML Loaded Version",
+                s(crate::ext::libxml::loaded_version()),
+            ),
+            ("libXML streams", s("enabled")),
+        ],
+        "xml" => vec![
+            ("XML Support", s("active")),
+            ("XML Namespace Support", s("active")),
+            ("libxml2 Version", xml()),
+        ],
+        "dom" => vec![
+            ("DOM/XML", s("enabled")),
+            ("DOM/XML API Version", s("20031129")),
+            ("libxml Version", xml()),
+            ("HTML Support", s("enabled")),
+            ("XPath Support", s("enabled")),
+            ("XPointer Support", s("enabled")),
+            ("Schema Support", s("enabled")),
+            ("RelaxNG Support", s("enabled")),
+        ],
+        _ => return None,
+    })
+}
+
+/// DISPLAY_INI_ENTRIES for `names` (php_ini_boolean_displayer_cb for
+/// `bools`), after a module's rows.
+fn print_ini(o: &mut Info, names: &[&str], bools: &[&str]) {
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    for name in names {
+        let boolean = bools.contains(name);
+        let show = |v: Option<Vec<u8>>| match v {
+            v if boolean => {
+                let on = v.as_deref().is_some_and(crate::main::ini::ini_parse_bool);
+                (if on { "On" } else { "Off" }).to_string()
+            }
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
+        };
+        let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
+        o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// ReflectionExtension::info(): php_info_print_module for one module, as the
+/// running SAPI prints it.
+pub(crate) fn module_info(e: &str) -> Vec<u8> {
+    let mut o = Info::for_sapi();
+    print_module(&mut o, e);
     o.0
 }
 

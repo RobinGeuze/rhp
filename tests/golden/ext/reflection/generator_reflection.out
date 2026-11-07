@@ -1,0 +1,28 @@
+ReflectionMethod outer line 11 generator_reflection.php
+this: K
+executing: outer
+  #0 K->outer args [] +object
+-- at 0
+ReflectionMethod outer line 12 generator_reflection.php
+this: K
+executing: outer
+  #0 K->outer args [] +object
+-- at 1
+ReflectionMethod outer line 13 generator_reflection.php
+this: K
+executing: inner
+  #0 K->inner called at line 13 args [5] +object
+  #1 K->outer args [] +object
+-- at 2
+ReflectionMethod outer line 13 generator_reflection.php
+this: K
+executing: inner
+  #0 K->inner called at line 13 args [5] +object
+  #1 K->outer args [] +object
+closed; function outer
+Cannot fetch information from a closed Generator
+ReflectionFunction {closure:generator_reflection.php:41} line 43 generator_reflection.php
+this: null
+executing: {closure:generator_reflection.php:41}
+  #0 {closure:generator_reflection.php:41} args [3]
+int(1)

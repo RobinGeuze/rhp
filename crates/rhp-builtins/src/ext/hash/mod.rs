@@ -1050,6 +1050,11 @@ fn fn_hash_equals(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(eq))
 }
 
+/// The hash algorithms, in php_hash_hashtable order.
+pub(crate) fn algo_names() -> &'static [&'static str] {
+    ALGOS
+}
+
 fn fn_hash_algos(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(string_list(ALGOS))
 }

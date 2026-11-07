@@ -355,6 +355,18 @@ impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
                     _ => None,
                 };
             }
+            // ZEND_AST_COALESCE over a folded left side (`X::class ?? 1`).
+            Expression::Binary(b)
+                if matches!(
+                    b.operator,
+                    crate::parse::cst::BinaryOperator::NullCoalesce(_)
+                ) =>
+            {
+                return match self.fold(b.lhs)? {
+                    Value::Null => self.fold(b.rhs),
+                    v => Some(v),
+                };
+            }
             Expression::MagicConstant(MagicConstant::Class(_)) => {
                 return match self.class_name {
                     None => Some(Value::str(Vec::new())),
@@ -489,15 +501,17 @@ pub(crate) fn decl_meta(
 }
 
 /// Reflection data for a parameter default: a standalone thunk for a
-/// non-constant default, and the constant's name when the default is a bare
-/// constant / class-constant reference.
+/// non-constant default, the constant's name when the default is a bare
+/// constant / class-constant reference, and the zend_ast_export text of a
+/// default php does not fold at compile time (zend_compile_params turns
+/// constant substitution off, so every constant stays a name).
 pub(crate) fn param_default_meta(
     cx: &FileCtx,
     p: &crate::parse::cst::FunctionLikeParameter,
     class_name: Option<&PhpStr>,
-) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
+) -> (Option<Rc<FunctionProto>>, Option<PhpStr>, Option<PhpStr>) {
     let Some(dv) = &p.default_value else {
-        return (None, None);
+        return (None, None, None);
     };
     let e = dv.value;
     let cname = match e {
@@ -529,12 +543,49 @@ pub(crate) fn param_default_meta(
         }
         _ => None,
     };
-    let thunk = if fold_const(cx, e).is_err() {
-        compile_const_thunk(cx, e, class_name).ok()
-    } else {
-        None
+    if fold_const(cx, e).is_ok() {
+        return (None, cname, None);
+    }
+    let names = AttrNames { cx, class_name };
+    let thunk = compile_const_thunk(cx, e, class_name).ok();
+    // Built only from parts php evaluates at compile time (`[1, 2][0]`,
+    // `true ? 1 : 2`): php keeps the value, which the thunk gives.
+    if folds_whole(&names, e) {
+        return (thunk, cname, None);
+    }
+    let text = PhpStr::from_bytes(crate::ast_export::const_expr(cx.src, e, &names));
+    (thunk, cname, Some(text))
+}
+
+/// Whether zend_eval_const_expr folds all of `e` to a value: every part is
+/// a literal or something `names` folds.
+fn folds_whole(names: &AttrNames, e: &Expression) -> bool {
+    use crate::ast_export::ConstExprNames;
+    use crate::parse::cst::ArrayElement;
+    if names.fold(e).is_some() {
+        return true;
+    }
+    let el = |el: &ArrayElement| match el {
+        ArrayElement::KeyValue(kv) => folds_whole(names, kv.key) && folds_whole(names, kv.value),
+        ArrayElement::Value(v) => folds_whole(names, v.value),
+        ArrayElement::Variadic(v) => folds_whole(names, v.value),
+        ArrayElement::Missing(_) => true,
     };
-    (thunk, cname)
+    match crate::util::unparen(e) {
+        Expression::Literal(_) => true,
+        Expression::CompositeString(_) => crate::ast_export::plain_string(e).is_some(),
+        Expression::Array(a) => a.elements.iter().all(el),
+        Expression::LegacyArray(a) => a.elements.iter().all(el),
+        Expression::UnaryPrefix(u) => folds_whole(names, u.operand),
+        Expression::Binary(b) => folds_whole(names, b.lhs) && folds_whole(names, b.rhs),
+        Expression::Conditional(c) => {
+            folds_whole(names, c.condition)
+                && c.then.is_none_or(|t| folds_whole(names, t))
+                && folds_whole(names, c.r#else)
+        }
+        Expression::ArrayAccess(aa) => folds_whole(names, aa.array) && folds_whole(names, aa.index),
+        _ => false,
+    }
 }
 
 /// php's `add_stringable_interface`: a class-like (not a trait) declaring

@@ -85,7 +85,7 @@ Today rhp-builtins links:
 | OpenSSL (libcrypto, libssl) | static, Homebrew openssl@4 | static, libssl-dev |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
-| bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
+| bzip2 (bzip2 `=0.6.1`, default features off, features `bzip2-sys` and `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | libavifinfo (via rhp-csrc) | static, compiled from php-8.5.12's ext/standard/libavifinfo | the same |
 | libmagic 5.46 with php's patches and magic database (via rhp-csrc) | static, compiled from php-8.5.12's ext/fileinfo | the same |

@@ -406,6 +406,25 @@ The original notes:
 
 ---
 
+### 2.11 `ext/sockets`: partial, not reported as loaded
+
+- **Now:** `crates/rhp-builtins/src/ext/sockets/mod.rs` has `socket_import_stream`,
+  `socket_get_option`/`socket_set_option`, `socket_strerror`,
+  `socket_last_error`/`socket_clear_error`, the `Socket` class and the constants
+  (what react/socket uses beside stream sockets). `extension_loaded('sockets')` is
+  false (`registry/tests.rs` UNREPORTED_MODULES).
+- **Missing** (audited 2026-11-07 against `sockets.stub.php`): `socket_create`,
+  `_create_listen`, `_create_pair`, `_bind`, `_connect`, `_listen`, `_accept`,
+  `_read`/`_write`, `_recv`/`_recvfrom`/`_recvmsg`, `_send`/`_sendto`/`_sendmsg`,
+  `_select`, `_shutdown`, `_close`, `_set_block`/`_set_nonblock`,
+  `_getpeername`/`_getsockname`, `_export_stream`, `_atmark`, `_cmsg_space`, the
+  `socket_addrinfo_*` family and the Windows-only `socket_wsaprotocol_info_*`.
+- **Breaks:** code that checks `extension_loaded('sockets')` takes its no-sockets
+  path; Composer counts monolog's `ext-sockets` suggestion (12 suggestions where
+  php prints 11).
+- **Plan:** port the missing functions over the libc socket calls (php_sockets.h
+  semantics), then move `sockets` from UNREPORTED_MODULES to LOADED_EXTS.
+
 ## 3. Phar (`crates/rhp-builtins/src/ext/phar/mod.rs`)
 
 The module is deliberately "READ-ONLY, native format only"

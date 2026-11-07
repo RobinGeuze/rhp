@@ -1,0 +1,57 @@
+Function [ <user> function M\f ] {
+
+  - Parameters [23] {
+    Parameter #0 [ <optional> Traversable|array $a = [] ]
+    Parameter #1 [ <optional> Traversable|array|null $b = NULL ]
+    Parameter #2 [ <optional> Traversable|array|int $c = 1 ]
+    Parameter #3 [ <optional> $d = \N\I::X ]
+    Parameter #4 [ <optional> $e = new \ArrayObject() ]
+    Parameter #5 [ <optional> $f = M\PHP_EOL ]
+    Parameter #6 [ <optional> $g = PHP_VERSION ]
+    Parameter #7 [ <optional> $h = \M\E::A ]
+    Parameter #8 [ <optional> $i = [\N\I::X, 'a' => 'M\\C'] ]
+    Parameter #9 [ <optional> $j = \M\C::Y + 1 ]
+    Parameter #10 [ <optional> $k = M\FOO ]
+    Parameter #11 [ <optional> $l = \strlen(...) ]
+    Parameter #12 [ <optional> $m = 1.0 ]
+    Parameter #13 [ <optional> $n = 'a\nb' ]
+    Parameter #14 [ <optional> $o = M\M_PI ]
+    Parameter #15 [ <optional> $q = 10 ]
+    Parameter #16 [ <optional> $s = NULL ]
+    Parameter #17 [ <optional> $t = [1, [2]] ]
+    Parameter #18 [ <optional> $u = 'M\\C' ]
+    Parameter #19 [ <optional> $v = -1 ]
+    Parameter #20 [ <optional> $w = false ]
+    Parameter #21 [ <optional> $x = -2 ]
+    Parameter #22 [ <optional> $z = new \M\C(1, b: 2) ]
+  }
+  - Return [ Traversable|array ]
+}
+Method [ <user> public method m ] {
+
+  - Parameters [3] {
+    Parameter #0 [ <optional> M\K $a = new self() ]
+    Parameter #1 [ <optional> int $b = self::Y ]
+    Parameter #2 [ <optional> $c = [self::Y => \M\E::A] ]
+  }
+}
+Property [ public Traversable|array $p = [] ]
+Property [ public Traversable|array|null $q = NULL ]
+iterable
+Function [ <user> function g ] {
+
+  - Parameters [5] {
+    Parameter #0 [ <optional> $f = PHP_EOL ]
+    Parameter #1 [ <optional> $j = E_ALL | E_USER_ERROR ]
+    Parameter #2 [ <optional> $l = [PHP_INT_MAX => 1] ]
+    Parameter #3 [ <optional> $n = true ]
+    Parameter #4 [ <optional> $o = NULL ]
+  }
+}
+Parameter #0 [ <optional> $a = 'a' ]
+Parameter #1 [ <optional> $b = 2 ]
+Parameter #2 [ <optional> $c = 1 ]
+Parameter #3 [ <optional> $d = 1 ]
+Parameter #4 [ <optional> $e = [1, 2] ]
+Parameter #5 [ <optional> $f = 1 ]
+Parameter #6 [ <optional> $g = '8x' ]

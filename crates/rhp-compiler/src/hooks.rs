@@ -310,6 +310,7 @@ fn compile_hook_body(
             promoted: false,
             default_thunk: None,
             default_const: None,
+            default_text: None,
         });
     }
 

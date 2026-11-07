@@ -22,7 +22,12 @@ use crate::{Host, Thrown};
 fn is_php_module(path: &[u8]) -> bool {
     use object::Object;
     use std::os::unix::ffi::OsStrExt;
-    let Ok(data) = std::fs::read(std::ffi::OsStr::from_bytes(path)) else {
+    let path = std::ffi::OsStr::from_bytes(path);
+    // Only a regular file (not a device or FIFO, which never ends).
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(data) = std::fs::read(path) else {
         return false;
     };
     let Ok(file) = object::File::parse(&*data) else {
@@ -170,5 +175,15 @@ pub(crate) fn fn_dl(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             "dl",
             "rhp cannot load php extension modules",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_device_is_not_read_as_a_module() {
+        // /dev/zero never ends: reading it whole would never return.
+        assert!(!super::is_php_module(b"/dev/zero"));
+        assert!(!super::is_php_module(b"/nonexistent/x.so"));
     }
 }

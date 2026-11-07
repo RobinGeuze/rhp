@@ -406,7 +406,41 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                         .is_some_and(|n| n.eq_ignore_ascii_case(b"Closure")))
         })
         .unwrap_or(false);
+    let found = found || {
+        let obj = deref(&args[0]);
+        matches!(obj, Value::Object(_)) && spl_inner_has_method(host, &obj, &method, 0)
+    };
     Ok(Value::Bool(found))
+}
+
+/// spl_dual_it_get_method / spl_recursive_it_get_method: an SPL outer
+/// iterator answers for the methods of its inner (or current sub-)
+/// iterator, so method_exists() finds them.
+fn spl_inner_has_method(host: &mut dyn Host, obj: &Value, method: &[u8], depth: u32) -> bool {
+    let Some(name) = host.object_class_name(obj) else {
+        return false;
+    };
+    let inner = if host.reflect_is_a(&name, b"IteratorIterator") {
+        host.object_prop(obj, b"__it")
+    } else if host.reflect_is_a(&name, b"RecursiveIteratorIterator") {
+        let level = host
+            .object_prop(obj, b"__level")
+            .map(|l| conv::to_int(&deref(&l)));
+        match (host.object_prop(obj, b"__its").map(|v| deref(&v)), level) {
+            (Some(Value::Array(a)), Some(l)) => a.get(&rhp_values::ArrayKey::Int(l)).cloned(),
+            _ => None,
+        }
+    } else {
+        return false;
+    };
+    let Some(inner @ Value::Object(_)) = inner.map(|v| deref(&v)) else {
+        return false;
+    };
+    let Ok(Some(cid)) = class_id_of(host, &inner) else {
+        return false;
+    };
+    host.class_has_method(cid, method)
+        || (depth < 64 && spl_inner_has_method(host, &inner, method, depth + 1))
 }
 
 fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

@@ -70,6 +70,14 @@ enum FnSubject {
     Method { class: ClassId, m: ResolvedMethod },
     /// An enum's engine-provided static method (`cases` / `from` / `tryFrom`).
     EnumBuiltin { class: ClassId, name: &'static str },
+    /// A first-class callable of a method that only `__call` /
+    /// `__callStatic` answers (zend_get_call_trampoline_func).
+    Trampoline {
+        cd: Rc<rhp_values::ClosureData>,
+        class: ClassId,
+        name: Vec<u8>,
+        is_static: bool,
+    },
     /// A closure object (`proto` is its body).
     Closure {
         cd: Rc<rhp_values::ClosureData>,
@@ -488,7 +496,9 @@ impl Vm {
                     _ => None,
                 };
                 Ok(match sub {
-                    Some(FnSubject::Closure { cd, .. }) => Value::Closure(cd),
+                    Some(FnSubject::Closure { cd, .. } | FnSubject::Trampoline { cd, .. }) => {
+                        Value::Closure(cd)
+                    }
                     Some(FnSubject::Method { class, m }) => {
                         let called = this.as_ref().map(|h| h.borrow().class).unwrap_or(class);
                         self.method_closure(&m, this, called)
@@ -1525,7 +1535,10 @@ impl Vm {
                         pair.push(Value::str("__invoke"));
                         w = Value::Array(pair);
                     }
-                    self.fn_subject(&w)?
+                    match self.fn_subject(&w)? {
+                        Some(sub) => Some(sub),
+                        None => self.trampoline_subject(cd, &w),
+                    }
                 }
                 None => self
                     .closures
@@ -1613,7 +1626,9 @@ impl Vm {
             FnSubject::Func(f) => Some(f.proto.clone()),
             FnSubject::Method { m, .. } => Some(m.proto.clone()),
             FnSubject::Closure { proto, .. } => Some(proto.clone()),
-            FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => None,
+            FnSubject::Builtin(_)
+            | FnSubject::EnumBuiltin { .. }
+            | FnSubject::Trampoline { .. } => None,
         }
     }
 
@@ -1624,7 +1639,9 @@ impl Vm {
             FnSubject::Func(f) => f.unit,
             FnSubject::Method { m, .. } => m.unit,
             FnSubject::Closure { cd, .. } => self.closures[cd.fnidx as usize].unit,
-            FnSubject::Builtin(_) | FnSubject::EnumBuiltin { .. } => 0,
+            FnSubject::Builtin(_)
+            | FnSubject::EnumBuiltin { .. }
+            | FnSubject::Trampoline { .. } => 0,
         }
     }
 
@@ -1713,6 +1730,12 @@ impl Vm {
         let (proto, internal) = match sub {
             FnSubject::Builtin(name) => return self.builtin_fn_info(name),
             FnSubject::EnumBuiltin { class, name } => return self.enum_builtin_info(*class, name),
+            FnSubject::Trampoline {
+                cd,
+                class,
+                name,
+                is_static,
+            } => return self.trampoline_info(cd, *class, name, *is_static),
             FnSubject::Func(f) => (f.proto.clone(), f.proto.is_internal()),
             FnSubject::Method { m, .. } => {
                 (m.proto.clone(), self.is_internal_class(m.defining_class))
@@ -2017,7 +2040,9 @@ impl Vm {
                 a.push(s(name.as_bytes()));
                 Value::Array(a)
             }
-            FnSubject::Closure { cd, .. } => Value::Closure(cd.clone()),
+            FnSubject::Closure { cd, .. } | FnSubject::Trampoline { cd, .. } => {
+                Value::Closure(cd.clone())
+            }
             FnSubject::Method { m, .. } => {
                 let mut a = PhpArray::new();
                 a.push(s(self.classes[m.defining_class as usize].name.as_bytes()));
@@ -2081,6 +2106,97 @@ impl Vm {
             }
         }
         p
+    }
+
+    /// The `[class or object, name]` a closure wraps, when only `__call`
+    /// (an object) or `__callStatic` (a class) answers it.
+    fn trampoline_subject(
+        &mut self,
+        cd: &Rc<rhp_values::ClosureData>,
+        w: &Value,
+    ) -> Option<FnSubject> {
+        let Value::Array(a) = w else { return None };
+        let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+        let [target, name] = &v[..] else { return None };
+        let (class, is_static) = match target {
+            Value::Object(h) => (h.borrow().class, false),
+            other => (
+                self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(other))
+                    .ok()?,
+                true,
+            ),
+        };
+        let magic: &[u8] = if is_static {
+            b"__callStatic"
+        } else {
+            b"__call"
+        };
+        self.lookup_method(class, magic)?;
+        Some(FnSubject::Trampoline {
+            cd: cd.clone(),
+            class,
+            name: rhp_values::conv::to_string_bytes(name),
+            is_static,
+        })
+    }
+
+    /// zend_get_call_trampoline_func's function: public, variadic
+    /// `mixed ...$arguments`, static for `__callStatic`.
+    fn trampoline_info(
+        &self,
+        cd: &Rc<rhp_values::ClosureData>,
+        cid: ClassId,
+        name: &[u8],
+        is_static: bool,
+    ) -> Value {
+        let cname = self.classes[cid as usize].name.clone();
+        let mut a = PhpArray::new();
+        put(&mut a, "ext", Value::Bool(false));
+        put(&mut a, "name", s(name));
+        put(&mut a, "short", s(name));
+        put(&mut a, "ns", s(b""));
+        put(&mut a, "internal", Value::Bool(true));
+        put(&mut a, "file", Value::Bool(false));
+        put(&mut a, "start", Value::Bool(false));
+        put(&mut a, "end", Value::Bool(false));
+        put(&mut a, "doc", Value::Bool(false));
+        put(&mut a, "returnsRef", Value::Bool(false));
+        put(&mut a, "generator", Value::Bool(false));
+        put(&mut a, "variadic", Value::Bool(true));
+        put(&mut a, "static", Value::Bool(is_static));
+        put(&mut a, "class", Value::Str(cname.clone()));
+        put(&mut a, "reflClass", Value::Str(cname.clone()));
+        put(&mut a, "scope", Value::Str(cname.clone()));
+        put(&mut a, "calledScope", Value::Str(cname));
+        put(&mut a, "vis", Value::Int(1));
+        put(
+            &mut a,
+            "modifiers",
+            Value::Int(if is_static { 17 } else { 1 }),
+        );
+        put(&mut a, "abstract", Value::Bool(false));
+        put(&mut a, "final", Value::Bool(false));
+        put(&mut a, "attrs", Value::Array(PhpArray::new()));
+        put(&mut a, "tentative", Value::Null);
+        put(&mut a, "ret", Value::Null);
+        let mut d = PhpArray::new();
+        put(&mut d, "name", s(b"arguments"));
+        put(&mut d, "pos", Value::Int(0));
+        put(&mut d, "optional", Value::Bool(true));
+        put(&mut d, "variadic", Value::Bool(true));
+        put(&mut d, "byref", Value::Bool(false));
+        put(&mut d, "promoted", Value::Bool(false));
+        put(&mut d, "hasDefault", Value::Bool(false));
+        put(&mut d, "defaultConst", Value::Null);
+        put(&mut d, "type", self.stub_type_desc("mixed", false));
+        put(&mut d, "attrs", Value::Array(PhpArray::new()));
+        let mut params = PhpArray::new();
+        params.push(Value::Array(d));
+        put(&mut a, "params", Value::Array(params));
+        put(&mut a, "nreq", Value::Int(0));
+        put(&mut a, "closure", Value::Bool(true));
+        put(&mut a, "loc", Value::Closure(cd.clone()));
+        Value::Array(a)
     }
 
     fn enum_builtin_info(&self, cid: ClassId, name: &'static str) -> Value {

@@ -903,12 +903,44 @@ impl ProtoBuilder<'_> {
                 }
                 ArrayElement::Variadic(v) => {
                     let src = self.compile_expr(v.value)?;
+                    if self.in_const_expr() {
+                        self.const_unpack_check(src);
+                    }
                     self.emit(Instr::ArrSpread { arr: dst, src });
                 }
                 ArrayElement::Missing(_) => {}
             }
         }
         Ok(dst)
+    }
+
+    /// zend_ast_add_unpacked_element: a constant expression unpacks
+    /// arrays only (`is_array($src)` or throw).
+    fn const_unpack_check(&mut self, src: Reg) {
+        let base = self.alloc_temps(1);
+        self.emit(Instr::Mov { dst: base, src });
+        let name = self.intern_name(b"is_array");
+        let fallback = self.intern_fallback(&None);
+        let ok = self.alloc_temp();
+        self.emit(Instr::Call {
+            dst: ok,
+            name,
+            base,
+            argc: 1,
+            fallback,
+            flags: rhp_bytecode::CallFlags::default(),
+        });
+        let jpos = self.code.len();
+        self.emit(Instr::Nop);
+        let k = self.intern_const(Value::str(
+            "Only arrays can be unpacked in constant expression",
+        ));
+        self.emit(Instr::ThrowError { k });
+        let after = self.here();
+        self.code[jpos] = Instr::JmpTrue {
+            cond: ok,
+            target: after,
+        };
     }
 
     /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls the

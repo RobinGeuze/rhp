@@ -128,9 +128,9 @@ auth cookies' expiry, session token and HMAC, wpdb's `{<64 hex>}`
 placeholder escape, wp-admin's clock (user settings, post lock, time-format
 previews, Site Health's times, cron's "overdue by"), the embed secret and
 share ids, `antispambot()`'s entity mix, `data-pw` and the comment
-moderation hash; in the database dump, Unix times and session tokens. The database is compared as `sqlite3 .dump` text (see
-`sqlite-dump` below), so the harness needs the `sqlite3` command when a
-request writes to it.
+moderation hash; in the database dump, Unix times and session tokens. The
+database is compared as `sqlite3 .dump` text (see `sqlite-dump` below), so
+the harness needs the `sqlite3` command when a request writes to it.
 
 The plugin needs `pdo_sqlite`. CI's setup-php installs `pdo` and
 `pdo_sqlite` with its default extensions and its `-n` shims load them, as

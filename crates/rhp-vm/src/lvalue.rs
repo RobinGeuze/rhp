@@ -2147,6 +2147,31 @@ impl Vm {
         make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
     }
 
+    /// The object a built-in ArrayIterator is backed by (its `__o`).
+    pub(crate) fn spl_array_backing(
+        &mut self,
+        h: &ObjectHandle,
+        owner: ClassId,
+    ) -> Result<Option<ObjectHandle>, Thrown> {
+        if self.class(owner).name.as_bytes() != b"ArrayIterator" {
+            return Ok(None);
+        }
+        let cx = PropCtx {
+            classes: &self.classes,
+            typed: &self.typed_refs,
+            scope: Some(owner),
+            called: Some(owner),
+            incdec: false,
+        };
+        let mut obj = Value::Object(h.clone());
+        let o = make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__o"))], &cx)?;
+        let v = o.borrow().clone();
+        Ok(match v {
+            Value::Object(o) => Some(o),
+            _ => None,
+        })
+    }
+
     /// The storage key of offset `key` of the built-in ArrayObject /
     /// ArrayIterator `h` (spl_array_get_dimension_ptr's conversion).
     pub(crate) fn spl_array_key(

@@ -3456,6 +3456,20 @@ impl Vm {
                 .spl_array_owner(&obj, b"getiterator")
                 .or_else(|| self.spl_array_owner(&obj, b"current"));
             if let Some(owner) = spl {
+                // Backed by an object: its property table (spl_array's
+                // object storage), `pos_reg` holding [object, iterator id].
+                if let Some(backing) = self.spl_array_backing(&obj, owner)? {
+                    let cls = obj.borrow().class;
+                    self.fe_iter_handle(top, pos_reg, cls);
+                    let backing = self.lazy_props_object(&backing)?;
+                    let id = rhp_values::next_ht_iter_id();
+                    backing.borrow_mut().prop_iter_set(id, 0);
+                    let mut st = PhpArray::new();
+                    st.push(Value::Object(backing));
+                    st.push(Value::Int(id as i64));
+                    self.reg_set(top, pos_reg, Value::Array(st));
+                    return Ok(());
+                }
                 // `pos_reg` holds [storage reference, position].
                 let cell = self.spl_array_storage(&obj, owner)?;
                 let cls = obj.borrow().class;
@@ -3580,7 +3594,17 @@ impl Vm {
         id: u32,
         by_ref: bool,
     ) -> Result<Option<(Value, Value)>, Thrown> {
-        let caller = self.stack[top].defining_class;
+        self.prop_iter_next_in(self.stack[top].defining_class, h, id, by_ref)
+    }
+
+    /// [`Self::prop_iter_next`] with the properties `caller` may see.
+    fn prop_iter_next_in(
+        &mut self,
+        caller: Option<ClassId>,
+        h: &ObjectHandle,
+        id: u32,
+        by_ref: bool,
+    ) -> Result<Option<(Value, Value)>, Thrown> {
         let mut b = h.borrow_mut();
         let cls = b.class;
         // A table the iterator is not on starts over (php restarts at the
@@ -3792,6 +3816,27 @@ impl Vm {
                         self.reg_set(top, pos_reg, Value::Array(st));
                     }
                     None => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
+            // An object-backed ArrayIterator (see FeResetRef): public
+            // properties only (spl_array_skip_protected).
+            if let (Some(Value::Object(o)), Some(Value::Int(id))) = (
+                st.get_index(0).map(|e| e.1.clone()),
+                st.get_index(1).map(|e| e.1.clone()),
+            ) {
+                let id = id as u32;
+                match self.prop_iter_next_in(None, &o, id, true)? {
+                    Some((k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k)?;
+                        }
+                    }
+                    _ => {
+                        o.borrow_mut().prop_iter_del(id);
+                        self.stack[top].pc = end as usize;
+                    }
                 }
                 return Ok(());
             }

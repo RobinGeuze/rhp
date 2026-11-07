@@ -10,3 +10,5 @@ mb_http_output(): Argument #1 ($encoding) must be a valid encoding, "BAD" given
 mb_http_output(): Argument #1 ($encoding) must not contain any null bytes
 array(0) {
 }
+$BF|K\x$B8l
+日本a

@@ -24,3 +24,18 @@ foreach (['BAD', "UTF-8\0x"] as $n) {
     }
 }
 var_dump(headers_list());
+// The encoder is flushed only by the final chunk; the decoder's state
+// carries over between chunks.
+mb_http_output('ISO-2022-JP');
+ob_start('mb_output_handler', 2);
+echo "\u{65e5}\u{672c}";
+echo "x";
+echo "\u{8a9e}";
+ob_end_flush();
+echo "\n";
+mb_internal_encoding('ISO-2022-JP');
+mb_http_output('UTF-8');
+ob_start('mb_output_handler', 2);
+echo "\x1b\$BF|";
+echo "K\\\x1b(Ba\n";
+ob_end_flush();

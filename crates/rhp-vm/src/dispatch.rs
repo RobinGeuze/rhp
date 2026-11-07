@@ -290,7 +290,7 @@ impl Vm {
     /// handler replaces the variable, the write still goes to that
     /// container (an object's offsetSet) and is lost for the variable.
     #[cold]
-    fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
+    pub(crate) fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
         let target = match self.cursor_root {
             CursorRoot::Cv(cv) => match self.reg_get(top, cv) {
                 Value::Null => {
@@ -1391,6 +1391,19 @@ impl Vm {
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
+                        // The last key of an assignment: read when the
+                        // write has checked the container.
+                        if key < proto.num_cvs
+                            && self.deferred_undef_key.is_none()
+                            && matches!(
+                                proto.code.get(self.stack[top].pc),
+                                Some(Instr::AssignLval { .. })
+                            )
+                        {
+                            self.deferred_undef_key = Some(key);
+                            self.cursor_steps.push(CursorStep::Key(Value::Null));
+                            continue;
+                        }
                         self.lval_undef_key(top, key)?
                     } else {
                         self.reg_get(top, key)
@@ -1526,6 +1539,9 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
+                        continue;
+                    }
                     // (After a compound assignment's FetchLvalRw raised them
                     // already, `rw_null_keys` counts them.)
                     if self.cursor_null_key && self.rw_null_keys == 0 {
@@ -3061,10 +3077,24 @@ impl Vm {
         a: Reg,
         b: Reg,
     ) -> Result<(Value, Value), Thrown> {
+        if self.stack[top].regs[a as usize].is_undef() {
+            return self.bin_operands_undef(top, dst, a, b);
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bin_operands_undef(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
         let f = &self.stack[top];
         if a != b
             && b < f.proto.num_cvs
-            && f.regs[a as usize].is_undef()
             && f.regs[b as usize].is_undef()
             && matches!(f.proto.code.get(f.pc),
                 Some(Instr::Assign { cv, src }) if *cv == a && *src == dst)

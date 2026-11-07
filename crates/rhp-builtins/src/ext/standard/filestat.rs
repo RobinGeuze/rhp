@@ -59,6 +59,14 @@ fn stat_path(
             }
             local
         }
+        Located::Wrapper(u) if crate::ext::standard::ftp_fopen_wrapper::is_ftp(&u) => {
+            return Ok(Some(crate::ext::standard::ftp_fopen_wrapper::url_stat(
+                host,
+                fname,
+                &u,
+                &Value::Null,
+            )?));
+        }
         Located::Wrapper(u) => u,
         // the plain url_stat of the whole path, or no wrapper at all
         Located::Unknown(_) => {

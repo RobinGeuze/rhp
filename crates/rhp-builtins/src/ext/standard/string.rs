@@ -2664,6 +2664,16 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(1)
         .map(|v| conv::to_string_bytes(&deref(v)))
         .unwrap_or_default();
+    let mut base = php_basename(&path);
+    if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
+        base = &base[..base.len() - suffix.len()];
+    }
+    Ok(Value::str(base.to_vec()))
+}
+
+/// `php_basename` without a suffix: the last component, trailing slashes
+/// ignored.
+pub(crate) fn php_basename(path: &[u8]) -> &[u8] {
     // drop trailing '/'
     let end = path
         .iter()
@@ -2676,11 +2686,7 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .rposition(|&b| b == b'/')
         .map(|i| i + 1)
         .unwrap_or(0);
-    let mut base = &trimmed[start..];
-    if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
-        base = &base[..base.len() - suffix.len()];
-    }
-    Ok(Value::str(base.to_vec()))
+    &trimmed[start..]
 }
 
 /// `pathinfo(path, flags=PATHINFO_ALL)` — splits a path into dirname/basename/

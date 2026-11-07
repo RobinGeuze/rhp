@@ -9,6 +9,7 @@ use rhp_values::ops::deref;
 use rhp_values::{conv, PhpArray, Value};
 
 use crate::ext::standard::filestat::arr_from_stat;
+use crate::ext::standard::ftp_fopen_wrapper as ftp;
 use crate::ext::standard::proc_open::{zpp_path, SPAWN_LOCK};
 use crate::main::php_glob::{
     GLOB_AVAILABLE, GLOB_BRACE, GLOB_ERR, GLOB_MARK, GLOB_NOCHECK, GLOB_NOESCAPE, GLOB_NOSORT,
@@ -79,6 +80,14 @@ pub(crate) fn stream_param(
 /// php's `php_stream_context_from_zval(zcontext, 0)`: with no explicit
 /// context argument the default context is fetched (allocating its resource
 /// on first use).
+/// The context argument at `idx`, else the default context.
+pub(crate) fn ctx_or_default(host: &mut dyn Host, args: &[Value], idx: usize) -> Value {
+    match args.get(idx).map(deref) {
+        Some(v @ Value::Resource(_)) => v,
+        _ => host.default_stream_context(),
+    }
+}
+
 pub(crate) fn touch_ctx(host: &mut dyn Host, args: &[Value], idx: usize) {
     if matches!(args.get(idx).map(deref), None | Some(Value::Null)) {
         host.default_stream_context();
@@ -92,7 +101,7 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 3);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+    if crate::ext::standard::http_fopen_wrapper::is_url_stream(&path) {
         return Ok(crate::ext::standard::http_fopen_wrapper::open_arg(
             host,
             "fopen",
@@ -248,7 +257,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
     crate::main::streams::clear_errno();
-    let mut opened = crate::ext::standard::http_fopen_wrapper::is_http(&path);
+    let mut opened = crate::ext::standard::http_fopen_wrapper::is_url_stream(&path);
     let data = if opened {
         match crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
@@ -602,6 +611,12 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
     touch_ctx(host, args, 3);
+    if ftp::is_ftp(&path) {
+        let ctx = ctx_or_default(host, args, 3);
+        return Ok(Value::Bool(ftp::mkdir(
+            host, "mkdir", &path, recursive, &ctx,
+        )?));
+    }
     let (scheme, _) = split_scheme(&path);
     if scheme != b"file" {
         return Ok(Value::Bool(false));
@@ -718,7 +733,7 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     crate::main::streams::clear_errno();
-    let data = if crate::ext::standard::http_fopen_wrapper::is_http(&from) {
+    let data = if crate::ext::standard::http_fopen_wrapper::is_url_stream(&from) {
         match crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
             "copy",
@@ -946,7 +961,7 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 2);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+    if crate::ext::standard::http_fopen_wrapper::is_url_stream(&path) {
         let Some(data) = crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
             "readfile",
@@ -1492,7 +1507,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 2);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
+    if crate::ext::standard::http_fopen_wrapper::is_url_stream(&url) {
         return Ok(
             match crate::ext::standard::http_fopen_wrapper::get_contents(
                 host,
@@ -1836,8 +1851,18 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         return Ok(Value::Bool(false));
     }
-    let Some(stream) = open_stream(host, "file_put_contents", &path, mode, &ctx, flags & 1 != 0)?
-    else {
+    let stream = if ftp::is_ftp(&path) {
+        crate::ext::standard::http_fopen_wrapper::open_arg(
+            host,
+            "file_put_contents",
+            &path,
+            mode,
+            args.get(3),
+        )?
+    } else {
+        open_stream(host, "file_put_contents", &path, mode, &ctx, flags & 1 != 0)?
+    };
+    let Some(stream) = stream else {
         return Ok(Value::Bool(false));
     };
     if flags & LOCK_EX != 0 {
@@ -1938,6 +1963,10 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
+    if ftp::is_ftp(&path) {
+        let ctx = ctx_or_default(host, args, 1);
+        return Ok(Value::Bool(ftp::unlink(host, "unlink", &path, &ctx)?));
+    }
     if !crate::main::fopen_wrappers::check(host, "unlink", strip_file_scheme(&path), true)? {
         return Ok(Value::Bool(false));
     }
@@ -1973,6 +2002,10 @@ pub(crate) fn os_text(e: &std::io::Error) -> String {
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "rmdir", "directory")?;
     touch_ctx(host, args, 1);
+    if ftp::is_ftp(&path) {
+        let ctx = ctx_or_default(host, args, 1);
+        return Ok(Value::Bool(ftp::rmdir(host, "rmdir", &path, &ctx)?));
+    }
     if !crate::main::fopen_wrappers::check(host, "rmdir", strip_file_scheme(&path), true)? {
         return Ok(Value::Bool(false));
     }
@@ -1998,6 +2031,16 @@ fn rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 2);
     let from_b = path_arg(args, 0);
     let to_b = path_arg(args, 1);
+    if ftp::is_ftp(&from_b) {
+        if !ftp::is_ftp(&to_b) {
+            crate::warn(host, "rename", "Cannot rename a file across wrapper types")?;
+            return Ok(Value::Bool(false));
+        }
+        let ctx = ctx_or_default(host, args, 2);
+        return Ok(Value::Bool(ftp::rename(
+            host, "rename", &from_b, &to_b, &ctx,
+        )?));
+    }
     if !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&from_b), true)?
         || !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&to_b), true)?
     {

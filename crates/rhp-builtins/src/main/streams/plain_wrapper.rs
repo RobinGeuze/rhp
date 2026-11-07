@@ -120,6 +120,9 @@ pub struct FdStream {
     /// for the code that ran them to deliver.
     pub notify: bool,
     pub(crate) events: Vec<NotifyEvent>,
+    /// An ftp:// file stream's control connection (php's `wrapperthis`),
+    /// dropped after the data socket closes.
+    pub(crate) ftp_control: Option<Box<crate::ext::standard::ftp_fopen_wrapper::Control>>,
 }
 
 /// A notification a stream operation owes its context's notifier.
@@ -273,6 +276,7 @@ impl FdStream {
             dechunk: None,
             notify: false,
             events: Vec::new(),
+            ftp_control: None,
         }
     }
 
@@ -293,6 +297,7 @@ impl FdStream {
             dechunk: None,
             notify: false,
             events: Vec::new(),
+            ftp_control: None,
         }
     }
 

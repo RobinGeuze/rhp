@@ -19,10 +19,12 @@ const STATE_ARG: u8 = 3;
 const STATE_BEFORE_VAL: u8 = 4;
 const STATE_VAL: u8 = 5;
 
-/// `url_adapt_state_ex_t` (the output rewriter's; the session one belongs
-/// to ext/session).
+/// `url_adapt_state_ex_t`: the output rewriter's, or the session's
+/// (`session`: trans-sid, which reads session.trans_sid_tags and
+/// session.trans_sid_hosts).
 #[derive(Default)]
 struct State {
+    session: bool,
     tag: Vec<u8>,
     arg: Vec<u8>,
     val: Vec<u8>,
@@ -41,11 +43,18 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
+    static SESSION_STATE: RefCell<State> = RefCell::new(State::default());
 }
 
 /// Per-request reset (RSHUTDOWN / RINIT).
 pub(crate) fn reset_state() {
     STATE.with(|s| *s.borrow_mut() = State::default());
+    SESSION_STATE.with(|s| *s.borrow_mut() = State::default());
+}
+
+fn with_state<T>(session: bool, f: impl FnOnce(&mut State) -> T) -> T {
+    let st = if session { &SESSION_STATE } else { &STATE };
+    st.with(|s| f(&mut s.borrow_mut()))
 }
 
 fn ini(name: &[u8]) -> Vec<u8> {
@@ -57,10 +66,14 @@ fn tokens(v: &[u8]) -> impl Iterator<Item = &[u8]> {
     v.split(|&c| c == b',').filter(|t| !t.is_empty())
 }
 
-/// url_rewriter.tags as php_ini_on_update_tags reads it: lowercased tag →
-/// attribute, the first entry for a tag kept.
-fn lookup_tag(tag: &[u8]) -> Option<Vec<u8>> {
-    let tags = ini(b"url_rewriter.tags");
+/// url_rewriter.tags (session.trans_sid_tags) as php_ini_on_update_tags
+/// reads it: lowercased tag → attribute, the first entry for a tag kept.
+fn lookup_tag(tag: &[u8], session: bool) -> Option<Vec<u8>> {
+    let tags = ini(if session {
+        b"session.trans_sid_tags"
+    } else {
+        b"url_rewriter.tags"
+    });
     for t in tokens(&tags) {
         let Some(eq) = t.iter().position(|&c| c == b'=') else {
             continue;
@@ -74,11 +87,14 @@ fn lookup_tag(tag: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-/// url_rewriter.hosts, lowercased.
-fn allowed_hosts() -> Vec<Vec<u8>> {
-    tokens(&ini(b"url_rewriter.hosts"))
-        .map(|t| t.to_ascii_lowercase())
-        .collect()
+/// url_rewriter.hosts (session.trans_sid_hosts), lowercased.
+fn allowed_hosts(session: bool) -> Vec<Vec<u8>> {
+    let name: &[u8] = if session {
+        b"session.trans_sid_hosts"
+    } else {
+        b"url_rewriter.hosts"
+    };
+    tokens(&ini(name)).map(|t| t.to_ascii_lowercase()).collect()
 }
 
 fn arg_separator() -> Vec<u8> {
@@ -87,7 +103,7 @@ fn arg_separator() -> Vec<u8> {
 
 /// append_modified_url: `url` with `url_app` added to its query, when it is
 /// a relative or http(s) URL to an allowed host.
-fn append_modified_url(url: &[u8], dest: &mut Vec<u8>, url_app: &[u8], sep: &[u8]) {
+fn append_modified_url(url: &[u8], dest: &mut Vec<u8>, url_app: &[u8], sep: &[u8], session: bool) {
     let Some(parts) = crate::ext::standard::url::parse(url) else {
         dest.extend_from_slice(url);
         return;
@@ -103,7 +119,7 @@ fn append_modified_url(url: &[u8], dest: &mut Vec<u8>, url_app: &[u8], sep: &[u8
         }
     }
     if let Some(h) = &parts.host {
-        if !allowed_hosts().contains(&h.to_ascii_lowercase()) {
+        if !allowed_hosts(session).contains(&h.to_ascii_lowercase()) {
             dest.extend_from_slice(url);
             return;
         }
@@ -161,7 +177,8 @@ impl State {
         }
         if self.arg.eq_ignore_ascii_case(&self.lookup_data) {
             let mut out = std::mem::take(&mut self.result);
-            append_modified_url(&self.val, &mut out, &self.url_app, &arg_separator());
+            let sep = arg_separator();
+            append_modified_url(&self.val, &mut out, &self.url_app, &sep, self.session);
             self.result = out;
         } else {
             self.result.extend_from_slice(&self.val);
@@ -187,7 +204,7 @@ impl State {
         let Some(h) = &parts.host else {
             return true;
         };
-        let allowed = allowed_hosts();
+        let allowed = allowed_hosts(self.session);
         if allowed.is_empty() && check_http_host(host, h) {
             return true;
         }
@@ -209,7 +226,7 @@ impl State {
     /// handle_tag: whether the tag is one url_rewriter.tags names.
     fn handle_tag(&mut self, tag: &[u8]) {
         self.tag = tag.to_ascii_lowercase();
-        match lookup_tag(&self.tag) {
+        match lookup_tag(&self.tag, self.session) {
             Some(attr) => {
                 self.lookup_data = attr;
                 self.tag_form = self.tag == b"form";
@@ -465,9 +482,18 @@ fn check_http_host(host: &mut dyn Host, target: &[u8]) -> bool {
 
 /// php_url_scanner_output_handler, the "URL-Rewriter" output handler.
 fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
+    handler_impl(host, cx, false)
+}
+
+/// php_url_scanner_session_handler, the session's "URL-Rewriter".
+fn session_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
+    handler_impl(host, cx, true)
+}
+
+fn handler_impl(host: &mut dyn Host, cx: &mut OutputHandlerCtx, session: bool) -> bool {
     // PHP_OUTPUT_HANDLER_FLUSH | PHP_OUTPUT_HANDLER_FINAL.
     let flush = cx.op & 0x0c != 0;
-    let mut st = STATE.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    let mut st = with_state(session, std::mem::take);
     cx.out = if !st.url_app.is_empty() {
         st.adapt(host, cx.input, flush)
     } else if !st.buf.is_empty() {
@@ -478,7 +504,7 @@ fn output_handler(host: &mut dyn Host, cx: &mut OutputHandlerCtx) -> bool {
     } else {
         cx.input.to_vec()
     };
-    STATE.with(|s| *s.borrow_mut() = st);
+    with_state(session, |s| *s = st);
     true
 }
 
@@ -507,29 +533,41 @@ fn fn_output_add_rewrite_var(host: &mut dyn Host, args: &[Value]) -> Result<Valu
     let value = conv::to_string_bytes(&deref(&args[1]));
     // What the encoded copies and the grown buffers take (php allocates
     // them all, and runs out of memory as they grow).
-    let (url_len, form_len) = STATE.with(|s| {
-        let s = s.borrow();
-        (s.url_app.len(), s.form_app.len())
-    });
+    let (url_len, form_len) = with_state(false, |s| (s.url_app.len(), s.form_app.len()));
     let need = (name.len() + value.len()) * 3 + url_len + form_len;
     if !rhp_values::mem::reserve(need) || !rhp_values::mem::reserve(need * 2) {
         return Ok(Value::Null);
     }
-    let sname = raw_url_encode(&name);
-    let svalue = raw_url_encode(&value);
-    let hname = escape_html(host, &name);
-    let hvalue = escape_html(host, &value);
-    let start = STATE.with(|s| {
-        let mut s = s.borrow_mut();
+    add_var(host, &name, &value, false)?;
+    Ok(Value::Bool(true))
+}
+
+/// php_url_scanner_add_session_var (encoded).
+pub(crate) fn add_session_var(
+    host: &mut dyn Host,
+    name: &[u8],
+    value: &[u8],
+) -> Result<(), Thrown> {
+    add_var(host, name, value, true)
+}
+
+/// php_url_scanner_add_var_impl (encoded).
+fn add_var(host: &mut dyn Host, name: &[u8], value: &[u8], session: bool) -> Result<(), Thrown> {
+    let sname = raw_url_encode(name);
+    let svalue = raw_url_encode(value);
+    let hname = escape_html(host, name);
+    let hvalue = escape_html(host, value);
+    let sep = arg_separator();
+    let start = with_state(session, |s| {
         let start = !s.active;
         if start {
             *s = State {
                 active: true,
+                session,
                 ..State::default()
             };
         }
         if !s.url_app.is_empty() {
-            let sep = arg_separator();
             s.url_app.extend_from_slice(&sep);
         }
         s.url_app.extend_from_slice(&sname);
@@ -544,19 +582,89 @@ fn fn_output_add_rewrite_var(host: &mut dyn Host, args: &[Value]) -> Result<Valu
         start
     });
     if start {
+        let func = if session {
+            session_handler
+        } else {
+            output_handler
+        };
         host.output_control(crate::host::ObCall::StartInternal {
             name: "URL-Rewriter",
-            func: output_handler,
+            func,
             chunk_size: 0,
         })?;
     }
-    Ok(Value::Bool(true))
+    Ok(())
+}
+
+/// php_url_scanner_reset_var_impl (encoded) for the session's variable:
+/// `name=…` out of url_app and its hidden input out of form_app.
+pub(crate) fn reset_session_var(host: &mut dyn Host, name: &[u8]) {
+    if with_state(true, |s| s.url_app.is_empty()) {
+        return;
+    }
+    let sname = raw_url_encode(name);
+    let hname = escape_html(host, name);
+    let sep = arg_separator();
+    with_state(true, |s| {
+        let mut url_app = sname;
+        url_app.push(b'=');
+        let mut form_app = b"<input type=\"hidden\" name=\"".to_vec();
+        form_app.extend_from_slice(&hname);
+        form_app.extend_from_slice(b"\" value=\"");
+        let Some(start) = find(&s.url_app, &url_app) else {
+            return;
+        };
+        let mut start = start;
+        let limit = s.url_app.len();
+        let mut end = start + url_app.len();
+        let mut sep_removed = false;
+        while end < limit {
+            if !sep.is_empty() && s.url_app[end..].starts_with(&sep) {
+                end += sep.len();
+                sep_removed = true;
+                break;
+            }
+            end += 1;
+        }
+        if s.url_app.len() == end - start {
+            s.url_app.clear();
+            s.form_app.clear();
+            return;
+        }
+        // The separator before it goes when none followed.
+        if !sep_removed && start >= sep.len() && s.url_app[start - sep.len()..start] == sep[..] {
+            start -= sep.len();
+        }
+        s.url_app.drain(start..end);
+        let Some(fstart) = find(&s.form_app, &form_app) else {
+            s.url_app.clear();
+            s.form_app.clear();
+            return;
+        };
+        start = fstart;
+        let limit = s.form_app.len();
+        let mut end = start + form_app.len();
+        while end < limit {
+            if s.form_app[end] == b'>' {
+                end += 1;
+                break;
+            }
+            end += 1;
+        }
+        s.form_app.drain(start..end);
+    });
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// php_url_scanner_reset_vars.
 fn fn_output_reset_rewrite_vars(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
-    STATE.with(|s| {
-        let mut s = s.borrow_mut();
+    with_state(false, |s| {
         s.form_app.clear();
         s.url_app.clear();
     });

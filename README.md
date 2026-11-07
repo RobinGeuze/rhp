@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 5,246 | 5,396 | 97.2% | Fibers 113/113; lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| Zend/tests | 5,248 | 5,396 | 97.3% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 851 | 895 | 95.1% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 22 | 117 | 18.8% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,350 | 3,880 | 86.3% | no user stream wrappers |
+| ext/standard | 3,368 | 3,880 | 86.8% | no user stream wrappers |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -71,6 +71,7 @@ passing, so the percentages are of all php-src tests.
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
 | ext/reflection | 431 | 540 | 79.8% | |
+| ext/session | 249 | 269 | 92.6% | the `files` and `user` save handlers, the three serializers and trans-sid; no upload progress (`session.upload_progress.*`) |
 | ext/simplexml | 154 | 165 | 93.3% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
 | ext/spl | 562 | 796 | 70.6% | |
@@ -79,12 +80,12 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 119 | 125 | 95.2% | `ZipArchive` on libzip |
-| ext/zlib | 132 | 161 | 82.0% | system zlib |
-| other ext/ | 3 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| ext/zlib | 132 | 161 | 82.0% | system zlib; no incremental deflate/inflate contexts |
+| other ext/ | 3 | 3,684 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **14,519** | **22,219** | **65.3%** | |
+| **total** | **14,788** | **22,219** | **66.6%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support

@@ -621,6 +621,15 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     });
     let modified = restore.is_some();
     if modified {
+        // ext/session's handlers run on the value restored, and may refuse.
+        let v = INI_STARTUP
+            .with(|m| m.borrow().get(&key).cloned())
+            .or_else(|| ini_default_value(&name).flatten())
+            .unwrap_or_default();
+        use crate::ext::session::{on_modify, Stage};
+        if let Some((false, _)) = on_modify(Some(host), "ini_restore", &name, &v, Stage::Runtime)? {
+            return Ok(Value::Null);
+        }
         crate::ext::iconv::ini_runtime_update(host, &name, "ini_restore")?;
     }
     for w in restore.flatten().unwrap_or_default() {

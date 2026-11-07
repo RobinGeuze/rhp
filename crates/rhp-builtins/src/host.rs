@@ -745,6 +745,24 @@ pub trait Host {
     fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
         None
     }
+    /// Make global `name` the reference `cell` (zend_hash_update_ind on the
+    /// symbol table; `delete` first runs zend_delete_global_variable, so
+    /// the entry moves to the end). Every frame's slot for it follows.
+    fn set_global_ref(&mut self, _name: &[u8], _cell: rhp_values::PhpRef, _delete: bool) {}
+    /// zend_delete_global_variable.
+    fn delete_global(&mut self, _name: &[u8]) {}
+    /// Define or overwrite a module's constant at run time
+    /// (REGISTER_*_CONSTANT after startup, as ext/session's `SID`).
+    fn set_module_const(&mut self, name: &[u8], value: Value) {
+        let _ = self.define_const(name, value);
+    }
+    /// register_user_shutdown_function: add the shutdown function `name`,
+    /// or replace the one registered under it in place.
+    fn register_named_shutdown(&mut self, _name: &[u8], _callback: Value) -> bool {
+        false
+    }
+    /// remove_user_shutdown_function.
+    fn remove_named_shutdown(&mut self, _name: &[u8]) {}
     /// zend_exception_error(thrown, level): report a throwable as uncaught
     /// ("Fatal error: Uncaught ..." for E_ERROR, "Warning: ..." for
     /// E_WARNING).

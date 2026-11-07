@@ -1,0 +1,21 @@
+== php
+caught sleep
+int(1)
+string(44) "617c693a313b627c613a313a7b693a303b7d637c647c"
+[2] session_start(): Unexpected end of serialized data
+[2] session_start(): Failed to decode session object. Session has been destroyed
+caught Serialization of 'Closure' is not allowed
+== php_binary
+caught sleep
+int(1)
+string(44) "0161693a313b0162613a313a7b693a303b7d01630164"
+[2] session_start(): Unexpected end of serialized data
+[2] session_start(): Failed to decode session object. Session has been destroyed
+caught Serialization of 'Closure' is not allowed
+== php_serialize
+caught sleep
+int(1)
+string(104) "613a343a7b733a313a2261223b693a313b733a313a2262223b613a313a7b693a303b7d733a313a2263223b733a313a2264223b7d"
+[2] session_start(): Unexpected end of serialized data
+[2] session_start(): Failed to decode session object. Session has been destroyed
+caught Serialization of 'Closure' is not allowed

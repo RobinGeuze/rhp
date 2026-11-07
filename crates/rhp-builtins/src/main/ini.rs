@@ -142,6 +142,9 @@ pub(crate) struct StartupDiags {
     /// Directives whose accepted startup value warned: php's handler warns
     /// again each time it restores that value.
     pub(crate) restore: HashMap<String, Vec<String>>,
+    /// The same for ext/session's handlers, which raise other levels too:
+    /// (level, message as raised at request shutdown).
+    restore_leveled: HashMap<String, Vec<(i64, String)>>,
     /// Directives `ini_set` changed this request, in order
     /// (`EG(modified_ini_directives)`).
     pub(crate) changed: Vec<String>,
@@ -406,18 +409,22 @@ const REMOVED_DIRECTIVES: &[(i64, &str, &[&str])] = &[
     ),
 ];
 
-/// The warnings raised at request end when startup values are restored
-/// over runtime changes, once.
-pub fn take_shutdown_diagnostics() -> Vec<String> {
+/// The diagnostics raised at request end when startup values are restored
+/// over runtime changes, once: (level, message).
+pub fn take_shutdown_diagnostics() -> Vec<(i64, String)> {
     STARTUP_DIAGS.with(|d| {
         let mut d = d.borrow_mut();
         let changed = std::mem::take(&mut d.changed);
-        changed
-            .iter()
-            .filter_map(|k| d.restore.get(k))
-            .flatten()
-            .cloned()
-            .collect()
+        let mut out = Vec::new();
+        for k in &changed {
+            if let Some(w) = d.restore.get(k) {
+                out.extend(w.iter().map(|m| (crate::E_WARNING, m.clone())));
+            }
+            if let Some(w) = d.restore_leveled.get(k) {
+                out.extend(w.iter().cloned());
+            }
+        }
+        out
     })
 }
 
@@ -528,6 +535,16 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         b"assert.callback",
         b"assert.exception",
     ];
+    // url_scanner_ex's session.trans_sid_* come with the standard module,
+    // after ext/session's directives.
+    let pos = if name.starts_with(b"session.trans_sid_") {
+        INI_TABLE
+            .iter()
+            .rposition(|e| e.0 == "session")
+            .map_or(pos, |p| p + 1)
+    } else {
+        pos
+    };
     let pos = match ASSERT_ORDER.iter().position(|n| *n == name) {
         Some(rank) => INI_TABLE
             .iter()
@@ -537,7 +554,46 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     };
     let key = String::from_utf8_lossy(name).into_owned();
     let mut level = crate::E_WARNING;
-    let (warnings, stored) = if v.is_empty() && STRING_UNEMPTY.contains(&name) {
+    // ext/session's handlers: each diagnostic with its own level.
+    let session =
+        crate::ext::session::on_modify(None, "", name, v, crate::ext::session::Stage::Startup)
+            .ok()
+            .flatten();
+    let mut leveled: Option<Vec<(i64, String)>> = None;
+    let (warnings, stored) = if let Some((ok, diags)) = session {
+        // zend_ini_deactivate runs the handler again on this value.
+        let again: Vec<(i64, String)> = diags
+            .iter()
+            .map(|(l, m)| {
+                if *l == crate::ext::session::QUANTITY {
+                    (crate::E_WARNING, m.clone())
+                } else {
+                    (*l, format!("PHP Request Shutdown: {m}"))
+                }
+            })
+            .collect();
+        STARTUP_DIAGS.with(|d| {
+            let mut d = d.borrow_mut();
+            if ok && !again.is_empty() {
+                d.restore_leveled.insert(key.clone(), again);
+            } else {
+                d.restore_leveled.remove(&key);
+            }
+        });
+        leveled = Some(
+            diags
+                .into_iter()
+                .map(|(l, m)| {
+                    if l == crate::ext::session::QUANTITY {
+                        (crate::E_WARNING, m)
+                    } else {
+                        (l, format!("PHP Startup: {m}"))
+                    }
+                })
+                .collect(),
+        );
+        (Vec::new(), ok.then(|| v.to_vec()))
+    } else if v.is_empty() && STRING_UNEMPTY.contains(&name) {
         // OnUpdateStringUnempty refuses an empty value: the default stays.
         (Vec::new(), None)
     } else if name == b"date.timezone" && !tz_valid(v) {
@@ -590,6 +646,10 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
         }
         d.startup
             .extend(warnings.into_iter().map(|w| (pos, key.clone(), level, w)));
+        if let Some(l) = leveled {
+            d.startup
+                .extend(l.into_iter().map(|(lv, w)| (pos, key.clone(), lv, w)));
+        }
     });
     let Some(v) = stored else {
         INI.with(|m| m.borrow_mut().remove(&key));
@@ -847,6 +907,11 @@ pub(crate) fn alter_ini_entry_ex(
         return Ok(None);
     }
     mark_changed(&String::from_utf8_lossy(name));
+    // ext/session's handlers (session.*).
+    use crate::ext::session::{on_modify, Stage};
+    if let Some((false, _)) = on_modify(Some(host), func, name, &newv, Stage::Runtime)? {
+        return Ok(None);
+    }
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
     }

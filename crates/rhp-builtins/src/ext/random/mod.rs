@@ -10,7 +10,7 @@ use rhp_values::{conv, Value};
 use crate::zend::zpp::{int_or_null_param, int_param};
 use crate::{Host, Thrown};
 
-mod engine;
+pub(crate) mod engine;
 mod randomizer;
 
 use engine::Mt;

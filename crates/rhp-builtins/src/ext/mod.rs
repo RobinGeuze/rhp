@@ -28,6 +28,7 @@ pub mod posix;
 pub mod random;
 pub mod readline;
 pub mod reflection;
+pub mod session;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
@@ -226,6 +227,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: iconv::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "session",
+            cli_only: false,
+            functions: session::register,
+            constants: session::constants,
+            prelude_php: session::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: session::reset_state,
             object_freed: None,
         },
         ModuleDef {

@@ -95,6 +95,7 @@ impl Vm {
             native_calls: Vec::new(),
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),
+            shutdown_names: Vec::new(),
             cursor_root: CursorRoot::Cv(0),
             cursor_steps: Default::default(),
             cursor_global: None,
@@ -442,10 +443,9 @@ impl Vm {
             );
         }
         self.jit_globals.insert(b"_ENV".to_vec(), Value::Array(env));
-        for lazy in [&b"_REQUEST"[..], b"_SESSION"] {
-            self.jit_globals
-                .insert(lazy.to_vec(), Value::Array(PhpArray::new()));
-        }
+        // ($_SESSION exists once ext/session creates it.)
+        self.jit_globals
+            .insert(b"_REQUEST".to_vec(), Value::Array(PhpArray::new()));
     }
 
     /// Bind a frame's superglobal CVs to their shared global cells.
@@ -662,6 +662,7 @@ impl Vm {
         // php_free_shutdown_functions is step 7: the callbacks (and their
         // object handles) live until after the destructors.
         let _registered = std::mem::take(&mut self.shutdown_functions);
+        self.shutdown_names.clear();
         // 2. destructors
         self.enter_shutdown_scope();
         if let Err(t) = self
@@ -685,6 +686,15 @@ impl Vm {
                 status = c;
             }
             self.output_end_all();
+        }
+        // zend_deactivate_modules: the modules' RSHUTDOWN (the session is
+        // written and closed).
+        self.enter_shutdown_scope();
+        if let Err(t) = builtins::request_deactivate(self) {
+            self.enter_shutdown_scope();
+            if let Some(c) = on_throw(self, t)? {
+                status = c;
+            }
         }
         // zend_deactivate closes the resource list: streams still open with
         // filters run them a last time.
@@ -890,6 +900,13 @@ impl Vm {
             self.install_prelude(&prog.classes[..prog.num_prelude_classes])
         })?;
         self.internal_classes = self.classes.len();
+        // The modules' RINIT (session.auto_start), before any user class
+        // exists.
+        // (Request startup: its diagnostics are "in Unknown on line 0".)
+        self.sapi.startup = true;
+        let activated = builtins::request_activate(self);
+        self.sapi.startup = false;
+        activated?;
         let top = self.register_decl_classes(prog, unit);
         // Preloaded functions and classes exist before the script compiles.
         self.install_preload();

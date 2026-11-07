@@ -595,6 +595,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "gmp",
     "hash",
     "iconv",
+    "session",
     "standard",
     "libxml",
     // Built in but disabled (php's CLI default; the CGI harness runs php
@@ -1036,9 +1037,13 @@ fn fn_get_defined_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value
     let is_user = |n: &[u8]| user.iter().any(|(u, _)| u == n);
     let mut flat = PhpArray::new();
     let mut cats = PhpArray::new();
+    // Constants a module registers at run time (ext/session's SID) come
+    // last in its category.
+    const RUNTIME: &[(&str, &str)] = &[("session", "SID")];
     for (module, names) in CONST_MODULES {
         let mut cat = PhpArray::new();
-        for name in names.split(' ') {
+        let late = RUNTIME.iter().filter(|(m, _)| m == module).map(|(_, n)| *n);
+        for name in names.split(' ').chain(late) {
             if is_user(name.as_bytes()) {
                 continue;
             }

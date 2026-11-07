@@ -1680,8 +1680,15 @@ Zend/tests/fibers/call-to-ctor-of-terminated-fiber.phpt
 Zend/tests/fibers/catch-then-suspend.phpt
 Zend/tests/fibers/catch.phpt
 Zend/tests/fibers/debug-backtrace.phpt
+Zend/tests/fibers/destructors_002.phpt
+Zend/tests/fibers/destructors_003.phpt
 Zend/tests/fibers/destructors_007.phpt
 Zend/tests/fibers/destructors_008.phpt
+Zend/tests/fibers/destructors_009.phpt
+Zend/tests/fibers/destructors_010.phpt
+Zend/tests/fibers/destructors_011.phpt
+Zend/tests/fibers/destructors_013.phpt
+Zend/tests/fibers/destructors_015.phpt
 Zend/tests/fibers/double-start.phpt
 Zend/tests/fibers/error-reporting.phpt
 Zend/tests/fibers/exit-in-fiber.phpt
@@ -2010,6 +2017,7 @@ Zend/tests/gc/gc_043.phpt
 Zend/tests/gc/gc_044.phpt
 Zend/tests/gc/gc_045.phpt
 Zend/tests/gc/gc_046.phpt
+Zend/tests/gc/gc_048.phpt
 Zend/tests/gc/gc_049.phpt
 Zend/tests/gc/gc_050.phpt
 Zend/tests/gc_051.phpt
@@ -9442,6 +9450,7 @@ ext/spl/tests/bug79432.phpt
 ext/spl/tests/bug80111.phpt
 ext/spl/tests/bug80663.phpt
 ext/spl/tests/bug80724.phpt
+ext/spl/tests/bug81587.phpt
 ext/spl/tests/bug81992.phpt
 ext/spl/tests/class_implements_basic.phpt
 ext/spl/tests/class_implements_basic2.phpt
@@ -9478,6 +9487,7 @@ ext/spl/tests/fixedarray_024.phpt
 ext/spl/tests/gh10248.phpt
 ext/spl/tests/gh11338.phpt
 ext/spl/tests/gh11972.phpt
+ext/spl/tests/gh12721.phpt
 ext/spl/tests/gh13531.phpt
 ext/spl/tests/gh13685.phpt
 ext/spl/tests/gh14290.phpt

@@ -465,6 +465,20 @@ impl Vm {
             let j = g.eph[e].v as usize;
             g.nodes[j].rc -= 1;
         }
+        if std::env::var_os("RHP_GC_DEBUG").is_some() {
+            for n in &g.nodes {
+                if let Some(v) = n.n.upgrade() {
+                    let what = match &v {
+                        Value::Object(h) => format!("obj {} #{}", String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()), h.borrow().id),
+                        Value::Array(_) => "array".into(),
+                        Value::Ref(_) => "ref".into(),
+                        Value::Closure(c) => format!("closure #{}", c.id),
+                        _ => "?".into(),
+                    };
+                    eprintln!("gc node {what} rc={} strong={}", n.rc, n.n.strong() - 1);
+                }
+            }
+        }
         // gc_scan_roots: whatever a node with outside references reaches
         // is black, the rest white.
         let mut stack: Vec<u32> = (0..g.nodes.len() as u32)

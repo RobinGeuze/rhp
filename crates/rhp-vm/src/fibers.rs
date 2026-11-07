@@ -61,6 +61,7 @@ enum Status {
 pub(crate) struct ExecCtx {
     stack: Vec<Frame>,
     native_calls: Vec<NativeCall>,
+    fiber_call_args: Vec<*const [Value]>,
     gen_stack: Vec<u32>,
     yield_out: Option<(Value, Value, Reg)>,
     magic_fetch: (usize, builtins::MagicFetch),
@@ -90,6 +91,10 @@ pub(crate) struct FiberData {
     args: Vec<Value>,
     named: Vec<(PhpStr, Value)>,
     result: Value,
+    /// fiber_execute holds the callable and the arguments on the fiber's
+    /// stack (until the callable returns): the cycle collector counts
+    /// them once more.
+    executing: bool,
     /// The coroutine, while not running.
     co: Option<Co>,
     /// The fiber's own context while it does not run; the resumer's while
@@ -154,6 +159,7 @@ fn cell_of(h: &ObjectHandle) -> Rc<FiberCell> {
         args: Vec::new(),
         named: Vec::new(),
         result: Value::Null,
+        executing: false,
         co: None,
         ctx: None,
         yielder: std::ptr::null(),
@@ -345,6 +351,7 @@ impl Vm {
         let ctx = ExecCtx {
             stack: vec![entry_frame()],
             native_calls: Vec::new(),
+            fiber_call_args: Vec::new(),
             gen_stack: Vec::new(),
             yield_out: None,
             magic_fetch: (0, builtins::MagicFetch::default()),
@@ -373,6 +380,7 @@ impl Vm {
         use std::mem::swap;
         swap(&mut self.stack, &mut c.stack);
         swap(&mut self.native_calls, &mut c.native_calls);
+        swap(&mut self.fiber_call_args, &mut c.fiber_call_args);
         swap(&mut self.gen_stack, &mut c.gen_stack);
         swap(&mut self.yield_out, &mut c.yield_out);
         swap(&mut self.magic_fetch, &mut c.magic_fetch);
@@ -457,14 +465,40 @@ impl Vm {
             d.yielder = y;
             (
                 d.callable.clone(),
-                std::mem::take(&mut d.args),
+                d.args.clone(),
                 std::mem::take(&mut d.named),
             )
         };
-        let r = builtins::Host::call_callable_named(self, &callable, &args, named);
-        drop(args);
+        let r = match &callable {
+            // A closure runs straight from here, so what this frame holds
+            // is all the fiber's stack holds besides its frames.
+            Value::Closure(cd) if cd.wrapped.is_none() && named.is_empty() => {
+                cell.borrow_mut().executing = true;
+                let callee = crate::calls::Callee::Closure(cd.clone());
+                let r = self.callee_by_ref_args(&callee, args.clone());
+                drop(callee);
+                match r {
+                    Ok(bound) => {
+                        let old = std::mem::replace(&mut cell.borrow_mut().args, bound.clone());
+                        drop(old);
+                        drop(args);
+                        self.run_closure_sync(cd, crate::calls::Args::Slice(&bound), None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => builtins::Host::call_callable_named(self, &callable, &args, named),
+        };
         // php drops the callable once it returned.
-        cell.borrow_mut().callable = Value::Undef;
+        let old = {
+            let mut d = cell.borrow_mut();
+            d.executing = false;
+            (
+                std::mem::replace(&mut d.callable, Value::Undef),
+                std::mem::take(&mut d.args),
+            )
+        };
+        drop(old);
         drop(callable);
         match r {
             Ok(v) => {
@@ -587,11 +621,25 @@ pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
     out.push(d.callable.clone());
     out.push(d.result.clone());
     out.extend(d.args.iter().cloned());
+    if d.executing {
+        out.push(d.callable.clone());
+        out.extend(d.args.iter().cloned());
+    }
     out.extend(d.named.iter().map(|(_, v)| v.clone()));
     if d.status == Status::Suspended {
         if let Some(ctx) = &d.ctx {
             for f in &ctx.stack {
                 f.gc_children(out);
+            }
+            // The arguments of the builtin calls the fiber is suspended in.
+            for n in &ctx.native_calls {
+                // SAFETY: see `NativeCall::args`; the calls are suspended
+                // with the fiber, so their argument vectors are alive.
+                out.extend(unsafe { &*n.args }.iter().cloned());
+            }
+            for &a in &ctx.fiber_call_args {
+                // SAFETY: as above (`Vm::fiber_call_args`).
+                out.extend(unsafe { &*a }.iter().cloned());
             }
         }
     }

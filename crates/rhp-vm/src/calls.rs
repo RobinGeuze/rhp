@@ -1654,7 +1654,7 @@ impl Vm {
     }
 
     /// [`Vm::wrap_by_ref_args`] for a resolved callee.
-    fn callee_by_ref_args(
+    pub(crate) fn callee_by_ref_args(
         &mut self,
         callee: &Callee,
         args: Vec<Value>,
@@ -2512,10 +2512,19 @@ impl Vm {
                     .contains(rhp_bytecode::ProtoFlags::SHUTDOWN_SCOPE)
         };
         if frameless || !(user || engine_called()) {
+            // Inside a fiber, the call's arguments are listed for the cycle
+            // collector (see `NativeCall::args` for why the pointer is valid).
+            let in_fiber = self.active_fiber.is_some();
+            if in_fiber {
+                self.fiber_call_args.push(args.as_slice() as *const [Value]);
+            }
             let r = match zpp_error {
                 Some(e) => Err(e),
                 None => self.run_builtin_fn(builtin, &args, dynamic),
             };
+            if in_fiber {
+                self.fiber_call_args.pop();
+            }
             self.zpp_fcc = None;
             // ZEND_ARRAY_KEY_EXISTS: zend_illegal_array_offset_access.
             let r = match r {

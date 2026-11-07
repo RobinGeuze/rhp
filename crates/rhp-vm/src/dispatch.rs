@@ -14,7 +14,7 @@ use rhp_values::{
 };
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
-use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
+use crate::errors::{FinallyCont, UnwindResult};
 use crate::generators::GenStatus;
 use crate::lvalue::StaticOp;
 use crate::lvalue::{
@@ -1923,7 +1923,7 @@ impl Vm {
                         Some(FinallyCont::Rethrow(t)) => return Err(t),
                         Some(FinallyCont::Return(v)) => {
                             // An outer finally still has to run first.
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::Return(v));
                                 self.stack[top].pc = f2 as usize;
                             } else if let Some(done) = self.do_return(v) {
@@ -1931,7 +1931,7 @@ impl Vm {
                             }
                         }
                         Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
                                 self.stack[top].pc = f2 as usize;
                             } else {
@@ -1963,8 +1963,7 @@ impl Vm {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
                     }
                 }
@@ -1972,14 +1971,12 @@ impl Vm {
                     // the notice comes with the return, after the finally
                     let v = self.ret_ref_checked(top, &proto, src, kind)?;
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
                     self.jump_through_finally(top, &proto, pc, target);
                 }
 

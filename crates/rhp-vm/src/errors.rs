@@ -1172,39 +1172,37 @@ impl Vm {
                     self.reg_set(top, dst, Value::Null);
                 }
             }
-            let in_try = |r: &&rhp_bytecode::ExRegion| throw_pc >= r.start && throw_pc < r.end;
-            let handler = proto.exception_table.iter().find(in_try).cloned();
-            // Thrown from inside a running finally block and not handled
-            // within it: the exception (or return) that block was finishing
-            // is discarded, and a pending exception becomes the innermost
+            // zend_dispatch_try_catch_finally_helper: the regions around the
+            // throw point, innermost first (the table lists inner regions
+            // before outer ones). A try that does not handle it passes it
+            // on; a running finally block it leaves discards what that block
+            // was finishing, and a pending exception becomes the innermost
             // `previous` of the new one (zend_exception_set_previous).
-            let in_finally = proto.exception_table.iter().filter(|r| {
-                r.finally
-                    .is_some_and(|f| throw_pc >= f && throw_pc <= r.finally_end)
-            });
-            for f in in_finally {
-                let fin = f.finally.unwrap_or(0);
-                let handled_inside = handler
-                    .as_ref()
-                    .is_some_and(|h| h.start >= fin && h.end <= f.finally_end);
-                if !handled_inside {
-                    let pend = &mut self.stack[top].pending;
-                    if let Some(i) = pend.iter().position(|(k, _)| *k == fin) {
-                        if let (_, FinallyCont::Rethrow(prev)) = pend.remove(i) {
-                            self.chain_previous(&thrown, prev);
-                        }
-                    }
-                }
-            }
-            // The innermost try first; one whose catches do not match and
-            // that has no finally passes the exception to the next one out.
             let regions: Vec<rhp_bytecode::ExRegion> = proto
                 .exception_table
                 .iter()
-                .filter(in_try)
+                .filter(|r| {
+                    (throw_pc >= r.start && throw_pc < r.end)
+                        || r.finally
+                            .is_some_and(|f| throw_pc >= f && throw_pc < r.finally_end)
+                })
                 .cloned()
                 .collect();
             for region in regions {
+                if !(throw_pc >= region.start && throw_pc < region.end) {
+                    let fin = region.finally.unwrap_or(0);
+                    let pend = &mut self.stack[top].pending;
+                    if let Some(i) = pend.iter().position(|(k, _)| *k == fin) {
+                        if let (_, FinallyCont::Rethrow(prev)) = pend.remove(i) {
+                            if crate::fibers::is_graceful_exit(&thrown) {
+                                drop(prev);
+                            } else {
+                                self.chain_previous(&thrown, prev);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if self.free_try_temps(top, region.temps) && !self.destructibles.is_empty() {
                     // Destructed as they are freed, before the handler.
                     match self.collect_released() {
@@ -1320,19 +1318,39 @@ impl Vm {
         pend.push((fin, cont));
     }
 
-    /// A `return`/`break` leaving the finally blocks that contain `pc`
-    /// discards whatever those blocks were finishing.
-    pub(crate) fn drop_left_finallies(&mut self, top: usize, proto: &FunctionProto, pc: u32) {
-        if self.stack[top].pending.is_empty() {
-            return;
-        }
+    /// zend_handle_loops_and_finally for a `return` (`target` None) or a
+    /// jump to `target` at `pc`: walking out innermost first, each running
+    /// finally block it leaves discards what it was finishing
+    /// (ZEND_DISCARD_EXCEPTION) until a try whose finally must run first
+    /// (ZEND_FAST_CALL), which is returned; the walk goes on when that block
+    /// ends.
+    pub(crate) fn leave_finallies(
+        &mut self,
+        top: usize,
+        proto: &FunctionProto,
+        pc: u32,
+        target: Option<u32>,
+    ) -> Option<u32> {
         for r in &proto.exception_table {
-            if let Some(f) = r.finally {
-                if pc >= f && pc <= r.finally_end {
-                    self.stack[top].pending.retain(|(k, _)| *k != f);
+            let Some(f) = r.finally else {
+                continue;
+            };
+            let in_try = |p: u32| p >= r.start && p < r.end;
+            let in_body = |p: u32| p >= f && p < r.finally_end;
+            if in_try(pc) {
+                if target.is_some_and(in_try) {
+                    return None;
                 }
+                return Some(f);
+            }
+            if in_body(pc) {
+                if target.is_some_and(in_body) {
+                    return None;
+                }
+                self.stack[top].pending.retain(|(k, _)| *k != f);
             }
         }
+        None
     }
 
     /// Jump to `target`, first running the innermost enclosing finally that
@@ -1344,7 +1362,7 @@ impl Vm {
         pc: u32,
         target: u32,
     ) {
-        if let Some(f) = enclosing_finally(proto, pc, Some(target)) {
+        if let Some(f) = self.leave_finallies(top, proto, pc, Some(target)) {
             self.push_pending(top, f, FinallyCont::Jump(target));
             self.stack[top].pc = f as usize;
         } else {
@@ -1353,7 +1371,9 @@ impl Vm {
     }
 
     /// zend_exception_set_previous: append `prev` at the end of `thrown`'s
-    /// `previous` chain, unless it is already part of it (no cycles).
+    /// `previous` chain. It is dropped instead when it is `thrown` itself,
+    /// or when its own chain reaches `thrown` or a link of `thrown`'s chain
+    /// walked so far (no cycles).
     pub(crate) fn chain_previous(&self, thrown: &Thrown, prev: Thrown) {
         let (Thrown::Object(ex), Thrown::Object(add)) = (thrown, &prev) else {
             return;
@@ -1370,16 +1390,15 @@ impl Vm {
             Some(Value::Object(p)) => Some(p),
             _ => None,
         };
-        // `add`'s own chain must not already contain `ex`.
-        let mut anc = previous_of(add);
-        while let Some(a) = anc {
-            if Rc::ptr_eq(&a, ex) {
-                return;
-            }
-            anc = previous_of(&a);
-        }
         let mut cur = ex.clone();
         loop {
+            let mut anc = previous_of(add);
+            while let Some(a) = anc {
+                if Rc::ptr_eq(&a, &cur) {
+                    return;
+                }
+                anc = previous_of(&a);
+            }
             match previous_of(&cur) {
                 None => {
                     let key = self.declared_prop_key(&cur, b"previous");
@@ -1535,20 +1554,6 @@ pub(crate) fn display_errors_mode(v: &[u8]) -> DisplayErrors {
             _ => DisplayErrors::Stdout,
         },
     }
-}
-
-/// The innermost try/catch with a `finally` whose protected range holds `pc`
-/// (and, for a jump, does not hold `target`): its finally block's start pc.
-pub(crate) fn enclosing_finally(
-    proto: &FunctionProto,
-    pc: u32,
-    target: Option<u32>,
-) -> Option<u32> {
-    proto.exception_table.iter().find_map(|r| {
-        let f = r.finally?;
-        let holds = |p: u32| p >= r.start && p < r.end;
-        (holds(pc) && !target.is_some_and(holds)).then_some(f)
-    })
 }
 
 /// The current line of frame `f`.

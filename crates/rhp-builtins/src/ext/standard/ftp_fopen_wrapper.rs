@@ -287,8 +287,11 @@ fn fopen_connect(op: &mut Op, path: &[u8]) -> Result<Option<Connected>, Thrown> 
     let has_cntrl = |v: &[u8]| v.iter().any(|c| c.is_ascii_control());
     match &resource.user {
         Some(u) => {
-            let u = c_str(&crate::main::php_variables::raw_url_decode(u)).to_vec();
-            if has_cntrl(&u) {
+            // the whole decoded value is checked (a NUL too), then used
+            // as a C string
+            let d = crate::main::php_variables::raw_url_decode(u);
+            let u = c_str(&d).to_vec();
+            if has_cntrl(&d) {
                 op.log_error(format!("Invalid login {}", String::from_utf8_lossy(&u)));
                 return Ok(None);
             }
@@ -305,8 +308,9 @@ fn fopen_connect(op: &mut Op, path: &[u8]) -> Result<Option<Connected>, Thrown> 
         let mut cmd = b"PASS ".to_vec();
         match &resource.pass {
             Some(p) => {
-                let p = c_str(&crate::main::php_variables::raw_url_decode(p)).to_vec();
-                if has_cntrl(&p) {
+                let d = crate::main::php_variables::raw_url_decode(p);
+                let p = c_str(&d).to_vec();
+                if has_cntrl(&d) {
                     op.log_error(format!("Invalid password {}", String::from_utf8_lossy(&p)));
                     return Ok(None);
                 }

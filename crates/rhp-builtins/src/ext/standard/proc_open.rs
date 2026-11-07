@@ -720,6 +720,8 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
 
     let mut descs: Vec<Desc> = Vec::new();
+    // The one PTY every "pty" descriptor shares (master, slave).
+    let mut pty: Option<(OwnedFd, OwnedFd)> = None;
     let mut kinds: Vec<DescKind> = Vec::new();
     for (k, item) in spec.iter() {
         let index =
@@ -848,11 +850,44 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         }
                         (unsafe { OwnedFd::from_raw_fd(fd) }, None, DescKind::Std)
                     }
+                    // set_proc_descriptor_to_pty: the child gets the slave
+                    // end, $pipes the master end of the same PTY.
                     b"pty" => {
-                        return Err(Thrown::unsupported(
-                            "proc_open",
-                            "pty descriptors are not supported",
-                        ))
+                        if pty.is_none() {
+                            let (mut m, mut sl) = (-1, -1);
+                            // SAFETY: openpty fills two fds we then own.
+                            let r = unsafe {
+                                libc::openpty(
+                                    &mut m,
+                                    &mut sl,
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                )
+                            };
+                            if r != 0 {
+                                let e =
+                                    crate::main::streams::strerror(crate::main::streams::errno());
+                                crate::warn(
+                                    host,
+                                    "proc_open",
+                                    &format!("Could not open PTY (pseudoterminal): {e}"),
+                                )?;
+                                return Ok(Value::Bool(false));
+                            }
+                            // SAFETY: both fds were just opened and are ours.
+                            pty = Some(unsafe {
+                                (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(sl))
+                            });
+                        }
+                        let (m, sl) = pty
+                            .as_ref()
+                            .map(|(m, s)| (m.as_raw_fd(), s.as_raw_fd()))
+                            .unwrap_or((-1, -1));
+                        let (Some(child), Some(parent)) = (dup_fd(sl), dup_fd(m)) else {
+                            return Ok(Value::Bool(false));
+                        };
+                        (child, Some(parent), DescKind::Pipe)
                     }
                     _ => {
                         let msg = [ty.as_slice(), b" is not a valid descriptor spec/mode"].concat();

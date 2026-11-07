@@ -3580,7 +3580,9 @@ Zend/tests/offsets/object_container_offset_behaviour.phpt
 Zend/tests/offsets/reference_containers_appended.phpt
 Zend/tests/offsets/runtime_compile_time_offset_access.phpt
 Zend/tests/offsets/string_container_offset_behaviour.phpt
+Zend/tests/oom_SplFixedArray___unserialize.phpt
 Zend/tests/oom_SplFixedArray_fromArray_001.phpt
+Zend/tests/oom_SplFixedArray_fromArray_002.phpt
 Zend/tests/oom_after_main_script.phpt
 Zend/tests/oom_array_fill_001.phpt
 Zend/tests/oom_array_fill_002.phpt

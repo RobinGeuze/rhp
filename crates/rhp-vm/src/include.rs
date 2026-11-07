@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use rhp_builtins::{self as builtins, Host};
 use rhp_bytecode::{FunctionProto, IncludeKind, Program, Reg};
-use rhp_values::{conv, Thrown, Value};
+use rhp_values::{Thrown, Value};
 
 use crate::errors::UnwindResult;
 use crate::{ini_bool, opcache, Frame, UnitBase, UnitFn, UnitId, Vm};
@@ -94,7 +94,13 @@ impl Vm {
     /// `eval($code)`: compile the PHP source at runtime and run it in the current
     /// variable scope (`top`). Returns the script's return value (Null if none).
     pub(crate) fn do_eval(&mut self, top: usize, src: Reg) -> Result<Value, Thrown> {
-        let code = conv::to_string_bytes(&self.reg_r(top, src)?);
+        // zval_try_get_string: __toString for an object, its exception or
+        // "could not be converted" Error.
+        let v = self.reg_r(top, src)?;
+        let code = match &v {
+            Value::Str(s) => s.as_bytes().to_vec(),
+            v => self.to_string_vm(v)?,
+        };
         // eval() code is already in PHP mode; prepend an open tag so the parser
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();

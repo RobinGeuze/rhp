@@ -297,6 +297,9 @@ pub struct Vm {
     // An undefined variable assigned below a `__get` property: php reads
     // it (and warns) after fetching the container.
     deferred_undef_src: Option<Reg>,
+    // A compound assignment's operator left its operands for the
+    // `AssignLval` to free once the store is done (`free_bin_operands`).
+    compound_free: Option<(Reg, Reg)>,
     // The typed property the open cursor's leaf is, as the last
     // `cursor_through_check` found it.
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,

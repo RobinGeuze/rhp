@@ -638,12 +638,8 @@ impl Vm {
             }
             let instr = proto.code[pc];
 
-            // Run destructors of objects the program has just released (a
-            // compound assignment's operator frees its operand only once
-            // the store is done: ZEND_ASSIGN_OBJ_OP & co. free OP_DATA last).
-            if self.dtor_check
-                && !(matches!(instr, Instr::AssignLval { .. }) && compound_op(&proto.code, pc))
-            {
+            // Run destructors of objects the program has just released.
+            if self.dtor_check {
                 self.dtor_check = false;
                 if self.filtered_streams > 0 {
                     // A filtered stream's last reference went away: its
@@ -835,15 +831,13 @@ impl Vm {
                         Value::Float(f) => f.is_nan(),
                         _ => false,
                     };
-                    let v = if slow(&x) || slow(&y) {
+                    if slow(&x) || slow(&y) {
                         let v = self.concat_object(&x, &y)?;
-                        self.free_tmp(top, proto.num_cvs, a);
-                        self.free_tmp(top, proto.num_cvs, b);
-                        v
+                        drop((x, y));
+                        self.free_bin_operands(top, dst, a, b, v)?;
                     } else {
-                        ops::concat(&x, &y)
-                    };
-                    self.reg_set(top, dst, v);
+                        self.reg_set(top, dst, ops::concat(&x, &y));
+                    }
                 }
 
                 Instr::Neg { dst, a } => {
@@ -1538,6 +1532,7 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    let operands = self.compound_free.take();
                     // (After a compound assignment's FetchLvalRw raised them
                     // already, `rw_null_keys` counts them.)
                     if self.cursor_null_key && self.rw_null_keys == 0 {
@@ -1591,6 +1586,10 @@ impl Vm {
                         r
                     };
                     self.cursor_release();
+                    if let Some((a, b)) = operands {
+                        self.free_tmp(top, proto.num_cvs, a);
+                        self.free_tmp(top, proto.num_cvs, b);
+                    }
                     r?;
                 }
                 Instr::AssignLvalRef { src } => {
@@ -3065,19 +3064,17 @@ impl Vm {
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
         let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
-        let v = if matches!(x, Value::Int(_) | Value::Float(_))
+        if matches!(x, Value::Int(_) | Value::Float(_))
             && matches!(y, Value::Int(_) | Value::Float(_))
         {
-            f(&x, &y)?
+            let v = f(&x, &y)?;
+            self.reg_set(top, dst, v);
+            Ok(())
         } else {
             let v = self.bin_slow(op, f, &x, &y)?;
-            let n = self.stack[top].proto.num_cvs;
-            self.free_tmp(top, n, a);
-            self.free_tmp(top, n, b);
-            v
-        };
-        self.reg_set(top, dst, v);
-        Ok(())
+            drop((x, y));
+            self.free_bin_operands(top, dst, a, b, v)
+        }
     }
 
     /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
@@ -3086,7 +3083,55 @@ impl Vm {
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
         let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
         let v = self.long_op(op, &x, &y)?;
+        drop((x, y));
+        self.free_bin_operands(top, dst, a, b, v)
+    }
+
+    /// Store a binary operator's result `v` and free the temporaries it
+    /// consumed (FREE_OP). A compound assignment's operands go only after
+    /// its store, as php frees OP_DATA last: an `AssignLval` frees them
+    /// (`compound_free`), and a variable's `Assign` runs here first.
+    #[inline(never)]
+    fn free_bin_operands(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        v: Value,
+    ) -> Result<(), Thrown> {
         let n = self.stack[top].proto.num_cvs;
+        let held = |vm: &Self, r: Reg| {
+            r >= n
+                && matches!(
+                    vm.stack[top].regs[r as usize],
+                    Value::Object(_) | Value::Array(_) | Value::Closure(_)
+                )
+        };
+        if held(self, a) || held(self, b) {
+            let pc = self.stack[top].pc;
+            match self.stack[top].proto.code.get(pc).copied() {
+                Some(Instr::AssignLval { src, dst: d }) if src == dst && d == dst => {
+                    self.reg_set(top, dst, v);
+                    self.compound_free = Some((a, b));
+                    return Ok(());
+                }
+                Some(Instr::Assign { cv, src }) if src == dst && cv == a => {
+                    self.reg_set(top, dst, v.clone());
+                    self.stack[top].pc = pc + 1;
+                    if self.typed_refs.is_empty()
+                        || !matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+                    {
+                        self.cv_assign_fast(top, cv, v);
+                    } else {
+                        self.assign_maybe_typed(top, cv, dst, v)?;
+                    }
+                    self.free_tmp(top, n, b);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         self.free_tmp(top, n, a);
         self.free_tmp(top, n, b);
         self.reg_set(top, dst, v);
@@ -4165,27 +4210,6 @@ pub(crate) fn cell_define(cell: &RefCell<Value>) {
 /// A value with nothing to drop: overwriting it needs no drop glue and
 /// never releases an object or array.
 #[inline(always)]
-/// Whether the instruction before `pc` is a compound assignment's operator
-/// (its `AssignLval` comes next).
-fn compound_op(code: &[Instr], pc: usize) -> bool {
-    pc > 0
-        && matches!(
-            code[pc - 1],
-            Instr::Add { .. }
-                | Instr::Sub { .. }
-                | Instr::Mul { .. }
-                | Instr::Div { .. }
-                | Instr::Mod { .. }
-                | Instr::Pow { .. }
-                | Instr::BitAnd { .. }
-                | Instr::BitOr { .. }
-                | Instr::BitXor { .. }
-                | Instr::Shl { .. }
-                | Instr::Shr { .. }
-                | Instr::Concat { .. }
-        )
-}
-
 fn is_scalar(v: &Value) -> bool {
     matches!(
         v,

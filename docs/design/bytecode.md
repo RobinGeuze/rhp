@@ -528,8 +528,9 @@ RetNull     {}                                    return Null
    holding an object or array (binary operators and concatenation past
    their scalar fast paths, `(string)`, property and dimension reads)
    clears it (`Vm::free_tmp`), so its destructor runs before the next
-   instruction, reported at this one; a compound assignment's operand goes
-   after its `AssignLval`, as php frees OP_DATA last
+   instruction, reported at this one; a compound assignment's operands go
+   after its store, as php frees OP_DATA last (`AssignLval` frees them; a
+   variable's `Assign` runs inside the operator)
 -- php's live ranges, approximated: an exception caught by a try frees the
    try body's temporaries (`ExRegion::temps` up), and one leaving a frame
    frees the frame's, their destructors running (chained) before the

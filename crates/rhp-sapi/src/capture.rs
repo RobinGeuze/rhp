@@ -34,6 +34,7 @@ pub struct Captured {
 pub struct CaptureSapi {
     name: Rc<str>,
     ini: Vec<(&'static str, &'static str)>,
+    entries: Vec<(&'static str, &'static str)>,
     stores_headers: bool,
     initial_code: i64,
     sink: Rc<RefCell<Captured>>,
@@ -45,6 +46,7 @@ impl CaptureSapi {
         CaptureSapi {
             name: CliSapi.name().into(),
             ini: CliSapi.ini_defaults(),
+            entries: CliSapi.ini_entries(),
             stores_headers: CliSapi.stores_headers(),
             initial_code: CliSapi.initial_response_code(),
             sink: Rc::default(),
@@ -56,6 +58,7 @@ impl CaptureSapi {
         CaptureSapi {
             name: name.into(),
             ini: Vec::new(),
+            entries: Vec::new(),
             stores_headers: true,
             initial_code: 200,
             sink: Rc::default(),
@@ -82,6 +85,10 @@ impl Sapi for CaptureSapi {
 
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
         self.ini.clone()
+    }
+
+    fn ini_entries(&self) -> Vec<(&'static str, &'static str)> {
+        self.entries.clone()
     }
 
     fn stores_headers(&self) -> bool {

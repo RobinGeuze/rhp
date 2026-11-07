@@ -2613,11 +2613,28 @@ fn sort_by_ref(
     if !dup && !matches!(&*g, Value::Array(a) if a.data_ptr() == sorted) {
         return true;
     }
-    // An array_walk over it goes on from the same position (zend_hash_sort
-    // keeps iterator positions; php_usort's zend_array_dup copies them).
+    // An array_walk or foreach by reference over it goes on from the same
+    // position. zend_hash_sort drops holes: a packed table (and php_usort's
+    // zend_array_dup copy) through zend_hash_rehash, which moves iterators
+    // to the next element; a hash's holes go without moving them.
     if let Value::Array(old) = &mut *g {
         if old.has_iters() {
+            let moved: Vec<(u32, usize)> = if old.is_packed() || dup {
+                let d = old.data();
+                old.iters()
+                    .into_iter()
+                    .map(|(id, p)| {
+                        let before = (0..p.min(d.used())).filter(|&i| d.at(i).is_some());
+                        (id, before.count())
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             old.make_mut().move_iters_to(out.make_mut());
+            for (id, p) in moved {
+                out.make_mut().iter_add(id, p);
+            }
         }
     }
     *g = Value::Array(out);

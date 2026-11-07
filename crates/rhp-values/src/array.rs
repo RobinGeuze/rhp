@@ -56,6 +56,14 @@ impl Bucket {
     }
 }
 
+// The block layouts below assume these sizes (and alignment 8).
+const _: () = assert!(
+    std::mem::size_of::<Bucket>() == 32
+        && std::mem::size_of::<Value>() == 16
+        && std::mem::align_of::<Bucket>() <= 8
+        && std::mem::align_of::<Value>() <= 8
+);
+
 /// A read view of the table.
 enum View<'a> {
     /// Values by position (`len()` is nNumUsed).

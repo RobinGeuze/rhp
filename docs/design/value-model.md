@@ -312,9 +312,12 @@ on an element, and iterators on a hole move to the next element.
 `array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`) and
 moves it to the next element before each call (`walk_step`, php's
 `zend_hash_move_forward_ex`), where foreach by reference moves its iterator
-to the next position (`iter_step`, holes included); it is copied along with the array, so the walk survives a copy-on-write
+to the next position (`iter_step`, holes included). The iterator is
+copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked
-from its internal pointer. The sorts keep iterator positions, and
+from its internal pointer. The sorts drop holes as `zend_hash_sort` does:
+a packed table (and usort's copy) moves its iterators to the next element
+as `zend_hash_rehash` does, a hash keeps their positions; and
 `array_splice` moves them the way `php_splice` does (`splice_iterators`,
 walking the input's positions, holes included).
 

@@ -395,7 +395,7 @@ disciplines compose: object levels share, array levels COW.
 // in assign_path(slot: &mut Value, steps, value)
 (Value::Object(handle), CursorStep::Prop(name)) => {
     let mut od = handle.borrow_mut();
-    let child = od.properties.entry(name.clone()).or_insert(Value::Null);
+    let child = od.props_mut().get_or_insert_null(name.clone());
     assign_path(child, rest, value)        // SAME recursion for the tail
 }
 (Value::Null, CursorStep::Prop(_))  => Err(Thrown::error("Error","Attempt to assign property on null")),
@@ -499,7 +499,7 @@ never a second source of semantics.
   `Bool(resolve_class
   (class).map(|c| classes[val.class].ancestors.contains(&c)).unwrap_or(false))`.
 - **`Clone`**: deref `src` → handle; build `ObjectData { class, id:
-  next_object_id++ , properties: od.properties.clone() }` (shallow: nested
+  next_object_id++ , properties: od.props().clone() }` (shallow: nested
   arrays/objects follow their own copy/handle discipline, so a clone *shares*
   nested object handles). New `Rc`, write to `dst`, run `__clone` (`$this` = new
   handle) if defined. `===` of clone vs original is false.

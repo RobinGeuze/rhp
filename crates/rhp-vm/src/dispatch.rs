@@ -784,7 +784,7 @@ impl Vm {
                     }
                 }
                 Instr::Pow { dst, a, b } => {
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let v = self.pow_op(&x, &y)?;
                     self.reg_set(top, dst, v);
                 }
@@ -825,7 +825,7 @@ impl Vm {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
                     }
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let slow = |v: &Value| match v {
                         Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
                         Value::Float(f) => f.is_nan(),
@@ -3038,7 +3038,7 @@ impl Vm {
         op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
         let v = if matches!(x, Value::Int(_) | Value::Float(_))
             && matches!(y, Value::Int(_) | Value::Float(_))
         {
@@ -3050,11 +3050,36 @@ impl Vm {
         Ok(())
     }
 
+    /// The operands of binary op `dst = a <op> b`. `$a <op>= $b` compiles to
+    /// the op followed by `Assign` back to `$a`; php's ZEND_ASSIGN_OP reads
+    /// op2 first, so with both undefined `$b` warns first (and reads as
+    /// null whatever the handler did).
+    fn bin_operands(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
+        let f = &self.stack[top];
+        if a != b
+            && b < f.proto.num_cvs
+            && f.regs[a as usize].is_undef()
+            && f.regs[b as usize].is_undef()
+            && matches!(f.proto.code.get(f.pc),
+                Some(Instr::Assign { cv, src }) if *cv == a && *src == dst)
+        {
+            self.undef_cv(top, b)?;
+            return Ok((self.reg_r(top, a)?, Value::Null));
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
+    }
+
     /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
         let v = self.long_op(op, &x, &y)?;
         self.reg_set(top, dst, v);
         Ok(())

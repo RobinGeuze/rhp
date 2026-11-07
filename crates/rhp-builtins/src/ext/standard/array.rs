@@ -2841,7 +2841,7 @@ fn make_ref(slot: &mut Value) -> Cell {
 /// the callback are seen (php's HashTable iterator); a different array
 /// (the variable was reassigned) is walked from its internal pointer.
 fn walk_next_array(a: &mut PhpArray, id: u32) -> Option<(Cell, Value)> {
-    let (k, slot) = a.make_mut().iter_step(id)?;
+    let (k, slot) = a.make_mut().walk_step(id)?;
     Some((make_ref(slot), k.to_value()))
 }
 
@@ -3367,16 +3367,16 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // php_splice moves them.
     let mut iter_moves = arr.iters();
     if !iter_moves.is_empty() {
-        let packed = arr.is_packed();
+        let d = arr.data();
+        let live: Vec<bool> = (0..d.used()).map(|p| d.at(p).is_some()).collect();
         let cut = removed.len() + dropped.len();
         splice_iterators(
             &mut iter_moves,
-            arr.len(),
+            &live,
             offset as usize,
-            cut,
             length,
             out.len() + cut - arr.len(),
-            packed,
+            arr.is_packed(),
             !unused,
         );
     }
@@ -3449,22 +3449,18 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     }
 }
 
-/// php_splice's HashTable iterator updates, on positions: an rhp table has
-/// no holes, so a bucket index is taken to be the position (php tables
-/// with holes, such as packed arrays with sparse keys, can differ). `n`
-/// elements, `cut`
-/// removed at `off`, `repl` inserted; `length` is php's clamped length.
-/// Deleting the last element shrinks the used part and clamps iterators
-/// to it.
-/// The packed loop also moves one met in the removed part to
-/// `offset + length`; the rest moves each iterator met to its output
-/// position, where it can be met again (php's loop does the same).
-#[allow(clippy::too_many_arguments)]
+/// php_splice's HashTable iterator updates. `live` tells which positions
+/// of the input table hold an element (holes included, up to nNumUsed);
+/// `length` is php's clamped length and `repl` the number of elements
+/// inserted. Deleting the last element shrinks the used part past
+/// trailing holes and clamps iterators to it. The packed loop also moves
+/// an iterator met in the removed part to `offset + length`; the rest
+/// moves each iterator met to its output position, where it can be met
+/// again (php's loop does the same).
 fn splice_iterators(
     iters: &mut [(u32, usize)],
-    n: usize,
+    live: &[bool],
     off: usize,
-    cut: usize,
     length: i64,
     repl: usize,
     packed: bool,
@@ -3486,45 +3482,60 @@ fn splice_iterators(
             }
         }
     };
-    let mut num_used = n;
+    let mut live = live.to_vec();
+    let mut num_used = live.len();
     let mut iter_pos = lower(iters, 0, num_used);
-    let (mut pos, mut idx) = (0usize, 0usize);
-    while idx < off {
-        if idx == iter_pos {
-            iter_pos = lower(iters, iter_pos + 1, num_used);
-        }
-        pos += 1;
-        idx += 1;
-    }
-    while idx < off + cut && idx < num_used {
-        if used {
+    let off = off as i64;
+    let (mut pos, mut idx) = (0i64, 0usize);
+    while pos < off && idx < num_used {
+        if live[idx] {
+            if idx == iter_pos {
+                if idx as i64 != pos {
+                    update(iters, idx, pos as usize);
+                }
+                iter_pos = lower(iters, iter_pos + 1, num_used);
+            }
             pos += 1;
         }
-        if idx + 1 == num_used {
-            // Everything from `off` on is deleted now.
-            num_used = off;
-            for e in iters.iter_mut() {
-                e.1 = e.1.min(num_used);
+        idx += 1;
+    }
+    let mut pos2 = pos;
+    while pos2 - off < length && idx < num_used {
+        if live[idx] {
+            pos2 += 1;
+            live[idx] = false;
+            if idx + 1 == num_used {
+                while num_used > 0 && !live[num_used - 1] {
+                    num_used -= 1;
+                }
+                for e in iters.iter_mut() {
+                    e.1 = e.1.min(num_used);
+                }
+            }
+            if packed && idx == iter_pos {
+                update(iters, idx, (off + length) as usize);
+                iter_pos = lower(iters, iter_pos + 1, num_used);
             }
         }
-        if packed && idx == iter_pos {
-            update(iters, idx, (off as i64 + length) as usize);
-            iter_pos = lower(iters, iter_pos + 1, num_used);
-        }
         idx += 1;
+    }
+    if used {
+        pos = pos2;
     }
     if !packed {
         iter_pos = lower(iters, iter_pos, num_used);
     }
-    pos += repl;
+    pos += repl as i64;
     while idx < num_used {
-        if idx == iter_pos {
-            if idx != pos {
-                update(iters, idx, pos);
+        if live[idx] {
+            if idx == iter_pos {
+                if idx as i64 != pos {
+                    update(iters, idx, pos as usize);
+                }
+                iter_pos = lower(iters, iter_pos + 1, num_used);
             }
-            iter_pos = lower(iters, iter_pos + 1, num_used);
+            pos += 1;
         }
-        pos += 1;
         idx += 1;
     }
 }

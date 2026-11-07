@@ -309,11 +309,14 @@ append. A copy-on-write separation restarts a past-the-end pointer at 0, as
 on an element, and iterators on a hole move to the next element.
 `array_pop`/`array_shift` are `ArrayData::pop`/
 `shift`, php's code paths (renumbering in place, moving iterators).
-`array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
-is copied along with the array, so the walk survives a copy-on-write
+`array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`) and
+moves it to the next element before each call (`walk_step`, php's
+`zend_hash_move_forward_ex`), where foreach by reference moves its iterator
+to the next position (`iter_step`, holes included); it is copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked
 from its internal pointer. The sorts keep iterator positions, and
-`array_splice` moves them the way `php_splice` does (`splice_iterators`).
+`array_splice` moves them the way `php_splice` does (`splice_iterators`,
+walking the input's positions, holes included).
 
 ## 4. Reference semantics (PHP `&`)
 

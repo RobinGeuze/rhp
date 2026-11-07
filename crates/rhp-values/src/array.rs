@@ -1544,8 +1544,8 @@ impl ArrayData {
     }
 
     /// The element at iterator `id` (from the internal pointer when the
-    /// array does not carry it), moving the iterator past it: FE_FETCH_RW
-    /// and array_walk. `None` at the end.
+    /// array does not carry it), moving the iterator to the position after
+    /// it: FE_FETCH_RW. `None` at the end.
     pub fn iter_step(&mut self, id: u32) -> Option<(ArrayKey, &mut Value)> {
         let start = match self.iter_pos(id) {
             Some(p) => p,
@@ -1557,6 +1557,23 @@ impl ArrayData {
             return None;
         };
         self.iter_add(id, pos + 1);
+        self.at_mut(pos)
+    }
+
+    /// As [`ArrayData::iter_step`], but the iterator moves on to the next
+    /// element (zend_hash_move_forward_ex), not the next position: array_walk.
+    pub fn walk_step(&mut self, id: u32) -> Option<(ArrayKey, &mut Value)> {
+        let start = match self.iter_pos(id) {
+            Some(p) => p,
+            None => self.valid_pos(self.pos as usize),
+        };
+        let Some((pos, _, _)) = self.fetch_from(start) else {
+            let used = self.used();
+            self.iter_add(id, used);
+            return None;
+        };
+        let next = self.valid_pos(pos + 1);
+        self.iter_add(id, next);
         self.at_mut(pos)
     }
 }

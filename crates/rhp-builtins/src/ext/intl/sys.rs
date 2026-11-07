@@ -32,7 +32,10 @@ opaque!(
     UStringSearch,
     UCollator,
     UNormalizer2,
-    UIDNA
+    UIDNA,
+    UNumberFormat,
+    UEnumeration,
+    UFieldPosition
 );
 
 pub type UErrorCode = i32;
@@ -45,6 +48,7 @@ pub const U_ZERO_ERROR: UErrorCode = 0;
 pub const U_ILLEGAL_ARGUMENT_ERROR: UErrorCode = 1;
 pub const U_INVALID_CHAR_FOUND: UErrorCode = 10;
 pub const U_BUFFER_OVERFLOW_ERROR: UErrorCode = 15;
+pub const U_UNSUPPORTED_ERROR: UErrorCode = 16;
 pub const U_STRING_NOT_TERMINATED_WARNING: UErrorCode = -124;
 
 /// `U_FAILURE(code)`.
@@ -64,6 +68,21 @@ pub const UCOL_STRENGTH: i32 = 5;
 pub const UCOL_SECONDARY: i32 = 1;
 /// `UCOL_EQUAL`.
 pub const UCOL_EQUAL: i32 = 0;
+
+/// `ULOC_FULLNAME_CAPACITY`.
+pub const ULOC_FULLNAME_CAPACITY: usize = 157;
+/// `ULOC_ACCEPT_FAILED`.
+pub const ULOC_ACCEPT_FAILED: i32 = 0;
+
+/// `UParseError` (`U_PARSE_CONTEXT_LEN` 16).
+#[repr(C)]
+#[derive(Default)]
+pub struct UParseError {
+    pub line: i32,
+    pub offset: i32,
+    pub pre_context: [UChar; 16],
+    pub post_context: [UChar; 16],
+}
 
 /// `UIDNAInfo` (stable since ICU 4.6).
 #[repr(C)]
@@ -149,6 +168,112 @@ icu! {
     pub fn ucol_strcoll(
         c: *const UCollator, a: *const UChar, a_len: i32, b: *const UChar, b_len: i32,
     ) -> i32;
+    pub fn ucol_getAttribute(c: *const UCollator, attr: i32, status: *mut UErrorCode) -> i32;
+    pub fn ucol_getStrength(c: *const UCollator) -> i32;
+    pub fn ucol_setStrength(c: *mut UCollator, strength: i32);
+    pub fn ucol_getLocaleByType(c: *const UCollator, kind: i32, status: *mut UErrorCode) -> *const c_char;
+    pub fn ucol_getSortKey(
+        c: *const UCollator, src: *const UChar, len: i32, result: *mut u8, cap: i32,
+    ) -> i32;
+
+    pub fn u_isspace(c: UChar32) -> UBool;
+
+    pub fn uloc_getDefault() -> *const c_char;
+    pub fn uloc_getLanguage(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_getScript(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_getCountry(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_getVariant(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_canonicalize(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_addLikelySubtags(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_minimizeSubtags(l: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode) -> i32;
+    pub fn uloc_getISO3Language(l: *const c_char) -> *const c_char;
+    pub fn uloc_isRightToLeft(l: *const c_char) -> UBool;
+    pub fn uloc_getDisplayLanguage(
+        l: *const c_char, disp: *const c_char, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_getDisplayScript(
+        l: *const c_char, disp: *const c_char, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_getDisplayCountry(
+        l: *const c_char, disp: *const c_char, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_getDisplayVariant(
+        l: *const c_char, disp: *const c_char, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_getDisplayName(
+        l: *const c_char, disp: *const c_char, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_openKeywords(l: *const c_char, status: *mut UErrorCode) -> *mut UEnumeration;
+    pub fn uloc_getKeywordValue(
+        l: *const c_char, key: *const c_char, buf: *mut c_char, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uloc_acceptLanguageFromHTTP(
+        result: *mut c_char, cap: i32, out: *mut i32, http: *const c_char,
+        available: *mut UEnumeration, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn ures_openAvailableLocales(package: *const c_char, status: *mut UErrorCode) -> *mut UEnumeration;
+    pub fn uenum_next(e: *mut UEnumeration, len: *mut i32, status: *mut UErrorCode) -> *const c_char;
+    pub fn uenum_close(e: *mut UEnumeration);
+
+    pub fn unum_open(
+        style: i32, pattern: *const UChar, pattern_len: i32, locale: *const c_char,
+        perr: *mut UParseError, status: *mut UErrorCode,
+    ) -> *mut UNumberFormat;
+    pub fn unum_close(f: *mut UNumberFormat);
+    pub fn unum_clone(f: *const UNumberFormat, status: *mut UErrorCode) -> *mut UNumberFormat;
+    pub fn unum_format(
+        f: *const UNumberFormat, n: i32, buf: *mut UChar, cap: i32, pos: *mut UFieldPosition,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_formatInt64(
+        f: *const UNumberFormat, n: i64, buf: *mut UChar, cap: i32, pos: *mut UFieldPosition,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_formatDouble(
+        f: *const UNumberFormat, n: f64, buf: *mut UChar, cap: i32, pos: *mut UFieldPosition,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_formatDoubleCurrency(
+        f: *const UNumberFormat, n: f64, currency: *mut UChar, buf: *mut UChar, cap: i32,
+        pos: *mut UFieldPosition, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_parse(
+        f: *const UNumberFormat, text: *const UChar, len: i32, pos: *mut i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_parseInt64(
+        f: *const UNumberFormat, text: *const UChar, len: i32, pos: *mut i32, status: *mut UErrorCode,
+    ) -> i64;
+    pub fn unum_parseDouble(
+        f: *const UNumberFormat, text: *const UChar, len: i32, pos: *mut i32, status: *mut UErrorCode,
+    ) -> f64;
+    pub fn unum_parseDoubleCurrency(
+        f: *const UNumberFormat, text: *const UChar, len: i32, pos: *mut i32, currency: *mut UChar,
+        status: *mut UErrorCode,
+    ) -> f64;
+    pub fn unum_getAttribute(f: *const UNumberFormat, attr: i32) -> i32;
+    pub fn unum_setAttribute(f: *mut UNumberFormat, attr: i32, value: i32);
+    pub fn unum_getDoubleAttribute(f: *const UNumberFormat, attr: i32) -> f64;
+    pub fn unum_setDoubleAttribute(f: *mut UNumberFormat, attr: i32, value: f64);
+    pub fn unum_getTextAttribute(
+        f: *const UNumberFormat, tag: i32, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_setTextAttribute(
+        f: *mut UNumberFormat, tag: i32, value: *const UChar, len: i32, status: *mut UErrorCode,
+    );
+    pub fn unum_getSymbol(
+        f: *const UNumberFormat, sym: i32, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_setSymbol(
+        f: *mut UNumberFormat, sym: i32, value: *const UChar, len: i32, status: *mut UErrorCode,
+    );
+    pub fn unum_toPattern(
+        f: *const UNumberFormat, localized: UBool, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn unum_applyPattern(
+        f: *mut UNumberFormat, localized: UBool, pattern: *const UChar, len: i32,
+        perr: *mut UParseError, status: *mut UErrorCode,
+    );
+    pub fn unum_getLocaleByType(f: *const UNumberFormat, kind: i32, status: *mut UErrorCode) -> *const c_char;
 
     pub fn unorm2_getNFCInstance(status: *mut UErrorCode) -> *const UNormalizer2;
     pub fn unorm2_getNFDInstance(status: *mut UErrorCode) -> *const UNormalizer2;
@@ -187,9 +312,25 @@ pub struct IntlConst {
     pub str: *const c_char,
 }
 
+/// A row of the shim's class-constant table; `kind` 0 int, 1 string, 2
+/// null.
+#[repr(C)]
+pub struct IntlClassConst {
+    pub class: *const c_char,
+    pub name: *const c_char,
+    pub kind: i32,
+    pub value: c_longlong,
+    pub str: *const c_char,
+    pub attr: *const c_char,
+}
+
 unsafe extern "C" {
     /// php's global intl constants (consts.h), ended by a null name.
     pub fn rhp_intl_constants() -> *const IntlConst;
     /// `sizeof(UIDNAInfo)`, for the layout test.
     pub fn rhp_intl_uidna_info_size() -> usize;
+    /// The intl classes' constants (class_consts.h), ended by a null class.
+    pub fn rhp_intl_class_constants() -> *const IntlClassConst;
+    /// `UNUM_FORMAT_SYMBOL_COUNT` (it grows with ICU).
+    pub fn rhp_intl_unum_format_symbol_count() -> i32;
 }

@@ -4,7 +4,7 @@
 use rhp_values::{ArrayKey, PhpArray, Value};
 
 use super::sys::{self, UErrorCode};
-use super::{error_reset, error_set_code, error_set_msg, int_const};
+use super::{error_reset, error_set_code, int_const};
 use crate::zend::zpp::{int_arg_or, set_ref, str_arg, value_error};
 use crate::{Host, Thrown};
 
@@ -12,13 +12,18 @@ use crate::{Host, Thrown};
 const VARIANT_UTS46: i64 = 1;
 
 /// `php_intl_idn_check_status`: always records the code; fails on an error.
-fn check_status(fname: &str, status: UErrorCode, msg: &str) -> bool {
+fn check_status(
+    host: &mut dyn Host,
+    fname: &str,
+    status: UErrorCode,
+    msg: &str,
+) -> Result<bool, Thrown> {
     error_set_code(status);
     if sys::failure(status) {
-        error_set_msg(fname, msg);
-        return false;
+        super::error::set_custom_msg(host, fname, msg)?;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 /// The owner of a `uidna_openUTS46` instance.
@@ -65,7 +70,7 @@ fn handoff(host: &mut dyn Host, args: &[Value], to_ascii: bool) -> Result<Value,
     let mut status = sys::U_ZERO_ERROR;
     // SAFETY: plain open; php passes the flags as uint32_t.
     let uts46 = Uts46(unsafe { sys::uidna_openUTS46(option as u32, &mut status) });
-    if !check_status(f, status, "failed to open UIDNA instance") {
+    if !check_status(host, f, status, "failed to open UIDNA instance")? {
         return Ok(Value::Bool(false));
     }
     let capac: i32 = if to_ascii { 255 } else { 252 * 4 };
@@ -88,7 +93,7 @@ fn handoff(host: &mut dyn Host, args: &[Value], to_ascii: bool) -> Result<Value,
             &mut status,
         )
     };
-    if len >= capac || !check_status(f, status, "failed to convert name") {
+    if len >= capac || !check_status(host, f, status, "failed to convert name")? {
         return Ok(Value::Bool(false));
     }
     buf.truncate(len.max(0) as usize);

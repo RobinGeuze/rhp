@@ -58,6 +58,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
+        intl::CLASSES,
         pdo::CLASSES,
         date::CLASSES,
     ]
@@ -217,7 +218,7 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             cli_only: false,
             functions: intl::register,
             constants: intl::constants,
-            prelude_php: intl::PRELUDE_PHP,
+            prelude_php: intl::prelude(),
             wrappers: no_wrappers,
             reset: intl::error_reset,
             object_freed: None,

@@ -80,3 +80,24 @@ fn version_constants_match_php() {
          intl_error_name(31), intl_error_name(U_ERROR_LIMIT - 1));\n",
     );
 }
+
+#[test]
+fn number_formatter_matches_php() {
+    check("numfmt", include_str!("intl/numfmt.php"));
+}
+
+#[test]
+fn collator_matches_php() {
+    check("collator", include_str!("intl/collator.php"));
+}
+
+#[test]
+fn locale_matches_php() {
+    check("locale", include_str!("intl/locale.php"));
+}
+
+#[test]
+fn procedural_arguments_match_php() {
+    check("args", include_str!("intl/args.php"));
+    check("args_strict", include_str!("intl/args_strict.php"));
+}

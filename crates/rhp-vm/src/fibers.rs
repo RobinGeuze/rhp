@@ -19,7 +19,7 @@ use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use rhp_builtins as builtins;
 use rhp_builtins::zend::fibers::FiberOp;
-use rhp_bytecode::{FunctionProto, Reg};
+use rhp_bytecode::FunctionProto;
 use rhp_values::{ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::NativeCall;
@@ -62,7 +62,8 @@ pub(crate) struct ExecCtx {
     stack: Vec<Frame>,
     native_calls: Vec<NativeCall>,
     gen_stack: Vec<u32>,
-    yield_out: Option<(Value, Value, Reg)>,
+    gen_resumes: Vec<(usize, u32, u32)>,
+    yield_out: Option<crate::generators::YieldOut>,
     magic_fetch: (usize, builtins::MagicFetch),
     pending_magic_fetch: builtins::MagicFetch,
     silence: u32,
@@ -90,6 +91,16 @@ pub(crate) struct FiberData {
     args: Vec<Value>,
     named: Vec<(PhpStr, Value)>,
     result: Value,
+    /// fiber_execute holds the callable and the arguments on the fiber's
+    /// stack (until the callable returns): the cycle collector counts
+    /// them once more.
+    executing: bool,
+    /// The cycle collector's destructor fiber (gc_destructor_fiber is
+    /// its function).
+    gc_dtor: bool,
+    /// Resumed to be destroyed (zend_fiber_object_destroy): php does not
+    /// link its stack to the resumer's, so traces end at its bottom.
+    unlinked: bool,
     /// The coroutine, while not running.
     co: Option<Co>,
     /// The fiber's own context while it does not run; the resumer's while
@@ -154,6 +165,9 @@ fn cell_of(h: &ObjectHandle) -> Rc<FiberCell> {
         args: Vec::new(),
         named: Vec::new(),
         result: Value::Null,
+        executing: false,
+        gc_dtor: false,
+        unlinked: false,
         co: None,
         ctx: None,
         yielder: std::ptr::null(),
@@ -269,9 +283,36 @@ impl Vm {
                 if status != Status::Suspended {
                     return Ok(Value::Null);
                 }
-                cell.borrow_mut().destroyed = true;
+                {
+                    let mut d = cell.borrow_mut();
+                    d.destroyed = true;
+                    d.unlinked = true;
+                }
                 self.fiber_switch(h, &cell, Err(graceful_exit()))
                     .map(|_| Value::Null)
+            }
+            FiberOp::ReflectCallable => {
+                let d = cell.borrow();
+                if d.status == Status::Dead {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot fetch the callable from a fiber that has terminated",
+                    ));
+                }
+                Ok(d.callable.clone())
+            }
+            FiberOp::ReflectTrace | FiberOp::ReflectLine | FiberOp::ReflectFile => {
+                if matches!(status, Status::Init | Status::Dead) {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot fetch information from a fiber that has not been started or is terminated",
+                    ));
+                }
+                let opts = match arg(0) {
+                    Value::Int(n) => n,
+                    _ => 1,
+                };
+                self.fiber_reflect(h, op, opts)
             }
             FiberOp::GetCurrent | FiberOp::Suspend => unreachable!(),
         }
@@ -346,6 +387,7 @@ impl Vm {
             stack: vec![entry_frame()],
             native_calls: Vec::new(),
             gen_stack: Vec::new(),
+            gen_resumes: Vec::new(),
             yield_out: None,
             magic_fetch: (0, builtins::MagicFetch::default()),
             pending_magic_fetch: builtins::MagicFetch::default(),
@@ -374,6 +416,7 @@ impl Vm {
         swap(&mut self.stack, &mut c.stack);
         swap(&mut self.native_calls, &mut c.native_calls);
         swap(&mut self.gen_stack, &mut c.gen_stack);
+        swap(&mut self.gen_resumes, &mut c.gen_resumes);
         swap(&mut self.yield_out, &mut c.yield_out);
         swap(&mut self.magic_fetch, &mut c.magic_fetch);
         swap(&mut self.pending_magic_fetch, &mut c.pending_magic_fetch);
@@ -431,6 +474,7 @@ impl Vm {
         self.active_fiber = prev;
         let mut d = cell.borrow_mut();
         d.prev = None;
+        d.unlinked = false;
         match r {
             CoroutineResult::Yield(s) => {
                 d.co = Some(co);
@@ -451,20 +495,52 @@ impl Vm {
     /// zend_fiber_execute: the coroutine's body. Calls the callable from
     /// the fiber's bottom frame and records how it ended.
     fn fiber_execute(&mut self, y: &Yielder<Resume, Suspended>) -> Result<(), Thrown> {
-        let cell = cell_of(self.active_fiber.as_ref().expect("the starting fiber"));
+        let me = self.active_fiber.as_ref().expect("the starting fiber");
+        let me_ptr = Rc::as_ptr(me);
+        let cell = cell_of(me);
+        if cell.borrow().gc_dtor {
+            cell.borrow_mut().yielder = y;
+            return self.fiber_run_gc_dtor(&cell, me_ptr);
+        }
         let (callable, args, named) = {
             let mut d = cell.borrow_mut();
             d.yielder = y;
             (
                 d.callable.clone(),
-                std::mem::take(&mut d.args),
+                d.args.clone(),
                 std::mem::take(&mut d.named),
             )
         };
-        let r = builtins::Host::call_callable_named(self, &callable, &args, named);
-        drop(args);
+        let r = match &callable {
+            // A closure runs straight from here, so what this frame holds
+            // is all the fiber's stack holds besides its frames.
+            Value::Closure(cd) if cd.wrapped.is_none() && named.is_empty() => {
+                cell.borrow_mut().executing = true;
+                let callee = crate::calls::Callee::Closure(cd.clone());
+                let r = self.callee_by_ref_args(&callee, args.clone());
+                drop(callee);
+                match r {
+                    Ok(bound) => {
+                        let old = std::mem::replace(&mut cell.borrow_mut().args, bound.clone());
+                        drop(old);
+                        drop(args);
+                        self.run_closure_sync(cd, crate::calls::Args::Slice(&bound), None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => builtins::Host::call_callable_named(self, &callable, &args, named),
+        };
         // php drops the callable once it returned.
-        cell.borrow_mut().callable = Value::Undef;
+        let old = {
+            let mut d = cell.borrow_mut();
+            d.executing = false;
+            (
+                std::mem::replace(&mut d.callable, Value::Undef),
+                std::mem::take(&mut d.args),
+            )
+        };
+        drop(old);
         drop(callable);
         match r {
             Ok(v) => {
@@ -481,6 +557,66 @@ impl Vm {
                 Err(self.materialize(t, None))
             }
         }
+    }
+
+    /// The destructor fiber's body: gc_destructor_fiber, an internal
+    /// function called from the fiber's bottom frame.
+    fn fiber_run_gc_dtor(
+        &mut self,
+        cell: &Rc<FiberCell>,
+        me: *const RefCell<rhp_values::ObjectData>,
+    ) -> Result<(), Thrown> {
+        const NO_ARGS: &[Value] = &[];
+        const NO_NAMED: &[(PhpStr, Value)] = &[];
+        self.native_calls.push(NativeCall {
+            name: "gc_destructor_fiber",
+            args: NO_ARGS as *const [Value],
+            shown_str: 0,
+            caller: 0,
+            frameless_icall: false,
+            named: NO_NAMED as *const [(PhpStr, Value)],
+            method_of: None,
+        });
+        let r = self.gc_destructor_fiber(me);
+        self.native_calls.pop();
+        match r {
+            Ok(()) => Ok(()),
+            Err(t) if is_graceful_exit(&t) && cell.borrow().destroyed => Ok(()),
+            Err(t @ (Thrown::Exit(_) | Thrown::Unsupported { .. })) => {
+                cell.borrow_mut().bailout = true;
+                Err(t)
+            }
+            Err(t) => {
+                cell.borrow_mut().threw = true;
+                Err(self.materialize(t, None))
+            }
+        }
+    }
+
+    /// gc_create_destructor_fiber: a new Fiber object running
+    /// gc_destructor_fiber, started.
+    pub(crate) fn gc_start_dtor_fiber(&mut self) -> Result<(), Thrown> {
+        let cls = self.resolve_class_by_name(b"Fiber")?;
+        let h = self.new_object(cls);
+        let cell = cell_of(&h);
+        cell.borrow_mut().gc_dtor = true;
+        let size = builtins::zend::fibers::stack_size()?;
+        self.fiber_init(&cell, size, Vec::new(), Vec::new())?;
+        self.gc_dtor_set_fiber(Some(h.clone()));
+        let r = self.fiber_switch(&h, &cell, Ok(Value::Null));
+        drop(h);
+        r.map(drop)
+    }
+
+    /// zend_fiber_resume_internal: resume suspended fiber `h` with null.
+    pub(crate) fn fiber_resume_internal(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
+        let cell = cell_of(h);
+        self.fiber_switch(h, &cell, Ok(Value::Null))
+    }
+
+    /// zend_fiber_suspend from the engine: suspend the running fiber.
+    pub(crate) fn fiber_suspend_internal(&mut self) -> Result<Value, Thrown> {
+        self.fiber_suspend(Value::Null)
     }
 
     /// Fiber::suspend(): hand `value` to the resumer and wait.
@@ -538,6 +674,69 @@ impl Vm {
         None
     }
 
+    /// ReflectionFiber's getTrace() / getExecutingLine() / getExecutingFile()
+    /// on started fiber `h`: its own frames (php's fiber->execute_data, or
+    /// the running frames when `h` is the active fiber), not those of the
+    /// context that resumed it.
+    fn fiber_reflect(&mut self, h: &ObjectHandle, op: FiberOp, opts: i64) -> Result<Value, Thrown> {
+        let active = self.active_fiber.as_ref().is_some_and(|a| Rc::ptr_eq(a, h));
+        // Where `h`'s context is kept: its own cell while suspended, the
+        // cell of the fiber it resumed while that one runs.
+        let holder = if active {
+            None
+        } else if cell_of(h).borrow().status == Status::Suspended {
+            Some(cell_of(h))
+        } else {
+            let mut cur = self.active_fiber.clone();
+            let mut found = None;
+            while let Some(f) = cur {
+                let c = cell_of(&f);
+                let prev = c.borrow().prev.clone();
+                if prev.as_ref().is_some_and(|p| Rc::ptr_eq(p, h)) {
+                    found = Some(c);
+                    break;
+                }
+                cur = prev;
+            }
+            Some(found.ok_or_else(|| fiber_error("Cannot fetch information from this fiber"))?)
+        };
+        let mut ctx = holder
+            .as_ref()
+            .map(|c| c.borrow_mut().ctx.take().expect("a fiber's context"));
+        if let Some(c) = ctx.as_mut() {
+            std::mem::swap(&mut self.stack, &mut c.stack);
+            std::mem::swap(&mut self.native_calls, &mut c.native_calls);
+        }
+        let r = match op {
+            FiberOp::ReflectTrace => {
+                let provide_object = opts & 1 != 0;
+                let ignore_args = opts & 2 != 0;
+                Value::Array(self.build_trace_part(provide_object, ignore_args, active, active))
+            }
+            _ => {
+                use rhp_bytecode::ProtoFlags as F;
+                let user = self
+                    .stack
+                    .iter()
+                    .rev()
+                    .find(|f| !f.proto.is_internal() && !f.proto.flags.contains(F::CONST_EXPR));
+                match (user, op) {
+                    (Some(f), FiberOp::ReflectLine) => {
+                        Value::Int(crate::errors::frame_line(f) as i64)
+                    }
+                    (Some(f), _) => Value::Str(f.proto.debug.file.clone()),
+                    (None, _) => Value::Null,
+                }
+            }
+        };
+        if let (Some(mut c), Some(cell)) = (ctx, holder) {
+            std::mem::swap(&mut self.stack, &mut c.stack);
+            std::mem::swap(&mut self.native_calls, &mut c.native_calls);
+            cell.borrow_mut().ctx = Some(c);
+        }
+        Ok(r)
+    }
+
     /// The trace frames of the contexts below the running fiber: each
     /// resumer's, innermost first (zend_fetch_debug_backtrace following
     /// the fiber's bottom frame to the resumer).
@@ -550,14 +749,19 @@ impl Vm {
         let mut cur = self.active_fiber.clone();
         while let Some(h) = cur {
             let cell = cell_of(&h);
+            if cell.borrow().unlinked {
+                break;
+            }
             let Some(mut ctx) = cell.borrow_mut().ctx.take() else {
                 break;
             };
             std::mem::swap(&mut self.stack, &mut ctx.stack);
             std::mem::swap(&mut self.native_calls, &mut ctx.native_calls);
+            std::mem::swap(&mut self.gen_resumes, &mut ctx.gen_resumes);
             let part = self.build_trace_part(provide_object, ignore_args, false, false);
             std::mem::swap(&mut self.stack, &mut ctx.stack);
             std::mem::swap(&mut self.native_calls, &mut ctx.native_calls);
+            std::mem::swap(&mut self.gen_resumes, &mut ctx.gen_resumes);
             let mut d = cell.borrow_mut();
             d.ctx = Some(ctx);
             for (_, v) in part.iter() {
@@ -568,27 +772,43 @@ impl Vm {
     }
 }
 
-/// zend_fiber_object_gc: the values a Fiber object holds, for the cycle
-/// collector: its callable, arguments and result and, while it is
-/// suspended, every value of its suspended frames (variables,
-/// temporaries, extra arguments, variables created by name).
-#[allow(dead_code)] // the cycle collector's traversal hook
-pub(crate) fn fiber_gc_values(h: &ObjectHandle) -> Vec<Value> {
-    let Some(cell) = h.borrow().payload::<FiberCell>() else {
-        return Vec::new();
+/// zend_fiber_object_gc: the values Fiber object `h` holds, for the cycle
+/// collector: its callable and result and, while it is suspended, what
+/// every frame on its stack holds (variables, temporaries, extra
+/// arguments, variables created by name, the running closure). False when
+/// `h` is no Fiber.
+pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
+    let Ok(o) = h.try_borrow() else {
+        return false;
     };
-    let d = cell.borrow();
-    let mut out = vec![d.callable.clone(), d.result.clone()];
+    let Some(cell) = o.payload::<FiberCell>() else {
+        return false;
+    };
+    drop(o);
+    let Ok(d) = cell.try_borrow() else {
+        return true;
+    };
+    out.push(d.callable.clone());
+    out.push(d.result.clone());
     out.extend(d.args.iter().cloned());
+    if d.executing {
+        out.push(d.callable.clone());
+        out.extend(d.args.iter().cloned());
+    }
     out.extend(d.named.iter().map(|(_, v)| v.clone()));
     if d.status == Status::Suspended {
         if let Some(ctx) = &d.ctx {
             for f in &ctx.stack {
-                out.extend(f.regs.iter().cloned());
-                out.extend(f.extra_args.iter().cloned());
-                out.extend(f.dyn_vars.values().map(|c| Value::Ref(c.clone())));
+                f.gc_children(out);
+            }
+            // A suspended Generator method holds its object (php's
+            // internal frame with ZEND_CALL_RELEASE_THIS).
+            for n in &ctx.native_calls {
+                if let Some((_, this)) = &n.method_of {
+                    out.push(Value::Object(this.clone()));
+                }
             }
         }
     }
-    out
+    true
 }

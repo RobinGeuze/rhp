@@ -247,9 +247,45 @@ impl Vm {
             }
             return Ok(inst);
         }
-        if obj_flags & LazyInfo::PROXY != 0 {
-            return self.lazy_init_proxy(h);
+        // php holds the object across the initializer and fails when that
+        // was the last reference. Callers hold one clone of `h`.
+        let before = Rc::strong_count(h);
+        let r = if obj_flags & LazyInfo::PROXY != 0 {
+            self.lazy_init_proxy(h)
+        } else {
+            self.lazy_init_ghost(h)
+        };
+        self.lazy_released_check(h, before, r)
+    }
+
+    /// The end of zend_lazy_object_init: "Lazy object was released during
+    /// initialization" when nothing but the caller's clone (and the
+    /// destructor list) holds `h` any more, and it had other holders before.
+    fn lazy_released_check(
+        &mut self,
+        h: &ObjectHandle,
+        before: usize,
+        r: Result<ObjectHandle, Thrown>,
+    ) -> Result<ObjectHandle, Thrown> {
+        // (A ghost's result is `h` itself.)
+        let after = Rc::strong_count(h) - usize::from(matches!(&r, Ok(i) if Rc::ptr_eq(i, h)));
+        if after >= before {
+            return r;
         }
+        let listed = usize::from(self.destructibles.iter().any(|d| Rc::ptr_eq(d, h)));
+        if after != 1 + listed {
+            return r;
+        }
+        self.dtor_check = true;
+        let e = Thrown::error("Error", "Lazy object was released during initialization");
+        Err(match r {
+            Ok(_) => e,
+            Err(prev) => rhp_builtins::Host::chain_thrown(self, e, prev),
+        })
+    }
+
+    /// The ghost part of zend_lazy_object_init.
+    fn lazy_init_ghost(&mut self, h: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
         // Ghost: prevent re-entrant initialization, snapshot the state, give
         // the lazy slots their defaults and run the initializer.
         let id = h.borrow().id;

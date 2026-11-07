@@ -1,0 +1,13 @@
+string(5) "UTF-8"
+string(12) "636166c3a90a"
+string(12) "636166c3a90a"
+string(4) "pass"
+Warning: Cannot modify header information - headers already sent by (output started at output_handler.php:9)
+string(10) "<&eacute;>"
+string(2) "é"
+mb_http_output(): Argument #1 ($encoding) must be a valid encoding, "BAD" given
+mb_http_output(): Argument #1 ($encoding) must not contain any null bytes
+array(0) {
+}
+$BF|K\x$B8l
+日本a

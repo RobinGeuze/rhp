@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_builtins::{Host, ObCall, E_DEPRECATED, E_NOTICE, E_WARNING};
-use rhp_values::{conv, ArrayKey, PhpArray, Thrown, Value};
+use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::Vm;
 
@@ -100,6 +100,9 @@ pub(crate) struct Output {
     handlers: Vec<HRef>,
     active: Option<HRef>,
     running: Option<HRef>,
+    /// The running user handler's object when only the handler holds it
+    /// (see `output_deactivate`).
+    running_sole: Option<ObjectHandle>,
     flags: u32,
     /// Opening the ini `output_handler` before the script runs (diagnostics
     /// say `PHP Request Startup` / `Unknown`).
@@ -112,6 +115,7 @@ impl Default for Output {
             handlers: Vec::new(),
             active: None,
             running: None,
+            running_sole: None,
             flags: O_ACTIVATED,
             starting: false,
         }
@@ -243,7 +247,15 @@ impl Vm {
         }
         if let Some(nc) = self.native_calls.last() {
             if nc.caller + 1 >= self.stack.len() {
+                if let Some((class, _)) = &nc.method_of {
+                    return format!("{class}::{}(): ", nc.name);
+                }
                 return format!("{}(): ", nc.name);
+            }
+        }
+        if let Some(k) = self.include_docref {
+            if self.include_docref_depth == self.stack.len() {
+                return format!("{k}(): ");
             }
         }
         match self.stack.last() {
@@ -296,7 +308,19 @@ impl Vm {
             None => (Vec::new(), 0),
             Some(i) => (self.current_file(i), self.current_line(i) as i64),
         };
-        let trace = self.fatal_trace();
+        // zend_error_impl: an exception pending (from a destructor the
+        // deactivation ran) is reported first, as a warning, and the fatal
+        // error then has no backtrace.
+        let trace = match self.pending_throw.take() {
+            Some(t) if t.is_catchable() => {
+                self.report_uncaught_as(t, E_WARNING, "Warning");
+                Vec::new()
+            }
+            other => {
+                self.pending_throw = other;
+                self.fatal_trace()
+            }
+        };
         self.last_error = Some((1, msg.as_bytes().to_vec(), file.clone(), line));
         self.display_error_trace(1, "Fatal error", msg.as_bytes(), &file, line, &trace);
         self.destructibles.clear();
@@ -343,6 +367,17 @@ impl Vm {
             self.output.active = None;
             self.output.running = None;
             self.output.handlers.clear();
+            // The running handler's object, held by nothing else: php's call
+            // holds no reference, so freeing the handler destructs it now,
+            // in the middle of its own call.
+            if let Some(o) = self.output.running_sole.take() {
+                if let Some(i) = self.destructibles.iter().position(|d| Rc::ptr_eq(d, &o)) {
+                    let h = self.destructibles.remove(i);
+                    if let Err(t) = self.call_destructor(h) {
+                        self.ob_pending(t);
+                    }
+                }
+            }
             self.dtor_pending_checks = usize::MAX / 2;
             if let Err(t) = self.collect_released() {
                 self.ob_pending(t);
@@ -517,7 +552,19 @@ impl Vm {
                 let data = h.borrow().buf.clone();
                 let at_shutdown = self.no_code_running();
                 let depth = self.stack.len();
+                // (The handler, `cb` and the destructor list hold it.)
+                let sole = match &cb {
+                    Value::Object(o)
+                        if Rc::strong_count(o) == 3
+                            && self.destructibles.iter().any(|d| Rc::ptr_eq(d, o)) =>
+                    {
+                        Some(o.clone())
+                    }
+                    _ => None,
+                };
+                let saved = std::mem::replace(&mut self.output.running_sole, sole);
                 let r = self.call_callable_value(&cb, vec![Value::str(data), Value::Int(ctx.op)]);
+                self.output.running_sole = saved;
                 if r.is_err() && self.stack.len() > depth {
                     // `exit` leaves the handler's frames behind.
                     self.stack.truncate(depth);
@@ -782,6 +829,9 @@ impl Vm {
             )),
             // php_output_handler_create_internal through the alias.
             _ if alias.is_some() => alias.map(|a| {
+                if let Some(init) = a.init {
+                    init(chunk);
+                }
                 Handler::new(
                     a.name.as_bytes().to_vec(),
                     Func::Internal(a.func),
@@ -897,11 +947,15 @@ impl Vm {
     /// The userland functions (output.c's PHP_FUNCTIONs).
     pub(crate) fn output_control_call(&mut self, call: ObCall) -> Result<Value, Thrown> {
         Ok(match call {
-            ObCall::StartInternal { name, func } => {
+            ObCall::StartInternal {
+                name,
+                func,
+                chunk_size,
+            } => {
                 let h = Handler::new(
                     name.as_bytes().to_vec(),
                     Func::Internal(func),
-                    0,
+                    chunk_size,
                     H_STDFLAGS,
                 );
                 Value::Bool(self.handler_start(h))
@@ -919,6 +973,11 @@ impl Vm {
                     Value::Bool(false)
                 }
             }
+            ObCall::StartDefault => {
+                let h = Handler::new(DEFAULT_HANDLER_NAME.to_vec(), Func::Default, 0, H_STDFLAGS);
+                Value::Bool(self.handler_start(h))
+            }
+            ObCall::Discard => Value::Bool(self.stack_pop(POP_DISCARD)),
             ObCall::Flush => {
                 if self.output.active.is_none() {
                     self.ob_diag(E_NOTICE, "Failed to flush buffer. No buffer to flush");
@@ -1025,6 +1084,7 @@ impl Vm {
                 self.sapi_flush();
                 Value::Null
             }
+            ObCall::HandlerRunning => Value::Bool(self.output.running.is_some()),
         })
     }
 

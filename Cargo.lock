@@ -616,8 +616,6 @@ dependencies = [
 [[package]]
 name = "mago-syntax"
 version = "1.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fbf1daffec31461650d52f48434a551d357f384e514130269f403aa232660e4"
 dependencies = [
  "mago-allocator",
  "mago-database",
@@ -748,6 +746,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -946,9 +953,11 @@ dependencies = [
  "md-5",
  "md2",
  "md4",
+ "memchr",
  "num-bigint",
  "num-integer",
  "num-traits",
+ "object",
  "openssl-sys",
  "rhp-bytecode",
  "rhp-csrc",

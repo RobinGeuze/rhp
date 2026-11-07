@@ -1,0 +1,7 @@
+Error: Lazy object was released during initialization
+object(Plain)#4 (1) {
+  ["v"]=>
+  int(2)
+}
+Error: Lazy object was released during initialization
+NULL

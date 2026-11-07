@@ -337,8 +337,20 @@ impl ProtoBuilder<'_> {
                 r
             }
             Expression::Pipe(p) => self.compile_pipe(p),
-            Expression::ArrowFunction(af) => self.compile_arrow(af),
-            Expression::Closure(cl) => self.compile_closure(cl),
+            // zend_compile_func_decl leaves CG(zend_lineno) at the
+            // function's last line: what follows reports there.
+            Expression::ArrowFunction(af) => {
+                use mago_span::HasSpan;
+                let r = self.compile_arrow(af);
+                self.cur_line = self.cx.line_of(af.span().end.offset.saturating_sub(1));
+                r
+            }
+            Expression::Closure(cl) => {
+                use mago_span::HasSpan;
+                let r = self.compile_closure(cl);
+                self.cur_line = self.cx.line_of(cl.span().end.offset.saturating_sub(1));
+                r
+            }
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),
@@ -903,12 +915,44 @@ impl ProtoBuilder<'_> {
                 }
                 ArrayElement::Variadic(v) => {
                     let src = self.compile_expr(v.value)?;
+                    if self.in_const_expr() {
+                        self.const_unpack_check(src);
+                    }
                     self.emit(Instr::ArrSpread { arr: dst, src });
                 }
                 ArrayElement::Missing(_) => {}
             }
         }
         Ok(dst)
+    }
+
+    /// zend_ast_add_unpacked_element: a constant expression unpacks
+    /// arrays only (`is_array($src)` or throw).
+    fn const_unpack_check(&mut self, src: Reg) {
+        let base = self.alloc_temps(1);
+        self.emit(Instr::Mov { dst: base, src });
+        let name = self.intern_name(b"is_array");
+        let fallback = self.intern_fallback(&None);
+        let ok = self.alloc_temp();
+        self.emit(Instr::Call {
+            dst: ok,
+            name,
+            base,
+            argc: 1,
+            fallback,
+            flags: rhp_bytecode::CallFlags::default(),
+        });
+        let jpos = self.code.len();
+        self.emit(Instr::Nop);
+        let k = self.intern_const(Value::str(
+            "Only arrays can be unpacked in constant expression",
+        ));
+        self.emit(Instr::ThrowError { k });
+        let after = self.here();
+        self.code[jpos] = Instr::JmpTrue {
+            cond: ok,
+            target: after,
+        };
     }
 
     /// zend_compile_shell_exec: `` `cmd` `` is deprecated and calls the
@@ -1444,25 +1488,28 @@ impl ProtoBuilder<'_> {
         self.compile_ref_source(e)
     }
 
-    /// `yield from $iterable`: re-yield each element (keys preserved); the
-    /// expression evaluates to the inner generator's return value (null for an
-    /// array). Lowered as a foreach-style loop over existing opcodes.
+    /// `yield from $iterable` (ZEND_YIELD_FROM): `YieldFrom` delegates to a
+    /// Generator (the frame resumes at `end` with its return value in
+    /// `dst`); an array or other Traversable falls through to a
+    /// foreach-style loop re-yielding each element, keys preserved, and
+    /// evaluates to null.
     fn compile_yield_from(&mut self, iterable: &Expression) -> Result<Reg, Thrown> {
         let src = self.compile_expr(iterable)?;
+        let dst = self.alloc_temp();
         let arr_reg = self.alloc_temp();
         let pos_reg = self.alloc_temp();
         self.alloc_temp(); // pos_reg + 1: the iterator handle (see FeReset)
         let key_cv = self.alloc_temp();
         let val_cv = self.alloc_temp();
 
+        let yf_pos = self.code.len();
+        self.emit(Instr::Nop); // YieldFrom
         let reset_pos = self.code.len();
         self.emit(Instr::Nop); // FeReset
         let fetch_label = self.here();
         let fetch_pos = self.code.len();
         self.emit(Instr::Nop); // FeFetch
-        let ysink = self.alloc_temp();
-        self.emit(Instr::Yield {
-            dst: ysink,
+        self.emit(Instr::YieldValues {
             key: key_cv,
             value: val_cv,
         });
@@ -1470,6 +1517,7 @@ impl ProtoBuilder<'_> {
             target: fetch_label,
         });
         let end = self.here();
+        self.code[yf_pos] = Instr::YieldFrom { dst, src, end };
         self.code[reset_pos] = Instr::FeReset {
             arr_reg,
             pos_reg,
@@ -1489,37 +1537,6 @@ impl ProtoBuilder<'_> {
             from: pos_reg + 1,
             to: pos_reg + 2,
         });
-
-        // Result: `$src instanceof Generator ? $src->getReturn() : null`.
-        let dst = self.alloc_temp();
-        let is_gen = self.alloc_temp();
-        let gen_class = ClassRef::Name(self.intern_name(b"Generator"));
-        self.emit(Instr::InstanceOf {
-            dst: is_gen,
-            val: src,
-            class: gen_class,
-        });
-        let jf = self.code.len();
-        self.emit(Instr::Nop); // JmpFalse is_gen -> lnull
-        let base = self.alloc_temps(1);
-        let name = self.intern_name(b"getReturn");
-        self.emit(Instr::CallMethod {
-            dst,
-            obj: src,
-            name,
-            base,
-            argc: 0,
-        });
-        let jend = self.code.len();
-        self.emit(Instr::Nop); // Jmp -> lend
-        let lnull = self.here();
-        self.emit(Instr::LoadNull { dst });
-        let lend = self.here();
-        self.code[jf] = Instr::JmpFalse {
-            cond: is_gen,
-            target: lnull,
-        };
-        self.code[jend] = Instr::Jmp { target: lend };
         Ok(dst)
     }
 

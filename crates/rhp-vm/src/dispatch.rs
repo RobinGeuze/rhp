@@ -14,8 +14,7 @@ use rhp_values::{
 };
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
-use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
-use crate::generators::GenStatus;
+use crate::errors::{FinallyCont, UnwindResult};
 use crate::lvalue::StaticOp;
 use crate::lvalue::{
     aa_key, foreach_next_ref, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode,
@@ -284,13 +283,31 @@ impl Vm {
         Ok(())
     }
 
+    /// `LvalKey` with undefined `key`: the last key of an assignment is
+    /// read when the write has checked the container (`None`: the step is
+    /// pushed, see `assign_undef_key`); any other warns now.
+    #[cold]
+    #[inline(never)]
+    fn lval_undef_key_step(&mut self, top: usize, key: Reg) -> Result<Option<Value>, Thrown> {
+        let f = &self.stack[top];
+        if key < f.proto.num_cvs
+            && self.deferred_undef_key.is_none()
+            && matches!(f.proto.code.get(f.pc), Some(Instr::AssignLval { .. }))
+        {
+            self.deferred_undef_key = Some(key);
+            self.cursor_steps.push(CursorStep::Key(Value::Null));
+            return Ok(None);
+        }
+        self.lval_undef_key(top, key).map(Some)
+    }
+
     /// An undefined variable as a key of the open cursor: the warning may
     /// run an error handler, which must not disturb the cursor. php has
     /// fetched the container already (a null one made an array): when the
     /// handler replaces the variable, the write still goes to that
     /// container (an object's offsetSet) and is lost for the variable.
     #[cold]
-    fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
+    pub(crate) fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
         let target = match self.cursor_root {
             CursorRoot::Cv(cv) => match self.reg_get(top, cv) {
                 Value::Null => {
@@ -784,7 +801,7 @@ impl Vm {
                     }
                 }
                 Instr::Pow { dst, a, b } => {
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let v = self.pow_op(&x, &y)?;
                     self.reg_set(top, dst, v);
                 }
@@ -825,18 +842,19 @@ impl Vm {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
                     }
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let slow = |v: &Value| match v {
                         Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
                         Value::Float(f) => f.is_nan(),
                         _ => false,
                     };
-                    let v = if slow(&x) || slow(&y) {
-                        self.concat_object(&x, &y)?
+                    if slow(&x) || slow(&y) {
+                        let v = self.concat_object(&x, &y)?;
+                        drop((x, y));
+                        self.free_bin_operands(top, dst, a, b, v)?;
                     } else {
-                        ops::concat(&x, &y)
-                    };
-                    self.reg_set(top, dst, v);
+                        self.reg_set(top, dst, ops::concat(&x, &y));
+                    }
                 }
 
                 Instr::Neg { dst, a } => {
@@ -919,6 +937,7 @@ impl Vm {
                 Instr::CastString { dst, a } => {
                     let v = self.reg_r(top, a)?;
                     let s = self.to_string_vm(&v)?;
+                    self.free_tmp(top, proto.num_cvs, a);
                     self.reg_set(top, dst, Value::str(s));
                 }
                 Instr::CastBool { dst, a } => {
@@ -1185,7 +1204,7 @@ impl Vm {
                     let cell = self.global_cell(gname.as_bytes());
                     cell_define(&cell);
                     self.ref_globals.insert(gname.as_bytes().to_vec());
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.rebind_cv(top, cv, Value::Ref(cell));
                 }
                 Instr::BindGlobalDyn { name } => self.bind_global_dyn(top, name)?,
                 Instr::BindStatic { cv, name, init } => {
@@ -1202,7 +1221,7 @@ impl Vm {
                     let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.static_table(top).get(&key) {
                         let cell = c.clone();
-                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        self.rebind_cv(top, cv, Value::Ref(cell));
                         self.sync_global_cv(top, cv);
                         self.stack[top].pc = target as usize;
                     }
@@ -1220,7 +1239,7 @@ impl Vm {
                         .entry(key)
                         .or_insert_with(|| Rc::new(RefCell::new(v)))
                         .clone();
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.rebind_cv(top, cv, Value::Ref(cell));
                     self.sync_global_cv(top, cv);
                 }
                 Instr::DeclareConst { name, src } => {
@@ -1289,6 +1308,8 @@ impl Vm {
                     let a = self.reg_r(top, arr)?;
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
+                    drop(a);
+                    self.free_tmp(top, proto.num_cvs, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchW { dst, arr, key } => {
@@ -1342,6 +1363,8 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Is)?;
+                    drop(a);
+                    self.free_tmp(top, proto.num_cvs, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchList { dst, arr, key } => {
@@ -1391,7 +1414,10 @@ impl Vm {
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
-                        self.lval_undef_key(top, key)?
+                        match self.lval_undef_key_step(top, key)? {
+                            Some(v) => v,
+                            None => continue,
+                        }
                     } else {
                         self.reg_get(top, key)
                     };
@@ -1526,6 +1552,14 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    let operands = self.compound_free.take();
+                    if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
+                        if let Some((a, b)) = operands {
+                            self.free_tmp(top, proto.num_cvs, a);
+                            self.free_tmp(top, proto.num_cvs, b);
+                        }
+                        continue;
+                    }
                     // (After a compound assignment's FetchLvalRw raised them
                     // already, `rw_null_keys` counts them.)
                     if self.cursor_null_key && self.rw_null_keys == 0 {
@@ -1579,6 +1613,10 @@ impl Vm {
                         r
                     };
                     self.cursor_release();
+                    if let Some((a, b)) = operands {
+                        self.free_tmp(top, proto.num_cvs, a);
+                        self.free_tmp(top, proto.num_cvs, b);
+                    }
                     r?;
                 }
                 Instr::AssignLvalRef { src } => {
@@ -1753,6 +1791,19 @@ impl Vm {
                         // php writes the property even so: a readonly one
                         // throws over the operator's TypeError.
                         Err(e) => {
+                            // zend_{pre,post}_incdec_overloaded_property: the
+                            // unchanged copy goes to write_property (no __set
+                            // runs with the exception pending).
+                            if let MagicSplit::Leaf(h, _) = self.cursor_magic_split(top, &steps) {
+                                let cls = h.borrow().class;
+                                if self.lookup_method(cls, b"__set").is_none() {
+                                    if let Err(w) = self.cursor_write(top, &steps, old) {
+                                        use rhp_builtins::Host;
+                                        return Err(self.chain_thrown(w, e));
+                                    }
+                                }
+                                return Err(e);
+                            }
                             return Err(match self.cursor_readonly_leaf_err(top, &steps) {
                                 Some(ro) => {
                                     use rhp_builtins::Host;
@@ -1923,7 +1974,7 @@ impl Vm {
                         Some(FinallyCont::Rethrow(t)) => return Err(t),
                         Some(FinallyCont::Return(v)) => {
                             // An outer finally still has to run first.
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::Return(v));
                                 self.stack[top].pc = f2 as usize;
                             } else if let Some(done) = self.do_return(v) {
@@ -1931,7 +1982,7 @@ impl Vm {
                             }
                         }
                         Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
                                 self.stack[top].pc = f2 as usize;
                             } else {
@@ -1952,6 +2003,11 @@ impl Vm {
                         Some(FinallyCont::Jump(target)) => {
                             self.jump_through_finally(top, &proto, pc, target)
                         }
+                        Some(FinallyCont::ForcedClose) => {
+                            if let Some(done) = self.finally_forced_close(top, &proto, pc)? {
+                                return Ok(done);
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -1963,8 +2019,7 @@ impl Vm {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
                     }
                 }
@@ -1972,14 +2027,12 @@ impl Vm {
                     // the notice comes with the return, after the finally
                     let v = self.ret_ref_checked(top, &proto, src, kind)?;
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
                     self.jump_through_finally(top, &proto, pc, target);
                 }
 
@@ -1995,12 +2048,14 @@ impl Vm {
                     let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
                     let o = self.reg_r(top, obj)?;
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropW { dst, obj, name } => {
@@ -2031,6 +2086,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch_is(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
@@ -2044,6 +2100,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
@@ -2197,12 +2254,14 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_isset(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_empty(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
@@ -2216,6 +2275,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
@@ -2229,6 +2289,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::UnsetProp { obj, name } => {
@@ -2499,12 +2560,7 @@ impl Vm {
 
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);
-                    let old = std::mem::replace(
-                        &mut self.stack[top].regs[dst_cv as usize],
-                        Value::Ref(rc),
-                    );
-                    rhp_values::gc::possible_root(&old);
-                    drop(old);
+                    self.rebind_cv(top, dst_cv, Value::Ref(rc));
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
@@ -2515,9 +2571,7 @@ impl Vm {
                         self.cv_assign(top, dst_cv, v)?;
                         continue;
                     }
-                    let old = std::mem::replace(&mut self.stack[top].regs[dst_cv as usize], v);
-                    rhp_values::gc::possible_root(&old);
-                    drop(old);
+                    self.rebind_cv(top, dst_cv, v);
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::FetchListW { dst, src, key } => {
@@ -2721,6 +2775,15 @@ impl Vm {
                 }
                 Instr::Yield { dst, key, value } => {
                     self.exec_yield(top, &proto, dst, key, value)?;
+                    return Ok(Value::Null);
+                }
+                Instr::YieldFrom { dst, src, end } => {
+                    if self.exec_yield_from(top, dst, src, end)? {
+                        return Ok(Value::Null);
+                    }
+                }
+                Instr::YieldValues { key, value } => {
+                    self.exec_yield_values(top, key, value)?;
                     return Ok(Value::Null);
                 }
             }
@@ -2979,17 +3042,17 @@ impl Vm {
         let is_gen = self.generators.contains_key(&id);
         let mut out = Vec::new();
         if is_gen {
-            self.gen_ensure_started(id)?;
+            self.gen_check_open(id)?;
+            self.gen_rewind(id)?;
         } else {
             self.call_iter_method(&it, b"rewind")?;
         }
         loop {
             let (k, v) = if is_gen {
-                let g = &self.generators[&id];
-                if g.status == GenStatus::Finished {
-                    break;
+                match self.gen_fetch(id)? {
+                    Some(kv) => kv,
+                    None => break,
                 }
-                (g.current_key.clone(), g.current_val.clone())
             } else {
                 if !conv::to_bool(&self.call_iter_method(&it, b"valid")?) {
                     break;
@@ -3017,7 +3080,7 @@ impl Vm {
             };
             out.push((key, deref(&v)));
             if is_gen {
-                self.advance_gen(id, Value::Null)?;
+                self.advance_gen(id)?;
             } else {
                 self.call_iter_method(&it, b"next")?;
             }
@@ -3038,24 +3101,119 @@ impl Vm {
         op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
-        let v = if matches!(x, Value::Int(_) | Value::Float(_))
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
+        if matches!(x, Value::Int(_) | Value::Float(_))
             && matches!(y, Value::Int(_) | Value::Float(_))
         {
-            f(&x, &y)?
+            let v = f(&x, &y)?;
+            self.reg_set(top, dst, v);
+            Ok(())
         } else {
-            self.bin_slow(op, f, &x, &y)?
-        };
-        self.reg_set(top, dst, v);
-        Ok(())
+            let v = self.bin_slow(op, f, &x, &y)?;
+            drop((x, y));
+            self.free_bin_operands(top, dst, a, b, v)
+        }
+    }
+
+    /// The operands of binary op `dst = a <op> b`. `$a <op>= $b` compiles to
+    /// the op followed by `Assign` back to `$a`; php's ZEND_ASSIGN_OP reads
+    /// op2 first, so with both undefined `$b` warns first (and reads as
+    /// null whatever the handler did).
+    fn bin_operands(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
+        if self.stack[top].regs[a as usize].is_undef() {
+            return self.bin_operands_undef(top, dst, a, b);
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bin_operands_undef(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
+        let f = &self.stack[top];
+        if a != b
+            && b < f.proto.num_cvs
+            && f.regs[b as usize].is_undef()
+            && matches!(f.proto.code.get(f.pc),
+                Some(Instr::Assign { cv, src }) if *cv == a && *src == dst)
+        {
+            self.undef_cv(top, b)?;
+            return Ok((self.reg_r(top, a)?, Value::Null));
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
     }
 
     /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
         let v = self.long_op(op, &x, &y)?;
+        drop((x, y));
+        self.free_bin_operands(top, dst, a, b, v)
+    }
+
+    /// Store a binary operator's result `v` and free the temporaries it
+    /// consumed (FREE_OP). A compound assignment's operands go only after
+    /// its store, as php frees OP_DATA last: an `AssignLval` frees them
+    /// (`compound_free`), and a variable's `Assign` runs here first (the
+    /// compiler puts its result register before the operand's).
+    #[inline(never)]
+    fn free_bin_operands(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        v: Value,
+    ) -> Result<(), Thrown> {
+        let n = self.stack[top].proto.num_cvs;
+        let held = |vm: &Self, r: Reg| {
+            r >= n
+                && matches!(
+                    vm.stack[top].regs[r as usize],
+                    Value::Object(_) | Value::Array(_) | Value::Closure(_)
+                )
+        };
+        if held(self, a) || held(self, b) {
+            let pc = self.stack[top].pc;
+            match self.stack[top].proto.code.get(pc).copied() {
+                Some(Instr::AssignLval { src, dst: d }) if src == dst && d == dst => {
+                    self.reg_set(top, dst, v);
+                    self.compound_free = Some((a, b));
+                    return Ok(());
+                }
+                // (`$x = $x <op> ...` has the same shape, but its result
+                // register comes after the operand's.)
+                Some(Instr::Assign { cv, src }) if src == dst && cv == a && dst < b => {
+                    self.reg_set(top, dst, v.clone());
+                    self.stack[top].pc = pc + 1;
+                    if self.typed_refs.is_empty()
+                        || !matches!(self.stack[top].regs[cv as usize], Value::Ref(_))
+                    {
+                        self.cv_assign_fast(top, cv, v);
+                    } else {
+                        self.assign_maybe_typed(top, cv, dst, v)?;
+                    }
+                    self.free_tmp(top, n, b);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        self.free_tmp(top, n, a);
+        self.free_tmp(top, n, b);
         self.reg_set(top, dst, v);
         Ok(())
     }
@@ -3161,15 +3319,12 @@ impl Vm {
                 let oid = obj.borrow().id;
                 let ocls = obj.borrow().class;
                 if self.generators.contains_key(&oid) {
-                    if delegate {
-                        // ZEND_YIELD_FROM attaches the generator
-                        // as it stands; no rewind.
-                        self.gen_ensure_started(oid)?;
-                    } else {
-                        self.gen_check_open(oid)?;
-                        self.fe_iter_handle(top, pos_reg, ocls);
-                        self.gen_rewind(oid)?;
-                    }
+                    // (`yield from` an aggregate's Generator iterates it
+                    // like foreach.)
+                    let _ = delegate;
+                    self.gen_check_open(oid)?;
+                    self.fe_iter_handle(top, pos_reg, ocls);
+                    self.gen_rewind(oid)?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.class_implements(ocls, b"Iterator") {
@@ -3281,18 +3436,17 @@ impl Vm {
             if self.generators.contains_key(&id) {
                 let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
                 if !first {
-                    self.advance_gen(id, Value::Null)?;
+                    self.advance_gen(id)?;
                 }
-                let g = &self.generators[&id];
-                if g.status == GenStatus::Finished {
-                    self.stack[top].pc = end as usize;
-                } else {
-                    let (k, v) = (g.current_key.clone(), deref(&g.current_val));
+                if let Some((k, v)) = self.gen_fetch(id)? {
+                    let v = deref(&v);
                     self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
                         self.cv_assign(top, key_cv, k)?;
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
+                } else {
+                    self.stack[top].pc = end as usize;
                 }
                 return Ok(());
             }
@@ -3431,6 +3585,20 @@ impl Vm {
                 .spl_array_owner(&obj, b"getiterator")
                 .or_else(|| self.spl_array_owner(&obj, b"current"));
             if let Some(owner) = spl {
+                // Backed by an object: its property table (spl_array's
+                // object storage), `pos_reg` holding [object, iterator id].
+                if let Some(backing) = self.spl_array_backing(&obj, owner)? {
+                    let cls = obj.borrow().class;
+                    self.fe_iter_handle(top, pos_reg, cls);
+                    let backing = self.lazy_props_object(&backing)?;
+                    let id = rhp_values::next_ht_iter_id();
+                    backing.borrow_mut().prop_iter_set(id, 0);
+                    let mut st = PhpArray::new();
+                    st.push(Value::Object(backing));
+                    st.push(Value::Int(id as i64));
+                    self.reg_set(top, pos_reg, Value::Array(st));
+                    return Ok(());
+                }
                 // `pos_reg` holds [storage reference, position].
                 let cell = self.spl_array_storage(&obj, owner)?;
                 let cls = obj.borrow().class;
@@ -3469,7 +3637,12 @@ impl Vm {
                     }
                 };
                 match rc_opt {
-                    Some(rc) => add(&mut rc.borrow_mut()),
+                    Some(rc) => {
+                        add(&mut rc.borrow_mut());
+                        // FE_RESET_RW's result holds the reference while
+                        // the loop runs (php's live loop variable).
+                        self.stack[top].regs[pos_reg as usize + 1] = Value::Ref(rc);
+                    }
                     None => add(&mut self.stack[top].regs[arr_cv as usize]),
                 }
                 self.reg_set(top, pos_reg, Value::Int(id as i64));
@@ -3555,7 +3728,17 @@ impl Vm {
         id: u32,
         by_ref: bool,
     ) -> Result<Option<(Value, Value)>, Thrown> {
-        let caller = self.stack[top].defining_class;
+        self.prop_iter_next_in(self.stack[top].defining_class, h, id, by_ref)
+    }
+
+    /// [`Self::prop_iter_next`] with the properties `caller` may see.
+    fn prop_iter_next_in(
+        &mut self,
+        caller: Option<ClassId>,
+        h: &ObjectHandle,
+        id: u32,
+        by_ref: bool,
+    ) -> Result<Option<(Value, Value)>, Thrown> {
         let mut b = h.borrow_mut();
         let cls = b.class;
         // A table the iterator is not on starts over (php restarts at the
@@ -3770,6 +3953,27 @@ impl Vm {
                 }
                 return Ok(());
             }
+            // An object-backed ArrayIterator (see FeResetRef): public
+            // properties only (spl_array_skip_protected).
+            if let (Some(Value::Object(o)), Some(Value::Int(id))) = (
+                st.get_index(0).map(|e| e.1.clone()),
+                st.get_index(1).map(|e| e.1.clone()),
+            ) {
+                let id = id as u32;
+                match self.prop_iter_next_in(None, &o, id, true)? {
+                    Some((k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k)?;
+                        }
+                    }
+                    _ => {
+                        o.borrow_mut().prop_iter_del(id);
+                        self.stack[top].pc = end as usize;
+                    }
+                }
+                return Ok(());
+            }
             let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
                 st.get_index(0).map(|e| e.1.clone()),
                 st.get_index(1).map(|e| e.1.clone()),
@@ -3782,14 +3986,12 @@ impl Vm {
                 return self.fe_fetch_ref_internal(top, pos_reg, key_cv, val_cv, end, g, fetched);
             }
             if fetched {
-                self.advance_gen(id, Value::Null)?;
+                self.advance_gen(id)?;
             }
-            let gs = &self.generators[&id];
-            if gs.status == GenStatus::Finished {
+            let Some((k, v)) = self.gen_fetch(id)? else {
                 self.stack[top].pc = end as usize;
                 return Ok(());
-            }
-            let (k, v) = (gs.current_key.clone(), gs.current_val.clone());
+            };
             let rc = match v {
                 Value::Ref(rc) => rc,
                 other => Rc::new(RefCell::new(other)),
@@ -4509,8 +4711,31 @@ impl Vm {
                 c
             }
         };
-        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        self.rebind_cv(top, cv, Value::Ref(cell));
         self.sync_global_cv(top, cv);
+    }
+
+    /// Point CV `cv` at a new value without writing through a reference it
+    /// holds (`=&`, `static`, `global`). The old value is released as php's
+    /// i_zval_ptr_dtor does: its destructor runs before the next instruction,
+    /// reported at this one.
+    #[inline]
+    pub(crate) fn rebind_cv(&mut self, top: usize, cv: Reg, v: Value) {
+        let slot = &mut self.stack[top].regs[cv as usize];
+        if is_scalar(slot) {
+            std::mem::forget(std::mem::replace(slot, v));
+            return;
+        }
+        self.rebind_cv_slow(top, cv, v);
+    }
+
+    #[inline(never)]
+    fn rebind_cv_slow(&mut self, top: usize, cv: Reg, v: Value) {
+        let old = std::mem::replace(&mut self.stack[top].regs[cv as usize], v);
+        rhp_values::gc::possible_root(&old);
+        if (matches!(old, Value::Ref(_)) && self.release_pending()) || self.release_tracked(&old) {
+            self.dtor_check = true;
+        }
     }
 }
 
@@ -4550,6 +4775,29 @@ impl Vm {
                     || self.lookup_method(cls, b"__destruct").is_some()
             }
             _ => false,
+        }
+    }
+
+    /// php's FREE_OP of a TMP operand: the consuming instruction releases a
+    /// temporary holding an object or array, so its destructor runs before
+    /// the next instruction, reported at this one (and caught by the try
+    /// around it). Scalars stay: dropping them changes nothing.
+    #[inline(always)]
+    fn free_tmp(&mut self, top: usize, num_cvs: Reg, r: Reg) {
+        if r >= num_cvs {
+            self.free_tmp_slot(top, r);
+        }
+    }
+
+    #[inline]
+    fn free_tmp_slot(&mut self, top: usize, r: Reg) {
+        let slot = &mut self.stack[top].regs[r as usize];
+        if matches!(slot, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
+            let old = std::mem::replace(slot, Value::Null);
+            if !self.destructibles.is_empty() {
+                self.dtor_check = true;
+            }
+            drop(old);
         }
     }
 
@@ -4617,7 +4865,8 @@ impl Vm {
                 c
             }
         };
-        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        drop(st);
+        self.rebind_cv(top, cv, Value::Ref(cell));
         true
     }
 }

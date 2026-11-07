@@ -406,7 +406,41 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                         .is_some_and(|n| n.eq_ignore_ascii_case(b"Closure")))
         })
         .unwrap_or(false);
+    let found = found || {
+        let obj = deref(&args[0]);
+        matches!(obj, Value::Object(_)) && spl_inner_has_method(host, &obj, &method, 0)
+    };
     Ok(Value::Bool(found))
+}
+
+/// spl_dual_it_get_method / spl_recursive_it_get_method: an SPL outer
+/// iterator answers for the methods of its inner (or current sub-)
+/// iterator, so method_exists() finds them.
+fn spl_inner_has_method(host: &mut dyn Host, obj: &Value, method: &[u8], depth: u32) -> bool {
+    let Some(name) = host.object_class_name(obj) else {
+        return false;
+    };
+    let inner = if host.reflect_is_a(&name, b"IteratorIterator") {
+        host.object_prop(obj, b"__it")
+    } else if host.reflect_is_a(&name, b"RecursiveIteratorIterator") {
+        let level = host
+            .object_prop(obj, b"__level")
+            .map(|l| conv::to_int(&deref(&l)));
+        match (host.object_prop(obj, b"__its").map(|v| deref(&v)), level) {
+            (Some(Value::Array(a)), Some(l)) => a.get(&rhp_values::ArrayKey::Int(l)).cloned(),
+            _ => None,
+        }
+    } else {
+        return false;
+    };
+    let Some(inner @ Value::Object(_)) = inner.map(|v| deref(&v)) else {
+        return false;
+    };
+    let Ok(Some(cid)) = class_id_of(host, &inner) else {
+        return false;
+    };
+    host.class_has_method(cid, method)
+        || (depth < 64 && spl_inner_has_method(host, &inner, method, depth + 1))
 }
 
 fn fn_property_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -561,6 +595,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "gmp",
     "hash",
     "iconv",
+    "session",
     "standard",
     "libxml",
     // Built in but disabled (php's CLI default; the CGI harness runs php
@@ -1002,9 +1037,13 @@ fn fn_get_defined_constants(host: &mut dyn Host, args: &[Value]) -> Result<Value
     let is_user = |n: &[u8]| user.iter().any(|(u, _)| u == n);
     let mut flat = PhpArray::new();
     let mut cats = PhpArray::new();
+    // Constants a module registers at run time (ext/session's SID) come
+    // last in its category.
+    const RUNTIME: &[(&str, &str)] = &[("session", "SID")];
     for (module, names) in CONST_MODULES {
         let mut cat = PhpArray::new();
-        for name in names.split(' ') {
+        let late = RUNTIME.iter().filter(|(m, _)| m == module).map(|(_, n)| *n);
+        for name in names.split(' ').chain(late) {
             if is_user(name.as_bytes()) {
                 continue;
             }
@@ -1103,17 +1142,17 @@ fn fn_zend_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(crate::version::ZEND_VERSION))
 }
 
-/// Raw byte-difference `memcmp` over the first `n` bytes: returns the signed
-/// difference of the first differing (unsigned) byte, or 0. Matches the
-/// platform `memcmp` php returns directly.
+/// The platform `memcmp` over the first `n` bytes. php returns its result
+/// as is, and the value differs by libc (macOS: the byte difference; glibc:
+/// depends on the implementation), so call the same function.
 fn memcmp_raw(a: &[u8], b: &[u8], n: usize) -> i64 {
-    for i in 0..n {
-        let d = a[i] as i64 - b[i] as i64;
-        if d != 0 {
-            return d;
-        }
+    assert!(n <= a.len() && n <= b.len());
+    if n == 0 {
+        return 0;
     }
-    0
+    // SAFETY: both slices hold at least `n` bytes (checked above).
+    let r = unsafe { libc::memcmp(a.as_ptr().cast(), b.as_ptr().cast(), n) };
+    r as i64
 }
 
 /// Case-insensitive variant: compares `tolower` of each byte.

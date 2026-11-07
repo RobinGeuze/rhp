@@ -31,6 +31,7 @@ pub mod hrtime;
 pub mod html;
 #[rustfmt::skip]
 pub mod html_tables;
+pub mod ftp_fopen_wrapper;
 pub mod http;
 pub mod http_fopen_wrapper;
 pub mod image;

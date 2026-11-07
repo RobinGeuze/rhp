@@ -125,6 +125,46 @@ pub fn notify(id: u32) {
     }
 }
 
+/// zend_weakmap_get_object_key_entry_gc: the entries keyed by the object
+/// or closure with handle `id`, as (WeakMap state address, value), for the
+/// cycle collector. A key does not hold its entries' values; the collector
+/// keeps a value when both its key and its map are live.
+pub fn key_gc_entries(id: u32, out: &mut Vec<(usize, Value)>) {
+    let _ = REGISTRY.try_with(|r| {
+        let Ok(r) = r.try_borrow() else {
+            return;
+        };
+        for t in r.get(&id).into_iter().flatten() {
+            if let Target::Map(w) = t {
+                if let Some(m) = w.upgrade() {
+                    if let Ok(inner) = m.inner.try_borrow() {
+                        if let Some(e) = inner.by_id.get(&id).and_then(|s| inner.entries.get(s)) {
+                            out.push((Rc::as_ptr(&m) as usize, e.value.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// zend_weakmap_get_entry_gc: WeakMap `h`'s entries as (key address,
+/// value) for the cycle collector; returns the map state's address (the
+/// one [`key_gc_entries`] gives), or None when `h` is no WeakMap.
+pub fn map_gc_entries(h: &ObjectHandle, out: &mut Vec<(usize, Value)>) -> Option<usize> {
+    let st = object_handlers::payload_of::<MapState>(h)?;
+    if let Ok(inner) = st.inner.try_borrow() {
+        for e in inner.entries.values() {
+            let key = match &e.key {
+                Referent::Obj(w) => w.as_ptr() as usize,
+                Referent::Closure(w) => w.as_ptr() as usize,
+            };
+            out.push((key, e.value.clone()));
+        }
+    }
+    Some(Rc::as_ptr(&st) as usize)
+}
+
 /// A new request (`zend_weakrefs_init`).
 pub fn reset() {
     let _ = REGISTRY.try_with(|r| {

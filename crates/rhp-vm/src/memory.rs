@@ -117,6 +117,31 @@ impl Vm {
         }
     }
 
+    /// sapi_handle_post: request parsing crossed the limit (php stops
+    /// parsing there). The error is raised before the script runs, in
+    /// Unknown on line 0, and the request ends as after a fatal error.
+    pub(crate) fn oom_startup(&mut self) -> Result<(), Thrown> {
+        if !self.mem.attention() {
+            return Ok(());
+        }
+        let message = match self.mem.take_oom() {
+            Some(oom @ Oom::Hard { .. }) => return Err(self.hard_limit_exit(oom)),
+            Some(oom) => oom.message(),
+            // Noted already (a builtin call while building the request).
+            None => match self.delayed_oom.take() {
+                Some(d) => d.message,
+                None => return Ok(()),
+            },
+        };
+        self.delayed_oom = Some(Box::new(DelayedOom {
+            message,
+            file: b"Unknown".to_vec(),
+            line: 0,
+            at: (0, 0),
+        }));
+        Err(self.raise_oom())
+    }
+
     /// zend_handle_delayed_oom: report the E_ERROR (php_error_cb drops every
     /// output buffer first, unless a handler is running; the backtrace stops
     /// after its first frame while an OOM is handled), then bail out like a

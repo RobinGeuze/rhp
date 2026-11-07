@@ -177,7 +177,7 @@ impl Response {
     }
 
     /// `sapi_header_add_op`: store a line (replacing same-name ones).
-    fn add(&mut self, replace: bool, line: Vec<u8>) {
+    pub(crate) fn add(&mut self, replace: bool, line: Vec<u8>) {
         if !self.store {
             return;
         }
@@ -502,6 +502,19 @@ pub fn header_op(host: &mut dyn Host, op: HeaderOp<'_>) -> Result<bool, Thrown> 
             }
         } else if name.eq_ignore_ascii_case(b"WWW-Authenticate") {
             r.update_code(401);
+        } else if name.eq_ignore_ascii_case(b"Content-Length") {
+            // req #44164: the script cannot know the compressed length
+            r.add(replace, line.clone());
+            if code != 0 {
+                r.update_code(code);
+            }
+            crate::main::ini::alter_ini_entry(
+                host,
+                b"zlib.output_compression",
+                b"0".to_vec(),
+                "header",
+            )?;
+            return Ok(true);
         }
     }
     if code != 0 {

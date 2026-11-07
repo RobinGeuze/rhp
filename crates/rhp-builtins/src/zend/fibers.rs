@@ -27,6 +27,12 @@ pub enum FiberOp {
     Suspend,
     /// zend_fiber_object_destroy (the class's `dtor_obj`).
     Destroy,
+    /// ReflectionFiber::getTrace(), getExecutingLine(), getExecutingFile(),
+    /// getCallable() on the fiber.
+    ReflectTrace,
+    ReflectLine,
+    ReflectFile,
+    ReflectCallable,
 }
 
 impl FiberOp {
@@ -44,6 +50,10 @@ impl FiberOp {
             8 => GetReturn,
             9 => GetCurrent,
             10 => Suspend,
+            11 => ReflectTrace,
+            12 => ReflectLine,
+            13 => ReflectFile,
+            14 => ReflectCallable,
             _ => return None,
         })
     }

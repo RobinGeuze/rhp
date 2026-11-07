@@ -1,0 +1,30 @@
+bool(true)
+bool(true)
+int(1)
+array(1) {
+  [0]=>
+  string(4) "http"
+}
+open http://example.invalid/a rb
+string(5) "body
+"
+open http://example.invalid/b r
+string(5) "body
+"
+open http://example.invalid/c rb
+array(1) {
+  [0]=>
+  string(5) "body
+"
+}
+open http://example.invalid/d rb
+body
+int(5)
+open http://example.invalid/e wb
+write data
+int(4)
+open http://example.invalid/f rb
+open http://example.invalid/g wb
+write body
+
+bool(true)

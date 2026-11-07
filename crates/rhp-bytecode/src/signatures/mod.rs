@@ -463,7 +463,18 @@ impl Zpp {
 /// `Z_PARAM_STR_OR_NULL` and pcntl_signal's `$restart_syscalls`
 /// `Z_PARAM_BOOL_OR_NULL`. (Typed parameters php parses as any value, such
 /// as hash_equals' and ini_set's, carry [`ZV`].)
-const ZPP_OWN: &[(&str, &str)] = &[("fputcsv", "eol"), ("pcntl_signal", "restart_syscalls")];
+const ZPP_OWN: &[(&str, &str)] = &[
+    ("fputcsv", "eol"),
+    ("pcntl_signal", "restart_syscalls"),
+    // zpp "ffffff|f!f!f!" after a deprecation: the body checks them in order.
+    ("session_set_save_handler", "read"),
+    ("session_set_save_handler", "write"),
+    ("session_set_save_handler", "destroy"),
+    ("session_set_save_handler", "gc"),
+    ("session_set_save_handler", "create_sid"),
+    ("session_set_save_handler", "validate_sid"),
+    ("session_set_save_handler", "update_timestamp"),
+];
 
 /// Parameters whose zpp differs from what their stub type maps to:
 /// number_format's `float $num` is `Z_PARAM_NUMBER`, and the `string`

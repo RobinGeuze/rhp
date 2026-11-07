@@ -25,6 +25,8 @@ rhp-bytecode = { path = "../rhp-bytecode" }
 libc = "0.2"
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
+# Substring search (explode, …), as php_memnstr.
+memchr = "2"
 # No -sys crate for PCRE2: build.rs links the system libpcre2-8 (see
 # docs/design/libraries.md) and src/ext/pcre/sys.rs declares what rhp calls.
 # pcre2-sys would silently build its bundled copy instead.
@@ -80,6 +82,10 @@ openssl-sys = "0.9.118"
 
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
+
+# dl.rs: reads a shared library's exported symbols to tell a php extension
+# module (one exporting get_module) from other libraries without loading it.
+object = { version = "0.37", default-features = false, features = ["read_core", "elf", "macho", "std", "unaligned"] }
 
 [build-dependencies]
 # Compiles the libxml2, ICU and curl shims against the headers of the

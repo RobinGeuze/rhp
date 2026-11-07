@@ -352,6 +352,7 @@ impl Vm {
         self.rw_null_keys = 0;
         self.cursor_static = None;
         self.deferred_undef_src = None;
+        self.skip_false_dep = 0;
         self.typed_write_result = None;
         if matches!(self.cursor_root, CursorRoot::Cell(_)) {
             self.cursor_root = CursorRoot::Cv(0);
@@ -538,6 +539,73 @@ impl Vm {
             self.diag(level, &w)?;
         }
         Ok(())
+    }
+
+    /// The warning of an undefined variable that is the last key of an
+    /// assignment's path, in php's order: ZEND_ASSIGN_DIM reads the key
+    /// after checking the container. A false container is converted first
+    /// (with its deprecation); a string container is held while the key
+    /// is read. When the handler released either, php writes nothing:
+    /// `Ok(true)`, with the cursor released and the result `dst` null.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn assign_undef_key(&mut self, top: usize, dst: Reg) -> Result<bool, Thrown> {
+        let key = self.deferred_undef_key.take().expect("a deferred key");
+        match self.assign_undef_key_in(top, key) {
+            Ok(false) => Ok(false),
+            r => {
+                self.cursor_steps.clear();
+                self.cursor_release();
+                if r.is_ok() {
+                    self.reg_set(top, dst, Value::Null);
+                }
+                r
+            }
+        }
+    }
+
+    fn assign_undef_key_in(&mut self, top: usize, key: Reg) -> Result<bool, Thrown> {
+        let container = |vm: &Vm| {
+            let n = vm.cursor_steps.len();
+            deref(&if n <= 1 {
+                vm.cursor_root_value(top)
+            } else {
+                vm.cursor_read_steps(top, &vm.cursor_steps[..n - 1])
+            })
+        };
+        match container(self) {
+            Value::Bool(false) => {
+                self.diag(
+                    builtins::E_DEPRECATED,
+                    "Automatic conversion of false to array is deprecated",
+                )?;
+                if !matches!(container(self), Value::Bool(false)) {
+                    return Ok(true);
+                }
+                self.skip_false_dep += 1;
+                self.undef_cv(top, key)?;
+                // php's converted array is gone when the handler replaced
+                // the variable.
+                if !matches!(container(self), Value::Bool(false)) {
+                    return Ok(true);
+                }
+            }
+            Value::Str(s) => {
+                self.undef_cv(top, key)?;
+                if !matches!(container(self), Value::Str(t) if t.ptr_eq(&s)) {
+                    self.diag(builtins::E_WARNING, "String offset cast occurred")?;
+                    return Ok(true);
+                }
+            }
+            // "Cannot use a scalar value as an array" comes first; the key
+            // is not read.
+            Value::Int(_) | Value::Float(_) | Value::Bool(true) | Value::Resource(_) => {}
+            _ => {
+                self.lval_undef_key(top, key)?;
+            }
+        }
+        self.cursor_null_key = true;
+        Ok(false)
     }
 
     /// The null keys of an assignment's path: php's write fetches convert
@@ -1725,6 +1793,10 @@ impl Vm {
                 self.rw_null_keys -= 1;
                 continue;
             }
+            if self.skip_false_dep > 0 && msg == FALSE_TO_ARRAY.as_bytes() {
+                self.skip_false_dep -= 1;
+                continue;
+            }
             self.diag(level, &msg)?;
         }
         Ok(())
@@ -2115,7 +2187,7 @@ impl Vm {
         let cls = h.borrow().class;
         let msg = format!(
             "Indirect modification of overloaded element of {} has no effect",
-            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+            String::from_utf8_lossy(crate::errors::c_name(self.class(cls).name.as_bytes()))
         );
         self.diag(builtins::E_NOTICE, &msg)
     }
@@ -2145,6 +2217,31 @@ impl Vm {
         };
         let mut obj = Value::Object(h.clone());
         make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__s"))], &cx)
+    }
+
+    /// The object a built-in ArrayIterator is backed by (its `__o`).
+    pub(crate) fn spl_array_backing(
+        &mut self,
+        h: &ObjectHandle,
+        owner: ClassId,
+    ) -> Result<Option<ObjectHandle>, Thrown> {
+        if self.class(owner).name.as_bytes() != b"ArrayIterator" {
+            return Ok(None);
+        }
+        let cx = PropCtx {
+            classes: &self.classes,
+            typed: &self.typed_refs,
+            scope: Some(owner),
+            called: Some(owner),
+            incdec: false,
+        };
+        let mut obj = Value::Object(h.clone());
+        let o = make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__o"))], &cx)?;
+        let v = o.borrow().clone();
+        Ok(match v {
+            Value::Object(o) => Some(o),
+            _ => None,
+        })
     }
 
     /// The storage key of offset `key` of the built-in ArrayObject /
@@ -2343,6 +2440,18 @@ impl Vm {
                 let k = match key {
                     Value::Int(n) => ArrayKey::Int(*n),
                     Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    // slow_index_convert: an error handler that drops the
+                    // last reference destroys the array (php's GC_DELREF
+                    // check); only this fetch's two copies are left then.
+                    Value::Float(_) => {
+                        let before = a.ref_count();
+                        let k = self.dim_key(key, true)?;
+                        let after = a.ref_count();
+                        if after < before && after <= 2 {
+                            return Ok(empty);
+                        }
+                        k.unwrap_or(ArrayKey::Int(0))
+                    }
                     _ => match self.dim_key(key, true)? {
                         Some(k) => k,
                         None => {
@@ -2608,10 +2717,7 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
             Ok(())
         }
         Value::Bool(false) => {
-            path_diag(
-                builtins::E_DEPRECATED,
-                "Automatic conversion of false to array is deprecated",
-            );
+            path_diag(builtins::E_DEPRECATED, FALSE_TO_ARRAY);
             *slot = Value::Array(PhpArray::new());
             Ok(())
         }
@@ -2637,6 +2743,8 @@ fn autovivify(slot: &mut Value, cx: &PropCtx) -> Result<(), Thrown> {
         )),
     }
 }
+
+const FALSE_TO_ARRAY: &str = "Automatic conversion of false to array is deprecated";
 
 const NULL_OFFSET_DEPRECATION: &str =
     "Using null as an array offset is deprecated, use an empty string instead";

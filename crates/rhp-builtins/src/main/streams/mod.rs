@@ -95,6 +95,11 @@ pub fn note_errno() {
     LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
 }
 
+/// Record `errno` as a wrapper sets it.
+pub fn set_errno(e: i32) {
+    LAST_OS_ERR.with(|c| c.set(Some(e)));
+}
+
 /// Record the errno carried by an `io::Error`.
 pub fn note_io_err(e: &std::io::Error) {
     LAST_OS_ERR.with(|c| c.set(e.raw_os_error()));
@@ -102,6 +107,7 @@ pub fn note_io_err(e: &std::io::Error) {
 
 /// A new request: no errno or wrapper error recorded.
 pub(crate) fn reset_state() {
+    userspace::reset_state();
     clear_errno();
     take_wrapper_error();
 }
@@ -454,7 +460,7 @@ pub fn locate_url_wrapper(path: &[u8], registered: impl Fn(&[u8]) -> bool) -> Lo
     }
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 

@@ -892,20 +892,35 @@ impl Vm {
     /// Free the streams that still have filters at the end of the request
     /// (zend_close_rsrc_list, last first): their filters see a null stream.
     pub(crate) fn close_filtered_streams(&mut self) -> Result<(), Thrown> {
-        let mut ids: Vec<u32> = self
-            .streams
-            .ids()
-            .into_iter()
-            .filter(|id| self.layer(*id).is_some())
-            .collect();
-        ids.sort_unstable();
         self.closing_resources = true;
         let mut r = Ok(());
-        for id in ids.into_iter().rev() {
-            if let Err(t) = self.free_stream(id) {
-                r = r.and(Err(t));
+        // streams a close opens (a user wrapper's stream_close may include)
+        // are closed in later rounds
+        for _ in 0..16 {
+            let mut ids: Vec<u32> = self
+                .streams
+                .ids()
+                .into_iter()
+                .filter(|id| {
+                    self.layer(*id).is_some()
+                        || matches!(self.streams.get(id), Some(StreamState::User(_)))
+                })
+                .collect();
+            if ids.is_empty() {
+                break;
+            }
+            ids.sort_unstable();
+            for id in ids.into_iter().rev() {
+                if let Err(t) = self.free_stream(id) {
+                    r = r.and(Err(t));
+                }
+                // a fatal error in one close leaves the others to close
+                if let Some(Thrown::Exit(_)) = self.pending_throw {
+                    self.pending_throw = None;
+                }
             }
         }
+        self.held_streams.clear();
         self.closing_resources = false;
         r
     }

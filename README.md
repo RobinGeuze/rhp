@@ -43,11 +43,11 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 5,128 | 5,396 | 95.0% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 834 | 895 | 93.2% | php-src's tests of the language, functions, classes and output |
+| Zend/tests | 5,266 | 5,396 | 97.6% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| tests | 853 | 895 | 95.3% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 22 | 117 | 18.8% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,327 | 3,880 | 85.7% | no user stream wrappers |
+| ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
 | ext/ctype | 38 | 49 | 77.6% | |
@@ -55,36 +55,37 @@ passing, so the percentages are of all php-src tests.
 | ext/date | 686 | 705 | 97.3% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
 | ext/filter | 40 | 129 | 31.0% | `filter_var` only |
-| ext/gmp | 95 | 99 | 96.0% | on libgmp |
+| ext/gmp | 96 | 99 | 97.0% | on libgmp |
 | ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 80 | 82 | 97.6% | the system iconv |
 | ext/intl | 42 | 511 | 8.2% | `grapheme_*`, `Normalizer`, `idn_*` and the `intl_*` error functions only, on ICU; not reported as loaded |
 | ext/json | 80 | 94 | 85.1% | |
-| ext/libxml | 18 | 32 | 56.2% | on libxml2 |
-| ext/mbstring | 226 | 446 | 50.7% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 802 | 876 | 91.6% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/libxml | 21 | 32 | 65.6% | on libxml2 |
+| ext/mbstring | 236 | 446 | 52.9% | on php-src's libmbfl (rhp-mbfl-sys) |
+| ext/opcache | 804 | 876 | 91.8% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
-| ext/pcre | 166 | 174 | 95.4% | PCRE2, linked statically |
+| ext/pcre | 167 | 174 | 96.0% | PCRE2, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 0 | 28 | 0.0% | `readline()`, `readline_add_history()`, `readline_clear_history()` only; no line editing; not reported as loaded |
-| ext/reflection | 423 | 540 | 78.3% | |
-| ext/simplexml | 154 | 165 | 93.3% | on libxml2 |
+| ext/reflection | 431 | 540 | 79.8% | |
+| ext/session | 249 | 269 | 92.6% | |
+| ext/simplexml | 156 | 165 | 94.5% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
-| ext/spl | 561 | 796 | 70.5% | |
+| ext/spl | 563 | 796 | 70.7% | |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
-| ext/zip | 119 | 125 | 95.2% | `ZipArchive` on libzip |
-| ext/zlib | 93 | 161 | 57.8% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
+| ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
+| other ext/ | 3 | 3,684 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **14,303** | **22,219** | **64.4%** | |
+| **total** | **14,867** | **22,219** | **66.9%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support
@@ -97,10 +98,10 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | 1,749 of its 1,751 PHP files compile under rhp. `bin/console --version`, `list` and `debug:router` print what php prints; `about` differs in its Intl locale line (`n/a`). Every request of the request diff answers 500 instead. |
 | Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: the container calls `spl_object_id()` on a closure, which rhp rejects, so every artisan command and request fails. |
 | PHPUnit (`tests/apps/tools`) | 13.4.6 | All 29 checked commands print what php prints: `--version`, `--help`, the `--list-*` commands, configuration validation and migration, test runs (passing, failing and skipped tests, data providers, `--filter`, `--group`, `--stop-on-failure`, random order with a seed) and every output format (testdox, TeamCity, debug, JUnit, event log). |
-| PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | 24 of 25 commands print what php prints: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format, and runs with 2 parallel workers. The parallel runs write the same files but list them in the order the workers finish, which with rhp's slower workers is sometimes not php's: one of the two differed in the measured run. |
-| Psalm (`tests/apps/tools`) | 7.0.3 | 22 of 24 commands print what php prints: `--version`, `--help`, single-threaded analysis with every checked output format but `xml`, `--show-info`, `--stats`, `--find-dead-code`, `--set-baseline` and `--alter` (psalter, with and without `--dry-run`). `--threads=2` stops at `Fiber` (amphp's event loop), and `--output-format=xml` fails because rhp's `property_exists()` doesn't see `DOMDocument`'s properties (`preserveWhiteSpace`, `formatOutput`). |
-| PHPStan (`tests/apps/tools`) | 2.3.5 | 3 of 25 commands print what php prints: `--version`, `list` and `help analyse`. Every other command (`analyse`, `diagnose`, `dump-parameters`, `clear-result-cache`, ...) runs out of the default 128M memory limit while PHPStan tokenises files (rhp's `token_get_all()` needs about 2.4 times php's memory). With `--memory-limit=512M` analysis runs but reports an internal error: rhp's `[$a, $b] = $a;` overwrites `$a` before it reads `$b`. |
-| Rector (`tests/apps/tools`) | 2.8.4 | 5 of 20 commands print what php prints: `--version`, `list`, `help process` and `list-rules` (text and JSON). Every `process` run fails on each file because `stream_wrapper_restore()` is missing, and parallel runs stop at `Random\Randomizer`, which rhp lacks. |
+| PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | 23 of 25 commands print what php prints: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format. The two runs with 2 parallel workers write the same files and exit with php's code, but list the files in the order the workers finish, which with rhp's slower workers is not php's. |
+| Psalm (`tests/apps/tools`) | 7.0.3 | All 24 checked commands print what php prints: `--version`, `--help`, analysis single-threaded and with `--threads=2` (amphp's event loop on fibers), every checked output format including `xml`, `--show-info`, `--stats`, `--find-dead-code`, `--set-baseline` and `--alter` (psalter, with and without `--dry-run`). |
+| PHPStan (`tests/apps/tools`) | 2.3.5 | 24 of 25 commands print what php prints, with the default 128M memory limit: `--version`, `list`, `help analyse`, `diagnose`, `dump-parameters`, the result-cache commands, and `analyse` at several levels, on one file, in parallel, with `--generate-baseline` and in every error format. rhp cannot load PHPStan's optional `phpstan_turbo` extension, so PHPStan spawns its worker where php forks it, and `analyse -v` says so in its peak-memory line. |
+| Rector (`tests/apps/tools`) | 2.8.4 | All 20 checked commands print what php prints: `--version`, `list`, `help process`, `list-rules` (text and JSON) and `process` (dry runs with and without diffs, real runs that write the same files, a single file, `--only`, `--max-changes`, `--rules-summary`, `--clear-cache`, `--debug`, 2 parallel workers, and JSON, GitHub and GitLab output). |
 
 ## Build and test
 

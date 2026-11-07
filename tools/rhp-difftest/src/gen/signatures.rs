@@ -57,6 +57,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/random", "random"),
     ("ext/readline", "readline"),
     ("ext/reflection", "Reflection"),
+    ("ext/session", "session"),
     ("ext/simplexml", "SimpleXML"),
     ("ext/sockets", "sockets"),
     ("ext/spl", "SPL"),

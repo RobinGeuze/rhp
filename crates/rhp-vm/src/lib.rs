@@ -43,6 +43,7 @@ mod streams;
 mod stub_default;
 mod traits;
 mod types;
+mod user_streams;
 mod zpp;
 
 use std::cell::RefCell;
@@ -139,6 +140,9 @@ pub struct Vm {
     exception_handlers: Vec<Value>,
     /// `register_shutdown_function` callbacks with their arguments, in order.
     shutdown_functions: Vec<(Value, Vec<Value>)>,
+    /// The entries of `shutdown_functions` registered under a name
+    /// (register_user_shutdown_function), with their index.
+    shutdown_names: Vec<(Vec<u8>, usize)>,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.
@@ -173,11 +177,17 @@ pub struct Vm {
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
     // Generator runtime state, keyed by the Generator object's id.
-    generators: HashMap<u32, GenState>,
-    // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
-    yield_out: Option<(Value, Value, Reg)>,
+    generators: rustc_hash::FxHashMap<u32, GenState>,
+    // Set by `Yield` / `YieldFrom` to tell the generator driver why the
+    // frame stopped.
+    yield_out: Option<generators::YieldOut>,
     // Stack of generator ids currently being advanced (innermost last).
     gen_stack: Vec<u32>,
+    // The running generator frames: (stack index, the generator, the leaf
+    // generator it runs for), so traces show the `yield from` chain.
+    gen_resumes: Vec<(usize, u32, u32)>,
+    // A force-closed generator ended without a return value.
+    gen_abort: bool,
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
     includer: Option<Includer>,
@@ -241,6 +251,9 @@ pub struct Vm {
     // Built-in wrappers `stream_wrapper_unregister` took out, kept for
     // `stream_wrapper_restore` (None: one served outside `wrappers`).
     wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
+    // User wrappers in `wrappers`, in registration order (php's hash order
+    // for `stream_get_wrappers`).
+    user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for
@@ -297,6 +310,15 @@ pub struct Vm {
     // An undefined variable assigned below a `__get` property: php reads
     // it (and warns) after fetching the container.
     deferred_undef_src: Option<Reg>,
+    // An undefined variable as the last key of an assignment's path: php
+    // reads it after checking the container (see `assign_undef_key`).
+    deferred_undef_key: Option<Reg>,
+    // False-to-array deprecations already raised for the open cursor's
+    // write (its walk then converts quietly).
+    skip_false_dep: u32,
+    // A compound assignment's operator left its operands for the
+    // `AssignLval` to free once the store is done (`free_bin_operands`).
+    compound_free: Option<(Reg, Reg)>,
     // The typed property the open cursor's leaf is, as the last
     // `cursor_through_check` found it.
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
@@ -319,11 +341,18 @@ pub struct Vm {
     /// The include kind while an include opens its file (php's docref
     /// names the include then).
     include_docref: Option<&'static str>,
+    /// The frame depth a user-wrapper include runs its stream at: php's
+    /// docref names the include there.
+    include_docref_depth: usize,
+    /// Streams of includes a fatal error cut short: php closes them with
+    /// the resource list at shutdown.
+    held_streams: Vec<Value>,
     /// The end-of-request resource list close is running: filters see a
     /// null stream.
     closing_resources: bool,
-    /// Open streams with a filter layer (their release is checked at
-    /// function returns: php frees a resource on its last reference).
+    /// Open streams with a filter layer, plus user wrapper streams (their
+    /// release is checked at once: php frees a resource on its last
+    /// reference, and their close runs PHP code).
     filtered_streams: u32,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,
@@ -374,6 +403,9 @@ pub struct Vm {
     delayed_oom: Option<Box<memory::DelayedOom>>,
     /// EG(active_fiber): the running Fiber object.
     active_fiber: Option<ObjectHandle>,
+    /// The cycle collector's destructor fiber and the state of a
+    /// collection's destructor phase.
+    gc_dtor: gc::DtorState,
     /// Last, so it drops after every value above: the request state kept
     /// outside the Vm is reset when the engine goes.
     _request_state: lifecycle::RequestStateReset,

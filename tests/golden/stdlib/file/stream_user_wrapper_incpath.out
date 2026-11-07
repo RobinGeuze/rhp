@@ -1,0 +1,14 @@
+url_stat ipw://lib/one.php 2
+stream_open ipw://lib/one.php
+include(ipw://lib/one.php): Failed to open stream: "IncPathWrapper::stream_open" call failed
+include(): Failed opening 'one.php' for inclusion (include_path='ipw://lib')
+bool(false)
+url_stat ipw://lib/two.php 2
+stream_open ipw://lib/two.php
+include_once(ipw://lib/two.php): Failed to open stream: "IncPathWrapper::stream_open" call failed
+include_once(): Failed opening 'two.php' for inclusion (include_path='ipw://lib')
+bool(false)
+stream_open ipw://lib/three.php
+include(ipw://lib/three.php): Failed to open stream: "IncPathWrapper::stream_open" call failed
+include(): Failed opening 'ipw://lib/three.php' for inclusion (include_path='ipw://lib')
+bool(false)

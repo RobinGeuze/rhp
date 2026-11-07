@@ -167,6 +167,25 @@ pub(crate) fn str_param(
     }
 }
 
+/// [`str_param`] as a php string: a string argument is shared, not copied
+/// (`Z_PARAM_STR` hands the function the caller's `zend_string`).
+pub(crate) fn zstr_param(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    func: &str,
+    pname: &str,
+) -> Result<rhp_values::PhpStr, Thrown> {
+    match &args[i] {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Ref(r) => match &*r.borrow() {
+            Value::Str(s) => Ok(s.clone()),
+            _ => str_param(host, args, i, func, pname).map(rhp_values::PhpStr::from_bytes),
+        },
+        _ => str_param(host, args, i, func, pname).map(rhp_values::PhpStr::from_bytes),
+    }
+}
+
 /// An `array` parameter. The VM's zpp has checked it for a call from user
 /// code; a prelude caller passing anything else gets php's TypeError.
 pub(crate) fn array_param(
@@ -532,9 +551,10 @@ pub fn set_ref(args: &[Value], i: usize, v: Value) {
     }
 }
 
-/// php's `ZEND_TRY_ASSIGN_REF_*` on an untyped reference: the old value is
+/// php's `ZEND_TRY_ASSIGN_REF_*`. On an untyped reference the old value is
 /// destroyed first (its destructor runs now and sees null), then the new
-/// one is stored. A destructor's exception comes back after the store.
+/// one is stored; a typed one checks and stores first, then destroys. A
+/// destructor's exception comes back after the store.
 pub fn try_assign_ref(
     host: &mut dyn Host,
     args: &[Value],
@@ -544,6 +564,17 @@ pub fn try_assign_ref(
     let Some(Value::Ref(r)) = args.get(i) else {
         return Ok(());
     };
+    if host.ref_is_typed(r) {
+        // zend_try_assign_typed_ref: checked and stored, then the old value
+        // is destroyed.
+        let old = r.borrow().clone();
+        host.assign_ref(r, v)?;
+        if matches!(old, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
+            drop(old);
+            return host.run_released_destructors();
+        }
+        return Ok(());
+    }
     let old = std::mem::replace(&mut *r.borrow_mut(), Value::Null);
     let res = if matches!(old, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
         drop(old);

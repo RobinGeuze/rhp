@@ -1,0 +1,115 @@
+bool(true)
+string(4) "user"
+int(1)
+open rhp_golden_session_handlers PHPSESSID
+validateId unknown
+create_sid
+read goldenid1
+bool(true)
+string(9) "goldenid1"
+[2] ini_set(): Session ini settings cannot be changed when a session is active (started from handlers.php on line 27)
+bool(false)
+string(9) "PHPSESSID"
+[2] session_name(): Session name cannot be changed when a session is active (started from handlers.php on line 27)
+[2] session_save_path(): Session save path cannot be changed when a session is active (started from handlers.php on line 27)
+[2] session_id(): Session ID cannot be changed when a session is active (started from handlers.php on line 27)
+bool(false)
+bool(false)
+bool(false)
+[2] session_cache_limiter(): Session cache limiter cannot be changed when a session is active (started from handlers.php on line 27)
+[2] session_cache_expire(): Session cache expiration cannot be changed when a session is active (started from handlers.php on line 27)
+bool(false)
+int(180)
+[2] session_set_cookie_params(): Session cookie parameters cannot be changed when a session is active (started from handlers.php on line 27)
+bool(false)
+write goldenid1 x|i:1;
+close
+open rhp_golden_session_handlers PHPSESSID
+create_sid
+validateId goldenid2
+read goldenid2
+bool(true)
+string(9) "goldenid2"
+write goldenid2 x|i:1;
+close
+-- unchanged data
+open rhp_golden_session_handlers PHPSESSID
+validateId goldenid2
+read goldenid2
+array(1) {
+  ["x"]=>
+  int(1)
+}
+updateTimestamp goldenid2 x|i:1;
+close
+-- reset, abort
+open rhp_golden_session_handlers PHPSESSID
+validateId goldenid2
+read goldenid2
+open rhp_golden_session_handlers PHPSESSID
+validateId goldenid2
+read goldenid2
+bool(true)
+array(1) {
+  ["x"]=>
+  int(1)
+}
+close
+bool(true)
+int(1)
+open rhp_golden_session_handlers PHPSESSID
+validateId goldenid2
+read goldenid2
+array(1) {
+  ["x"]=>
+  int(1)
+}
+destroy goldenid2
+close
+open rhp_golden_session_handlers PHPSESSID
+create_sid
+validateId goldenid3
+read goldenid3
+bool(true)
+string(9) "goldenid3"
+bool(true)
+destroy goldenid3
+close
+bool(true)
+int(1)
+bool(true)
+-- errors
+[2] session_decode(): Session data cannot be decoded when there is no active session
+[2] session_regenerate_id(): Session ID cannot be regenerated when there is no active session
+[2] session_gc(): Session cannot be garbage collected when there is no active session
+[2] session_destroy(): Trying to destroy uninitialized session
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+[2] session_create_id(): Prefix cannot contain special characters. Only the A-Z, a-z, 0-9, "-", and "," characters are allowed
+bool(false)
+int(35)
+[2] session_set_cookie_params(): Argument #1 ($lifetime_or_options) contains an unrecognized key "nope"
+session_set_cookie_params(): Argument #1 ($lifetime_or_options) must contain at least 1 valid key
+session_start(): Option "x" must be of type string|int|bool, array given
+open rhp_golden_session_handlers S1
+create_sid
+read goldenid4
+close
+bool(true)
+int(1)
+string(2) "S1"
+[2] ini_set(): Session save handler "nosuch" cannot be found
+[2] ini_set(): Serialization handler "nosuch" cannot be found
+bool(false)
+bool(false)
+[8192] ini_set(): session.sid_length INI setting is deprecated
+[2] ini_set(): session.configuration "session.sid_length" must be between 22 and 256
+[2] ini_set(): session.name "123" must not be numeric, empty, contain null bytes or any of the following characters "=,;.[ \t\r\n\013\014"
+bool(false)
+bool(false)

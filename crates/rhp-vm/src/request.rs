@@ -105,9 +105,17 @@ impl Vm {
         if builtins::main::sapi::is_cgi() {
             self.sapi.deferred_startup_diags = diags;
         } else {
+            // Shown before the request starts: the headers are not sent by
+            // them (sapi_activate starts the response afresh).
+            let (sent, start) = (
+                self.sapi.response.sent,
+                self.sapi.response.output_start.clone(),
+            );
             for (level, msg) in diags {
                 self.module_startup_diag(level, &msg);
             }
+            self.sapi.response.sent = sent;
+            self.sapi.response.output_start = start;
         }
         // sapi_activate reads the POST body before the headers are set up.
         self.check_post_size();
@@ -259,14 +267,13 @@ impl Vm {
             self.module_startup_diag(level, &msg);
         }
         // The module is up by now: the usual display / log rules apply.
-        for d in builtins::take_shutdown_diagnostics() {
-            self.display_error(
-                rhp_builtins::E_WARNING,
-                "Warning",
-                d.as_bytes(),
-                b"Unknown",
-                0,
-            );
+        for (level, d) in builtins::take_shutdown_diagnostics() {
+            let label = if level == rhp_builtins::E_DEPRECATED {
+                "Deprecated"
+            } else {
+                "Warning"
+            };
+            self.display_error(level, label, d.as_bytes(), b"Unknown", 0);
         }
         self.sapi_send_headers();
         self.sapi.sapi.flush();

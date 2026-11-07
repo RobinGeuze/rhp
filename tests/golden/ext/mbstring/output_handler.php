@@ -1,0 +1,46 @@
+<?php
+// mb_output_handler(): converts to the HTTP output encoding, passes
+// through with "pass", and mb_http_output() validates names.
+// Warnings print the script's basename, not the checkout's path.
+set_error_handler(function ($no, $msg) {
+    echo "Warning: ", str_replace(__FILE__, basename(__FILE__), $msg), "\n";
+    return true;
+});
+var_dump(mb_http_output());
+mb_http_output('ISO-8859-1');
+ob_start('mb_output_handler');
+echo "caf\u{e9}\n";
+$s = ob_get_clean();
+var_dump(bin2hex($s));
+mb_http_output('pass');
+ob_start('mb_output_handler');
+echo "caf\u{e9}\n";
+var_dump(bin2hex(ob_get_clean()));
+var_dump(mb_http_output());
+mb_http_output('HTML-ENTITIES');
+var_dump(mb_output_handler("<\u{e9}>", PHP_OUTPUT_HANDLER_START | PHP_OUTPUT_HANDLER_END));
+// Not started: the conversion is off again after the END call.
+var_dump(mb_output_handler("\u{e9}", 0));
+foreach (['BAD', "UTF-8\0x"] as $n) {
+    try {
+        mb_http_output($n);
+    } catch (ValueError $e) {
+        echo $e->getMessage(), "\n";
+    }
+}
+var_dump(headers_list());
+// The encoder is flushed only by the final chunk; the decoder's state
+// carries over between chunks.
+mb_http_output('ISO-2022-JP');
+ob_start('mb_output_handler', 2);
+echo "\u{65e5}\u{672c}";
+echo "x";
+echo "\u{8a9e}";
+ob_end_flush();
+echo "\n";
+mb_internal_encoding('ISO-2022-JP');
+mb_http_output('UTF-8');
+ob_start('mb_output_handler', 2);
+echo "\x1b\$BF|";
+echo "K\\\x1b(Ba\n";
+ob_end_flush();

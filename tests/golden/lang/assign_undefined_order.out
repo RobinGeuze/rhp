@@ -1,0 +1,50 @@
+handler: Undefined variable $b
+handler: Undefined variable $a
+string(0) ""
+handler: Undefined variable $m
+handler: Undefined variable $n
+int(0)
+handler: Undefined variable $d
+int(0)
+clobber: Undefined variable $y
+string(3) "set"
+handler: Undefined variable $k1
+handler: Using null as an array offset is deprecated, use an empty string instead
+array(1) {
+  [""]=>
+  int(1)
+}
+handler: Automatic conversion of false to array is deprecated
+handler: Undefined variable $k2
+handler: Using null as an array offset is deprecated, use an empty string instead
+array(1) {
+  [""]=>
+  int(2)
+}
+handler: Undefined variable $k3
+handler: String offset cast occurred
+string(3) "xbc"
+Error: Cannot use a scalar value as an array
+handler: Automatic conversion of false to array is deprecated
+handler: Undefined variable $k5
+handler: Using null as an array offset is deprecated, use an empty string instead
+array(1) {
+  [0]=>
+  array(1) {
+    [""]=>
+    int(3)
+  }
+}
+handler: Undefined variable $k6
+handler: Using null as an array offset is deprecated, use an empty string instead
+int(4)
+array(1) {
+  [""]=>
+  int(4)
+}
+release: Automatic conversion of false to array is deprecated
+string(4) "gone"
+replace: Automatic conversion of false to array is deprecated
+replace: Undefined variable $k8
+string(2) "zz"
+NULL

@@ -51,6 +51,7 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 /// [`pcntl_interrupt_pending`] between instructions and, when set, calls
 /// [`pcntl_dispatch`] to run the queued PHP signal handlers.
 pub use ext::standard::basic_functions::run_tick_functions;
+pub use ext::zlib::output::request_startup as zlib_request_startup;
 
 #[rustfmt::skip]
 mod const_modules;
@@ -125,3 +126,17 @@ pub use main::ini::{config_load_file, config_set_opened_path, config_set_scanned
 
 pub use main::ini::{apply_memory_limits, take_shutdown_diagnostics, take_startup_diagnostics};
 pub use module::{output_handler_alias, OutputHandlerAlias, OutputHandlerCtx, OutputHandlerFn};
+
+/// zend_activate_modules: the modules' RINIT that act at request start
+/// (ext/session's session.auto_start). The VM calls it once the built-in
+/// classes exist, before the script runs.
+pub fn request_activate(host: &mut dyn Host) -> Result<(), Thrown> {
+    ext::session::rinit(host)
+}
+
+/// zend_deactivate_modules: the modules' RSHUTDOWN that run code
+/// (ext/session writes and closes its session). The VM calls it after the
+/// output buffers were flushed.
+pub fn request_deactivate(host: &mut dyn Host) -> Result<(), Thrown> {
+    ext::session::rshutdown(host)
+}

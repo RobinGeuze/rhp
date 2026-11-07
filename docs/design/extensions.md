@@ -118,6 +118,39 @@ global — does not exist in practice among the real extensions anyone wants.)
 > extension in rhp, and it reintroduces a PHP runtime dependency the project
 > is eliminating. Out of scope.
 
+### What rhp does with `extension=` and `dl()` (php extension modules)
+
+`ext/standard/dl.rs` follows php_load_extension up to the point where php
+would run the module: the same paths are tried and a library that does not
+load gets php's "Unable to load dynamic library" warning (`dl()`'s other
+warnings too; the dl-*.phpt tests pin them). A library that loads is never
+run: an `extension=` entry for it does nothing, and `dl()` of it stops with
+"unsupported".
+
+A php extension module (a shared library exporting `get_module`, found by
+reading its export table with the `object` crate) is treated like a library
+that loads, even when dlopen() fails. It fails under rhp only because it
+links against php's engine symbols (`compiler_globals`, ...); under php the
+same file loads. So an `extension=` entry for one is skipped silently, as in
+a php built without DL support (php_ini.c's php_load_php_extension_cb does
+nothing there), and `extension_loaded()` stays false. Anything else that
+fails to load (a missing file, a library that is not a php module) still
+warns as in php.
+
+This is what lets PHPStan 2.3 run: it restarts php with
+`-d extension=<phar dir>/turbo-ext/<platform>/phpstan_turbo-8.5.so` (and
+passes the same flag to its spawned workers) whenever the binary exists next
+to the phar, without checking that it loads, and afterwards uses its PHP
+implementations when `extension_loaded('phpstan_turbo')` is false. php loads
+the module and runs the native code; rhp skips it and runs the PHP code,
+which PHPStan keeps output-identical. What differs from php: `diagnose`
+reports the extension as not loaded after the restart, and the analysis is
+slower. The alternatives were rejected because they are untrue of rhp:
+reporting PHP_ZTS or PHP_DEBUG, or another `php_uname('m')`, to make
+PHPStan's selector return null; or hiding pcntl (the restart needs it, but
+PHPStan's spawned workers would get the `-d extension=` anyway, and Psalm
+uses pcntl_fork).
+
 ---
 
 ## 2. Category 2 — linking the C libraries PHP builds on: FEASIBLE

@@ -160,7 +160,12 @@ pub(crate) fn reset_progress(host: &mut dyn Host, ctx: &Value) {
 }
 
 /// `php_stream_notify_progress_init`.
-fn progress_init(host: &mut dyn Host, ctx: &Value, sofar: i64, max: i64) -> Result<(), Thrown> {
+pub(crate) fn progress_init(
+    host: &mut dyn Host,
+    ctx: &Value,
+    sofar: i64,
+    max: i64,
+) -> Result<(), Thrown> {
     if host.stream_context_notifier(ctx).is_none() {
         return Ok(());
     }
@@ -270,7 +275,7 @@ fn deliver_ctx(
 }
 
 /// `php_strip_url_passwd`.
-fn strip_url_passwd(url: &[u8]) -> Vec<u8> {
+pub(crate) fn strip_url_passwd(url: &[u8]) -> Vec<u8> {
     let mut out = url.to_vec();
     let Some(p) = out.windows(3).position(|w| w == b"://") else {
         return out;
@@ -414,7 +419,7 @@ fn proxy_authorization_header(s: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// php's `%s` of a string: up to the first NUL.
-fn c_str(s: &[u8]) -> &[u8] {
+pub(crate) fn c_str(s: &[u8]) -> &[u8] {
     &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())]
 }
 
@@ -1299,6 +1304,9 @@ pub fn open(
     ctx: &Value,
     only_headers: bool,
 ) -> Result<Option<Value>, Thrown> {
+    if super::ftp_fopen_wrapper::is_ftp(url) {
+        return super::ftp_fopen_wrapper::open(host, fname, url, mode, ctx);
+    }
     set_last_http_headers(host, None);
     let mut cx = Cx {
         host,
@@ -1429,6 +1437,12 @@ pub fn get_contents(
     crate::flush_stream_diags(host, fname)?;
     host.stream_close(&res);
     Ok(Some(out))
+}
+
+/// Whether `url` is for this wrapper or the ftp one (the URL wrappers
+/// whose streams are sockets).
+pub fn is_url_stream(url: &[u8]) -> bool {
+    is_http(url) || super::ftp_fopen_wrapper::is_ftp(url)
 }
 
 /// Whether `url` is for this wrapper.

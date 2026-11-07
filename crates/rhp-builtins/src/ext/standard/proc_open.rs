@@ -635,9 +635,12 @@ fn desc_string(ht: &PhpArray, i: i64, what: &str) -> Result<Vec<u8>, Thrown> {
 }
 
 /// What a descriptor became (for building `$pipes`).
+#[derive(Clone, Copy)]
 enum DescKind {
     Std,
     Pipe,
+    /// A pipe whose parent end is a PTY master (mode "r+").
+    Pty,
 }
 
 fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -720,6 +723,8 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
 
     let mut descs: Vec<Desc> = Vec::new();
+    // The one PTY every "pty" descriptor shares (master, slave).
+    let mut pty: Option<(OwnedFd, OwnedFd)> = None;
     let mut kinds: Vec<DescKind> = Vec::new();
     for (k, item) in spec.iter() {
         let index =
@@ -848,11 +853,44 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         }
                         (unsafe { OwnedFd::from_raw_fd(fd) }, None, DescKind::Std)
                     }
+                    // set_proc_descriptor_to_pty: the child gets the slave
+                    // end, $pipes the master end of the same PTY.
                     b"pty" => {
-                        return Err(Thrown::unsupported(
-                            "proc_open",
-                            "pty descriptors are not supported",
-                        ))
+                        if pty.is_none() {
+                            let (mut m, mut sl) = (-1, -1);
+                            // SAFETY: openpty fills two fds we then own.
+                            let r = unsafe {
+                                libc::openpty(
+                                    &mut m,
+                                    &mut sl,
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                )
+                            };
+                            if r != 0 {
+                                let e =
+                                    crate::main::streams::strerror(crate::main::streams::errno());
+                                crate::warn(
+                                    host,
+                                    "proc_open",
+                                    &format!("Could not open PTY (pseudoterminal): {e}"),
+                                )?;
+                                return Ok(Value::Bool(false));
+                            }
+                            // SAFETY: both fds were just opened and are ours.
+                            pty = Some(unsafe {
+                                (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(sl))
+                            });
+                        }
+                        let (m, sl) = pty
+                            .as_ref()
+                            .map(|(m, s)| (m.as_raw_fd(), s.as_raw_fd()))
+                            .unwrap_or((-1, -1));
+                        let (Some(child), Some(parent)) = (dup_fd(sl), dup_fd(m)) else {
+                            return Ok(Value::Bool(false));
+                        };
+                        (child, Some(parent), DescKind::Pty)
                     }
                     _ => {
                         let msg = [ty.as_slice(), b" is not a valid descriptor spec/mode"].concat();
@@ -890,8 +928,11 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut pipes = Vec::new();
     for (d, kind) in descs.into_iter().zip(kinds) {
         drop(d.childend);
-        if let (DescKind::Pipe, Some(p)) = (kind, d.parentend) {
+        if let (DescKind::Pipe | DescKind::Pty, Some(p)) = (kind, d.parentend) {
             if let Some(s) = host.stream_from_fd(p) {
+                if matches!(kind, DescKind::Pty) {
+                    host.stream_set_mode(&s, b"r+");
+                }
                 pipes_arr.insert(ArrayKey::Int(d.index as i64), s.clone());
                 pipes.push(s);
             }

@@ -184,6 +184,25 @@ fn mtime_and_size(path: &[u8]) -> Option<(i64, u64)> {
     Some((m.mtime(), m.size()))
 }
 
+/// php's `is_cacheable_stream_path`: the stream paths opcache caches
+/// scripts from (`file://` and `phar://`); other wrappers' scripts are
+/// compiled on every include.
+pub(crate) fn is_cacheable_stream_path(path: &[u8]) -> bool {
+    path.starts_with(b"file://") || path.starts_with(b"phar://")
+}
+
+impl Vm {
+    /// `zend_get_file_handle_timestamp`: a script's mtime and size, from
+    /// its stream wrapper's stat for a `phar://` script.
+    fn script_stat(&self, path: &[u8]) -> Option<(i64, u64)> {
+        if path.starts_with(b"phar://") {
+            let st = self.wrapper_for(path)?.stat(path)?;
+            return Some((st.mtime, st.size));
+        }
+        mtime_and_size(path)
+    }
+}
+
 fn ini_flag(v: &[u8]) -> bool {
     crate::ini_bool(v)
 }
@@ -552,7 +571,9 @@ impl Vm {
                 && script.timestamp != 0
                 && !(freq != 0 && script.revalidate >= request_time)
             {
-                let fresh = mtime_and_size(path).is_some_and(|(m, _)| m == script.timestamp);
+                let fresh = self
+                    .script_stat(path)
+                    .is_some_and(|(m, _)| m == script.timestamp);
                 if !fresh {
                     script.corrupted = true;
                     script.main = None;
@@ -692,7 +713,7 @@ impl Vm {
         if !(validate || protect != 0 || max_size > 0) {
             return Some(0);
         }
-        let (mtime, size) = mtime_and_size(path)?;
+        let (mtime, size) = self.script_stat(path)?;
         if mtime == 0 || (protect != 0 && request_time - protect < mtime) {
             return None;
         }
@@ -819,7 +840,10 @@ impl Vm {
             };
             if validate && s.timestamp != 0 && !(freq != 0 && s.revalidate >= request_time) {
                 // A changed file goes the long way: discarded, recompiled.
-                if mtime_and_size(given).is_none_or(|(m, _)| m != s.timestamp) {
+                if self
+                    .script_stat(given)
+                    .is_none_or(|(m, _)| m != s.timestamp)
+                {
                     return false;
                 }
                 s.revalidate = request_time + freq;
@@ -891,7 +915,10 @@ impl Vm {
             if !validate || s.timestamp == 0 || (freq != 0 && s.revalidate >= request_time) {
                 return true;
             }
-            if mtime_and_size(&real).is_some_and(|(m, _)| m == s.timestamp) {
+            if self
+                .script_stat(&real)
+                .is_some_and(|(m, _)| m == s.timestamp)
+            {
                 s.revalidate = request_time + freq;
                 true
             } else {
@@ -914,7 +941,10 @@ impl Vm {
         let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
         with_cache(|c| {
             if let Some(s) = c.scripts.get_mut(&real).filter(|s| !s.corrupted) {
-                let stale = || mtime_and_size(&real).is_none_or(|(m, _)| m != s.timestamp);
+                let stale = || {
+                    self.script_stat(&real)
+                        .is_none_or(|(m, _)| m != s.timestamp)
+                };
                 if force || !validate || s.timestamp == 0 || stale() {
                     s.corrupted = true;
                     s.main = None;

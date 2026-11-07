@@ -176,6 +176,9 @@ unchanged file reuse its compiled `Program`, with php's settings:
 `max_accelerated_files`, `max_file_size`, `memory_consumption` and
 `blacklist_filename`. `opcache_get_status()` and the other `opcache_*`
 functions report it; `opcache_reset()` takes effect at the next request.
+Like php (`is_cacheable_stream_path`), it caches `phar://` scripts as well
+as plain files, revalidating them by the phar entry's mtime; scripts from
+other stream wrappers are compiled on every include.
 
 - **Per thread.** A `Program` holds `Rc`s, so the cache is a
   `thread_local!`: every request served on a worker thread shares it, as
@@ -200,7 +203,7 @@ functions report it; `opcache_reset()` takes effect at the next request.
   units aren't serialisable), the optimizer and its debug output, the JIT
   (`opcache_get_status()['jit']` reports what the settings select),
   switching to `opcache.preload_user` (only its warning), the inheritance
-  cache, `opcache.enable_file_override`, and caching `phar://` scripts.
+  cache and `opcache.enable_file_override`.
 
 ## Request lifecycle
 
@@ -347,9 +350,17 @@ The request then ends like any fatal error: shutdown functions run, the
 exit status is 255, a 200 becomes a 500 when the error isn't displayed.
 The next request on the thread starts from zero. Builtins that know a big
 size first refuse it before allocating, as php's fallible allocations do:
-`str_repeat`, `str_pad`, `implode`, `array_fill`, `array_pad`, `range`,
-`fread`, `stream_get_line`, `file_get_contents` (plain files) and
-`unserialize`.
+`str_repeat`, `str_pad`, `implode`, `wordwrap`, `array_fill`, `array_pad`,
+`range`, `fread`, `stream_get_line`, `file_get_contents` (plain files),
+`ftruncate` on `php://memory`/`php://temp` and `unserialize`.
+
+Building the request's superglobals is counted too. When parsing the
+body crosses the limit, the parsers stop where php 8.5's do (the
+multipart parser checks after each step, `explode` after each piece:
+`rhp_values::mem::has_oom`, php's `ZEND_HAS_OOM()`), and the fatal error
+is raised in Unknown on line 0 before the script runs (php's
+`sapi_handle_post`). The raw body itself is not counted: php keeps at most
+2 MB of it in memory (`php://temp`) or streams it (multipart).
 
 php's hard limit (twice `memory_limit`, or `memory_hard_limit_percent`)
 kills php-cli with exit 137. rhp checks it where the VM or a builtin
@@ -360,7 +371,7 @@ error.
 
 What still escapes the limit, until more builtins are mirrored:
 
-- A builtin without a pre-check (`str_replace`, `explode`, `array_merge`,
+- A builtin without a pre-check (`str_replace`, `array_merge`,
   …) allocates as much as its input asks for and only reports the
   crossing when it returns. One call can use far more than the limit.
 - An allocation the system refuses aborts the process (Rust's
@@ -381,8 +392,12 @@ Limits of the model:
   request heap; otherwise the request that built it is charged and a
   later one credited when it is freed. The compiled-script cache compiles
   the programs it keeps, and changes its tables, that way.
-- rhp's data structures are not php's: an array of ints takes about three
-  times php's memory, strings about the same. Scripts close to the limit
+- rhp's data structures are not php's: an array of ints takes about five
+  times php's memory (an `IndexMap` entry is 40 bytes, and its entries
+  grow to match the index table), strings about the same. Compiling takes
+  about ten times php's memory at its peak (mago-syntax's AST: a
+  `Statement` is 312 bytes, an `Expression` 376), so the hard limit is not
+  checked while compiling. Scripts close to the limit
   can fail earlier (or later) than under php, and "tried to allocate N" for
   a growing array differs. Sizes a builtin checks up front use php's
   numbers.

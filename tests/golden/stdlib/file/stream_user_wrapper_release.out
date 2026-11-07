@@ -1,0 +1,13 @@
+leaving f
+close rel://local
+destruct rel://local
+after f
+close rel://nulled
+destruct rel://nulled
+after null
+close rel://in-array
+destruct rel://in-array
+after unset
+end
+destruct rel://kept
+close rel://kept

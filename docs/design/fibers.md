@@ -35,6 +35,13 @@ fiber's bottom frame to the frame that resumed it. An error raised while the fib
 stack has no user frame yet (the callable is a builtin, or its arguments
 fail to bind) is reported at the resumer's line (`fiber_resumer_site`).
 
+ReflectionFiber's getTrace(), getExecutingLine() and getExecutingFile()
+(`fiber_reflect`) read the fiber's own frames where its `ExecCtx` is kept:
+the running stack for the active fiber, its own cell while suspended, and
+the cell of the fiber it resumed while that one runs (`FiberData::prev`
+points back to it). The trace stops at the fiber's bottom frame, as php's
+does by cutting `stack_bottom->prev_execute_data`.
+
 ## The switch
 
 `Fiber::start()/resume()/throw()` call `fiber_switch`: swap the context,
@@ -62,7 +69,10 @@ is never destroyed (a fatal error's bailout) is dropped with
 `Coroutine::force_reset`, leaking what its stack held, as php does.
 
 The cycle collector reaches what a suspended fiber holds through
-`fibers::fiber_gc_values` (php's zend_fiber_object_gc).
+`fibers::fiber_gc_values` (php's zend_fiber_object_gc), and runs the
+destructors of a collection inside a fiber in its own destructor fiber
+(see gc.md). A fiber resumed only to be destroyed is not linked to its
+resumer: traces from it end at its bottom, as php's do.
 
 ## Stack size
 

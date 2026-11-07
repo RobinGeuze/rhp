@@ -566,7 +566,7 @@ impl Host for TestHost<'_> {
     fn stream_gets_max(&mut self, res: &Value, _max: usize) -> Option<Vec<u8>> {
         self.stream_gets(res)
     }
-    fn stream_eof(&self, _res: &Value) -> bool {
+    fn stream_eof(&mut self, _res: &Value) -> bool {
         true
     }
     fn stream_close(&mut self, _res: &Value) -> bool {

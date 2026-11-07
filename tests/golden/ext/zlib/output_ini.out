@@ -1,0 +1,13 @@
+start
+Warning: Invalid "zlib.output_compression" setting. Invalid quantity "garbage": no valid leading digits, interpreting as "0" for backwards compatibility
+Warning: ini_set(): Cannot change zlib.output_compression - headers already sent
+bool(false)
+string(1) "0"
+Warning: ini_set(): Cannot change zlib.output_compression - headers already sent
+bool(false)
+Warning: Invalid "zlib.output_compression_level" setting. Invalid quantity "5x": unknown multiplier "x", interpreting as "5" for backwards compatibility
+string(2) "-1"
+string(2) "5x"
+Warning: ini_set(): Cannot change zlib.output_handler - headers already sent
+bool(false)
+string(0) ""

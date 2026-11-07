@@ -453,8 +453,12 @@ FeFree is emitted at the loop end and before `break N`/`continue N`, `return`
 and `goto` leave the loop (only loops inside the innermost try/finally; outer
 ones are left to the frame). On a jump `end` is the loop end: an exception a
 destructor throws there is handled as if thrown at the loop end
-(ZEND_FREE_ON_RETURN). A temporary is not freed on exception unwinding until the
-frame goes (php's live ranges are not modelled). Its HashTable iterator does go:
+(ZEND_FREE_ON_RETURN). A `break`/`continue` through a finally frees the loops
+outside it once the finally ran: the jump goes to a stub after the try
+statement that runs their FeFree and jumps on (php interleaves FAST_CALL and
+FE_FREE the same way). A temporary is not freed on exception unwinding until a
+catch frees the try's temporaries or the exception leaves the frame (php's
+live ranges are not modelled). Its HashTable iterator does go:
 the frame records each running loop's iterator (`Frame::fe_live`), and a catch
 that frees the try's temporaries, the frame going, or the same loop starting
 again drops one its loop left without `FeFree`.
@@ -520,9 +524,17 @@ RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
    takes them), so an object passed as a temporary is freed when the call
    returns and its handle comes back as in php (oop-model.md, "Fresh id")
--- php's live ranges, approximated: `f()[k]` clears the call's result once
-   the element is out, and an exception caught by a try frees the try
-   body's temporaries (`ExRegion::temps` up) before the handler runs
+-- php's FREE_OP, approximated: an instruction that consumes a temporary
+   holding an object or array (binary operators and concatenation past
+   their scalar fast paths, `(string)`, property and dimension reads)
+   clears it (`Vm::free_tmp`), so its destructor runs before the next
+   instruction, reported at this one; a compound assignment's operands go
+   after its store, as php frees OP_DATA last (`AssignLval` frees them; a
+   variable's `Assign` runs inside the operator)
+-- php's live ranges, approximated: an exception caught by a try frees the
+   try body's temporaries (`ExRegion::temps` up), and one leaving a frame
+   frees the frame's, their destructors running (chained) before the
+   handler; a failed `new`'s evaluated arguments go before its object
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)
@@ -831,6 +843,7 @@ pub enum FinallyCont {
     Jump(PC),           // a break/continue crossing out
     Return(Value),      // a `return v;` crossing out — complete it after finally
     Rethrow(Thrown),    // an exception in flight — resume unwinding after finally
+    ForcedClose,        // a destroyed generator runs its finally blocks, then closes
 }
 ```
 
@@ -843,6 +856,31 @@ control flow wins) — the finally body replaces the top `pending` before
 `FinallyEnd`. `flags.has_finally` lets the common finally-free function skip this
 path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
 `Frame::pending`: `FinallyEnd` *is* FAST_RET; the entry jump *is* FAST_CALL.)
+
+The walks follow zend_dispatch_try_catch_finally_helper and
+zend_handle_loops_and_finally: regions are visited innermost first (the
+exception table lists inner regions before outer ones). An exception
+thrown inside a running finally block that no inner try handles discards
+what that block was finishing; a pending exception becomes the innermost
+`previous` of the new one (zend_exception_set_previous, which drops it
+when it is already in the chain). A `return` or jump discards the pending
+work of each finally block it leaves only after the inner finally blocks
+it must run first have run (`Vm::leave_finallies`).
+
+Generators (generators.rs) follow zend_generators.c. A suspended
+generator's `Frame` lives in its `GenState`; resuming pushes it and runs
+it until `Yield`/`YieldValues` (a yielded value) or `YieldFrom` (attached
+to another generator) hands `yield_out` to the driver. `yield from` over
+a Generator builds php's delegation tree: the delegating generator is a
+child of the one it yields from, values and resumption go to the root,
+and `Vm::gen_resume` moves between nodes in a loop (no Rust recursion per
+level; roots and leaves cache each other as php's `node.ptr` does). A
+generator whose function has finally blocks is destructible: its
+destructor runs the finally blocks around its `yield` with
+`FinallyCont::ForcedClose`, where a `yield` throws. Traces show a resumed
+generator as called from `[internal function]` when a `Generator` method
+(a `NativeCall` with `method_of`) resumed it, followed by the generators
+of the `yield from` chain it runs for (`Vm::gen_resumes`).
 
 ### 3.6 Units: one copy of the bytecode
 

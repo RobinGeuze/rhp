@@ -723,6 +723,13 @@ impl ProtoBuilder<'_> {
         }
         if has_finally {
             self.finally_rets.push(Vec::new());
+            self.finally_breaks.push(Vec::new());
+            // A label right before the try is outside it: a `goto` to it
+            // from the body leaves the try (and runs the finally).
+            let here = self.here();
+            if self.labels.values().any(|(pc, _)| *pc == here) {
+                self.emit(Instr::Nop);
+            }
         }
         let try_start = self.here();
         let temps = self.next_temp;
@@ -773,9 +780,11 @@ impl ProtoBuilder<'_> {
 
         let catches_end = self.here();
         let mut finally_end = 0;
+        let mut breaks = Vec::new();
         let finally_pc = if let Some(fin) = &t.finally_clause {
             // Stop routing returns into THIS finally while compiling its body.
             let pending_rets = self.finally_rets.pop().unwrap();
+            breaks = self.finally_breaks.pop().unwrap();
             let fpc = self.here();
             self.enter_goto_scope(true);
             self.compile_stmts(fin.block.statements.iter())?;
@@ -796,6 +805,7 @@ impl ProtoBuilder<'_> {
         for j in end_jumps {
             self.patch_jmp(j, norm_target);
         }
+        self.emit_break_throughs(breaks);
 
         let has_catches = !catch_arms.is_empty();
         self.exception_table.push(ExRegion {
@@ -900,9 +910,33 @@ impl ProtoBuilder<'_> {
             }
             self.emit_jump_free(i);
         }
+        self.emit_loop_jump(idx, is_break, line);
+        Ok(())
+    }
+
+    /// The jump of a `break`/`continue` to loop `idx`, after the frees of
+    /// the loops inside the innermost try with a finally: through that
+    /// finally when there is one. When loops outside it need freeing too,
+    /// the jump goes to code after the try statement that frees them and
+    /// goes on (`compile_try`), as php's zend_handle_loops_and_finally
+    /// interleaves FAST_CALLs and FE_FREEs.
+    fn emit_loop_jump(&mut self, idx: usize, is_break: bool, line: u32) {
         let pos = self.code.len();
-        if self.finally_rets.len() > self.loops[idx].finally_depth {
-            self.emit(Instr::JmpFinally { target: 0 }); // patched at loop close
+        let depth = self.finally_rets.len();
+        if depth > self.loops[idx].finally_depth {
+            self.emit(Instr::JmpFinally { target: 0 }); // patched later
+            let frees_outside = self.loops[idx + 1..]
+                .iter()
+                .any(|l| l.finally_depth < depth && l.free.is_some());
+            if frees_outside {
+                self.finally_breaks[depth - 1].push(crate::builder::BreakThrough {
+                    pos,
+                    loop_idx: idx,
+                    is_break,
+                    line,
+                });
+                return;
+            }
         } else {
             self.emit(Instr::Nop); // patched to Jmp at loop close
         }
@@ -911,7 +945,33 @@ impl ProtoBuilder<'_> {
         } else {
             self.loops[idx].continue_jumps.push(pos);
         }
-        Ok(())
+    }
+
+    /// After a try statement whose finally `breaks` jumped through: per
+    /// jump, free the loops between this finally and the next one out (or
+    /// the target loop), then go on.
+    fn emit_break_throughs(&mut self, breaks: Vec<crate::builder::BreakThrough>) {
+        if breaks.is_empty() {
+            return;
+        }
+        let over = self.code.len();
+        self.emit(Instr::Nop); // Jmp past the stubs
+        let saved_line = self.cur_line;
+        for b in breaks {
+            let stub = self.here();
+            self.patch_jmp(b.pos, stub);
+            self.cur_line = b.line;
+            for i in (b.loop_idx + 1..self.loops.len()).rev() {
+                if self.loops[i].finally_depth < self.finally_rets.len() {
+                    break;
+                }
+                self.emit_jump_free(i);
+            }
+            self.emit_loop_jump(b.loop_idx, b.is_break, b.line);
+        }
+        self.cur_line = saved_line;
+        let after = self.here();
+        self.patch_jmp(over, after);
     }
 
     fn patch_all(&mut self, positions: Vec<usize>, target: u32) {

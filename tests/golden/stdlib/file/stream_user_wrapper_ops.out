@@ -1,0 +1,52 @@
+bool(false)
+bool(true)
+construct, context is resource
+dir_opendir(ww://dir, 0)
+string(1) "b"
+string(1) "a"
+rewind
+[8192] readdir(): Passing null is deprecated, instead the last opened directory stream should be provided
+string(1) "b"
+closedir
+construct, context is NULL
+dir_opendir(ww://dir, 0)
+closedir
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  string(1) "c"
+}
+construct, context is resource
+mkdir(ww://new, 700, 9)
+bool(true)
+construct, context is resource
+rmdir(ww://new, 8)
+bool(false)
+construct, context is resource
+rename(ww://x, ww://y)
+bool(true)
+[2] rename(): Cannot rename a file across wrapper types
+bool(false)
+construct, context is resource
+unlink(ww://x)
+bool(false)
+construct, context is NULL
+url_stat(ww://x, 6)
+bool(true)
+bool(true)
+construct, context is NULL
+url_stat(ww://boom, 6)
+no stat for ww://boom
+construct, context is NULL
+included from w://opened/path
+int(42)
+construct, context is resource
+LogicException: cannot open
+  W->stream_open
+  fopen
+construct, context is NULL
+url_stat(ww://boom, 4)
+no stat for ww://boom

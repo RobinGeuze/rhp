@@ -167,6 +167,11 @@ pub fn locate_for_open(
 /// an unknown wrapper / bad php:// URL first, then "Failed to open stream:"
 /// with the errno the failing syscall recorded (see [`streams::note_errno`]).
 pub fn open_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
+    // php_stream_display_wrapper_errors: nothing once an exception is thrown
+    if host.has_pending_throw() {
+        streams::take_wrapper_error();
+        return Ok(());
+    }
     let scheme = streams::split_scheme(path).0.to_ascii_lowercase();
     // Only the plain-files wrapper reports errno; others say "operation failed".
     let mut reason = if scheme == b"file" {

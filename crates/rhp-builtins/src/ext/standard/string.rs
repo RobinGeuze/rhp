@@ -12,7 +12,7 @@ use rhp_values::{conv, ArrayKey, PhpArray, Value};
 use crate::ext::random::mt_range;
 use crate::ext::standard::file::path_arg;
 use crate::zend::builtin_functions::{binary_strncasecmp, binary_strncmp};
-use crate::zend::zpp::{bool_param, str_or_null_param, str_param, zval_get_string};
+use crate::zend::zpp::{bool_param, str_or_null_param, str_param, zstr_param, zval_get_string};
 use crate::{deprecated, Host, Thrown};
 
 // ---------------------------------------------------------------------------
@@ -574,6 +574,19 @@ fn fn_wordwrap(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let bytes = &text[..];
     let n = bytes.len() as i64;
     let w = width;
+    // A multi-byte break or cut: php allocates the worst case up front
+    // (zend_string_safe_falloc), refused past memory_limit.
+    if brk.len() != 1 || cut {
+        let ok = if w > 0 {
+            let chk = bytes.len() / w as usize + 1;
+            rhp_values::mem::reserve_safe(chk, brk.len(), rhp_values::mem::zstr_size(bytes.len()))
+        } else {
+            rhp_values::mem::reserve_safe(bytes.len(), brk.len() + 1, rhp_values::mem::zstr_size(0))
+        };
+        if !ok {
+            return Ok(Value::Null);
+        }
+    }
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len() + bytes.len() / 8 + 8);
     let bl = brk.len();
     let mut laststart: i64 = 0;
@@ -2091,54 +2104,79 @@ fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thr
     Ok(Value::str(out))
 }
 
-fn fn_explode(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let delim = conv::to_string_bytes(&deref(&args[0]));
-    let s = conv::to_string_bytes(&deref(&args[1]));
+/// `explode`: php_explode / php_explode_negative_limit. The pieces are
+/// built from the borrowed arguments (no copy of either string), and a
+/// string without the separator is returned as is.
+fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let delim = zstr_param(host, args, 0, "explode", "separator")?;
+    let s = zstr_param(host, args, 1, "explode", "string")?;
+    let limit = match args.get(2) {
+        Some(v) => conv::to_int(&deref(v)),
+        None => i64::MAX,
+    };
+    let delim = delim.as_bytes();
     if delim.is_empty() {
         return Err(Thrown::error(
             "ValueError",
             "explode(): Argument #1 ($separator) must not be empty",
         ));
     }
-    // All pieces, in order.
-    let mut parts: Vec<Vec<u8>> = Vec::new();
-    let mut start = 0;
-    while let Some(pos) = find_subslice(&s[start..], &delim) {
-        parts.push(s[start..start + pos].to_vec());
-        start += pos + delim.len();
-    }
-    parts.push(s[start..].to_vec());
-
-    let limit = args.get(2).map(|v| conv::to_int(&deref(v)));
-    let n = parts.len();
-    let pieces: Vec<Vec<u8>> = match limit {
-        None => parts,
-        // Positive: at most `limit` pieces; the last keeps the remainder.
-        Some(l) if l > 0 => {
-            let l = l as usize;
-            if l >= n {
-                parts
-            } else {
-                let mut out: Vec<Vec<u8>> = parts[..l - 1].to_vec();
-                out.push(parts[l - 1..].join(&delim[..]));
-                out
-            }
-        }
-        // Zero is treated as 1: the whole string as one piece.
-        Some(0) => vec![s.clone()],
-        // Negative: drop the last `|limit|` pieces.
-        Some(l) => {
-            let drop = (-l) as usize;
-            if drop >= n {
-                Vec::new()
-            } else {
-                parts[..n - drop].to_vec()
-            }
-        }
-    };
     let mut arr = PhpArray::new();
-    for p in pieces {
-        arr.push(Value::str(p));
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        if limit >= 0 {
+            arr.push(Value::str(Vec::new()));
+        }
+        return Ok(Value::Array(arr));
+    }
+    let finder = memchr::memmem::Finder::new(delim);
+    if limit > 1 {
+        let mut p1 = 0;
+        let Some(mut p2) = finder.find(bytes) else {
+            arr.push(Value::Str(s.clone()));
+            return Ok(Value::Array(arr));
+        };
+        let mut limit = limit;
+        loop {
+            // Each piece costs a zval and a string: stop once over the limit.
+            if rhp_values::mem::has_oom() {
+                return Ok(Value::Array(arr));
+            }
+            arr.push(Value::str(bytes[p1..p2].to_vec()));
+            p1 = p2 + delim.len();
+            match finder.find(&bytes[p1..]) {
+                Some(o) => p2 = p1 + o,
+                None => break,
+            }
+            limit -= 1;
+            if limit <= 1 {
+                break;
+            }
+        }
+        arr.push(Value::str(bytes[p1..].to_vec()));
+    } else if limit < 0 {
+        let mut positions = vec![0];
+        let mut p1 = 0;
+        while let Some(o) = finder.find(&bytes[p1..]) {
+            if rhp_values::mem::has_oom() {
+                return Ok(Value::Array(arr));
+            }
+            p1 += o + delim.len();
+            positions.push(p1);
+        }
+        if positions.len() == 1 {
+            return Ok(Value::Array(arr));
+        }
+        let to_return = limit + positions.len() as i64;
+        for i in 0..to_return.max(0) as usize {
+            if rhp_values::mem::has_oom() {
+                break;
+            }
+            let (a, b) = (positions[i], positions[i + 1] - delim.len());
+            arr.push(Value::str(bytes[a..b].to_vec()));
+        }
+    } else {
+        arr.push(Value::Str(s.clone()));
     }
     Ok(Value::Array(arr))
 }
@@ -2664,6 +2702,16 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .get(1)
         .map(|v| conv::to_string_bytes(&deref(v)))
         .unwrap_or_default();
+    let mut base = php_basename(&path);
+    if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
+        base = &base[..base.len() - suffix.len()];
+    }
+    Ok(Value::str(base.to_vec()))
+}
+
+/// `php_basename` without a suffix: the last component, trailing slashes
+/// ignored.
+pub(crate) fn php_basename(path: &[u8]) -> &[u8] {
     // drop trailing '/'
     let end = path
         .iter()
@@ -2676,11 +2724,7 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .rposition(|&b| b == b'/')
         .map(|i| i + 1)
         .unwrap_or(0);
-    let mut base = &trimmed[start..];
-    if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
-        base = &base[..base.len() - suffix.len()];
-    }
-    Ok(Value::str(base.to_vec()))
+    &trimmed[start..]
 }
 
 /// `pathinfo(path, flags=PATHINFO_ALL)` — splits a path into dirname/basename/

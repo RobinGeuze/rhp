@@ -89,6 +89,7 @@ These have no php-src counterpart.
 | `main/streams/filter.rs` | main/streams/filter.c: buckets, brigades, the filter factories (the chains run in rhp-vm's `stream_filters.rs`) |
 | `main/streams/glob_wrapper.rs` | main/streams/glob_wrapper.c |
 | `main/streams/plain_wrapper.rs` | main/streams/plain_wrapper.c |
+| `main/streams/userspace.rs` | main/streams/userspace.c: user wrappers, their streams over the generic layer |
 | `main/streams/xp_socket.rs` | main/streams/xp_socket.c and transports.c |
 
 ### ext/standard/
@@ -111,6 +112,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `filters.rs` | filters.c: string.*, convert.*, consumed and dechunk filters |
 | `formatted_print.rs` | formatted_print.c |
 | `fsock.rs` | fsock.c |
+| `ftp_fopen_wrapper.rs` | ftp_fopen_wrapper.c |
 | `head.rs` | head.c |
 | `hebrev.rs` | string.c's `hebrev()` |
 | `hrtime.rs` | hrtime.c |
@@ -156,6 +158,7 @@ One directory per php-src extension, `ext/<name>/`:
 | `ext/opcache/` | ext/opcache's zend_accelerator_module.c; the cache itself is in rhp-vm (`opcache/`) |
 | `ext/random/` | ext/random: random.c (`mod.rs`), the engines (`engine.rs`), randomizer.c, gammasection.c and the engines' methods (`randomizer.rs`); the classes in `prelude.php` |
 | `ext/readline/` | ext/readline/readline.c |
+| `ext/session/` | ext/session: session.c, mod_user.c and mod_user_class.c (`mod.rs`, SessionHandler in `prelude.php`), mod_files.c (`mod_files.rs`); trans-sid goes through `ext/standard/url_scanner_ex.rs` |
 | `ext/spl/` | ext/spl: php_spl.c, spl_iterators.c's `iterator_to_array`, the prelude classes |
 | `ext/date/` | ext/date: php_date.c over timelib |
 

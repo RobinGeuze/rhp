@@ -134,8 +134,10 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   rest), then destructors (globals holding the sole reference, last first, then
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed
-  at the next instruction boundary (frame return, overwritten/unset variable, end
-  of an expression statement via `ClearTemps`), reporting the line of the
+  at the next instruction boundary (frame return, overwritten/unset variable,
+  a `static`/`global`/`=&` binding or catch variable replacing it, an
+  instruction consuming an object or array temporary — php's FREE_OP — or the
+  end of an expression statement via `ClearTemps`), reporting the line of the
   instruction before that boundary; a non-public `__destruct` the releasing
   scope may not call throws php's "Call to private X::__destruct()" (a
   warning during shutdown). Gap: an object freed while only a
@@ -297,8 +299,27 @@ The original notes:
   `user_filters.rs`, zlib, bz2 and iconv). A filtered stream closes when
   its last variable, element or property reference goes; one whose last
   reference was a temporary closes at the next such check or function
-  return. Not modelled: persistent streams and user stream wrappers
-  (wave 6) carrying filters.
+  return. Not modelled: persistent streams and user wrapper streams
+  carrying filters (the filter calls go to the wrapper's stream unfiltered).
+- User stream wrappers (`stream_wrapper_register`): main/streams/userspace.c
+  is `main/streams/userspace.rs`. A registered wrapper sits in the VM's
+  wrapper table beside the built-in ones; `userspace::locate` is
+  php_stream_locate_url_wrapper for them (also when one replaced `file://`).
+  Its streams (`StreamState::User`) run a port of streams.c's generic layer
+  (read buffer, chunked writes, buffered seeks, liveness checks) over the
+  wrapper's methods; the VM lends the stream out for each operation, so
+  methods may use other streams, and `fclose` from inside read, write, seek
+  and cast is refused as in php. An exception from a method is php's
+  EG(exception): the builtin returns, then it is thrown. Covered: fopen and
+  the stream functions, file_get_contents/file/readfile/copy, the hash
+  functions, include/require (include_path entries searched with a quiet
+  `url_stat`), the stat family (with php's one-entry stat cache), unlink,
+  rename, mkdir, rmdir, touch/chmod/chown/chgrp, opendir/scandir,
+  stream_select casts. A user stream closes as its last reference goes
+  (watched like a filtered stream). A stream an include left open when a
+  fatal error unwound closes with the resource list at shutdown. Not covered:
+  parse_ini_file through a user wrapper, and the `context` property is
+  written without php's visibility and readonly checks.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).
@@ -500,7 +521,10 @@ The module is deliberately "READ-ONLY, native format only"
 - **Now:** the prelude keeps the object's properties as an array
   (`get_object_vars` when constructed); offset writes, unsets and
   `exchangeArray()` also write through to the object (`__spl_obj_store`),
-  and `append()` throws as php does.
+  and `append()` throws as php does. `foreach` by reference over an
+  ArrayIterator backed by an object walks the object's public property
+  slots themselves (typed properties as type sources, readonly ones
+  refused).
 - **Breaks:** properties the object gains or changes afterwards are not seen
   through the ArrayObject; private/protected properties are not in the
   snapshot; `$ao[] = v` and integer offsets land under string keys in the
@@ -747,15 +771,9 @@ The module is deliberately "READ-ONLY, native format only"
 
 ### 9.4 Fibers — gaps
 
-Fibers run on their own stacks ([fibers.md](./fibers.md)). Left: a suspended
-fiber that is part of a reference cycle is destroyed only at shutdown until
-the cycle collector traverses it (`fibers::fiber_gc_values` is its hook;
-Zend/tests/fibers/destructors_*, gc-cycle-*, gh9735-*, gh10340-003,
-generators/gh15330-*). A generator whose frame a destroyed fiber unwinds is
-not marked force-closed, so a `yield` in its `finally` is not refused
-(gh9916-009; zend_generator_dtor_storage's ZEND_GENERATOR_FORCED_CLOSE).
-`ReflectionFiber` is still the old stub (no executing file/line, callable
-or trace; ext/reflection/tests/ReflectionFiber_*).
+Fibers run on their own stacks ([fibers.md](./fibers.md)); the cycle
+collector traverses suspended fibers and runs destructors in php's
+destructor fiber (gc.md).
 
 ## 10. Prioritized roadmap
 

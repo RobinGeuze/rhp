@@ -28,6 +28,7 @@ pub mod posix;
 pub mod random;
 pub mod readline;
 pub mod reflection;
+pub mod session;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
@@ -51,6 +52,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         sockets::CLASSES,
         spl::CLASSES,
         xml::CLASSES,
+        zlib::context::CLASSES,
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
@@ -182,9 +184,9 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             cli_only: false,
             functions: zlib::register,
             constants: zlib::constants,
-            prelude_php: "",
+            prelude_php: zlib::context::PRELUDE_PHP,
             wrappers: zlib::wrappers,
-            reset: no_state,
+            reset: zlib::output::reset_state,
             object_freed: None,
         },
         ModuleDef {
@@ -225,6 +227,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: iconv::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "session",
+            cli_only: false,
+            functions: session::register,
+            constants: session::constants,
+            prelude_php: session::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: session::reset_state,
             object_freed: None,
         },
         ModuleDef {

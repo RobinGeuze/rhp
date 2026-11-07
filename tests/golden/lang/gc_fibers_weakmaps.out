@@ -1,0 +1,31 @@
+-- WeakMap value kept while map and key live
+int(0)
+int(1)
+int(2)
+int(0)
+-- WeakMap value referring to its map
+int(2)
+bool(true)
+int(0)
+bool(true)
+-- two maps, one key
+int(2)
+int(0)
+-- suspended fiber holding itself
+int(0)
+int(0)
+-- destructors in the destructor fiber
+dtor b in Fiber#9
+dtor a in Fiber#9
+int(2)
+dtor c in Fiber#9
+int(1)
+dtor main in main
+int(1)
+-- by-reference foreach holds its array
+int(0)
+int(1)
+-- a closure key whose value holds it
+int(3)
+int(0)
+done

@@ -47,6 +47,10 @@ pub(crate) struct ProtoBuilder<'c> {
     /// Per enclosing try-with-finally: positions of pending-return jump
     /// placeholders to patch to the finally entry.
     pub(crate) finally_rets: Vec<Vec<usize>>,
+    /// Per enclosing try-with-finally (in step with `finally_rets`): the
+    /// `break`/`continue` jumps through it that leave foreach loops outside
+    /// it, which are freed once the finally ran (see `compile_try`).
+    pub(crate) finally_breaks: Vec<Vec<BreakThrough>>,
     pub(crate) num_cvs: u16,
     pub(crate) next_temp: Reg,
     pub(crate) high_water: Reg,
@@ -123,6 +127,17 @@ pub(crate) struct ProtoBuilder<'c> {
     pub(crate) expr_regs: Vec<(usize, Reg)>,
 }
 
+/// A `break`/`continue` through a finally (see `ProtoBuilder::finally_breaks`).
+#[derive(Clone, Copy)]
+pub(crate) struct BreakThrough {
+    /// The `JmpFinally` to point at the code that frees the loops.
+    pub(crate) pos: usize,
+    /// The target loop.
+    pub(crate) loop_idx: usize,
+    pub(crate) is_break: bool,
+    pub(crate) line: u32,
+}
+
 /// A break/continue target under construction. Jump placeholders are recorded
 /// as code positions and patched once the loop's exit/continue labels are known.
 #[derive(Default)]
@@ -162,6 +177,7 @@ impl<'c> ProtoBuilder<'c> {
             cv_map: Vec::new(),
             exception_table: Vec::new(),
             finally_rets: Vec::new(),
+            finally_breaks: Vec::new(),
             num_cvs: 0,
             next_temp: 0,
             high_water: 0,
@@ -513,9 +529,16 @@ impl<'c> ProtoBuilder<'c> {
         for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
+            let saved_line = self.cur_line;
+            {
+                // RECV_INIT runs on the parameter's line
+                use mago_span::HasSpan;
+                self.cur_line = self.cx.line_of(expr.span().start.offset);
+            }
             self.in_const_decl = true;
             let t = self.compile_expr(expr);
             self.in_const_decl = false;
+            self.cur_line = saved_line;
             let t = t?;
             self.emit(Instr::Mov { dst: cv, src: t });
             if let Some(line) = check_line {

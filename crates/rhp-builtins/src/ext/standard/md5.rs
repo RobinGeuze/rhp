@@ -47,6 +47,30 @@ pub(crate) fn read_file_for_hash(
     if path.is_empty() {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
+    if let Some((w, p)) = crate::main::streams::userspace::locate(host, path) {
+        // read in 1 KiB steps; a failed read or a stream not at its end
+        // fails the hash
+        let Some(opened) = crate::main::streams::userspace::open(host, &w, &p, b"rb", 0, None)
+        else {
+            if !host.has_pending_throw() {
+                crate::open_failed(host, fname, path)?;
+            }
+            return Ok(None);
+        };
+        let mut s = opened.stream;
+        s.orig_path = path.to_vec();
+        let res = host.user_stream_insert(s, None);
+        let mut data = Vec::new();
+        let failed = loop {
+            match host.stream_read(&res, 1024) {
+                Some(b) if !b.is_empty() => data.extend_from_slice(&b),
+                Some(_) => break !host.stream_eof(&res),
+                None => break true,
+            }
+        };
+        host.stream_close(&res);
+        return Ok((!failed).then_some(data));
+    }
     let Some(url) = crate::locate_for_open(host, fname, path)? else {
         return Ok(None);
     };

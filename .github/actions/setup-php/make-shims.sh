@@ -12,6 +12,7 @@
 # - The shims run php with themselves as argv[0], so PHP_BINARY is the shim
 #   and a test spawning `PHP_BINARY . getenv('TEST_PHP_EXTRA_ARGS')` (" -n
 #   ...") keeps the extensions too.
+# - Under -n, session.save_path is reset to upstream's default (see below).
 set -euo pipefail
 
 shim_dir="$1"
@@ -49,7 +50,10 @@ for a in "\$@"; do
         extension=*) e="\${v#extension=}"; e="\${e##*/}"; e="\${e%.so}"; own="\$own\${e#php_} " ;;
       esac
     done
-    flags=(-d "extension_dir=$extdir")
+    # Debian builds in session.save_path=/var/lib/php/sessions, which a
+    # non-root user can't open: session gc (1 in 100 session_start calls)
+    # then prints a notice. Use upstream's default (the temp dir).
+    flags=(-d "extension_dir=$extdir" -d "session.save_path=")
     for e in$exts; do
       case "\$own" in
         *" \$e "*) ;;

@@ -223,7 +223,24 @@ fn output_filter(p: &mut Program, f: &rhp_builtins::zend::multibyte::OutputFilte
     }
 }
 
+/// [`compile_source_checked`] as php compiles: past the hard memory limit
+/// it stops ([`IncludeError::HardLimit`]).
 fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
+    rhp_values::mem::compiling(|| compile_source_checked(file, src, mode))
+}
+
+/// Went past the hard memory limit while scanning or parsing: php stops
+/// in the scanner, somewhere in the file; rhp parses it whole first and
+/// names its last line.
+fn parse_hard_limit(src: &[u8]) -> Result<(), IncludeError> {
+    if rhp_values::mem::hard_oom_pending() {
+        let line = 1 + src.iter().filter(|&&c| c == b'\n').count() as u32;
+        return Err(IncludeError::HardLimit { line });
+    }
+    Ok(())
+}
+
+fn compile_source_checked(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
     let short_tags = rhp_builtins::short_open_tag();
     // php's own grammar decides what parses (its scanner, grammar and
     // grammar action errors), with the warnings its parser raised. It runs
@@ -233,6 +250,7 @@ fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, Include
         .into_iter()
         .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
         .collect();
+    parse_hard_limit(src)?;
     if let Some(f) = php_failure {
         return Err(IncludeError::Parse {
             class: f.class,
@@ -243,6 +261,7 @@ fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, Include
     }
     let arena = Arena::new();
     let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
+    parse_hard_limit(src)?;
     if parsed.has_parse_errors() {
         // Code php's grammar accepts but mago does not, that php then
         // refuses to compile.
@@ -266,6 +285,14 @@ fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, Include
         }
     }
     let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
+    if rhp_values::mem::hard_oom_pending() {
+        // The compiler stopped at a line, or went past the limit finishing.
+        let line = match r {
+            Err(Thrown::Exit(_)) => rhp_compiler::compile_error_line(),
+            _ => 1 + src.iter().filter(|&&c| c == b'\n').count() as u32,
+        };
+        return Err(IncludeError::HardLimit { line });
+    }
     if parse_diags.is_empty() {
         return r.map_err(include_error);
     }
@@ -422,6 +449,12 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             vm.compile_failed(&message, file.as_bytes(), line, &diags, false);
             vm.finish_request();
             return Outcome::Exit(255);
+        }
+        Err(IncludeError::HardLimit { line }) => {
+            let t = vm.compile_hard_limit(Some((file.as_bytes(), line)));
+            let code = fatal(&mut vm, t);
+            vm.finish_request();
+            return Outcome::Exit(code);
         }
         Err(IncludeError::Thrown(t)) => {
             let code = fatal(&mut vm, t);

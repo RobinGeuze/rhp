@@ -107,6 +107,9 @@ pub struct MemState {
     /// An OOM was recorded this request (php's `ZEND_HAS_OOM()`): later
     /// crossings are not recorded until [`MemState::reset_oom`].
     latched: Cell<bool>,
+    /// Compiling (zend_is_compiling): a new chunk or huge block checks the
+    /// hard limit too, as php's non-fallible emalloc does ([`compiling`]).
+    compiling: Cell<bool>,
     /// `paged` above this takes the slow path: a new peak or another chunk.
     /// Never above either threshold ([`MemState::update_mark`]).
     mark: Cell<usize>,
@@ -128,6 +131,7 @@ thread_local! {
             tick: Cell::new(false),
             pending: Cell::new(None),
             latched: Cell::new(false),
+            compiling: Cell::new(false),
             mark: Cell::new(0),
         }
     };
@@ -266,6 +270,17 @@ impl MemState {
         true
     }
 
+    /// The allocator's limit check: while compiling, the hard limit's too.
+    /// The allocation goes ahead either way; the compiler stops at its next
+    /// check ([`hard_oom_pending`]).
+    fn check_limit_or_hard(&self, add: usize) {
+        if self.compiling.get() {
+            self.check_hard_limit(add);
+        } else {
+            self.check_limit(add);
+        }
+    }
+
     fn record(&self, oom: Oom) {
         if !self.latched.get() {
             self.latched.set(true);
@@ -332,7 +347,7 @@ impl MemState {
     #[cold]
     #[inline(never)]
     fn grow_chunks(&self, paged: usize) {
-        self.check_limit(CHUNK_SIZE);
+        self.check_limit_or_hard(CHUNK_SIZE);
         self.chunks.set(chunks_for(paged));
         self.real_peak.set(self.real_peak.get().max(self.real()));
     }
@@ -340,7 +355,7 @@ impl MemState {
     #[cold]
     #[inline(never)]
     fn add_huge(&self, r: usize) {
-        self.check_limit(r);
+        self.check_limit_or_hard(r);
         self.huge.set(self.huge.get().saturating_add(r));
         self.real_peak.set(self.real_peak.get().max(self.real()));
     }
@@ -387,7 +402,7 @@ impl MemState {
             self.huge.set(self.huge.get().saturating_sub(old - new));
             return;
         }
-        self.check_limit(new - old);
+        self.check_limit_or_hard(new - old);
         self.huge.set(self.huge.get().saturating_add(new - old));
         self.real_peak.set(self.real_peak.get().max(self.real()));
         self.peak.set(self.peak.get().max(self.size()));
@@ -480,6 +495,26 @@ pub fn begin_request() {
 /// Stop counting (the request is over).
 pub fn end_request() {
     state().active.set(false);
+}
+
+/// Run `f` (parsing and compiling a script) with the allocator checking
+/// php's hard limit as well as `memory_limit`: php's compiler allocates
+/// with emalloc, which exits past the hard limit ("Hard memory limit of N
+/// bytes exhausted"). Elsewhere rhp's own allocations only record crossing
+/// the limit, as its sizes differ from php's.
+pub fn compiling<T>(f: impl FnOnce() -> T) -> T {
+    let s = state();
+    let was = s.compiling.replace(true);
+    let r = f();
+    s.compiling.set(was);
+    r
+}
+
+/// Has an allocation gone past the hard limit ([`compiling`])? The
+/// compiler then stops.
+#[inline]
+pub fn hard_oom_pending() -> bool {
+    matches!(state().pending.get(), Some(Oom::Hard { .. }))
 }
 
 /// Run `f` with counting paused: what it allocates (engine data that lives

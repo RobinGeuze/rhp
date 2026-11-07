@@ -368,7 +368,7 @@ the "linked" section for that reason.
   listing each change, marked `rhp:` in the source), excluded from the
   workspace and put in place with `[patch.crates-io]` in the root
   Cargo.toml. It gets a `THIRD-PARTY-NOTICES` entry like any vendored code.
-  Today: mago-syntax (lexer fixes).
+  Today: mago-syntax (lexer fixes, a smaller parse tree).
 
 ## Threading
 

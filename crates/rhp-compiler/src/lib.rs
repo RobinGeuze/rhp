@@ -72,6 +72,18 @@ pub fn compile_error_line() -> u32 {
     COMPILE_ERROR_LINE.with(Cell::get)
 }
 
+/// Stop once an allocation went past php's hard memory limit
+/// (`rhp_values::mem::compiling`): php exits there, at the line being
+/// compiled, which [`compile_error_line`] then gives. The SAPI checks
+/// `rhp_values::mem::hard_oom_pending` before looking at the result.
+fn check_hard_limit(cx: &FileCtx, offset: u32) -> Result<(), Thrown> {
+    if rhp_values::mem::hard_oom_pending() {
+        set_compile_error_line(cx.line_of(offset));
+        return Err(Thrown::Exit(255));
+    }
+    Ok(())
+}
+
 pub(crate) fn set_compile_error_line(line: u32) {
     COMPILE_ERROR_LINE.with(|l| l.set(line));
 }
@@ -197,6 +209,7 @@ fn compile_file(
     let num_prelude_functions = functions.len();
     for (ns, stmt) in flat {
         use mago_span::HasSpan;
+        check_hard_limit(cx, stmt.span().start.offset)?;
         cx.set_ns(ns);
         let at = |e| cx.locate(e, stmt.span().start.offset);
         match stmt {
@@ -228,6 +241,7 @@ fn compile_file(
 
     let mut top_class_idx = 0u32;
     for (ns, stmt) in flat {
+        check_hard_limit(cx, mago_span::HasSpan::span(*stmt).start.offset)?;
         cx.set_ns(ns);
         // A bare top-level function is already hoisted into `functions`; skip it
         // so compile_stmt doesn't also runtime-declare (double) it. Functions

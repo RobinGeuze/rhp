@@ -214,3 +214,35 @@ fn mark_matches_reference_model() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn compiling_checks_the_hard_limit() {
+    std::thread::spawn(|| {
+        const M: usize = 1 << 20;
+        begin_request();
+        force_limit(8 * M);
+        let s = state();
+        // Outside compiling, a huge block past the hard limit only
+        // records crossing the limit.
+        s.on_alloc(20 * M);
+        assert!(!hard_oom_pending());
+        assert!(matches!(s.take_oom(), Some(Oom::Limit { .. })));
+        s.on_free(20 * M);
+        s.reset_oom();
+        // While compiling it records the hard limit (16 MB here).
+        compiling(|| s.on_alloc(20 * M));
+        assert!(hard_oom_pending());
+        assert_eq!(
+            s.take_oom(),
+            Some(Oom::Hard {
+                limit: 16 * M,
+                tried: rounded(20 * M)
+            })
+        );
+        s.on_free(20 * M);
+        assert!(!s.compiling.get());
+        end_request();
+    })
+    .join()
+    .unwrap();
+}

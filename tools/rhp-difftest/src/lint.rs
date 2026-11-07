@@ -131,6 +131,10 @@ pub fn lint_source(file: &str, src: &[u8]) -> Result<(), Refusal> {
                 class: class.to_string(),
                 message,
             }),
+            Err(IncludeError::HardLimit { line }) => Err(Refusal::Error {
+                class: "HardLimit".into(),
+                message: format!("hard memory limit exhausted compiling line {line}"),
+            }),
             Err(IncludeError::Thrown(other)) => Err(Refusal::Error {
                 class: "Thrown".into(),
                 message: format!("{other:?}"),

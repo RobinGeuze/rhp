@@ -66,7 +66,9 @@ fn parses_into_the_bump_arena() {
     let arena = Arena::new();
     let mut src = b"<?php\n".to_vec();
     for i in 0..2000 {
-        src.extend_from_slice(format!("function f{i}($a) {{ return [$a, 'k' => $a + {i}]; }}\n").as_bytes());
+        src.extend_from_slice(
+            format!("function f{i}($a) {{ return [$a, 'k' => $a + {i}]; }}\n").as_bytes(),
+        );
     }
     let parsed = arena.parse(b"t.php", &src);
     assert!(!parsed.has_parse_errors());

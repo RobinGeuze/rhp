@@ -355,7 +355,8 @@ jobs:
   # under php, then the compile-only ratchet: `rhp-difftest lint
   # --check-known` fails only on a file rhp newly refuses; listed files that
   # now compile are a notice, never a failure.
-  # Last, the request diff ratchet (`rhp-difftest app --check-known`).
+  # Then the request diff ratchet (`rhp-difftest app --check-known`) and
+  # the console battery ratchet (`apps.py console`).
   apps-lint:
     name: app ${{ matrix.app }}
     needs: [apps-matrix, build]
@@ -395,3 +396,7 @@ jobs:
       # request in known-passing-requests.txt stops answering like php-cgi.
       - name: Known requests still answer like php-cgi
         run: python3 tests/apps/apps.py diff ${{ matrix.app }}
+      # The console battery (console.toml) under php -n and rhp -n: fails
+      # only when a command in known-passing-console.txt stops matching php.
+      - name: Known console commands still match php
+        run: python3 tests/apps/apps.py console ${{ matrix.app }}

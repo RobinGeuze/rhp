@@ -43,6 +43,27 @@ smoke = [
 ]
 
 [[app]]
+name = "symfony-8.1"
+framework = "symfony"
+version = "8.1"
+docroot = "public"
+front_controller = "public/index.php"
+console = "bin/console"
+install = "composer install --no-scripts --no-interaction"
+setup = ["php bin/console cache:warmup"]
+lint = ["vendor", "src", "config", "public"]
+known_refused = "known-refused.txt"
+known_requests = "known-passing-requests.txt"
+smoke = [
+    "GET / 200",
+    "GET /hello/rhp 200",
+    "GET /json?a=1 200",
+    "GET /twig/rhp 200",
+    "POST /submit 201",
+    "GET /nope 404",
+]
+
+[[app]]
 name = "laravel-13"
 framework = "laravel"
 version = "13"

@@ -1,0 +1,8 @@
+{% extends 'base.html.twig' %}
+{% block title %}Hello {{ name }}{% endblock %}
+{% block body %}
+<h1>Hello {{ name|upper }}</h1>
+<ul>{% for i in items %}<li>{{ loop.index }}: {{ i }}</li>{% endfor %}</ul>
+{% if items|length > 2 %}<p>many</p>{% else %}<p>few</p>{% endif %}
+<p>{{ '<b>escaped</b>' }} {{ '<i>raw</i>'|raw }}</p>
+{% endblock %}

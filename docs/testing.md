@@ -170,6 +170,11 @@ own nodes.
 a compile-only lint ratchet and a request diff of `rhp --cgi` against
 php-cgi.
 
+The dev tools (`tests/apps/tools.py`: PHPUnit, PHPStan, Psalm,
+PHP-CS-Fixer, Rector; a nightly big tier) and Composer
+(`tests/apps/composer_diff.py`) run command by command under php and rhp,
+each in its own CI job; `tests/apps/harness_test.py` tests their masks.
+
 ## Regenerating expectations
 
 - A golden: `rhp-difftest golden --write --filter NAME` with the reference

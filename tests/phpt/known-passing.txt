@@ -435,6 +435,7 @@ Zend/tests/backtrace/fatal_error_backtraces_001.phpt
 Zend/tests/backtrace/fatal_error_backtraces_002.phpt
 Zend/tests/backtrace/fatal_error_backtraces_003.phpt
 Zend/tests/binary.phpt
+Zend/tests/bind_static_exception.phpt
 Zend/tests/bitwise_not_precision_exception.phpt
 Zend/tests/break_error_001.phpt
 Zend/tests/break_error_002.phpt
@@ -1215,6 +1216,7 @@ Zend/tests/constexpr/gh9136.phpt
 Zend/tests/constexpr/gh9136_2.phpt
 Zend/tests/constexpr/gh9138.phpt
 Zend/tests/constexpr/gh9138_2.phpt
+Zend/tests/constexpr/new.phpt
 Zend/tests/constexpr/new_allowed.phpt
 Zend/tests/constexpr/new_anon_class.phpt
 Zend/tests/constexpr/new_arg_eval.phpt
@@ -1571,6 +1573,7 @@ Zend/tests/exceptions/bug48428.phpt
 Zend/tests/exceptions/bug50005.phpt
 Zend/tests/exceptions/bug50383.phpt
 Zend/tests/exceptions/bug51394.phpt
+Zend/tests/exceptions/bug53511.phpt
 Zend/tests/exceptions/bug54043.phpt
 Zend/tests/exceptions/bug60569.phpt
 Zend/tests/exceptions/bug61362.phpt
@@ -1582,6 +1585,7 @@ Zend/tests/exceptions/bug64821.3.phpt
 Zend/tests/exceptions/bug65254.phpt
 Zend/tests/exceptions/bug70012.phpt
 Zend/tests/exceptions/bug72581.phpt
+Zend/tests/exceptions/bug73338.phpt
 Zend/tests/exceptions/bug73350.phpt
 Zend/tests/exceptions/bug76025.phpt
 Zend/tests/exceptions/exception_001.phpt
@@ -2199,6 +2203,8 @@ Zend/tests/gh10168/assign_prop.phpt
 Zend/tests/gh10168/assign_prop_ref.phpt
 Zend/tests/gh10168/assign_prop_ref_with_prop_ref.phpt
 Zend/tests/gh10168/assign_prop_with_prop_ref.phpt
+Zend/tests/gh10168/assign_ref.phpt
+Zend/tests/gh10168/assign_ref_with_prop_ref.phpt
 Zend/tests/gh10168/assign_static_prop.phpt
 Zend/tests/gh10168/assign_static_prop_ref.phpt
 Zend/tests/gh10168/assign_static_prop_ref_with_prop_ref.phpt
@@ -2263,6 +2269,7 @@ Zend/tests/gh16408.phpt
 Zend/tests/gh16515.phpt
 Zend/tests/gh16648.phpt
 Zend/tests/gh16799.phpt
+Zend/tests/gh17162.phpt
 Zend/tests/gh18026.phpt
 Zend/tests/gh18572.phpt
 Zend/tests/gh18581.phpt
@@ -2284,6 +2291,7 @@ Zend/tests/gh19719.phpt
 Zend/tests/gh19839.phpt
 Zend/tests/gh20113.phpt
 Zend/tests/gh20177.phpt
+Zend/tests/gh20183_001.phpt
 Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21504.phpt
@@ -4047,6 +4055,7 @@ Zend/tests/static_variables/static_variable_in_dynamic_function_2.phpt
 Zend/tests/static_variables/static_variable_in_private_method.phpt
 Zend/tests/static_variables/static_variable_in_private_trait_method.phpt
 Zend/tests/static_variables/static_variables_closure_bind.phpt
+Zend/tests/static_variables/static_variables_destructor.phpt
 Zend/tests/static_variables/static_variables_global.phpt
 Zend/tests/static_variables/static_variables_global_2.phpt
 Zend/tests/static_variables/static_variables_recursive.phpt
@@ -4097,6 +4106,7 @@ Zend/tests/temporary_cleaning/temporary_cleaning_009.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_010.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_011.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_012.phpt
+Zend/tests/temporary_cleaning/temporary_cleaning_013.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_014.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_015.phpt
 Zend/tests/temporary_cleaning/temporary_cleaning_016.phpt
@@ -4401,6 +4411,7 @@ Zend/tests/try/try_finally_013.phpt
 Zend/tests/try/try_finally_014.phpt
 Zend/tests/try/try_finally_015.phpt
 Zend/tests/try/try_finally_016.phpt
+Zend/tests/try/try_finally_017.phpt
 Zend/tests/try/try_finally_018.phpt
 Zend/tests/try/try_finally_019.phpt
 Zend/tests/try/try_finally_020.phpt
@@ -5101,6 +5112,7 @@ Zend/tests/weakrefs/gh10043-014.phpt
 Zend/tests/weakrefs/gh10043-016.phpt
 Zend/tests/weakrefs/gh13612.phpt
 Zend/tests/weakrefs/gh17442_1.phpt
+Zend/tests/weakrefs/gh17442_2.phpt
 Zend/tests/weakrefs/gh20073.phpt
 Zend/tests/weakrefs/notify.phpt
 Zend/tests/weakrefs/weakmap_basic_map_behavior.phpt
@@ -10280,6 +10292,7 @@ ext/standard/tests/array/gh17977.phpt
 ext/standard/tests/array/gh18480.phpt
 ext/standard/tests/array/gh19300_1.phpt
 ext/standard/tests/array/gh19300_2.phpt
+ext/standard/tests/array/gh19926.phpt
 ext/standard/tests/array/gh19926_pointer.phpt
 ext/standard/tests/array/gh20043.phpt
 ext/standard/tests/array/gh22678.phpt
@@ -12506,6 +12519,9 @@ ext/standard/tests/strings/gh18823_strict.phpt
 ext/standard/tests/strings/gh18823_weak.phpt
 ext/standard/tests/strings/gh18897.phpt
 ext/standard/tests/strings/gh19070.phpt
+ext/standard/tests/strings/gh20906_1.phpt
+ext/standard/tests/strings/gh20906_2.phpt
+ext/standard/tests/strings/gh20906_3.phpt
 ext/standard/tests/strings/gh23204.phpt
 ext/standard/tests/strings/hebrev_basic.phpt
 ext/standard/tests/strings/hex2bin_basic.phpt
@@ -14172,6 +14188,7 @@ tests/output/gh14808.phpt
 tests/output/gh15179.phpt
 tests/output/gh15181.phpt
 tests/output/gh16135.phpt
+tests/output/gh20352.phpt
 tests/output/gh20837.phpt
 tests/output/ob_001.phpt
 tests/output/ob_002.phpt

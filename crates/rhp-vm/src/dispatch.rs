@@ -641,7 +641,9 @@ impl Vm {
             // Run destructors of objects the program has just released (a
             // compound assignment's operator frees its operand only once
             // the store is done: ZEND_ASSIGN_OBJ_OP & co. free OP_DATA last).
-            if self.dtor_check && !matches!(instr, Instr::AssignLval { .. }) {
+            if self.dtor_check
+                && !(matches!(instr, Instr::AssignLval { .. }) && compound_op(&proto.code, pc))
+            {
                 self.dtor_check = false;
                 if self.filtered_streams > 0 {
                     // A filtered stream's last reference went away: its
@@ -835,8 +837,8 @@ impl Vm {
                     };
                     let v = if slow(&x) || slow(&y) {
                         let v = self.concat_object(&x, &y)?;
-                        self.free_tmp(top, a);
-                        self.free_tmp(top, b);
+                        self.free_tmp(top, proto.num_cvs, a);
+                        self.free_tmp(top, proto.num_cvs, b);
                         v
                     } else {
                         ops::concat(&x, &y)
@@ -924,7 +926,7 @@ impl Vm {
                 Instr::CastString { dst, a } => {
                     let v = self.reg_r(top, a)?;
                     let s = self.to_string_vm(&v)?;
-                    self.free_tmp(top, a);
+                    self.free_tmp(top, proto.num_cvs, a);
                     self.reg_set(top, dst, Value::str(s));
                 }
                 Instr::CastBool { dst, a } => {
@@ -1296,7 +1298,7 @@ impl Vm {
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
                     drop(a);
-                    self.free_tmp(top, arr);
+                    self.free_tmp(top, proto.num_cvs, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchW { dst, arr, key } => {
@@ -1351,7 +1353,7 @@ impl Vm {
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Is)?;
                     drop(a);
-                    self.free_tmp(top, arr);
+                    self.free_tmp(top, proto.num_cvs, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchList { dst, arr, key } => {
@@ -2018,14 +2020,14 @@ impl Vm {
                     let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
-                    self.free_tmp(top, obj);
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
                     let o = self.reg_r(top, obj)?;
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
-                    self.free_tmp(top, obj);
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropW { dst, obj, name } => {
@@ -2056,7 +2058,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch_is(top, o, pname)?;
-                    self.free_tmp(top, obj);
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
@@ -2070,7 +2072,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
-                    self.free_tmp(top, obj);
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
@@ -2224,12 +2226,14 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_isset(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyProp { dst, obj, name } => {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_empty(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::EmptyPropDyn { dst, obj, name } => {
@@ -2243,6 +2247,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_empty(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::IssetPropDyn { dst, obj, name } => {
@@ -2256,6 +2261,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let r = self.prop_isset(top, o, pname)?;
+                    self.free_tmp(top, proto.num_cvs, obj);
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::UnsetProp { obj, name } => {
@@ -3065,8 +3071,9 @@ impl Vm {
             f(&x, &y)?
         } else {
             let v = self.bin_slow(op, f, &x, &y)?;
-            self.free_tmp(top, a);
-            self.free_tmp(top, b);
+            let n = self.stack[top].proto.num_cvs;
+            self.free_tmp(top, n, a);
+            self.free_tmp(top, n, b);
             v
         };
         self.reg_set(top, dst, v);
@@ -3079,8 +3086,9 @@ impl Vm {
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
         let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
         let v = self.long_op(op, &x, &y)?;
-        self.free_tmp(top, a);
-        self.free_tmp(top, b);
+        let n = self.stack[top].proto.num_cvs;
+        self.free_tmp(top, n, a);
+        self.free_tmp(top, n, b);
         self.reg_set(top, dst, v);
         Ok(())
     }
@@ -4157,6 +4165,27 @@ pub(crate) fn cell_define(cell: &RefCell<Value>) {
 /// A value with nothing to drop: overwriting it needs no drop glue and
 /// never releases an object or array.
 #[inline(always)]
+/// Whether the instruction before `pc` is a compound assignment's operator
+/// (its `AssignLval` comes next).
+fn compound_op(code: &[Instr], pc: usize) -> bool {
+    pc > 0
+        && matches!(
+            code[pc - 1],
+            Instr::Add { .. }
+                | Instr::Sub { .. }
+                | Instr::Mul { .. }
+                | Instr::Div { .. }
+                | Instr::Mod { .. }
+                | Instr::Pow { .. }
+                | Instr::BitAnd { .. }
+                | Instr::BitOr { .. }
+                | Instr::BitXor { .. }
+                | Instr::Shl { .. }
+                | Instr::Shr { .. }
+                | Instr::Concat { .. }
+        )
+}
+
 fn is_scalar(v: &Value) -> bool {
     matches!(
         v,
@@ -4542,7 +4571,18 @@ impl Vm {
     /// holds (`=&`, `static`, `global`). The old value is released as php's
     /// i_zval_ptr_dtor does: its destructor runs before the next instruction,
     /// reported at this one.
+    #[inline]
     pub(crate) fn rebind_cv(&mut self, top: usize, cv: Reg, v: Value) {
+        let slot = &mut self.stack[top].regs[cv as usize];
+        if is_scalar(slot) {
+            std::mem::forget(std::mem::replace(slot, v));
+            return;
+        }
+        self.rebind_cv_slow(top, cv, v);
+    }
+
+    #[inline(never)]
+    fn rebind_cv_slow(&mut self, top: usize, cv: Reg, v: Value) {
         let old = std::mem::replace(&mut self.stack[top].regs[cv as usize], v);
         rhp_values::gc::possible_root(&old);
         if (matches!(old, Value::Ref(_)) && self.release_pending()) || self.release_tracked(&old) {
@@ -4594,13 +4634,16 @@ impl Vm {
     /// temporary holding an object or array, so its destructor runs before
     /// the next instruction, reported at this one (and caught by the try
     /// around it). Scalars stay: dropping them changes nothing.
-    #[inline]
-    fn free_tmp(&mut self, top: usize, r: Reg) {
-        let f = &mut self.stack[top];
-        if r < f.proto.num_cvs {
-            return;
+    #[inline(always)]
+    fn free_tmp(&mut self, top: usize, num_cvs: Reg, r: Reg) {
+        if r >= num_cvs {
+            self.free_tmp_slot(top, r);
         }
-        let slot = &mut f.regs[r as usize];
+    }
+
+    #[inline]
+    fn free_tmp_slot(&mut self, top: usize, r: Reg) {
+        let slot = &mut self.stack[top].regs[r as usize];
         if matches!(slot, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
             let old = std::mem::replace(slot, Value::Null);
             if !self.destructibles.is_empty() {

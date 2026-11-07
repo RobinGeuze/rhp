@@ -267,6 +267,14 @@ pub trait Host {
     /// new exception's previous one. An `exit` in `previous` wins.
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown;
 
+    /// In the traces of `thrown` and its previous exceptions, put `with` in
+    /// place of every argument that is the array stored at `data_ptr`
+    /// (`PhpArray::data_ptr`). php's traces share the argument's table, so
+    /// a function that keeps changing it in place changes what they show.
+    fn trace_replace_array(&mut self, thrown: &Thrown, data_ptr: usize, with: &Value) {
+        let _ = (thrown, data_ptr, with);
+    }
+
     /// A directive's current value (the per-request ini store shared with
     /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded
     /// module registers it.

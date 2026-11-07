@@ -3428,6 +3428,7 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let mut held: Option<PhpArray> = None;
     let mut modified = false;
     let mut pending: Option<Thrown> = None;
+    let trace_mark = PhpArray::new();
     for k in dropped {
         let v = {
             let mut g = rc.borrow_mut();
@@ -3452,6 +3453,10 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         // A throwing destructor leaves its exception pending; the rest are
         // still destroyed, each later exception chained to it.
         if let Err(e) = host.run_released_destructors() {
+            // The exception's trace took the table as an argument: php's
+            // shares it (and sees the deletions); here it would keep the
+            // remaining elements alive. It gets the result at the end.
+            host.trace_replace_array(&e, ptr, &Value::Array(trace_mark.clone()));
             pending = Some(match pending.take() {
                 Some(p) => host.chain_thrown(e, p),
                 None => e,
@@ -3471,9 +3476,12 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             d.iter_add(id, p);
         }
     }
-    *rc.borrow_mut() = Value::Array(out);
+    *rc.borrow_mut() = Value::Array(out.clone());
     match pending {
-        Some(e) => Err(e),
+        Some(e) => {
+            host.trace_replace_array(&e, trace_mark.data_ptr(), &Value::Array(out));
+            Err(e)
+        }
         None => Ok(Value::Array(removed)),
     }
 }

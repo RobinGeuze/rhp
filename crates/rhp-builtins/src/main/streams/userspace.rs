@@ -81,17 +81,6 @@ impl StreamWrapper for UserWrapper {
     }
 }
 
-/// The user wrapper behind a registered wrapper, if it is one.
-pub fn as_user(w: &Rc<dyn StreamWrapper>) -> Option<Rc<UserWrapper>> {
-    if !w.as_any().is::<UserWrapper>() {
-        return None;
-    }
-    let raw = Rc::into_raw(w.clone()) as *const UserWrapper;
-    // SAFETY: the concrete type was checked just above; the pointer came
-    // from an Rc of that type and is turned back into one Rc.
-    Some(unsafe { Rc::from_raw(raw) })
-}
-
 thread_local! {
     /// FG(user_stream_current_filename): the URL a user opener is opening.
     static CURRENT_FILENAME: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
@@ -168,6 +157,22 @@ fn ini_on(host: &dyn Host, name: &[u8]) -> bool {
 /// PG(in_user_include).
 pub fn in_user_include() -> bool {
     IN_USER_INCLUDE.with(|c| c.get())
+}
+
+/// The length of the `scheme` of a `scheme://` path (php's protocol
+/// scan: alphanumerics, `+`, `-`, `.`; at least two of them).
+pub fn protocol_len(path: &[u8]) -> Option<usize> {
+    let n = path
+        .iter()
+        .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        .count();
+    (n > 1 && path[n..].starts_with(b"://")).then_some(n)
+}
+
+/// `php_resolve_path` over include_path (wrapper entries get a quiet
+/// `url_stat`).
+pub fn resolve_path(host: &mut dyn Host, name: &[u8]) -> Option<Vec<u8>> {
+    crate::ext::standard::file::resolve_include_path(host, name)
 }
 
 /// `php_stream_locate_url_wrapper` for user wrappers: the wrapper the

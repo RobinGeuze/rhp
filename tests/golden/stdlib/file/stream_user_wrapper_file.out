@@ -1,0 +1,9 @@
+bool(true)
+open rb stream_user_wrapper_file.inc 82048
+in inc: file ok
+int(7)
+bool(true)
+open rb stream_user_wrapper_file.php 0
+bool(true)
+bool(true)
+bool(true)

@@ -13,9 +13,9 @@ use crate::Vm;
 
 impl Vm {
     /// Run `f` on the user stream behind `res`: `None` when it is not one
-    /// (or an operation on it is running already).
-    /// The stream cannot be closed meanwhile (PHP_STREAM_FLAG_NO_FCLOSE,
-    /// as php sets it around read, write, seek and cast).
+    /// (or an operation on it is running already). The stream cannot be
+    /// closed meanwhile (PHP_STREAM_FLAG_NO_FCLOSE, as php sets it around
+    /// read, write, seek and cast).
     #[inline]
     pub(crate) fn with_user<R>(
         &mut self,
@@ -73,10 +73,10 @@ impl Vm {
     }
 
     pub(crate) fn host_user_wrapper(&self, protocol: &[u8]) -> Option<Rc<UserWrapper>> {
-        if self.user_wrappers.is_empty() {
-            return None;
-        }
-        userspace::as_user(self.wrappers.get(protocol)?)
+        self.user_wrappers
+            .iter()
+            .find(|(u, _)| u == protocol)
+            .map(|(_, w)| w.clone())
     }
 
     pub(crate) fn host_register_wrapper(&mut self, protocol: &[u8], w: Rc<UserWrapper>) -> bool {
@@ -85,8 +85,8 @@ impl Vm {
         if self.wrappers.contains_key(protocol) || builtin_outside {
             return false;
         }
-        self.wrappers.insert(protocol.to_vec(), w);
-        self.user_wrappers.push(protocol.to_vec());
+        self.wrappers.insert(protocol.to_vec(), w.clone());
+        self.user_wrappers.push((protocol.to_vec(), w));
         true
     }
 
@@ -214,40 +214,6 @@ impl Vm {
     }
 }
 
-/// php_resolve_path's walk of include_path: entries split at ':', a
-/// `scheme://` prefix kept whole.
-fn split_include_path(ip: &[u8]) -> Vec<&[u8]> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < ip.len() {
-        let n = ip[i..]
-            .iter()
-            .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-            .count();
-        let mut p = i + n;
-        let rest = &ip[p..];
-        // `.://` and `..://` are no stream wrappers
-        if n > 1 && rest.starts_with(b"://") && !(n == 2 && &ip[i..p] == b"..") {
-            p += 3;
-        }
-        let end = ip[p..].iter().position(|&b| b == b':').map(|e| p + e);
-        match end {
-            Some(e) => {
-                out.push(&ip[i..e]);
-                i = e + 1;
-            }
-            None => {
-                out.push(&ip[i..]);
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// A user wrapper and the path its opener gets.
-type Located = (Rc<UserWrapper>, Vec<u8>);
-
 /// What an include through a user wrapper came to.
 pub(crate) enum UserInclude {
     /// Opened and read: the compiled name, the source and the stream to
@@ -276,12 +242,33 @@ impl Vm {
         raw: &[u8],
         kind: rhp_bytecode::IncludeKind,
     ) -> Result<Option<UserInclude>, rhp_values::Thrown> {
-        let (w, open_path, resolved) = match userspace::locate(self, raw) {
-            Some((w, p)) => (w, p, false),
-            None => match self.user_resolve_path(raw)? {
-                Some((w, p)) => (w, p, true),
+        // zend_resolve_path first: a URL is not resolved; a plain name is,
+        // through include_path (whose wrapper entries get a quiet url_stat)
+        let (w, open_path, resolved) = if userspace::protocol_len(raw).is_some() {
+            match userspace::locate(self, raw) {
+                Some((w, p)) => (w, p, false),
                 None => return Ok(None),
-            },
+            }
+        } else {
+            let r = userspace::resolve_path(self, raw);
+            if let Some(t) = self.pending_throw.take() {
+                return Err(t);
+            }
+            match r {
+                Some(r) => match userspace::locate(self, &r) {
+                    Some((w, p)) => {
+                        if kind.is_once() && self.included_files.contains(&r) {
+                            return Ok(Some(UserInclude::AlreadyIncluded));
+                        }
+                        (w, p, true)
+                    }
+                    None => return Ok(None),
+                },
+                None => match userspace::locate(self, raw) {
+                    Some((w, p)) => (w, p, false),
+                    None => return Ok(None),
+                },
+            }
         };
         let fname = kind.name();
         // php_stream_locate_url_wrapper's URL protection
@@ -316,11 +303,15 @@ impl Vm {
         self.include_docref = Some(fname);
         self.include_docref_depth = self.stack.len();
         let opened = userspace::open(self, &w, &open_path, b"rb", options, None);
+        let opened = match opened {
+            Some(o) if self.pending_throw.is_some() => {
+                self.end_include_stream(o.stream);
+                None
+            }
+            o => o,
+        };
         if let Some(t) = self.pending_throw.take() {
             self.include_docref = None;
-            if let Some(o) = opened {
-                self.close_user_state(Some(o.stream));
-            }
             return Err(t);
         }
         let Some(opened) = opened else {
@@ -402,50 +393,5 @@ impl Vm {
             data,
             stream: s,
         }))
-    }
-
-    /// php_resolve_path over an include_path with user-wrapper entries: the
-    /// first entry whose `url_stat` (quiet) succeeds. `None` when the path
-    /// is not searched or a plain entry holds the file.
-    fn user_resolve_path(&mut self, raw: &[u8]) -> Result<Option<Located>, rhp_values::Thrown> {
-        if raw.is_empty()
-            || raw[0] == b'/'
-            || raw.starts_with(b"./")
-            || raw.starts_with(b"../")
-            || raw.windows(3).any(|w| w == b"://")
-        {
-            return Ok(None);
-        }
-        let ip = self.ini_get(b"include_path").unwrap_or_default();
-        if !ip.windows(3).any(|w| w == b"://") {
-            return Ok(None);
-        }
-        for dir in split_include_path(&ip) {
-            let mut trypath = dir.to_vec();
-            trypath.push(b'/');
-            trypath.extend_from_slice(raw);
-            if let Some((w, _)) = userspace::locate(self, &trypath) {
-                if !dir.windows(3).any(|w| w == b"://") {
-                    // a plain entry, while `file://` is a user wrapper
-                    continue;
-                }
-                let st = userspace::url_stat(self, &w, &trypath, userspace::URL_STAT_QUIET, None);
-                if let Some(t) = self.pending_throw.take() {
-                    return Err(t);
-                }
-                if st.is_some() {
-                    return Ok(Some((w, trypath)));
-                }
-                continue;
-            }
-            if dir.windows(3).any(|w| w == b"://") {
-                continue;
-            }
-            let p = builtins::zend::virtual_cwd::os_path(&trypath);
-            if std::fs::canonicalize(&p).is_ok() {
-                return Ok(None);
-            }
-        }
-        Ok(None)
     }
 }

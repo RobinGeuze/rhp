@@ -438,13 +438,15 @@ impl Host for Vm {
         let mut rest: Vec<Vec<u8>> = self
             .wrappers
             .keys()
-            .filter(|k| !ORDER.contains(&k.as_slice()) && !self.user_wrappers.contains(k))
+            .filter(|k| {
+                !ORDER.contains(&k.as_slice()) && !self.user_wrappers.iter().any(|(u, _)| u == *k)
+            })
             .cloned()
             .collect();
         rest.sort();
         v.extend(rest);
         // user wrappers last, in registration order (php's hash order)
-        v.extend(self.user_wrappers.iter().cloned());
+        v.extend(self.user_wrappers.iter().map(|(u, _)| u.clone()));
         v
     }
 
@@ -499,7 +501,7 @@ impl Host for Vm {
 
     fn stream_wrapper_unregister(&mut self, scheme: &[u8]) -> bool {
         if let Some(w) = self.wrappers.remove(scheme) {
-            if let Some(i) = self.user_wrappers.iter().position(|u| u == scheme) {
+            if let Some(i) = self.user_wrappers.iter().position(|(u, _)| u == scheme) {
                 self.user_wrappers.remove(i);
                 return true;
             }
@@ -517,7 +519,7 @@ impl Host for Vm {
     fn stream_wrapper_restore(&mut self, scheme: &[u8]) -> builtins::WrapperRestore {
         match self.wrappers_off.remove(scheme) {
             Some(w) => {
-                if let Some(i) = self.user_wrappers.iter().position(|u| u == scheme) {
+                if let Some(i) = self.user_wrappers.iter().position(|(u, _)| u == scheme) {
                     self.user_wrappers.remove(i);
                     self.wrappers.remove(scheme);
                 }

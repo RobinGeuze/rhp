@@ -244,7 +244,7 @@ pub struct Vm {
     wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
     // User wrappers in `wrappers`, in registration order (php's hash order
     // for `stream_get_wrappers`).
-    user_wrappers: Vec<Vec<u8>>,
+    user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for

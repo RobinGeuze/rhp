@@ -1344,6 +1344,15 @@ impl Host for Vm {
                 // pulls the buffer offset back to the new end; php's stream
                 // position (what ftell reports) is left alone.
                 let size = size as usize;
+                // zend_string_frealloc(…, fallible): refused past the limit.
+                if size > buf.len()
+                    && !rhp_values::mem::reserve_realloc(
+                        rhp_values::mem::zstr_size(buf.len()),
+                        rhp_values::mem::zstr_size(size),
+                    )
+                {
+                    return Some(false);
+                }
                 buf.resize(size, 0);
                 if size < *pos {
                     *skew += (*pos - size) as i64;

@@ -962,6 +962,7 @@ dependencies = [
  "md-5",
  "md2",
  "md4",
+ "memchr",
  "num-bigint",
  "num-integer",
  "num-traits",

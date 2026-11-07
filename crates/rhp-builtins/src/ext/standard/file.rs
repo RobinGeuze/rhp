@@ -1238,6 +1238,10 @@ fn fn_fgetcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let first = if len == 0 {
         host.stream_gets(&h)
     } else {
+        // emalloc(len + 1): past php's hard limit the process stops here.
+        if !rhp_values::mem::alloc_check(len as usize + 1) {
+            return Ok(Value::Null);
+        }
         host.stream_gets_max(&h, len as usize)
     };
     let Some(buf) = first else {

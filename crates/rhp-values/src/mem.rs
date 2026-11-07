@@ -456,6 +456,14 @@ impl MemState {
     }
 }
 
+/// php's `ZEND_HAS_OOM()`: this request crossed the limit and the error
+/// is pending or being reported. Code that builds something big checks it
+/// to stop early, as php's loops do.
+#[inline]
+pub fn has_oom() -> bool {
+    state().latched.get()
+}
+
 /// Start counting this thread's allocations for a new request, from zero.
 pub fn begin_request() {
     let s = state();

@@ -1,0 +1,5 @@
+parameters:
+    level: max
+    paths:
+        - vendor/symfony/console
+    tmpDir: var/phpstan-big-max

@@ -3,20 +3,29 @@
 
     python3 tests/apps/tools.py setup              # composer install in tools/project
     python3 tests/apps/tools.py list               # tools, versions and command counts
-    python3 tests/apps/tools.py diff [TOOL...] [--candidate BIN] [--only N,...]
+    python3 tests/apps/tools.py diff [TOOL...] [--big] [--candidate BIN] [--only N,...]
 
 `diff` runs each command of each TOOL (all tools when none is named) on a
 fresh copy of the fixture project, first under php and then under rhp. A
 command is SAME when stdout, stderr and the exit code are byte-identical after
 normalisation (NORMALISE below), and the files it left in the project
 (vendor/ and var/ aside) are identical too; otherwise DIFF, with a unified
-diff of what differed. The summary line per tool is `identical/total`.
-Exit code 0 when every command was SAME.
+diff of what differed. Commands marked `unordered` in tools.toml (parallel
+runs, which list files in worker completion order) compare their per-file
+blocks as a set. Each line also shows CPU time (user + sys of the whole
+process tree) and peak RSS under php and the candidate. The summary line per
+tool is `identical/total`. Exit code 0 when every command was SAME.
+
+Both engines read tools/php.ini (PHPRC), a php.ini like a distribution's.
 
   --candidate BIN  the engine compared against php (default $RHP or
                    target/release/rhp); `--candidate "$(command -v php)"`
                    self-checks the normalisation
   --only N,...     run only these command numbers (as printed by `diff`)
+  --big            run the big tier instead (each tool's `big` commands:
+                   PHPStan, Psalm, Rector and CS-Fixer on vendor code,
+                   PHPUnit's synthetic suite with process isolation);
+                   minutes per command under rhp, so CI runs it nightly
   --quiet          print the DIFF details only into the output directory
 
 php is $RHP_PHP or `php`; composer (for setup) is $COMPOSER or `composer`.
@@ -31,8 +40,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 
@@ -40,15 +51,19 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 PROJECT = HERE / "tools" / "project"
 WORK = HERE / "tools" / "work"
+PHP_INI = HERE / "tools" / "php.ini"
 TIMEOUT = 900
 
 # Normalisation: only what php itself varies from run to run, plus the
 # engine's binary path. Each rule is (name, pattern, replacement); the README
 # (tests/apps/README.md, "Dev tools") documents each one.
 NORMALISE = [
-    # The path of the engine binary (PHP_BINARY, and $_SERVER['_'] in
-    # diagnostics) differs by construction between the two engines.
+    # The absolute path of the engine binary (PHP_BINARY, and $_SERVER['_']
+    # in diagnostics) differs by construction between the two engines.
     ("binary", None, "<PHP_BINARY>"),
+    # PHPStan forks its workers only with its native phpstan_turbo extension,
+    # which php loads and rhp cannot (a Zend .so); otherwise it spawns them.
+    ("phpstan-worker", re.compile(r"\((the|largest of \d+) (forked|spawned) (worker|workers)\)"), r"(\1 \3)"),
     # PHPUnit's "Time: 00:00.047, Memory: 18.00 MB" summary line.
     ("phpunit-time", re.compile(r"Time: \d\d:\d\d(\.\d+)?, Memory: [\d.]+ MB"), "Time: <T>, Memory: <M>"),
     # PHPUnit's event log: "[00:00:00.012345678 / 00:00:00.000123456] ..." and memory figures.
@@ -84,6 +99,9 @@ def load():
     versions = {p["name"]: p["version"] for p in lock["packages"] + lock["packages-dev"]}
     for t in tools:
         t["version"] = versions.get(t["package"], "?")
+        # A command is an argument string or {args = "...", unordered = true}.
+        for tier in ("commands", "big"):
+            t[tier] = [c if isinstance(c, dict) else {"args": c} for c in t.get(tier, [])]
     return tools
 
 
@@ -152,6 +170,48 @@ def snapshot(run_dir):
     return out
 
 
+# Parallel runs print one numbered block per file ("   1) src/Item.php",
+# "1) src/Item.php:12") in the order the workers finish, which php does not
+# keep stable either. The text ends at a summary line.
+BLOCK = re.compile(r"^\s*\d+\) \S")
+TAIL = re.compile(r"^ ?\[(OK|ERROR|WARNING|NOTE|INFO|CAUTION)\] |^(Found|Fixed) \d+ of \d+ files")
+FILE_KEYS = ("name", "file", "file_name", "path")
+
+
+def sort_json(v, key=""):
+    if isinstance(v, dict):
+        return {k: sort_json(x, k) for k, x in v.items()}
+    if isinstance(v, list):
+        v = [sort_json(x) for x in v]
+        if v and all(isinstance(x, dict) for x in v):
+            k = next((k for k in FILE_KEYS if all(k in x for x in v)), None)
+            if k:
+                v.sort(key=lambda x: str(x[k]))
+        elif "file" in key and all(isinstance(x, str) for x in v):
+            v.sort()
+    return v
+
+
+def unorder(text):
+    """The per-file blocks of a parallel run in a fixed order (see BLOCK)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, (dict, list)):
+        return json.dumps(sort_json(data), indent=4, ensure_ascii=False) + "\n"
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, l in enumerate(lines) if BLOCK.match(l)]
+    if not starts:
+        return text
+    end = next((i for i in range(starts[-1], len(lines)) if TAIL.match(lines[i])), len(lines))
+    blocks = []
+    for a, b in zip(starts, starts[1:] + [end]):
+        block = "".join(lines[a:b]).rstrip("\n") + "\n"
+        blocks.append(re.sub(r"^(\s*)\d+\)", r"\1#)", block))
+    return "".join(lines[: starts[0]]) + "\n".join(sorted(blocks)) + "\n" + "".join(lines[end:])
+
+
 def normalise(text, binaries):
     for name, pat, rep in NORMALISE:
         if pat is None:
@@ -162,7 +222,50 @@ def normalise(text, binaries):
     return text
 
 
-def run_one(engine, tool, args, run_dir, files, binaries):
+def spawn(argv, cwd, env, timeout=TIMEOUT):
+    """Run argv with stdin closed; return stdout, stderr, exit code (or
+    "timeout"), CPU seconds and peak RSS in MB of the process and the
+    children it waited for (composer_diff.py uses it too)."""
+    p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, start_new_session=True)
+    bufs = {}
+
+    def drain(name, f):
+        bufs[name] = f.read()
+
+    readers = [threading.Thread(target=drain, args=(n, f)) for n, f in (("out", p.stdout), ("err", p.stderr))]
+    for r in readers:
+        r.start()
+    timed_out = []
+
+    def kill():
+        timed_out.append(True)
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    timer = threading.Timer(timeout, kill)
+    timer.start()
+    _, status, ru = os.wait4(p.pid, 0)
+    timer.cancel()
+    p.returncode = os.waitstatus_to_exitcode(status)
+    if timed_out:
+        # Leftover workers would keep the pipes open.
+        kill()
+    for r in readers:
+        r.join()
+    p.stdout.close()
+    p.stderr.close()
+    out, err, code = bufs.get("out", b""), bufs.get("err", b""), p.returncode
+    if timed_out:
+        err += f"\n<TIMEOUT after {timeout}s>".encode()
+        code = "timeout"
+    rss = ru.ru_maxrss / (1 << 20 if sys.platform == "darwin" else 1 << 10)
+    return out, err, code, ru.ru_utime + ru.ru_stime, rss
+
+
+def run_one(engine, tool, cmd, run_dir, files, binaries):
     reset(run_dir, files)
     # A minimal, fixed environment: no CI variables (php-cs-fixer's and
     # PHPStan's output depends on them), no colours, a fixed width, and HOME
@@ -177,15 +280,20 @@ def run_one(engine, tool, args, run_dir, files, binaries):
         "COLUMNS": "120",
         "NO_COLOR": "1",
         "TERM": "dumb",
+        "PHPRC": str(PHP_INI),
     }
-    argv = [engine, tool["bin"], *shlex.split(args)]
-    try:
-        p = subprocess.run(argv, cwd=run_dir, env=env, capture_output=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
-        out, err, code = p.stdout, p.stderr, p.returncode
-    except subprocess.TimeoutExpired as e:
-        out, err, code = e.stdout or b"", (e.stderr or b"") + f"\n<TIMEOUT after {TIMEOUT}s>".encode(), "timeout"
-    dec = lambda b: normalise(b.decode("utf-8", "replace"), binaries)
-    return {"stdout": dec(out), "stderr": dec(err), "code": code, "files": snapshot(run_dir)}
+    argv = [engine, tool["bin"], *shlex.split(cmd["args"])]
+    out, err, code, cpu, rss = spawn(argv, run_dir, env)
+
+    def dec(b):
+        text = b.decode("utf-8", "replace")
+        return normalise(unorder(text) if cmd.get("unordered") else text, binaries)
+
+    return {"stdout": dec(out), "stderr": dec(err), "code": code, "files": snapshot(run_dir), "cpu": cpu, "rss": rss}
+
+
+def same(ref, cand):
+    return all(ref[k] == cand[k] for k in ("stdout", "stderr", "code", "files"))
 
 
 def describe_diff(ref, cand):
@@ -220,34 +328,53 @@ def describe_diff(ref, cand):
     return "".join(p if p.endswith("\n") else p + "\n" for p in parts)
 
 
-def cmd_diff(tools, candidate, only, quiet):
+def binary_paths(php, candidate):
+    """The absolute paths under which each engine can appear in output. Never
+    a bare name such as `php`: it would replace every "php" in the text."""
+    out = set()
+    for engine in (php, candidate):
+        which = shutil.which(engine)
+        real = subprocess.run([engine, "-n", "-r", "echo PHP_BINARY;"], capture_output=True, text=True).stdout
+        for b in (engine, which, which and os.path.realpath(which), real):
+            if b and os.path.isabs(b):
+                out.add(b)
+    return sorted(out, key=len, reverse=True)
+
+
+def cmd_diff(tools, candidate, only, quiet, big):
     php = os.environ.get("RHP_PHP", "php")
-    real_php = subprocess.run([php, "-r", "echo PHP_BINARY;"], capture_output=True, text=True).stdout
-    real_cand = subprocess.run([candidate, "-r", "echo PHP_BINARY;"], capture_output=True, text=True).stdout
-    binaries = sorted({b for b in (php, shutil.which(php), real_php, candidate, real_cand) if b}, key=len, reverse=True)
+    binaries = binary_paths(php, candidate)
     files = fixture_files()
+    tier = "big" if big else "commands"
     summary = []
     for t in tools:
-        run_dir = WORK / t["name"]
-        out_dir = WORK / f"{t['name']}-out"
+        if not t[tier]:
+            continue
+        name = f"{t['name']}-big" if big else t["name"]
+        run_dir = WORK / name
+        out_dir = WORK / f"{name}-out"
         shutil.rmtree(out_dir, ignore_errors=True)
         out_dir.mkdir(parents=True)
         same_count = total = 0
-        for i, args in enumerate(t["commands"]):
+        cpu = [0.0, 0.0]
+        for i, cmd in enumerate(t[tier]):
             if only and i not in only:
                 continue
-            ref = run_one(php, t, args, run_dir, files, binaries)
-            cand = run_one(candidate, t, args, run_dir, files, binaries)
+            ref = run_one(php, t, cmd, run_dir, files, binaries)
+            cand = run_one(candidate, t, cmd, run_dir, files, binaries)
             for who, r in (("php", ref), ("cand", cand)):
                 (out_dir / f"{i:02}.{who}.txt").write_text(
                     f"exit {r['code']}\n--stdout--\n{r['stdout']}--stderr--\n{r['stderr']}"
                 )
-            same = ref == cand
+            ok = same(ref, cand)
             total += 1
-            same_count += same
-            label = f"{t['name']} {args}".rstrip()
-            print(f"{'SAME' if same else 'DIFF'}  php={ref['code']} rhp={cand['code']}  {i:02} {label}", flush=True)
-            if not same:
+            same_count += ok
+            cpu[0] += ref["cpu"]
+            cpu[1] += cand["cpu"]
+            label = f"{t['name']} {cmd['args']}".rstrip()
+            usage = f"cpu {ref['cpu']:.1f}s/{cand['cpu']:.1f}s rss {ref['rss']:.0f}/{cand['rss']:.0f}MB"
+            print(f"{'SAME' if ok else 'DIFF'}  php={ref['code']} rhp={cand['code']}  {usage:<34} {i:02} {label}", flush=True)
+            if not ok:
                 d = describe_diff(ref, cand)
                 (out_dir / f"{i:02}.diff").write_text(d)
                 if not quiet:
@@ -255,12 +382,17 @@ def cmd_diff(tools, candidate, only, quiet):
                     print("      " + "\n      ".join(lines[:40]))
                     if len(lines) > 40:
                         print(f"      ... ({len(lines) - 40} more lines in {out_dir / f'{i:02}.diff'})")
-        summary.append((t, same_count, total))
-        print(f"== {t['name']} {t['version']}: {same_count}/{total} commands identical (outputs in {out_dir})", flush=True)
+        summary.append((t, same_count, total, cpu))
+        print(
+            f"== {t['name']} {t['version']}: {same_count}/{total} commands identical, "
+            f"cpu php {cpu[0]:.1f}s rhp {cpu[1]:.1f}s (outputs in {out_dir})",
+            flush=True,
+        )
     if len(summary) > 1:
-        for t, s, n in summary:
-            print(f"{t['name']:<14} {t['version']:<10} {s}/{n}")
-    return 0 if all(s == n for _, s, n in summary) else 1
+        for t, s, n, c in summary:
+            ratio = f"{c[1] / c[0]:.1f}x" if c[0] else "-"
+            print(f"{t['name']:<14} {t['version']:<10} {s}/{n}  cpu {c[0]:.1f}s -> {c[1]:.1f}s ({ratio})")
+    return 0 if all(s == n for _, s, n, _ in summary) else 1
 
 
 def main(argv):
@@ -269,7 +401,7 @@ def main(argv):
         return 0
     sub, rest = argv[0], argv[1:]
     candidate = os.environ.get("RHP") or str(REPO / "target/release/rhp")
-    only, quiet, names = None, False, []
+    only, quiet, big, names = None, False, False, []
     it = iter(rest)
     for a in it:
         if a == "--candidate":
@@ -278,6 +410,8 @@ def main(argv):
             only = {int(x) for x in next(it).split(",")}
         elif a == "--quiet":
             quiet = True
+        elif a == "--big":
+            big = True
         else:
             names.append(a)
     tools = load()
@@ -285,9 +419,9 @@ def main(argv):
         cmd_setup()
     elif sub == "list":
         for t in tools:
-            print(f"{t['name']:<14} {t['version']:<10} {len(t['commands'])} commands")
+            print(f"{t['name']:<14} {t['version']:<10} {len(t['commands'])} commands, {len(t['big'])} big")
     elif sub == "diff":
-        return cmd_diff(select(tools, names), candidate, only, quiet)
+        return cmd_diff(select(tools, names), candidate, only, quiet, big)
     else:
         sys.exit(f"unknown command {sub!r}; see --help")
     return 0

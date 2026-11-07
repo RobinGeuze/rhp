@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="vendor/autoload.php" cacheDirectory="var/phpunit-big" colors="false"
+  displayDetailsOnTestsThatTriggerWarnings="true" displayDetailsOnTestsThatTriggerDeprecations="true"
+  displayDetailsOnTestsThatTriggerNotices="true" displayDetailsOnTestsThatTriggerErrors="true"
+  displayDetailsOnIncompleteTests="true" displayDetailsOnPhpunitDeprecations="true">
+  <testsuites><testsuite name="big"><directory>big</directory></testsuite></testsuites>
+  <source><include><directory>src</directory><directory>big</directory></include></source>
+</phpunit>

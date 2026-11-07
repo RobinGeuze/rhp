@@ -6,6 +6,10 @@
 //! `zend_objects_store_put` does. Once shutdown destructors start, freed
 //! handles are not reused any more (`EG_FLAGS_OBJECT_STORE_NO_REUSE`).
 //!
+//! php allocates the store itself as request memory (1024 slots, doubled
+//! when full); the slots past the first 1024 are allocated here too, so
+//! `memory_limit` sees them (handles not reused at shutdown fill it).
+//!
 //! The store is thread-local because handles are freed from `Drop`, where
 //! there is no engine. One engine runs per thread at a time; each new
 //! engine (and each engine's drop) resets it.
@@ -22,7 +26,14 @@ struct Store {
     free: ManuallyDrop<RefCell<Vec<u32>>>,
     /// Shutdown: freed handles are dropped, not reused.
     no_reuse: Cell<bool>,
+    /// php's store size in slots (`objects_store.size`).
+    size: Cell<u32>,
+    /// The slots past the first [`INIT_SIZE`], as counted request memory.
+    grown: ManuallyDrop<RefCell<Vec<usize>>>,
 }
+
+/// zend_objects_store_init's size (the slots counted in the baseline).
+const INIT_SIZE: u32 = 1024;
 
 thread_local! {
     static STORE: Store = const {
@@ -30,6 +41,8 @@ thread_local! {
             next: Cell::new(1),
             free: ManuallyDrop::new(RefCell::new(Vec::new())),
             no_reuse: Cell::new(false),
+            size: Cell::new(INIT_SIZE),
+            grown: ManuallyDrop::new(RefCell::new(Vec::new())),
         }
     };
 }
@@ -44,9 +57,22 @@ pub fn alloc_object_id() -> u32 {
             }
             let id = s.next.get();
             s.next.set(id + 1);
+            if id >= s.size.get() {
+                grow(s);
+            }
             id
         })
         .unwrap_or(0)
+}
+
+/// The store is full: double it (`zend_objects_store_put`'s erealloc).
+#[cold]
+fn grow(s: &Store) {
+    let size = s.size.get().saturating_mul(2);
+    s.size.set(size);
+    if let Ok(mut g) = s.grown.try_borrow_mut() {
+        *g = Vec::with_capacity((size - INIT_SIZE) as usize);
+    }
 }
 
 /// Give a freed object's handle back (`zend_objects_store_del`). Handle 0
@@ -88,6 +114,10 @@ pub fn reset_object_ids() {
     let _ = STORE.try_with(|s| {
         s.next.set(1);
         s.no_reuse.set(false);
+        s.size.set(INIT_SIZE);
+        if let Ok(mut g) = s.grown.try_borrow_mut() {
+            *g = Vec::new();
+        }
         if let Ok(mut f) = s.free.try_borrow_mut() {
             f.clear();
         }

@@ -33,6 +33,8 @@ Kinds:
 | where | static | kind | reset by |
 |---|---|---|---|
 | `zend/virtual_cwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `virtual_cwd::reset_state` |
+| `zend/call_stack.rs` | `BASE`, `LIMIT`, `RESERVED` (the stack limit; a fiber switch swaps `BASE` and `LIMIT`) | request | set by `call_stack::init` at request start |
+| `zend/fibers.rs` | `BLOCKING` (fiber switches blocked while tick functions or signal handlers run) | call | `SwitchBlock` guards |
 | `zend/virtual_cwd/realpath_cache.rs` | `CACHE` (php's realpath cache and its settings; php keeps it per process) | request | `realpath_cache::reset_state` |
 | `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
 | `main/fopen_wrappers.rs` | `BASEDIR`, `ACTIVE` (open_basedir, its entries expanded after an ini_set) | request | `fopen_wrappers::reset_state` |
@@ -43,6 +45,8 @@ Kinds:
 | `ext/standard/var.rs` | `VIEWS` (`__debugInfo` / handler views while formatting) | call | `var::clear_views` |
 | `ext/standard/var.rs` | `DUMPING` (the arrays and objects `var_dump` / `debug_zval_dump` are inside of: php's recursion guards) | call | emptied as each dump returns |
 | `ext/standard/array.rs` | `OBJECT_POS` (objects' internal array pointers, by object id) | request | `array::reset_state` |
+| `main/streams/filter.rs` | `VOLATILE` (the filter patterns `stream_filter_register` added: php's volatile filter hash) | request | `filter::reset_state` via `user_filters::reset_state` |
+| `ext/standard/user_filters.rs` | `USER_FILTERS` (registered filter names and their classes) | request | `user_filters::reset_state` |
 | `main/streams/xp_socket.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `xp_socket::reset_state` |
 | `ext/json/mod.rs` | `LAST_ERROR` | request | `json::reset_state` |
 | `ext/json/mod.rs` | `SERIALIZING` (objects whose `jsonSerialize()` runs: php's JSON guard) | call | emptied as each call returns |

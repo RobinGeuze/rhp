@@ -1,0 +1,45 @@
+== php://memory
+[closing][onClose]
+[onClose]
+after null
+[closing][onClose]
+[onClose]
+after unset
+[closing][onClose]
+[onClose]
+after unset dim
+[closing][onClose]
+[onClose]
+after dim store
+[closing][onClose]
+[onClose]
+after prop
+[closing][onClose]
+[onClose]
+after unset prop
+still referenced
+[closing][onClose]
+[onClose]
+gone
+== php://output
+[closing][onClose]
+after null
+[closing][onClose]
+after unset
+[closing][onClose]
+after unset dim
+[closing][onClose]
+after dim store
+[closing][onClose]
+after prop
+[closing][onClose]
+after unset prop
+still referenced
+[closing][onClose]
+gone
+warning: file_get_contents(): Unable to locate filter "resource=data:,abc"
+warning: file_get_contents(): Unable to create filter (resource=data:,abc)
+string(3) "abc"
+resource(64) of type (stream)
+int(5)
+resource(66) of type (stream)

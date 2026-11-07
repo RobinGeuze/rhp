@@ -255,6 +255,7 @@ impl Vm {
                 }
             }
             b"attr_args" => self.attr_args(args),
+            b"attr_show" => self.attr_show(args),
             b"attr_new" => self.attr_new(args),
             // A global constant's attributes (`#[A] const X = 1;`).
             b"gconst_attrs" => {
@@ -521,6 +522,8 @@ impl Vm {
             wrapped: Some(Box::new(callable)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 
@@ -546,6 +549,8 @@ impl Vm {
             wrapped: Some(Box::new(Value::Array(pair))),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 
@@ -1260,6 +1265,31 @@ impl Vm {
             return Ok(Value::Array(PhpArray::new()));
         };
         self.attr_eval_args(&at, scope, unit)
+    }
+
+    /// `ReflectionAttribute::__toString()`'s arguments: `[name, is_ast,
+    /// value or exported text]` each.
+    fn attr_show(&mut self, args: &[Value]) -> Result<Value, Thrown> {
+        let mut out = PhpArray::new();
+        let Some((at, _, _)) = self.attr_lookup(&arg(args, 0))? else {
+            return Ok(Value::Array(out));
+        };
+        for (name, show) in &at.arg_show {
+            let mut a = PhpArray::new();
+            a.push(name.clone().map_or(Value::Null, Value::Str));
+            match show {
+                rhp_bytecode::AttrArgShow::Value(v) => {
+                    a.push(Value::Bool(false));
+                    a.push(v.clone());
+                }
+                rhp_bytecode::AttrArgShow::Ast(t) => {
+                    a.push(Value::Bool(true));
+                    a.push(Value::Str(t.clone()));
+                }
+            }
+            out.push(Value::Array(a));
+        }
+        Ok(Value::Array(out))
     }
 
     fn attr_eval_args(

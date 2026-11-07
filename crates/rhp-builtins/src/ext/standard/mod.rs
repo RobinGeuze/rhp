@@ -22,6 +22,7 @@ pub mod dns;
 pub mod exec;
 pub mod file;
 pub mod filestat;
+pub mod filters;
 pub mod formatted_print;
 pub mod fsock;
 pub mod head;
@@ -59,6 +60,7 @@ pub mod r#type;
 pub mod uniqid;
 pub mod url;
 pub mod url_scanner_ex;
+pub mod user_filters;
 pub mod uuencode;
 pub mod var;
 pub mod versioning;
@@ -127,6 +129,7 @@ fn register(m: &mut crate::Registry) {
     info::register(m);
     credits::register(m);
     streamsfuncs::register(m);
+    user_filters::register(m);
     fsock::register(m);
     http::register(m);
     crypt::register(m);
@@ -152,6 +155,7 @@ fn constants() -> Vec<(&'static str, Value)> {
         info::constants(),
         crypt::constants(),
         streamsfuncs::constants(),
+        user_filters::constants(),
         password::constants(),
         assert::constants(),
         image::constants(),
@@ -167,10 +171,11 @@ fn prelude() -> &'static str {
     static PRELUDE: OnceLock<String> = OnceLock::new();
     PRELUDE.get_or_init(|| {
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             dir::PRELUDE_PHP,
             string::PRELUDE_PHP,
-            math::PRELUDE_PHP
+            math::PRELUDE_PHP,
+            user_filters::PRELUDE_PHP
         )
     })
 }
@@ -182,4 +187,5 @@ fn reset_state() {
     basic_functions::reset_state();
     var::reset_state();
     url_scanner_ex::reset_state();
+    user_filters::reset_state();
 }

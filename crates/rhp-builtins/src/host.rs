@@ -195,7 +195,7 @@ pub trait Host {
 
     /// php's `zend_fetch_debug_backtrace` for `debug_backtrace()` (innermost
     /// first, the calling builtin's own frame skipped).
-    fn backtrace(&self, provide_object: bool, ignore_args: bool) -> Option<Value>;
+    fn backtrace(&mut self, provide_object: bool, ignore_args: bool) -> Option<Value>;
 
     /// Push a user exception handler (`set_exception_handler`; null clears),
     /// returning the previous one (or null).
@@ -213,6 +213,25 @@ pub trait Host {
     /// (zpp then coerces no scalars).
     fn caller_strict_types(&self) -> bool;
 
+    /// Write `v` through the by-reference argument `r` (php's
+    /// ZEND_TRY_ASSIGN_REF_*): a reference bound to typed properties checks
+    /// and coerces it, else the TypeError and nothing is written.
+    fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
+        *r.borrow_mut() = v;
+        Ok(())
+    }
+
+    /// Make the typed property `key` of `obj`, whose slot holds `r`, a type
+    /// source of that reference (ZEND_REF_ADD_TYPE_SOURCE).
+    fn add_ref_type_source(
+        &mut self,
+        r: &rhp_values::PhpRef,
+        obj: &ObjectHandle,
+        key: &rhp_values::PhpStr,
+    ) {
+        let _ = (r, obj, key);
+    }
+
     /// How the engine fetches the property or element whose magic accessor
     /// (`__get`, `__isset`, `offsetGet`, `offsetExists`) is running, asked from
     /// that accessor's own frame (anything it calls sees a read): SimpleXML's
@@ -226,6 +245,12 @@ pub trait Host {
     /// there is one, else the code running the operator. Weak when that caller
     /// is a builtin or there is none (the main script).
     fn arg_uses_strict_types(&self) -> bool;
+
+    /// gc_collect_cycles(): run the cycle collector, returning how many
+    /// values it freed.
+    fn gc_collect_cycles(&mut self) -> Result<i64, Thrown> {
+        Ok(0)
+    }
 
     /// `thrown` raised while `previous` is pending: php makes `previous` the
     /// new exception's previous one. An `exit` in `previous` wins.
@@ -544,7 +569,7 @@ pub trait Host {
                 o.properties.insert(storage.clone(), v);
             }
             None => {
-                o.properties.shift_remove(storage);
+                o.remove_prop(storage);
             }
         }
     }
@@ -573,6 +598,18 @@ pub trait Host {
     /// The Closure the innermost user frame runs (`Closure::getCurrent()`),
     /// if that frame is a closure's.
     fn current_closure(&self) -> Option<Value>;
+
+    /// A `Fiber` method, or the object's destruction (Zend/zend_fibers.c;
+    /// the engine owns the stack switching).
+    fn fiber(
+        &mut self,
+        op: crate::zend::fibers::FiberOp,
+        this: Option<&rhp_values::ObjectHandle>,
+        args: &[Value],
+    ) -> Result<Value, Thrown> {
+        let _ = (op, this, args);
+        Err(Thrown::error("Error", "Fibers are not available"))
+    }
 
     /// The class name of an object value, if any (for `instanceof`-style checks
     /// inside builtins).
@@ -866,6 +903,55 @@ pub trait Host {
     fn stream_is_open(&self, res: &Value) -> bool;
     /// The mode a stream was opened with (`"r"`, `"w+b"`, ...), when known.
     fn stream_mode(&self, res: &Value) -> Option<Vec<u8>>;
+    /// Attach `filter` to stream `res`'s write (else read) chain, at the end
+    /// (else the front), as `stream_filter_append` / `_prepend` do; with
+    /// `register` it gets a `stream filter` resource. `None` when appending
+    /// to the read chain failed on the buffered data (the filter is freed).
+    fn stream_filter_add(
+        &mut self,
+        _res: &Value,
+        _filter: crate::main::streams::filter::Filter,
+        _write: bool,
+        _append: bool,
+        _register: bool,
+    ) -> Option<Value> {
+        None
+    }
+    /// `stream_filter_remove`: flush the filter, take it off its chain and
+    /// free it. Err for a resource that is not a live stream filter.
+    fn stream_filter_remove(&mut self, _filter: &Value) -> Result<bool, Thrown> {
+        Ok(false)
+    }
+    /// A line read (`stream_get_line`) starts (`done` false) or ended on
+    /// `res`: php's read buffer of a memory stream fills by chunks then.
+    fn stream_note_line_read(&mut self, _res: &Value, _done: bool) {}
+    /// `php_stream_get_record` where the host runs it itself (a filtered
+    /// stream): `Some(None)` is false; `None` leaves it to the caller.
+    fn stream_get_record(
+        &mut self,
+        _res: &Value,
+        _maxlen: usize,
+        _delim: &[u8],
+    ) -> Option<Option<Vec<u8>>> {
+        None
+    }
+    /// The name php's docref messages use for the running function
+    /// (`get_active_function_name`, or the include kind while an include
+    /// opens its file).
+    fn active_function_name(&self) -> String {
+        "Unknown".to_string()
+    }
+    /// Hold `t` as php's EG(exception), thrown once the builtin returns.
+    fn set_pending_throw(&mut self, _t: Thrown) {}
+    /// Whether an exception is held (EG(exception)).
+    fn has_pending_throw(&self) -> bool {
+        false
+    }
+    /// `has_property(ZEND_PROPERTY_EXISTS)` with the object's own class as
+    /// scope (a set, possibly null, declared or dynamic property).
+    fn object_prop_exists_as(&self, obj: &Value, name: &[u8]) -> bool {
+        self.object_prop_exists(obj, name)
+    }
 
     // --- classes and reflection ---------------------------------------------
 

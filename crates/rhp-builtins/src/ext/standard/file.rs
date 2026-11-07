@@ -1511,9 +1511,10 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return stdin_contents(host, offset, maxlen);
     }
     let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
-    if host
-        .stream_wrapper(&scheme)
-        .is_some_and(|w| w.has_stream_opener())
+    if crate::main::streams::is_filter_url(&url)
+        || host
+            .stream_wrapper(&scheme)
+            .is_some_and(|w| w.has_stream_opener())
     {
         let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
         return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
@@ -1638,7 +1639,9 @@ fn get_contents_via_stream(
     maxlen: Option<usize>,
 ) -> Result<Value, Thrown> {
     let Some(res) = host.stream_open_ctx(url, b"rb", ctx) else {
-        crate::open_failed(host, "file_get_contents", url)?;
+        if !host.has_pending_throw() {
+            crate::open_failed(host, "file_get_contents", url)?;
+        }
         return Ok(Value::Bool(false));
     };
     if offset != 0 {
@@ -1684,15 +1687,18 @@ pub(crate) fn read_via_opener(
     ctx: Option<&Value>,
 ) -> Result<Option<Option<Vec<u8>>>, Thrown> {
     let scheme = crate::main::streams::split_scheme(url).0.to_vec();
-    if !host
-        .stream_wrapper(&scheme)
-        .is_some_and(|w| w.has_stream_opener())
+    if !crate::main::streams::is_filter_url(url)
+        && !host
+            .stream_wrapper(&scheme)
+            .is_some_and(|w| w.has_stream_opener())
     {
         return Ok(None);
     }
     let ctx = ctx.map(deref).unwrap_or(Value::Null);
     let Some(res) = host.stream_open_ctx(url, b"rb", &ctx) else {
-        crate::open_failed(host, fname, url)?;
+        if !host.has_pending_throw() {
+            crate::open_failed(host, fname, url)?;
+        }
         return Ok(Some(None));
     };
     let data = host.stream_read(&res, -1).unwrap_or_default();

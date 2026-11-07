@@ -99,6 +99,10 @@ pub struct MemState {
     /// A crossing waits for the VM ([`MemState::take_oom`]) or is being
     /// reported: the VM's cheap per-instruction check.
     attention: Cell<bool>,
+    /// A cycle collection is due ([`crate::gc`]).
+    gc_due: Cell<bool>,
+    /// `attention || gc_due`: the one flag the VM reads per instruction.
+    tick: Cell<bool>,
     pending: Cell<Option<Oom>>,
     /// An OOM was recorded this request (php's `ZEND_HAS_OOM()`): later
     /// crossings are not recorded until [`MemState::reset_oom`].
@@ -120,6 +124,8 @@ thread_local! {
             limit: Cell::new(DEFAULT_LIMIT),
             hard_percent: Cell::new(-1),
             attention: Cell::new(false),
+            gc_due: Cell::new(false),
+            tick: Cell::new(false),
             pending: Cell::new(None),
             latched: Cell::new(false),
             mark: Cell::new(0),
@@ -252,7 +258,7 @@ impl MemState {
                 limit: hard,
                 tried: add,
             }));
-            self.attention.set(true);
+            self.set_attention(true);
             self.latched.set(true);
             return false;
         }
@@ -264,7 +270,7 @@ impl MemState {
         if !self.latched.get() {
             self.latched.set(true);
             self.pending.set(Some(oom));
-            self.attention.set(true);
+            self.set_attention(true);
         }
     }
 
@@ -388,6 +394,30 @@ impl MemState {
         self.update_mark();
     }
 
+    fn set_attention(&self, on: bool) {
+        self.attention.set(on);
+        self.tick.set(on || self.gc_due.get());
+    }
+
+    /// A cycle collection is due, or no longer.
+    pub fn gc_due(&self, on: bool) {
+        self.gc_due.set(on);
+        self.tick.set(on || self.attention.get());
+    }
+
+    /// Whether a collection is due.
+    #[inline]
+    pub fn gc_is_due(&self) -> bool {
+        self.gc_due.get()
+    }
+
+    /// The VM's per-instruction check: [`MemState::attention`] or a due
+    /// cycle collection.
+    #[inline]
+    pub fn tick(&self) -> bool {
+        self.tick.get()
+    }
+
     /// Whether a limit crossing waits for the VM or is being reported.
     #[inline]
     pub fn attention(&self) -> bool {
@@ -403,7 +433,7 @@ impl MemState {
     /// The VM raised the error; later crossings stay unrecorded until
     /// [`MemState::reset_oom`].
     pub fn oom_raised(&self) {
-        self.attention.set(false);
+        self.set_attention(false);
     }
 
     /// The VM raised this request's out-of-memory error and the request is
@@ -417,7 +447,7 @@ impl MemState {
     pub fn reset_oom(&self) {
         self.latched.set(false);
         self.pending.set(None);
-        self.attention.set(false);
+        self.set_attention(false);
     }
 
     /// The current limit (`LIMIT_MAX` when unlimited).

@@ -591,7 +591,11 @@ impl Vm {
         if present {
             let key = key.unwrap();
             self.consume_reinit(&h, &key);
-            h.borrow_mut().properties.shift_remove(&key);
+            let old = h.borrow_mut().remove_prop(&key);
+            if let Some(old) = &old {
+                rhp_values::gc::possible_root(old);
+            }
+            drop(old);
             self.mark_typed_unset(&h, &key);
         } else if was_uninit {
             // Reset IS_PROP_UNINIT, bypassing __unset().
@@ -907,7 +911,24 @@ impl Vm {
                     .get(&key)
                     .is_some_and(|pe| pe.ty.is_some())
                 {
+                    let held = Rc::strong_count(&h);
                     let v = self.verify_prop_type(cls, &key, val, strict)?;
+                    // A `__toString` that released the object
+                    // (zend_object_released_while_assigning_to_property_error).
+                    if held > 1 && Rc::strong_count(&h) == 1 {
+                        self.dtor_check = true;
+                        let pe = &self.class(cls).props[&key];
+                        return Err(Thrown::error(
+                            "Error",
+                            format!(
+                                "Object was released while assigning to property {}::${}",
+                                String::from_utf8_lossy(crate::errors::c_name(
+                                    self.class(pe.declaring_class).name.as_bytes()
+                                )),
+                                String::from_utf8_lossy(pe.name.as_bytes())
+                            ),
+                        ));
+                    }
                     // The assignment's value is the coerced one (`StoreProp`).
                     if want_result {
                         self.typed_write_result = Some(v.clone());
@@ -923,14 +944,24 @@ impl Vm {
             };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
-            match slot {
+            let old = match slot {
                 Value::Ref(rc) => {
                     let rc = rc.clone();
                     drop(od);
-                    *rc.borrow_mut() = val;
+                    let (v, old) = self.assign_to_ref(&rc, val, strict)?;
+                    if want_result && self.typed_refs.has(&rc) {
+                        self.typed_write_result = Some(v);
+                    }
+                    old
                 }
-                other => *other = val,
-            }
+                other => {
+                    let old = std::mem::replace(other, val);
+                    drop(od);
+                    old
+                }
+            };
+            rhp_values::gc::possible_root(&old);
+            drop(old);
             return Ok(());
         }
         if let Value::Closure(_) = o {
@@ -981,6 +1012,36 @@ impl Vm {
             builtins::E_DEPRECATED,
             &format!("Creation of dynamic property {cname}::${p} is deprecated"),
         )
+    }
+
+    /// [`Vm::check_dynamic_prop`] for object `h`, which the caller holds
+    /// `locals` times: a deprecation handler that released the object
+    /// makes it php's "Cannot create dynamic property" Error
+    /// (zend_deprecated_dynamic_property).
+    pub(crate) fn check_dynamic_prop_held(
+        &mut self,
+        top: usize,
+        h: &ObjectHandle,
+        locals: usize,
+        pname: &PhpStr,
+    ) -> Result<(), Thrown> {
+        let before = Rc::strong_count(h);
+        let cls = h.borrow().class;
+        self.check_dynamic_prop(top, cls, pname)?;
+        if before > locals && Rc::strong_count(h) == locals {
+            self.dtor_check = true;
+            let cname =
+                String::from_utf8_lossy(crate::errors::c_name(self.class(cls).name.as_bytes()))
+                    .into_owned();
+            return Err(Thrown::error(
+                "Error",
+                format!(
+                    "Cannot create dynamic property {cname}::${}",
+                    String::from_utf8_lossy(pname.as_bytes())
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// incomplete_class.c's message for object `h`: what the script tried,
@@ -1069,25 +1130,6 @@ impl Vm {
             a.insert(ArrayKey::from_bytes(key.as_bytes()), v);
         }
         Value::Array(a)
-    }
-
-    /// Snapshot an object's accessible (public from `caller` scope) properties as
-    /// an array, for `foreach` over a plain object.
-    pub(crate) fn object_prop_array(&self, h: &ObjectHandle, top: usize) -> PhpArray {
-        let caller = self.stack[top].defining_class;
-        let b = h.borrow();
-        let cls = b.class;
-        let mut arr = PhpArray::new();
-        for (key, val) in &b.properties {
-            if self.internal_slot(cls, key) {
-                continue;
-            }
-            if let Some(name) = classes::slot_accessible(&self.classes, cls, caller, key) {
-                // Property names iterate as string keys, even numeric ones.
-                arr.insert(ArrayKey::Str(classes::unmangle(&name)), deref(val).clone());
-            }
-        }
-        arr
     }
 
     /// Whether class `c` is a built-in class implemented in the PHP prelude.
@@ -1549,6 +1591,22 @@ impl Vm {
         }
         let new_obj: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         self.track_destructible(&new_obj);
+        // zend_objects_clone_members: a reference the clone shares gets its
+        // typed property as a source too.
+        if !self.typed_refs.is_empty() {
+            let refs: Vec<_> = new_obj
+                .borrow()
+                .properties
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Ref(rc) if self.typed_refs.has(rc) => Some((k.clone(), rc.clone())),
+                    _ => None,
+                })
+                .collect();
+            for (k, rc) in refs {
+                self.add_prop_ref_source(&rc, &new_obj, &k);
+            }
+        }
         if let Some(rhp_builtins::zend::object_handlers::CloneObj::Custom(f)) =
             self.class(cls).handlers.map(|t| t.clone_obj)
         {
@@ -1569,6 +1627,8 @@ fn clone_closure(cd: &rhp_values::ClosureData) -> Value {
         wrapped: cd.wrapped.clone(),
         id: rhp_values::alloc_object_id(),
         statics: cd.statics_copy(),
+        weakly_referenced: Default::default(),
+        gc_buffered: Default::default(),
     }))
 }
 

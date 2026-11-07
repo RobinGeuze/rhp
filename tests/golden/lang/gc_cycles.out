@@ -1,0 +1,23 @@
+int(3)
+destruct a
+destruct b
+destruct c
+int(3)
+int(0)
+int(2)
+bool(true)
+int(1)
+int(2)
+int(3)
+int(3)
+int(1)
+int(1)
+from 2 <- from 1
+bool(false)
+string(1) "0"
+int(9)
+bool(true)
+bool(true)
+string(1) "1"
+int(12000)
+done

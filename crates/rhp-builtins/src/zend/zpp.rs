@@ -532,6 +532,29 @@ pub fn set_ref(args: &[Value], i: usize, v: Value) {
     }
 }
 
+/// php's `ZEND_TRY_ASSIGN_REF_*` on an untyped reference: the old value is
+/// destroyed first (its destructor runs now and sees null), then the new
+/// one is stored. A destructor's exception comes back after the store.
+pub fn try_assign_ref(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    v: Value,
+) -> Result<(), Thrown> {
+    let Some(Value::Ref(r)) = args.get(i) else {
+        return Ok(());
+    };
+    let old = std::mem::replace(&mut *r.borrow_mut(), Value::Null);
+    let res = if matches!(old, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
+        drop(old);
+        host.run_released_destructors()
+    } else {
+        Ok(())
+    };
+    *r.borrow_mut() = v;
+    res
+}
+
 /// `ZEND_DOUBLE_FITS_LONG`, true for NAN as in C.
 fn double_fits_long(d: f64) -> bool {
     const TWO_63: f64 = 9_223_372_036_854_775_808.0;
@@ -643,7 +666,7 @@ pub(crate) fn arg_bytes(args: &[Value], i: usize) -> Vec<u8> {
 
 /// `__zpp_arg($fn, $n, $name, $type, $value)`: coerce one argument of a
 /// prelude-implemented internal method the way php's zpp does in coercive
-/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`), or raise its
+/// mode (`string`, `int`, `?string`, `?int`, `?Throwable`, `resource`), or raise its
 /// TypeError ("Fn(): Argument #n ($name) must be of type T, X given").
 fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let func = arg_bytes(args, 0);
@@ -676,6 +699,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 conv::Num::Float(f) => f as i64,
             })
         }),
+        (Value::Resource(_), b"resource") => Some(v.clone()),
         (Value::Object(_), b"Throwable") => {
             let cls = host.object_class_name(&v).unwrap_or_default();
             host.reflect_is_a(&cls, b"Throwable").then(|| v.clone())

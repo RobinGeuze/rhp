@@ -2620,6 +2620,17 @@ fn fn_strcoll(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
 fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let s = str_param(host, args, 0, "parse_str", "string")?;
+    let out = parse_query(host, s, "parse_str")?;
+    if let Some(Value::Ref(r)) = args.get(1) {
+        let old = std::mem::replace(&mut *r.borrow_mut(), Value::Array(out));
+        rhp_values::gc::possible_root(&old);
+    }
+    Ok(Value::Null)
+}
+
+/// php_default_treat_data(PARSE_STRING) for `func` (parse_str,
+/// mb_parse_str): the variables of query string `s`.
+pub(crate) fn parse_query(host: &mut dyn Host, s: Vec<u8>, func: &str) -> Result<PhpArray, Thrown> {
     // C string: processing stops at the first NUL byte.
     let s = match s.iter().position(|&b| b == 0) {
         Some(p) => s[..p].to_vec(),
@@ -2638,14 +2649,11 @@ fn fn_parse_str(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if exceeded {
         crate::warn(
             host,
-            "parse_str",
+            func,
             &format!("Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."),
         )?;
     }
-    if let Some(Value::Ref(r)) = args.get(1) {
-        *r.borrow_mut() = Value::Array(out);
-    }
-    Ok(Value::Null)
+    Ok(out)
 }
 
 /// `basename(path, suffix="")` — the trailing name component, byte-wise, matching

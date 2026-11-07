@@ -792,8 +792,7 @@ implemented.
    no special re-entrancy; a throw inside unwinds like any call.
 9. **ICs guard on `ClassId` only, store `+1`** (`0 == empty`). Never cache
    `self`/`parent`/`static`/`Dynamic`. Miss calls the same resolver — pure speedup.
-10. **Cycles leak (for now).** `$o->self = $o`, object-holding static props/consts
-    are `Rc` cycles the deferred mark-and-sweep cleans later; these types don't
-    change when it lands. Don't create a borrow that deadlocks on a self-referential
+10. **Cycles.** `$o->self = $o` is an `Rc` cycle the cycle collector frees
+    (gc.md). Don't create a borrow that deadlocks on a self-referential
     property during one `borrow_mut` chain.
 ```

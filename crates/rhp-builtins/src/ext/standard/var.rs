@@ -3013,6 +3013,8 @@ fn fn_unserialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     // Per calling convention the result is never a reference.
     let v = deref(&root.borrow());
+    // php roots the result for the cycle collector.
+    rhp_values::gc::check_possible_root(&v);
     Ok(v)
 }
 
@@ -3093,6 +3095,25 @@ fn fn_object_properties_load(host: &mut dyn Host, args: &[Value]) -> Result<Valu
         };
         host.prop_store(&h, &storage, Some(rhp_values::ops::copy_elem(v)));
     }
+    Ok(Value::Null)
+}
+
+/// `__spl_obj_store($object, $key, $value[, $unset])`: an ArrayObject backed
+/// by an object writes its offsets straight into the object's property
+/// table (spl_array_get_hash_table), keyed as given.
+fn fn_spl_obj_store(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Object(h) = deref(&args[0]) else {
+        return Ok(Value::Null);
+    };
+    let key = match deref(&args[1]) {
+        Value::Int(n) => n.to_string().into_bytes(),
+        k => conv::to_string_bytes(&k),
+    };
+    let unset = args
+        .get(3)
+        .is_some_and(|v| matches!(deref(v), Value::Bool(true)));
+    let val = (!unset).then(|| rhp_values::ops::copy_elem(&args[2]));
+    host.prop_store(&h, &rhp_values::PhpStr::from_bytes(key), val);
     Ok(Value::Null)
 }
 
@@ -3219,6 +3240,7 @@ pub fn register(m: &mut crate::Registry) {
             ("__unserialize_value", fn_unserialize_value),
             ("__spl_array_unserialize", fn_spl_array_unserialize),
             ("__object_properties_load", fn_object_properties_load),
+            ("__spl_obj_store", fn_spl_obj_store),
             ("__unserialize_init", fn_unserialize_init),
             ("__unserialize_destroy", fn_unserialize_destroy),
             ("var_dump", fn_var_dump),

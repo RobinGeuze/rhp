@@ -378,9 +378,11 @@ fn build_match(
 /// Write an out-value through a by-reference `$matches`/`$count` argument.
 /// As for the sort functions: the compiler passes arg 2 as a `Value::Ref`; if it is
 /// not a ref (the optional out-param was omitted), this is a no-op.
-fn write_ref(arg: Option<&Value>, value: Value) {
-    if let Some(Value::Ref(rc)) = arg {
-        *rc.borrow_mut() = value;
+fn write_ref(host: &mut dyn Host, arg: Option<&Value>, value: Value) -> Result<(), Thrown> {
+    match arg {
+        // ZEND_TRY_ASSIGN_REF_*: a typed reference checks the value.
+        Some(Value::Ref(rc)) => host.assign_ref(rc, value),
+        _ => Ok(()),
     }
 }
 
@@ -389,6 +391,7 @@ fn write_ref(arg: Option<&Value>, value: Value) {
 /// negative one counts from the end, clamped to 0; one past the subject
 /// fails with PREG_INTERNAL_ERROR). `Ok(None)` means return false.
 fn match_setup(
+    host: &mut dyn Host,
     f: &str,
     global: bool,
     subject: &[u8],
@@ -405,7 +408,7 @@ fn match_setup(
             ),
         ));
     }
-    write_ref(matches, Value::Array(PhpArray::new()));
+    write_ref(host, matches, Value::Array(PhpArray::new()))?;
     let order = flags & 0xff;
     if order != 0 && (!global || !(PREG_PATTERN_ORDER..=PREG_SET_ORDER).contains(&order)) {
         return Err(Thrown::error(
@@ -446,7 +449,15 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
-    let Some(offset) = match_setup("preg_match", false, &subject, flags, offset, args.get(2))?
+    let Some(offset) = match_setup(
+        host,
+        "preg_match",
+        false,
+        &subject,
+        flags,
+        offset,
+        args.get(2),
+    )?
     else {
         return Ok(Value::Bool(false));
     };
@@ -456,11 +467,11 @@ fn fn_preg_match(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     match find_at(&re, &subject, offset) {
         Ok(Some(ov)) => {
             let arr = build_match(&ov, &subject, re.names(), offset_capture, unmatched_null);
-            write_ref(args.get(2), Value::Array(arr));
+            write_ref(host, args.get(2), Value::Array(arr))?;
             Ok(Value::Int(1))
         }
         Ok(None) => {
-            write_ref(args.get(2), Value::Array(PhpArray::new()));
+            write_ref(host, args.get(2), Value::Array(PhpArray::new()))?;
             Ok(Value::Int(0))
         }
         Err(()) => Ok(Value::Bool(false)),
@@ -483,7 +494,15 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
     let subject = rhp_values::conv::to_string_bytes(&args[1]);
     let flags = int_arg(args, 3, 0);
     let offset = int_arg(args, 4, 0);
-    let Some(offset) = match_setup("preg_match_all", true, &subject, flags, offset, args.get(2))?
+    let Some(offset) = match_setup(
+        host,
+        "preg_match_all",
+        true,
+        &subject,
+        flags,
+        offset,
+        args.get(2),
+    )?
     else {
         return Ok(Value::Bool(false));
     };
@@ -546,7 +565,7 @@ fn fn_preg_match_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         outer
     };
 
-    write_ref(args.get(2), Value::Array(result));
+    write_ref(host, args.get(2), Value::Array(result))?;
     Ok(if ok {
         Value::Int(count as i64)
     } else {
@@ -781,7 +800,7 @@ fn preg_replace_common(
         }
     };
 
-    write_ref(args.get(4), Value::Int(count as i64));
+    write_ref(host, args.get(4), Value::Int(count as i64))?;
     Ok(result)
 }
 
@@ -891,7 +910,7 @@ fn fn_preg_replace_callback(host: &mut dyn Host, args: &[Value]) -> Result<Value
         flags,
         &mut count,
     )?;
-    write_ref(args.get(4), Value::Int(count as i64));
+    write_ref(host, args.get(4), Value::Int(count as i64))?;
     Ok(result.unwrap_or(Value::Null))
 }
 
@@ -923,7 +942,7 @@ fn fn_preg_replace_callback_array(host: &mut dyn Host, args: &[Value]) -> Result
             None => return Ok(Value::Null),
         }
     }
-    write_ref(args.get(3), Value::Int(count as i64));
+    write_ref(host, args.get(3), Value::Int(count as i64))?;
     Ok(cur)
 }
 

@@ -37,8 +37,10 @@ h.borrow_mut().take_payload();                            // free early (`close(
 - Get an `Rc<T>` and release the object borrow before calling the host or
   PHP; mutate through `Cell`/`RefCell` inside `T`. A builtin's clone keeps
   the state alive until it returns, as php's refcount would.
-- Never a strong reference back to the object: that is a cycle, and rhp has
-  no cycle collector. Keep a `Weak` (ext/xml's `index`). Values a payload
+- Never a strong reference back to the object: keep a `Weak` (ext/xml's
+  `index`). The cycle collector sees a payload's values only through the
+  class's `get_gc` handler (gc.md); without one they count as outside
+  references and keep a cycle alive. Values a payload
   holds for PHP (ext/xml's handlers and `xml_set_object` target) can still
   form a cycle through the object; ext/xml keeps a thread-local list of
   weak references to its parsers and drops those values at the next
@@ -77,7 +79,7 @@ carry native state). It is false only for a class that just replaces
 `default_object_handlers` (`Directory`). `ReflectionClass::
 newInstanceWithoutConstructor` refuses a final internal class that has
 one. A class with a `create_object` and the default handlers registers
-`ObjectHandlers::STD` (`Closure`, `WeakMap`, `HashContext`).
+`ObjectHandlers::STD` (`Closure`, `HashContext`).
 
 | php | rhp | called by |
 |---|---|---|
@@ -87,6 +89,8 @@ one. A class with a `create_object` and the default handlers registers
 | `do_operation` | `do_operation(host, op, op1, op2)`: `Ok(None)` is FAILURE (the normal operator runs, casting with `cast_object`), an error is SUCCESS with an exception | `+ - * / **`: op1's handler when op1 is an object with one, else op2's, then both operands as numbers. `% << >> \| & ^` (`convert_op1_op2_long`) and `.` (`concat_function`): op1's handler, then op1 converted (to int / string; failing is "Unsupported operand types"), and only then op2's handler and op2. Compound assignments the same. `-$x` as `Mul` by -1, `~$x` as `BitNot` (else "Cannot perform bitwise not"); `++`/`--` as `Add`/`Sub` of 1, then `cast_object(Number)`, then php's "Cannot increment" TypeError |
 | `cast_object` | `cast_object(host, obj, target)`: replaces php's default for every target, so hand the targets you do not convert to `host.std_cast_object(obj, target)` (`__toString()` for strings) | string conversion (`echo`, `.`, `(string)`), `(int)`/`(float)`/`intval`/`floatval` (`object_handlers::object_to_number`: a failure is php's "could not be converted" warning and 1), `(bool)`, `if`, `!`, `empty($o->p)`, `boolval`, `array_filter` (`object_handlers::is_true`), arithmetic operands and `array_sum`/`array_product` (`Number`), comparison with a scalar |
 | `dtor_obj` | `dtor_obj(host, obj)`, once, before `__destruct` | the engine's destructor pass |
+| `read_dimension`, `write_dimension`, `has_dimension`, `unset_dimension` | `dimension: Some(&DimensionHandlers { read, write, has, unset })`; `read` takes php's `BP_VAR_*` (`DimType`) and for `W`/`Rw` returns the stored slot as a `Value::Ref` | `$o[k]` reads, writes, `isset`/`empty`/`??`, `unset`, nested writes and `$o[k] =& $v` on that class, instead of its `ArrayAccess` methods (WeakMap) |
+| `ce->get_iterator` | `get_iterator(host, obj, by_ref)`: an InternalIterator object over the class's `IteratorFuncs` (zend/internal_iterator.rs) | `foreach`, by value (through the iterator's methods) and by reference (`IteratorFuncs::current_ref`); `getIterator()` returns the same iterator (WeakMap, DatePeriod) |
 | `free_obj` | the payload's `Drop`; work that may call PHP goes in `free_obj_host(host, obj)`, run once right after `__destruct` (in its place without one) unless the destructor kept a reference | the object's storage being freed; the engine's destructor pass |
 
 Notes:
@@ -113,9 +117,17 @@ Notes:
   one in php; a handler does that with `host.chain_thrown(new, pending)`.
 - Formatters only see `&dyn Host`, so the dumpers resolve every reachable
   object's view up front (`var::resolve_views`).
-- Handlers not routed yet: property and dimension access (`read_property`,
-  `has_property`…), `get_constructor` (`Directory`), `get_gc`. DOM's,
-  SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
+- Weak references: freeing an object or closure that a WeakReference or
+  WeakMap refers to (php's IS_OBJ_WEAKLY_REFERENCED, a flag on the object)
+  calls zend/weakrefs.rs's `notify` from the object's `Drop`, after the
+  payload and before the properties and the handle go (php's
+  `zend_object_std_dtor`). Its registry of WeakReferences and WeakMaps by
+  handle is php's `EG(weakrefs)`, the second exception to "no side
+  tables"; it holds only `Weak` pointers and drops a handle's entry when
+  that object is freed, so a reused handle never finds stale entries.
+- Handlers not routed yet: property access (`read_property`,
+  `has_property`…), dimension access for classes other than WeakMap,
+  `get_constructor` (`Directory`), `get_gc`. DOM's, SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
   SimpleXML's dimensions) go through their prelude classes'
   `__get`/`__set`/`__isset`/`__unset` and ArrayAccess methods, which call
   the ported handlers. Two things make those stand-ins behave like php's

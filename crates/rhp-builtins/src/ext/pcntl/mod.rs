@@ -288,6 +288,8 @@ pub fn dispatch(host: &mut dyn Host) -> Result<(), Thrown> {
         return Ok(());
     }
     st.processing = true;
+    // No fiber switch while the handlers run.
+    let block = crate::zend::fibers::SwitchBlock::new();
     let mut result = Ok(());
     while let Some(si) = queue.pop_front() {
         let handler = state(host).and_then(|st| st.handlers.get(&(si.signo as i64)).cloned());
@@ -301,6 +303,7 @@ pub fn dispatch(host: &mut dyn Host) -> Result<(), Thrown> {
             }
         }
     }
+    drop(block);
     let Some(st) = state(host) else {
         return result;
     };

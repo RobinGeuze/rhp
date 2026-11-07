@@ -515,6 +515,8 @@ impl Vm {
             wrapped,
             id,
             statics,
+            weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         })))
     }
 

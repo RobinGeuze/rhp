@@ -8,7 +8,7 @@ use rhp_bytecode::{FunctionProto, Instr};
 use rhp_values::{conv, ArrayKey, ClassId, ObjectHandle, PhpArray, Thrown, Value};
 
 use crate::calls::{is_engine_helper_name, is_handler_accessor};
-use crate::{deref, ini_bool, Vm};
+use crate::{deref, ini_bool, Frame, Vm};
 
 /// PG(display_errors) (main.c php_get_display_errors_mode).
 pub(crate) enum DisplayErrors {
@@ -168,7 +168,11 @@ impl Vm {
             .find(|&i| !self.stack[i].proto.is_internal() && !self.is_const_expr_frame(i))
         {
             None if self.sapi.startup => (b"Unknown".to_vec(), 0),
-            None => (Vec::new(), 0),
+            None => match self.fiber_resumer_site() {
+                Some((_, _, true)) => (b"Unknown".to_vec(), 0),
+                Some((file, line, false)) => (file, line as i64),
+                None => (Vec::new(), 0),
+            },
             // The user exception handler's call: php has no frame there.
             Some(i)
                 if self.stack[i]
@@ -294,16 +298,7 @@ impl Vm {
 
     /// Source line of the instruction currently executing in frame `top`.
     pub(crate) fn current_line(&self, top: usize) -> u32 {
-        let f = &self.stack[top];
-        let pc = f.pc.saturating_sub(1) as u32;
-        let lines = &f.proto.debug.lines;
-        // Largest (pc,line) entry whose pc <= the current pc.
-        let idx = lines.partition_point(|(p, _)| *p <= pc);
-        if idx == 0 {
-            0
-        } else {
-            lines[idx - 1].1
-        }
+        frame_line(&self.stack[top])
     }
 
     /// The source file name of frame `top` (for exception getFile()).
@@ -344,7 +339,7 @@ impl Vm {
     /// out (see [`Self::dispatched_method`]).
     fn is_plumbing_frame(&self, i: usize) -> bool {
         let f = &self.stack[i];
-        f.include_kind.is_none()
+        f.include_kind().is_none()
             && f.proto.is_internal()
             && (is_engine_helper_name(f.proto.name.as_bytes())
                 || f.defining_class.is_some_and(|c| {
@@ -422,7 +417,10 @@ impl Vm {
             .find(|&i| !self.is_internal_frame(i) && !self.is_const_expr_frame(i))
         {
             Some(i) => (self.current_file(i), self.current_line(i)),
-            None => (b"[no active file]".to_vec(), 0),
+            None => match self.fiber_resumer_site() {
+                Some((file, line, false)) => (file, line),
+                _ => (b"[no active file]".to_vec(), 0),
+            },
         }
     }
 
@@ -505,13 +503,13 @@ impl Vm {
     /// innermost first; each user frame paired with its call site (absent for a
     /// call made by a builtin: `[internal function]`), each running builtin as
     /// its own frame, `include`/`require`/`eval` as pseudo-frames.
-    fn build_trace(&self) -> PhpArray {
+    fn build_trace(&mut self) -> PhpArray {
         self.build_trace_ex(false, builtins::zend::exceptions::ignore_args())
     }
 
     /// [`Vm::build_trace`] with debug_backtrace's options: `$trace['object']` for
     /// frames with a `$this`, and no `args`.
-    pub(crate) fn build_trace_ex(&self, provide_object: bool, ignore_args: bool) -> PhpArray {
+    pub(crate) fn build_trace_ex(&mut self, provide_object: bool, ignore_args: bool) -> PhpArray {
         self.build_trace_skip(provide_object, ignore_args, false)
     }
 
@@ -519,10 +517,26 @@ impl Vm {
     /// builtin (debug_backtrace() itself, zend_fetch_debug_backtrace's
     /// `skip_last`).
     pub(crate) fn build_trace_skip(
+        &mut self,
+        provide_object: bool,
+        ignore_args: bool,
+        skip_last: bool,
+    ) -> PhpArray {
+        let mut out = self.build_trace_part(provide_object, ignore_args, skip_last, true);
+        if self.active_fiber.is_some() {
+            self.fiber_trace_tail(&mut out, provide_object, ignore_args);
+        }
+        out
+    }
+
+    /// The trace frames of the running stack; `innermost`: it is the
+    /// running context's (not a fiber resumer's below it).
+    pub(crate) fn build_trace_part(
         &self,
         provide_object: bool,
         ignore_args: bool,
         skip_last: bool,
+        innermost: bool,
     ) -> PhpArray {
         let mut skip_native = skip_last;
         // Keys and file names are shared (Rc) rather than re-allocated per
@@ -554,7 +568,7 @@ impl Vm {
         // zend_fetch_debug_backtrace under a filename override: the real
         // execution point, when it differs, as a `[constant expression]`
         // frame.
-        if let Some((ofile, oline)) = self.const_expr_site() {
+        if let Some((ofile, oline)) = self.const_expr_site().filter(|_| innermost) {
             // (None when an internal function evaluates it.)
             let user = (0..self.stack.len())
                 .rev()
@@ -651,7 +665,7 @@ impl Vm {
                 e.insert(k(b"file"), file_of(caller));
                 e.insert(k(b"line"), Value::Int(self.current_line(caller) as i64));
             }
-            if let Some(kind) = f.include_kind {
+            if let Some(kind) = f.include_kind() {
                 if kind != "eval" {
                     if let Some(file) = &include_file {
                         let mut a = PhpArray::new();
@@ -693,7 +707,7 @@ impl Vm {
             // A frame the engine called (an error handler, an autoloader)
             // while its caller runs an include that has not started a frame
             // yet: php adds the include as a frame of its own.
-            if f.include_kind.is_none() && !self.is_internal_frame(caller) {
+            if f.include_kind().is_none() && !self.is_internal_frame(caller) {
                 let cf = &self.stack[caller];
                 let at = cf.pc.checked_sub(1).and_then(|pc| cf.proto.code.get(pc));
                 if let Some(rhp_bytecode::Instr::Include { kind, .. }) = at {
@@ -716,7 +730,7 @@ impl Vm {
 
     /// Stamp a freshly created Throwable with php's creation-site `file`,
     /// `line` and `trace` (zend_default_exception_new).
-    pub(crate) fn init_throwable(&self, obj: &ObjectHandle) {
+    pub(crate) fn init_throwable(&mut self, obj: &ObjectHandle) {
         let (file, line) = self.throw_site();
         let trace = self.build_trace();
         let (kf, kl, kt) = (
@@ -737,6 +751,9 @@ impl Vm {
         let Thrown::Error { class, message } = &thrown else {
             return thrown;
         };
+        if crate::fibers::is_graceful_exit(&thrown) {
+            return thrown;
+        }
         let Ok(cls) = self.resolve_class_by_name(class.as_bytes()) else {
             return thrown;
         };
@@ -1114,7 +1131,7 @@ impl Vm {
         }
     }
 
-    fn set_error_reporting(&mut self, v: i64) {
+    pub(crate) fn set_error_reporting(&mut self, v: i64) {
         builtins::Host::ini_set(self, b"error_reporting", v.to_string().into_bytes());
     }
 
@@ -1126,7 +1143,7 @@ impl Vm {
         // An engine error becomes a real object here, before any frame is popped,
         // so its file/line/trace describe the throw point.
         let mut thrown = self.materialize(thrown, None);
-        loop {
+        'unwind: loop {
             if self.stack.len() <= floor {
                 return Ok(UnwindResult::Escaped(thrown)); // escaped the (sub)run
             }
@@ -1210,8 +1227,14 @@ impl Vm {
                             let obj = self.thrown_to_object(&thrown)?;
                             // php assigns the catch variable like `$e = ...`:
                             // through a reference it holds (a global's cell).
+                            // A typed reference may refuse it: that error is
+                            // thrown from the catch block's start.
                             if let Some(vr) = arm.var_reg {
-                                self.cv_assign(top, vr, obj);
+                                if let Err(e) = self.cv_assign_as(top, vr, obj, true) {
+                                    self.stack[top].pc = arm.target as usize + 1;
+                                    thrown = self.materialize(e, None);
+                                    continue 'unwind;
+                                }
                             }
                             self.stack[top].pc = arm.target as usize;
                             self.unsilence_frames(top + 1);
@@ -1270,6 +1293,13 @@ impl Vm {
     /// The temporaries of an unwound try body (from `from` up), freed in
     /// order before its handler runs.
     fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
+        // The loops inside the try give up their iterators.
+        let f = &mut self.stack[top];
+        if let Some(live) = f.fe_live.as_deref_mut() {
+            for (_, arr, by_ref, id) in live.extract_if(.., |l| l.0 >= from) {
+                crate::dispatch::release_fe_iter(&mut f.regs, arr, by_ref, id);
+            }
+        }
         let n = self.stack[top].regs.len();
         let mut freed = false;
         for r in from as usize..n {
@@ -1367,6 +1397,7 @@ impl Vm {
     fn thrown_class_id(&self, thrown: &Thrown) -> Option<ClassId> {
         match thrown {
             Thrown::Object(h) => Some(h.borrow().class),
+            Thrown::Error { .. } if crate::fibers::is_graceful_exit(thrown) => None,
             Thrown::Error { class, .. } => self.resolve_class_by_name(class.as_bytes()).ok(),
             _ => None,
         }
@@ -1518,4 +1549,17 @@ pub(crate) fn enclosing_finally(
         let holds = |p: u32| p >= r.start && p < r.end;
         (holds(pc) && !target.is_some_and(holds)).then_some(f)
     })
+}
+
+/// The current line of frame `f`.
+pub(crate) fn frame_line(f: &Frame) -> u32 {
+    let pc = f.pc.saturating_sub(1) as u32;
+    let lines = &f.proto.debug.lines;
+    // Largest (pc,line) entry whose pc <= the current pc.
+    let idx = lines.partition_point(|(p, _)| *p <= pc);
+    if idx == 0 {
+        0
+    } else {
+        lines[idx - 1].1
+    }
 }

@@ -351,6 +351,12 @@ impl FdStream {
         self.seekable
     }
 
+    /// Hand over the read-ahead (php's read buffer when a filter is added).
+    pub fn take_buffered(&mut self) -> Vec<u8> {
+        let n = self.rbuf.len();
+        self.take(n)
+    }
+
     /// Bytes read ahead but not consumed (php's `unread_bytes`).
     pub fn unread(&self) -> usize {
         self.rbuf.len()

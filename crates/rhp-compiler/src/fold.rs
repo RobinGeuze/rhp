@@ -15,6 +15,11 @@ use crate::util::{dirname, is_superglobal, strip_dollar};
 pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> {
     let v = match e {
         Expression::Literal(l) => literal_value(l),
+        // A heredoc / nowdoc / "..." without interpolation is a plain string.
+        Expression::CompositeString(_) => match crate::ast_export::plain_string(e) {
+            Some(s) => Value::str(s),
+            None => return Err(non_const_err()),
+        },
         Expression::Parenthesized(p) => return fold_const(cx, p.expression),
         // Context-free magic constants fold in const / default-value positions
         // (`const ROOT = __DIR__;`, `function f($p = __FILE__)`). The scope-

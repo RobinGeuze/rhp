@@ -15,10 +15,9 @@ object carries a `ClassId(u32)`, and the class table lives **in the `Vm`**, neve
 in a `Value`; opcodes delegate to `ops::`/`conv::`/`registry()` where applicable;
 the ISA stays JIT-lowerable (fixed `Copy` operands, side tables, `ClassId`-guarded
 inline caches). Objects are **handle** types (`Rc<RefCell<ObjectData>>`):
-assignment shares the handle, `clone` copies. The deferred cycle collector still
-applies — object graphs cycle (`$o->self = $o`, a static prop holding an object)
-and `Rc` leaks them until mark-and-sweep lands; none of the types below change
-when it does.
+assignment shares the handle, `clone` copies. Object graphs that cycle
+(`$o->self = $o`) are freed by the cycle collector (gc.md), which works on
+these types as they are.
 
 All behavior claims are verified against `php` 8.5.8 and reproduced inline so they
 become fixtures.
@@ -633,11 +632,8 @@ pub struct Vm {
 
 ## 8. Deferred / out-of-scope in this cut (noted, not forgotten)
 
-- **Cycle collection.** `ObjectData.properties` can hold `Value::Object` handles
-  back to the same object, and static-prop cells / class constants can root object
-  graphs; `Rc` leaks cycles until the deferred mark-and-sweep collector lands. The
-  types above are unchanged by it — the collector walks `ObjectData` + the `Vm`
-  static-prop/const roots.
+- **Cycle collection.** Done: php's trial-deletion collector over the
+  `Rc` counts, see gc.md.
 - **Typed-uninitialized properties.** Verified distinct state
   (`uninitialized(int)`, and `Error: must not be accessed before initialization`),
   but we store no type hints this cut, so `PropDefault::Null` materializes both
@@ -719,8 +715,10 @@ zend_object_handlers.c (vm/src/lazy.rs).
   `Host::lazy_props_object` or `hooked_properties_for`; `(array)`,
   `get_mangled_object_vars` and `var_dump`/`print_r` do not, and an
   initialized proxy shows its instance.
-- **Not done.** Typed reference sources (php's "Cannot assign string to
-  reference held by property") and "Lazy object was released during
+- Typed reference sources (value-model.md §4) work with lazy objects:
+  a source is the slot, so initializing or resetting an object needs no
+  bookkeeping.
+- **Not done.** "Lazy object was released during
   initialization" (needs refcounts php's way). php's "Can not reset an
   object during property iteration" check is missing, and
   reset/next/current do not initialize a lazy object.

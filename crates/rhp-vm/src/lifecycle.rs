@@ -34,6 +34,8 @@ impl Drop for RequestStateReset {
 fn reset_request_state() {
     builtins::reset_request_state();
     rhp_values::handles::reset_object_ids();
+    rhp_values::gc::reset();
+    crate::generators::reset_freed();
     crate::lvalue::reset_path_diags();
 }
 
@@ -63,7 +65,9 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
-        rhp_values::set_object_free_hook(builtins::object_freed);
+        rhp_values::set_object_free_hook(crate::generators::object_freed);
+        rhp_values::set_weak_notify_hook(builtins::zend::weakrefs::notify);
+        builtins::zend::weakrefs::reset();
         Vm {
             prop_guards: Default::default(),
             pending_magic_fetch: Default::default(),
@@ -141,18 +145,25 @@ impl Vm {
             silence: 0,
             last_fatal_trace: None,
             silence_stack: Vec::new(),
+            active_fiber: None,
             quiet: 0,
             rw_null_keys: 0,
+            rw_aborted: false,
             typed_write_result: None,
+            typed_refs: Default::default(),
             want_typed_result: false,
             incdec_write: false,
             cursor_static: None,
             deferred_undef_src: None,
             cursor_leaf: None,
             cursor_null_key: false,
+            cursor_ref_null: 0,
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,
+            include_docref: None,
+            closing_resources: false,
+            filtered_streams: 0,
             native_resources: HashMap::new(),
             stdin_reader: None,
             destructibles: Vec::new(),
@@ -477,6 +488,7 @@ impl Vm {
             .handlers
             .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some());
         if native || self.lookup_method(cls, b"__destruct").is_some() {
+            rhp_values::gc::set_flag(h.borrow().id, rhp_values::gc::TRACKED, true);
             self.destructibles.push(h.clone());
         }
     }
@@ -486,7 +498,11 @@ impl Vm {
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
     pub(crate) fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
-        let cls = h.borrow().class;
+        let (cls, id) = {
+            let o = h.borrow();
+            (o.class, o.id)
+        };
+        rhp_values::gc::set_flag(id, rhp_values::gc::TRACKED, false);
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
             Some(f) => f(self, &h),
@@ -561,6 +577,7 @@ impl Vm {
     /// Destruct every tracked object nothing references any more (a full
     /// scan, repeated until no destructor releases further objects).
     pub(crate) fn collect_released_now(&mut self) -> Result<(), Thrown> {
+        self.drop_freed_generators();
         loop {
             if !self.destructibles.iter().any(|h| Rc::strong_count(h) == 1) {
                 return Ok(());
@@ -569,14 +586,37 @@ impl Vm {
                 .into_iter()
                 .partition(|h| Rc::strong_count(h) == 1);
             self.destructibles = kept;
+            // php destroys each released object in turn: one whose
+            // destructor throws leaves the exception pending, the next
+            // destructors still run (zend_objects_destroy_object), and a
+            // later exception gets the pending one as its previous.
+            let mut pending: Option<Thrown> = None;
             let mut it = released.into_iter();
             while let Some(h) = it.next() {
-                if let Err(e) = self.call_destructor(h) {
-                    // Keep the not-yet-destructed ones tracked.
-                    let rest: Vec<_> = it.collect();
-                    self.destructibles.splice(0..0, rest);
-                    return Err(e);
+                // The cycle collector destructed it already (it leaves the
+                // list when the collection ends).
+                let id = h.borrow().id;
+                if rhp_values::gc::flags(id) & rhp_values::gc::CALLED != 0 {
+                    continue;
                 }
+                match self.call_destructor(h) {
+                    Ok(()) => {}
+                    Err(e) if !e.is_catchable() => {
+                        let rest: Vec<_> = it.collect();
+                        self.destructibles.splice(0..0, rest);
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        let e = self.materialize(e, None);
+                        if let Some(prev) = pending.take() {
+                            self.chain_previous(&e, prev);
+                        }
+                        pending = Some(e);
+                    }
+                }
+            }
+            if let Some(e) = pending {
+                return Err(e);
             }
         }
     }
@@ -637,6 +677,18 @@ impl Vm {
             }
             self.output_end_all();
         }
+        // zend_deactivate closes the resource list: streams still open with
+        // filters run them a last time.
+        self.enter_shutdown_scope();
+        let r = self.close_filtered_streams();
+        // A filter throwing there is reported as uncaught.
+        if let Some(t) = r.err().or_else(|| self.pending_throw.take()) {
+            self.enter_shutdown_scope();
+            if let Some(c) = on_throw(self, t)? {
+                status = c;
+            }
+        }
+        self.pending_throw = None;
         self.shutdown_functions.clear();
         self.stack.clear();
         Ok(status)

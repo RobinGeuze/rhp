@@ -15,6 +15,7 @@ use rustc_hash::FxBuildHasher;
 
 pub mod conv;
 pub mod fmt;
+pub mod gc;
 pub mod handles;
 pub mod mem;
 pub mod ops;
@@ -170,6 +171,13 @@ pub struct ClosureData {
     /// them (php copies a closure's static variables into each Closure
     /// object). Unbound ones still have their declared initial value.
     pub statics: RefCell<Vec<(PhpStr, PhpRef)>>,
+    /// php's IS_OBJ_WEAKLY_REFERENCED: a WeakReference or WeakMap holds
+    /// this closure, so freeing it notifies them ([`set_weak_notify_hook`]).
+    pub weakly_referenced: std::cell::Cell<bool>,
+    /// In the cycle collector's root buffer (php's GC_INFO): a release of
+    /// a buffered closure skips the buffer lookup. (Objects have no room
+    /// for it: the slow path's `last` cache serves a repeated `$this`.)
+    pub gc_buffered: std::cell::Cell<bool>,
 }
 
 impl ClosureData {
@@ -188,11 +196,19 @@ impl ClosureData {
 
 impl Drop for ClosureData {
     fn drop(&mut self) {
+        // zend_object_std_dtor: the weak references go first.
+        if self.weakly_referenced.get() {
+            weak_notify(self.id);
+        }
         // What the closure holds is freed before its handle goes back.
+        for v in &self.captures {
+            gc::possible_root(v);
+        }
         self.captures.clear();
         self.bound_this = None;
         self.wrapped = None;
         self.statics.get_mut().clear();
+        gc::object_freed(self.id);
         release_object_id(self.id);
     }
 }
@@ -235,6 +251,18 @@ struct ObjectExtra {
     /// Lazy object state (php's IS_OBJ_LAZY_* flags plus its
     /// `zend_lazy_object_info`).
     lazy: Option<LazyInfo>,
+    /// php's IS_OBJ_WEAKLY_REFERENCED (see [`set_weak_notify_hook`]).
+    weak: bool,
+    /// HashTable iterators on the property table (foreach over the
+    /// object): (id, position), kept on the same property by
+    /// [`ObjectData::remove_prop`] and [`ObjectData::insert_prop_at`].
+    iters: Vec<(u32, usize)>,
+}
+
+impl ObjectExtra {
+    fn is_empty(&self) -> bool {
+        self.native.is_none() && self.lazy.is_none() && !self.weak && self.iters.is_empty()
+    }
 }
 
 /// A lazy object's state (Zend/zend_lazy_objects.c). php keeps the info in
@@ -264,6 +292,27 @@ impl LazyInfo {
     pub const INITIALIZED: u8 = 1 << 2;
     pub const SKIP_INITIALIZATION_ON_SERIALIZE: u8 = 1 << 3;
     pub const SKIP_DESTRUCTOR: u8 = 1 << 4;
+
+    /// php keeps the initializer twice (the callable and its call info):
+    /// releasing the first leaves a count, so the callable becomes a
+    /// possible root just before it is freed (zend_lazy_object_info_dtor).
+    pub fn release_initializer(init: &Value) {
+        match init {
+            Value::Closure(_) | Value::Object(_) => gc::check_possible_root(init),
+            Value::Array(a) => {
+                if let Some(o @ Value::Object(_)) = a.get(&ArrayKey::Int(0)) {
+                    gc::possible_root(o);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for LazyInfo {
+    fn drop(&mut self) {
+        LazyInfo::release_initializer(&self.initializer);
+    }
 }
 
 /// The native state an internal class keeps with each of its objects: what
@@ -330,7 +379,7 @@ impl ObjectData {
     pub fn take_lazy(&mut self) -> Option<LazyInfo> {
         let extra = self.extra.as_deref_mut()?;
         let l = extra.lazy.take();
-        if extra.native.is_none() {
+        if extra.is_empty() {
             self.extra = None;
         }
         l
@@ -378,15 +427,88 @@ impl ObjectData {
             .replace(state)
     }
 
+    /// Mark the object weakly referenced (php's IS_OBJ_WEAKLY_REFERENCED):
+    /// freeing it calls the weak notify hook. The flag stays set; a hook
+    /// call for an object nothing refers to any more finds nothing.
+    pub fn set_weakly_referenced(&mut self) {
+        self.extra.get_or_insert_with(Default::default).weak = true;
+    }
+
     /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
     pub fn take_payload(&mut self) -> Option<Payload> {
         let extra = self.extra.as_deref_mut()?;
         let p = extra.native.take();
-        if extra.lazy.is_none() {
+        if extra.is_empty() {
             self.extra = None;
         }
         p
     }
+
+    /// Remove property `key`, keeping the property table's iterators on
+    /// the same properties (php leaves a hole the iterators skip).
+    pub fn remove_prop(&mut self, key: &PhpStr) -> Option<Value> {
+        let (i, _, v) = self.properties.shift_remove_full(key)?;
+        if let Some(e) = self.extra.as_deref_mut() {
+            for (_, p) in e.iters.iter_mut() {
+                if *p > i {
+                    *p -= 1;
+                }
+            }
+        }
+        Some(v)
+    }
+
+    /// Insert property `key` at index `pos` (a declared slot coming back
+    /// after unset); an iterator at `pos` sees it.
+    pub fn insert_prop_at(&mut self, pos: usize, key: PhpStr, v: Value) {
+        self.properties.shift_insert(pos, key, v);
+        if let Some(e) = self.extra.as_deref_mut() {
+            for (_, p) in e.iters.iter_mut() {
+                if *p > pos {
+                    *p += 1;
+                }
+            }
+        }
+    }
+
+    /// Register (or move) property-table iterator `id` at `pos`.
+    pub fn prop_iter_set(&mut self, id: u32, pos: usize) {
+        let it = &mut self.extra.get_or_insert_with(Default::default).iters;
+        match it.iter_mut().find(|(i, _)| *i == id) {
+            Some(e) => e.1 = pos,
+            None => it.push((id, pos)),
+        }
+    }
+
+    /// The position of property-table iterator `id`.
+    pub fn prop_iter_pos(&self, id: u32) -> Option<usize> {
+        let e = self.extra.as_deref()?;
+        e.iters.iter().find(|(i, _)| *i == id).map(|e| e.1)
+    }
+
+    /// Drop property-table iterator `id`.
+    pub fn prop_iter_del(&mut self, id: u32) {
+        if let Some(e) = self.extra.as_deref_mut() {
+            e.iters.retain(|(i, _)| *i != id);
+            if e.is_empty() {
+                self.extra = None;
+            }
+        }
+    }
+}
+
+thread_local! {
+    static HT_ITER_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh HashTable iterator id (php's zend_hash_iterator_add slot), for
+/// foreach and array_walk; never 0.
+pub fn next_ht_iter_id() -> u32 {
+    HT_ITER_ID.with(|c| {
+        let n = c.get().wrapping_add(1).max(1);
+        c.set(n);
+        n
+    })
 }
 
 thread_local! {
@@ -394,6 +516,24 @@ thread_local! {
     /// state still kept by object id (the internal array pointer of
     /// objects, archives not on the payload yet).
     static OBJECT_FREE_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+    /// Called with the id of a weakly referenced object or closure when it
+    /// is freed (php's zend_weakrefs_notify).
+    static WEAK_NOTIFY_HOOK: std::cell::Cell<Option<fn(u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the weak notify hook: called with the handle of a weakly
+/// referenced object or closure ([`ObjectData::set_weakly_referenced`],
+/// [`ClosureData::weakly_referenced`]) when it is freed, before its
+/// properties and its handle go.
+pub fn set_weak_notify_hook(f: fn(u32)) {
+    WEAK_NOTIFY_HOOK.with(|h| h.set(Some(f)));
+}
+
+#[cold]
+fn weak_notify(id: u32) {
+    if let Ok(Some(f)) = WEAK_NOTIFY_HOOK.try_with(|h| h.get()) {
+        f(id);
+    }
 }
 
 /// The object an initialized lazy proxy forwards to (php's
@@ -416,23 +556,75 @@ pub fn set_object_free_hook(f: fn(u32)) {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
+        if self.id == 0 && self.properties.is_empty() && self.extra.is_none() {
+            // Freed by the cycle collector already (or an enum case never
+            // accessed).
+            return;
+        }
+        gc::object_freed(self.id);
+        self.free_storage();
+    }
+}
+
+impl ObjectData {
+    /// php's free_obj plus the handle going back to the free list. The
+    /// cycle collector calls it on garbage that other garbage may still
+    /// reference: afterwards the object is an empty shell with handle 0.
+    fn free_storage(&mut self) {
         // php's free_obj: the native state goes first, then the lazy
         // info (zend_object_std_dtor), then the properties.
         if let Some(mut extra) = self.extra.take() {
             drop(extra.native.take());
+            if extra.weak {
+                weak_notify(self.id);
+            }
             drop(extra.lazy.take());
         }
+        let id = std::mem::take(&mut self.id);
         // `try_with`: thread-local teardown may already have run.
-        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
-            f(self.id);
+        if id != 0 {
+            if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+                f(id);
+            }
         }
         // The handle goes back after what the properties held (php frees the
         // object, then puts its handle on the free list).
         if !self.properties.is_empty() {
+            for v in self.properties.values() {
+                gc::possible_root(v);
+            }
             self.properties.clear();
         }
-        release_object_id(self.id);
+        release_object_id(id);
     }
+}
+
+/// Free a garbage object found by the cycle collector (the collector's
+/// "destroy zvals" step): its storage goes now, even though other garbage
+/// still holds the handle. Nothing runs PHP code here.
+pub fn gc_free_object(h: &ObjectHandle) {
+    let (extra, props, id) = {
+        let Ok(mut o) = h.try_borrow_mut() else {
+            return;
+        };
+        let id = std::mem::take(&mut o.id);
+        (o.extra.take(), std::mem::take(&mut o.properties), id)
+    };
+    gc::object_freed(id);
+    if let Some(mut extra) = extra {
+        drop(extra.native.take());
+        drop(extra.lazy.take());
+    }
+    if id != 0 {
+        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+            f(id);
+        }
+    }
+    for v in props.values() {
+        gc::possible_root(v);
+    }
+    drop(props);
+    release_object_id(id);
 }
 
 /// What kind of class-like declaration a class table entry is.
@@ -722,6 +914,15 @@ impl Clone for ArrayData {
     }
 }
 
+impl Drop for ArrayData {
+    fn drop(&mut self) {
+        gc::array_freed(self as *const ArrayData as usize);
+        for v in self.entries.values() {
+            gc::possible_root(v);
+        }
+    }
+}
+
 impl ArrayData {
     fn new() -> Self {
         ArrayData {
@@ -882,6 +1083,16 @@ impl PhpArray {
         self.0.pos
     }
 
+    /// The shared storage (the cycle collector's graph walk).
+    pub fn rc(&self) -> &Rc<ArrayData> {
+        &self.0
+    }
+
+    /// An array value for storage `rc`.
+    pub fn from_rc(rc: Rc<ArrayData>) -> Self {
+        PhpArray(rc)
+    }
+
     /// How many values share this storage (debug_zval_dump's refcount).
     pub fn ref_count(&self) -> usize {
         Rc::strong_count(&self.0)
@@ -915,7 +1126,9 @@ impl PhpArray {
         if let ArrayKey::Int(n) = key {
             data.bump_next_int(n);
         }
-        data.entries.insert(key, value);
+        if let Some(old) = data.entries.insert(key, value) {
+            gc::possible_root(&old);
+        }
     }
 
     /// Append `$a[] = value` (COW); nothing is inserted when the next
@@ -967,6 +1180,7 @@ impl PhpArray {
         let data = self.make_mut();
         let (i, _, v) = data.entries.shift_remove_full(key)?;
         data.removed_at(i);
+        gc::possible_root(&v);
         Some(v)
     }
 }

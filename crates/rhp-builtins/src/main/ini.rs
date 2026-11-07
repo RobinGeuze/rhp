@@ -159,6 +159,7 @@ const QUANTITY_DIRECTIVES: &[&str] = &[
     "pcre.backtrack_limit",
     "pcre.recursion_limit",
     "bcmath.scale",
+    "fiber.stack_size",
 ];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the
@@ -180,6 +181,11 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
         }
+    }
+    // OnUpdateFiberStackSize.
+    if name == b"fiber.stack_size" && ini_parse_quantity(v) < 0 {
+        warnings.push("fiber.stack_size must be a positive number".to_string());
+        return (warnings, None);
     }
     // bcmath's OnUpdateScale: 0..=INT_MAX.
     if name == b"bcmath.scale" && !(0..=i64::from(i32::MAX)).contains(&ini_parse_quantity(v)) {
@@ -780,6 +786,9 @@ pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
         b"zend.assertions" => crate::zend::set_assertions(v.map_or(1, ini_parse_quantity)),
         b"assert.active" | b"assert.bail" | b"assert.warning" | b"assert.exception"
         | b"assert.callback" => crate::ext::standard::assert::ini_update(name, v),
+        b"zend.enable_gc" => {
+            rhp_values::gc::enable(v.is_none_or(ini_parse_bool));
+        }
         b"zend.exception_ignore_args" => {
             crate::zend::exceptions::set_ignore_args(v.is_some_and(ini_parse_bool))
         }

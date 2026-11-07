@@ -114,7 +114,7 @@ impl Host for TestHost<'_> {
     fn compare_cx(&mut self) -> Option<&mut dyn CompareCx> {
         None
     }
-    fn backtrace(&self, _provide_object: bool, _ignore_args: bool) -> Option<Value> {
+    fn backtrace(&mut self, _provide_object: bool, _ignore_args: bool) -> Option<Value> {
         None
     }
     #[allow(clippy::type_complexity)]
@@ -242,6 +242,8 @@ impl Host for TestHost<'_> {
             wrapped: Some(Box::new(callable)),
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
+            weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
     fn closure_name(&self, _closure: &Value) -> Option<Vec<u8>> {

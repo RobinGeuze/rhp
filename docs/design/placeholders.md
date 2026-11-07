@@ -140,8 +140,7 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   scope may not call throws php's "Call to private X::__destruct()" (a
   warning during shutdown). Gap: an object freed while only a
   non-tracked container held it is destructed late (at the next check) rather than
-  exactly at release, and cycles are destructed at shutdown (php's GC may run
-  earlier).
+  exactly at release.
 
 The original notes:
 - **Now:** accepts and discards; returns `Null` (`php_fns.rs:162-165`). The comment
@@ -170,13 +169,9 @@ The original notes:
 - **Effort/priority:** low / low.
 
 ### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`
-- **Now:** no-ops (`true`/`true`/`0`) (`php_fns.rs:445-448`). `set_time_limit`
-  is real now: it sets max_execution_time, whose timer
-  (`rhp_builtins::zend::timeout`) the command-line SAPIs arm.
-- **OK because:** rhp uses `Rc` + the planned cycle story is separate.
-- **Full impl:** `gc_collect_cycles` could return a real freed-count if/when a
-  cycle collector exists; otherwise these are permanently cosmetic. Leave as-is.
-- **Effort/priority:** low / low (likely never).
+- **Done:** php's cycle collector (gc.md). `set_time_limit` is real too: it
+  sets max_execution_time, whose timer (`rhp_builtins::zend::timeout`) the
+  command-line SAPIs arm.
 
 ### 1.8 `setlocale`
 - **Now:** calls the C library's setlocale (process-wide, as php does, ZTS
@@ -288,8 +283,22 @@ The original notes:
   (`main::fopen_wrappers`), including the compress.zlib/bzip2, zip and
   libxml opens. Not there yet: SplFileInfo/SplFileObject's own checks
   (which throw), CURLFile uploads, and phar's later checks and messages
-  (only the archive open is refused). Still missing: stream filters on plain
-  files, `php://fd` outside the CLI check.
+  (only the archive open is refused). Still missing: `php://fd` outside the
+  CLI check.
+- Stream filters (`stream_filter_append` & co., `php://filter`): a stream
+  gets a filter layer (`rhp-vm/src/stream_filters.rs`) when its first
+  filter is added. It holds the chains, php's read buffer, `stream->eof`
+  and `stream->position`, and runs streams.c's filtered read, line, write,
+  flush and seek paths over the stream's own read and write ops; streams
+  without filters take the unfiltered paths unchanged. What the backing
+  stream had read ahead moves into the layer's buffer (for memory streams,
+  the chunk php's line reads would have buffered). The filters are in
+  rhp-builtins (`main/streams/filter.rs`, `ext/standard/filters.rs`,
+  `user_filters.rs`, zlib, bz2 and iconv). A filtered stream closes when
+  its last variable, element or property reference goes; one whose last
+  reference was a temporary closes at the next such check or function
+  return. Not modelled: persistent streams and user stream wrappers
+  (wave 6) carrying filters.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).
@@ -487,6 +496,24 @@ The module is deliberately "READ-ONLY, native format only"
   for `in_array`/`array_search` over callables.
 - **Effort/priority:** med / low.
 
+### 5.2 ArrayObject / ArrayIterator over an object — a snapshot plus write-through
+- **Now:** the prelude keeps the object's properties as an array
+  (`get_object_vars` when constructed); offset writes, unsets and
+  `exchangeArray()` also write through to the object (`__spl_obj_store`),
+  and `append()` throws as php does.
+- **Breaks:** properties the object gains or changes afterwards are not seen
+  through the ArrayObject; private/protected properties are not in the
+  snapshot; `$ao[] = v` and integer offsets land under string keys in the
+  object (php keeps integer keys in a properties table); nested writes
+  (`$ao['a']['b'] = v`) do not reach the object; ArrayIterator has no
+  write-through. Over another ArrayObject / ArrayIterator php shares that
+  one's storage (SPL_ARRAY_USE_OTHER); rhp does not see its elements and
+  writes stay in the outer one.
+- **Full impl:** let the storage be the object's property table itself
+  (spl_array_get_hash_table), which needs a properties table that can hold
+  integer keys.
+- **Effort/priority:** med / low.
+
 ---
 
 ## 6. Closures (`crates/rhp-builtins/src/core_prelude.php`, `crates/rhp-vm/src/lib.rs`)
@@ -682,13 +709,12 @@ The module is deliberately "READ-ONLY, native format only"
   destructors start. Objects, closures, generators and enum cases take them.
   Argument temporaries move into calls and a method call on a temporary releases
   its object, so most objects are freed when php frees them.
-- **Breaks:** objects php's cycle collector frees (rhp's `Rc` cycles leak, so
-  their handles never come back); destructible objects, which rhp destructs and
+- **Breaks:** destructible objects, which rhp destructs and
   frees at its next release check rather than at the exact refcount drop; other
   temporaries that stay in a register until it is overwritten. `#N` then differs
   from php.
 - **Full impl:** free every dead temporary (php's FREE opcodes / liveness), run
-  destructors at the refcount drop, a cycle collector.
+  destructors at the refcount drop.
 
 ### 9.2 STDIN/STDOUT/STDERR constants — stale placeholder ints, shadowed at runtime
 - **Now:** `builtins/lib.rs:436-441` defines `STDIN`/`STDOUT`/`STDERR` as
@@ -715,6 +741,21 @@ The module is deliberately "READ-ONLY, native format only"
 - `#[\NoDiscard]` on an internal function is honoured only where the
   prelude declares it (DateTimeImmutable); natively implemented methods
   carry no attributes.
+- `ReflectionAttribute::__toString()` prints a class constant php
+  substitutes at compile time (`K::Y` of a class declared earlier in the
+  file) as the expression, not its value.
+
+### 9.4 Fibers — gaps
+
+Fibers run on their own stacks ([fibers.md](./fibers.md)). Left: a suspended
+fiber that is part of a reference cycle is destroyed only at shutdown until
+the cycle collector traverses it (`fibers::fiber_gc_values` is its hook;
+Zend/tests/fibers/destructors_*, gc-cycle-*, gh9735-*, gh10340-003,
+generators/gh15330-*). A generator whose frame a destroyed fiber unwinds is
+not marked force-closed, so a `yield` in its `finally` is not refused
+(gh9916-009; zend_generator_dtor_storage's ZEND_GENERATOR_FORCED_CLOSE).
+`ReflectionFiber` is still the old stub (no executing file/line, callable
+or trace; ext/reflection/tests/ReflectionFiber_*).
 
 ## 10. Prioritized roadmap
 

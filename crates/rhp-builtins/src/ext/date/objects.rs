@@ -191,12 +191,11 @@ pub(crate) struct PeriodObj {
     pub(crate) st: RefCell<PeriodState>,
 }
 
-/// php's `zend_internal_iterator` over a DatePeriod's `date_period_it`.
+/// A DatePeriod's `date_period_it` (its InternalIterator's funcs).
 pub(crate) struct PeriodIter {
     pub(crate) period: ObjectHandle,
     pub(crate) index: Cell<i64>,
     pub(crate) current: RefCell<Option<Value>>,
-    pub(crate) rewound: Cell<bool>,
 }
 
 // --- handler tables ---------------------------------------------------------
@@ -254,12 +253,6 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {
         class: "DatePeriod",
         handlers: &PERIOD_HANDLERS,
-        create_object: true,
-    },
-    // Zend's zend_internal_iterator_handlers.
-    ClassHandlers {
-        class: "InternalIterator",
-        handlers: &ObjectHandlers::UNCLONEABLE,
         create_object: true,
     },
 ];

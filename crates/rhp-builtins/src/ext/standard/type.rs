@@ -420,7 +420,7 @@ fn fn_settype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     };
     if let Value::Ref(r) = &args[0] {
-        *r.borrow_mut() = new;
+        host.assign_ref(r, new)?;
     }
     Ok(Value::Bool(true))
 }

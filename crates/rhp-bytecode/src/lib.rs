@@ -21,6 +21,8 @@ pub type NIdx = u32; // index into FunctionProto.names (interned identifier byte
 /// on namespaced unqualified function/const references (see `Call`/`FetchConst`).
 pub const NO_NAME: NIdx = u32::MAX;
 pub type Pc = u32; // instruction index into FunctionProto.code (NOT a byte offset)
+/// No instruction (see [`Instr::FeFree`]).
+pub const NO_PC: Pc = Pc::MAX;
 
 /// Comparison kind for the single `Cmp` opcode (all route to `ops::`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,6 +429,8 @@ pub enum Instr {
     },
 
     // -- foreach (by value): iterate a COW snapshot --
+    // `pos_reg + 1` (by value and by reference) holds the object handle of
+    // the iterator a loop over a Traversable or hooked object creates.
     FeReset {
         arr_reg: Reg,
         pos_reg: Reg,
@@ -457,6 +461,20 @@ pub enum Instr {
         pos_reg: Reg,
         key_cv: Reg,
         val_cv: Reg,
+        end: Pc,
+    },
+    /// ZEND_FE_FREE: the loop is left (its end, `break`, `return`, `goto`).
+    /// Drops the HashTable iterator held in `pos_reg` (by-reference loops
+    /// and plain objects) from the array or object in `arr`, then clears
+    /// `pos_reg` and, with `clear_arr`, the iterated temporary `arr` (its
+    /// destructor runs here). `end` is `NO_PC` at the loop's own end; on a
+    /// jump out it is that end, where an exception a destructor throws is
+    /// handled (ZEND_FREE_ON_RETURN: it is logically thrown at the loop end).
+    FeFree {
+        arr: Reg,
+        pos_reg: Reg,
+        by_ref: bool,
+        clear_arr: bool,
         end: Pc,
     },
 
@@ -1244,11 +1262,24 @@ pub struct AttributeProto {
     /// An internal attribute's validator error that
     /// `#[\DelayedTargetValidation]` deferred to `newInstance()`.
     pub validation_error: Option<PhpStr>,
+    /// Each argument as `ReflectionAttribute::__toString()` prints it: its
+    /// name (named arguments) and its folded value or exported expression.
+    pub arg_show: Vec<(Option<PhpStr>, AttrArgShow)>,
     /// Where it is written and its file's `strict_types`: `newInstance()`
     /// runs the constructor as if called from there.
     pub file: PhpStr,
     pub line: u32,
     pub strict_types: bool,
+}
+
+/// An attribute argument for `ReflectionAttribute::__toString()`
+/// (format_default_value).
+#[derive(Clone)]
+pub enum AttrArgShow {
+    /// Folded at compile time.
+    Value(Value),
+    /// A constant expression left unevaluated, as zend_ast_export prints it.
+    Ast(PhpStr),
 }
 
 /// Declaration metadata surfaced by Reflection: attributes, the doc comment

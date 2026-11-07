@@ -10,6 +10,36 @@ use crate::calls::native_method_count_error;
 use crate::errors::UnwindResult;
 use crate::{deref, Frame, Vm};
 
+thread_local! {
+    /// Handles freed while generators exist: a freed generator's state is
+    /// dropped at the next [`Vm::drop_freed_generators`].
+    static FREED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// This thread's generator table is not empty: frees are noted.
+    static LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Set once any engine made a generator: until then a free notes nothing.
+static WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The engine's object free hook: the builtins' per-handle state, and the
+/// handle noted for the generator table.
+pub(crate) fn object_freed(id: u32) {
+    rhp_builtins::object_freed(id);
+    if WATCH.load(std::sync::atomic::Ordering::Relaxed) && LIVE.try_with(|l| l.get()) == Ok(true) {
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.push(id);
+            }
+        });
+    }
+}
+
+/// A new engine: nothing noted.
+pub(crate) fn reset_freed() {
+    let _ = LIVE.try_with(|l| l.set(false));
+    let _ = FREED.try_with(|f| f.borrow_mut().clear());
+}
+
 /// Status of a generator.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum GenStatus {
@@ -53,6 +83,20 @@ impl Vm {
             id,
             indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
         )));
+        // php's generator holds its Closure until the generator object is
+        // freed, also after it finished: the object's payload keeps it.
+        if let Some(c) = frame.closure.clone() {
+            obj.borrow_mut().set_payload(Rc::new(c));
+        }
+        WATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = LIVE.try_with(|l| l.set(true));
+        // A free of an earlier object with this handle is not this
+        // generator's.
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.retain(|&x| x != id);
+            }
+        });
         self.generators.insert(
             id,
             GenState {
@@ -73,9 +117,23 @@ impl Vm {
     /// Advance generator `id` to its next `yield` (or completion), injecting
     /// `send` as the result of the yield expression it was suspended on.
     pub(crate) fn advance_gen(&mut self, id: u32, send: Value) -> Result<(), Thrown> {
+        self.resume_gen(id, Ok(send))
+    }
+
+    /// [`Self::advance_gen`], or raise `Err` at the suspended `yield`
+    /// (Generator::throw).
+    fn resume_gen(&mut self, id: u32, send: Result<Value, Thrown>) -> Result<(), Thrown> {
+        if self.generators.get(&id).map(|g| g.status) == Some(GenStatus::Running) {
+            // Suspended in a fiber while it runs (zend_generator_resume).
+            return Err(Thrown::error(
+                "Error",
+                "Cannot resume an already running generator",
+            ));
+        }
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
+        rhp_builtins::zend::call_stack::check()?;
         let (mut frame, status, resume_dst) = {
             let g = self.generators.get_mut(&id).unwrap();
             if g.status == GenStatus::Finished {
@@ -88,8 +146,11 @@ impl Vm {
                 g.resume_dst,
             )
         };
-        if status == GenStatus::Suspended {
-            frame.regs[resume_dst as usize] = send;
+        let mut throw = None;
+        match send {
+            Ok(v) if status == GenStatus::Suspended => frame.regs[resume_dst as usize] = v,
+            Ok(_) => {}
+            Err(t) => throw = Some(t),
         }
         frame.capture = true;
         self.generators.get_mut(&id).unwrap().status = GenStatus::Running;
@@ -98,7 +159,11 @@ impl Vm {
         self.gen_stack.push(id);
         let saved_yield = self.yield_out.take();
         let result = loop {
-            match self.run_frames() {
+            let step = match throw.take() {
+                Some(t) => Err(t),
+                None => self.run_frames(),
+            };
+            match step {
                 Ok(v) => {
                     if let Some((k, val, dst)) = self.yield_out.take() {
                         let frame = self.stack.pop().unwrap();
@@ -135,6 +200,61 @@ impl Vm {
         self.gen_stack.pop();
         self.yield_out = saved_yield;
         result
+    }
+
+    /// Generator::throw on a started generator: php throws into the
+    /// innermost generator of a `yield from` chain (zend_generator_get_current)
+    /// and the exception travels out through each delegating one.
+    fn gen_throw(&mut self, id: u32, t: Thrown) -> Result<(), Thrown> {
+        let mut t = t;
+        if let Some(inner) = self.gen_delegate(id) {
+            match self.gen_throw(inner, t) {
+                Ok(()) => {
+                    let g = &self.generators[&inner];
+                    if g.status == GenStatus::Finished {
+                        // The delegate returned: the `yield from` ends.
+                        return self.resume_gen(id, Ok(Value::Null));
+                    }
+                    // The delegate yields again: so does this generator.
+                    let (k, v) = (g.current_key.clone(), g.current_val.clone());
+                    let g = self.generators.get_mut(&id).unwrap();
+                    g.current_key = k;
+                    g.current_val = v;
+                    g.at_first_yield = false;
+                    return Ok(());
+                }
+                Err(e) if e.is_catchable() => t = e,
+                Err(e) => return Err(e),
+            }
+        }
+        self.resume_gen(id, Err(t))
+    }
+
+    /// The generator a suspended generator delegates to: it is suspended
+    /// at the `Yield` of a `yield from` (lowered as FeReset{delegate} /
+    /// FeFetch / Yield / Jmp) over a Generator.
+    fn gen_delegate(&self, id: u32) -> Option<u32> {
+        use rhp_bytecode::Instr;
+        let g = self.generators.get(&id)?;
+        if g.status != GenStatus::Suspended {
+            return None;
+        }
+        let f = g.frame.as_ref()?;
+        let code = &f.proto.code;
+        let Some(Instr::Jmp { target }) = code.get(f.pc) else {
+            return None;
+        };
+        let t = *target as usize;
+        let (Some(Instr::FeFetch { arr_reg, .. }), Some(Instr::FeReset { delegate: true, .. })) =
+            (code.get(t), t.checked_sub(1).and_then(|p| code.get(p)))
+        else {
+            return None;
+        };
+        let Value::Object(h) = deref(&f.regs[*arr_reg as usize]) else {
+            return None;
+        };
+        let oid = h.borrow().id;
+        self.generators.contains_key(&oid).then_some(oid)
     }
 
     /// Ensure a generator has started (run to its first yield).
@@ -190,6 +310,7 @@ impl Vm {
                 | b"send"
                 | b"rewind"
                 | b"getreturn"
+                | b"throw"
                 | b"__debuginfo"
         ) {
             if let Some(e) = native_method_count_error("Generator", name_lc, args.len()) {
@@ -230,6 +351,34 @@ impl Vm {
                 Ok(Value::Null)
             })(),
             b"getreturn" => Ok(self.generators[&id].return_val.clone()),
+            b"throw" => (|| {
+                let e = match args.first().map(deref) {
+                    Some(Value::Object(e))
+                        if self.class_implements(e.borrow().class, b"Throwable") =>
+                    {
+                        e
+                    }
+                    other => {
+                        let v = other.unwrap_or(Value::Null);
+                        let given = rhp_builtins::zval_type_name(self, &v);
+                        return Err(Thrown::type_error(format!(
+                            "Generator::throw(): Argument #1 ($exception) must be of type Throwable, {given} given"
+                        )));
+                    }
+                };
+                if self.generators[&id].status == GenStatus::Running {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot resume an already running generator",
+                    ));
+                }
+                self.gen_ensure_started(id)?;
+                if self.generators[&id].status == GenStatus::Finished {
+                    return Err(Thrown::Object(e));
+                }
+                self.gen_throw(id, Thrown::Object(e))?;
+                Ok(deref(&self.generators[&id].current_val))
+            })(),
             b"__debuginfo" => Ok(Value::Array(self.generator_debug_info(id))),
             _ => return None,
         })
@@ -305,5 +454,126 @@ impl Vm {
         };
         self.yield_out = Some((key_val, val, dst));
         Ok(())
+    }
+}
+
+impl Vm {
+    /// Drop the state of generators whose object was freed (php frees the
+    /// frame with the generator; its variables are released then).
+    pub(crate) fn drop_freed_generators(&mut self) {
+        let ids = FREED.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *f)
+            }
+        });
+        for id in ids {
+            if let Some(g) = self.generators.get(&id) {
+                if g.status != GenStatus::Running {
+                    if let Some(g) = self.generators.remove(&id) {
+                        if let Some(f) = &g.frame {
+                            self.forget_unfinished_news(f);
+                        }
+                        drop(g);
+                    }
+                }
+            }
+        }
+        self.gen_table_changed();
+    }
+
+    /// After states left the generator table: with none left, frees are
+    /// no longer noted.
+    pub(crate) fn gen_table_changed(&mut self) {
+        if self.generators.is_empty() {
+            reset_freed();
+        }
+    }
+
+    /// A suspended frame is destroyed: objects whose `new` had not called
+    /// the constructor yet are never destructed (zend_cleanup_unfinished_calls).
+    fn forget_unfinished_news(&mut self, f: &Frame) {
+        let pc = f.pc as u32;
+        for &(start, end, dst) in &f.proto.new_ranges {
+            if pc > start && pc < end {
+                if let Some(Value::Object(h)) = f.regs.get(dst as usize) {
+                    self.destructibles.retain(|d| !Rc::ptr_eq(d, h));
+                }
+            }
+        }
+    }
+
+    /// The values generator `id`'s state holds (zend_generator_get_gc):
+    /// the suspended frame's registers and the current and returned values.
+    pub(crate) fn gen_gc_children(&self, id: u32, out: &mut Vec<Value>) {
+        let Some(g) = self.generators.get(&id) else {
+            return;
+        };
+        if let Some(f) = &g.frame {
+            f.gc_children(out);
+        }
+        out.push(g.current_key.clone());
+        out.push(g.current_val.clone());
+        out.push(g.return_val.clone());
+    }
+
+    /// Whether generator `id` still has a frame to destroy (php's
+    /// generator `dtor_obj` has work to do).
+    pub(crate) fn gen_has_frame(&self, id: u32) -> bool {
+        self.generators.get(&id).is_some_and(|g| g.frame.is_some())
+    }
+
+    /// The cycle collector destroys generator `id`: its frame and values
+    /// go (returned, for the caller to drop).
+    pub(crate) fn gen_gc_close(&mut self, id: u32) {
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
+        if g.status == GenStatus::Running {
+            return;
+        }
+        let frame = g.frame.take();
+        g.status = GenStatus::Finished;
+        if let Some(f) = &frame {
+            self.forget_unfinished_news(f);
+        }
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
+        let cur = (
+            std::mem::replace(&mut g.current_key, Value::Null),
+            std::mem::replace(&mut g.current_val, Value::Null),
+        );
+        drop(cur);
+        drop(frame);
+    }
+
+    /// The generator object of handle `id` is being freed by the cycle
+    /// collector: its state goes with it.
+    pub(crate) fn gen_gc_free(&mut self, id: u32) -> Option<GenState> {
+        let g = self.generators.get(&id)?;
+        if g.status == GenStatus::Running {
+            return None;
+        }
+        let g = self.generators.remove(&id)?;
+        self.gen_table_changed();
+        if let Some(f) = &g.frame {
+            self.forget_unfinished_news(f);
+        }
+        Some(g)
+    }
+}
+
+impl Frame {
+    /// The values a suspended frame holds.
+    pub(crate) fn gc_children(&self, out: &mut Vec<Value>) {
+        out.extend(self.regs.iter().map(Value::copy_slot));
+        out.extend(self.extra_args.iter().cloned());
+        out.extend(self.dyn_vars.values().map(|r| Value::Ref(r.clone())));
+        if let Some(c) = &self.closure {
+            out.push(Value::Closure(c.clone()));
+        }
     }
 }

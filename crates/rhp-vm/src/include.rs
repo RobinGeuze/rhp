@@ -19,6 +19,8 @@ pub(crate) type Includer = Box<dyn FnMut(&str, &[u8]) -> Result<Program, Include
 /// local file (read only when the compiled-script cache misses).
 pub(crate) enum IncludeSource {
     Bytes(Vec<u8>),
+    /// Read from a stream resource that already took its id.
+    Streamed(Vec<u8>),
     File(std::fs::File),
     /// Not on disk, but a cached script that needn't be revalidated.
     Cached,
@@ -222,7 +224,32 @@ impl Vm {
         // data: URLs (php's rfc2397 wrapper, a URL wrapper): only with
         // allow_url_fopen and allow_url_include.
         let mut reason_override = None;
-        let found = if builtins::main::streams::is_data_url(&raw_path) {
+        let mut quiet_open = false;
+        let found = if builtins::main::streams::is_filter_url(&raw_path) {
+            // php://filter: opened and read through the stream layer.
+            self.include_docref = Some(kind.name());
+            let data = match builtins::Host::stream_open_ctx(self, &raw_path, b"rb", &Value::Null) {
+                Some(res) => {
+                    let d = self.stream_read_all_for_include(&res);
+                    builtins::Host::stream_close(self, &res);
+                    // a failed read fails the include without a reason
+                    quiet_open = d.is_none();
+                    d
+                }
+                None => {
+                    reason_override = Some(
+                        builtins::main::streams::take_wrapper_error()
+                            .unwrap_or_else(|| "operation failed".to_string()),
+                    );
+                    None
+                }
+            };
+            self.include_docref = None;
+            if let Some(t) = self.pending_throw.take() {
+                return Err(t);
+            }
+            data.map(|d| (raw_path.clone(), IncludeSource::Streamed(d)))
+        } else if builtins::main::streams::is_data_url(&raw_path) {
             let on = |vm: &Self, n: &[u8]| crate::ini_bool(&vm.ini_get(n).unwrap_or_default());
             let off = if !on(self, b"allow_url_fopen") {
                 Some("allow_url_fopen")
@@ -292,7 +319,7 @@ impl Vm {
                 let ip =
                     String::from_utf8_lossy(&self.ini_get(b"include_path").unwrap_or_default())
                         .into_owned();
-                let reason = if path_str.is_empty() {
+                let reason = if path_str.is_empty() || quiet_open {
                     None
                 } else if let Some(r) = reason_override {
                     Some(r)
@@ -401,6 +428,7 @@ impl Vm {
                 opened.set(true);
                 compile(self, &src).map(Rc::new)
             }
+            IncludeSource::Streamed(src) => compile(self, &src).map(Rc::new),
             IncludeSource::Cached => self.opcache_compile(
                 realpath,
                 given,
@@ -626,8 +654,7 @@ impl Vm {
         }
         let mut frame = Frame::new(main.clone(), unit, 0);
         frame.capture = true;
-        frame.include_kind = Some(kind);
-        frame.include_caller = Some(caller_top);
+        frame.include = Some((kind, caller_top));
         frame.defining_class = self.stack[caller_top].defining_class;
         frame.called_class = self.stack[caller_top].called_class;
 
@@ -687,7 +714,7 @@ impl Vm {
     /// `global $a`, `static $a`) or unset carries that over to the including
     /// scope, as php's shared symbol table does.
     pub(crate) fn include_writeback(&mut self, frame: &Frame) {
-        let Some(caller) = frame.include_caller else {
+        let Some(caller) = frame.include_caller() else {
             return;
         };
         // In the global scope every variable already is a global symbol-table

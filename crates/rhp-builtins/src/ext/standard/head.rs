@@ -43,12 +43,10 @@ fn fn_headers_sent(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
         }
         _ => (false, Vec::new(), 0),
     };
-    if let Some(Value::Ref(f)) = args.first() {
-        *f.borrow_mut() = Value::str(file);
-    }
-    if let Some(Value::Ref(l)) = args.get(1) {
-        *l.borrow_mut() = Value::Int(line);
-    }
+    // php assigns the line first.
+    let r = crate::zend::zpp::try_assign_ref(host, args, 1, Value::Int(line));
+    let f = crate::zend::zpp::try_assign_ref(host, args, 0, Value::str(file));
+    r.and(f)?;
     Ok(Value::Bool(sent))
 }
 

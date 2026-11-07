@@ -28,11 +28,21 @@ pub(crate) struct DelayedOom {
 
 impl Vm {
     /// The between-instructions check, while a crossing is recorded or
-    /// waiting (`self.mem.attention()`): note the crossing, or raise it if
-    /// the instruction that just ran was an interrupt point. `top` / `pc`:
-    /// the frame and instruction about to run.
+    /// waiting (`self.mem.attention()`) or a cycle collection is due
+    /// (`self.mem.tick()` covers both): run the collection; note the
+    /// crossing, or raise it if the instruction that just ran was an
+    /// interrupt point. `top` / `pc`: the frame and instruction about to
+    /// run.
     #[cold]
     pub(crate) fn oom_tick(&mut self, top: usize, pc: usize) -> Result<(), Thrown> {
+        if self.mem.gc_is_due() {
+            // The automatic cycle collection (php runs it where the root
+            // buffer filled up).
+            self.gc_auto()?;
+            if !self.mem.attention() {
+                return Ok(());
+            }
+        }
         let depth = self.stack.len();
         if let Some(oom) = self.mem.take_oom() {
             if let Oom::Hard { .. } = oom {

@@ -37,8 +37,44 @@ interface ArrayAccess {
 }
 interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
+// Zend/zend_fibers.c: the engine switches stacks behind __fiber (op codes:
+// rhp_builtins::zend::fibers::FiberOp).
+final class Fiber {
+    public function __construct($callback) { __fiber(0, $this, $callback); }
+    public function start(mixed ...$args): mixed { return __fiber(1, $this, $args); }
+    public function resume(mixed $value = null): mixed { return __fiber(2, $this, $value); }
+    public function throw(Throwable $exception): mixed { return __fiber(3, $this, $exception); }
+    public function isStarted(): bool { return __fiber(4, $this); }
+    public function isSuspended(): bool { return __fiber(5, $this); }
+    public function isRunning(): bool { return __fiber(6, $this); }
+    public function isTerminated(): bool { return __fiber(7, $this); }
+    public function getReturn(): mixed { return __fiber(8, $this); }
+    public static function getCurrent(): ?Fiber { return __fiber(9, null); }
+    public static function suspend(mixed $value = null): mixed { return __fiber(10, null, $value); }
+}
 class stdClass {}
 final class __PHP_Incomplete_Class {}
+final class InternalIterator implements Iterator {
+    private function __construct() {}
+    public function current(): mixed { return __internal_iterator($this, 'current'); }
+    public function key(): mixed { return __internal_iterator($this, 'key'); }
+    public function next(): void { __internal_iterator($this, 'next'); }
+    public function valid(): bool { return __internal_iterator($this, 'valid'); }
+    public function rewind(): void { __internal_iterator($this, 'rewind'); }
+}
+final class WeakReference {
+    public function __construct() { __weakref('construct'); }
+    public static function create(object $object): WeakReference { return __weakref('create', $object); }
+    public function get(): ?object { return __weakref('get', $this); }
+}
+final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
+    public function offsetGet($object): mixed { return __weakmap('get', $this, $object); }
+    public function offsetSet($object, mixed $value): void { __weakmap('set', $this, $object, $value); }
+    public function offsetExists($object): bool { return __weakmap('exists', $this, $object); }
+    public function offsetUnset($object): void { __weakmap('unset', $this, $object); }
+    public function count(): int { return __weakmap('count', $this); }
+    public function getIterator(): Iterator { return __weakmap('iterator', $this); }
+}
 final class Closure {
     public static function fromCallable($callback) { return __closure_from_callable($callback); }
     public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
@@ -111,6 +147,9 @@ class ErrorException extends Exception {
     final public function getSeverity() { return $this->severity; }
 }
 class TypeError extends Error {}
+final class FiberError extends Error {
+    public function __construct() { throw new Error('The "FiberError" class is reserved for internal use and cannot be manually instantiated'); }
+}
 class ValueError extends Error {}
 class ArithmeticError extends Error {}
 class DivisionByZeroError extends ArithmeticError {}

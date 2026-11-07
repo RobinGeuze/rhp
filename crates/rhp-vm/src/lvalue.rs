@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
+use rhp_builtins::zend::object_handlers::DimType;
 use rhp_bytecode::{Reg, TypeKind};
 use rhp_values::{
     conv, ArrayKey, ClassId, ObjectData, ObjectHandle, PhpArray, PhpStr, Thrown, Value,
@@ -97,6 +98,12 @@ pub(crate) enum DimFetch {
 }
 
 /// Where an lvalue cursor is rooted.
+/// A typed slot a reference is being bound to.
+enum RefBind {
+    Static(ClassId, PhpStr),
+    Prop(ObjectHandle, PhpStr),
+}
+
 #[derive(Clone)]
 pub(crate) enum CursorRoot {
     /// A register (compiled variable) in the current frame.
@@ -120,6 +127,8 @@ pub(crate) enum DimMode {
 /// same visibility errors) as a plain `$o->p`.
 struct PropCtx<'a> {
     classes: &'a [classes::ClassEntry],
+    /// The typed references (writes through one go back to the VM).
+    typed: &'a crate::refsrc::TypedRefs,
     scope: Option<ClassId>,
     /// The called (LSB) class, named by asymmetric-visibility errors.
     called: Option<ClassId>,
@@ -210,6 +219,31 @@ impl PropCtx<'_> {
     }
 }
 
+/// What a read-modify-write fetch holds while an undefined-key warning
+/// runs (see [`Vm::cursor_rw_checks`]).
+enum RwHold {
+    /// The array missing the key at path level `.0` (its clone makes a
+    /// write by the handler separate it, as php's GC_ADDREF does).
+    Array(usize, PhpArray),
+    /// A null root php turns into an array first: destroyed when the
+    /// variable no longer holds null.
+    RootNull,
+}
+
+/// Where [`assign_path`] stopped for the VM: a write through a typed
+/// reference (done by the VM, with the value), or an array that cannot be
+/// auto-initialized inside a typed reference / typed property.
+enum TypedStop {
+    Leaf(Rc<RefCell<Value>>, Value),
+    RefInit(Rc<RefCell<Value>>),
+    PropInit(ClassId, PhpStr),
+}
+
+/// php's promotes_to_array: null, false (and an undefined slot).
+fn promotes_to_array(v: &Value) -> bool {
+    matches!(v, Value::Null | Value::Undef | Value::Bool(false))
+}
+
 thread_local! {
     /// Diagnostics raised inside the pure cursor-path walkers
     /// ([`assign_path`] / [`make_ref_path`] / [`unset_path`]), emitted by
@@ -261,6 +295,9 @@ impl Vm {
             MagicSplit::Incomplete(h) => Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
                 self.cursor_rw_checks(top, steps, incdec)?;
+                if self.rw_aborted {
+                    return Ok(Value::Null);
+                }
                 Ok(self.cursor_read_steps(top, steps))
             }
             // (A by-reference `__get` result is read as a copy.)
@@ -290,6 +327,7 @@ impl Vm {
                 }
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -336,6 +374,10 @@ impl Vm {
         // `None`: the slot does not exist yet (the write creates it as null).
         let mut cur = Some(deref(&self.cursor_root_value(top)));
         let mut warnings: Vec<(i64, String)> = Vec::new();
+        // The container of the first undefined key, held while its warning
+        // runs (zend_undefined_index_write's GC_ADDREF), with the warning's
+        // index.
+        let mut hold: Option<(usize, RwHold)> = None;
         for (i, step) in steps.iter().enumerate() {
             cur = match (cur, step) {
                 // A string container: no read-modify-write through its offsets.
@@ -350,6 +392,7 @@ impl Vm {
                     self.flush_rw_warnings(warnings)?;
                     let cx = PropCtx {
                         classes: &self.classes,
+                        typed: &self.typed_refs,
                         scope: self.stack[top].defining_class,
                         called: self.stack[top].called_class,
                         incdec: false,
@@ -369,10 +412,15 @@ impl Vm {
                         Some(_) => string_offset_misuse(rest, false),
                     });
                 }
-                (None | Some(Value::Null), CursorStep::Key(k)) => {
+                (c @ (None | Some(Value::Null)), CursorStep::Key(k)) => {
                     self.rw_null_key(k, &mut warnings);
                     match ArrayKey::from_value(&deref(k)) {
-                        Some(key) => warnings.push((builtins::E_WARNING, undefined_key_msg(&key))),
+                        Some(key) => {
+                            if i == 0 && c.is_some() && hold.is_none() {
+                                hold = Some((warnings.len(), RwHold::RootNull));
+                            }
+                            warnings.push((builtins::E_WARNING, undefined_key_msg(&key)))
+                        }
                         None => {
                             self.flush_rw_warnings(warnings)?;
                             return Err(self.illegal_array_offset(top, k));
@@ -391,6 +439,9 @@ impl Vm {
                     match a.get(&key) {
                         Some(v) => Some(deref(v)),
                         None => {
+                            if hold.is_none() {
+                                hold = Some((warnings.len(), RwHold::Array(i, a.clone())));
+                            }
                             warnings.push((builtins::E_WARNING, undefined_key_msg(&key)));
                             None
                         }
@@ -438,12 +489,43 @@ impl Vm {
                 _ => break,
             };
         }
-        self.flush_rw_warnings(warnings)
+        let Some((at, hold)) = hold else {
+            return self.flush_rw_warnings(warnings);
+        };
+        for (i, (level, w)) in warnings.into_iter().enumerate() {
+            self.diag(level, &w)?;
+            if i == at {
+                let destroyed = match &hold {
+                    // php separates the held table on any write to it:
+                    // the path no longer reaches it.
+                    RwHold::Array(level, a) => {
+                        let mut v = deref(&self.cursor_root_value(top));
+                        for step in &steps[..*level] {
+                            let next = match (&v, step) {
+                                (Value::Array(x), CursorStep::Key(k)) => {
+                                    ArrayKey::from_value(k).and_then(|key| x.get(&key).map(deref))
+                                }
+                                _ => None,
+                            };
+                            v = next.unwrap_or(Value::Null);
+                        }
+                        !matches!(&v, Value::Array(x) if x.data_ptr() == a.data_ptr())
+                    }
+                    RwHold::RootNull => !matches!(deref(&self.cursor_root_value(top)), Value::Null),
+                };
+                if destroyed {
+                    self.rw_aborted = true;
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn illegal_array_offset(&self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -607,6 +689,55 @@ impl Vm {
         Ok(Rc::new(RefCell::new(Value::Object(inst))))
     }
 
+    /// zend_std_get_property_ptr_ptr's lazy_init: initialize `h` and run `f`
+    /// on the instance's cell; a fetch the proxy's `__get` guard let through
+    /// holds the same guard on the instance.
+    fn lazy_ptr_fetch<T>(
+        &mut self,
+        h: &ObjectHandle,
+        step: &CursorStep,
+        f: impl FnOnce(&mut Self, Rc<RefCell<Value>>) -> Result<T, Thrown>,
+    ) -> Result<T, Thrown> {
+        let guard = match step {
+            CursorStep::Prop(name) => {
+                let cls = h.borrow().class;
+                let held = self.lookup_method(cls, b"__get").is_some()
+                    && self.magic(h, cls, b"__get", name).is_none();
+                held.then(|| name.clone())
+            }
+            _ => None,
+        };
+        let cell = self.lazy_cursor_cell(h)?;
+        let inst = match &*cell.borrow() {
+            Value::Object(o) if guard.is_some() => Some(o.clone()),
+            _ => None,
+        };
+        match (inst, guard) {
+            (Some(inst), Some(name)) => {
+                let icls = inst.borrow().class;
+                let has_get = self.lookup_method(icls, b"__get").is_some();
+                self.with_guard(&inst, has_get, b"__get", &name, |vm| f(vm, cell))
+            }
+            _ => f(self, cell),
+        }
+    }
+
+    /// Whether register `r` holds a PHP reference (IS_REFERENCE), not just a
+    /// cell rhp shares with the symbol table: a global-scope variable is
+    /// one only once made so (`ref_globals`), and an include frame's
+    /// variables are bound to its caller's.
+    pub(crate) fn reg_is_php_ref(&self, top: usize, r: Reg) -> bool {
+        let f = &self.stack[top];
+        if !matches!(f.regs[r as usize], Value::Ref(_)) {
+            return false;
+        }
+        match f.proto.cv_var_names.get(r as usize) {
+            Some(name) if f.global_scope => self.ref_globals.contains(name.as_bytes()),
+            Some(_) => f.include_caller().is_none(),
+            None => true,
+        }
+    }
+
     /// Run `f` with the cursor temporarily re-rooted at `cell`.
     fn with_cursor_root<T>(
         &mut self,
@@ -671,8 +802,19 @@ impl Vm {
                     return Ok(rc);
                 }
                 self.cursor_dyn_check(top, steps, true)?;
+                // ZEND_FETCH_REF on a typed property: the reference gets
+                // it as a type source.
+                let leaf = if steps.is_empty() {
+                    self.cursor_static_prop().map(|st| (None, st.cls, st.name))
+                } else if matches!(steps.last(), Some(CursorStep::Prop(_))) {
+                    self.cursor_leaf_slot(top, steps)
+                        .map(|(h, k)| (Some(h), 0, k))
+                } else {
+                    None
+                };
                 let cx = PropCtx {
                     classes: &self.classes,
+                    typed: &self.typed_refs,
                     scope: self.stack[top].defining_class,
                     called: self.stack[top].called_class,
                     incdec: false,
@@ -688,14 +830,21 @@ impl Vm {
                         c
                     }
                 };
+                if let (Ok(rc), Some((obj, cls, key))) = (&r, leaf) {
+                    match obj {
+                        Some(h) => self.add_prop_ref_source(rc, &h, &key),
+                        None => self.add_static_ref_source(rc, cls, key.as_bytes()),
+                    }
+                }
                 self.flush_path_diags()?;
                 return r;
             }
             MagicSplit::Leaf(h, name) => (steps.len() - 1, h, name),
             MagicSplit::Nested(i, h, name) => (i, h, name),
             MagicSplit::Lazy(i, h) => {
-                let cell = self.lazy_cursor_cell(&h)?;
-                return self.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, &steps[i..]));
+                return self.lazy_ptr_fetch(&h, &steps[i], |vm, cell| {
+                    vm.with_cursor_root(cell, |vm| vm.cursor_make_ref(top, &steps[i..]))
+                });
             }
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
@@ -718,6 +867,7 @@ impl Vm {
     fn cursor_read_steps(&self, top: usize, steps: &[CursorStep]) -> Value {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -869,7 +1019,12 @@ impl Vm {
                             let set =
                                 !make_ref && leaf && self.magic(&h, cls, b"__set", name).is_some();
                             if dynamic && !set {
-                                self.check_dynamic_prop(top, cls, name)?;
+                                // Held here by `h`, and by `cur` unless
+                                // that is a reference.
+                                let locals = 1 + usize::from(
+                                    matches!(&cur, Value::Object(o) if Rc::ptr_eq(o, &h)),
+                                );
+                                self.check_dynamic_prop_held(top, &h, locals, name)?;
                             }
                             return Ok(());
                         }
@@ -892,6 +1047,7 @@ impl Vm {
         // (`$o->p = &$x` fetches the property for a reference.)
         self.cursor_readonly_check(top, steps, matches!(v, Value::Ref(_)))?;
         let mut v = v;
+        let mut bind = None;
         match self.cursor_magic_split(top, steps) {
             MagicSplit::Incomplete(h) => return Err(self.incomplete_error(&h, "modify a property")),
             MagicSplit::Plain => {
@@ -907,6 +1063,11 @@ impl Vm {
                             self.verify_type_for_prop(&ty, decl, cls, name.as_bytes(), v, strict)?;
                         self.typed_write_result = Some(v.clone());
                     }
+                }
+                if matches!(v, Value::Ref(_)) {
+                    bind = self.cursor_bind_ref_check(top, steps, &v)?;
+                } else if self.cursor_static.is_some() {
+                    self.cursor_static_auto_init(top, steps)?;
                 }
             }
             // `$o->p = &$x` through a hook (zend_assign_to_property_reference):
@@ -939,6 +1100,12 @@ impl Vm {
                 self.flush_deferred_undef(top)?;
                 return self.prop_store(top, Value::Object(h), name, v);
             }
+            // (`$o->p = &$x` is a write fetch: get_property_ptr_ptr.)
+            MagicSplit::Lazy(i, h) if matches!(v, Value::Ref(_)) => {
+                return self.lazy_ptr_fetch(&h, &steps[i], |vm, cell| {
+                    vm.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v))
+                });
+            }
             MagicSplit::Lazy(i, h) => {
                 let cell = self.lazy_cursor_cell(&h)?;
                 return self.with_cursor_root(cell, |vm| vm.cursor_write(top, &steps[i..], v));
@@ -951,8 +1118,25 @@ impl Vm {
             // `$obj[$k] = v` / `$obj[] = v` on an ArrayAccess object ->
             // offsetSet; below it, the element is fetched with offsetGet.
             MagicSplit::Offset(i, h) => {
-                let key = aa_key(&steps[i]).unwrap_or(Value::Null);
+                let mut key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    if let Some(d) = self.handlers_of(&h).and_then(|t| t.dimension) {
+                        (d.write)(self, &h, aa_key_opt(&steps[i]).as_ref(), v)?;
+                        if !self.destructibles.is_empty() {
+                            self.dtor_check = true;
+                        }
+                        return Ok(());
+                    }
+                    // spl_array_write_dimension_ex: a reference to null is
+                    // an offset (get_hash_key's deprecation), not an append.
+                    if i < 64
+                        && self.cursor_ref_null & (1 << i) != 0
+                        && matches!(steps[i], CursorStep::Key(Value::Null))
+                        && self.spl_array_owner(&h, b"offsetset").is_some()
+                    {
+                        self.diag(builtins::E_DEPRECATED, NULL_OFFSET_DEPRECATION)?;
+                        key = Value::str(Vec::new());
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetset") {
                         self.call_sync(&m, Some(h), cls, vec![key, v])?;
@@ -966,12 +1150,14 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
         };
         // An object written to a string offset is converted afterwards.
         let obj_val = matches!(v, Value::Object(_) | Value::Closure(_)).then(|| v.clone());
+        let bound = bind.is_some().then(|| v.clone());
         let r = match &self.cursor_root {
             CursorRoot::Cv(r) => {
                 let r = *r as usize;
@@ -979,18 +1165,30 @@ impl Vm {
             }
             CursorRoot::Cell(rc) => {
                 let rc = rc.clone();
-                let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
-                r
+                // A global's cell that is itself a typed reference
+                // (`$GLOBALS['x']` bound to a typed property): written
+                // through it as a reference.
+                if cx.typed.has(&rc) && !(steps.is_empty() && matches!(v, Value::Ref(_))) {
+                    assign_path(&mut Value::Ref(rc), steps, v, &cx)
+                } else {
+                    let r = assign_path(&mut rc.borrow_mut(), steps, v, &cx);
+                    r
+                }
             }
         };
         flush_deferred_writes();
+        flush_replaced();
+        let r = self.finish_typed_stop(top, r);
+        if let (Some(b), Some(bv), true) = (bind, &bound, r.is_ok()) {
+            self.finish_ref_bind(b, bv);
+        }
         self.flush_path_diags()?;
         if STRING_OFFSET_OBJECT.with(|f| f.replace(false)) {
             return self.string_offset_object_write(top, steps, obj_val, r);
         }
         // The overwritten element may have held the last reference to an
         // object: its destructor runs before the next statement, as in php.
-        if !self.destructibles.is_empty() {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         r
@@ -1180,6 +1378,16 @@ impl Vm {
         top: usize,
         steps: &[CursorStep],
     ) -> Option<(ClassId, PhpStr)> {
+        self.cursor_leaf_slot(top, steps)
+            .map(|(h, k)| (h.borrow().class, k))
+    }
+
+    /// [`Vm::cursor_leaf_typed`] with the object.
+    pub(crate) fn cursor_leaf_slot(
+        &self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<(ObjectHandle, PhpStr)> {
         let (CursorStep::Prop(name), prefix) = steps.split_last()? else {
             return None;
         };
@@ -1198,7 +1406,171 @@ impl Vm {
             return None;
         };
         self.class(cls).props.get(&key)?.ty.as_ref()?;
-        Some((cls, key))
+        Some((h, key))
+    }
+
+    /// What [`assign_path`] left to the VM (see [`TypedStop`]): the write
+    /// through a typed reference, or the auto-initialization error.
+    #[inline]
+    fn finish_typed_stop(
+        &mut self,
+        top: usize,
+        r: Result<Option<Box<TypedStop>>, Thrown>,
+    ) -> Result<(), Thrown> {
+        match r? {
+            None => Ok(()),
+            Some(stop) => self.typed_stop(top, *stop),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn typed_stop(&mut self, top: usize, stop: TypedStop) -> Result<(), Thrown> {
+        match stop {
+            TypedStop::Leaf(rc, v) => {
+                let strict = self.stack[top].proto.strict_types;
+                let (c, old) = self.assign_to_ref(&rc, v, strict)?;
+                self.typed_write_result = Some(c);
+                drop(old);
+                Ok(())
+            }
+            TypedStop::RefInit(rc) => self.verify_ref_array_assignable(&rc),
+            TypedStop::PropInit(cls, key) => match self.prop_src_info(cls, &key) {
+                Some(info) => self.check_auto_init(&info),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// The typed reference the leaf of a cursor path holds, if any.
+    pub(crate) fn cursor_leaf_ref(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+    ) -> Option<Rc<RefCell<Value>>> {
+        if self.typed_refs.is_empty() {
+            return None;
+        }
+        let scope = self.stack[top].defining_class;
+        let mut cur = match &self.cursor_root {
+            // A global's cell may be the typed reference itself.
+            CursorRoot::Cell(rc) if self.typed_refs.has(rc) => Value::Ref(rc.clone()),
+            _ => self.cursor_root_value(top),
+        };
+        for step in steps {
+            let next = match (deref(&cur), step) {
+                (Value::Array(a), CursorStep::Key(k)) => {
+                    ArrayKey::from_value(k).and_then(|key| a.get(&key).cloned())
+                }
+                (Value::Object(h), CursorStep::Prop(name)) => {
+                    let cls = h.borrow().class;
+                    let key = match classes::resolve_prop(&self.classes, cls, scope, name) {
+                        PropRes::Slot(k) => k,
+                        PropRes::Dynamic => name.clone(),
+                        PropRes::Denied(_) => return None,
+                    };
+                    let v = h.borrow().properties.get(&key).cloned();
+                    v
+                }
+                _ => None,
+            };
+            cur = next?;
+        }
+        match cur {
+            Value::Ref(rc) if self.typed_refs.has(&rc) => Some(rc),
+            _ => None,
+        }
+    }
+
+    /// A write below a typed static property at the cursor root that would
+    /// make it an array (ZEND_FETCH_STATIC_PROP_W with ZEND_FETCH_DIM_WRITE).
+    #[cold]
+    #[inline(never)]
+    fn cursor_static_auto_init(&self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
+        if !matches!(steps.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            return Ok(());
+        }
+        let Some(st) = self.cursor_static_prop() else {
+            return Ok(());
+        };
+        let cur = self.cursor_root_value(top);
+        if !promotes_to_array(&deref(&cur)) {
+            return Ok(());
+        }
+        match self.static_src_info(st.cls, st.name.as_bytes()) {
+            Some(info) => self.check_auto_init(&info),
+            None => Ok(()),
+        }
+    }
+
+    /// zend_throw_auto_init_in_prop_error unless typed property `s` takes
+    /// an array.
+    fn check_auto_init(&self, s: &crate::refsrc::SrcInfo) -> Result<(), Thrown> {
+        use rhp_bytecode::TypeKind as K;
+        if s.ty
+            .kinds
+            .iter()
+            .any(|k| matches!(k, K::Array | K::Iterable | K::Mixed))
+        {
+            return Ok(());
+        }
+        Err(Thrown::type_error(format!(
+            "Cannot auto-initialize an array inside property {}::${} of type {}",
+            String::from_utf8_lossy(self.class(s.decl).name.as_bytes()),
+            String::from_utf8_lossy(s.name.as_bytes()),
+            self.prop_type_string(&s.ty, s.decl, Some(s.cls))
+        )))
+    }
+
+    /// The typed slot a `lval = &$x` binds (zend_assign_to_typed_property_
+    /// reference): checks the reference against it and drops the old
+    /// reference's source. What to add as a source after the bind.
+    #[cold]
+    #[inline(never)]
+    fn cursor_bind_ref_check(
+        &mut self,
+        top: usize,
+        steps: &[CursorStep],
+        v: &Value,
+    ) -> Result<Option<RefBind>, Thrown> {
+        let strict = self.stack[top].proto.strict_types;
+        if steps.is_empty() {
+            let Some(st) = self.cursor_static_prop() else {
+                return Ok(None);
+            };
+            let Some(info) = self.static_src_info(st.cls, st.name.as_bytes()) else {
+                return Ok(None);
+            };
+            self.verify_prop_assignable_by_ref(&info, v, strict)?;
+            if let Value::Ref(old) = &*st.cell.borrow() {
+                self.del_static_ref_source(old, info.decl, st.name.as_bytes());
+            }
+            return Ok(Some(RefBind::Static(st.cls, st.name)));
+        }
+        let Some((h, key)) = self.cursor_leaf_slot(top, steps) else {
+            return Ok(None);
+        };
+        let cls = h.borrow().class;
+        let Some(info) = self.prop_src_info(cls, &key) else {
+            return Ok(None);
+        };
+        self.verify_prop_assignable_by_ref(&info, v, strict)?;
+        let old = h.borrow().properties.get(&key).cloned();
+        if let Some(Value::Ref(old)) = old {
+            self.del_prop_ref_source(&old, &h, &key);
+        }
+        Ok(Some(RefBind::Prop(h, key)))
+    }
+
+    /// Add the source [`Vm::cursor_bind_ref_check`] found.
+    #[cold]
+    #[inline(never)]
+    fn finish_ref_bind(&mut self, bind: RefBind, v: &Value) {
+        let Value::Ref(rc) = v else { return };
+        match bind {
+            RefBind::Static(cls, name) => self.add_static_ref_source(rc, cls, name.as_bytes()),
+            RefBind::Prop(h, key) => self.add_prop_ref_source(rc, &h, &key),
+        }
     }
 
     pub(crate) fn cursor_unset(&mut self, top: usize, steps: &[CursorStep]) -> Result<(), Thrown> {
@@ -1234,6 +1606,20 @@ impl Vm {
             MagicSplit::Offset(i, h) => {
                 let key = aa_key(&steps[i]).unwrap_or(Value::Null);
                 if i + 1 == steps.len() {
+                    if let Some(d) = self.handlers_of(&h).and_then(|t| t.dimension) {
+                        (d.unset)(self, &h, &key)?;
+                        if !self.destructibles.is_empty() {
+                            self.dtor_check = true;
+                        }
+                        return Ok(());
+                    }
+                    if let Some(base) = self.spl_array_owner(&h, b"offsetunset") {
+                        // ArrayIterator's own offsetUnset keeps its position.
+                        if self.class(base).name.as_bytes() == b"ArrayObject" {
+                            return self.spl_array_unset_dim(&h, base, &key);
+                        }
+                        self.spl_array_key_in(&h, &key, SplKeyUse::Unset)?;
+                    }
                     let cls = h.borrow().class;
                     if let Some(m) = self.lookup_method(cls, b"offsetunset") {
                         self.call_sync(&m, Some(h), cls, vec![key])?;
@@ -1247,6 +1633,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1259,9 +1646,10 @@ impl Vm {
                 r
             }
         };
+        flush_replaced();
         self.flush_path_diags()?;
         // The removed element may have held the last reference to an object.
-        if !self.destructibles.is_empty() {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         r
@@ -1286,6 +1674,7 @@ impl Vm {
         let s = Value::str(self.to_string_vm(&v)?);
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: false,
@@ -1305,7 +1694,7 @@ impl Vm {
                 .retain(|(_, m)| m.starts_with(b"Only the first byte"))
         });
         self.flush_path_diags()?;
-        r
+        r.map(|_| ())
     }
 
     /// `$str[$k]->…` written: the offset's own checks, then "Cannot use
@@ -1313,6 +1702,7 @@ impl Vm {
     pub(crate) fn string_offset_as_object(&mut self, top: usize, k: &Value) -> Thrown {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: self.stack[top].defining_class,
             called: self.stack[top].called_class,
             incdec: self.incdec_write,
@@ -1342,6 +1732,9 @@ impl Vm {
 
     /// `offsetGet($key)` on an ArrayAccess object.
     pub(crate) fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            return Ok((d.read)(self, h, Some(&key), DimType::R)?.unwrap_or(Value::Null));
+        }
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"offsetget") {
             Some(m) => self.call_sync(&m, Some(h.clone()), cls, vec![key]),
@@ -1355,6 +1748,9 @@ impl Vm {
         h: &ObjectHandle,
         key: Value,
     ) -> Result<bool, Thrown> {
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            return (d.has)(self, h, &key, false);
+        }
         let cls = h.borrow().class;
         let m = self.lookup_method(cls, b"offsetexists").unwrap();
         let r = self.call_sync(&m, Some(h.clone()), cls, vec![key])?;
@@ -1414,7 +1810,7 @@ impl Vm {
         }
         // An include/eval frame has no scope of its own: a variable it has no
         // slot for lives in the including scope.
-        if let Some(caller) = self.stack[top].include_caller {
+        if let Some(caller) = self.stack[top].include_caller() {
             return match self.var_var_lookup(caller, name)? {
                 Ok(cv) => Some(Err(self.slot_cell_ro(caller, cv))),
                 Err(cell) => Some(Err(cell)),
@@ -1434,7 +1830,7 @@ impl Vm {
         }
         if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
             self.stack[top].regs[i as usize] = Value::Ref(cell);
-        } else if let Some(caller) = self.stack[top].include_caller {
+        } else if let Some(caller) = self.stack[top].include_caller() {
             self.var_var_bind(caller, name, cell);
         } else {
             self.stack[top].dyn_vars.insert(name.to_vec(), cell);
@@ -1450,7 +1846,7 @@ impl Vm {
         }
         if let Some(i) = scope::named_cv(&self.stack[top].proto, name) {
             self.unset_cv(top, i);
-        } else if let Some(caller) = self.stack[top].include_caller {
+        } else if let Some(caller) = self.stack[top].include_caller() {
             self.var_var_unset(caller, name);
         } else if let Some(c) = self.stack[top].dyn_vars.shift_remove(name) {
             if matches!(&*c.borrow(), Value::Object(_) | Value::Array(_)) {
@@ -1480,7 +1876,7 @@ impl Vm {
         if self.stack[top].global_scope {
             return Err(self.global_cell(name));
         }
-        if let Some(caller) = self.stack[top].include_caller {
+        if let Some(caller) = self.stack[top].include_caller() {
             return Err(match self.var_var_slot(caller, name) {
                 Ok(cv) => self.promote_slot(caller, cv),
                 Err(cell) => cell,
@@ -1510,6 +1906,27 @@ impl Vm {
         if let Some(cell) = self.spl_array_dim_ptr(h, step, &key, mode)? {
             return Ok(cell);
         }
+        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+            let ty = match mode {
+                DimFetch::W => DimType::W,
+                DimFetch::Rw => DimType::Rw,
+                DimFetch::Unset => DimType::Unset,
+            };
+            let got = (d.read)(self, h, aa_key_opt(step).as_ref(), ty)?;
+            return Ok(match got {
+                Some(Value::Ref(rc)) => rc,
+                other => {
+                    let other = other.unwrap_or(Value::Null);
+                    if !matches!(other, Value::Object(_) | Value::Closure(_)) {
+                        self.indirect_overloaded_notice(h)?;
+                    }
+                    Rc::new(RefCell::new(other))
+                }
+            });
+        }
+        if matches!(step, CursorStep::Append) && self.spl_array_base(h).is_some() {
+            return self.spl_array_append_fetch(h);
+        }
         let fetch = match mode {
             DimFetch::W | DimFetch::Rw => builtins::MagicFetch::Write,
             DimFetch::Unset => builtins::MagicFetch::Read,
@@ -1524,6 +1941,174 @@ impl Vm {
                 Rc::new(RefCell::new(other))
             }
         })
+    }
+
+    /// The ArrayObject / ArrayIterator class `h` is or derives from.
+    pub(crate) fn spl_array_base(&self, h: &ObjectHandle) -> Option<ClassId> {
+        let cls = h.borrow().class;
+        self.class(cls).ancestors.iter().copied().find(|&a| {
+            let n = self.class(a).name.as_bytes();
+            n == b"ArrayObject" || n == b"ArrayIterator"
+        })
+    }
+
+    /// spl_array_has_dimension_ex: `isset($ao[$k])` (`check_empty` false)
+    /// or `!empty($ao[$k])`. A user offsetExists is asked first; the
+    /// storage is read directly unless a user offsetGet must supply the
+    /// value.
+    pub(crate) fn spl_array_has_dim(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: Value,
+        check_empty: bool,
+    ) -> Result<bool, Thrown> {
+        let user_has = self.spl_array_owner(h, b"offsetexists").is_none();
+        let user_get = self.spl_array_owner(h, b"offsetget").is_none();
+        let mut value = None;
+        if user_has {
+            if !self.aa_offset_exists(h, k.clone())? {
+                return Ok(false);
+            }
+            if !check_empty {
+                return Ok(true);
+            }
+            if user_get {
+                value = Some(self.aa_offset_get(h, k.clone())?);
+            }
+        }
+        let value = match value {
+            Some(v) => v,
+            None => {
+                let storage = self.spl_array_storage(h, base)?;
+                let akey = self.spl_array_key_in(h, &k, SplKeyUse::Isset)?;
+                let found = match &*storage.borrow() {
+                    Value::Array(a) => a.get(&akey).map(deref),
+                    _ => None,
+                };
+                let Some(found) = found else {
+                    return Ok(false);
+                };
+                if check_empty && user_get {
+                    self.aa_offset_get(h, k)?
+                } else {
+                    found
+                }
+            }
+        };
+        if check_empty {
+            self.truthy(&deref(&value))
+        } else {
+            Ok(!matches!(deref(&value), Value::Null))
+        }
+    }
+
+    /// spl_array_read_dimension_ex in BP_VAR_IS (`$ao[$k] ?? ...`, a
+    /// nested isset): one key conversion, no warning for a missing key.
+    fn spl_array_read_is(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: Value,
+    ) -> Result<Value, Thrown> {
+        let user_has = self.spl_array_owner(h, b"offsetexists").is_none();
+        let user_get = self.spl_array_owner(h, b"offsetget").is_none();
+        if user_get || user_has {
+            if !self.spl_array_has_dim(h, base, k.clone(), false)? {
+                return Ok(Value::Null);
+            }
+            if user_get {
+                return self.aa_offset_get(h, k);
+            }
+        }
+        let storage = self.spl_array_storage(h, base)?;
+        let akey = self.spl_array_key_in(h, &k, SplKeyUse::Isset)?;
+        let found = match &*storage.borrow() {
+            Value::Array(a) => a.get(&akey).map(deref),
+            _ => None,
+        };
+        Ok(found.unwrap_or(Value::Null))
+    }
+
+    /// spl_array_unset_dimension_ex for ArrayObject's built-in offsetUnset.
+    fn spl_array_unset_dim(
+        &mut self,
+        h: &ObjectHandle,
+        base: ClassId,
+        k: &Value,
+    ) -> Result<(), Thrown> {
+        let akey = self.spl_array_key_in(h, k, SplKeyUse::Unset)?;
+        let storage = self.spl_array_storage(h, base)?;
+        if let Value::Array(a) = &mut *storage.borrow_mut() {
+            a.remove(&akey);
+        }
+        // Backed by an object: its property table too.
+        {
+            let cx = PropCtx {
+                classes: &self.classes,
+                typed: &self.typed_refs,
+                scope: Some(base),
+                called: Some(base),
+                incdec: false,
+            };
+            let mut obj = Value::Object(h.clone());
+            let o = make_ref_path(&mut obj, &[CursorStep::Prop(PhpStr::from("__o"))], &cx)?;
+            let backing = o.borrow().clone();
+            if let Value::Object(o) = backing {
+                let key = match akey {
+                    rhp_values::ArrayKey::Int(n) => PhpStr::from_bytes(n.to_string().into_bytes()),
+                    rhp_values::ArrayKey::Str(s) => s,
+                };
+                rhp_builtins::Host::prop_store(self, &o, &key, None);
+            }
+        }
+        self.collect_released()
+    }
+
+    /// spl_array_read_dimension_ex for `$ao[]` with a user offsetGet: it is
+    /// called with an undefined offset, so a required `$offset` fails ("not
+    /// passed") and the result is php's uninitialized_zval (the notice).
+    fn spl_array_append_fetch(&mut self, h: &ObjectHandle) -> Result<Rc<RefCell<Value>>, Thrown> {
+        let cls = h.borrow().class;
+        let Some(m) = self.lookup_method(cls, b"offsetget") else {
+            self.indirect_overloaded_notice(h)?;
+            return Ok(Rc::new(RefCell::new(Value::Null)));
+        };
+        // (zend_handle_undef_args: only a RECV_INIT takes its default; a
+        // variadic one fails too, without a name.)
+        let got = match m.proto.params.first() {
+            Some(p) if p.default.is_none() => {
+                let pname = if p.variadic {
+                    String::new()
+                } else {
+                    let n = &m.proto.names[p.name as usize];
+                    format!(" (${})", String::from_utf8_lossy(n.as_bytes()))
+                };
+                Err(Thrown::error(
+                    "ArgumentCountError",
+                    format!(
+                        "{}::{}(): Argument #1{pname} not passed",
+                        self.class_name_lossy(m.defining_class),
+                        String::from_utf8_lossy(m.proto.name.as_bytes()),
+                    ),
+                ))
+            }
+            _ => self.fetching_as(builtins::MagicFetch::Write, |vm| {
+                vm.call_sync(&m, Some(h.clone()), cls, vec![])
+            }),
+        };
+        match got {
+            Ok(Value::Ref(rc)) => Ok(rc),
+            Ok(v @ (Value::Object(_) | Value::Closure(_))) => Ok(Rc::new(RefCell::new(v))),
+            Err(e) => {
+                self.indirect_overloaded_notice(h)?;
+                Err(e)
+            }
+            Ok(v) => {
+                self.indirect_overloaded_notice(h)?;
+                Ok(Rc::new(RefCell::new(v)))
+            }
+        }
     }
 
     pub(crate) fn indirect_overloaded_notice(&mut self, h: &ObjectHandle) -> Result<(), Thrown> {
@@ -1553,6 +2138,7 @@ impl Vm {
     ) -> Result<Rc<RefCell<Value>>, Thrown> {
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -1568,13 +2154,26 @@ impl Vm {
         h: &ObjectHandle,
         key: &Value,
     ) -> Result<rhp_values::ArrayKey, Thrown> {
+        self.spl_array_key_in(h, key, SplKeyUse::Access)
+    }
+
+    /// spl_array's get_hash_key, failing with zend_illegal_container_offset's
+    /// message for the fetch type.
+    fn spl_array_key_in(
+        &mut self,
+        h: &ObjectHandle,
+        key: &Value,
+        how: SplKeyUse,
+    ) -> Result<rhp_values::ArrayKey, Thrown> {
         let akey = self.dim_key(&deref(key), false)?;
         akey.ok_or_else(|| {
-            Thrown::type_error(format!(
-                "Cannot access offset of type {} on {}",
-                rhp_builtins::zval_type_name(self, key),
-                rhp_builtins::zval_type_name(self, &Value::Object(h.clone()))
-            ))
+            let ty = rhp_builtins::zval_type_name(self, key);
+            let on = rhp_builtins::zval_type_name(self, &Value::Object(h.clone()));
+            Thrown::type_error(match how {
+                SplKeyUse::Access => format!("Cannot access offset of type {ty} on {on}"),
+                SplKeyUse::Isset => format!("Cannot access offset of type {ty} in isset or empty"),
+                SplKeyUse::Unset => format!("Cannot unset offset of type {ty} on {on}"),
+            })
         })
     }
 
@@ -1598,7 +2197,17 @@ impl Vm {
             return Ok(Some(Rc::new(RefCell::new(Value::Null))));
         }
         let storage = self.spl_array_storage(h, owner)?;
-        let akey = self.spl_array_key(h, key)?;
+        let akey = match mode {
+            // uninitialized_zval after the TypeError: the notice follows.
+            DimFetch::Unset => match self.spl_array_key_in(h, key, SplKeyUse::Unset) {
+                Ok(k) => k,
+                Err(e) => {
+                    self.indirect_overloaded_notice(h)?;
+                    return Err(e);
+                }
+            },
+            _ => self.spl_array_key(h, key)?,
+        };
         let exists = matches!(&*storage.borrow(), Value::Array(a) if a.get(&akey).is_some());
         if !exists {
             match mode {
@@ -1621,6 +2230,7 @@ impl Vm {
         }
         let cx = PropCtx {
             classes: &self.classes,
+            typed: &self.typed_refs,
             scope: Some(owner),
             called: Some(owner),
             incdec: false,
@@ -1853,6 +2463,9 @@ impl Vm {
             Value::Object(h) => {
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
+                    if let (true, Some(base)) = (quiet, self.spl_array_base(h)) {
+                        return self.spl_array_read_is(h, base, key.clone());
+                    }
                     // zend_std_read_dimension(BP_VAR_IS): offsetExists first.
                     if quiet && !self.aa_offset_exists(h, key.clone())? {
                         return Ok(Value::Null);
@@ -2200,7 +2813,36 @@ fn flush_deferred_writes() {
     let pending = DEFERRED_WRITE.with(|d| std::mem::take(&mut *d.borrow_mut()));
     for (rc, v) in pending {
         let old = std::mem::replace(&mut *rc.borrow_mut(), v);
+        rhp_values::gc::possible_root(&old);
         drop(old);
+    }
+}
+
+thread_local! {
+    /// Values a cursor write replaced, released once the path's borrows
+    /// are (each may become a possible root of a cycle).
+    static REPLACED: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Release `old` (overwritten by a path write) after the write.
+fn replaced(old: Value) {
+    if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = old {
+        REPLACED.with(|r| r.borrow_mut().push(old));
+    }
+}
+
+/// The values [`replaced`] kept: possible roots, then dropped.
+pub(crate) fn flush_replaced() {
+    let old = REPLACED.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *r)
+        }
+    });
+    for v in &old {
+        rhp_values::gc::possible_root(v);
     }
 }
 
@@ -2210,7 +2852,7 @@ fn assign_path(
     steps: &[CursorStep],
     value: Value,
     cx: &PropCtx,
-) -> Result<(), Thrown> {
+) -> Result<Option<Box<TypedStop>>, Thrown> {
     // An undefined variable at the root is created by the write (not by a
     // property write, which fails on it).
     if let Value::Undef = slot {
@@ -2221,18 +2863,30 @@ fn assign_path(
     // `lval = &$x` (a `Ref` value at the leaf) rebinds the slot itself: it
     // does not write through a reference the slot already held.
     if steps.is_empty() && matches!(value, Value::Ref(_)) {
-        *slot = value;
-        return Ok(());
+        replaced(std::mem::replace(slot, value));
+        return Ok(None);
     }
     // Descend through a reference to its underlying storage.
     if let Value::Ref(rc) = slot {
+        if cx.typed.has(rc) {
+            if steps.is_empty() {
+                return Ok(Some(Box::new(TypedStop::Leaf(rc.clone(), value))));
+            }
+            let nested = matches!(steps[0], CursorStep::Key(_) | CursorStep::Append);
+            if nested
+                && rc.try_borrow().is_ok_and(|v| promotes_to_array(&v))
+                && !cx.typed.accepts_array(cx.classes, rc)
+            {
+                return Ok(Some(Box::new(TypedStop::RefInit(rc.clone()))));
+            }
+        }
         let Ok(mut inner) = rc.try_borrow_mut() else {
             // The reference is to a container this write is inside (an array
             // holding a reference to itself): the value is stored once the
             // path is released.
             if steps.is_empty() {
                 DEFERRED_WRITE.with(|d| d.borrow_mut().push((rc.clone(), value)));
-                return Ok(());
+                return Ok(None);
             }
             return Err(Thrown::error(
                 "Error",
@@ -2242,8 +2896,8 @@ fn assign_path(
         return assign_path(&mut inner, steps, value, cx);
     }
     let Some((head, rest)) = steps.split_first() else {
-        *slot = value;
-        return Ok(());
+        replaced(std::mem::replace(slot, value));
+        return Ok(None);
     };
     if let CursorStep::Prop(name) = head {
         // Descend into an object property (handle semantics: no COW).
@@ -2272,6 +2926,27 @@ fn assign_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "modify", rest)?;
+        // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE): a typed
+        // property that would become an array.
+        if matches!(rest.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
+            let at = od.properties.get_index_of(&key);
+            let promotes = at.is_none_or(|i| match &od.properties[i] {
+                Value::Ref(r) => r.try_borrow().is_ok_and(|v| promotes_to_array(&v)),
+                v => promotes_to_array(v),
+            });
+            if promotes
+                && cx.classes[od.class as usize]
+                    .props
+                    .get(&key)
+                    .and_then(|pe| pe.ty.as_ref())
+                    .is_some_and(|t| !crate::refsrc::takes_array(t))
+            {
+                return Ok(Some(Box::new(TypedStop::PropInit(od.class, key))));
+            }
+            if let Some(i) = at {
+                return assign_path(&mut od.properties[i], rest, value, cx);
+            }
+        }
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
         return assign_path(child, rest, value, cx);
     }
@@ -2283,7 +2958,7 @@ fn assign_path(
             ));
         };
         if rest.is_empty() && !matches!(value, Value::Ref(_)) {
-            return assign_string_offset(slot, k, &value, cx);
+            return assign_string_offset(slot, k, &value, cx).map(|_| None);
         }
         string_offset(k, false, cx)?;
         // `$str[k] =& $v`
@@ -2314,6 +2989,15 @@ pub(crate) fn cannot_add_element() -> Thrown {
 
 /// The key value for an ArrayAccess cursor step: `Key(k)` -> k, `Append` -> null
 /// (`$obj[] = v` calls offsetSet(null, v)); `Prop` is not array access.
+/// The offset of an ArrayAccess step for a native dimension handler:
+/// `None` for `[]`.
+pub(crate) fn aa_key_opt(step: &CursorStep) -> Option<Value> {
+    match step {
+        CursorStep::Key(k) => Some(k.clone()),
+        _ => None,
+    }
+}
+
 pub(crate) fn aa_key(step: &CursorStep) -> Option<Value> {
     match step {
         CursorStep::Key(k) => Some(k.clone()),
@@ -2436,7 +3120,9 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 return Ok(());
             };
             if rest.is_empty() {
-                od.properties.shift_remove(&key);
+                if let Some(old) = od.remove_prop(&key) {
+                    replaced(old);
+                }
             } else if let Some(child) = od.properties.get_mut(&key) {
                 unset_path(child, rest, cx)?;
             }
@@ -2532,6 +3218,37 @@ pub(crate) fn foreach_promote(
     Some((key, rc))
 }
 
+/// FE_FETCH_RW over the array in `slot`: the element at HashTable iterator
+/// `id`'s position (the internal pointer when the array does not carry the
+/// iterator: the variable was given another array), promoted to a shared
+/// cell; the iterator moves past it. `None` at the end.
+pub(crate) fn foreach_next_ref(
+    slot: &mut Value,
+    id: u32,
+) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
+    let Value::Array(arr) = slot else { return None };
+    let data = arr.make_mut();
+    let len = data.entries.len();
+    let pos = data.iter_pos(id).unwrap_or(data.pos.min(len));
+    if pos >= len {
+        data.iter_add(id, len);
+        return None;
+    }
+    data.iter_add(id, pos + 1);
+    let (k, v) = data.entries.get_index_mut(pos)?;
+    let key = k.clone();
+    let rc = match v {
+        Value::Ref(rc) => rc.clone(),
+        other => {
+            let inner = std::mem::replace(other, Value::Null);
+            let rc = Rc::new(RefCell::new(inner));
+            *other = Value::Ref(rc.clone());
+            rc
+        }
+    };
+    Some((key, rc))
+}
+
 /// php's "Undefined array key" warning text for `k`.
 fn undefined_key_msg(k: &ArrayKey) -> String {
     match k {
@@ -2550,4 +3267,12 @@ fn illegal_offset_on_array(k: &Value, cx: &PropCtx) -> Thrown {
         "Cannot access offset of type {} on array",
         cx.type_name(k)
     ))
+}
+
+/// What an ArrayObject offset is used for (the wording of its TypeError).
+#[derive(Clone, Copy)]
+enum SplKeyUse {
+    Access,
+    Isset,
+    Unset,
 }

@@ -137,7 +137,7 @@ impl Vm {
         name: NIdx,
         fallback: NIdx,
     ) -> Result<CallTarget, Thrown> {
-        if self.stack[top].include_kind.is_none() {
+        if self.stack[top].include_kind().is_none() {
             let key = (Rc::as_ptr(proto) as usize, pc as u32);
             if let Some(site) = self.call_sites.get(&key) {
                 if site.gen == 0 || site.gen == self.fn_gen {
@@ -162,7 +162,7 @@ impl Vm {
         fallback: NIdx,
     ) -> Result<CallTarget, Thrown> {
         let (target, stable) = self.resolve_call(proto, name, fallback)?;
-        if self.stack[top].include_kind.is_none() && !matches!(target, CallTarget::Missing) {
+        if self.stack[top].include_kind().is_none() && !matches!(target, CallTarget::Missing) {
             let key = (Rc::as_ptr(proto) as usize, pc as u32);
             let site = CallSite {
                 target,
@@ -980,7 +980,7 @@ impl Vm {
     pub(crate) fn current_this(&self, top: usize) -> Option<ObjectHandle> {
         let Some(cv) = self.stack[top].proto.this_cv else {
             // An include or eval runs with its caller's `$this`.
-            if let Some(caller) = self.stack[top].include_caller {
+            if let Some(caller) = self.stack[top].include_caller() {
                 return self.current_this(caller);
             }
             // A closure whose body has no `$this` slot still has the bound
@@ -1083,6 +1083,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
@@ -1102,6 +1103,26 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// zend_execute_ex's stack limit check for the frame just pushed by a
+    /// nested run (a nested run takes machine stack): the Error is raised
+    /// in that frame before its first instruction, so its trace shows the
+    /// frame and no `catch` in it applies.
+    #[inline(always)]
+    fn check_stack_limit_entered(&mut self) -> Result<(), Thrown> {
+        if rhp_builtins::zend::call_stack::overflowed() {
+            return Err(self.stack_limit_entered_error());
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn stack_limit_entered_error(&mut self) -> Thrown {
+        let t = self.materialize(rhp_builtins::zend::call_stack::size_error(), None);
+        self.stack.pop();
+        t
     }
 
     /// Push a capture frame for a closure (captures bound to CVs `0..nc`, params
@@ -1137,6 +1158,7 @@ impl Vm {
         frame.capture = true;
         let base = self.stack.len();
         self.stack.push(frame);
+        self.check_stack_limit_entered()?;
         loop {
             match self.run_frames() {
                 Ok(v) => return Ok(v),
@@ -1789,7 +1811,7 @@ impl Vm {
         {
             self.ctor_frames.pop();
         }
-        if !self.destructibles.is_empty() {
+        if self.release_pending() {
             self.dtor_check = true;
         }
         if !self.readonly_reinit.is_empty() {
@@ -2380,7 +2402,7 @@ impl Vm {
     pub(crate) fn caller_function_frame(&self) -> Option<&Frame> {
         self.stack
             .last()
-            .filter(|f| f.include_kind.is_none() && f.proto.name.as_bytes() != b"{main}")
+            .filter(|f| f.include_kind().is_none() && f.proto.name.as_bytes() != b"{main}")
     }
 
     pub(crate) fn invoke_builtin(
@@ -2551,6 +2573,16 @@ impl Vm {
         let r = match self.fcall_timeout() {
             Some(e) => Err(e),
             None => r,
+        };
+        // And its interrupt function: queued async signals are dispatched
+        // with the call still on the trace.
+        let r = if r.is_ok()
+            && builtins::pcntl_interrupt_pending()
+            && !builtins::zend::timeout::timed_out()
+        {
+            builtins::pcntl_dispatch(self).and(r)
+        } else {
+            r
         };
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).

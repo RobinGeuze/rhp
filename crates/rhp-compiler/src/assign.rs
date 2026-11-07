@@ -542,7 +542,7 @@ impl ProtoBuilder<'_> {
             // `$o->p`: ASSIGN_OBJ (reaches `__set`).
             Expression::Access(Access::Property(pa)) => {
                 let obj = self.compile_write_object(pa.object)?;
-                match self.compile_selector(&pa.property)? {
+                match self.compile_prop_selector(&pa.property)? {
                     Sel::Static(name) => self.emit(Instr::StoreProp { obj, name, src }),
                     Sel::Dyn(name) => self.emit(Instr::StorePropDyn { obj, name, src }),
                 }
@@ -590,7 +590,7 @@ impl ProtoBuilder<'_> {
             }
             Expression::Access(Access::Property(pa)) => {
                 let root = self.collect_lvalue_steps(pa.object, steps)?;
-                match self.compile_selector(&pa.property)? {
+                match self.compile_prop_selector(&pa.property)? {
                     Sel::Static(name) => steps.push(CursorStep::Prop(name)),
                     Sel::Dyn(r) => steps.push(CursorStep::PropDyn(r)),
                 }
@@ -878,16 +878,20 @@ impl ProtoBuilder<'_> {
                 ClassLikeMemberSelector::Variable(_) | ClassLikeMemberSelector::Expression(_)
             ) {
                 let obj = self.compile_write_object(pa.object)?;
-                let name = match self.compile_selector(&pa.property)? {
-                    Sel::Dyn(r) => r,
-                    Sel::Static(_) => unreachable!(),
-                };
+                let sel = self.compile_prop_selector(&pa.property)?;
                 let rhs = self.compile_expr(a.rhs)?;
-                self.emit(Instr::StorePropDyn {
-                    obj,
-                    name,
-                    src: rhs,
-                });
+                match sel {
+                    Sel::Dyn(name) => self.emit(Instr::StorePropDyn {
+                        obj,
+                        name,
+                        src: rhs,
+                    }),
+                    Sel::Static(name) => self.emit(Instr::StoreProp {
+                        obj,
+                        name,
+                        src: rhs,
+                    }),
+                }
                 return Ok(rhs);
             }
         }
@@ -1013,7 +1017,7 @@ impl ProtoBuilder<'_> {
             // left side in BP_VAR_IS mode for the check).
             Expression::Access(Access::Property(pa)) => {
                 let obj = self.compile_quiet(pa.object)?;
-                let sel = self.compile_selector(&pa.property)?;
+                let sel = self.compile_prop_selector(&pa.property)?;
                 match sel {
                     Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
                     Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),

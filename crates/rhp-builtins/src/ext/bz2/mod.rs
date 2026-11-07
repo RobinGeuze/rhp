@@ -3,6 +3,8 @@
 //! bytes match), the `compress.bzip2://` wrapper, and the `bzopen` family as
 //! stream aliases.
 
+pub(crate) mod bz2_filter;
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;

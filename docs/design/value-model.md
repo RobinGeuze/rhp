@@ -11,9 +11,9 @@ reproduced inline so they can be turned into tests.
 
 - **Single-threaded.** The whole engine is `!Send`/`!Sync`. We use `Rc`/`RefCell`,
   not `Arc`/`Mutex`. This matches PHP's share-nothing request model and the Zend
-  engine's own non-atomic refcounting. Cycle collection is **deferred**: `Rc`
-  leaks reference cycles (e.g. `$a->x = $a`) for now; a mark-and-sweep cycle
-  collector is a later phase and does not change these types.
+  engine's own non-atomic refcounting. Reference cycles (e.g. `$a->x = $a`)
+  are found by php's trial-deletion cycle collector over `Rc::strong_count`
+  (gc.md); it did not change these types.
 - **Values own all their data.** No variant of `Value` (or anything reachable
   from it) carries the `'arena` lifetime. The arena holds the *AST*; the runtime
   holds *owned* copies. See §7.
@@ -325,7 +325,8 @@ A variable/array/property **slot** normally holds a `Value` *directly*
   element now holds a `Value::Ref`, the array's COW shallow-clone shares that
   ref — so the reference stays live even if the array is copied, exactly as PHP
   (the well-known "`&` left in an array after foreach" footgun is reproduced
-  faithfully).
+  faithfully). The loop keeps a HashTable iterator on the array (see the
+  foreach section of bytecode.md), so it sees elements added or removed.
 
 **Non-variables where php wants a reference.** As in php, the compiler
 classifies the expression (zend_is_variable / zend_is_call) and the VM
@@ -375,6 +376,28 @@ by-reference `foreach` over `$a['k']` holds) is released when php frees it.
 Where rhp keeps a second holder php does not have (a global's cell: the
 globals table and main's CV; an enum case: its constant and the case list),
 `Host::shadow_holders` reports it and the dumpers leave it out.
+
+**Typed references** (php's ZEND_REF_TYPE_SOURCES). A reference bound to
+a typed property remembers it as a type source; writes through it are
+checked and coerced against every source ("Cannot assign string to
+reference held by property C::$p of type int", the inconsistent-coercion
+error for two sources), and binding a reference to a typed property checks
+it first. `PhpRef` stays a plain `Rc<RefCell<Value>>`: the sources live in
+the VM's side table (`rhp-vm` refsrc.rs) keyed by the cell's address, with a
+`Weak` to the cell so the address is not reused while the entry lives. A
+source names the object weakly (or the static property); one whose object
+is gone or whose slot no longer holds the cell is skipped, so unset, rebind
+and object free need no hook (php deletes the source; the explicit sites
+here still delete it, keeping php's order). Untyped references pay one
+`is_empty` branch while no typed reference exists, one hash lookup after.
+Cursor writes find a typed reference inside `assign_path`, which hands the
+write back to the VM (`TypedStop`). Builtins write by-reference arguments
+through `Host::assign_ref` (settype, the preg functions; extract assigns
+through the scope); the other by-ref writers do not check yet. Not done:
+by-ref foreach over an ArrayIterator backed by an object (php's
+spl_array_it_get_current_data adds the source): rhp's ArrayIterator copies
+the object's properties; unserialize() does not add sources for references
+to typed properties (php's var_unserializer does).
 
 ## 5. Object model sketch (enough for phase 7)
 

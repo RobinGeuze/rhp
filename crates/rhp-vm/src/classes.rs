@@ -782,7 +782,7 @@ pub(crate) fn prop_slot_mut<'o>(
             .count(),
         None => od.properties.len(),
     };
-    od.properties.shift_insert(pos, key, Value::Null);
+    od.insert_prop_at(pos, key, Value::Null);
     &mut od.properties[pos]
 }
 
@@ -2354,9 +2354,13 @@ impl Vm {
     /// drops what the engine still keeps under it (a freed generator's
     /// state, a freed object's unset typed property flags).
     pub(crate) fn alloc_object_id(&mut self) -> u32 {
+        if !self.generators.is_empty() {
+            self.drop_freed_generators();
+        }
         let id = rhp_values::alloc_object_id();
         if !self.generators.is_empty() {
             drop(self.generators.remove(&id));
+            self.gen_table_changed();
         }
         if !self.unset_typed_props.is_empty() {
             self.unset_typed_props.remove(&id);
@@ -2432,6 +2436,7 @@ impl Vm {
         }
         frame.defining_class = Some(method.defining_class);
         frame.called_class = Some(called_class);
+        frame.internal_caller = self.stack.last().is_some_and(|f| f.proto.is_internal());
         self.bind_frame(&mut frame, args, Some(self.caller_strict()))?;
         self.bind_superglobals(&mut frame);
         if callee.is_generator {

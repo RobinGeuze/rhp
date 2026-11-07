@@ -167,7 +167,7 @@ impl Vm {
                         .cloned()
                         .collect();
                     for k in keys {
-                        removed.extend(b.properties.shift_remove(&k));
+                        removed.extend(b.remove_prop(&k));
                     }
                     for k in reset {
                         let present = b.properties.contains_key(&k);
@@ -179,7 +179,7 @@ impl Vm {
                             if keep {
                                 continue;
                             }
-                            removed.extend(b.properties.shift_remove(&k));
+                            removed.extend(b.remove_prop(&k));
                         }
                         lazy_props.push(k);
                     }
@@ -355,6 +355,7 @@ impl Vm {
         let id = h.borrow().id;
         self.unset_typed_props.remove(&id);
         drop(old_props);
+        rhp_values::LazyInfo::release_initializer(&old_init);
         drop(old_init);
         Ok(inst)
     }

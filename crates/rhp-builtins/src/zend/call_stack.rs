@@ -12,6 +12,8 @@ thread_local! {
     /// `EG(stack_base)` and `EG(stack_limit)` (0: unchecked).
     static BASE: Cell<usize> = const { Cell::new(0) };
     static LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// EG(reserved_stack_size).
+    static RESERVED: Cell<usize> = const { Cell::new(RESERVED_MIN) };
 }
 
 /// zend.reserved_stack_size's floor (php's without alloca).
@@ -93,6 +95,31 @@ pub fn init() {
     };
     BASE.with(|b| b.set(base));
     LIMIT.with(|l| l.set(lim));
+    rhp_values::ops::set_stack_overflow_check(overflowed);
+    RESERVED.with(|r| r.set(reserved));
+}
+
+/// The running stack's (base, limit), saved when a fiber switches.
+pub fn bounds() -> (usize, usize) {
+    (BASE.with(Cell::get), LIMIT.with(Cell::get))
+}
+
+/// Make (base, limit) the running stack's (a fiber switch).
+pub fn set_bounds((base, lim): (usize, usize)) {
+    BASE.with(|b| b.set(base));
+    LIMIT.with(|l| l.set(lim));
+}
+
+/// zend_fiber_stack_base / zend_fiber_stack_limit: the bounds for a fiber
+/// stack of `size` bytes below `base`, checked only when the main stack is.
+pub fn fiber_bounds(base: usize, size: usize) -> (usize, usize) {
+    if LIMIT.with(Cell::get) == 0 {
+        return (0, 0);
+    }
+    // php doubles the reserve on Apple (its stack probes reach twice as
+    // far on an alternative stack).
+    let reserved = RESERVED.with(Cell::get) * if cfg!(target_vendor = "apple") { 2 } else { 1 };
+    (base, limit(base, size, reserved))
 }
 
 /// zend_call_stack_overflowed: the stack has grown past the limit.

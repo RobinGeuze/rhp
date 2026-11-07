@@ -1795,66 +1795,47 @@ fn period_has_more(st: &PeriodState, index: i64) -> bool {
     }
 }
 
-fn iterator_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let ih = obj(args, 0)?;
-    let Some(it) = crate::zend::object_handlers::payload_of::<PeriodIter>(&ih) else {
-        return Err(Thrown::error(
-            "Error",
-            "The InternalIterator object has not been properly initialized",
-        ));
-    };
-    let op = bytes(args, 1);
-    let ensure_rewound = |host: &mut dyn Host| -> Result<(), Thrown> {
-        if !it.rewound.get() {
-            it.rewound.set(true);
-            it.index.set(0);
-            period_rewind(host, &it.period)?;
-            it.current.replace(None);
-        }
-        Ok(())
-    };
-    match &op[..] {
-        b"current" => {
-            ensure_rewound(host)?;
-            let st = period_state(&it.period);
-            let Some(cur) = st.current.clone() else {
-                return Ok(Value::Null);
-            };
-            let ce = base_date_class(host, st.start_ce.as_deref().unwrap_or(b"DateTime"));
-            let v = new_date(host, &ce, cur)?;
-            it.current.replace(Some(v.clone()));
-            Ok(v)
-        }
-        b"key" => {
-            ensure_rewound(host)?;
-            Ok(Value::Int(it.index.get()))
-        }
-        b"next" => {
-            ensure_rewound(host)?;
-            if let Some(po) = period_obj(&it.period) {
-                let mut st = po.st.borrow_mut();
-                if let (Some(iv), Some(cur)) = (st.interval.clone(), st.current.as_mut()) {
-                    period_advance(cur, &iv);
-                }
+/// php's `date_period_it_*` (the funcs of DatePeriod's InternalIterator).
+impl crate::zend::internal_iterator::IteratorFuncs for PeriodIter {
+    fn valid(&self, _: &mut dyn Host) -> Result<bool, Thrown> {
+        Ok(period_has_more(
+            &period_state(&self.period),
+            self.index.get(),
+        ))
+    }
+
+    fn current(&self, host: &mut dyn Host) -> Result<Option<Value>, Thrown> {
+        let st = period_state(&self.period);
+        let Some(cur) = st.current.clone() else {
+            return Ok(None);
+        };
+        let ce = base_date_class(host, st.start_ce.as_deref().unwrap_or(b"DateTime"));
+        let v = new_date(host, &ce, cur)?;
+        self.current.replace(Some(v.clone()));
+        Ok(Some(v))
+    }
+
+    fn key(&self, _: &mut dyn Host) -> Result<Option<Value>, Thrown> {
+        Ok(Some(Value::Int(self.index.get())))
+    }
+
+    fn move_forward(&self, _: &mut dyn Host) -> Result<(), Thrown> {
+        if let Some(po) = period_obj(&self.period) {
+            let mut st = po.st.borrow_mut();
+            if let (Some(iv), Some(cur)) = (st.interval.clone(), st.current.as_mut()) {
+                period_advance(cur, &iv);
             }
-            it.index.set(it.index.get() + 1);
-            it.current.replace(None);
-            Ok(Value::Null)
         }
-        b"valid" => {
-            ensure_rewound(host)?;
-            Ok(Value::Bool(period_has_more(
-                &period_state(&it.period),
-                it.index.get(),
-            )))
-        }
-        _ => {
-            it.rewound.set(true);
-            period_rewind(host, &it.period)?;
-            it.current.replace(None);
-            it.index.set(0);
-            Ok(Value::Null)
-        }
+        self.index.set(self.index.get() + 1);
+        self.current.replace(None);
+        Ok(())
+    }
+
+    fn rewind(&self, host: &mut dyn Host) -> Result<(), Thrown> {
+        period_rewind(host, &self.period)?;
+        self.current.replace(None);
+        self.index.set(0);
+        Ok(())
     }
 }
 
@@ -2101,16 +2082,14 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
         }
         b"dp_iterator" => {
             let h = obj(args, 0)?;
-            let it = instantiate(host, b"InternalIterator")?;
-            crate::zend::object_handlers::set_payload(
-                &it,
-                Rc::new(PeriodIter {
+            let it = crate::zend::internal_iterator::create(
+                host,
+                Box::new(PeriodIter {
                     period: h,
                     index: std::cell::Cell::new(0),
                     current: std::cell::RefCell::new(None),
-                    rewound: std::cell::Cell::new(false),
                 }),
-            );
+            )?;
             Value::Object(it)
         }
         b"dp_internal" => Value::Bool(is_period_prop(&bytes(args, 0))),
@@ -2167,9 +2146,6 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
 pub(crate) fn fn_date(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let op = bytes(args, 0);
     let rest = &args[1.min(args.len())..];
-    if op == b"it" {
-        return iterator_op(host, rest);
-    }
     for f in [date_op, timezone_op, interval_op, period_op] {
         if let Some(v) = f(host, &op, rest)? {
             return Ok(v);

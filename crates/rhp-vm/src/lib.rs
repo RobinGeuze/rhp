@@ -19,6 +19,8 @@ mod compare;
 mod const_link;
 mod dispatch;
 mod errors;
+mod fibers;
+mod gc;
 mod generators;
 mod hooks;
 mod host;
@@ -33,8 +35,10 @@ mod opcache;
 mod output;
 mod props;
 mod reflect;
+mod refsrc;
 mod request;
 mod scope;
+mod stream_filters;
 mod streams;
 mod stub_default;
 mod traits;
@@ -63,6 +67,8 @@ pub use include::IncludeError;
 /// The virtual machine: call stack + global tables, running one request
 /// under its SAPI.
 pub struct Vm {
+    /// Typed references and their type sources (see `refsrc`).
+    typed_refs: refsrc::TypedRefs,
     /// Active magic-accessor guards: (object id, accessor, property name).
     prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
     /// The fetch the next magic accessor or ArrayAccess call serves (php's
@@ -275,6 +281,9 @@ pub struct Vm {
     // Null-key deprecations a read-modify-write path already raised (its
     // write converts those keys quietly).
     rw_null_keys: u32,
+    // An error handler destroyed the container of a read-modify-write
+    // fetch (zend_undefined_index_write failed): the operation is dropped.
+    rw_aborted: bool,
     // The value a cursor write stored in a typed property after coercion
     // (the assignment expression's value).
     typed_write_result: Option<Value>,
@@ -293,6 +302,9 @@ pub struct Vm {
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,
     // The open cursor has a null key (set by `LvalKey`).
     cursor_null_key: bool,
+    /// Steps (bit per index) of the open cursor whose key is a reference
+    /// holding null.
+    cursor_ref_null: u64,
     // The last raised diagnostic (`error_get_last`): type, message, file, line.
     last_error: Option<(i64, Vec<u8>, Vec<u8>, i64)>,
     /// EG(last_fatal_error_backtrace): `error_get_last()['trace']`.
@@ -304,6 +316,15 @@ pub struct Vm {
     /// engine) raised a diagnostic: php's pending `EG(exception)`, thrown
     /// once the builtin returns.
     pending_throw: Option<Thrown>,
+    /// The include kind while an include opens its file (php's docref
+    /// names the include then).
+    include_docref: Option<&'static str>,
+    /// The end-of-request resource list close is running: filters see a
+    /// null stream.
+    closing_resources: bool,
+    /// Open streams with a filter layer (their release is checked at
+    /// function returns: php frees a resource on its last reference).
+    filtered_streams: u32,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,
     // The `STDIN` constant's reader: a buffered stream over a dup of fd 0
@@ -351,6 +372,8 @@ pub struct Vm {
     mem: &'static rhp_values::mem::MemState,
     /// A memory_limit crossing waiting for an interrupt point.
     delayed_oom: Option<Box<memory::DelayedOom>>,
+    /// EG(active_fiber): the running Fiber object.
+    active_fiber: Option<ObjectHandle>,
     /// Last, so it drops after every value above: the request state kept
     /// outside the Vm is reset when the engine goes.
     _request_state: lifecycle::RequestStateReset,
@@ -417,11 +440,9 @@ struct Frame {
     /// Arguments passed beyond the declared parameters (non-variadic callee):
     /// kept for `func_get_args()` and exception-trace `args`.
     extra_args: Vec<Value>,
-    /// `include`/`require`/`eval` frame: the construct name shown in traces.
-    include_kind: Option<&'static str>,
-    /// `include`/`require`/`eval` frame: the frame whose variable scope it
-    /// runs in.
-    include_caller: Option<usize>,
+    /// `include`/`require`/`eval` frame: the construct name shown in
+    /// traces, and the frame whose variable scope it runs in.
+    include: Option<(&'static str, usize)>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
     dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
     /// Runs in the global scope ({main}, or a file included from it): its
@@ -430,23 +451,79 @@ struct Frame {
     /// The Closure object this frame runs (`Closure::getCurrent()`, the
     /// closure's own static variables).
     closure: Option<Rc<rhp_values::ClosureData>>,
+    /// HashTable iterators of the running foreach loops over an object or
+    /// by reference. A loop left without its `FeFree` (an exception, a jump
+    /// through a finally) gives its iterator up when a catch frees its
+    /// temporaries or the frame goes. Boxed to keep `Frame` small (calls
+    /// move it): most frames have none.
+    #[allow(clippy::box_collection)]
+    fe_live: Option<Box<Vec<FeLive>>>,
+    /// Called by a prelude function: php has no such call, so its `$this`
+    /// is no possible root when the frame ends.
+    internal_caller: bool,
 }
+
+/// A running foreach's iterator: `(pos_reg, arr, by_ref, id)`.
+type FeLive = (Reg, Reg, bool, u32);
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        // php frees a frame's variables, then its `$this`: the handles come
-        // back in that order.
-        if let Some(cv) = self.proto.this_cv {
-            if let Some(slot) = self.regs.get_mut(cv as usize) {
-                let this = std::mem::replace(slot, Value::Null);
-                self.regs.clear();
-                drop(this);
+        if let Some(live) = self.fe_live.take() {
+            for (_, arr, by_ref, id) in *live {
+                dispatch::release_fe_iter(&mut self.regs, arr, by_ref, id);
             }
+        }
+        // php frees a frame's variables, then its `$this`: the handles come
+        // back in that order. Each variable may become a possible root of
+        // a cycle as it goes (a prelude function is internal in php: it
+        // has none). Scalars and temporaries go with the register file.
+        let proto = &*self.proto;
+        let this = match proto.this_cv {
+            Some(cv) => self
+                .regs
+                .get_mut(cv as usize)
+                .map(|s| std::mem::replace(s, Value::Null)),
+            None => None,
+        };
+        if !proto.is_internal() {
+            let n = (proto.num_cvs as usize).min(self.regs.len());
+            for slot in &mut self.regs[..n] {
+                if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot
+                {
+                    let v = std::mem::replace(slot, Value::Undef);
+                    rhp_values::gc::possible_root(&v);
+                    drop(v);
+                }
+            }
+        }
+        if let Some(this) = this {
+            // A prelude method's variables go before its `$this` too.
+            self.regs.clear();
+            if self.closure.is_none() && !self.internal_caller {
+                rhp_values::gc::possible_root(&this);
+            }
+            drop(this);
+        }
+        // A closure call releases the Closure (not its bound `$this`).
+        if let Some(c) = self.closure.take() {
+            let c = Value::Closure(c);
+            rhp_values::gc::possible_root(&c);
+            drop(c);
         }
     }
 }
 
 impl Frame {
+    /// See `Frame::include`.
+    fn include_kind(&self) -> Option<&'static str> {
+        self.include.map(|i| i.0)
+    }
+
+    /// See `Frame::include`.
+    fn include_caller(&self) -> Option<usize> {
+        self.include.map(|i| i.1)
+    }
+
     fn new(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Self {
         // Every register starts undefined (a zero tag, so this is a fill
         // of zeroes): a variable must be, and a temporary is written before
@@ -468,11 +545,12 @@ impl Frame {
             argc: 0,
             holes: 0,
             extra_args: Vec::new(),
-            include_kind: None,
-            include_caller: None,
+            include: None,
             dyn_vars: indexmap::IndexMap::new(),
             global_scope: false,
             closure: None,
+            fe_live: None,
+            internal_caller: false,
         }
     }
 }

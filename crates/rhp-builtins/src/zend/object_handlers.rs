@@ -86,6 +86,54 @@ pub type CastFn = fn(&mut dyn Host, &ObjectHandle, CastTarget) -> Result<Option<
 /// `free_obj_host` (once, with a host, after it).
 pub type DtorFn = fn(&mut dyn Host, &ObjectHandle) -> Result<(), Thrown>;
 
+/// The fetch a `read_dimension` serves (php's `BP_VAR_*`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DimType {
+    /// A read (`$o[k]`).
+    R,
+    /// A quiet read (`$o[k] ?? …`): an absent element is no error.
+    Is,
+    /// Below a write (`$o[k][] = …`, `&$o[k]`).
+    W,
+    /// Below a read-modify-write (`$o[k]++`, `$o[k] .= …`).
+    Rw,
+    /// Below an unset (`unset($o[k][j])`).
+    Unset,
+}
+
+/// php's dimension handlers (`read_dimension`, `write_dimension`,
+/// `has_dimension`, `unset_dimension`) for a class that answers `$o[k]`
+/// natively instead of through its `ArrayAccess` methods. An offset of
+/// `None` is `$o[]`.
+/// `read_dimension` (see [`DimensionHandlers::read`]).
+pub type ReadDimFn =
+    fn(&mut dyn Host, &ObjectHandle, Option<&Value>, DimType) -> Result<Option<Value>, Thrown>;
+
+/// `write_dimension` (see [`DimensionHandlers::write`]).
+pub type WriteDimFn = fn(&mut dyn Host, &ObjectHandle, Option<&Value>, Value) -> Result<(), Thrown>;
+
+pub struct DimensionHandlers {
+    /// The element: `R`/`Is`/`Unset` a copy (`Is`: `None` when absent),
+    /// `W`/`Rw` the element's own slot as a `Value::Ref` that writes go
+    /// through (php's `ZVAL_MAKE_REF` on the stored zval).
+    pub read: ReadDimFn,
+    /// Store the value (a `Value::Ref` is stored as the reference: `=&`).
+    pub write: WriteDimFn,
+    /// `isset` (`false`) or `!empty` (`true`, php's `check_empty`).
+    pub has: fn(&mut dyn Host, &ObjectHandle, &Value, bool) -> Result<bool, Thrown>,
+    pub unset: fn(&mut dyn Host, &ObjectHandle, &Value) -> Result<(), Thrown>,
+}
+
+/// `ce->get_iterator`: the iterator `foreach` drives, an `InternalIterator`
+/// object (zend/internal_iterator.rs); `by_ref` for `foreach (… as &$v)`.
+pub type GetIteratorFn = fn(&mut dyn Host, &ObjectHandle, bool) -> Result<ObjectHandle, Thrown>;
+
+/// `get_gc`: push the values the object's native state holds (what php's
+/// handler returns besides the properties), for the cycle collector. A
+/// value must be one the payload really holds a reference to; leaving
+/// one out only keeps garbage alive.
+pub type GetGcFn = fn(&ObjectHandle, &mut Vec<Value>);
+
 /// php's `clone_obj` slot.
 #[derive(Clone, Copy)]
 pub enum CloneObj {
@@ -113,6 +161,13 @@ pub struct ObjectHandlers {
     /// pass right after `__destruct` (in its place when there is none),
     /// unless the destructor kept a reference to the object.
     pub free_obj_host: Option<DtorFn>,
+    /// Native dimension access (WeakMap); `None` goes through the
+    /// class's `ArrayAccess` methods.
+    pub dimension: Option<&'static DimensionHandlers>,
+    /// php's `ce->get_iterator` for `foreach` (a class field in php, kept
+    /// here with the handlers); `None` uses `getIterator()` / `Iterator`.
+    pub get_iterator: Option<GetIteratorFn>,
+    pub get_gc: Option<GetGcFn>,
 }
 
 impl ObjectHandlers {
@@ -125,6 +180,9 @@ impl ObjectHandlers {
         cast_object: None,
         dtor_obj: None,
         free_obj_host: None,
+        dimension: None,
+        get_iterator: None,
+        get_gc: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {
@@ -208,11 +266,16 @@ const CORE: &[ClassHandlers] = &[
     },
     ClassHandlers {
         class: "Fiber",
-        handlers: &ObjectHandlers::UNCLONEABLE,
+        handlers: &ObjectHandlers {
+            clone_obj: CloneObj::None,
+            dtor_obj: Some(crate::zend::fibers::object_dtor),
+            ..ObjectHandlers::STD
+        },
         create_object: true,
     },
+    // zend_internal_iterator_handlers
     ClassHandlers {
-        class: "WeakReference",
+        class: "InternalIterator",
         handlers: &ObjectHandlers::UNCLONEABLE,
         create_object: true,
     },
@@ -225,11 +288,6 @@ const CORE: &[ClassHandlers] = &[
     // Classes with a create_object and the default handlers.
     ClassHandlers {
         class: "Closure",
-        handlers: &ObjectHandlers::STD,
-        create_object: true,
-    },
-    ClassHandlers {
-        class: "WeakMap",
         handlers: &ObjectHandlers::STD,
         create_object: true,
     },
@@ -329,6 +387,7 @@ pub fn registered(name: &[u8]) -> Option<&'static ClassHandlers> {
         let mut t: Vec<&'static ClassHandlers> = CORE
             .iter()
             .chain(REFLECTION)
+            .chain(crate::zend::weakrefs::CLASSES)
             .chain(crate::ext::class_handlers())
             .collect();
         t.sort_by(|a, b| cmp_ci(a.class.as_bytes(), b.class.as_bytes()));

@@ -244,7 +244,10 @@ pub fn run_tick_functions(host: &mut dyn Host) -> Result<(), Thrown> {
         let Some((cb, params)) = call else {
             continue;
         };
+        // ZEND_TICKS blocks fiber switches around the tick functions.
+        let block = crate::zend::fibers::SwitchBlock::new();
         let r = host.call_callable(&cb, &params);
+        drop(block);
         TICK_FUNCS.with(|t| {
             if let Some(f) = t.borrow_mut().iter_mut().find(|f| f.id == id) {
                 f.calling = false;

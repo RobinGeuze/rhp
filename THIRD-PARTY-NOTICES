@@ -54,6 +54,7 @@ software is linked into rhp or distributed with it.
 27. BSD uuencode   BSD-4-Clause (UC Berkeley)
 28. libavifinfo    BSD-2-Clause; AOMedia Patent License 1.0
 29. mago-syntax     MIT OR Apache-2.0
+30. SQLite          public domain
 
 
 ------------------------------------------------------------------------------
@@ -2706,3 +2707,19 @@ texts are in vendor/mago-syntax (LICENSE-MIT, LICENSE-APACHE). LICENSE-MIT:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+
+------------------------------------------------------------------------------
+30. SQLite
+------------------------------------------------------------------------------
+
+SQLite (https://sqlite.org), which ext/pdo_sqlite links statically: the
+static libsqlite3 of Homebrew's sqlite formula on macOS, of libsqlite3-dev
+on Debian/Ubuntu. Its source carries this dedication instead of a licence:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+     May you do good and not evil.
+     May you find forgiveness for yourself and forgive others.
+     May you share freely, never taking more than you give.

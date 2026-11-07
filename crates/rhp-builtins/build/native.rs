@@ -181,6 +181,22 @@ pub const LIBS: &[Lib] = &[
         linux: Mode::Dynamic("no static archive of php's version (libzip-dev ships only the .so)"),
         install: "macOS: brew install libzip; Debian/Ubuntu: apt install pkg-config libzip-dev",
     },
+    // php's pdo_sqlite links Homebrew's keg-only sqlite on macOS (not the
+    // SDK's libsqlite3) and libsqlite3 on Linux. Public domain.
+    Lib {
+        name: "SQLITE3",
+        pkg: "sqlite3",
+        brew: Some("sqlite"),
+        macos_sdk: false,
+        link: "sqlite3",
+        incdir: "",
+        header: "sqlite3.h",
+        macros: &["SQLITE_VERSION"],
+        version: &["SQLITE_VERSION"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install: "macOS: brew install sqlite; Debian/Ubuntu: apt install pkg-config libsqlite3-dev",
+    },
     // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
     Lib {
         name: "GMP",

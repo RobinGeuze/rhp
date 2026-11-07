@@ -287,6 +287,26 @@ fn fn_bzerror(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Array(a))
 }
 
+extern "C" {
+    /// libbz2's version string (bzip2-sys links the C library).
+    fn BZ2_bzlibVersion() -> *const std::ffi::c_char;
+}
+
+/// PHP_MINFO_FUNCTION(bz2).
+pub(crate) fn info_rows() -> Vec<(&'static str, String)> {
+    // SAFETY: a pointer to a static NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(BZ2_bzlibVersion()) };
+    vec![
+        ("BZip2 Support", "Enabled".to_string()),
+        ("Stream Wrapper support", "compress.bzip2://".to_string()),
+        (
+            "Stream Filter support",
+            "bzip2.decompress, bzip2.compress".to_string(),
+        ),
+        ("BZip2 Version", v.to_string_lossy().into_owned()),
+    ]
+}
+
 pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,

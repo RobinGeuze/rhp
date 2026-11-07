@@ -1238,13 +1238,32 @@ class ReflectionExtension implements Reflector {
     }
     public function getName(): string { return $this->name; }
     public function getVersion(): ?string { $v = phpversion($this->name); return $v === false ? null : $v; }
-    public function info(): void {}
-    public function getClasses(): array { return []; }
-    public function getClassNames(): array { return []; }
-    public function getConstants(): array { return []; }
-    public function getFunctions(): array { return []; }
-    public function getINIEntries(): array { return []; }
-    public function getDependencies(): array { return []; }
+    // The zend_module_dep lists of php-src's modules (rhp's reported ones).
+    private const __DEPS = [
+        'mbstring' => ['pcre' => 'Required'], 'SPL' => ['json' => 'Required'], 'session' => ['spl' => 'Optional'],
+        'standard' => ['uri' => 'Required', 'session' => 'Optional'], 'libxml' => ['standard' => 'Required'],
+        'PDO' => ['spl' => 'Required'], 'pdo_sqlite' => ['pdo' => 'Required'],
+        'Phar' => ['apc' => 'Optional', 'bz2' => 'Optional', 'openssl' => 'Optional', 'zlib' => 'Optional', 'standard' => 'Optional', 'hash' => 'Required', 'spl' => 'Required'],
+        'SimpleXML' => ['libxml' => 'Required', 'spl' => 'Required'],
+        'dom' => ['libxml' => 'Required', 'lexbor' => 'Required', 'domxml' => 'Conflicts'],
+        'xml' => ['libxml' => 'Required'], 'xmlreader' => ['dom' => 'Required', 'libxml' => 'Required'],
+        'xmlwriter' => ['libxml' => 'Required'], 'zip' => ['pcre' => 'Required'],
+    ];
+    public function info(): void { __reflect_ext('info', $this->name); }
+    public function getClasses(): array {
+        $o = [];
+        foreach (__reflect('ext_classes', $this->name) as $c) { $o[$c] = new ReflectionClass($c); }
+        return $o;
+    }
+    public function getClassNames(): array { return __reflect('ext_classes', $this->name); }
+    public function getConstants(): array { return __reflect_ext('constants', $this->name); }
+    public function getFunctions(): array {
+        $o = [];
+        foreach (__reflect('ext_functions', $this->name) as $f) { $r = new ReflectionFunction($f); $o[$r->name] = $r; }
+        return $o;
+    }
+    public function getINIEntries(): array { return __reflect_ext('ini', $this->name); }
+    public function getDependencies(): array { return self::__DEPS[$this->name] ?? []; }
     public function isPersistent(): bool { return true; }
     public function isTemporary(): bool { return false; }
     public function __toString(): string { return 'Extension [ <persistent> extension #0 ' . $this->name . " ] {\n}\n"; }

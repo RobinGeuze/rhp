@@ -1,0 +1,149 @@
+
+bz2
+
+BZip2 Support => Enabled
+Stream Wrapper support => compress.bzip2://
+Stream Filter support => bzip2.decompress, bzip2.compress
+BZip2 Version => 1.0.8, 13-Jul-2019
+
+ctype
+
+ctype functions => enabled
+
+bcmath
+
+BCMath support => enabled
+
+Directive => Local Value => Master Value
+bcmath.scale => 0 => 0
+
+filter
+
+Input Validation and Filtering => enabled
+
+Directive => Local Value => Master Value
+filter.default => unsafe_raw => unsafe_raw
+filter.default_flags => no value => no value
+
+Reflection
+
+Reflection => enabled
+
+tokenizer
+
+Tokenizer Support => enabled
+array(2) {
+  ["uri"]=>
+  string(8) "Required"
+  ["session"]=>
+  string(8) "Optional"
+}
+array(3) {
+  ["libxml"]=>
+  string(8) "Required"
+  ["lexbor"]=>
+  string(8) "Required"
+  ["domxml"]=>
+  string(9) "Conflicts"
+}
+array(7) {
+  ["apc"]=>
+  string(8) "Optional"
+  ["bz2"]=>
+  string(8) "Optional"
+  ["openssl"]=>
+  string(8) "Optional"
+  ["zlib"]=>
+  string(8) "Optional"
+  ["standard"]=>
+  string(8) "Optional"
+  ["hash"]=>
+  string(8) "Required"
+  ["spl"]=>
+  string(8) "Required"
+}
+array(0) {
+}
+array(1) {
+  ["bcmath.scale"]=>
+  string(1) "0"
+}
+array(2) {
+  [0]=>
+  string(16) "JsonSerializable"
+  [1]=>
+  string(13) "JsonException"
+}
+array(29) {
+  ["JSON_BIGINT_AS_STRING"]=>
+  int(2)
+  ["JSON_ERROR_CTRL_CHAR"]=>
+  int(3)
+  ["JSON_ERROR_DEPTH"]=>
+  int(1)
+  ["JSON_ERROR_INF_OR_NAN"]=>
+  int(7)
+  ["JSON_ERROR_INVALID_PROPERTY_NAME"]=>
+  int(9)
+  ["JSON_ERROR_NONE"]=>
+  int(0)
+  ["JSON_ERROR_NON_BACKED_ENUM"]=>
+  int(11)
+  ["JSON_ERROR_RECURSION"]=>
+  int(6)
+  ["JSON_ERROR_STATE_MISMATCH"]=>
+  int(2)
+  ["JSON_ERROR_SYNTAX"]=>
+  int(4)
+  ["JSON_ERROR_UNSUPPORTED_TYPE"]=>
+  int(8)
+  ["JSON_ERROR_UTF16"]=>
+  int(10)
+  ["JSON_ERROR_UTF8"]=>
+  int(5)
+  ["JSON_FORCE_OBJECT"]=>
+  int(16)
+  ["JSON_HEX_AMP"]=>
+  int(2)
+  ["JSON_HEX_APOS"]=>
+  int(4)
+  ["JSON_HEX_QUOT"]=>
+  int(8)
+  ["JSON_HEX_TAG"]=>
+  int(1)
+  ["JSON_INVALID_UTF8_IGNORE"]=>
+  int(1048576)
+  ["JSON_INVALID_UTF8_SUBSTITUTE"]=>
+  int(2097152)
+  ["JSON_NUMERIC_CHECK"]=>
+  int(32)
+  ["JSON_OBJECT_AS_ARRAY"]=>
+  int(1)
+  ["JSON_PARTIAL_OUTPUT_ON_ERROR"]=>
+  int(512)
+  ["JSON_PRESERVE_ZERO_FRACTION"]=>
+  int(1024)
+  ["JSON_PRETTY_PRINT"]=>
+  int(128)
+  ["JSON_THROW_ON_ERROR"]=>
+  int(4194304)
+  ["JSON_UNESCAPED_LINE_TERMINATORS"]=>
+  int(2048)
+  ["JSON_UNESCAPED_SLASHES"]=>
+  int(64)
+  ["JSON_UNESCAPED_UNICODE"]=>
+  int(256)
+}
+array(5) {
+  ["json_decode"]=>
+  string(30) "ReflectionFunction json_decode"
+  ["json_encode"]=>
+  string(30) "ReflectionFunction json_encode"
+  ["json_last_error"]=>
+  string(34) "ReflectionFunction json_last_error"
+  ["json_last_error_msg"]=>
+  string(38) "ReflectionFunction json_last_error_msg"
+  ["json_validate"]=>
+  string(32) "ReflectionFunction json_validate"
+}
+int(11)

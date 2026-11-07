@@ -362,6 +362,52 @@ impl Vm {
                 }
                 Ok(Value::Array(out))
             }
+            // ReflectionExtension::getFunctions(): the names of the
+            // internal functions of module `name` (lowercased).
+            b"ext_functions" => {
+                let want = arg_bytes(args, 0);
+                let mut names: Vec<Vec<u8>> = rhp_builtins::functions()
+                    .map(|b| b.name)
+                    .filter(|n| crate::calls::user_visible_builtin(n.as_bytes()))
+                    .map(|n| n.as_bytes().to_ascii_lowercase())
+                    .chain(
+                        self.functions
+                            .iter()
+                            .filter(|f| f.proto.is_internal())
+                            .map(|f| lc(f.proto.name.as_bytes())),
+                    )
+                    .filter(|n| {
+                        let n_str = std::str::from_utf8(n).unwrap_or("");
+                        let ext = rhp_builtins::sapi_function_module(n_str)
+                            .or(sigs::function(n).map(|f| f.ext))
+                            .unwrap_or("standard");
+                        ext.as_bytes().eq_ignore_ascii_case(&want)
+                    })
+                    .collect();
+                names.sort();
+                names.dedup();
+                let mut out = PhpArray::new();
+                for n in names {
+                    out.push(s(&n));
+                }
+                Ok(Value::Array(out))
+            }
+            // ReflectionExtension::getClasses(): the internal classes of
+            // module `name`, in registration order.
+            b"ext_classes" => {
+                let want = arg_bytes(args, 0);
+                let mut out = PhpArray::new();
+                for cid in 0..self.internal_classes {
+                    let cid = cid as ClassId;
+                    if self
+                        .class_extension(cid)
+                        .is_some_and(|x| x.as_bytes().eq_ignore_ascii_case(&want))
+                    {
+                        out.push(Value::Str(self.classes[cid as usize].name.clone()));
+                    }
+                }
+                Ok(Value::Array(out))
+            }
             b"functions" => {
                 let mut internal: Vec<Vec<u8>> = rhp_builtins::functions()
                     .map(|b| b.name)

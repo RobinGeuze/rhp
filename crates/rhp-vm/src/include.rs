@@ -462,6 +462,24 @@ impl Vm {
         // finds the script by the name it was asked for.
         let opened = std::cell::Cell::new(false);
         let compiled = match source {
+            // php's opcache caches phar:// scripts too (is_cacheable_stream_path),
+            // so their compiled code stays out of the request's memory.
+            IncludeSource::Bytes(src) if opcache::is_cacheable_stream_path(realpath) => {
+                opened.set(!self.opcache_has_name(given, realpath));
+                let mut src = Some(src);
+                let mut read = || {
+                    opened.set(true);
+                    src.take().unwrap_or_default()
+                };
+                self.opcache_compile(
+                    realpath,
+                    given,
+                    opcache::Kind::Include,
+                    false,
+                    &mut read,
+                    &mut compile,
+                )
+            }
             IncludeSource::Bytes(src) => {
                 opened.set(true);
                 compile(self, &src).map(Rc::new)

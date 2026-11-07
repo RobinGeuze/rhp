@@ -375,3 +375,69 @@ fn cached_programs_are_outside_the_request_memory() {
         assert!(discarded >= 0, "invalidating gave back {discarded}");
     });
 }
+
+/// A native phar (no signature) holding `files`.
+fn phar_bytes(files: &[(&str, &str)]) -> Vec<u8> {
+    let le = |n: usize| (n as u32).to_le_bytes();
+    let mut manifest: Vec<u8> = Vec::new();
+    manifest.extend(le(files.len()));
+    manifest.extend([0x11, 0x10]); // API version
+    manifest.extend(le(0)); // global flags
+    manifest.extend(le(0)); // alias
+    manifest.extend(le(0)); // metadata
+    let mut data: Vec<u8> = Vec::new();
+    for (name, body) in files {
+        manifest.extend(le(name.len()));
+        manifest.extend(name.as_bytes());
+        manifest.extend(le(body.len())); // size
+        manifest.extend(le(500)); // mtime
+        manifest.extend(le(body.len())); // compressed size
+        manifest.extend(le(0)); // crc32
+        manifest.extend(le(0o644)); // flags
+        manifest.extend(le(0)); // metadata
+        data.extend(body.as_bytes());
+    }
+    let mut out = b"<?php __HALT_COMPILER(); ?>\r\n".to_vec();
+    out.extend(le(manifest.len()));
+    out.extend(manifest);
+    out.extend(data);
+    out
+}
+
+#[test]
+fn phar_scripts_are_cached_like_files() {
+    // php's opcache caches phar:// scripts too (is_cacheable_stream_path):
+    // PHPStan's workers include its whole phar with opcache on, and its
+    // compiled code must not count against memory_limit.
+    on_own_thread(|| {
+        let d = Dir::new("phar");
+        let body: String = (0..2000)
+            .map(|i| format!("    $v{i} = 'value {i}' . PHP_EOL;\n"))
+            .collect();
+        let lib = format!("<?php\nfunction f() {{\n{body}}}\nreturn basename(__FILE__);\n");
+        std::fs::write(d.0.join("lib.phar"), phar_bytes(&[("lib.php", &lib)])).unwrap();
+        let main = d.file(
+            "main.php",
+            &format!(
+                r#"<?php
+                $before = memory_get_usage();
+                $r = include 'phar://' . __DIR__ . '/lib.phar/lib.php';
+                echo $r, ' ', memory_get_usage() - $before < 4096 ? 'small' : 'large', "\n";
+                if (ini_get('opcache.enable')) {{ {STATS} }}"#
+            ),
+            500,
+        );
+        assert_eq!(
+            request(&main, &[("opcache.enable", "0")], 1000),
+            "lib.php large\n"
+        );
+        assert_eq!(
+            request(&main, &[], 1001),
+            "lib.php small\nhits=0 misses=2 scripts=2\n"
+        );
+        assert_eq!(
+            request(&main, &[], 1002),
+            "lib.php small\nhits=2 misses=2 scripts=2\n"
+        );
+    });
+}

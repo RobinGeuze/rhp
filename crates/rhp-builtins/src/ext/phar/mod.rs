@@ -39,16 +39,108 @@ fn u32le(b: &[u8], pos: usize) -> Option<u32> {
 // --- parsed archive ----------------------------------------------------------
 
 struct Entry {
-    offset: usize, // absolute offset of the data block in `data`
+    offset: usize, // absolute offset of the data block in the archive
     csize: usize,
     usize_: usize,
     flags: u32,
     timestamp: u32,
 }
 
+/// Where an archive's bytes are. php keeps only the manifest in memory and
+/// reads an entry from the open file when it is used (`phar->fp`), so a
+/// phar on disk is read the same way here: holding the whole archive (30 MB
+/// for phpstan.phar) would count against `memory_limit` where php's doesn't.
+enum Source {
+    /// An archive read through a stream wrapper.
+    Mem(Vec<u8>),
+    /// A plain file, kept open; `len` is its size when it was opened.
+    File { file: std::fs::File, len: usize },
+}
+
+/// Read size for scanning and hashing a file-backed archive.
+const CHUNK: usize = 64 * 1024;
+
+impl Source {
+    /// Open a plain file as an archive source.
+    fn open(path: &[u8]) -> Option<Source> {
+        let file = std::fs::File::open(crate::zend::virtual_cwd::os_path(path)).ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        Some(Source::File {
+            file,
+            len: usize::try_from(meta.len()).ok()?,
+        })
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Source::Mem(d) => d.len(),
+            Source::File { len, .. } => *len,
+        }
+    }
+
+    /// The `len` bytes at `off`, or None past the end.
+    fn read_at(&self, off: usize, len: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
+        use std::borrow::Cow;
+        let end = off.checked_add(len)?;
+        match self {
+            Source::Mem(d) => d.get(off..end).map(Cow::Borrowed),
+            Source::File { file, len: total } => {
+                if end > *total {
+                    return None;
+                }
+                use std::os::unix::fs::FileExt;
+                let mut buf = vec![0u8; len];
+                file.read_exact_at(&mut buf, off as u64).ok()?;
+                Some(Cow::Owned(buf))
+            }
+        }
+    }
+
+    /// Feed the first `end` bytes to `f`, a chunk at a time.
+    fn for_each_chunk(&self, end: usize, mut f: impl FnMut(&[u8])) -> Option<()> {
+        match self {
+            Source::Mem(d) => f(d.get(..end)?),
+            Source::File { .. } => {
+                let mut off = 0;
+                while off < end {
+                    let n = CHUNK.min(end - off);
+                    f(&self.read_at(off, n)?);
+                    off += n;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Offset of the first `needle` (php scans the stub in chunks too).
+    fn find(&self, needle: &[u8]) -> Option<usize> {
+        match self {
+            Source::Mem(d) => d.windows(needle.len()).position(|w| w == needle),
+            Source::File { len, .. } => {
+                let mut off = 0;
+                while off < *len {
+                    let n = (CHUNK + needle.len()).min(len - off);
+                    let buf = self.read_at(off, n)?;
+                    if let Some(i) = buf.windows(needle.len()).position(|w| w == needle) {
+                        return Some(off + i);
+                    }
+                    if off + n >= *len {
+                        return None;
+                    }
+                    off += CHUNK;
+                }
+                None
+            }
+        }
+    }
+}
+
 /// A parsed, read-only native phar.
 pub struct PharArchive {
-    data: Vec<u8>,
+    src: Source,
     alias: Vec<u8>,
     /// Filesystem path the archive was loaded from (for canonical `phar://` URLs).
     path: Vec<u8>,
@@ -60,10 +152,11 @@ const COMPRESSED_BZ2: u32 = 0x2000;
 const SIG_PRESENT: u32 = 0x1_0000;
 
 impl PharArchive {
-    /// Parse a native phar from its full file bytes, verifying the signature.
-    fn parse(data: Vec<u8>, path: &[u8]) -> Result<PharArchive, String> {
+    /// Parse a native phar, verifying the signature. Only the manifest is
+    /// read into memory.
+    fn parse(src: Source, path: &[u8]) -> Result<PharArchive, String> {
         // Manifest begins just after `__HALT_COMPILER` + optional `(); ?>` + newline.
-        let manifest_start = halt_offset(&data).ok_or_else(|| {
+        let manifest_start = halt_offset(&src).ok_or_else(|| {
             format!(
                 "internal corruption of phar \"{}\" (__HALT_COMPILER(); not found)",
                 String::from_utf8_lossy(path)
@@ -77,7 +170,9 @@ impl PharArchive {
                 String::from_utf8_lossy(path)
             )
         };
-        let manifest_len = u32le(&data, pos)
+        let manifest_len = src
+            .read_at(pos, 4)
+            .and_then(|b| u32le(&b, 0))
             .ok_or_else(|| corrupt("truncated manifest at manifest length"))?
             as usize;
         if manifest_len > 1048576 * 100 {
@@ -88,11 +183,18 @@ impl PharArchive {
         }
         pos += 4;
         // MANIFEST_FIXED_LEN: count, API version, flags, alias length, metadata length.
-        if manifest_len < 18 || data.len() < pos + manifest_len {
+        if manifest_len < 18 || src.len() < pos + manifest_len {
             return Err(corrupt("truncated manifest header"));
         }
-        let data_start = pos + manifest_len; // file data begins here
-        let num_files = u32le(&data, pos).ok_or("truncated file count")? as usize;
+        // File data begins after the manifest; `pos` indexes the
+        // manifest's own bytes from here on.
+        let data_start = pos + manifest_len;
+        let manifest = src
+            .read_at(pos, manifest_len)
+            .ok_or_else(|| corrupt("truncated manifest header"))?;
+        let data: &[u8] = &manifest;
+        let mut pos = 0;
+        let num_files = u32le(data, pos).ok_or("truncated file count")? as usize;
         if num_files == 0 {
             return Err(format!(
                 "in phar \"{}\", manifest claims to have zero entries.  Phars must have at least 1 entry",
@@ -101,42 +203,42 @@ impl PharArchive {
         }
         pos += 4;
         pos += 2; // API version (big-endian nibbles; not needed to read)
-        let global_flags = u32le(&data, pos).ok_or("truncated global flags")?;
+        let global_flags = u32le(data, pos).ok_or("truncated global flags")?;
         pos += 4;
-        let alias_len = u32le(&data, pos).ok_or("truncated alias length")? as usize;
+        let alias_len = u32le(data, pos).ok_or("truncated alias length")? as usize;
         pos += 4;
         let alias = data
             .get(pos..pos + alias_len)
             .ok_or("truncated alias")?
             .to_vec();
         pos += alias_len;
-        let meta_len = u32le(&data, pos).ok_or("truncated global metadata length")? as usize;
+        let meta_len = u32le(data, pos).ok_or("truncated global metadata length")? as usize;
         pos += 4 + meta_len; // skip global metadata (serialize())
 
         if global_flags & SIG_PRESENT != 0 {
-            verify_signature(&data, path)?;
+            verify_signature(&src, path)?;
         }
 
         let mut entries = HashMap::with_capacity(num_files);
         let mut cursor = data_start;
         for _ in 0..num_files {
-            let name_len = u32le(&data, pos).ok_or("truncated entry name length")? as usize;
+            let name_len = u32le(data, pos).ok_or("truncated entry name length")? as usize;
             pos += 4;
             let name = data
                 .get(pos..pos + name_len)
                 .ok_or("truncated entry name")?
                 .to_vec();
             pos += name_len;
-            let usize_ = u32le(&data, pos).ok_or("truncated usize")? as usize;
+            let usize_ = u32le(data, pos).ok_or("truncated usize")? as usize;
             pos += 4;
-            let timestamp = u32le(&data, pos).ok_or("truncated mtime")?;
+            let timestamp = u32le(data, pos).ok_or("truncated mtime")?;
             pos += 4;
-            let csize = u32le(&data, pos).ok_or("truncated csize")? as usize;
+            let csize = u32le(data, pos).ok_or("truncated csize")? as usize;
             pos += 4;
             pos += 4; // crc32
-            let flags = u32le(&data, pos).ok_or("truncated entry flags")?;
+            let flags = u32le(data, pos).ok_or("truncated entry flags")?;
             pos += 4;
-            let em_len = u32le(&data, pos).ok_or("truncated entry metadata length")? as usize;
+            let em_len = u32le(data, pos).ok_or("truncated entry metadata length")? as usize;
             pos += 4 + em_len; // skip per-file metadata
 
             // Directories (trailing '/') carry no data block.
@@ -155,8 +257,9 @@ impl PharArchive {
             }
         }
 
+        drop(manifest);
         Ok(PharArchive {
-            data,
+            src,
             alias,
             path: Vec::new(),
             entries,
@@ -166,21 +269,21 @@ impl PharArchive {
     /// The raw (decompressed) bytes of an internal entry.
     fn read(&self, entry: &[u8]) -> Option<Vec<u8>> {
         let e = self.entries.get(entry)?;
-        let raw = self.data.get(e.offset..e.offset + e.csize)?;
+        let raw = self.src.read_at(e.offset, e.csize)?;
         if e.flags & COMPRESSED_GZ != 0 {
             use std::io::Read;
             let mut out = Vec::with_capacity(e.usize_);
-            DeflateDecoder::new(raw).read_to_end(&mut out).ok()?;
+            DeflateDecoder::new(&raw[..]).read_to_end(&mut out).ok()?;
             Some(out)
         } else if e.flags & COMPRESSED_BZ2 != 0 {
             use std::io::Read;
             let mut out = Vec::with_capacity(e.usize_);
-            bzip2::read::BzDecoder::new(raw)
+            bzip2::read::BzDecoder::new(&raw[..])
                 .read_to_end(&mut out)
                 .ok()?;
             Some(out)
         } else {
-            Some(raw.to_vec())
+            Some(raw.into_owned())
         }
     }
 
@@ -300,10 +403,12 @@ impl PharArchive {
 
 /// Offset of the manifest: just after the `__HALT_COMPILER` token and its
 /// optional `(); ?>` plus one trailing newline.
-fn halt_offset(data: &[u8]) -> Option<usize> {
+fn halt_offset(src: &Source) -> Option<usize> {
     let tok = b"__HALT_COMPILER";
-    let at = data.windows(tok.len()).position(|w| w == tok)?;
-    let mut i = at + tok.len();
+    let at = src.find(tok)?;
+    // the token and what follows it: `(); ?>` and a newline, give or take blanks
+    let data = src.read_at(at, (src.len() - at).min(256))?;
+    let mut i = tok.len();
     // skip "(" ")" ";" and surrounding whitespace
     while i < data.len() && matches!(data[i], b' ' | b'\t' | b'(' | b')') {
         i += 1;
@@ -324,7 +429,7 @@ fn halt_offset(data: &[u8]) -> Option<usize> {
     if data.get(i) == Some(&b'\n') {
         i += 1;
     }
-    Some(i)
+    Some(at + i)
 }
 
 /// Verify the trailing signature `[hash][type(4,LE)][GBMB]` over
@@ -332,62 +437,71 @@ fn halt_offset(data: &[u8]) -> Option<usize> {
 /// (composer uses SHA-512), all verified byte-for-byte. OpenSSL signatures
 /// (types 0x10/0x11/0x12: `[sig][siglen(4,LE)][type][GBMB]`, RSA over SHA-1 /
 /// SHA-256 / SHA-512) are verified against `<phar path>.pubkey`, as php does.
-fn verify_signature(data: &[u8], path: &[u8]) -> Result<(), String> {
-    let n = data.len();
-    if n < 8 || &data[n - 4..] != b"GBMB" {
+fn verify_signature(src: &Source, path: &[u8]) -> Result<(), String> {
+    let n = src.len();
+    if n < 8 || src.read_at(n - 4, 4).as_deref() != Some(b"GBMB") {
         return Err("missing GBMB signature trailer".into());
     }
-    let sig_type = u32le(data, n - 8).ok_or("truncated signature type")?;
+    let sig_type = src
+        .read_at(n - 8, 4)
+        .and_then(|b| u32le(&b, 0))
+        .ok_or("truncated signature type")?;
     // Each arm hashes `data[0 .. n-(hashlen+8)]` (everything before the stored
     // hash, the 4-byte type, and the `GBMB` magic) and compares to the stored hash.
-    let (hashlen, computed): (usize, Option<Vec<u8>>) = match sig_type {
-        0x0004 => {
-            let body = &data[..n - 72];
-            (64, Some(Sha512::digest(body).to_vec()))
-        }
-        0x0003 => {
-            let body = &data[..n - 40];
-            (32, Some(Sha256::digest(body).to_vec()))
-        }
-        0x0002 => {
-            let body = &data[..n - 28];
-            (20, Some(Sha1::digest(body).to_vec()))
-        }
-        0x0001 => {
-            let body = &data[..n - 24];
-            (16, Some(Md5::digest(body).to_vec()))
-        }
-        0x0010..=0x0012 => return verify_openssl_signature(data, sig_type, path),
+    let hashlen = match sig_type {
+        0x0004 => 64,
+        0x0003 => 32,
+        0x0002 => 20,
+        0x0001 => 16,
+        0x0010..=0x0012 => return verify_openssl_signature(src, sig_type, path),
         other => return Err(format!("unknown phar signature type {other}")),
     };
-    if let Some(expected) = computed {
-        let stored = data
-            .get(n - 8 - hashlen..n - 8)
-            .ok_or("truncated signature hash")?;
-        if stored != expected.as_slice() {
-            return Err("phar signature verification failed".into());
-        }
+    let body_len = n
+        .checked_sub(hashlen + 8)
+        .ok_or("truncated signature hash")?;
+    let computed = match sig_type {
+        0x0004 => digest_prefix::<Sha512>(src, body_len),
+        0x0003 => digest_prefix::<Sha256>(src, body_len),
+        0x0002 => digest_prefix::<Sha1>(src, body_len),
+        _ => digest_prefix::<Md5>(src, body_len),
+    }
+    .ok_or("truncated signature hash")?;
+    let stored = src
+        .read_at(body_len, hashlen)
+        .ok_or("truncated signature hash")?;
+    if *stored != *computed {
+        return Err("phar signature verification failed".into());
     }
     Ok(())
+}
+
+/// The `D` digest of the first `len` bytes of `src`.
+fn digest_prefix<D: Digest>(src: &Source, len: usize) -> Option<Vec<u8>> {
+    let mut d = D::new();
+    src.for_each_chunk(len, |c| d.update(c))?;
+    Some(d.finalize().to_vec())
 }
 
 /// The OpenSSL signature arms of [`verify_signature`] (php-src
 /// `phar_verify_signature`): RSA verify of everything before the signature
 /// with the PEM public key in `<path>.pubkey`.
-fn verify_openssl_signature(data: &[u8], sig_type: u32, path: &[u8]) -> Result<(), String> {
-    let n = data.len();
+fn verify_openssl_signature(src: &Source, sig_type: u32, path: &[u8]) -> Result<(), String> {
+    let n = src.len();
     let fname = String::from_utf8_lossy(path).into_owned();
     let len_at = n
         .checked_sub(12)
         .ok_or_else(|| format!("phar \"{fname}\" openssl signature length could not be read"))?;
-    let sig_len = u32le(data, len_at)
+    let sig_len = src
+        .read_at(len_at, 4)
+        .and_then(|b| u32le(&b, 0))
         .ok_or_else(|| format!("phar \"{fname}\" openssl signature length could not be read"))?
         as usize;
     let sig_start = len_at
         .checked_sub(sig_len)
         .ok_or_else(|| format!("phar \"{fname}\" openssl signature could not be read"))?;
-    let sig = &data[sig_start..len_at];
-    let body = &data[..sig_start];
+    let unreadable = || format!("phar \"{fname}\" openssl signature could not be read");
+    let sig = src.read_at(sig_start, sig_len).ok_or_else(unreadable)?;
+    let body = src.read_at(0, sig_start).ok_or_else(unreadable)?;
     let mut pk_path = path.to_vec();
     pk_path.extend_from_slice(b".pubkey");
     let fail =
@@ -401,7 +515,7 @@ fn verify_openssl_signature(data: &[u8], sig_type: u32, path: &[u8]) -> Result<(
         0x0011 => "sha256",
         _ => "sha1",
     };
-    match crate::ext::openssl::verify_with_pem(&pem, algo, body, sig) {
+    match crate::ext::openssl::verify_with_pem(&pem, algo, &body, &sig) {
         Some(true) => Ok(()),
         Some(false) => Err(fail("broken openssl signature")),
         None => Err(fail("openssl signature could not be processed")),
@@ -438,8 +552,8 @@ impl PharWrapper {
         }
     }
 
-    fn map_phar(&self, path: &[u8], alias: Option<&[u8]>, bytes: Vec<u8>) -> Result<(), String> {
-        let mut arc = PharArchive::parse(bytes, path)?;
+    fn map_phar(&self, path: &[u8], alias: Option<&[u8]>, src: Source) -> Result<(), String> {
+        let mut arc = PharArchive::parse(src, path)?;
         // A stored (implicit) alias is enforced over an explicit one.
         if let Some(a) = alias {
             if !arc.alias.is_empty() && arc.alias != a {
@@ -563,10 +677,10 @@ impl PharWrapper {
             if !crate::main::fopen_wrappers::check_queued(prefix, true) {
                 return;
             }
-            let Ok(bytes) = std::fs::read(crate::zend::virtual_cwd::os_path(prefix)) else {
+            let Some(src) = Source::open(prefix) else {
                 return;
             };
-            let Ok(mut arc) = PharArchive::parse(bytes, prefix) else {
+            let Ok(mut arc) = PharArchive::parse(src, prefix) else {
                 return;
             };
             let real =
@@ -650,6 +764,19 @@ fn with_phar_wrapper<R>(
 
 // --- native builtins behind the Phar class ----------------------------------
 
+/// The archive at `path`: a plain file stays on disk and is read as its
+/// entries are used; anything else (a wrapper URL, a path open_basedir
+/// governs) is read whole through the stream layer.
+fn open_source(host: &mut dyn Host, path: &[u8]) -> Option<Source> {
+    let plain = !path.windows(3).any(|w| w == b"://") && !crate::main::fopen_wrappers::active();
+    if plain {
+        if let Some(src) = Source::open(path) {
+            return Some(src);
+        }
+    }
+    host.stream_get_contents(path).map(Source::Mem)
+}
+
 /// `Phar::mapPhar($alias)`: parse the currently-running phar (the top-level
 /// script) and register `$alias` → the archive.
 fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -664,11 +791,10 @@ fn fn_phar_mapphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             "cannot initialize a phar outside of PHP execution",
         )
     })?;
-    let bytes = host
-        .stream_get_contents(&path)
+    let src = open_source(host, &path)
         .ok_or_else(|| Thrown::error("PharException", "cannot read the running phar"))?;
     with_phar_wrapper(host, |pw| {
-        pw.map_phar(&path, alias.as_deref(), bytes)
+        pw.map_phar(&path, alias.as_deref(), src)
             .map_err(|e| Thrown::error("PharException", &e))
     })?;
     Ok(Value::Bool(true))
@@ -681,11 +807,10 @@ fn fn_phar_loadphar(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         .get(1)
         .map(|v| conv::to_string_bytes(&deref(v)))
         .filter(|a| !a.is_empty());
-    let bytes = host
-        .stream_get_contents(&filename)
+    let src = open_source(host, &filename)
         .ok_or_else(|| Thrown::error("PharException", "cannot read phar file"))?;
     with_phar_wrapper(host, |pw| {
-        pw.map_phar(&filename, alias.as_deref(), bytes)
+        pw.map_phar(&filename, alias.as_deref(), src)
             .map_err(|e| Thrown::error("PharException", &e))
     })?;
     Ok(Value::Bool(true))

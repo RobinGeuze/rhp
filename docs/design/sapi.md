@@ -176,6 +176,9 @@ unchanged file reuse its compiled `Program`, with php's settings:
 `max_accelerated_files`, `max_file_size`, `memory_consumption` and
 `blacklist_filename`. `opcache_get_status()` and the other `opcache_*`
 functions report it; `opcache_reset()` takes effect at the next request.
+Like php (`is_cacheable_stream_path`), it caches `phar://` scripts as well
+as plain files, revalidating them by the phar entry's mtime; scripts from
+other stream wrappers are compiled on every include.
 
 - **Per thread.** A `Program` holds `Rc`s, so the cache is a
   `thread_local!`: every request served on a worker thread shares it, as
@@ -200,7 +203,7 @@ functions report it; `opcache_reset()` takes effect at the next request.
   units aren't serialisable), the optimizer and its debug output, the JIT
   (`opcache_get_status()['jit']` reports what the settings select),
   switching to `opcache.preload_user` (only its warning), the inheritance
-  cache, `opcache.enable_file_override`, and caching `phar://` scripts.
+  cache and `opcache.enable_file_override`.
 
 ## Request lifecycle
 

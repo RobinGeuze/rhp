@@ -227,7 +227,7 @@ pub fn fn_save(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .unwrap_or(0);
     let mut entries = Vec::new();
     if let Value::Array(list) = super::deref(args.get(1).unwrap_or(&Value::Null)) {
-        for (_, e) in list.iter() {
+        for e in list.values() {
             let Value::Array(e) = super::deref(e) else {
                 continue;
             };

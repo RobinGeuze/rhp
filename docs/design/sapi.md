@@ -392,9 +392,9 @@ Limits of the model:
   request heap; otherwise the request that built it is charged and a
   later one credited when it is freed. The compiled-script cache compiles
   the programs it keeps, and changes its tables, that way.
-- rhp's data structures are not php's: an array of ints takes about five
-  times php's memory (an `IndexMap` entry is 40 bytes, and its entries
-  grow to match the index table), strings about the same. Compiling takes
+- rhp's data structures are not all php's: arrays follow zend_hash's
+  layouts and sizes (packed lists at 16 bytes an element, hashes at 40), but
+  strings take more than php's. Compiling takes
   about ten times php's memory at its peak (mago-syntax's AST: a
   `Statement` is 312 bytes, an `Expression` 376), so the hard limit is not
   checked while compiling. Scripts close to the limit

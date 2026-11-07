@@ -2042,7 +2042,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             }
         }
         Value::Array(a) => {
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 let piece = match crate::zend::zpp::zval_get_string(host, v) {
                     Ok(p) => p,
                     Err(t) => {

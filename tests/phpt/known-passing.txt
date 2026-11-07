@@ -1062,7 +1062,6 @@ Zend/tests/closures/closure_use_trailing_comma.phpt
 Zend/tests/closures/closure_use_variable_twice.phpt
 Zend/tests/closures/closure_write_prop.phpt
 Zend/tests/closures/fake_closure_in_internal_func_leaks.phpt
-Zend/tests/closures/gh12073.phpt
 Zend/tests/closures/gh19653_1.phpt
 Zend/tests/closures/gh19653_2.phpt
 Zend/tests/closures/gh8083.phpt

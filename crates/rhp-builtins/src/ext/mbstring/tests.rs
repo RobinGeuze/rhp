@@ -124,8 +124,8 @@ fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
 fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
     match call(f, args) {
         Value::Array(a) => a
-            .iter()
-            .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
+            .values()
+            .map(|v| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
             .collect(),
         other => panic!("expected array, got {}", other.type_name()),
     }

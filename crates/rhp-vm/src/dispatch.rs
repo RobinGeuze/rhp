@@ -1068,8 +1068,10 @@ impl Vm {
                     }
                 }
 
-                Instr::NewArray { dst, .. } => {
-                    self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
+                Instr::NewArray { dst, cap } => {
+                    // ZEND_INIT_ARRAY: sized for the literal's elements.
+                    let a = rhp_values::PhpArray::with_capacity(cap as usize);
+                    self.reg_set(top, dst, Value::Array(a));
                 }
                 Instr::ArrPush { arr, val } => {
                     let v = self.elem_operand(top, &proto, val)?;
@@ -2913,11 +2915,11 @@ impl Vm {
         let Value::Array(sig) = &proto.consts[sig as usize] else {
             return Ok(());
         };
-        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let sig: Vec<Value> = sig.values().cloned().collect();
         let fname = conv::to_string_bytes(&sig[0]);
         let variadic = matches!(sig[1], Value::Bool(true));
         let list = |v: &Value| match v {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
         let flags: Vec<Value> = list(&sig[2]);
@@ -3063,10 +3065,7 @@ impl Vm {
             };
             let key = match deref(&k) {
                 Value::Int(n) => ArrayKey::Int(n),
-                Value::Str(s) => match ArrayKey::from_bytes(s.as_bytes()) {
-                    ArrayKey::Int(n) => ArrayKey::Int(n),
-                    _ => ArrayKey::Str(s),
-                },
+                Value::Str(s) => ArrayKey::from_php_str(&s),
                 _ => {
                     return Err(Thrown::error(
                         "Error",

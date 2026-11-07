@@ -1146,7 +1146,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     let mut pending: Option<Thrown> = None;
     for (i, a) in arrays.iter().enumerate() {
         if let Some(a) = a {
-            for (_, el) in a.iter() {
+            for el in a.values() {
                 let el = deref(el);
                 if let Some((fd, _)) = select_fd(host, &el)? {
                     if (fd as usize) < libc::FD_SETSIZE {

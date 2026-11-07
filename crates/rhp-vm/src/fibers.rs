@@ -764,7 +764,7 @@ impl Vm {
             std::mem::swap(&mut self.gen_resumes, &mut ctx.gen_resumes);
             let mut d = cell.borrow_mut();
             d.ctx = Some(ctx);
-            for (_, v) in part.iter() {
+            for v in part.values() {
                 out.push(v.clone());
             }
             cur = d.prev.clone();

@@ -79,7 +79,7 @@ fn dictionary(
                 return Ok(None);
             }
             let mut out = Vec::new();
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 let s = crate::zend::zpp::zval_get_string(host, &deref(v))?;
                 if s.is_empty() {
                     return Err(Thrown::error(

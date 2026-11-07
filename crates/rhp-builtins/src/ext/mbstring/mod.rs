@@ -603,7 +603,7 @@ fn parse_encoding_array(
 ) -> Result<Vec<Enc>, Thrown> {
     let mut out = Vec::new();
     let mut included_auto = false;
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let name = crate::zend::zpp::zval_get_string(host, v)?;
         if name.eq_ignore_ascii_case(b"auto") {
             if !included_auto {

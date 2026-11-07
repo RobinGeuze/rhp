@@ -22,7 +22,7 @@ fn vrepr(v: &Value) -> String {
 
 fn scan_arr(input: &str, fmt: &str) -> Option<Vec<String>> {
     match fn_sscanf(&mut TestHost::new(), &[s(input), s(fmt)]).unwrap() {
-        Value::Array(a) => Some(a.iter().map(|(_, v)| vrepr(v)).collect()),
+        Value::Array(a) => Some(a.values().map(vrepr).collect()),
         Value::Null => None,
         _ => unreachable!(),
     }

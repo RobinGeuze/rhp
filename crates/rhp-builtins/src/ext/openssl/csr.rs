@@ -388,7 +388,7 @@ fn csr_make(
         let nid = unsafe { sys::OBJ_txt2nid(cname.as_ptr()) };
         if nid != sys::NID_undef {
             if let Value::Array(sub) = deref(item) {
-                for (_, subitem) in sub.iter() {
+                for subitem in sub.values() {
                     if !add_subj_entry(host, f, subitem, subj, nid)? {
                         return Ok(false);
                     }

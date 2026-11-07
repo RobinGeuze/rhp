@@ -1025,7 +1025,7 @@ fn mime_parts(
             continue;
         }
         let values: Vec<Value> = match &current {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             other => vec![other.clone()],
         };
         for v in values {
@@ -1947,7 +1947,7 @@ fn set_option(
                 )));
             };
             let mut lines = Vec::with_capacity(a.len());
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 lines.push(crate::zend::zpp::zval_get_string(host, &deref(v))?);
             }
             let mut slist: *mut sys::curl_slist = std::ptr::null_mut();

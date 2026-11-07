@@ -1,0 +1,303 @@
+int(4)
+int(3)
+int(2)
+bool(false)
+NULL
+int(9)
+int(5)
+array(4) packed refcount(2){
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [3]=>
+  int(4)
+  [5]=>
+  int(9)
+}
+string(1) "z"
+array(2) refcount(2){
+  ["x"]=>
+  int(1)
+  ["z"]=>
+  int(3)
+}
+array(2) refcount(3){
+  [3]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(2) packed refcount(2){
+  [5]=>
+  int(1)
+  [6]=>
+  int(2)
+}
+array(20) packed refcount(2){
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+  [4]=>
+  int(5)
+  [5]=>
+  int(6)
+  [6]=>
+  int(7)
+  [7]=>
+  int(8)
+  [8]=>
+  int(9)
+  [9]=>
+  int(10)
+  [10]=>
+  int(11)
+  [11]=>
+  int(12)
+  [12]=>
+  int(13)
+  [13]=>
+  int(14)
+  [14]=>
+  int(15)
+  [15]=>
+  int(16)
+  [16]=>
+  int(17)
+  [17]=>
+  int(18)
+  [18]=>
+  int(19)
+  [19]=>
+  int(20)
+  [20]=>
+  int(1)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [2]=>
+  int(3)
+  [1]=>
+  int(5)
+}
+0=>1
+2=>3
+3=>4
+array(3) packed refcount(2){
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+  [2]=>
+  int(4)
+}
+int(4)
+array(3) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+  [2]=>
+  string(1) "n"
+}
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}
+array(3) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+  [2]=>
+  string(1) "q"
+}
+array(3) {
+  [0]=>
+  string(1) "z"
+  [1]=>
+  string(1) "a"
+  [2]=>
+  string(1) "b"
+}
+array(3) refcount(2){
+  [1]=>
+  int(1)
+  [2]=>
+  int(2)
+  [0]=>
+  int(3)
+}
+array(3) packed refcount(2){
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+int(110)
+string(3) "k90"
+string(3) "n99"
+array(3) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(1)
+  [4]=>
+  string(1) "x"
+}
+array(3) {
+  [0]=>
+  int(0)
+  [1]=>
+  string(1) "y"
+  [2]=>
+  string(1) "z"
+}
+array(4) {
+  [0]=>
+  int(0)
+  [1]=>
+  string(1) "y"
+  [2]=>
+  string(1) "z"
+  [3]=>
+  string(1) "w"
+}
+int(2)
+int(1)
+0 1 2 4 
+Cannot add element to the array as the next element is already occupied
+array(2) {
+  [-5]=>
+  string(1) "a"
+  [-4]=>
+  string(1) "b"
+}
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(5)
+  [2]=>
+  int(6)
+}
+int(19)
+0:0 2:2 3:3 5:5 
+bool(false)
+array(4) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+  [3]=>
+  int(5)
+}
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}
+string(25) "{"0":0,"2":2,"3":3,"5":5}"
+a:4:{i:0;i:0;i:2;i:2;i:3;i:3;i:5;i:5;}
+array (
+  0 => 0,
+  2 => 2,
+  3 => 3,
+  5 => 5,
+)
+array(2) {
+  ["c"]=>
+  int(3)
+  ["d"]=>
+  int(4)
+}
+string(1) "d"
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "c"
+  [2]=>
+  string(1) "d"
+}
+bool(false)
+array(3) {
+  ["a"]=>
+  int(1)
+  ["c"]=>
+  int(3)
+  ["d"]=>
+  int(4)
+}
+array(3) {
+  ["c"]=>
+  int(3)
+  ["d"]=>
+  int(4)
+  ["e"]=>
+  int(5)
+}
+k1,k3,k5,k7,k9,k11,k13,k15,k17,k19
+array(3) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+int(4)
+int(1)
+array(1) {
+  [0]=>
+  int(3)
+}
+array(3) refcount(2){
+  [1]=>
+  string(1) "a" interned
+  [2]=>
+  string(1) "b" interned
+  [3]=>
+  string(1) "c" interned
+}
+array(4) {
+  [1]=>
+  string(1) "a"
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(1) "c"
+  [4]=>
+  string(1) "d"
+}
+array(2) refcount(2){
+  [7]=>
+  int(1)
+  [15]=>
+  int(2)
+}
+array(3) refcount(2){
+  [0]=>
+  int(0)
+  [3]=>
+  int(1)
+  [12]=>
+  int(2)
+}
+array(2) refcount(1){
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}

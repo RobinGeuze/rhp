@@ -787,7 +787,7 @@ impl ArrayKey {
             Value::Bool(b) => ArrayKey::Int(if *b { 1 } else { 0 }),
             Value::Null | Value::Undef => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
-            Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+            Value::Str(s) => ArrayKey::from_php_str(s),
             Value::Resource(r) => ArrayKey::Int(r.id as i64),
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
             Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
@@ -800,6 +800,16 @@ impl ArrayKey {
         match self {
             ArrayKey::Int(n) => Value::Int(*n),
             ArrayKey::Str(s) => Value::Str(s.clone()),
+        }
+    }
+
+    /// The key for string `s`: an integer for a canonical integer string,
+    /// else the string itself, shared (php adds a reference to the key).
+    #[inline]
+    pub fn from_php_str(s: &PhpStr) -> ArrayKey {
+        match canonical_int_string(s.as_bytes()) {
+            Some(n) => ArrayKey::Int(n),
+            None => ArrayKey::Str(s.clone()),
         }
     }
 

@@ -421,7 +421,7 @@ pub(crate) fn start_element_handler(
             let before = a.len();
             a.push(Value::Array(tag));
             (a.len() > before)
-                .then(|| a.nth(a.len() - 1).map(|(k, _)| k.clone()))
+                .then(|| a.last().map(|(k, _)| k))
                 .flatten()
         })
         .flatten();
@@ -523,7 +523,7 @@ pub(crate) fn character_data_handler(p: &RefCell<Parser>, s: &[u8]) {
         if n == 0 {
             return false;
         }
-        let key = a.nth(n - 1).map(|(k, _)| k.clone());
+        let key = a.last().map(|(k, _)| k);
         let Some(key) = key else { return false };
         let Some(Value::Array(t)) = a.get_mut(&key) else {
             return false;

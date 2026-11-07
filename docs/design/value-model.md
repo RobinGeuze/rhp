@@ -153,9 +153,6 @@ PHP arrays are **insertion-ordered** maps keyed by `int` *or* `string`, with a
 running "next free integer index". Value semantics with copy-on-write.
 
 ```rust
-use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
-
 /// PHP array key: canonicalized to int-or-string (see normalization below).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ArrayKey {
@@ -163,39 +160,63 @@ pub enum ArrayKey {
     Str(PhpStr),
 }
 
-/// The array buffer. Insertion order preserved by IndexMap.
-#[derive(Clone)]
+/// The array buffer: php's HashTable (crates/rhp-values/src/array.rs).
+/// 40 bytes, so its Rc box is php's 56-byte zend_array.
 pub struct ArrayData {
-    /// Ordered entries. FxBuildHasher: fast, non-DoS-resistant hashing — fine
-    /// for a single request (PHP itself is not collision-hardened by default).
-    pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
-    /// php's nNextFreeElement: the key `$a[] = ...` uses. `i64::MIN` until
-    /// an integer key is inserted (a fresh array appends at 0).
-    next_free: i64,
-    /// Internal pointer (`current`/`next`/...); `entries.len()` is past the end.
-    pub pos: usize,
-    /// Positions of array_walk's HashTable iterators, by id.
-    iters: Option<Box<Vec<(u32, usize)>>>,
+    data: NonNull<u8>, // the table block, dangling until allocated
+    used: u32,         // nNumUsed: positions in use, holes included
+    size: u32,         // nTableSize (a power of two, at least 8) | HASH bit
+    count: u32,        // nNumOfElements
+    pos: u32,          // nInternalPointer, a position
+    next_free: i64,    // nNextFreeElement; i64::MIN until an int key is used
+    iters: Option<Box<Vec<(u32, usize)>>>, // HashTable iterators: (id, position)
 }
+// The block, one allocation as php's:
+// - packed: `size` Values (the position is the integer key; holes are
+//   `Value::Undef`), plus 8 bytes: HT_PACKED_SIZE.
+// - hash: `size` 32-byte buckets (value, int key or string hash, string
+//   key) in insertion order, then `2 * size` u32 index slots: HT_SIZE.
 
 /// A PHP array value. Clone is O(1) (Rc bump); mutation is COW via `make_mut`.
 #[derive(Clone)]
 pub struct PhpArray(Rc<ArrayData>);
-
-impl PhpArray {
-    pub fn get(&self, k: &ArrayKey) -> Option<&Value> { self.0.entries.get(k) }
-
-    /// COW mutable access: clones the whole buffer iff shared, then mutate.
-    pub fn make_mut(&mut self) -> &mut ArrayData { Rc::make_mut(&mut self.0) }
-}
 ```
+
+The storage is private (a raw block, read through `view`/`view_mut`
+slices): everything goes through methods (`get`, `insert`, `try_push`,
+`remove`, `iter` yielding owned keys, `values`, positions with
+`at`/`fetch_from`/`iter_step`, the pointer with `ptr_*`/`current`).
+
+The two layouts follow zend_hash (Zend/zend_hash.c) so memory and
+`debug_zval_dump`'s `packed` flag match php's:
+
+- **Packed** while integer keys arrive in ascending order within reach of
+  the table: `_zend_hash_index_add_or_update_i`'s rules (a key at or past
+  the end and below `size` is added, filling the gap with holes; one up to
+  twice the size grows the table when it is over half full; anything else,
+  a key into a hole, or a string key converts to a hash). 16 bytes an
+  element.
+- **Hash**: buckets plus the index, 40 bytes an element as php's Bucket and
+  two u32 hash slots are. The index uses linear probing with backward-shift
+  deletion, so it only ever holds live buckets.
+
+Removal leaves a hole (`Value::Undef` in the value slot) and shrinks the
+used part only past trailing holes; a hash table compacts its holes when it
+is full (`zend_hash_rehash`, which moves the pointer and the iterators with
+their elements) and doubles otherwise. A copy (`zend_array_dup`) keeps a
+packed table's holes and compacts a hash's. `Value::Undef` cloned gives
+`Null`, so the copy keeps holes explicitly. A value stored into an array is
+never `Undef` (`insert`/`try_push` store `Null` for it).
+
+A string offset becomes a key that shares the string (`ArrayKey::from_php_str`),
+as php adds a reference to the key instead of copying it.
 
 ### 3a. Copy-on-write
 
 `$b = $a` clones the `Rc` (shared buffer). Any mutation of `$b` goes through
 `PhpArray::make_mut` → `Rc::make_mut`, which clones `ArrayData` **iff** the
-refcount is > 1. The clone is *shallow in the Rust sense*: `IndexMap: Clone`
-clones each `Value`, and every `Value` clone is itself cheap (`Rc` bump / scalar
+refcount is > 1. The clone is *shallow in the Rust sense*: it clones each
+`Value`, and every `Value` clone is itself cheap (`Rc` bump / scalar
 copy). This yields exactly PHP's COW semantics, including the subtle rules:
 
 - Nested arrays are themselves `Rc`-shared after the shallow clone and only
@@ -276,15 +297,16 @@ element to the array as the next element is already occupied`.
 
 ### 3d. Internal pointer and iterators
 
-php's internal pointer and HashTable iterators are bucket positions; a
-deleted bucket leaves a hole, so a position keeps pointing at the same
-element. IndexMap compacts on removal instead, so `PhpArray::remove` (and
-`ArrayData::remove_index`) move `pos` and every registered iterator back
-by one when the removed entry was before them. A removed current element
-leaves the pointer on the next one, and the past-the-end position
-(`entries.len()`) picks up a later append, as php's `nNumUsed` does. A
-copy-on-write separation restarts a past-the-end pointer at 0, as
-`zend_array_dup` does.
+php's internal pointer and HashTable iterators are positions in the
+table, holes included, and so are rhp's: a removal leaves a hole, so a
+position keeps pointing at the same element, and reading from a position
+skips holes (`fetch_from`, php's `_zend_hash_get_valid_pos`), so a removed
+current element leaves the pointer on the next one. `reset`/`end`/`next`/
+`prev` follow `zend_hash_internal_pointer_*` and `zend_hash_move_*`; the
+past-the-end position (`used()`, php's `nNumUsed`) picks up a later
+append. A copy-on-write separation restarts a past-the-end pointer at 0, as
+`zend_array_dup` does. `array_pop`/`array_shift` are `ArrayData::pop`/
+`shift`, php's code paths (renumbering in place, moving iterators).
 `array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
 is copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked

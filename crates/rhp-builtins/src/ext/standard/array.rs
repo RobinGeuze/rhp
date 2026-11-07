@@ -35,7 +35,7 @@ fn key_strcast(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
 fn key_intstr(v: &Value) -> Option<ArrayKey> {
     match deref(v) {
         Value::Int(n) => Some(ArrayKey::Int(n)),
-        Value::Str(s) => Some(ArrayKey::from_bytes(s.as_bytes())),
+        Value::Str(s) => Some(ArrayKey::from_php_str(&s)),
         _ => None,
     }
 }
@@ -152,7 +152,8 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     // php sizes the array up front, fallibly: packed when the keys start in
     // 0..count, else a hash.
-    let reserved = if (0..count).contains(&start) {
+    let packed = (0..count).contains(&start);
+    let reserved = if packed {
         rhp_values::mem::reserve_packed_array((start + count) as usize)
     } else {
         count == 0 || rhp_values::mem::reserve_hash_array(count as usize)
@@ -161,7 +162,13 @@ fn fn_array_fill(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Null);
     }
     let val = deref(&args[2]);
-    let mut out = PhpArray::new();
+    let mut out = if packed {
+        PhpArray::with_capacity((start + count) as usize)
+    } else if count > 0 {
+        PhpArray::with_capacity_mixed(count as usize)
+    } else {
+        PhpArray::new()
+    };
     // PHP 8: keys are consecutive starting at `start` (incl. negative starts).
     for i in 0..count {
         out.insert(ArrayKey::Int(start + i), val.clone());
@@ -177,7 +184,7 @@ fn fn_array_fill_keys(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     let keys = array_param(host, args, 0, "array_fill_keys")?;
     let val = deref(&args[1]);
     let mut out = PhpArray::new();
-    for (_, kv) in keys.iter() {
+    for kv in keys.values() {
         out.insert(key_strcast(host, kv)?, val.clone());
     }
     Ok(Value::Array(out))
@@ -403,7 +410,7 @@ fn fn_array_diff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         1 => {
             let search = tmp_string(host, base.nth(0).expect("one").1)?;
             for o in &others {
-                for (_, v) in o.iter() {
+                for v in o.values() {
                     if tmp_string(host, v)? == search {
                         return Ok(Value::Array(PhpArray::new()));
                     }
@@ -419,7 +426,7 @@ fn fn_array_diff(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // The exclude set: the string forms of every other array's values.
     let mut exclude: HashSet<Vec<u8>> = HashSet::new();
     for o in &others {
-        for (_, v) in o.iter() {
+        for v in o.values() {
             exclude.insert(tmp_string(host, v)?);
         }
     }
@@ -489,7 +496,7 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     };
 
     let mut out = PhpArray::new();
-    for (_, row) in rows.iter() {
+    for row in rows.values() {
         let row = deref(row);
 
         // Extracted value.
@@ -538,7 +545,7 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 /// array or object.
 fn set_zval_key(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
     Ok(match v {
-        Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+        Value::Str(s) => ArrayKey::from_php_str(s),
         Value::Resource(r) => {
             let id = r.id as i64;
             host.emit_diagnostic(
@@ -613,7 +620,7 @@ fn fn_array_chunk(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
 fn fn_array_count_values(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let a = array_param(host, args, 0, "array_count_values")?;
     let mut out = PhpArray::new();
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let Some(k) = key_intstr(v) else {
             warn(
                 host,
@@ -650,7 +657,7 @@ fn count_recursive(
     }
     seen.push(a.data_ptr());
     let mut n = a.len() as i64;
-    for (_, v) in a.iter() {
+    for v in a.values() {
         if let Value::Array(sub) = deref(v) {
             n += count_recursive(host, fname, &sub, seen)?;
         }
@@ -736,7 +743,7 @@ fn extremum(host: &mut dyn Host, args: &[Value], want_max: bool) -> Result<Value
                 zend::zpp::zval_value_name(host, &args[0])
             )));
         };
-        let mut it = a.iter().map(|(_, v)| deref(v));
+        let mut it = a.values().map(deref);
         let Some(mut res) = it.next() else {
             return Err(Thrown::error(
                 "ValueError",
@@ -854,7 +861,7 @@ fn array_binop(
         )));
     };
     let mut acc = Value::Int(initial);
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let v = deref(v);
         let operand = match &v {
             Value::Object(_) | Value::Closure(_) => {
@@ -940,7 +947,7 @@ fn fn_array_values(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     };
     let mut out = PhpArray::new();
-    for (_, v) in a.iter() {
+    for v in a.values() {
         out.push(copy_elem(v));
     }
     Ok(Value::Array(out))
@@ -1009,10 +1016,11 @@ fn fn_array_map(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     // multiple arrays: zip by position, reindex
     let max_len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
     let mut out = PhpArray::new();
-    for i in 0..max_len {
-        let tuple: Vec<Value> = arrays
-            .iter()
-            .map(|a| a.nth(i).map(|(_, v)| v.clone()).unwrap_or(Value::Null))
+    let mut its: Vec<_> = arrays.iter().map(|a| a.values()).collect();
+    for _ in 0..max_len {
+        let tuple: Vec<Value> = its
+            .iter_mut()
+            .map(|it| it.next().cloned().unwrap_or(Value::Null))
             .collect();
         if cb_null {
             let mut t = PhpArray::new();
@@ -1056,7 +1064,7 @@ fn fn_array_reduce(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let a = as_array(&args[0], "array_reduce")?;
     let cb = &args[1];
     let mut acc = args.get(2).map(deref).unwrap_or(Value::Null);
-    for (_, v) in a.iter() {
+    for v in a.values() {
         acc = host.call_callable(cb, &[acc, v.clone()])?;
     }
     Ok(acc)
@@ -1403,7 +1411,7 @@ fn fn_in_array(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         ));
     };
     let strict = args.get(2).map(conv::to_bool).unwrap_or(false);
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let hit = if strict {
             ops::identical(&needle, v)?
         } else {
@@ -2593,6 +2601,8 @@ fn sort_by_ref(
         for (_, (k, v)) in items {
             out.insert(k, v);
         }
+        // zend_hash_sort leaves a table that keeps its keys a hash.
+        out.to_hash();
         out.make_mut().set_next_free(next_free);
     }
     let sorted = arr.data_ptr();
@@ -3206,14 +3216,11 @@ fn fn_array_push(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// Remove the first or last element of the by-reference array in place
-/// (other elements keep their references), then run `fix` on what is left.
-/// The removed value is dereferenced only afterwards, as php unwraps the
-/// returned reference last (it may be the array itself).
-fn take_end(
-    arg: &Value,
-    first: bool,
-    fix: impl FnOnce(&mut rhp_values::ArrayData, &ArrayKey),
-) -> Value {
+/// (other elements keep their references; see [`rhp_values::ArrayData::pop`]
+/// and [`rhp_values::ArrayData::shift`]). The removed value is dereferenced
+/// only afterwards, as php unwraps the returned reference last (it may be
+/// the array itself).
+fn take_end(arg: &Value, first: bool) -> Value {
     let Value::Ref(rc) = arg else {
         return Value::Null;
     };
@@ -3226,42 +3233,18 @@ fn take_end(
             return Value::Null;
         }
         let d = a.make_mut();
-        let i = if first { 0 } else { d.len() - 1 };
-        let (k, v) = d.remove_at(i).expect("non-empty");
-        fix(d, &k);
-        d.ptr_reset();
-        v
+        let v = if first { d.shift() } else { d.pop() };
+        v.expect("non-empty")
     };
     deref(&removed)
 }
 
 fn fn_array_pop(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(take_end(&args[0], false, |d, k| {
-        if let ArrayKey::Int(h) = *k {
-            if d.next_free().checked_sub(1) == Some(h) {
-                d.set_next_free(h);
-            }
-        }
-    }))
+    Ok(take_end(&args[0], false))
 }
 
 fn fn_array_shift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    Ok(take_end(&args[0], true, |d, _| {
-        let old = d.take_entries();
-        let mut k = 0i64;
-        for (key, v) in old {
-            match key {
-                ArrayKey::Int(_) => {
-                    d.insert(ArrayKey::Int(k), v);
-                    k += 1;
-                }
-                s => {
-                    d.insert(s, v);
-                }
-            }
-        }
-        d.set_next_free(k);
-    }))
+    Ok(take_end(&args[0], true))
 }
 
 fn fn_array_unshift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -3275,24 +3258,20 @@ fn fn_array_unshift(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let argc = vals.len();
     let d = a.make_mut();
-    let old = d.take_entries();
-    let mut out = PhpArray::new();
+    // A new table holds the arguments, then the old elements (integer keys
+    // renumbered), and replaces the old one's contents.
+    let mut out = PhpArray::with_capacity(d.len() + argc);
     for v in vals {
         out.push(v);
     }
-    for (k, v) in old {
+    for (k, v) in d.take_entries() {
         match k {
             ArrayKey::Int(_) => out.push(v),
             s => out.insert(s, v),
         }
     }
-    let nd = out.make_mut();
-    for (k, v) in nd.take_entries() {
-        d.insert(k, v);
-    }
-    d.set_next_free(nd.next_free());
     d.iters_advance(argc);
-    d.ptr_reset();
+    d.replace_contents(out.into_data());
     Ok(Value::Int(d.len() as i64))
 }
 
@@ -3320,7 +3299,7 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // convert_to_array of the replacement (when given).
     let replacement: Vec<Value> = match args.get(3).map(deref) {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(a)) => a.iter().map(|(_, v)| v.clone()).collect(),
+        Some(Value::Array(a)) => a.values().cloned().collect(),
         // The object's properties (ARRAY_CAST).
         Some(Value::Object(h)) => {
             let purpose = crate::zend::object_handlers::PropPurpose::ArrayCast;
@@ -3328,7 +3307,7 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
                 Some(a) => a,
                 None => host.object_props_mangled(&h),
             };
-            a.iter().map(|(_, v)| v.clone()).collect()
+            a.values().cloned().collect()
         }
         Some(v) => vec![v],
     };
@@ -3346,7 +3325,11 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     // Without a used result the removed elements are destroyed in place, one
     // by one; a destructor that changes the array makes php throw.
     let unused = host.result_unused();
-    let mut out = PhpArray::new();
+    // php_splice's output table, sized as php sizes it (a uint32_t: a
+    // length past the end wraps).
+    let kept = if length > 0 { num_in - length } else { 0 };
+    let size = (kept as u32).wrapping_add(replacement.len() as u32);
+    let mut out = PhpArray::with_capacity(size as usize);
     let mut removed = PhpArray::new();
     let mut dropped: Vec<ArrayKey> = Vec::new();
     let add = |a: &mut PhpArray, k: &ArrayKey, v: &Value| match k {
@@ -3375,17 +3358,16 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     for (k, v) in it {
         add(&mut out, &k, v);
     }
+    // Building the new table crossed the memory limit: php bails out there,
+    // before any removed element is destroyed.
+    if rhp_values::mem::has_oom() {
+        return Ok(Value::Null);
+    }
     // HashTable iterators (array_walk) stay on the table, moved the way
     // php_splice moves them.
     let mut iter_moves = arr.iters();
     if !iter_moves.is_empty() {
-        let packed = arr
-            .iter()
-            .try_fold(-1i64, |prev, (k, _)| match k {
-                ArrayKey::Int(n) if n > prev => Some(n),
-                _ => None,
-            })
-            .is_some();
+        let packed = arr.is_packed();
         let cut = removed.len() + dropped.len();
         splice_iterators(
             &mut iter_moves,
@@ -3737,7 +3719,7 @@ fn fn_shuffle(_host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         Value::Array(a) => a.clone(),
         _ => return Ok(Value::Bool(true)),
     };
-    let mut vals: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
+    let mut vals: Vec<Value> = arr.values().cloned().collect();
     crate::ext::random::shuffle(&mut vals, &mut |lo, hi| Ok(mt_range(lo, hi)))?;
     let mut out = PhpArray::new();
     for v in vals {

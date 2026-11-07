@@ -1925,7 +1925,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
         b"dp_construct" => {
             let h = obj(args, 0)?;
             let a: Vec<Value> = match arg(args, 1) {
-                Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+                Value::Array(a) => a.values().cloned().collect(),
                 _ => Vec::new(),
             };
             let fname = "DatePeriod::__construct";

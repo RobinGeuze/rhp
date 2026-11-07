@@ -1,0 +1,111 @@
+keys: 3 packed
+values: 3 packed
+merge: 8 packed
+merge_h: 7
+range: 3 packed
+explode: 2 packed
+slice: 3 packed
+slice_pk: 3 packed
+filter: 4 packed
+filter0: 2 packed
+map: 4 packed
+map_h: 3
+combine: 2 packed
+fill_keys: 2 packed
+str_split: 3 packed
+flip: 2 packed
+compact: 1
+fga: 2 packed
+unique: 3 packed
+reverse: 4 packed
+reverse_pk: 4
+pad: 6 packed
+chunk: 2 packed
+fill: 2
+fill0: 2 packed
+diff: 2 packed
+intersect: 2 packed
+column: 2 packed
+count_values: 3
+search_keys: 2 packed
+preg_split: 2 packed
+preg_match: 3 packed
+str_word: 2 packed
+sorted: 4 packed
+asorted: 4
+json: 2 packed
+json_o: 2 packed
+unser: 2
+replace: 4 packed
+splice: 3 packed
+shifted: 3 packed
+unshifted: 5 packed
+array_rand: 2 packed
+getdate: 11 packed
+parse_str: 2 packed
+str_getcsv: 2 packed
+array_walk: 4 packed
+spread: 4 packed
+lit: 3 packed
+lit_k: 2 packed
+neg: 1
+explode_lim: 2 packed
+mb: 2 packed
+iter: 2 packed
+gen: 2 packed
+merge_rec: 8 packed
+replace_rec: 4 packed
+diff_key: 3 packed
+isect_key: 2 packed
+filter_key: 3 packed
+natsort: 4
+usort: 4 packed
+uasort: 4
+msort: 4 packed
+range_c: 3 packed
+range_f: 3 packed
+range_rev: 3 packed
+objvars: 2
+cast: 2
+cast_l: 1 packed
+pma: 1 packed
+pma0: 2 packed
+grep: 2 packed
+search: 2 packed
+sscanf: 2 packed
+flip_s: 2
+combine_s: 2
+fk_s: 2
+values_h: 2 packed
+keys_h: 2 packed
+merge_e: 0
+merge_one: 4 packed
+slice_h: 1
+chunk_pk: 2 packed
+pad_neg: 6 packed
+diff_assoc: 3 packed
+udiff: 2 packed
+shuffle: 4 packed
+array_map2: 2 packed
+array_map_k: 2 packed
+implode_ex: 3 packed
+str_word2: 2 packed
+array_key_exists: 2 packed
+count_chars: 2
+stat: 2 packed
+pathinfo: 4
+parse_url: 3
+localeconv: 18 packed
+iterator_k: 1
+ao: 2 packed
+spl_fixed: 2 packed
+debug_bt: 4 packed
+get_defined: 1
+args_named: 2 packed
+args_named2: 1
+json_nested: 2 packed
+var_export: 2 packed
+unser_h: 1
+array_rev_h: 2
+array_rev_kh: 2 packed
+ksort: 2

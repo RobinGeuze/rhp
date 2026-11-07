@@ -261,7 +261,7 @@ fn fn_iterator_to_array(_: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
                 Ok(Value::Array(a))
             } else {
                 let mut out = PhpArray::new();
-                for (_, v) in a.iter() {
+                for v in a.values() {
                     out.push(v.clone());
                 }
                 Ok(Value::Array(out))

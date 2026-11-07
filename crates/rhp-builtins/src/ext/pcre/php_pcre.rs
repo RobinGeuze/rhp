@@ -740,9 +740,7 @@ fn replace_subject(
 fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     match deref(v) {
         Value::Array(a) => (
-            a.iter()
-                .map(|(_, x)| rhp_values::conv::to_string_bytes(x))
-                .collect(),
+            a.values().map(rhp_values::conv::to_string_bytes).collect(),
             true,
         ),
         other => (vec![rhp_values::conv::to_string_bytes(&other)], false),

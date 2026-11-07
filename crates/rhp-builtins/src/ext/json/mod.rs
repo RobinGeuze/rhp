@@ -55,6 +55,7 @@ const JSON_PRETTY_PRINT: i64 = 128;
 const JSON_UNESCAPED_UNICODE: i64 = 256;
 const JSON_PARTIAL_OUTPUT_ON_ERROR: i64 = 512;
 const JSON_PRESERVE_ZERO_FRACTION: i64 = 1024;
+const JSON_UNESCAPED_LINE_TERMINATORS: i64 = 2048;
 const JSON_INVALID_UTF8_IGNORE: i64 = 1_048_576;
 const JSON_INVALID_UTF8_SUBSTITUTE: i64 = 2_097_152;
 const JSON_THROW_ON_ERROR: i64 = 4_194_304;
@@ -114,6 +115,7 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         objects: Vec::new(),
         depth: 0,
         max_depth,
+        key_failed: false,
     };
     // An exception thrown by a jsonSerialize() propagates; the encoder's own
     // error code then stays NONE.
@@ -126,7 +128,7 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             return Err(e);
         }
     };
-    if ok {
+    if ok && !enc.key_failed {
         // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
         // json_last_error code. Without it nothing failed here: a nested
         // json_encode() (from jsonSerialize()) leaves no code behind.
@@ -157,6 +159,8 @@ struct Encoder {
     objects: Vec<u32>,
     depth: i32,
     max_depth: i32,
+    /// A key failed to encode (php keeps going, then fails the call).
+    key_failed: bool,
 }
 
 impl Encoder {
@@ -171,6 +175,24 @@ impl Encoder {
         }
         self.depth -= 1;
         true
+    }
+
+    /// A string value; under JSON_PARTIAL_OUTPUT_ON_ERROR a bad one is `null`.
+    fn string(&self, s: &[u8], out: &mut Vec<u8>) -> bool {
+        encode_string(s, out, self.flags) || self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0
+    }
+
+    /// A key: a bad one is `""` under JSON_PARTIAL_OUTPUT_ON_ERROR, else php
+    /// goes on encoding and fails the call at the end.
+    fn key(&mut self, s: &[u8], out: &mut Vec<u8>) {
+        if !encode_string(s, out, self.flags) {
+            if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                out.truncate(out.len() - 4);
+                out.extend_from_slice(b"\"\"");
+            } else {
+                self.key_failed = true;
+            }
+        }
     }
 
     /// A failure `code`: with JSON_PARTIAL_OUTPUT_ON_ERROR, `subst` is written
@@ -218,14 +240,12 @@ impl Encoder {
                         match num {
                             conv::Num::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
                             conv::Num::Float(f) if f.is_finite() => encode_float(f, out, flags),
-                            conv::Num::Float(_) => {
-                                return Ok(encode_string(s.as_bytes(), out, flags))
-                            }
+                            conv::Num::Float(_) => return Ok(self.string(s.as_bytes(), out)),
                         }
                         return Ok(true);
                     }
                 }
-                return Ok(encode_string(s.as_bytes(), out, flags));
+                return Ok(self.string(s.as_bytes(), out));
             }
             Value::Array(a) => {
                 let id = a.data_ptr();
@@ -389,9 +409,7 @@ impl Encoder {
                 out.push(b'\n');
                 indent(out, level + 1);
             }
-            if !encode_string(k.as_bytes(), out, self.flags) {
-                return Ok(false);
-            }
+            self.key(k.as_bytes(), out);
             out.extend_from_slice(if pretty { b": " } else { b":" });
             if !self.value(host, val, out, level + 1)? {
                 return Ok(false);
@@ -441,12 +459,9 @@ impl Encoder {
                 indent(out, level + 1);
             }
             if !is_list {
-                let ok = match k {
-                    ArrayKey::Int(n) => encode_string(n.to_string().as_bytes(), out, flags),
-                    ArrayKey::Str(s) => encode_string(s.as_bytes(), out, flags),
-                };
-                if !ok {
-                    return Ok(false);
+                match k {
+                    ArrayKey::Int(n) => self.key(n.to_string().as_bytes(), out),
+                    ArrayKey::Str(s) => self.key(s.as_bytes(), out),
                 }
                 out.extend_from_slice(if pretty { b": " } else { b":" });
             }
@@ -485,55 +500,99 @@ fn encode_float(f: f64, out: &mut Vec<u8>, flags: i64) {
 }
 
 /// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.
-fn encode_string(bytes: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
-    let owned;
-    let s = match std::str::from_utf8(bytes) {
-        Ok(s) => s,
-        // JSON_INVALID_UTF8_IGNORE drops, JSON_INVALID_UTF8_SUBSTITUTE replaces
-        // (U+FFFD) each invalid sequence.
-        Err(_) if flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE) != 0 => {
-            let mut t = String::with_capacity(bytes.len());
-            for chunk in bytes.utf8_chunks() {
-                t.push_str(chunk.valid());
-                if !chunk.invalid().is_empty() && flags & JSON_INVALID_UTF8_IGNORE == 0 {
-                    t.push('\u{fffd}');
-                }
-            }
-            owned = t;
-            &owned
-        }
-        Err(_) => {
-            set_last_error(JSON_ERROR_UTF8);
-            return false;
-        }
-    };
-    let unescaped_slashes = flags & JSON_UNESCAPED_SLASHES != 0;
-    let unescaped_unicode = flags & JSON_UNESCAPED_UNICODE != 0;
+/// json_encoder.c `php_json_escape_string` (without the numeric check, which
+/// the caller does). On invalid UTF-8 it sets JSON_ERROR_UTF8, drops what it
+/// wrote, writes `null` under JSON_PARTIAL_OUTPUT_ON_ERROR, and returns false.
+fn encode_string(s: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    // The bytes that need more than a copy: controls, `"&'/<>\`, and >= 0x80.
+    const CHARMAP: [u32; 8] = [
+        0xffffffff, 0x500080c4, 0x10000000, 0x00000000, 0xffffffff, 0xffffffff, 0xffffffff,
+        0xffffffff,
+    ];
+    fn u_escape(out: &mut Vec<u8>, us: u32) {
+        out.extend_from_slice(&[
+            b'\\',
+            b'u',
+            DIGITS[(us >> 12) as usize & 0xf],
+            DIGITS[(us >> 8) as usize & 0xf],
+            DIGITS[(us >> 4) as usize & 0xf],
+            DIGITS[us as usize & 0xf],
+        ]);
+    }
+    if s.is_empty() {
+        out.extend_from_slice(b"\"\"");
+        return true;
+    }
+    let checkpoint = out.len();
+    out.reserve(s.len() + 2);
     out.push(b'"');
-    for ch in s.chars() {
-        let cp = ch as u32;
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '/' if !unescaped_slashes => out.extend_from_slice(b"\\/"),
-            '\u{08}' => out.extend_from_slice(b"\\b"),
-            '\u{09}' => out.extend_from_slice(b"\\t"),
-            '\u{0a}' => out.extend_from_slice(b"\\n"),
-            '\u{0c}' => out.extend_from_slice(b"\\f"),
-            '\u{0d}' => out.extend_from_slice(b"\\r"),
-            _ if cp < 0x20 => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ if cp < 0x80 => out.push(cp as u8),
-            _ if unescaped_unicode => {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    let mut i = 0;
+    while i < s.len() {
+        // Copy the run of plain bytes in one go.
+        let start = i;
+        while i < s.len() && CHARMAP[(s[i] >> 5) as usize] & (1 << (s[i] & 31)) == 0 {
+            i += 1;
+        }
+        out.extend_from_slice(&s[start..i]);
+        if i == s.len() {
+            break;
+        }
+        let us = s[i];
+        if us >= 0x80 {
+            let at = i;
+            match crate::ext::standard::html::php_next_utf8_char(s, &mut i) {
+                None if flags & JSON_INVALID_UTF8_IGNORE != 0 => {}
+                None if flags & JSON_INVALID_UTF8_SUBSTITUTE != 0 => {
+                    if flags & JSON_UNESCAPED_UNICODE != 0 {
+                        out.extend_from_slice("\u{fffd}".as_bytes());
+                    } else {
+                        out.extend_from_slice(b"\\ufffd");
+                    }
+                }
+                None => {
+                    out.truncate(checkpoint);
+                    set_last_error(JSON_ERROR_UTF8);
+                    if flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                        out.extend_from_slice(b"null");
+                    }
+                    return false;
+                }
+                // U+2028/U+2029 stay escaped unless JSON_UNESCAPED_LINE_TERMINATORS.
+                Some(cp)
+                    if flags & JSON_UNESCAPED_UNICODE != 0
+                        && (flags & JSON_UNESCAPED_LINE_TERMINATORS != 0
+                            || !(0x2028..=0x2029).contains(&cp)) =>
+                {
+                    out.extend_from_slice(&s[at..i]);
+                }
+                Some(cp) if cp >= 0x10000 => {
+                    let v = cp - 0x10000;
+                    u_escape(out, 0xd800 | (v >> 10));
+                    u_escape(out, 0xdc00 | (v & 0x3ff));
+                }
+                Some(cp) => u_escape(out, cp),
             }
-            _ if cp <= 0xFFFF => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ => {
-                let v = cp - 0x10000;
-                let hi = 0xD800 + (v >> 10);
-                let lo = 0xDC00 + (v & 0x3FF);
-                out.extend_from_slice(format!("\\u{hi:04x}\\u{lo:04x}").as_bytes());
-            }
+            continue;
+        }
+        i += 1;
+        match us {
+            b'"' if flags & JSON_HEX_QUOT != 0 => out.extend_from_slice(b"\\u0022"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'/' if flags & JSON_UNESCAPED_SLASHES != 0 => out.push(b'/'),
+            b'/' => out.extend_from_slice(b"\\/"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b'<' if flags & JSON_HEX_TAG != 0 => out.extend_from_slice(b"\\u003C"),
+            b'>' if flags & JSON_HEX_TAG != 0 => out.extend_from_slice(b"\\u003E"),
+            b'&' if flags & JSON_HEX_AMP != 0 => out.extend_from_slice(b"\\u0026"),
+            b'\'' if flags & JSON_HEX_APOS != 0 => out.extend_from_slice(b"\\u0027"),
+            b'<' | b'>' | b'&' | b'\'' => out.push(us),
+            _ => u_escape(out, us as u32),
         }
     }
     out.push(b'"');
@@ -1040,6 +1099,10 @@ pub fn json_constants() -> Vec<(&'static str, Value)> {
         (
             "JSON_PRESERVE_ZERO_FRACTION",
             Value::Int(JSON_PRESERVE_ZERO_FRACTION),
+        ),
+        (
+            "JSON_UNESCAPED_LINE_TERMINATORS",
+            Value::Int(JSON_UNESCAPED_LINE_TERMINATORS),
         ),
         (
             "JSON_INVALID_UTF8_IGNORE",

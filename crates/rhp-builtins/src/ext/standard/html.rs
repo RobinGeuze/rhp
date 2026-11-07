@@ -179,6 +179,12 @@ fn determine_charset(
     Ok(Cs::Utf8)
 }
 
+/// `php_next_utf8_char`: the code point at `*pos`, or `None` for an
+/// invalid sequence; `*pos` moves past what was read.
+pub(crate) fn php_next_utf8_char(s: &[u8], pos: &mut usize) -> Option<u32> {
+    get_next_char(Cs::Utf8, s, pos).ok()
+}
+
 /// `get_next_char`: the character at `*cursor` and the cursor past it, or
 /// `Err` with the cursor past the invalid sequence (UTR #36 strategy 2).
 fn get_next_char(cs: Cs, s: &[u8], cursor: &mut usize) -> Result<u32, ()> {

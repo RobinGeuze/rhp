@@ -86,7 +86,7 @@ byte-for-byte, the Zend engine it was compiled against:
 
 1. **Replicate the exact `zval`/HashTable/`zend_string` memory layout** for the
    target PHP version and build (NTS vs ZTS changes struct shapes; debug builds
-   add fields). rhp's `Value` is a Rust enum with `Rc<BString>` strings and
+   add fields). rhp's `Value` is a Rust enum with its own `PhpStr` strings and
    an `indexmap`-backed array — a *completely different* representation. Every
    call boundary would need a bidirectional, allocation-correct zval marshaller.
 2. **Provide the Zend MM, the GC, and all `EG`/`CG`/`PG` globals** the module
@@ -104,7 +104,7 @@ byte-for-byte, the Zend engine it was compiled against:
 That is not "loading an extension" — it is shipping a binary-compatible
 reimplementation of the Zend Engine's runtime and ABI, which is the entire
 thing rhp set out *not* to be (register VM + owned `Value`s, PHP strings as
-`Rc<BString>`, no Zend internals). It also directly conflicts with rhp's
+`PhpStr`, no Zend internals). It also directly conflicts with rhp's
 "no `eval`, structural refusals, everything owned/`'static`" posture, and would
 re-import exactly the C-level memory-safety surface the project is replacing.
 
@@ -328,7 +328,7 @@ Key design rules this encodes:
   would be a *new, defaulted* `Host` method, mirroring how `get_const` /
   `call_callable` were added in `lib.rs:61`/`:66` — never a breaking change.)
 - **Byte-string discipline survives.** rhp strings are bytes
-  (`Rc<BString>`). The backend API is `&[u8]`-in / byte-offsets-out, so we drop
+  (`PhpStr`). The backend API is `&[u8]`-in / byte-offsets-out, so we drop
   the `from_utf8_lossy` offset-shifting caveat that the fancy-regex backend
   documents (`preg_fns.rs:17-25`) — PCRE2 matches bytes natively. This is itself
   a correctness win, not only a feature win.

@@ -18,8 +18,9 @@ reproduced inline so they can be turned into tests.
   from it) carries the `'arena` lifetime. The arena holds the *AST*; the runtime
   holds *owned* copies. See §7.
 - **Two different sharing disciplines, kept strictly separate:**
-  - *value types with copy-on-write* (`string`, `array`) use `Rc<T>` +
-    `Rc::make_mut` — cheap clone, deep-on-write, **value semantics**.
+  - *value types with copy-on-write* (`string`, `array`) are refcounted
+    (`PhpStr`'s own header, `Rc<ArrayData>`) with a `make_mut` that copies
+    only when shared — cheap clone, deep-on-write, **value semantics**.
   - *handle/reference types* (`object`, PHP `&` references) use
     `Rc<RefCell<T>>` — shared mutable cell, **aliasing semantics**.
   Conflating these (e.g. putting arrays behind `RefCell`) would break PHP's
@@ -93,59 +94,56 @@ copy-on-assign model.
 PHP strings are **byte strings, not UTF-8**: they can hold NULs and arbitrary
 bytes, `strlen` counts bytes, offsets index bytes. So `String`/`str` are wrong.
 
-```rust
-use bstr::BString;
+`PhpStr` is php's `zend_string`: one heap block, a thin 8-byte pointer to it
+(crates/rhp-values/src/phpstr.rs, the only unsafe code for strings).
 
-/// Owned, binary-safe, copy-on-write PHP string.
-/// Clone is O(1) (refcount bump). Mutation is copy-on-write via `make_mut`.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PhpStr(Rc<BString>);
+```text
+ 0  refcount  u32
+ 4  flags     u32   reserved (php's GC type info: interned, immutable)
+ 8  hash      u64   cached, 0 = not computed yet (zend_string's `h`)
+16  len       usize
+24  bytes…
+```
+
+```rust
+pub struct PhpStr { ptr: NonNull<u8>, /* !Send */ }
 
 impl PhpStr {
-    pub fn from_bytes(b: impl Into<Vec<u8>>) -> Self {
-        PhpStr(Rc::new(BString::new(b.into())))
-    }
-    pub fn as_bytes(&self) -> &[u8] { self.0.as_slice() }
-    pub fn len(&self) -> usize { self.0.len() }
-
-    /// COW mutable access: clones the buffer iff it is currently shared.
-    pub fn make_mut(&mut self) -> &mut BString { Rc::make_mut(&mut self.0) }
+    pub fn from_bytes(b: impl StrBytes) -> Self;  // &[u8]/&str copied, Vec/String taken over
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn make_mut(&mut self) -> StrMut<'_>;     // copies first when shared
+    pub fn get_mut(&mut self) -> Option<StrMut<'_>>; // only when unshared
+    pub fn hash_value(&self) -> u64;              // cached
 }
 ```
 
-**Why `Rc<BString>`:**
+- **Cheap clone.** Clone bumps the refcount; strings are copied constantly
+  (every variable read into a temp, every argument).
+- **One allocation.** The block's size is always a function of the length:
+  `zstr_size(len)` (header + bytes + NUL, 8-aligned, as php's
+  `_ZSTR_STRUCT_SIZE`) rounded as zend_mm rounds it. So a short string takes
+  php's 32 bytes, `memory_get_usage()` counts what php counts, and no
+  capacity field is needed: the length gives it.
+- **Copy-on-write.** `StrMut` derefs to `&mut [u8]` and has the
+  length-changing writes (`extend_from_slice`, `extend_self`, `push`,
+  `resize`, `truncate`). Growing within the block is free; growing past it
+  reallocs to the new length's block, like `zend_string_extend` (so `$s .= x`
+  in a loop reallocs as php's does). Taking a `StrMut` clears the cached hash.
+- **Owned buffers.** A `Vec<u8>` up to 4 KiB is copied (cheaper than a
+  realloc); a longer one is realloc'd into the string's block and its bytes
+  moved behind the header, so a large result never exists twice (peak memory
+  and `memory_limit` match php). That is why blocks use alignment 1 and the
+  header is read unaligned. Builders that know their pieces avoid the `Vec`:
+  `PhpStr::concat(a, b)`, `PhpStr::from_slice`, `conv::int_str`.
+- **Hashing.** `Hash` writes the cached hash (FxHash of the bytes, top bit
+  set so it is never 0). `ArrayKey` hashes as one word, the int or the
+  string's hash, as php hashes buckets by `h`. Equality is byte equality
+  (pointer equality first). `ArrayKey::from_php_str` shares a value's string
+  as the key instead of copying it, as php's hash keys addref theirs.
 
-- **Cheap clone.** `Rc` gives O(1) clone, mirroring Zend's refcounted
-  `zend_string`. Strings are copied constantly (every variable read into a temp,
-  every argument), so O(len) clone would dominate.
-- **Mutable on write.** `.=` (append), `$s[$i] = 'x'` (byte assignment),
-  `substr_replace`, etc. need in-place mutation. `BString: Clone`, so
-  `Rc::make_mut` clones the buffer *only* when the `Rc` is shared (refcount > 1)
-  and otherwise mutates in place — exact COW, and it keeps us from aliasing two
-  PHP string values through one buffer.
-- **`bstr` ergonomics.** `BString`/`BStr` give us a full byte-string API (`find`,
-  `split`, case ops) and a *lossy* `Display`/`Debug` for diagnostics, without
-  pretending the bytes are UTF-8.
-
-**Rejected alternatives:**
-
-- `Rc<[u8]>` — single indirection and immutable, but `[u8]: !Clone` means
-  `Rc::make_mut` is unavailable, so there is no clean COW mutation path; every
-  append would hand-roll a realloc+copy. Rejected.
-- `bstr::BString` (owned, no `Rc`) — clone is O(len); loses the cheap-clone
-  property that dominates the hot path. Rejected as the *value* representation
-  (it is the right thing *inside* the `Rc`).
-- Small-string optimization (inline ≤ N bytes, e.g. a hand-rolled SSO enum over
-  `smallvec::SmallVec<[u8; 23]>`) — attractive because PHP creates many tiny
-  strings (keys, identifiers), **but** inline storage makes clone O(len) again,
-  defeating cheap clone, and no SSO crate in our tree is binary-safe
-  (`compact_str` is UTF-8). **Deferred.** `PhpStr` is a newtype wrapping one
-  `Rc`, so we can later turn it into `enum { Inline([u8; N], u8), Shared(Rc<BString>) }`
-  or add an interned-symbol variant for class/function names without touching
-  call sites.
-
-Hashing/equality are over the raw bytes (what PHP array keys need), so
-`#[derive(Hash, Eq)]` on the byte content is correct.
+Not done: interned strings (php's `IS_STR_INTERNED`: no refcounting, the
+empty and one-char strings shared). The flags word is kept for that and for
+an immutable flag (bytecode.md, threading).
 
 ## 3. `PhpArray` — ordered map, COW value semantics
 
@@ -467,7 +465,7 @@ buffers rather than borrowing: runtime data must outlive any `&'arena` borrow.
 ## 7. Dependency notes
 
 - `indexmap` 2.14 — ordered maps for arrays and object properties.
-- `bstr` 1.13 — binary-safe string buffer (`BString`/`BStr`) inside `PhpStr`.
+- `bstr` 1.13 — byte-string helpers (`BStr` for `PhpStr`'s `Debug`).
 - `rustc-hash` (`FxBuildHasher`) — fast non-cryptographic hashing for the
   per-request maps. Present transitively in the lockfile; add it as a direct dep
   of the runtime crate. (If DoS-resistant hashing is ever wanted it can be

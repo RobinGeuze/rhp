@@ -228,7 +228,7 @@ commands: `bin/console` for Symfony (33: `about`, `debug:*`, `lint:*`,
 10 `tinker --execute` snippets and 10 workload scripts in
 `laravel-13/console/`, each booting the console kernel and printing
 support, view, security, validation, mail, HTTP, queue, database and
-storage results) and wp-cli for WordPress (72: post, user, option, term,
+storage results) and wp-cli for WordPress (73: post, user, option, term,
 comment, menu, widget, rewrite, cron, role, export, search-replace, media,
 i18n, db, `eval` one-liners and the `eval-file` probes in
 `wordpress-7.1/console/`). `console.py` runs them; its docstring has the

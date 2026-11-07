@@ -8,7 +8,8 @@ The commands are in the app's console list (`console_list` in apps.toml,
 default console.toml; format below). Every command starts from the same
 pristine copy of the app, first under `php -n`, then under `rhp -n`. A
 command is SAME when the exit code, stdout, stderr and the files it wrote
-(SQLite databases compared by their SQL dump) are identical after the masks.
+(their permission bits too; SQLite databases compared by their SQL dump) are
+identical after the masks.
 
 Without --write-known the run checks the app's ratchet (`known_console` in
 apps.toml, default known-passing-console.txt): it fails only when a listed
@@ -358,6 +359,9 @@ def run_one(work, engine, cmd, binaries):
             continue
         name = masked(str(rel), "paths", cid, masks, binaries)
         text = masked(file_text(work.run_dir / rel, st), "files", cid, masks, binaries)
+        if st is not None and not stat.S_ISLNK(st.st_mode):
+            # Permissions too (mkdir, chmod, tempnam modes).
+            text = f"<mode {stat.S_IMODE(st.st_mode):04o}>\n{text}"
         files.setdefault(name, []).append(text)
     work.restore(changed)
     dec = lambda b, where: masked(b.decode("utf-8", "replace"), where, cid, masks, binaries)

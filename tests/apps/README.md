@@ -250,9 +250,9 @@ How a run works:
    `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, and stdin
    closed. After each run the files it changed are put back.
 4. A command is `SAME` when the exit code, stdout, stderr and every file it
-   created, changed or deleted are identical after the masks. SQLite
-   databases are compared by their SQL dump, other binary files by size and
-   md5.
+   created, changed or deleted are identical after the masks, with their
+   permission bits. SQLite databases are compared by their SQL dump, other
+   binary files by size and md5.
 
 Masks only hide what php itself varies from run to run (the self-check
 against php reports every command `SAME`, three runs in a row), plus the

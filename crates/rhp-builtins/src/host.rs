@@ -99,10 +99,11 @@ pub enum ObCall {
         flags: i64,
     },
     /// php_output_start_internal: an extension's handler `func` under
-    /// `name`, with the standard flags and no chunk size.
+    /// `name`, with the standard flags.
     StartInternal {
         name: &'static str,
         func: crate::OutputHandlerFn,
+        chunk_size: usize,
     },
     /// php_output_start_default: a buffer an internal function collects its
     /// output in (`Bool(false)`: not started; a fatal error may be pending).

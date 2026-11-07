@@ -22,6 +22,18 @@ fn do_opendir(
         dir_open_failed(host, fname, &path)?;
         return Ok(None);
     }
+    if crate::ext::standard::ftp_fopen_wrapper::is_ftp(&path) {
+        let ctx = match args.get(1).map(deref) {
+            Some(v @ Value::Resource(_)) => v,
+            _ => host.default_stream_context(),
+        };
+        let Some(entries) =
+            crate::ext::standard::ftp_fopen_wrapper::opendir(host, fname, &path, &ctx)?
+        else {
+            return Ok(None);
+        };
+        return Ok(host.dir_open(&path, entries).map(|h| (path, h)));
+    }
     let Some(entries) = host.stream_opendir(&path) else {
         dir_open_failed(host, fname, &path)?;
         return Ok(None);
@@ -155,10 +167,20 @@ fn fn_directory_op(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             "Internal directory stream has been altered",
         ));
     }
-    if host.stream_kind(&h) != Some(StreamKind::Dir) {
-        return Err(Thrown::type_error(format!(
-            "Directory::{opname}(): cannot use Directory resource after it has been closed"
-        )));
+    match host.stream_kind(&h) {
+        Some(StreamKind::Dir) => {}
+        // another stream set through the ArrayObject hack
+        Some(_) => {
+            return Err(Thrown::error(
+                "Error",
+                "Internal directory stream has been altered",
+            ))
+        }
+        None => {
+            return Err(Thrown::type_error(format!(
+                "Directory::{opname}(): cannot use Directory resource after it has been closed"
+            )))
+        }
     }
     match op.as_slice() {
         b"read" => Ok(host

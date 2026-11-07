@@ -160,6 +160,7 @@ const QUANTITY_DIRECTIVES: &[&str] = &[
     "pcre.recursion_limit",
     "bcmath.scale",
     "fiber.stack_size",
+    "zlib.output_compression_level",
 ];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the
@@ -176,7 +177,11 @@ fn on_modify_check(name: &[u8], v: &[u8]) -> (Vec<String>, Option<Vec<u8>>) {
         return (Vec::new(), None);
     }
     let mut warnings = Vec::new();
-    if QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
+    // OnUpdate_zlib_output_compression parses all but "on"/"off"
+    let zlib_quantity = name == b"zlib.output_compression"
+        && !v.eq_ignore_ascii_case(b"on")
+        && !v.eq_ignore_ascii_case(b"off");
+    if zlib_quantity || QUANTITY_DIRECTIVES.iter().any(|d| d.as_bytes() == name) {
         if let Some(err) = quantity_error(v) {
             let name = String::from_utf8_lossy(name);
             warnings.push(format!("Invalid \"{name}\" setting. {err}"));
@@ -876,6 +881,9 @@ pub(crate) fn alter_ini_entry_ex(
         return Ok(None);
     }
     crate::ext::iconv::ini_runtime_update(host, name, func)?;
+    if !crate::ext::zlib::output::ini_update(host, name, &newv, func)? {
+        return Ok(None);
+    }
     #[cfg(feature = "mbstring-libmbfl")]
     let mb_changed = matches!(
         name,

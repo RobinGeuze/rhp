@@ -111,6 +111,7 @@ Each file is the php-src file of the same name in ext/standard/.
 | `filters.rs` | filters.c: string.*, convert.*, consumed and dechunk filters |
 | `formatted_print.rs` | formatted_print.c |
 | `fsock.rs` | fsock.c |
+| `ftp_fopen_wrapper.rs` | ftp_fopen_wrapper.c |
 | `head.rs` | head.c |
 | `hebrev.rs` | string.c's `hebrev()` |
 | `hrtime.rs` | hrtime.c |

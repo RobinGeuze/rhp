@@ -51,6 +51,7 @@ pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_inte
 /// [`pcntl_interrupt_pending`] between instructions and, when set, calls
 /// [`pcntl_dispatch`] to run the queued PHP signal handlers.
 pub use ext::standard::basic_functions::run_tick_functions;
+pub use ext::zlib::output::request_startup as zlib_request_startup;
 
 #[rustfmt::skip]
 mod const_modules;

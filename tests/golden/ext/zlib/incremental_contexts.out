@@ -1,0 +1,32 @@
+bool(true)
+int(1)
+bool(true)
+bool(true)
+bool(true)
+int(1)
+bool(true)
+bool(true)
+bool(true)
+int(1)
+bool(true)
+bool(true)
+string(17) "hello world hello"
+bool(false)
+ValueError: deflate_init(): Argument #1 ($encoding) must be one of ZLIB_ENCODING_RAW, ZLIB_ENCODING_GZIP, or ZLIB_ENCODING_DEFLATE
+ValueError: deflate_init(): "level" option must be between -1 and 9
+ValueError: deflate_init(): "memory" option must be between 1 and 9
+ValueError: deflate_init(): "window" option must be between 8 and 15
+ValueError: deflate_init(): "strategy" option must be one of ZLIB_FILTERED, ZLIB_HUFFMAN_ONLY, ZLIB_RLE, ZLIB_FIXED, or ZLIB_DEFAULT_STRATEGY
+ValueError: deflate_init(): Argument #2 ($options) must not contain empty strings
+TypeError: deflate_init(): Argument #2 ($options) must be of type zero-terminated string or array, float given
+ValueError: Encoding mode must be ZLIB_ENCODING_RAW, ZLIB_ENCODING_GZIP or ZLIB_ENCODING_DEFLATE
+ValueError: zlib window size (logarithm) (16) must be within 8..15
+ValueError: deflate_add(): Argument #3 ($flush_mode) must be one of ZLIB_NO_FLUSH, ZLIB_PARTIAL_FLUSH, ZLIB_SYNC_FLUSH, ZLIB_FULL_FLUSH, ZLIB_BLOCK, or ZLIB_FINISH
+TypeError: inflate_add(): Argument #1 ($context) must be of type InflateContext, DeflateContext given
+Error: Cannot directly construct DeflateContext, use deflate_init() instead
+Error: Cannot directly construct InflateContext, use inflate_init() instead
+object(DeflateContext)#14 (0) {
+}
+bool(true)
+bool(false)
+bool(false)

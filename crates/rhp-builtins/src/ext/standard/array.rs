@@ -1436,7 +1436,15 @@ fn fn_array_key_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
             b"Using null as the key parameter for array_key_exists() is deprecated, use an empty string instead",
         )?,
         Value::Float(f) => {
+            // zend_array_key_exists_fast: an error handler that drops the
+            // last reference destroys the array (only the argument and
+            // this copy are left then).
+            let before = a.ref_count();
             crate::zend::operators::dval_to_lval_safe(host, *f)?;
+            let after = a.ref_count();
+            if after < before && after <= 2 {
+                return Ok(Value::Bool(false));
+            }
         }
         Value::Resource(r) => host.emit_diagnostic(
             E_WARNING,

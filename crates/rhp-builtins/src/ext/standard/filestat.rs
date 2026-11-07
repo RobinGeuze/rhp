@@ -59,6 +59,14 @@ fn stat_path(
             }
             local
         }
+        Located::Wrapper(u) if crate::ext::standard::ftp_fopen_wrapper::is_ftp(&u) => {
+            return Ok(Some(crate::ext::standard::ftp_fopen_wrapper::url_stat(
+                host,
+                fname,
+                &u,
+                &Value::Null,
+            )?));
+        }
         Located::Wrapper(u) => u,
         // the plain url_stat of the whole path, or no wrapper at all
         Located::Unknown(_) => {
@@ -254,7 +262,7 @@ fn access_check(
         }
         Err(url) => url,
     };
-    let Some(s) = host.stream_stat(&url) else {
+    let Some(s) = wrapper_stat(host, fname, &url)? else {
         return Ok(false);
     };
     // php_stat (filestat.c): owner bits if we own it, group bits for our
@@ -421,8 +429,19 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     Ok(Value::Bool(match access_path(host, "file_exists", &p)? {
         Ok(Some(local)) => host.stream_exists(&local),
         Ok(None) => false,
+        Err(url) if crate::ext::standard::ftp_fopen_wrapper::is_ftp(&url) => {
+            wrapper_stat(host, "file_exists", &url)?.is_some()
+        }
         Err(url) => host.stream_exists(&url),
     }))
+}
+
+/// A registered wrapper's url_stat (the ftp one runs here).
+fn wrapper_stat(host: &mut dyn Host, fname: &str, url: &[u8]) -> Result<Option<StatInfo>, Thrown> {
+    if crate::ext::standard::ftp_fopen_wrapper::is_ftp(url) {
+        return crate::ext::standard::ftp_fopen_wrapper::url_stat(host, fname, url, &Value::Null);
+    }
+    Ok(host.stream_stat(url))
 }
 
 fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {

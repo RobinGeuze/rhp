@@ -63,6 +63,9 @@ pub struct OutputHandlerAlias {
     pub name: &'static str,
     pub func: OutputHandlerFn,
     pub conflicts: &'static [&'static str],
+    /// Run when the handler is created, with its chunk size
+    /// (`php_zlib_output_handler_init`).
+    pub init: Option<fn(usize)>,
 }
 
 /// php_output_handler_func_t: run the handler; `false` is FAILURE.
@@ -93,5 +96,6 @@ pub struct OutputHandlerCtx<'a> {
 pub fn output_handler_alias(name: &[u8]) -> Option<&'static OutputHandlerAlias> {
     crate::ext::iconv::OUTPUT_HANDLERS
         .iter()
+        .chain(crate::ext::zlib::output::OUTPUT_HANDLERS)
         .find(|a| a.name.as_bytes() == name)
 }

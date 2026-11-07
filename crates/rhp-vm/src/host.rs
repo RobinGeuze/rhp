@@ -2584,7 +2584,10 @@ fn kind_word(kind: ClassKind) -> &'static str {
 /// Built-in wrappers served outside the `wrappers` table (`php://`, `data:`,
 /// `http(s)://`).
 fn outside_map_wrapper(scheme: &[u8]) -> bool {
-    matches!(scheme, b"php" | b"data" | b"http" | b"https")
+    matches!(
+        scheme,
+        b"php" | b"data" | b"http" | b"https" | b"ftp" | b"ftps"
+    )
 }
 
 /// The stream operations without the filter layer.

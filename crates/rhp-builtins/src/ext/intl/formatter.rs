@@ -151,10 +151,41 @@ fn this_and_args<'a>(
     }
 }
 
-fn int_at(args: &[Value], i: usize, default: i64) -> i64 {
-    args.get(i)
-        .map(|v| rhp_values::conv::to_int(&deref(v)))
-        .unwrap_or(default)
+impl Call<'_> {
+    /// php's number of the argument at `i` after the object.
+    fn arg_num(&self, i: usize) -> usize {
+        i + if self.method { 1 } else { 2 }
+    }
+
+    /// The int parameter at `i` after the object.
+    fn long(
+        &self,
+        host: &mut dyn Host,
+        args: &[Value],
+        i: usize,
+        pname: &str,
+        default: i64,
+    ) -> Result<i64, Thrown> {
+        super::long_param(
+            host,
+            args.get(i),
+            self.arg_num(i),
+            self.fname,
+            pname,
+            default,
+        )
+    }
+
+    /// The string parameter at `i` after the object.
+    fn str(
+        &self,
+        host: &mut dyn Host,
+        args: &[Value],
+        i: usize,
+        pname: &str,
+    ) -> Result<Vec<u8>, Thrown> {
+        super::str_param(host, args.get(i), self.arg_num(i), self.fname, pname)
+    }
 }
 
 /// `INTL_METHOD_RETVAL_UTF8`.
@@ -208,7 +239,7 @@ fn format_with(
 fn ctor(host: &mut dyn Host, fname: &str, this: &Value, args: &[Value]) -> Result<bool, Thrown> {
     error::error_reset();
     let locale = zpp::str_arg(host, args, 0, fname, "locale")?;
-    let style = zpp::int_arg(host, args, 1, fname, "style")?;
+    let style = super::long_param(host, args.get(1), 2, fname, "style", 0)?;
     let pattern = zpp::opt_str_arg(host, args, 2, fname, "pattern")?;
     if super::locale_too_long(host, fname, locale.len())? {
         return Ok(false);
@@ -315,7 +346,7 @@ fn dispatch(
         "getErrorCode" => return Ok(Value::Int(nf.code() as i64)),
         "getErrorMessage" => return Ok(Value::str(nf.err.borrow().message().into_bytes())),
         "getSymbol" | "setSymbol" => {
-            let sym = int_at(args, 0, 0);
+            let sym = call.long(host, args, 0, "symbol", 0)?;
             // SAFETY: a plain getter.
             let count = unsafe { sys::rhp_intl_unum_format_symbol_count() } as i64;
             if sym >= count || sym < 0 {
@@ -342,8 +373,8 @@ fn dispatch(
     match name {
         "format" => format(host, &nf, &call, u, args),
         "formatCurrency" => {
-            let amount = rhp_values::conv::to_float(&deref(&args[0]));
-            let currency = zpp::str_arg(host, args, 1, f, "currency")?;
+            let amount = super::double_param(host, args.first(), call.arg_num(0), f, "amount")?;
+            let currency = call.str(host, args, 1, "currency")?;
             let mut cur = match utf16_z(&currency) {
                 Ok(c) => c,
                 Err(st) => {
@@ -372,9 +403,9 @@ fn dispatch(
             retval_utf8(host, &nf, f, &out)
         }
         "parse" => parse(host, &nf, &call, u, args),
-        "parseCurrency" => parse_currency(host, &nf, f, u, args),
+        "parseCurrency" => parse_currency(host, &nf, &call, u, args),
         "getAttribute" => {
-            let attr = int_at(args, 0, 0);
+            let attr = call.long(host, args, 0, "attribute", 0)?;
             let (ints, incr) = attrs();
             let mut ret = Value::Null;
             if ints.contains(&attr) {
@@ -402,8 +433,8 @@ fn dispatch(
             Ok(ret)
         }
         "setAttribute" => {
-            let attr = int_at(args, 0, 0);
-            let value = deref(args.get(1).unwrap_or(&Value::Null));
+            let attr = call.long(host, args, 0, "attribute", 0)?;
+            let value = super::number_param(host, args.get(1), call.arg_num(1), f, "value")?;
             let (ints, incr) = attrs();
             if ints.contains(&attr) {
                 let v = zpp::zval_get_long(host, &value)?;
@@ -422,7 +453,7 @@ fn dispatch(
             Ok(Value::Bool(true))
         }
         "getTextAttribute" => {
-            let attr = int_at(args, 0, 0) as i32;
+            let attr = call.long(host, args, 0, "attribute", 0)? as i32;
             let mut st = sys::U_ZERO_ERROR;
             // SAFETY: a live formatter.
             let v = super::icu_uchars(64, &mut st, |b, n, s| unsafe {
@@ -435,8 +466,8 @@ fn dispatch(
             retval_utf8(host, &nf, f, &v)
         }
         "setTextAttribute" => {
-            let attr = int_at(args, 0, 0) as i32;
-            let value = zpp::str_arg(host, args, 1, f, "value")?;
+            let attr = call.long(host, args, 0, "attribute", 0)? as i32;
+            let value = call.str(host, args, 1, "value")?;
             let v = match utf8_to_utf16(&value) {
                 Ok(v) => v,
                 Err(st) => {
@@ -460,7 +491,8 @@ fn dispatch(
             Ok(Value::Bool(true))
         }
         "getSymbol" => {
-            let sym = int_at(args, 0, 0) as i32;
+            // zpp'd above
+            let sym = rhp_values::conv::to_int(&deref(&args[0])) as i32;
             let mut st = sys::U_ZERO_ERROR;
             // SAFETY: a live formatter.
             let v = super::icu_uchars(4, &mut st, |b, n, s| unsafe {
@@ -473,8 +505,9 @@ fn dispatch(
             retval_utf8(host, &nf, f, &v)
         }
         "setSymbol" => {
-            let sym = int_at(args, 0, 0) as i32;
-            let value = zpp::str_arg(host, args, 1, f, "value")?;
+            // zpp'd above
+            let sym = rhp_values::conv::to_int(&deref(&args[0])) as i32;
+            let value = call.str(host, args, 1, "value")?;
             let v = match utf8_to_utf16(&value) {
                 Ok(v) => v,
                 Err(st) => {
@@ -510,7 +543,7 @@ fn dispatch(
             retval_utf8(host, &nf, f, &v)
         }
         "setPattern" => {
-            let value = zpp::str_arg(host, args, 0, f, "pattern")?;
+            let value = call.str(host, args, 0, "pattern")?;
             let v = match utf8_to_utf16(&value) {
                 Ok(v) => v,
                 Err(st) => {
@@ -535,7 +568,7 @@ fn dispatch(
             Ok(Value::Bool(true))
         }
         "getLocale" => {
-            let kind = int_at(args, 0, 0) as i32;
+            let kind = call.long(host, args, 0, "type", 0)? as i32;
             let mut st = sys::U_ZERO_ERROR;
             // SAFETY: a live formatter.
             let p = unsafe { sys::unum_getLocaleByType(u, kind, &mut st) };
@@ -558,8 +591,8 @@ fn format(
     args: &[Value],
 ) -> Result<Value, Thrown> {
     let f = call.fname;
-    let number = deref(args.first().unwrap_or(&Value::Null));
-    let mut ty = int_at(args, 1, TYPE_DEFAULT);
+    let number = super::number_param(host, args.first(), call.arg_num(0), f, "num")?;
+    let mut ty = call.long(host, args, 1, "type", TYPE_DEFAULT)?;
     if ty == TYPE_DEFAULT {
         ty = if matches!(number, Value::Float(_)) {
             TYPE_DOUBLE
@@ -700,8 +733,8 @@ fn parse(
     args: &[Value],
 ) -> Result<Value, Thrown> {
     let f = call.fname;
-    let s = zpp::str_arg(host, args, 0, f, "string")?;
-    let ty = int_at(args, 1, TYPE_DOUBLE);
+    let s = call.str(host, args, 0, "string")?;
+    let ty = call.long(host, args, 1, "type", TYPE_DOUBLE)?;
     let zpos = ref_arg(args.get(2));
     let pos_in = position_arg(host, &zpos)?;
     let us = match utf8_to_utf16(&s) {
@@ -782,11 +815,12 @@ fn parse(
 fn parse_currency(
     host: &mut dyn Host,
     nf: &NumFmt,
-    f: &str,
+    call: &Call,
     u: *mut UNumberFormat,
     args: &[Value],
 ) -> Result<Value, Thrown> {
-    let s = zpp::str_arg(host, args, 0, f, "string")?;
+    let f = call.fname;
+    let s = call.str(host, args, 0, "string")?;
     let zcur = ref_arg(args.get(1));
     let zpos = ref_arg(args.get(2));
     let us = match utf8_to_utf16(&s) {

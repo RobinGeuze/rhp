@@ -296,6 +296,81 @@ pub(crate) fn locale_get_default() -> Vec<u8> {
     }
 }
 
+/// zpp `l` for a parameter after the object, php's argument number `n`
+/// (a procedural call's object is #1). A null had its deprecation from
+/// the VM already; absent is `default`.
+pub(crate) fn long_param(
+    host: &mut dyn Host,
+    v: Option<&Value>,
+    n: usize,
+    fname: &str,
+    pname: &str,
+    default: i64,
+) -> Result<i64, Thrown> {
+    match v.map(crate::zend::zpp::deref) {
+        None => Ok(default),
+        Some(Value::Null) => Ok(0),
+        Some(v) => crate::zend::zpp::long_value(host, &v, n, fname, pname, "int"),
+    }
+}
+
+/// zpp `s` for a parameter after the object (see [`long_param`]): in
+/// strict mode only a string (or the VM's null) passes.
+pub(crate) fn str_param(
+    host: &mut dyn Host,
+    v: Option<&Value>,
+    n: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Vec<u8>, Thrown> {
+    let v = v.map(crate::zend::zpp::deref).unwrap_or(Value::Null);
+    let strict = host.caller_strict_types();
+    let s = match &v {
+        Value::Str(s) => return Ok(s.as_bytes().to_vec()),
+        Value::Null => Some(Vec::new()),
+        _ if strict => None,
+        Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
+            Some(rhp_values::conv::to_string_bytes(&v))
+        }
+        Value::Object(_) => crate::zend::object_handlers::to_string(host, &v)?,
+        _ => None,
+    };
+    s.ok_or_else(|| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{n} (${pname}) must be of type string, {} given",
+            crate::zend::zpp::zval_value_name(host, &v)
+        ))
+    })
+}
+
+/// zpp `d` for a parameter after the object (see [`long_param`]).
+pub(crate) fn double_param(
+    host: &mut dyn Host,
+    v: Option<&Value>,
+    n: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<f64, Thrown> {
+    match v.map(crate::zend::zpp::deref) {
+        None | Some(Value::Null) => Ok(0.0),
+        Some(v) => crate::zend::zpp::double_value(host, &v, n, fname, pname),
+    }
+}
+
+/// zpp `n` for a parameter after the object (see [`long_param`]).
+pub(crate) fn number_param(
+    host: &mut dyn Host,
+    v: Option<&Value>,
+    n: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Value, Thrown> {
+    match v.map(crate::zend::zpp::deref) {
+        None | Some(Value::Null) => Ok(Value::Int(0)),
+        Some(v) => crate::zend::zpp::number_value(host, &v, n, fname, pname),
+    }
+}
+
 /// A C string for ICU: the bytes up to the first NUL, as C reads them.
 pub(crate) fn c_string(s: &[u8]) -> std::ffi::CString {
     let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());

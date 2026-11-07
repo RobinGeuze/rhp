@@ -95,3 +95,9 @@ fn collator_matches_php() {
 fn locale_matches_php() {
     check("locale", include_str!("intl/locale.php"));
 }
+
+#[test]
+fn procedural_arguments_match_php() {
+    check("args", include_str!("intl/args.php"));
+    check("args_strict", include_str!("intl/args_strict.php"));
+}

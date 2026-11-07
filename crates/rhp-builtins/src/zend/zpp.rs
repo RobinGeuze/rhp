@@ -423,13 +423,27 @@ fn long_arg_as(
     pname: &str,
     ty: &str,
 ) -> Result<i64, Thrown> {
+    let v = args.get(i).map(deref).unwrap_or(Value::Null);
+    long_value(host, &v, i + 1, fname, pname, ty)
+}
+
+/// [`long_arg`] for the value of argument number `n`.
+pub fn long_value(
+    host: &mut dyn Host,
+    v: &Value,
+    n: usize,
+    fname: &str,
+    pname: &str,
+    ty: &str,
+) -> Result<i64, Thrown> {
     // ZEND_DOUBLE_FITS_LONG
     const TWO_63: f64 = 9_223_372_036_854_775_808.0;
     let fits = |f: f64| (-TWO_63..TWO_63).contains(&f);
-    let v = args.get(i).map(deref).unwrap_or(Value::Null);
+    let v = deref(v);
     if let Value::Int(n) = v {
         return Ok(n);
     }
+    let i = n - 1;
     // zend_wrong_parameter_type_error names the value (`true given`).
     let wrong = |host: &dyn Host, v: &Value| {
         Thrown::type_error(format!(
@@ -482,6 +496,93 @@ fn long_arg_as(
                 Ok(f as i64)
             }
             _ => Err(wrong(host, &v)),
+        },
+        _ => Err(wrong(host, &v)),
+    }
+}
+
+/// zpp `d` (`Z_PARAM_DOUBLE`) for the value of argument number `n`, in
+/// the caller's typing mode: an int is a float in either mode; in coercive
+/// mode also a bool, null (deprecated) or a numeric string.
+pub fn double_value(
+    host: &mut dyn Host,
+    v: &Value,
+    n: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<f64, Thrown> {
+    let v = deref(v);
+    let wrong = |host: &dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{n} (${pname}) must be of type float, {} given",
+            zval_value_name(host, v)
+        ))
+    };
+    match &v {
+        Value::Float(f) => return Ok(*f),
+        Value::Int(i) => return Ok(*i as f64),
+        _ if host.caller_strict_types() => return Err(wrong(host, &v)),
+        _ => {}
+    }
+    match &v {
+        Value::Bool(b) => Ok(*b as i64 as f64),
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                format!(
+                    "{fname}(): Passing null to parameter #{n} (${pname}) of type float is deprecated"
+                )
+                .as_bytes(),
+            )?;
+            Ok(0.0)
+        }
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(i)) => Ok(i as f64),
+            Some(conv::Num::Float(f)) => Ok(f),
+            None => Err(wrong(host, &v)),
+        },
+        _ => Err(wrong(host, &v)),
+    }
+}
+
+/// zpp `n` (`Z_PARAM_NUMBER`) for the value of argument number `n`: an int
+/// or a float as it is; in coercive mode a bool or null (deprecated) as an
+/// int and a numeric string as its number.
+pub fn number_value(
+    host: &mut dyn Host,
+    v: &Value,
+    n: usize,
+    fname: &str,
+    pname: &str,
+) -> Result<Value, Thrown> {
+    let v = deref(v);
+    let wrong = |host: &dyn Host, v: &Value| {
+        Thrown::type_error(format!(
+            "{fname}(): Argument #{n} (${pname}) must be of type int|float, {} given",
+            zval_value_name(host, v)
+        ))
+    };
+    match &v {
+        Value::Int(_) | Value::Float(_) => return Ok(v),
+        _ if host.caller_strict_types() => return Err(wrong(host, &v)),
+        _ => {}
+    }
+    match &v {
+        Value::Bool(b) => Ok(Value::Int(*b as i64)),
+        Value::Null => {
+            host.emit_diagnostic(
+                crate::E_DEPRECATED,
+                format!(
+                    "{fname}(): Passing null to parameter #{n} (${pname}) of type int|float is deprecated"
+                )
+                .as_bytes(),
+            )?;
+            Ok(Value::Int(0))
+        }
+        Value::Str(s) => match conv::numeric_string(s.as_bytes()) {
+            Some(conv::Num::Int(i)) => Ok(Value::Int(i)),
+            Some(conv::Num::Float(f)) => Ok(Value::Float(f)),
+            None => Err(wrong(host, &v)),
         },
         _ => Err(wrong(host, &v)),
     }

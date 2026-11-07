@@ -69,6 +69,35 @@ fn payload(h: &ObjectHandle) -> Rc<CollatorObj> {
 /// method (php's `hasThis()`, which shifts argument numbers).
 struct Call<'a> {
     fname: &'a str,
+    method: bool,
+}
+
+impl Call<'_> {
+    /// The int parameter at `i` after the object (php numbers a
+    /// procedural call's object #1).
+    fn long(
+        &self,
+        host: &mut dyn Host,
+        args: &[Value],
+        i: usize,
+        pname: &str,
+        default: i64,
+    ) -> Result<i64, Thrown> {
+        let n = i + if self.method { 1 } else { 2 };
+        super::long_param(host, args.get(i), n, self.fname, pname, default)
+    }
+
+    /// The string parameter at `i` after the object.
+    fn str(
+        &self,
+        host: &mut dyn Host,
+        args: &[Value],
+        i: usize,
+        pname: &str,
+    ) -> Result<Vec<u8>, Thrown> {
+        let n = i + if self.method { 1 } else { 2 };
+        super::str_param(host, args.get(i), n, self.fname, pname)
+    }
 }
 
 /// `zend_parse_method_parameters`' "O": the object, then the remaining
@@ -108,12 +137,6 @@ fn check_initialized(host: &mut dyn Host, co: &CollatorObj, call: &Call) -> Resu
 /// The fetch every method starts with: global and object errors reset.
 fn fetch(co: &CollatorObj) {
     co.err.borrow_mut().reset();
-}
-
-fn int_at(args: &[Value], i: usize, default: i64) -> i64 {
-    args.get(i)
-        .map(|v| rhp_values::conv::to_int(&deref(v)))
-        .unwrap_or(default)
 }
 
 fn str_at(
@@ -181,7 +204,10 @@ fn dispatch(
     this: Option<&Value>,
     args: &[Value],
 ) -> Result<Value, Thrown> {
-    let call = Call { fname };
+    let call = Call {
+        fname,
+        method: this.is_some(),
+    };
     if name == "create" {
         return create(host, fname, args);
     }
@@ -210,7 +236,7 @@ fn dispatch(
     let c = co.ucoll();
     match name {
         "getAttribute" => {
-            let attr = int_at(args, 0, 0);
+            let attr = call.long(host, args, 0, "attribute", 0)?;
             let mut status = sys::U_ZERO_ERROR;
             // SAFETY: a live collator.
             let v = unsafe { sys::ucol_getAttribute(c, attr as i32, &mut status) };
@@ -221,8 +247,8 @@ fn dispatch(
             Ok(Value::Int(v as i64))
         }
         "setAttribute" => {
-            let attr = int_at(args, 0, 0);
-            let value = int_at(args, 1, 0);
+            let attr = call.long(host, args, 0, "attribute", 0)?;
+            let value = call.long(host, args, 1, "value", 0)?;
             let mut status = sys::U_ZERO_ERROR;
             // SAFETY: a live collator.
             unsafe { sys::ucol_setAttribute(c, attr as i32, value as i32, &mut status) };
@@ -235,12 +261,13 @@ fn dispatch(
         // SAFETY: a live collator.
         "getStrength" => Ok(Value::Int(unsafe { sys::ucol_getStrength(c) } as i64)),
         "setStrength" => {
+            let strength = call.long(host, args, 0, "strength", 0)?;
             // SAFETY: a live collator.
-            unsafe { sys::ucol_setStrength(c, int_at(args, 0, 0) as i32) };
+            unsafe { sys::ucol_setStrength(c, strength as i32) };
             Ok(Value::Bool(true))
         }
         "getLocale" => {
-            let kind = int_at(args, 0, 0);
+            let kind = call.long(host, args, 0, "type", 0)?;
             let mut status = sys::U_ZERO_ERROR;
             // SAFETY: a live collator.
             let p = unsafe { sys::ucol_getLocaleByType(c, kind as i32, &mut status) };
@@ -251,8 +278,8 @@ fn dispatch(
             Ok(Value::str(super::c_bytes(p)))
         }
         "compare" => {
-            let s1 = str_at(host, args, 0, f, "string1")?;
-            let s2 = str_at(host, args, 1, f, "string2")?;
+            let s1 = call.str(host, args, 0, "string1")?;
+            let s2 = call.str(host, args, 1, "string2")?;
             let u1 = match utf8_to_utf16(&s1) {
                 Ok(u) => u,
                 Err(st) => {
@@ -282,7 +309,7 @@ fn dispatch(
             Ok(Value::Int(strcoll(c, &u1, &u2) as i64))
         }
         "getSortKey" => {
-            let s = str_at(host, args, 0, f, "string")?;
+            let s = call.str(host, args, 0, "string")?;
             let u = match utf8_to_utf16(&s) {
                 Ok(u) => u,
                 Err(st) => {
@@ -305,7 +332,7 @@ fn dispatch(
             }
         }
         "sort" | "asort" => {
-            let flags = int_at(args, 1, SORT_REGULAR);
+            let flags = call.long(host, args, 1, "flags", SORT_REGULAR)?;
             sort_internal(host, &co, f, args.first(), name == "sort", flags)
         }
         "sortWithSortKeys" => sort_with_sort_keys(host, &co, f, args.first()),

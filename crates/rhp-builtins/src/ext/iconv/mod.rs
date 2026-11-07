@@ -1822,6 +1822,7 @@ pub(crate) const OUTPUT_HANDLERS: &[OutputHandlerAlias] = &[OutputHandlerAlias {
     name: "ob_iconv_handler",
     func: output_handler,
     conflicts: &["ob_iconv_handler", "mb_output_handler"],
+    init: None,
 }];
 
 fn is_iconv_directive(name: &[u8]) -> bool {

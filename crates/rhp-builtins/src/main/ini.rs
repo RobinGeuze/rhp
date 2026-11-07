@@ -876,6 +876,9 @@ pub(crate) fn alter_ini_entry_ex(
         return Ok(None);
     }
     crate::ext::iconv::ini_runtime_update(host, name, func)?;
+    if !crate::ext::zlib::output::ini_update(host, name, &newv, func)? {
+        return Ok(None);
+    }
     #[cfg(feature = "mbstring-libmbfl")]
     let mb_changed = matches!(
         name,

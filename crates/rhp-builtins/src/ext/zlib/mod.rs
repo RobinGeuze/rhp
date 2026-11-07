@@ -10,6 +10,8 @@
 //! through C zlib with php's exact parameters (see `zraw`), so compressed bytes
 //! are identical to php's.
 
+pub(crate) mod context;
+pub mod output;
 pub(crate) mod zlib_filter;
 pub(crate) mod zraw;
 
@@ -169,10 +171,6 @@ fn fn_gzdecode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 fn fn_zlib_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     decode(host, "zlib_decode", args, zraw::ENCODING_ANY)
-}
-
-fn fn_zlib_get_coding_type(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(false))
 }
 
 // --- compress.zlib:// --------------------------------------------------------
@@ -445,7 +443,8 @@ pub fn register(m: &mut crate::Registry) {
             ("gzdecode", fn_gzdecode),
             ("zlib_encode", fn_zlib_encode),
             ("zlib_decode", fn_zlib_decode),
-            ("zlib_get_coding_type", fn_zlib_get_coding_type),
+            ("zlib_get_coding_type", output::fn_zlib_get_coding_type),
+            ("ob_gzhandler", output::fn_ob_gzhandler),
             ("gzopen", fn_gzopen),
             ("gzfile", fn_gzfile),
             ("readgzfile", fn_readgzfile),
@@ -462,6 +461,7 @@ pub fn register(m: &mut crate::Registry) {
             ("gztell", fn_gztell),
         ],
     );
+    context::register(m);
 }
 
 /// `ZLIB_*` / `FORCE_*` constants.

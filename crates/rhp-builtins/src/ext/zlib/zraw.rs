@@ -254,3 +254,143 @@ pub fn adler32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests;
+
+/// An incremental deflate or inflate stream (php's `php_zlib_context.Z`).
+/// The z_stream is boxed: zlib's state points back at it.
+pub struct ZStream {
+    s: Box<z::z_stream>,
+    deflate: bool,
+}
+
+impl ZStream {
+    /// `deflateInit2`.
+    pub fn deflate_init(
+        level: i64,
+        window_bits: i64,
+        mem_level: i64,
+        strategy: i64,
+    ) -> Result<ZStream, c_int> {
+        let mut s = Box::new(new_stream());
+        // SAFETY: a fresh, zeroed stream with our allocators; it stays boxed
+        // (pinned) for its whole life and deflateEnd runs on drop.
+        let rc = unsafe {
+            z::deflateInit2_(
+                &mut *s,
+                level as c_int,
+                z::Z_DEFLATED,
+                window_bits as c_int,
+                mem_level as c_int,
+                strategy as c_int,
+                z::zlibVersion(),
+                std::mem::size_of::<z::z_stream>() as c_int,
+            )
+        };
+        if rc != z::Z_OK {
+            return Err(rc);
+        }
+        Ok(ZStream { s, deflate: true })
+    }
+
+    /// `inflateInit2`.
+    pub fn inflate_init(window_bits: i64) -> Result<ZStream, c_int> {
+        let mut s = Box::new(new_stream());
+        // SAFETY: as in deflate_init.
+        let rc = unsafe {
+            z::inflateInit2_(
+                &mut *s,
+                window_bits as c_int,
+                z::zlibVersion(),
+                std::mem::size_of::<z::z_stream>() as c_int,
+            )
+        };
+        if rc != z::Z_OK {
+            return Err(rc);
+        }
+        Ok(ZStream { s, deflate: false })
+    }
+
+    /// `deflateSetDictionary` / `inflateSetDictionary`.
+    pub fn set_dictionary(&mut self, dict: &[u8]) -> c_int {
+        // SAFETY: dict outlives the call; zlib copies it.
+        unsafe {
+            if self.deflate {
+                z::deflateSetDictionary(&mut *self.s, dict.as_ptr(), dict.len() as c_uint)
+            } else {
+                z::inflateSetDictionary(&mut *self.s, dict.as_ptr(), dict.len() as c_uint)
+            }
+        }
+    }
+
+    /// `deflateReset` / `inflateReset`.
+    pub fn reset(&mut self) {
+        // SAFETY: an initialised stream.
+        unsafe {
+            if self.deflate {
+                z::deflateReset(&mut *self.s);
+            } else {
+                z::inflateReset(&mut *self.s);
+            }
+        }
+    }
+
+    /// `total_in`.
+    pub fn total_in(&self) -> u64 {
+        self.s.total_in as u64
+    }
+
+    /// Point the stream at `input` and `out[used..]`.
+    pub fn set_io(&mut self, input: &[u8], out: &mut [u8]) {
+        self.s.next_in = input.as_ptr() as *mut u8;
+        self.s.avail_in = input.len() as c_uint;
+        self.s.next_out = out.as_mut_ptr();
+        self.s.avail_out = out.len() as c_uint;
+    }
+
+    /// Move the output window to `out[used..]` (after the buffer grew).
+    pub fn set_out(&mut self, out: &mut [u8], used: usize) {
+        self.s.next_out = out[used..].as_mut_ptr();
+        self.s.avail_out = (out.len() - used) as c_uint;
+    }
+
+    /// Re-point the remaining input after the caller's buffer moved: the
+    /// last `avail_in` bytes of `input`.
+    pub fn set_in_tail(&mut self, input: &[u8]) {
+        let n = (self.s.avail_in as usize).min(input.len());
+        self.s.next_in = input[input.len() - n..].as_ptr() as *mut u8;
+    }
+
+    pub fn avail_in(&self) -> usize {
+        self.s.avail_in as usize
+    }
+
+    pub fn avail_out(&self) -> usize {
+        self.s.avail_out as usize
+    }
+
+    /// One `deflate`/`inflate` call. The caller keeps the buffers given to
+    /// `set_io`/`set_out` alive and unmoved until it returns.
+    pub fn run(&mut self, flush: i64) -> c_int {
+        // SAFETY: next_in/next_out point into live buffers of at least
+        // avail_in/avail_out bytes (set_io/set_out).
+        unsafe {
+            if self.deflate {
+                z::deflate(&mut *self.s, flush as c_int)
+            } else {
+                z::inflate(&mut *self.s, flush as c_int)
+            }
+        }
+    }
+}
+
+impl Drop for ZStream {
+    fn drop(&mut self) {
+        // SAFETY: an initialised stream, ended once.
+        unsafe {
+            if self.deflate {
+                z::deflateEnd(&mut *self.s);
+            } else {
+                z::inflateEnd(&mut *self.s);
+            }
+        }
+    }
+}

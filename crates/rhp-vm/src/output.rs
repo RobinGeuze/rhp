@@ -782,6 +782,9 @@ impl Vm {
             )),
             // php_output_handler_create_internal through the alias.
             _ if alias.is_some() => alias.map(|a| {
+                if let Some(init) = a.init {
+                    init(chunk);
+                }
                 Handler::new(
                     a.name.as_bytes().to_vec(),
                     Func::Internal(a.func),
@@ -897,11 +900,15 @@ impl Vm {
     /// The userland functions (output.c's PHP_FUNCTIONs).
     pub(crate) fn output_control_call(&mut self, call: ObCall) -> Result<Value, Thrown> {
         Ok(match call {
-            ObCall::StartInternal { name, func } => {
+            ObCall::StartInternal {
+                name,
+                func,
+                chunk_size,
+            } => {
                 let h = Handler::new(
                     name.as_bytes().to_vec(),
                     Func::Internal(func),
-                    0,
+                    chunk_size,
                     H_STDFLAGS,
                 );
                 Value::Bool(self.handler_start(h))

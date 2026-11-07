@@ -285,6 +285,9 @@ const RHP_INI: &[&str] = &[
     "zend.multibyte",
     "zend.reserved_stack_size",
     "zend.script_encoding",
+    "zlib.output_compression",
+    "zlib.output_compression_level",
+    "zlib.output_handler",
 ];
 
 /// The `name` of a `name=value` setting.

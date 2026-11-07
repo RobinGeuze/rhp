@@ -547,6 +547,7 @@ fn fn_output_add_rewrite_var(host: &mut dyn Host, args: &[Value]) -> Result<Valu
         host.output_control(crate::host::ObCall::StartInternal {
             name: "URL-Rewriter",
             func: output_handler,
+            chunk_size: 0,
         })?;
     }
     Ok(Value::Bool(true))

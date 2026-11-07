@@ -846,6 +846,10 @@ impl Vm {
             // superglobals (whose warnings then land in it).
             self.output_startup();
             self.seed_superglobals();
+            // zlib's RINIT (zend_activate_modules): output compression
+            if let Err(t) = builtins::zlib_request_startup(self) {
+                self.pending_throw.get_or_insert(t);
+            }
         }
         self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.

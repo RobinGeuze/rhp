@@ -520,6 +520,11 @@ CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = 
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
 CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err if undefined), then as CallUser/Builtin
 CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
+InitDynCall { callee }                            INIT_DYNAMIC_CALL's checks before the arguments run (throws what the call would)
+-- InitDynCall is emitted only when an argument is more than a literal or
+   a plain variable (otherwise running the arguments first can't be seen);
+   a call by name to an undefined function still runs its arguments first
+   (php's INIT_FCALL_BY_NAME throws before them)
 Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
 RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin

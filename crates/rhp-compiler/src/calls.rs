@@ -690,8 +690,8 @@ impl ProtoBuilder<'_> {
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
-    /// register; the callee decides at run time which arguments it takes by
-    /// reference.
+    /// register and checked before the arguments run; the callee decides at
+    /// run time which arguments it takes by reference.
     fn compile_dynamic_call(
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
@@ -712,6 +712,11 @@ impl ProtoBuilder<'_> {
             }
             _ => self.compile_expr(fc.function)?,
         };
+        // INIT_DYNAMIC_CALL resolves the callee before the arguments run;
+        // only an argument that can be seen running needs that done apart.
+        if args_run_code(&fc.argument_list) {
+            self.emit(Instr::InitDynCall { callee });
+        }
 
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let args =
@@ -1975,6 +1980,17 @@ fn arg_value<'a>(a: &Argument<'a>) -> &'a Expression<'a> {
         Argument::Positional(q) => q.value,
         Argument::Named(n) => n.value,
     }
+}
+
+/// Whether running the arguments can be seen (anything but literals and
+/// plain variables): the callee must be looked up before them.
+fn args_run_code(list: &crate::parse::cst::ArgumentList) -> bool {
+    list.arguments.iter().any(|a| {
+        !matches!(
+            arg_value(a),
+            Expression::Literal(_) | Expression::Variable(Variable::Direct(_))
+        )
+    })
 }
 
 /// An argument other than a literal, a constant or a plain variable.

@@ -1298,6 +1298,16 @@ impl Vm {
                 } => {
                     self.call_dyn(top, dst, callee, base, argc)?;
                 }
+                Instr::InitDynCall { callee } => {
+                    let closure = match &self.stack[top].regs[callee as usize] {
+                        Value::Closure(_) => true,
+                        Value::Ref(r) => matches!(*r.borrow(), Value::Closure(_)),
+                        _ => false,
+                    };
+                    if !closure {
+                        self.init_dyn_call(top, callee)?;
+                    }
+                }
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_r(top, callee)?;
                     let arr = self.reg_r(top, args)?;
@@ -4582,6 +4592,38 @@ impl Vm {
         a.push(Value::Object(this));
         a.push(m);
         Some(Value::Array(a))
+    }
+
+    /// `InitDynCall`: resolve the callable (autoloading its class) as the
+    /// call will, keeping only the Error it throws.
+    #[inline(never)]
+    fn init_dyn_call(&mut self, top: usize, callee: Reg) -> Result<(), Thrown> {
+        // A function's name, as most often: found without a copy.
+        let name = match &self.stack[top].regs[callee as usize] {
+            Value::Str(s) => Some(s.clone()),
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(s) = name {
+            let n = s.as_bytes();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            let found = if n.iter().any(u8::is_ascii_uppercase) {
+                self.fn_names.contains_key(&n.to_ascii_lowercase())
+            } else {
+                self.fn_names.contains_key(n)
+            };
+            if found {
+                return Ok(());
+            }
+        }
+        let c = deref(&self.reg_r(top, callee)?);
+        if !matches!(c, Value::Closure(_)) {
+            self.resolve_dynamic_call(&c)?;
+        }
+        Ok(())
     }
 
     /// `CallDyn`: `$f(...)` with the arguments in a window.

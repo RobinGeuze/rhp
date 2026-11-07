@@ -626,7 +626,30 @@ impl Vm {
         } else {
             ty
         };
-        match self.check_one(&v, checked, strict, ctx) {
+        // zend_is_callable runs in the returning frame: its scope and
+        // `$this` (an instance method named without an object is callable),
+        // deprecations included.
+        let r = if checked.kinds.contains(&K::Callable)
+            && matches!(deref(&v), Value::Str(_) | Value::Array(_))
+        {
+            let this = self.current_this(top);
+            let saved = self
+                .fcc_scope
+                .replace(Some((ctx, self.stack[top].called_class)));
+            let saved_this = self.fcc_this.replace(this);
+            let mut deps = Vec::new();
+            let _ = self.resolve_callable_ex(&v, proto.is_internal(), &mut deps);
+            let r = self.check_one(&v, checked, strict, ctx);
+            self.fcc_scope.set(saved);
+            *self.fcc_this.borrow_mut() = saved_this;
+            for d in deps {
+                self.diag(rhp_builtins::E_DEPRECATED, &d)?;
+            }
+            r
+        } else {
+            self.check_one(&v, checked, strict, ctx)
+        };
+        match r {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => {
                 self.coercion_diag(&v, &coerced)?;

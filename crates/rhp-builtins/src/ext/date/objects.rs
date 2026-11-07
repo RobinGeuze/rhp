@@ -836,7 +836,7 @@ fn date_object_get_properties_interval(
     };
     let mut props = PhpArray::new();
     for (k, v) in table.iter() {
-        if !hidden(k) {
+        if !hidden(&k) {
             props.insert(k.clone(), v.clone());
         }
     }

@@ -421,7 +421,7 @@ impl Encoder {
         let is_list = !force_object
             && a.iter()
                 .enumerate()
-                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
+                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if n == i as i64));
         let (open, close) = if is_list { (b'[', b']') } else { (b'{', b'}') };
         out.push(open);
         self.depth += 1;

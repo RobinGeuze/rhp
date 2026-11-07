@@ -281,7 +281,7 @@ pub(crate) fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Va
     let mut expected: i64 = 0;
     for (k, _) in a.iter() {
         match k {
-            ArrayKey::Int(n) if *n == expected => expected += 1,
+            ArrayKey::Int(n) if n == expected => expected += 1,
             _ => return Ok(Value::Bool(false)),
         }
     }

@@ -3299,22 +3299,24 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
     Ok(())
 }
 
-/// For by-reference foreach: promote the array element at insertion index `pos`
-/// to a shared cell and return `(key, cell)`. The element in the array becomes a
-/// `Value::Ref` to that cell, so a later write through the cell is visible in the
-/// array. Returns `None` if `slot` is not an array or `pos` is out of range.
+/// For by-reference foreach: promote the first array element at position
+/// `pos` or later to a shared cell and return `(its position, key, cell)`.
+/// The element in the array becomes a `Value::Ref` to that cell, so a later
+/// write through the cell is visible in the array. Returns `None` if `slot`
+/// is not an array or no element is left.
 pub(crate) fn foreach_promote(
     slot: &mut Value,
     pos: usize,
-) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
+) -> Option<(usize, ArrayKey, Rc<RefCell<Value>>)> {
     let Value::Array(arr) = slot else { return None };
-    if pos >= arr.len() {
-        return None;
-    }
-    let data = arr.make_mut();
-    let (k, v) = data.entries.get_index_mut(pos)?;
-    let key = k.clone();
-    let rc = match v {
+    let (at, _, _) = arr.fetch_from(pos)?;
+    let (key, v) = arr.make_mut().at_mut(at)?;
+    Some((at, key, promote(v)))
+}
+
+/// The cell behind element `v`, making it a reference first.
+fn promote(v: &mut Value) -> Rc<RefCell<Value>> {
+    match v {
         Value::Ref(rc) => rc.clone(),
         other => {
             let inner = std::mem::replace(other, Value::Null);
@@ -3322,8 +3324,7 @@ pub(crate) fn foreach_promote(
             *other = Value::Ref(rc.clone());
             rc
         }
-    };
-    Some((key, rc))
+    }
 }
 
 /// FE_FETCH_RW over the array in `slot`: the element at HashTable iterator
@@ -3335,26 +3336,8 @@ pub(crate) fn foreach_next_ref(
     id: u32,
 ) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
     let Value::Array(arr) = slot else { return None };
-    let data = arr.make_mut();
-    let len = data.entries.len();
-    let pos = data.iter_pos(id).unwrap_or(data.pos.min(len));
-    if pos >= len {
-        data.iter_add(id, len);
-        return None;
-    }
-    data.iter_add(id, pos + 1);
-    let (k, v) = data.entries.get_index_mut(pos)?;
-    let key = k.clone();
-    let rc = match v {
-        Value::Ref(rc) => rc.clone(),
-        other => {
-            let inner = std::mem::replace(other, Value::Null);
-            let rc = Rc::new(RefCell::new(inner));
-            *other = Value::Ref(rc.clone());
-            rc
-        }
-    };
-    Some((key, rc))
+    let (key, v) = arr.make_mut().iter_step(id)?;
+    Some((key, promote(v)))
 }
 
 /// php's "Undefined array key" warning text for `k`.

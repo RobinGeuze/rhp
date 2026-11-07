@@ -475,7 +475,7 @@ fn count_chars_cases() {
         .iter()
         .map(|(k, v)| {
             let ArrayKey::Int(n) = k else { panic!() };
-            (*n, conv::to_int(v))
+            (n, conv::to_int(v))
         })
         .collect();
     assert_eq!(pairs, vec![(101, 1), (104, 1), (108, 2), (111, 1)]);

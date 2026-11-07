@@ -451,7 +451,7 @@ impl Dumper<'_> {
                         self.put(b"nesting level too deep");
                         continue;
                     }
-                    dump_key(&mut self.out, k);
+                    dump_key(&mut self.out, &k);
                     self.put(b"=>\n");
                     res = self.value(val, level + 2);
                     if res.is_err() {
@@ -698,7 +698,7 @@ fn is_packed(a: &PhpArray) -> bool {
     let mut size: i64 = 8;
     let mut used: i64 = 0;
     for (i, (k, _)) in a.iter().enumerate() {
-        let ArrayKey::Int(k) = *k else {
+        let ArrayKey::Int(k) = k else {
             return false;
         };
         if k < used {
@@ -772,7 +772,7 @@ fn print_r_value(
             }
             let entries: Vec<(Vec<u8>, Value)> = a
                 .iter()
-                .map(|(k, val)| (print_r_key(k), val.clone()))
+                .map(|(k, val)| (print_r_key(&k), val.clone()))
                 .collect();
             printing.arrays.push(id);
             print_r_block(host, out, &entries, indent, printing);
@@ -923,7 +923,7 @@ fn var_export_value(
             seen.arrays.push(a.data_ptr());
             for (k, val) in a.iter() {
                 sp(level + 1, out);
-                export_key(out, k);
+                export_key(out, &k);
                 out.extend_from_slice(b" => ");
                 var_export_value(host, out, val, level + 2, seen);
                 out.extend_from_slice(b",\n");
@@ -1277,7 +1277,7 @@ impl Serializer {
             Value::Array(a) => {
                 out.extend_from_slice(format!("a:{}:{{", a.len()).as_bytes());
                 for (k, val) in a.iter() {
-                    serialize_key(out, k);
+                    serialize_key(out, &k);
                     self.nested(host, out, val)?;
                 }
                 out.push(b'}');
@@ -1346,7 +1346,7 @@ impl Serializer {
             };
             head(out, &cname, data.len());
             for (k, val) in data.iter() {
-                serialize_key(out, k);
+                serialize_key(out, &k);
                 self.nested(host, out, val)?;
             }
             out.push(b'}');

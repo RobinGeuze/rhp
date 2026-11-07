@@ -970,7 +970,7 @@ fn mime_parts(
     let mut parts = Vec::new();
     let mut files = false;
     for (k, current) in postfields.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let current = deref(current);
         let prop = |host: &dyn Host, name: &str| {
             host.object_prop(&current, name.as_bytes())
@@ -2145,7 +2145,7 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
     let mut ok = true;
     for (k, v) in arr.iter() {
         let option = match k {
-            ArrayKey::Int(i) => *i,
+            ArrayKey::Int(i) => i,
             ArrayKey::Str(_) => {
                 return Err(Thrown::error(
                     "ValueError",

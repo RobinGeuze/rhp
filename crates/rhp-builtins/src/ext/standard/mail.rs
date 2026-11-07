@@ -119,7 +119,7 @@ fn build_elems(host: &dyn Host, s: &mut Vec<u8>, key: &[u8], a: &PhpArray) -> Re
 fn build_headers(host: &dyn Host, headers: &PhpArray) -> Result<Vec<u8>, Thrown> {
     let mut s = Vec::new();
     for (k, v) in headers.iter() {
-        let key = match k {
+        let key = match &k {
             ArrayKey::Int(i) => {
                 return Err(Thrown::type_error(format!(
                     "Header name cannot be numeric, {i} given"

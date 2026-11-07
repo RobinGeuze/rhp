@@ -339,8 +339,8 @@ fn add_common_properties(
     skip: impl Fn(&[u8]) -> bool,
 ) {
     for (k, v) in host.object_props_mangled(h).iter() {
-        if let ArrayKey::Str(name) = k {
-            if !skip(name.as_bytes()) && myht.get(k).is_none() {
+        if let ArrayKey::Str(name) = &k {
+            if !skip(name.as_bytes()) && myht.get(&k).is_none() {
                 myht.insert(k.clone(), v.clone());
             }
         }

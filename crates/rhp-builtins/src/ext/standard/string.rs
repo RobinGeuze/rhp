@@ -153,7 +153,7 @@ fn replace_in_subject(
     for (i, (_, sv)) in searches.iter().enumerate() {
         let sbytes = zval_get_string(host, sv)?;
         let rbytes = match replace {
-            Value::Array(reps) => match reps.get_index(i) {
+            Value::Array(reps) => match reps.nth(i) {
                 Some((_, v)) => zval_get_string(host, v)?,
                 None => Vec::new(),
             },
@@ -1404,7 +1404,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     }
     if pairs.len() == 1 {
         let (k, v) = pairs.iter().next().expect("one pair");
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let rep = zval_get_string(host, v)?;
         if key.is_empty() {
             host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1419,7 +1419,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     let mut first = [false; 256];
     let (mut minlen, mut maxlen) = (usize::MAX, 0usize);
     for (k, v) in pairs.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         if key.is_empty() {
             if matches!(k, ArrayKey::Str(_)) {
                 host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1498,7 +1498,7 @@ fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             let sbytes = zval_get_string(host, v)?;
             // replace: array -> nth element (else ""); scalar -> whole, for all.
             let rep = match &replace {
-                Value::Array(ra) => match ra.get_index(i) {
+                Value::Array(ra) => match ra.nth(i) {
                     Some((_, rv)) => zval_get_string(host, rv)?,
                     None => Vec::new(),
                 },
@@ -1506,7 +1506,7 @@ fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             };
             // start: array -> nth element (else 0); scalar -> per-subject.
             let st = match &start_arg {
-                Value::Array(sa) => match sa.get_index(i) {
+                Value::Array(sa) => match sa.nth(i) {
                     Some((_, sv)) => crate::zend::zpp::zval_get_long(host, sv)?,
                     None => 0,
                 },
@@ -1516,7 +1516,7 @@ fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             // scalar -> per-subject.
             let ln = match &length_arg {
                 None => None,
-                Some(Value::Array(la)) => Some(match la.get_index(i) {
+                Some(Value::Array(la)) => Some(match la.nth(i) {
                     Some((_, lv)) => crate::zend::zpp::zval_get_long(host, lv)?,
                     None => sbytes.len() as i64,
                 }),

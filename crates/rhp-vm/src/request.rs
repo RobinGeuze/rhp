@@ -632,7 +632,7 @@ fn check_http_proxy(arr: &mut PhpArray, env: &[(Vec<u8>, Vec<u8>)]) {
 fn autoglobal_merge(dest: &mut PhpArray, src: &PhpArray) {
     for (k, v) in src.iter() {
         if let Value::Array(sa) = v {
-            if let Some(Value::Array(da)) = dest.get_mut(k) {
+            if let Some(Value::Array(da)) = dest.get_mut(&k) {
                 autoglobal_merge(da, sa);
                 continue;
             }

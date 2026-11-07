@@ -144,7 +144,7 @@ pub fn trace_to_string_ex(host: &dyn Host, trace: &Value, warn: &mut dyn FnMut(S
             let Value::Array(f) = deref(frame) else {
                 // ZEND_HASH_FOREACH_NUM_KEY_VAL: a string key reads as 0.
                 let index = match key {
-                    K::Int(i) => *i as u64,
+                    K::Int(i) => i as u64,
                     K::Str(_) => 0,
                 };
                 warn(format!("Expected array for frame {index}"));

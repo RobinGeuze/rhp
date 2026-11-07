@@ -579,7 +579,7 @@ impl Vm {
         let Value::Array(st) = state else {
             return Ok(None);
         };
-        let at = |i: usize| st.get_index(i).map(|e| e.1.clone());
+        let at = |i: usize| st.nth(i).map(|e| e.1.clone());
         let (Some(Value::Int(mut pos)), Some(Value::Array(plan))) = (at(0), at(1)) else {
             return Ok(None);
         };
@@ -603,9 +603,9 @@ impl Vm {
             });
             Value::Array(nst)
         };
-        while let Some((_, Value::Array(e))) = plan.get_index(pos as usize) {
+        while let Some((_, Value::Array(e))) = plan.nth(pos as usize) {
             pos += 1;
-            let get = |i: usize| e.get_index(i).map(|x| x.1.clone()).unwrap_or(Value::Null);
+            let get = |i: usize| e.nth(i).map(|x| x.1.clone()).unwrap_or(Value::Null);
             let (Value::Str(shown), Value::Str(key), Value::Int(decl)) = (get(0), get(1), get(2))
             else {
                 continue;

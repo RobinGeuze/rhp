@@ -142,7 +142,7 @@ pub fn add(a: &Value, b: &Value) -> Result<Value, Thrown> {
     if let (Value::Array(x), Value::Array(y)) = (&deref(a), &deref(b)) {
         let mut out = x.clone();
         for (k, v) in y.iter() {
-            if out.get(k).is_none() {
+            if out.get(&k).is_none() {
                 out.insert(k.clone(), v.clone());
             }
         }
@@ -737,7 +737,7 @@ fn compare_arrays(
     COMPARING.with(|c| c.borrow_mut().push(p));
     let r = (|| {
         for (k, xv) in x.iter() {
-            match y.get(k) {
+            match y.get(&k) {
                 Some(yv) => match compare(xv, yv, cx)? {
                     Ordering::Equal => continue,
                     other => return Ok(other),

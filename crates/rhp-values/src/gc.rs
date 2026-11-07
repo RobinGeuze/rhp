@@ -398,7 +398,7 @@ pub fn possible_root(v: &Value) {
         Value::Object(h) => Rc::strong_count(h) > 1,
         // An empty array cannot be in a cycle (php's `[]` is the immutable
         // zend_empty_array).
-        Value::Array(a) => Rc::strong_count(&a.0) > 1 && !a.0.entries.is_empty(),
+        Value::Array(a) => Rc::strong_count(&a.0) > 1 && !a.0.is_empty(),
         Value::Ref(r) => Rc::strong_count(r) > 1,
         Value::Closure(c) => Rc::strong_count(c) > 1 && !c.gc_buffered.get(),
         _ => false,
@@ -463,7 +463,7 @@ pub fn check_possible_root(v: &Value) {
 }
 
 fn add_array_root(a: &crate::PhpArray) {
-    if a.0.entries.is_empty() {
+    if a.0.is_empty() {
         return;
     }
     let addr = Rc::as_ptr(&a.0) as usize;

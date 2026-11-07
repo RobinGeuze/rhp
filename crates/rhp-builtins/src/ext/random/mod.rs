@@ -224,7 +224,7 @@ pub(crate) fn pick_keys(
     }
     if num == 1 {
         let i = range(0, avail - 1)? as usize;
-        return Ok(Ok(arr.get_index(i).map(|(k, _)| k.to_value()).unwrap()));
+        return Ok(Ok(arr.nth(i).map(|(k, _)| k.to_value()).unwrap()));
     }
     if num <= 0 || num > avail {
         return Ok(Err(PickError::Num));

@@ -95,15 +95,13 @@ fn append_after_int_max_fails() {
 #[test]
 fn removal_keeps_internal_pointer_on_element() {
     let mut a: PhpArray = (0..4).map(|i| (ArrayKey::Int(i), Value::Int(i))).collect();
-    a.make_mut().pos = 2;
+    a.make_mut().ptr_next();
+    a.make_mut().ptr_next();
     a.remove(&ArrayKey::Int(0));
-    assert_eq!(a.make_mut().pos, 1);
+    assert_eq!(a.current().unwrap().0, ArrayKey::Int(2));
     // The current element removed: the pointer is on the next one.
     a.remove(&ArrayKey::Int(2));
-    assert_eq!(
-        a.get_index(a.clone().make_mut().pos).unwrap().0,
-        &ArrayKey::Int(3)
-    );
+    assert_eq!(a.current().unwrap().0, ArrayKey::Int(3));
 }
 
 struct Native(Rc<std::cell::Cell<u32>>);

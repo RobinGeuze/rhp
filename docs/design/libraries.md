@@ -363,6 +363,12 @@ the "linked" section for that reason.
   timelib entry in `THIRD-PARTY-NOTICES`.
 - Adding or vendoring a library means adding its entry to
   `THIRD-PARTY-NOTICES` in the same change.
+- A Rust crate that needs a fix rhp cannot wait for is vendored under
+  `vendor/<crate>` (sources and Cargo.toml, licence files, a `PATCHES.md`
+  listing each change, marked `rhp:` in the source), excluded from the
+  workspace and put in place with `[patch.crates-io]` in the root
+  Cargo.toml. It gets a `THIRD-PARTY-NOTICES` entry like any vendored code.
+  Today: mago-syntax (lexer fixes).
 
 ## Threading
 

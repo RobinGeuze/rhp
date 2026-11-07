@@ -106,9 +106,11 @@ impl Vm {
             ref_globals: std::collections::HashSet::new(),
             statics: HashMap::new(),
             include_statics: HashMap::new(),
-            generators: HashMap::new(),
+            generators: Default::default(),
             yield_out: None,
             gen_stack: Vec::new(),
+            gen_resumes: Vec::new(),
+            gen_abort: false,
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
             fcc_this: std::cell::RefCell::new(None),
@@ -503,6 +505,9 @@ impl Vm {
             (o.class, o.id)
         };
         rhp_values::gc::set_flag(id, rhp_values::gc::TRACKED, false);
+        if self.generators.contains_key(&id) {
+            return self.gen_dtor(id);
+        }
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
             Some(f) => f(self, &h),

@@ -19,7 +19,7 @@ use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use rhp_builtins as builtins;
 use rhp_builtins::zend::fibers::FiberOp;
-use rhp_bytecode::{FunctionProto, Reg};
+use rhp_bytecode::FunctionProto;
 use rhp_values::{ObjectHandle, PhpArray, PhpStr, Thrown, Value};
 
 use crate::calls::NativeCall;
@@ -62,7 +62,8 @@ pub(crate) struct ExecCtx {
     stack: Vec<Frame>,
     native_calls: Vec<NativeCall>,
     gen_stack: Vec<u32>,
-    yield_out: Option<(Value, Value, Reg)>,
+    gen_resumes: Vec<(usize, u32, u32)>,
+    yield_out: Option<crate::generators::YieldOut>,
     magic_fetch: (usize, builtins::MagicFetch),
     pending_magic_fetch: builtins::MagicFetch,
     silence: u32,
@@ -346,6 +347,7 @@ impl Vm {
             stack: vec![entry_frame()],
             native_calls: Vec::new(),
             gen_stack: Vec::new(),
+            gen_resumes: Vec::new(),
             yield_out: None,
             magic_fetch: (0, builtins::MagicFetch::default()),
             pending_magic_fetch: builtins::MagicFetch::default(),
@@ -374,6 +376,7 @@ impl Vm {
         swap(&mut self.stack, &mut c.stack);
         swap(&mut self.native_calls, &mut c.native_calls);
         swap(&mut self.gen_stack, &mut c.gen_stack);
+        swap(&mut self.gen_resumes, &mut c.gen_resumes);
         swap(&mut self.yield_out, &mut c.yield_out);
         swap(&mut self.magic_fetch, &mut c.magic_fetch);
         swap(&mut self.pending_magic_fetch, &mut c.pending_magic_fetch);
@@ -555,9 +558,11 @@ impl Vm {
             };
             std::mem::swap(&mut self.stack, &mut ctx.stack);
             std::mem::swap(&mut self.native_calls, &mut ctx.native_calls);
+            std::mem::swap(&mut self.gen_resumes, &mut ctx.gen_resumes);
             let part = self.build_trace_part(provide_object, ignore_args, false, false);
             std::mem::swap(&mut self.stack, &mut ctx.stack);
             std::mem::swap(&mut self.native_calls, &mut ctx.native_calls);
+            std::mem::swap(&mut self.gen_resumes, &mut ctx.gen_resumes);
             let mut d = cell.borrow_mut();
             d.ctx = Some(ctx);
             for (_, v) in part.iter() {

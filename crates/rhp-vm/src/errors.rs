@@ -36,6 +36,9 @@ pub(crate) enum FinallyCont {
     ReturnRef(Value, u32, u8),
     /// A `break`/`continue` crossed out of the try/catch; jump after finally.
     Jump(u32),
+    /// A destroyed generator runs its finally blocks: the next enclosing
+    /// one runs after this, then the generator closes.
+    ForcedClose,
 }
 
 pub(crate) use builtins::zend::builtin_functions::SILENCE_MASK as SILENCE_KEEPS;
@@ -465,7 +468,11 @@ impl Vm {
 
     /// The trace `args` of frame `i`: the passed arguments' current values.
     fn frame_args(&self, i: usize) -> PhpArray {
-        let f = &self.stack[i];
+        self.frame_args_of(&self.stack[i])
+    }
+
+    /// The arguments frame `f` was called with, as a trace shows them.
+    fn frame_args_of(&self, f: &Frame) -> PhpArray {
         let mut args = PhpArray::new();
         let shown = |k: usize, v: Value| {
             if crate::attributes::param_is_sensitive(&f.proto, k) {
@@ -609,6 +616,13 @@ impl Vm {
                         e.insert(k(b"line"), Value::Int(self.current_line(i) as i64));
                     }
                     e.insert(k(b"function"), Value::str(n.name));
+                    if let Some((class, this)) = &n.method_of {
+                        e.insert(k(b"class"), Value::str(*class));
+                        if provide_object {
+                            e.insert(k(b"object"), Value::Object(this.clone()));
+                        }
+                        e.insert(k(b"type"), Value::str("->"));
+                    }
                     if !ignore_args {
                         let mut a = PhpArray::new();
                         // SAFETY: see `NativeCall::args` — every entry
@@ -701,6 +715,56 @@ impl Vm {
                 if !ignore_args {
                     e.insert(k(b"args"), Value::Array(self.frame_args(i)));
                 }
+            }
+            // A generator run through the `yield from` chain of a leaf
+            // generator: the delegating generators follow, each called from
+            // the next one's `yield from` (zend_generator_check_placeholder_frame).
+            let chain = match self.gen_resumes.iter().rev().find(|r| r.0 == i) {
+                Some(&(_, root, orig)) if root != orig => self.gen_chain(root, orig),
+                _ => Vec::new(),
+            };
+            if !chain.is_empty() {
+                let site = (e.get(&k(b"file")).cloned(), e.get(&k(b"line")).cloned());
+                let at = |e: &mut PhpArray, f: &Frame| {
+                    e.insert(k(b"file"), Value::Str(f.proto.debug.file.clone()));
+                    e.insert(k(b"line"), Value::Int(frame_line(f) as i64));
+                };
+                at(&mut e, chain[0]);
+                out.push(Value::Array(e));
+                for (n, g) in chain.iter().enumerate() {
+                    let mut e = PhpArray::new();
+                    match chain.get(n + 1) {
+                        Some(next) => at(&mut e, next),
+                        None => {
+                            if let (Some(file), Some(line)) = site.clone() {
+                                e.insert(k(b"file"), file);
+                                e.insert(k(b"line"), line);
+                            }
+                        }
+                    }
+                    e.insert(k(b"function"), Value::Str(g.proto.name.clone()));
+                    if let Some(c) = g.defining_class {
+                        e.insert(k(b"class"), Value::Str(self.class(c).name.clone()));
+                        let this =
+                            g.proto
+                                .this_cv
+                                .and_then(|cv| match deref(&g.regs[cv as usize]) {
+                                    Value::Object(h) => Some(h),
+                                    _ => None,
+                                });
+                        let ty = if this.is_some() { "->" } else { "::" };
+                        if let (true, Some(o)) = (provide_object, this) {
+                            e.insert(k(b"object"), Value::Object(o));
+                        }
+                        e.insert(k(b"type"), Value::str(ty));
+                    }
+                    if !ignore_args {
+                        e.insert(k(b"args"), Value::Array(self.frame_args_of(g)));
+                    }
+                    out.push(Value::Array(e));
+                }
+                include_file = site.0;
+                continue;
             }
             let file = e.get(&k(b"file")).cloned();
             out.push(Value::Array(e));
@@ -1290,7 +1354,7 @@ impl Vm {
 
     /// The temporaries of an unwound try body (from `from` up), freed in
     /// order before its handler runs.
-    fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
+    pub(crate) fn free_try_temps(&mut self, top: usize, from: rhp_bytecode::Reg) -> bool {
         // The loops inside the try give up their iterators.
         let f = &mut self.stack[top];
         if let Some(live) = f.fe_live.as_deref_mut() {

@@ -173,11 +173,17 @@ pub struct Vm {
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
     // Generator runtime state, keyed by the Generator object's id.
-    generators: HashMap<u32, GenState>,
-    // Set by the `Yield` opcode to hand (key, value, resume-dst) to the driver.
-    yield_out: Option<(Value, Value, Reg)>,
+    generators: rustc_hash::FxHashMap<u32, GenState>,
+    // Set by `Yield` / `YieldFrom` to tell the generator driver why the
+    // frame stopped.
+    yield_out: Option<generators::YieldOut>,
     // Stack of generator ids currently being advanced (innermost last).
     gen_stack: Vec<u32>,
+    // The running generator frames: (stack index, the generator, the leaf
+    // generator it runs for), so traces show the `yield from` chain.
+    gen_resumes: Vec<(usize, u32, u32)>,
+    // A force-closed generator ended without a return value.
+    gen_abort: bool,
     // `include`/`require`: a callback (injected by the SAPI) that parses+compiles
     // an included file's source into a Program, keeping the VM compiler-agnostic.
     includer: Option<Includer>,

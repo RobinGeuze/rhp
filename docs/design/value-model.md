@@ -414,10 +414,12 @@ pub struct ObjectData {
     /// The object handle (spl_object_id, `#N`): php's object store, reused
     /// once the object is freed (rhp_values::handles).
     pub id: u32,
-    /// Declared + dynamic properties, in declaration/insertion order.
-    /// Values may themselves be `Value::Ref` for `&`-bound properties.
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
-    // later: internal/native state, weak-ref registry, handlers.
+    /// Declared properties in the class's slots, then dynamic ones in
+    /// insertion order (`PropTable`, oop.md §1.1). Values may themselves be
+    /// `Value::Ref` for `&`-bound properties.
+    properties: PropTable,
+    /// Native payload, lazy object state, weak flag, iterators (boxed).
+    extra: Option<Box<ObjectExtra>>,
 }
 
 /// Shared object handle. Clone shares (handle semantics). Interior mutability
@@ -427,7 +429,7 @@ pub type ObjectHandle = Rc<RefCell<ObjectData>>;
 
 - **Assignment / passing** copies the `Rc` → shared handle. No COW.
 - **`clone $o`** performs a shallow property copy: new `id`, new `Rc`, cloned
-  `properties` map (then `__clone` runs). This is the one place objects "copy".
+  property table (then `__clone` runs). This is the one place objects "copy".
 - **Identity `===`** is `Rc::ptr_eq` (equivalently equal `id`); `==` compares
   class + property values.
 - **`&` properties** are represented by `Value::Ref` property values, so the

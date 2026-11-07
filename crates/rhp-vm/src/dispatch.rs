@@ -3350,7 +3350,7 @@ impl Vm {
                     // A plain object iterates its live property table
                     // through a HashTable iterator (FE_RESET_R).
                     let obj = self.lazy_props_object(&obj)?;
-                    if obj.borrow().properties.is_empty() {
+                    if obj.borrow().props().is_empty() {
                         self.reg_set(top, pos_reg, Value::Null);
                         self.stack[top].pc = end as usize;
                     } else {
@@ -3665,7 +3665,7 @@ impl Vm {
                     self.reg_set(top, pos_reg, st);
                     return Ok(());
                 }
-                if h.borrow().properties.is_empty() {
+                if h.borrow().props().is_empty() {
                     self.reg_set(top, pos_reg, Value::Null);
                     self.stack[top].pc = end as usize;
                 } else {
@@ -3749,10 +3749,10 @@ impl Vm {
         // A table the iterator is not on starts over (php restarts at the
         // internal pointer of a table it lost track of).
         let mut idx = b.prop_iter_pos(id).unwrap_or(0);
-        let n = b.properties.len();
+        let n = b.props().pos_len();
         let mut found = None;
         while idx < n {
-            let (key, val) = b.properties.get_index(idx).unwrap();
+            let (key, val) = b.props().get_index(idx).unwrap();
             idx += 1;
             if val.is_undef() || self.internal_slot(cls, key) {
                 continue;
@@ -3768,10 +3768,10 @@ impl Vm {
         };
         let key = Value::Str(classes::unmangle(&name));
         if !by_ref {
-            return Ok(Some((key, deref(&b.properties[i]))));
+            return Ok(Some((key, deref(&b.props()[i]))));
         }
-        let skey = b.properties.get_index(i).unwrap().0.clone();
-        if !matches!(b.properties[i], Value::Ref(_)) {
+        let skey = b.props().get_index(i).unwrap().0.clone();
+        if !matches!(b.props()[i], Value::Ref(_)) {
             if let Some(pe) = self.class(cls).props.get(&skey).filter(|pe| pe.readonly) {
                 return Err(Thrown::error(
                     "Error",
@@ -3783,7 +3783,7 @@ impl Vm {
                 ));
             }
         }
-        let slot = &mut b.properties[i];
+        let slot = &mut b.props_mut()[i];
         let rc = match slot {
             Value::Ref(rc) => rc.clone(),
             other => {

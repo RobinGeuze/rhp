@@ -473,7 +473,7 @@ impl Vm {
                         }
                         // A backed read without a get hook is silent:
                         // uninitialized reads as null.
-                        let v = h.borrow().properties.get(&key).map(deref);
+                        let v = h.borrow().props().get(&key).map(deref);
                         out.insert(ArrayKey::from_php_str(&shown), v.unwrap_or(Value::Null));
                         continue;
                     }
@@ -487,7 +487,7 @@ impl Vm {
                     }
                     v
                 }
-                None => match h.borrow().properties.get(&key) {
+                None => match h.borrow().props().get(&key) {
                     Some(Value::Ref(rc)) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
                     Some(v) => v.clone(),
                     None => continue,
@@ -498,7 +498,7 @@ impl Vm {
         let dynamic: Vec<(PhpStr, Value)> = {
             let b = h.borrow();
             let entry = self.class(cls);
-            b.properties
+            b.props()
                 .iter()
                 .filter(|(k, _)| !entry.props.contains_key(*k))
                 .map(|(k, v)| (k.clone(), deref(v)))
@@ -615,7 +615,7 @@ impl Vm {
             let v = match step {
                 IterStep::Slot(key) => {
                     let mut b = h.borrow_mut();
-                    let Some(slot) = b.properties.get_mut(&key) else {
+                    let Some(slot) = b.props_mut().get_mut(&key) else {
                         continue;
                     };
                     if !by_ref {
@@ -687,7 +687,7 @@ impl Vm {
         // Then the dynamic properties, as they are now.
         loop {
             let mut b = h.borrow_mut();
-            let Some((key, slot)) = b.properties.get_index_mut(dyn_pos) else {
+            let Some((key, slot)) = b.props_mut().get_index_mut(dyn_pos) else {
                 return Ok(None);
             };
             dyn_pos += 1;
@@ -723,7 +723,7 @@ fn get_is_backing_uninit(vm: &Vm, h: &ObjectHandle, pe: &PropEntry, key: &PhpStr
         .as_ref()
         .is_some_and(|hk| hk[HookKind::Get as usize].is_none())
         && !pe.virt
-        && !h.borrow().properties.contains_key(key)
+        && !h.borrow().props().contains_key(key)
         && vm.class(h.borrow().class).props.contains_key(key)
 }
 

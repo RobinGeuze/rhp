@@ -161,7 +161,7 @@ fn param(params: &Value, key: &str) -> Option<Value> {
         Value::Array(a) => a.get(&ArrayKey::from_bytes(key.as_bytes())).map(deref),
         Value::Object(o) => o
             .borrow()
-            .properties
+            .props()
             .get(&rhp_values::PhpStr::from_bytes(key.as_bytes()))
             .map(deref),
         _ => None,

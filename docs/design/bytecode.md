@@ -438,7 +438,8 @@ puts an iterator on the live array (`ArrayData` iterator list, id from
 unset/append/splice/shift/unshift and reassignment (an array without the
 iterator is walked from its internal pointer); a plain object by value or by
 ref iterates its live property table through an iterator kept on the object
-(`ObjectData::prop_iter_*`, moved by `remove_prop` / `insert_prop_at`).
+(`ObjectData::prop_iter_*`, moved by `remove_prop`; positions count
+every declared slot, empty ones too).
 `pos_reg + 1` holds a placeholder object for the handle php's
 zend_object_iterator takes (Traversable and hooked objects).
 `keycv` = `Reg::MAX` means "no key target".

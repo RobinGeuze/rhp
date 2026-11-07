@@ -129,7 +129,7 @@ impl Vm {
         let obj = Rc::new(RefCell::new(ObjectData::new(
             cls,
             id,
-            indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher),
+            self.blank_props(cls),
         )));
         // php's generator holds its Closure until the generator object is
         // freed, also after it finished: the object's payload keeps it.

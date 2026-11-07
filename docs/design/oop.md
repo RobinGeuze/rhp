@@ -47,26 +47,37 @@ fixtures.
 
 ## 1. Runtime object + class model
 
-### 1.1 `ObjectData` — confirmed, unchanged
+### 1.1 `ObjectData`
 
-Already built in `rhp-values` (`value-model.md` §5). **No change for cut 1.**
+Built in `rhp-values` (`value-model.md` §5).
 
 ```rust
 // rhp-values
 pub struct ObjectData {
-    pub class: ClassId,                                  // u32 index into Vm.classes
-    pub id: u32,                                         // spl_object_id (monotonic)
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>, // declaration+insertion order
+    pub class: ClassId,          // u32 index into Vm.classes
+    pub id: u32,                 // spl_object_id
+    properties: PropTable,       // props() / props_mut() / remove_prop()
+    extra: Option<Box<ObjectExtra>>,
 }
 pub type ClassId = u32;
 pub type ObjectHandle = Rc<RefCell<ObjectData>>;         // Value::Object(ObjectHandle)
 ```
 
+`PropTable` (rhp-values/src/props.rs) is php's `properties_table` plus the
+on-demand `properties` HashTable: declared properties sit in fixed slots
+laid out by the class (`ClassEntry::layout`, a `PropLayout` of `props`'
+storage keys, parent slots first), dynamic ones in a map made on first
+use. An unset or uninitialized slot holds `Value::Undef` and counts as
+absent; setting it again fills the same slot, so the order php's rebuilt
+properties table shows (slots, then dynamic in insertion order) falls out.
+Positions for foreach iterators count every slot, empty ones included.
+The slots are one allocation behind a thin pointer; the object itself fits
+64 bytes. Property paths that resolve a name use `resolve_prop_at`, whose
+index is the slot (php's property offset).
+
 Handle semantics (invariant): assignment shares the `Rc`; `clone` makes a new
-`Rc` + fresh `id` + shallow-copied map; `===` is `Rc::ptr_eq`. The class table is
-**in the `Vm`**, never in the `Value`. (The prior-art `slots: Vec<Value>` +
-lazy `dynamic` hybrid is the documented *later* optimization; cut 1 keeps the
-single `IndexMap`.)
+`Rc` + fresh `id` + shallow-copied table; `===` is `Rc::ptr_eq`. The class table is
+**in the `Vm`**, never in the `Value`.
 
 ### 1.2 Leaf types (`rhp-values` — small, `Copy` where possible)
 
@@ -384,7 +395,7 @@ disciplines compose: object levels share, array levels COW.
 // in assign_path(slot: &mut Value, steps, value)
 (Value::Object(handle), CursorStep::Prop(name)) => {
     let mut od = handle.borrow_mut();
-    let child = od.properties.entry(name.clone()).or_insert(Value::Null);
+    let child = od.props_mut().get_or_insert_null(name.clone());
     assign_path(child, rest, value)        // SAME recursion for the tail
 }
 (Value::Null, CursorStep::Prop(_))  => Err(Thrown::error("Error","Attempt to assign property on null")),
@@ -488,7 +499,7 @@ never a second source of semantics.
   `Bool(resolve_class
   (class).map(|c| classes[val.class].ancestors.contains(&c)).unwrap_or(false))`.
 - **`Clone`**: deref `src` → handle; build `ObjectData { class, id:
-  next_object_id++ , properties: od.properties.clone() }` (shallow: nested
+  next_object_id++ , properties: od.props().clone() }` (shallow: nested
   arrays/objects follow their own copy/handle discipline, so a clone *shares*
   nested object handles). New `Rc`, write to `dst`, run `__clone` (`$this` = new
   handle) if defined. `===` of clone vs original is false.

@@ -300,7 +300,7 @@ fn get_properties_for(
     }
     let v = Value::Object(h.clone());
     let mut out = PhpArray::new();
-    for (k, val) in h.borrow().properties.iter() {
+    for (k, val) in h.borrow().props().iter() {
         out.insert(ArrayKey::Str(k.clone()), val.clone());
     }
     let r = intern(&v).expect("an XMLReader");

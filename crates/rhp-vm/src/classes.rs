@@ -45,6 +45,9 @@ pub struct ClassEntry {
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
     /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
     pub props: IndexMap<PhpStr, PropEntry>,
+    /// The objects' slot layout: `props`' keys, slot `i` for entry `i`
+    /// (a virtual property's slot stays empty).
+    pub layout: Rc<rhp_values::PropLayout>,
     /// php's `properties_info`: unmangled name -> storage key of the most-derived
     /// declaration of that name (which may be an inherited parent private).
     pub prop_visible: FxHashMap<PhpStr, PhpStr>,
@@ -307,24 +310,36 @@ pub(crate) fn resolve_prop(
     scope: Option<ClassId>,
     name: &PhpStr,
 ) -> PropRes {
+    resolve_prop_at(classes, cls, scope, name).0
+}
+
+/// [`resolve_prop`] plus the slot of a [`PropRes::Slot`] (php's property
+/// offset; `usize::MAX` otherwise), for the paths that then read or write it.
+#[inline]
+pub(crate) fn resolve_prop_at(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> (PropRes, usize) {
     let entry = &classes[cls as usize];
     if let Some(s) = scope {
         if let Some(k) = classes[s as usize].own_private.get(name) {
-            if entry.props.contains_key(k) {
-                return PropRes::Slot(k.clone());
+            if let Some(i) = entry.props.get_index_of(k) {
+                return (PropRes::Slot(k.clone()), i);
             }
         }
     }
     let Some(key) = entry.prop_visible.get(name) else {
         if !entry.static_props.is_empty() {
             if let Some(d) = static_as_instance_denied(classes, cls, scope, name) {
-                return PropRes::Denied(d);
+                return (PropRes::Denied(d), usize::MAX);
             }
         }
-        return dynamic_or_bad(name);
+        return (dynamic_or_bad(name), usize::MAX);
     };
-    let pe = &entry.props[key];
-    match pe.visibility {
+    let (i, _, pe) = entry.props.get_full(key).expect("visible property");
+    let r = match pe.visibility {
         Visibility::Public => PropRes::Slot(key.clone()),
         Visibility::Protected => {
             if protected_ok(classes, scope, pe.prototype) {
@@ -336,7 +351,13 @@ pub(crate) fn resolve_prop(
         // (scope == declaring class was handled by `own_private` above.)
         Visibility::Private if pe.declaring_class != cls => dynamic_or_bad(name),
         Visibility::Private => PropRes::Denied(Deny::Vis(Visibility::Private)),
-    }
+    };
+    let at = if matches!(r, PropRes::Slot(_)) {
+        i
+    } else {
+        usize::MAX
+    };
+    (r, at)
 }
 
 /// A static property reached as `$o->name`, as zend_get_property_offset
@@ -762,30 +783,6 @@ pub(crate) fn prop_key(
     }
 }
 
-/// The value slot for storage key `key` on `od`, created (as null) when absent.
-/// A declared property that was `unset()` comes back at its declared position
-/// (php keeps the slot, it was only UNDEF), ahead of any dynamic properties.
-pub(crate) fn prop_slot_mut<'o>(
-    classes: &[ClassEntry],
-    od: &'o mut ObjectData,
-    key: PhpStr,
-) -> &'o mut Value {
-    if let Some(i) = od.properties.get_index_of(&key) {
-        return &mut od.properties[i];
-    }
-    let entry = &classes[od.class as usize];
-    let pos = match entry.props.get_index_of(&key) {
-        Some(slot) => od
-            .properties
-            .keys()
-            .take_while(|k| entry.props.get_index_of(*k).is_some_and(|j| j < slot))
-            .count(),
-        None => od.properties.len(),
-    };
-    od.insert_prop_at(pos, key, Value::Null);
-    &mut od.properties[pos]
-}
-
 /// php's `zend_check_property_access`: is the object slot stored under `key`
 /// the one `$obj->name` reaches from `scope`? Returns its unmangled name if so
 /// (drives `get_object_vars`, `foreach` over an object, and friends).
@@ -975,6 +972,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             traits: e.traits.clone(),
             methods: e.methods.clone(),
             props: e.props.clone(),
+            layout: e.layout.clone(),
             prop_visible: e.prop_visible.clone(),
             own_private: e.own_private.clone(),
             constants: e.constants.clone(),
@@ -1940,6 +1938,7 @@ impl Vm {
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
         self.class_order.push(self.decl_classes.len());
+        let layout = rhp_values::PropLayout::new(props.keys().cloned());
         self.classes.push(ClassEntry {
             name: proto.name.clone(),
             kind: proto.kind,
@@ -1950,6 +1949,7 @@ impl Vm {
             traits,
             methods,
             props,
+            layout,
             prop_visible,
             own_private,
             constants,
@@ -2105,8 +2105,7 @@ impl Vm {
     ) -> ObjectHandle {
         // The id is assigned on first access (see `touch_enum_case`).
         let oid = 0;
-        let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
-            IndexMap::with_hasher(FxBuildHasher);
+        let mut properties = self.blank_props(class_id);
         properties.insert(PhpStr::from("name"), Value::Str(name.clone()));
         if let Some(v) = value {
             properties.insert(PhpStr::from("value"), v);
@@ -2371,16 +2370,22 @@ impl Vm {
         id
     }
 
+    /// An empty property table for an object of `class_id`.
+    pub(crate) fn blank_props(&self, class_id: ClassId) -> rhp_values::PropTable {
+        rhp_values::PropTable::with_layout(&self.classes[class_id as usize].layout)
+    }
+
     /// Allocate a fresh instance of `class_id`, materializing property defaults.
     pub(crate) fn new_object(&mut self, class_id: ClassId) -> ObjectHandle {
         let id = self.alloc_object_id();
-        let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
-            IndexMap::with_hasher(FxBuildHasher);
-        for (name, pe) in &self.classes[class_id as usize].props {
-            if pe.starts_uninit() || pe.virt {
-                continue; // uninitialized typed / virtual property: no slot
+        let mut properties = self.blank_props(class_id);
+        for (i, pe) in self.classes[class_id as usize].props.values().enumerate() {
+            // An uninitialized typed or a virtual property's slot stays empty.
+            if !pe.starts_uninit() && !pe.virt {
+                if let Some(s) = properties.slot_mut(i) {
+                    *s = pe.default.clone();
+                }
             }
-            properties.insert(name.clone(), pe.default.clone());
         }
         let obj = Rc::new(RefCell::new(ObjectData::new(class_id, id, properties)));
         // Throwables record their creation site (file/line/trace) at creation,
@@ -2614,7 +2619,7 @@ impl Vm {
                 ConstInit::Expr(_) => e.value = v,
                 ConstInit::EnumCase(_) => {
                     if let Value::Object(h) = &e.value {
-                        h.borrow_mut().properties.insert(PhpStr::from("value"), v);
+                        h.borrow_mut().props_mut().insert(PhpStr::from("value"), v);
                     }
                 }
             }
@@ -2734,12 +2739,12 @@ impl Vm {
         let mut seen: Vec<(Value, PhpStr)> = Vec::with_capacity(entry.enum_cases.len());
         for case in &entry.enum_cases {
             let o = case.borrow();
-            let name = match o.properties.get(&PhpStr::from("name")) {
+            let name = match o.props().get(&PhpStr::from("name")) {
                 Some(Value::Str(s)) => s.clone(),
                 _ => PhpStr::from(""),
             };
             let v = o
-                .properties
+                .props()
                 .get(&PhpStr::from("value"))
                 .cloned()
                 .unwrap_or(Value::Null);

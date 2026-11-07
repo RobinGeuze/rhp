@@ -19,10 +19,12 @@ pub mod handles;
 pub mod mem;
 pub mod ops;
 mod phpstr;
+pub mod props;
 pub mod thrown;
 
 pub use handles::{alloc_object_id, release_object_id};
 pub use phpstr::{PhpStr, StrBuilder, StrBytes, StrMut};
+pub use props::{PropLayout, PropTable};
 pub use thrown::Thrown;
 
 // php's error levels (Zend/zend_errors.h).
@@ -238,7 +240,8 @@ pub type PhpRef = Rc<RefCell<Value>>;
 pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    /// The properties (see [`ObjectData::props`]).
+    properties: PropTable,
     /// Rarely used state: the native payload and the lazy object info.
     /// Boxed so that objects with neither pay a pointer.
     extra: Option<Box<ObjectExtra>>,
@@ -256,7 +259,7 @@ struct ObjectExtra {
     weak: bool,
     /// HashTable iterators on the property table (foreach over the
     /// object): (id, position), kept on the same property by
-    /// [`ObjectData::remove_prop`] and [`ObjectData::insert_prop_at`].
+    /// [`ObjectData::remove_prop`].
     iters: Vec<(u32, usize)>,
 }
 
@@ -343,17 +346,31 @@ impl Drop for LazyInfo {
 pub type Payload = Rc<dyn std::any::Any>;
 
 impl ObjectData {
-    pub fn new(
-        class: ClassId,
-        id: u32,
-        properties: IndexMap<PhpStr, Value, FxBuildHasher>,
-    ) -> Self {
+    pub fn new(class: ClassId, id: u32, properties: PropTable) -> Self {
         ObjectData {
             class,
             id,
             properties,
             extra: None,
         }
+    }
+
+    /// The property table. Removing goes through
+    /// [`ObjectData::remove_prop`], which keeps iterators in place.
+    #[inline]
+    pub fn props(&self) -> &PropTable {
+        &self.properties
+    }
+
+    #[inline]
+    pub fn props_mut(&mut self) -> &mut PropTable {
+        &mut self.properties
+    }
+
+    /// Swap in a whole new table (lazy object reset and initialization),
+    /// returning the old one. Iterators start over.
+    pub fn replace_props(&mut self, props: PropTable) -> PropTable {
+        std::mem::replace(&mut self.properties, props)
     }
 
     /// The lazy object state; `None` for ordinary objects.
@@ -457,10 +474,11 @@ impl ObjectData {
     }
 
     /// Remove property `key`, keeping the property table's iterators on
-    /// the same properties (php leaves a hole the iterators skip).
+    /// the same properties (php leaves a hole the iterators skip; a
+    /// declared slot stays, empty).
     pub fn remove_prop(&mut self, key: &PhpStr) -> Option<Value> {
-        let (i, _, v) = self.properties.shift_remove_full(key)?;
-        if let Some(e) = self.extra.as_deref_mut() {
+        let (pos, v) = self.properties.remove(key)?;
+        if let (Some(i), Some(e)) = (pos, self.extra.as_deref_mut()) {
             for (_, p) in e.iters.iter_mut() {
                 if *p > i {
                     *p -= 1;
@@ -468,19 +486,6 @@ impl ObjectData {
             }
         }
         Some(v)
-    }
-
-    /// Insert property `key` at index `pos` (a declared slot coming back
-    /// after unset); an iterator at `pos` sees it.
-    pub fn insert_prop_at(&mut self, pos: usize, key: PhpStr, v: Value) {
-        self.properties.shift_insert(pos, key, v);
-        if let Some(e) = self.extra.as_deref_mut() {
-            for (_, p) in e.iters.iter_mut() {
-                if *p > pos {
-                    *p += 1;
-                }
-            }
-        }
     }
 
     /// Register (or move) property-table iterator `id` at `pos`.
@@ -605,7 +610,7 @@ impl ObjectData {
             for v in self.properties.values() {
                 gc::possible_root(v);
             }
-            self.properties.clear();
+            self.properties = PropTable::default();
         }
         release_object_id(id);
     }

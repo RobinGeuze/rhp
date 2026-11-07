@@ -824,9 +824,9 @@ impl Vm {
             self.declared_prop_key(obj, b"trace"),
         );
         let mut b = obj.borrow_mut();
-        b.properties.insert(kf, Value::str(file));
-        b.properties.insert(kl, Value::Int(line as i64));
-        b.properties.insert(kt, Value::Array(trace));
+        b.props_mut().insert(kf, Value::str(file));
+        b.props_mut().insert(kl, Value::Int(line as i64));
+        b.props_mut().insert(kt, Value::Array(trace));
     }
 
     /// Turn an engine-raised `Thrown::Error` into a real Throwable object, created
@@ -846,12 +846,12 @@ impl Vm {
         let obj = self.new_object(cls);
         {
             let mut b = obj.borrow_mut();
-            b.properties
+            b.props_mut()
                 .insert(rhp_values::PhpStr::from("message"), Value::str(message));
             if let Some((file, line)) = at {
-                b.properties
+                b.props_mut()
                     .insert(rhp_values::PhpStr::from("file"), Value::str(file));
-                b.properties
+                b.props_mut()
                     .insert(rhp_values::PhpStr::from("line"), Value::Int(line as i64));
             }
         }
@@ -1096,7 +1096,7 @@ impl Vm {
         let cls = h.borrow().class;
         let prop = |n: &str| {
             h.borrow()
-                .properties
+                .props()
                 .get(&rhp_values::PhpStr::from(n))
                 .map(deref)
                 .unwrap_or(Value::Null)
@@ -1131,7 +1131,7 @@ impl Vm {
         match self.call_to_string(&h) {
             Ok(Value::Str(s)) => {
                 let key = self.declared_prop_key(&h, b"string");
-                h.borrow_mut().properties.insert(key, Value::Str(s));
+                h.borrow_mut().props_mut().insert(key, Value::Str(s));
             }
             Ok(_) => {
                 let name = self.class(cls).name.clone();
@@ -1148,7 +1148,7 @@ impl Vm {
         let key = self.declared_prop_key(&h, b"string");
         let s = h
             .borrow()
-            .properties
+            .props()
             .get(&key)
             .map(|v| conv::to_string_bytes(&deref(v)))
             .unwrap_or_default();
@@ -1499,7 +1499,7 @@ impl Vm {
         }
         let previous_of = |o: &ObjectHandle| match o
             .borrow()
-            .properties
+            .props()
             .get(&self.declared_prop_key(o, b"previous"))
             .map(deref)
         {
@@ -1519,7 +1519,7 @@ impl Vm {
                 None => {
                     let key = self.declared_prop_key(&cur, b"previous");
                     cur.borrow_mut()
-                        .properties
+                        .props_mut()
                         .insert(key, Value::Object(add.clone()));
                     return;
                 }
@@ -1554,7 +1554,7 @@ impl Vm {
                 let cls = self.resolve_class_by_name(class.as_bytes())?;
                 self.update_class_constants(cls)?;
                 let obj = self.new_object(cls);
-                obj.borrow_mut().properties.insert(
+                obj.borrow_mut().props_mut().insert(
                     rhp_values::PhpStr::from("message"),
                     Value::str(message.clone()),
                 );

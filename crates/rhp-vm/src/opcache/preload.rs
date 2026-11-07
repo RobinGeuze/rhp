@@ -332,7 +332,7 @@ impl Vm {
                 rhp_values::Thrown::Object(o) => {
                     let m = o
                         .borrow()
-                        .properties
+                        .props()
                         .get(&rhp_values::PhpStr::from("message"))
                         .cloned()
                         .unwrap_or(Value::Null);

@@ -39,7 +39,7 @@ pub fn cast_to_array(v: Value) -> Value {
         // name (visibility name-mangling for private/protected is not modelled).
         Value::Object(h) => {
             let mut a = PhpArray::new();
-            for (name, val) in &h.borrow().properties {
+            for (name, val) in h.borrow().props() {
                 a.insert(crate::ArrayKey::from_php_str(name), deref(val));
             }
             Value::Array(a)
@@ -938,16 +938,31 @@ fn std_compare_objects(
     };
     // Snapshot the property tables: comparing nested values may run user code
     // (`__toString`) that touches these objects.
+    if let Some(pairs) = slot_pairs(x, y, xc, cx) {
+        // No dynamic properties: slot by slot.
+        let _guard = Guard::enter(std::rc::Rc::as_ptr(x) as *const u8 as usize)?;
+        for (p1, p2) in pairs {
+            match (p1.is_undef(), p2.is_undef()) {
+                (false, false) => match compare(&p1, &p2, cx)? {
+                    Ordering::Equal => {}
+                    o => return Ok(o),
+                },
+                (true, true) => {}
+                _ => return Ok(Ordering::Greater),
+            }
+        }
+        return Ok(Ordering::Equal);
+    }
     let xp: Vec<(PhpStr, Value)> = x
         .borrow()
-        .properties
+        .props()
         .iter()
         .filter(|(k, _)| !cx.is_internal_prop(xc, k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let yp: crate::PhpArray = {
         let mut a = crate::PhpArray::new();
-        for (k, v) in y.borrow().properties.iter() {
+        for (k, v) in y.borrow().props().iter() {
             if !cx.is_internal_prop(yc, k) {
                 a.insert(crate::ArrayKey::Str(k.clone()), v.clone());
             }
@@ -965,7 +980,7 @@ fn std_compare_objects(
     let x_dyn: Vec<&(PhpStr, Value)> = xp.iter().filter(|(k, _)| !is_declared(k)).collect();
     let y_dyn = y
         .borrow()
-        .properties
+        .props()
         .keys()
         .filter(|k| !is_declared(k) && !cx.is_internal_prop(yc, k))
         .count();
@@ -1011,6 +1026,30 @@ fn std_compare_objects(
         }
     }
     Ok(Ordering::Equal)
+}
+
+/// The declared slots of two objects of class `class` side by side (empty
+/// ones kept), when neither has dynamic properties.
+fn slot_pairs(
+    x: &crate::ObjectHandle,
+    y: &crate::ObjectHandle,
+    class: crate::ClassId,
+    cx: &mut dyn CompareCx,
+) -> Option<Vec<(Value, Value)>> {
+    let (bx, by) = (x.borrow(), y.borrow());
+    let (px, py) = (bx.props(), by.props());
+    let n = px.pos_len();
+    if px.has_dynamic() || py.has_dynamic() || py.pos_len() != n {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let ((k, v1), (_, v2)) = (px.get_index(i)?, py.get_index(i)?);
+        if !cx.is_internal_prop(class, k) {
+            out.push((v1.copy_slot(), v2.copy_slot()));
+        }
+    }
+    Some(out)
 }
 
 fn cmp_num(a: Num, b: Num) -> Ordering {

@@ -2308,7 +2308,7 @@ fn find_strings(v: &Value, out: &mut Vec<PhpStr>) -> Result<(), Stopped> {
         *pos += 1;
         next = match top {
             Value::Array(a) => a.get_index(i).map(|(_, c)| c.clone()),
-            Value::Object(h) => h.borrow().properties.get_index(i).map(|(_, c)| c.clone()),
+            Value::Object(h) => h.borrow().props().get_index(i).map(|(_, c)| c.clone()),
             Value::Ref(r) => (i == 0).then(|| r.borrow().clone()),
             _ => None,
         };
@@ -2345,12 +2345,16 @@ impl Frame {
                 a.make_mut().entries.get_index_mut(i).map(|(_, v)| take(v))
             }
             Frame::Object(h, pos) => {
-                let i = *pos;
-                *pos += 1;
-                h.borrow_mut()
-                    .properties
-                    .get_index_mut(i)
-                    .map(|(_, v)| take(v))
+                let mut b = h.borrow_mut();
+                loop {
+                    let i = *pos;
+                    *pos += 1;
+                    let (_, v) = b.props_mut().get_index_mut(i)?;
+                    // (An empty declared slot is no property.)
+                    if !v.is_undef() {
+                        return Some(take(v));
+                    }
+                }
             }
             Frame::Cell(_, inner, visited) => {
                 (!std::mem::replace(visited, true)).then(|| take(inner))
@@ -2367,7 +2371,7 @@ impl Frame {
                 }
             }
             Frame::Object(h, pos) => {
-                if let Some((_, slot)) = h.borrow_mut().properties.get_index_mut(*pos - 1) {
+                if let Some((_, slot)) = h.borrow_mut().props_mut().get_index_mut(*pos - 1) {
                     *slot = v;
                 }
             }

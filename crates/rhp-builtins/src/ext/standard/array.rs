@@ -2860,15 +2860,19 @@ fn walk_next_object(
 ) -> Option<(Cell, Value)> {
     let mut b = h.borrow_mut();
     let class = b.class;
-    while *pos < b.properties.len() {
+    while *pos < b.props().pos_len() {
         let i = *pos;
         *pos += 1;
-        let key = b.properties.get_index(i).expect("in range").0.clone();
+        let (key, v) = b.props().get_index(i).expect("in range");
+        if v.is_undef() {
+            continue;
+        }
+        let key = key.clone();
         if host.is_internal_slot(class, &key) {
             continue;
         }
         let name = host.mangled_prop_name(class, &key);
-        let slot = b.properties.get_index_mut(i).expect("in range").1;
+        let slot = b.props_mut().get_index_mut(i).expect("in range").1;
         let rc = make_ref(slot);
         drop(b);
         // A typed property is a source of the reference.
@@ -3064,7 +3068,7 @@ fn object_table(host: &mut dyn Host, h: &rhp_values::ObjectHandle) -> Vec<(Value
     let b = h.borrow();
     let mut out = Vec::new();
     let mut seen = 0usize;
-    for (k, v) in b.properties.iter() {
+    for (k, v) in b.props().iter() {
         if host.is_internal_slot(b.class, k) {
             continue;
         }

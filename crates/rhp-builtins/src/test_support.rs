@@ -365,7 +365,7 @@ impl Host for TestHost<'_> {
         match deref(obj) {
             Value::Object(h) => h
                 .borrow()
-                .properties
+                .props()
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
@@ -383,10 +383,7 @@ impl Host for TestHost<'_> {
     }
     fn object_prop_exists(&self, obj: &Value, name: &[u8]) -> bool {
         match obj {
-            Value::Object(h) => h
-                .borrow()
-                .properties
-                .contains_key(&PhpStr::from_bytes(name)),
+            Value::Object(h) => h.borrow().props().contains_key(&PhpStr::from_bytes(name)),
             _ => false,
         }
     }
@@ -395,7 +392,7 @@ impl Host for TestHost<'_> {
     }
     fn object_props_mangled(&self, obj: &ObjectHandle) -> PhpArray {
         let mut a = PhpArray::new();
-        for (k, v) in &obj.borrow().properties {
+        for (k, v) in obj.borrow().props() {
             a.insert(ArrayKey::from_php_str(k), v.clone());
         }
         a

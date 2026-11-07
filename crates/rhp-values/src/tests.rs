@@ -114,11 +114,7 @@ impl Drop for Native {
 }
 
 fn object() -> ObjectHandle {
-    Rc::new(RefCell::new(ObjectData::new(
-        0,
-        1,
-        IndexMap::with_hasher(FxBuildHasher),
-    )))
+    Rc::new(RefCell::new(ObjectData::new(0, 1, PropTable::new())))
 }
 
 #[test]

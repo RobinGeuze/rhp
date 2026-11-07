@@ -97,7 +97,7 @@ pub fn conv_fp(
     let precision = precision.min(318);
     let abs = num.abs();
     let negative = num != 0.0 && num.is_sign_negative();
-    let mut out = match format {
+    let out = match format {
         b'F' => {
             let mut s = format!("{abs:.precision$}").into_bytes();
             if dec_point != b'.' {
@@ -125,7 +125,6 @@ pub fn conv_fp(
             s
         }
     };
-    out.shrink_to_fit();
     (out, negative)
 }
 

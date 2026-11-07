@@ -49,6 +49,9 @@ fn same(a: &Autoloader, b: &Autoloader) -> bool {
                 x == y && same_obj(t, u) && c == d
             }
             (Callee::EnumStatic(c, x), Callee::EnumStatic(d, y)) => c == d && x == y,
+            (Callee::ClosureMethod(c, x), Callee::ClosureMethod(d, y)) => {
+                Rc::ptr_eq(c, d) && x == y
+            }
             _ => false,
         }
 }
@@ -150,6 +153,16 @@ impl Vm {
                             _ => b"cases",
                         };
                         pair(self, &None, *cls, name)
+                    }
+                    Callee::ClosureMethod(cd, lc) => {
+                        let name: &[u8] = match &lc[..] {
+                            b"bindto" => b"bindTo",
+                            _ => b"call",
+                        };
+                        let mut a = PhpArray::new();
+                        a.push(Value::Closure(cd.clone()));
+                        a.push(Value::str(name.to_vec()));
+                        Value::Array(a)
                     }
                 }
             })

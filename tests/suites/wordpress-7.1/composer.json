@@ -1,0 +1,13 @@
+{
+    "name": "rhp/suite-wordpress-7.1",
+    "description": "rhp test-suite ratchet: what wordpress-develop's PHPUnit suite needs (it replaces the clone's composer.json, whose other dev tools are linters)",
+    "license": "MIT",
+    "require-dev": {
+        "phpunit/phpunit": "^9.6",
+        "yoast/phpunit-polyfills": "^1.1.0"
+    },
+    "config": {
+        "allow-plugins": false,
+        "sort-packages": true
+    }
+}

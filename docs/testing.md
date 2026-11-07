@@ -27,6 +27,7 @@ tests/                         data only
   curl_http/NAME.php|.out      curl fixtures
   phpt/                        known-passing.txt, ignored.txt, php-src.ref
   apps/                        pinned Symfony / Laravel apps
+  suites/                      frameworks' own PHPUnit suites, per-suite lists
   asan/                        ASan stress scripts, phpts.txt
 crates/rhp-cli/tests/          diff.rs (the goldens, in-process), and runs
                                of the rhp binary: cli.rs, cgi.rs,
@@ -63,6 +64,7 @@ own). A fixture's `.inc` files sit next to it.
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
 | phpt ratchet | `tests/phpt/known-passing.txt` | php on the machine, per php-src `.phpt` | no (CI job) |
 | apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job) |
+| suites | `tests/suites/` | php runs the frameworks' PHPUnit suites; per-test known-passing lists | no (nightly job) |
 | ASan | `tests/asan/` | stress scripts print `ok`; `phpts.txt`, a subset of the ratchet, still matches | no (CI job) |
 
 To choose:
@@ -170,6 +172,11 @@ own nodes.
 a compile-only lint ratchet and a request diff of `rhp --cgi` against
 php-cgi.
 
+**Suites** (`tests/suites/README.md`) run laravel/framework's, the
+Symfony components' and wordpress-develop's own PHPUnit suites under php
+and rhp, per test, in the nightly `suites` workflow: a test on a suite's
+`known-passing.txt` that php passes and rhp doesn't fails it.
+
 ## Regenerating expectations
 
 - A golden: `rhp-difftest golden --write --filter NAME` with the reference
@@ -184,6 +191,8 @@ php-cgi.
   then keep the list C-sorted with its header lines first; remove an entry
   only with a stated reason.
 - An app's lint list: `python3 tests/apps/apps.py lint APP --write-known`.
+- A suite's list: `python3 tests/suites/suites.py compare SUITE --ref PHPRUN
+  --cand RHPRUN --write-known`, or the nightly's `passing.txt` artifact.
 - `rhp-difftest phpt --mutate N --emit-fixtures DIR --minimize` writes
   minimised golden pairs for the divergences it finds; move a pair into
   its `tests/golden/` area once rhp is fixed.

@@ -1,0 +1,83 @@
+# Framework test suites run under php and rhp (suites.py; README.md here).
+#
+# One [[suite]] per suite. Its directory tests/suites/<name>/ holds what is
+# committed: the composer.lock (and composer.json when the suite's own isn't
+# used), other overlay files, and known-passing.txt.
+#
+#   git      the repository cloned into the work dir, at `ref`; setup checks
+#            that HEAD is `commit`. Without it the work dir starts empty.
+#   overlay  files copied from tests/suites/<name>/ into the work dir before
+#            `install` (the lock pins every dependency).
+#   download pinned archives unpacked into the work dir (as in apps.toml).
+#   setup    commands run with php after install, in the work dir.
+#   phpunit  the PHPUnit script, relative to the work dir.
+#   args     arguments for every part; `part_args` is formatted with {part}.
+#   parts    one PHPUnit process each: a crash or timeout only loses the
+#            rest of that part.
+#   reset    paths (relative to the work dir) emptied before each part.
+#   env      extra environment for the tests.
+#   timeout  seconds per part.
+
+[[suite]]
+name = "laravel-13"
+title = "laravel/framework"
+version = "13.39.0"
+git = { url = "https://github.com/laravel/framework.git", ref = "v13.39.0", commit = "d52c3b3129e4c8e213c97cdc68f94b0b7d27f181" }
+# Resolved from the clone's composer.json (dev deps included).
+overlay = ["composer.lock"]
+install = "composer install --no-interaction --no-progress --no-scripts --no-plugins"
+phpunit = "vendor/bin/phpunit"
+args = ["-c", "phpunit.xml.dist", "--do-not-cache-result"]
+part_args = "tests/{part}"
+parts = [
+    "Auth", "Broadcasting", "Bus", "Cache", "Conditionable", "Config", "Console",
+    "Container", "Cookie", "Database", "Encryption", "Events", "Filesystem",
+    "Foundation", "Hashing", "Http", "Image", "Integration", "JsonSchema", "Log",
+    "Mail", "Notifications", "Pagination", "Pipeline", "Process", "Queue", "Redis",
+    "Routing", "Session", "Support", "Testing", "Translation", "Validation", "View",
+]
+timeout = 1800
+
+[[suite]]
+name = "symfony-7.4"
+title = "Symfony components"
+version = "7.4.22"
+# No clone: composer.json installs the components from source (git), so each
+# vendor/symfony/<component>/ has its Tests/ and phpunit.xml.dist, at the
+# versions the symfony-7.4 fixture app locks.
+overlay = ["composer.json", "composer.lock"]
+install = "composer install --no-interaction --no-progress --no-scripts --no-plugins"
+phpunit = "vendor/bin/phpunit"
+args = ["--do-not-cache-result"]
+part_args = "-c vendor/symfony/{part}/phpunit.xml.dist --bootstrap vendor/autoload.php"
+parts = [
+    "cache", "clock", "config", "console", "dependency-injection", "error-handler",
+    "event-dispatcher", "filesystem", "finder", "http-foundation", "http-kernel",
+    "mime", "process", "routing", "stopwatch", "string", "translation",
+    "var-dumper", "var-exporter", "yaml",
+]
+timeout = 1800
+
+[[suite]]
+name = "wordpress-7.1"
+title = "wordpress-develop"
+version = "7.1.4"
+git = { url = "https://github.com/WordPress/wordpress-develop.git", ref = "7.1.4", commit = "0afb74de8c3fe4c1869e44b62b0418d67b11aa4c" }
+# composer.json replaces the clone's (whose other dev deps are linters):
+# PHPUnit 9.6 and the polyfills. wp-tests-config.php puts the tests on SQLite.
+overlay = ["composer.json", "composer.lock", "wp-tests-config.php"]
+install = "composer install --no-interaction --no-progress --no-scripts --no-plugins"
+setup = ["php -r 'copy(\"src/wp-content/plugins/sqlite-database-integration/db.copy\", \"src/wp-content/db.php\");'"]
+phpunit = "vendor/bin/phpunit"
+args = ["-c", "phpunit.xml.dist", "--do-not-cache-result"]
+part_args = "--group {part}"
+# The DB-light groups first (wordpress.md, "Coverage").
+parts = ["formatting", "kses", "shortcode", "blocks", "html-api", "restapi"]
+reset = ["var/database"]
+timeout = 3600
+
+# The same plugin build as the fixture app (apps.toml).
+[[suite.download]]
+url = "https://downloads.wordpress.org/plugin/sqlite-database-integration.3.1.3.zip"
+sha256 = "f6ce35e8419d0b9326221a907627d905e25c2a5ba2afc86492811f14c851efe0"
+to = "src/wp-content/plugins/sqlite-database-integration"

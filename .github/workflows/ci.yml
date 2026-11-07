@@ -395,3 +395,12 @@ jobs:
       # request in known-passing-requests.txt stops answering like php-cgi.
       - name: Known requests still answer like php-cgi
         run: python3 tests/apps/apps.py diff ${{ matrix.app }}
+
+  # The suite runner's own tests (TeamCity reader, comparison, manifest).
+  # The suites themselves run nightly (suites-nightly.yml).
+  suites-selftest:
+    name: suites runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m unittest discover -s tests/suites -p 'test_*.py' -v

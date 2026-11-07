@@ -193,7 +193,8 @@ class Work:
         self.dir.mkdir(parents=True, exist_ok=True)
         stamp_file = self.dir / "shared.stamp"
         stamp = repr([self.stamp(s) for s in self.shared])
-        if not stamp_file.is_file() or stamp_file.read_text() != stamp:
+        copied = all((self.run_dir / s).exists() for s in self.shared)
+        if not copied or not stamp_file.is_file() or stamp_file.read_text() != stamp:
             remove(self.run_dir)
             for s in self.shared:
                 if not (self.src / s).exists():

@@ -1449,8 +1449,12 @@ impl Host for Vm {
                 return None;
             }
             Some(
-                s.set_option(vm, us::OPTION_TRUNCATE_API, us::TRUNCATE_SET_SIZE, Some(size))
-                    == us::OPTION_RETURN_OK,
+                s.set_option(
+                    vm,
+                    us::OPTION_TRUNCATE_API,
+                    us::TRUNCATE_SET_SIZE,
+                    Some(size),
+                ) == us::OPTION_RETURN_OK,
             )
         }) {
             return r;

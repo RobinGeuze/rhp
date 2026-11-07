@@ -12,13 +12,6 @@ use crate::streams::{res_id, StreamState};
 use crate::Vm;
 
 impl Vm {
-    /// Whether `res` is a stream a user wrapper opened.
-    pub(crate) fn is_user_stream(&self, res: &Value) -> bool {
-        res_id(res)
-            .and_then(|id| self.streams.get(&id))
-            .is_some_and(|s| matches!(s, StreamState::User(_)))
-    }
-
     /// Run `f` on the user stream behind `res`: `None` when it is not one
     /// (or an operation on it is running already).
     /// The stream cannot be closed meanwhile (PHP_STREAM_FLAG_NO_FCLOSE,
@@ -252,6 +245,9 @@ fn split_include_path(ip: &[u8]) -> Vec<&[u8]> {
     out
 }
 
+/// A user wrapper and the path its opener gets.
+type Located = (Rc<UserWrapper>, Vec<u8>);
+
 /// What an include through a user wrapper came to.
 pub(crate) enum UserInclude {
     /// Opened and read: the compiled name, the source and the stream to
@@ -343,7 +339,12 @@ impl Vm {
         }
         // php_stream_open_for_zend_ex: no read buffer; zend_stream_fixup
         // reads the size the stream reports, else in growing chunks.
-        s.set_option(self, userspace::OPTION_READ_BUFFER, userspace::BUFFER_NONE, None);
+        s.set_option(
+            self,
+            userspace::OPTION_READ_BUFFER,
+            userspace::BUFFER_NONE,
+            None,
+        );
         let size = match s.stat(self) {
             Some(st) => st.size as usize,
             None => 0,
@@ -406,10 +407,7 @@ impl Vm {
     /// php_resolve_path over an include_path with user-wrapper entries: the
     /// first entry whose `url_stat` (quiet) succeeds. `None` when the path
     /// is not searched or a plain entry holds the file.
-    fn user_resolve_path(
-        &mut self,
-        raw: &[u8],
-    ) -> Result<Option<(Rc<UserWrapper>, Vec<u8>)>, rhp_values::Thrown> {
+    fn user_resolve_path(&mut self, raw: &[u8]) -> Result<Option<Located>, rhp_values::Thrown> {
         if raw.is_empty()
             || raw[0] == b'/'
             || raw.starts_with(b"./")

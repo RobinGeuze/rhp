@@ -1389,9 +1389,14 @@ fn stream_get_meta_data_impl(
     fname: &str,
 ) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, fname, "stream")?;
-    let Some(m) = host.stream_meta(&h) else {
+    // a user stream's `eof` is php_stream_eof (it asks the stream)
+    let user_eof = us::with(host, &h, |s, h| s.stream_eof(h));
+    let Some(mut m) = host.stream_meta(&h) else {
         return Ok(Value::Bool(false));
     };
+    if let Some(e) = user_eof {
+        m.eof = e;
+    }
     let mut a = PhpArray::new();
     let mut put = |k: &str, v: Value| {
         a.insert(ArrayKey::from_bytes(k.as_bytes()), v);

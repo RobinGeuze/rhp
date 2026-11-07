@@ -42,6 +42,8 @@ pub const STREAM_OPEN_FOR_INCLUDE: i64 = 0x80;
 // url_stat flags
 pub const URL_STAT_LINK: i64 = 1;
 pub const URL_STAT_QUIET: i64 = 2;
+/// PHP_STREAM_URL_STAT_IGNORE_OPEN_BASEDIR (php_stat passes it).
+pub const URL_STAT_IGNORE_OPEN_BASEDIR: i64 = 4;
 // stream_metadata options
 pub const META_TOUCH: i64 = 1;
 pub const META_OWNER_NAME: i64 = 2;
@@ -117,6 +119,7 @@ pub fn cached_stat(
     filename: &[u8],
     link: bool,
     quiet: bool,
+    extra: i64,
 ) -> Option<Option<StatInfo>> {
     if !host.has_user_wrappers() {
         return None;
@@ -125,12 +128,15 @@ pub fn cached_stat(
     let hit = STAT_CACHE.with(|c| {
         let c = c.borrow();
         let e = if link { &c.1 } else { &c.0 };
-        e.as_ref().filter(|(f, _)| f == filename).map(|(_, s)| s.clone())
+        e.as_ref()
+            .filter(|(f, _)| f == filename)
+            .map(|(_, s)| s.clone())
     });
     if hit.is_some() {
         return Some(hit);
     }
-    let flags = if link { URL_STAT_LINK } else { 0 } | if quiet { URL_STAT_QUIET } else { 0 };
+    let flags =
+        if link { URL_STAT_LINK } else { 0 } | if quiet { URL_STAT_QUIET } else { 0 } | extra;
     let st = url_stat(host, &w, &p, flags, None)?;
     STAT_CACHE.with(|c| {
         let mut c = c.borrow_mut();
@@ -189,7 +195,9 @@ pub fn locate(host: &dyn Host, path: &[u8]) -> Option<(Rc<UserWrapper>, Vec<u8>)
         }
         // file://: the path after the protocol (a remote host is refused
         // by the caller's own lookup).
-        let w = host.user_wrapper(p).or_else(|| host.user_wrapper(b"file"))?;
+        let w = host
+            .user_wrapper(p)
+            .or_else(|| host.user_wrapper(b"file"))?;
         let mut q = &path[n + 1..];
         if path.len() >= 17 && path[..17].eq_ignore_ascii_case(b"file://localhost/") {
             q = &path[n + 1 + 11..];
@@ -470,8 +478,7 @@ pub fn open(
         return None;
     }
     let old_include = in_user_include();
-    if !w.is_url && options & STREAM_OPEN_FOR_INCLUDE != 0 && !ini_on(host, b"allow_url_include")
-    {
+    if !w.is_url && options & STREAM_OPEN_FOR_INCLUDE != 0 && !ini_on(host, b"allow_url_include") {
         IN_USER_INCLUDE.with(|c| c.set(true));
     }
     let r = open_inner(host, w, filename, mode, options, ctx);
@@ -574,7 +581,13 @@ pub fn opendir(
 
 /// The bool a url op (`unlink`, `rename`, `mkdir`, `rmdir`, `metadata`)
 /// returned: only `true` counts.
-fn url_op(host: &mut dyn Host, w: &UserWrapper, method: &str, args: &[Value], ctx: Option<&Value>) -> bool {
+fn url_op(
+    host: &mut dyn Host,
+    w: &UserWrapper,
+    method: &str,
+    args: &[Value],
+    ctx: Option<&Value>,
+) -> bool {
     let Some(obj) = create_object(host, w, ctx) else {
         return false;
     };
@@ -623,14 +636,26 @@ pub fn mkdir(
 }
 
 /// `user_wrapper_rmdir`.
-pub fn rmdir(host: &mut dyn Host, w: &UserWrapper, url: &[u8], options: i64, ctx: Option<&Value>) -> bool {
+pub fn rmdir(
+    host: &mut dyn Host,
+    w: &UserWrapper,
+    url: &[u8],
+    options: i64,
+    ctx: Option<&Value>,
+) -> bool {
     let args = [Value::str(url.to_vec()), Value::Int(options)];
     url_op(host, w, "rmdir", &args, ctx)
 }
 
 /// `user_wrapper_metadata`: `value` is the option's argument as php
 /// passes it (an array of times for touch).
-pub fn metadata(host: &mut dyn Host, w: &UserWrapper, url: &[u8], option: i64, value: Value) -> bool {
+pub fn metadata(
+    host: &mut dyn Host,
+    w: &UserWrapper,
+    url: &[u8],
+    option: i64,
+    value: Value,
+) -> bool {
     let args = [Value::str(url.to_vec()), Value::Int(option), value];
     url_op(host, w, "stream_metadata", &args, None)
 }
@@ -882,7 +907,12 @@ impl UserStream {
         match option {
             OPTION_CHECK_LIVENESS => match call(host, &obj, "stream_eof", &[]) {
                 Call::Missing => {
-                    not_implemented(host, &class, "stream_eof", " is not implemented! Assuming EOF");
+                    not_implemented(
+                        host,
+                        &class,
+                        "stream_eof",
+                        " is not implemented! Assuming EOF",
+                    );
                     OPTION_RETURN_ERR
                 }
                 Call::Undef => OPTION_RETURN_ERR,
@@ -988,7 +1018,13 @@ impl UserStream {
     /// `php_userstreamop_cast` up to the returned stream: `Some(res)` is
     /// the stream to cast in its place. `report` is false when php only
     /// asks whether the stream can be cast.
-    pub fn cast(&mut self, host: &mut dyn Host, castas: i64, report: bool, me: u32) -> Option<Value> {
+    pub fn cast(
+        &mut self,
+        host: &mut dyn Host,
+        castas: i64,
+        report: bool,
+        me: u32,
+    ) -> Option<Value> {
         if self.dir {
             return None;
         }
@@ -1015,7 +1051,12 @@ impl UserStream {
         let is_stream = matches!(&ret, Value::Resource(_)) && host.stream_is_open(&ret);
         if !is_stream {
             if report {
-                not_implemented(host, &class, "stream_cast", " must return a stream resource");
+                not_implemented(
+                    host,
+                    &class,
+                    "stream_cast",
+                    " must return a stream resource",
+                );
             }
             return None;
         }
@@ -1031,7 +1072,11 @@ impl UserStream {
     /// `php_userstreamop_close` / `closedir`.
     fn op_close(&mut self, host: &mut dyn Host) {
         let obj = std::mem::replace(&mut self.obj, Value::Null);
-        let name = if self.dir { "dir_closedir" } else { "stream_close" };
+        let name = if self.dir {
+            "dir_closedir"
+        } else {
+            "stream_close"
+        };
         let _ = call(host, &obj, name, &[]);
     }
 
@@ -1067,38 +1112,28 @@ impl UserStream {
     pub fn read(&mut self, host: &mut dyn Host, size: usize) -> Option<Vec<u8>> {
         let mut out: Vec<u8> = Vec::new();
         let mut size = size;
-        while size > 0 {
-            if self.writepos > self.readpos {
-                let n = (self.writepos - self.readpos).min(size);
-                out.extend_from_slice(&self.readbuf[self.readpos..self.readpos + n]);
-                self.readpos += n;
-                size -= n;
-            }
-            if size == 0 {
-                break;
-            }
+        if self.writepos > self.readpos {
+            let n = (self.writepos - self.readpos).min(size);
+            out.extend_from_slice(&self.readbuf[self.readpos..self.readpos + n]);
+            self.readpos += n;
+            size -= n;
+        }
+        // not greedy: a user stream reads at most once
+        if size > 0 {
             if self.no_buffer || self.chunk_size == 1 {
                 let (got, data) = self.op_read(host, size);
-                if got < 0 {
-                    if out.is_empty() {
-                        return None;
-                    }
-                    break;
+                if got >= 0 {
+                    out.extend_from_slice(&data);
+                } else if out.is_empty() {
+                    return None;
                 }
-                out.extend_from_slice(&data);
-            } else {
-                if !self.fill_read_buffer(host, size) {
-                    if out.is_empty() {
-                        return None;
-                    }
-                    break;
-                }
+            } else if self.fill_read_buffer(host, size) {
                 let toread = (self.writepos - self.readpos).min(size);
                 out.extend_from_slice(&self.readbuf[self.readpos..self.readpos + toread]);
                 self.readpos += toread;
+            } else if out.is_empty() {
+                return None;
             }
-            // not greedy: a user stream returns after one read
-            break;
         }
         self.position += out.len() as i64;
         Some(out)
@@ -1204,9 +1239,7 @@ impl UserStream {
             f
         } else if !has_delim && amount >= maxlen {
             maxlen
-        } else if amount < maxlen && !self.eof {
-            return None;
-        } else if amount == 0 && self.eof {
+        } else if (amount < maxlen && !self.eof) || (amount == 0 && self.eof) {
             return None;
         } else {
             amount.min(maxlen)
@@ -1277,9 +1310,7 @@ impl UserStream {
                     self.eof = false;
                     return 0;
                 }
-                libc::SEEK_SET
-                    if offset > self.position && offset <= self.position + avail =>
-                {
+                libc::SEEK_SET if offset > self.position && offset <= self.position + avail => {
                     self.readpos += (offset - self.position) as usize;
                     self.position = offset;
                     self.eof = false;
@@ -1333,7 +1364,13 @@ impl UserStream {
     }
 
     /// `_php_stream_set_option`.
-    pub fn set_option(&mut self, host: &mut dyn Host, option: i64, value: i64, ptr: Option<i64>) -> i32 {
+    pub fn set_option(
+        &mut self,
+        host: &mut dyn Host,
+        option: i64,
+        value: i64,
+        ptr: Option<i64>,
+    ) -> i32 {
         let ret = self.op_set_option(host, option, value, ptr);
         if ret != OPTION_RETURN_NOTIMPL {
             return ret;
@@ -1457,7 +1494,13 @@ pub fn with<R>(
 }
 
 /// `php_stream_set_option` on a user stream; `None` for other streams.
-pub fn set_option(host: &mut dyn Host, res: &Value, option: i64, value: i64, ptr: Option<i64>) -> Option<i32> {
+pub fn set_option(
+    host: &mut dyn Host,
+    res: &Value,
+    option: i64,
+    value: i64,
+    ptr: Option<i64>,
+) -> Option<i32> {
     with(host, res, |s, host| s.set_option(host, option, value, ptr))
 }
 
@@ -1499,7 +1542,9 @@ fn fn_stream_wrapper_register(host: &mut dyn Host, args: &[Value]) -> Result<Val
         m.extend_from_slice(&protocol);
         m.extend_from_slice(b":// is already defined.");
     } else {
-        m.extend_from_slice(b"Invalid protocol scheme specified. Unable to register wrapper class ");
+        m.extend_from_slice(
+            b"Invalid protocol scheme specified. Unable to register wrapper class ",
+        );
         m.extend_from_slice(&name);
         m.extend_from_slice(b" to ");
         m.extend_from_slice(&protocol);

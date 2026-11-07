@@ -228,11 +228,12 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     crate::main::streams::clear_errno();
     let user = crate::main::streams::userspace::locate(host, &path);
     let names = if let Some((w, p)) = user {
+        // scandir takes a context only when one is given
         let ctx = match args.get(2).map(deref) {
-            Some(v @ Value::Resource(_)) => v,
-            _ => host.default_stream_context(),
+            Some(v @ Value::Resource(_)) => Some(v),
+            _ => None,
         };
-        match crate::main::streams::userspace::opendir(host, &w, &p, 0, Some(&ctx)) {
+        match crate::main::streams::userspace::opendir(host, &w, &p, 0, ctx.as_ref()) {
             Some(mut s) => {
                 let mut names = Vec::new();
                 while let Some(n) = s.readdir(host) {

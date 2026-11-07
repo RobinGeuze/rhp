@@ -676,11 +676,16 @@ pub trait Host {
 
     /// `php_register_url_stream_wrapper_volatile`: false when the protocol
     /// is taken.
-    fn register_stream_wrapper(&mut self, _protocol: &[u8], _w: Rc<userspace::UserWrapper>) -> bool {
+    fn register_stream_wrapper(
+        &mut self,
+        _protocol: &[u8],
+        _w: Rc<userspace::UserWrapper>,
+    ) -> bool {
         false
     }
 
     /// A stream resource over a user stream; `ctx` is the context it holds.
+    #[allow(clippy::boxed_local)]
     fn user_stream_insert(&mut self, _s: Box<userspace::UserStream>, _ctx: Option<Value>) -> Value {
         Value::Bool(false)
     }
@@ -697,6 +702,7 @@ pub trait Host {
     }
 
     /// Give back a user stream [`Host::user_stream_take`] took.
+    #[allow(clippy::boxed_local)]
     fn user_stream_put(&mut self, _res: &Value, _s: Box<userspace::UserStream>) {}
 
     /// The current PHP call stack for `debug_backtrace`/`debug_print_backtrace`:

@@ -89,6 +89,7 @@ These have no php-src counterpart.
 | `main/streams/filter.rs` | main/streams/filter.c: buckets, brigades, the filter factories (the chains run in rhp-vm's `stream_filters.rs`) |
 | `main/streams/glob_wrapper.rs` | main/streams/glob_wrapper.c |
 | `main/streams/plain_wrapper.rs` | main/streams/plain_wrapper.c |
+| `main/streams/userspace.rs` | main/streams/userspace.c: user wrappers, their streams over the generic layer |
 | `main/streams/xp_socket.rs` | main/streams/xp_socket.c and transports.c |
 
 ### ext/standard/

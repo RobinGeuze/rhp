@@ -798,7 +798,9 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// stat checks, then a chunked copy from the source to the target.
 fn copy_streams(host: &mut dyn Host, from: &[u8], to: &[u8], ctx: &Value) -> Result<Value, Thrown> {
     use crate::main::streams::userspace as us;
-    let stat = |host: &mut dyn Host, p: &[u8], quiet: bool| match us::cached_stat(host, p, false, quiet) {
+    let stat = |host: &mut dyn Host, p: &[u8], quiet: bool| match us::cached_stat(
+        host, p, false, quiet, 0,
+    ) {
         Some(s) => s,
         None => host.stream_stat(p),
     };
@@ -1043,6 +1045,30 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         };
         host.write_out(&data);
         return Ok(Value::Int(data.len() as i64));
+    }
+    if host.has_user_wrappers() && crate::main::streams::userspace::locate(host, &path).is_some() {
+        // _php_stream_passthru: 8 KiB reads, each written out
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
+        let Some(res) = open_stream(host, "readfile", &path, b"rb", &ctx, false)? else {
+            return Ok(Value::Bool(false));
+        };
+        let mut n: i64 = 0;
+        let mut failed = false;
+        loop {
+            match host.stream_read(&res, 8192) {
+                Some(b) if !b.is_empty() => {
+                    host.write_out(&b);
+                    n += b.len() as i64;
+                }
+                Some(_) => break,
+                None => {
+                    failed = n == 0;
+                    break;
+                }
+            }
+        }
+        host.stream_close(&res);
+        return Ok(Value::Int(if failed { -1 } else { n }));
     }
     if let Some(r) = read_via_opener(host, "readfile", &path, args.get(2))? {
         let Some(data) = r else {

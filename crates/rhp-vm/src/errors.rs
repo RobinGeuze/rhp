@@ -192,6 +192,22 @@ impl Vm {
         self.raise_error_at_ex(level, msg, file, line, true);
     }
 
+    /// Whether a user error handler gets a diagnostic of `level`.
+    fn user_handler_takes(&self, level: i64, user_handler: bool) -> bool {
+        let unsafe_level = level
+            & (builtins::E_ERROR
+                | builtins::E_PARSE
+                | builtins::E_CORE_ERROR
+                | builtins::E_CORE_WARNING
+                | builtins::E_COMPILE_ERROR
+                | builtins::E_COMPILE_WARNING)
+            != 0;
+        user_handler
+            && !unsafe_level
+            && matches!(self.error_handlers.last(),
+                Some((h, mask)) if !matches!(h, Value::Null | Value::Bool(false)) && mask & level != 0)
+    }
+
     /// [`Vm::raise_error_at`]; without `user_handler` the user error
     /// handler is skipped (php_error_cb only).
     pub(crate) fn raise_error_at_ex(
@@ -202,8 +218,10 @@ impl Vm {
         line: i64,
         user_handler: bool,
     ) {
-        if self.pending_throw.is_some() {
-            return; // php skips diagnostics while an exception is pending
+        if self.pending_throw.is_some() && self.user_handler_takes(level, user_handler) {
+            // the user handler's call is skipped while an exception is
+            // pending (zend_call_function), and nothing is shown
+            return;
         }
         self.last_fatal_trace = None;
         // A diagnostic prelude code silenced with `@` is engine plumbing (php's

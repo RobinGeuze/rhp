@@ -83,8 +83,19 @@ fn stat_path(
 
 /// `php_stream_stat_path_ex` through a user wrapper; `None` when no user
 /// wrapper serves `path`.
-fn user_stat(host: &mut dyn Host, path: &[u8], link: bool, quiet: bool) -> Option<Option<StatInfo>> {
-    let st = crate::main::streams::userspace::cached_stat(host, path, link, quiet);
+fn user_stat(
+    host: &mut dyn Host,
+    path: &[u8],
+    link: bool,
+    quiet: bool,
+) -> Option<Option<StatInfo>> {
+    let st = crate::main::streams::userspace::cached_stat(
+        host,
+        path,
+        link,
+        quiet,
+        crate::main::streams::userspace::URL_STAT_IGNORE_OPEN_BASEDIR,
+    );
     if st.is_none() {
         // a stat of another path takes php's cache over
         crate::main::streams::userspace::clear_stat_cache();
@@ -130,19 +141,16 @@ fn stat_failed(
     if p.contains(&0) {
         crate::warn(host, fname, "Filename contains null byte")?;
     } else if !p.is_empty() {
-        crate::warn(
-            host,
-            fname,
-            &[
-                if link {
-                    b"Lstat failed for ".as_slice()
-                } else {
-                    b"stat failed for "
-                },
-                &p,
-            ]
-            .concat(),
-        )?;
+        let msg = [
+            if link {
+                b"Lstat failed for ".as_slice()
+            } else {
+                b"stat failed for "
+            },
+            &p,
+        ]
+        .concat();
+        crate::warn(host, fname, &msg)?;
     }
     Ok(Value::Bool(false))
 }

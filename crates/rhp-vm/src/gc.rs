@@ -433,11 +433,7 @@ impl Vm {
     }
 
     /// One pass of zend_gc_collect_cycles (up to `rerun_gc`).
-    fn gc_run(
-        &mut self,
-        dtor_ns: &mut u64,
-        free_ns: &mut u64,
-    ) -> Result<Run, Thrown> {
+    fn gc_run(&mut self, dtor_ns: &mut u64, free_ns: &mut u64) -> Result<Run, Thrown> {
         gc::count_run();
         gc::set_active(true);
 
@@ -536,7 +532,10 @@ impl Vm {
             }
             // A WeakMap entry is live when its map and its key are.
             for e in &g.eph {
-                let map_live = g.maps.get(&e.map).is_none_or(|&m| g.nodes[m as usize].black);
+                let map_live = g
+                    .maps
+                    .get(&e.map)
+                    .is_none_or(|&m| g.nodes[m as usize].black);
                 if map_live && g.live_addr(e.key) && !g.nodes[e.v as usize].black {
                     stack.push(e.v);
                 }

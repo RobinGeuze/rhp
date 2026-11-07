@@ -225,7 +225,26 @@ impl Vm {
         // allow_url_fopen and allow_url_include.
         let mut reason_override = None;
         let mut quiet_open = false;
-        let found = if builtins::main::streams::is_filter_url(&raw_path) {
+        let mut user_stream = None;
+        let user = if self.user_wrappers.is_empty() {
+            None
+        } else {
+            self.user_include(&raw_path, kind)?
+        };
+        let found = if let Some(u) = user {
+            match u {
+                crate::user_streams::UserInclude::Opened { key, data, stream } => {
+                    user_stream = Some(stream);
+                    Some((key, IncludeSource::Streamed(data)))
+                }
+                crate::user_streams::UserInclude::Failed(reason) => {
+                    quiet_open = reason.is_none();
+                    reason_override = reason;
+                    None
+                }
+                crate::user_streams::UserInclude::AlreadyIncluded => return Ok(Value::Bool(true)),
+            }
+        } else if builtins::main::streams::is_filter_url(&raw_path) {
             // php://filter: opened and read through the stream layer.
             self.include_docref = Some(kind.name());
             let data = match builtins::Host::stream_open_ctx(self, &raw_path, b"rb", &Value::Null) {
@@ -360,7 +379,12 @@ impl Vm {
         }
         self.included_files.insert(realpath.clone());
 
-        let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source)?;
+        let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source);
+        // zend_destroy_file_handle: the stream closes after compiling
+        if let Some(s) = user_stream.take() {
+            self.close_user_state(Some(s));
+        }
+        let prog = prog?;
         self.emit_compile_diags(&prog);
         if let Some(t) = self.pending_throw.take() {
             return Err(t);

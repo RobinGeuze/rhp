@@ -29,7 +29,7 @@ pub enum UnserProp {
     Fail,
 }
 
-use crate::main::streams::{ops, plain_wrapper};
+use crate::main::streams::{ops, plain_wrapper, userspace};
 use crate::main::{ini, rfc1867, sapi};
 use crate::zend::object_handlers;
 use crate::{StatInfo, StreamWrapper, Thrown};
@@ -664,6 +664,36 @@ pub trait Host {
         WrapperRestore::NeverExisted
     }
 
+    /// Whether any user wrapper (`stream_wrapper_register`) is registered.
+    fn has_user_wrappers(&self) -> bool {
+        false
+    }
+
+    /// The user wrapper registered under `protocol` (exactly as written).
+    fn user_wrapper(&self, _protocol: &[u8]) -> Option<Rc<userspace::UserWrapper>> {
+        None
+    }
+
+    /// `php_register_url_stream_wrapper_volatile`: false when the protocol
+    /// is taken.
+    fn register_stream_wrapper(&mut self, _protocol: &[u8], _w: Rc<userspace::UserWrapper>) -> bool {
+        false
+    }
+
+    /// A stream resource over a user stream; `ctx` is the context it holds.
+    fn user_stream_insert(&mut self, _s: Box<userspace::UserStream>, _ctx: Option<Value>) -> Value {
+        Value::Bool(false)
+    }
+
+    /// Take the user stream behind `res` out for an operation (none when it
+    /// is not one, or is busy); [`Host::user_stream_put`] gives it back.
+    fn user_stream_take(&mut self, _res: &Value) -> Option<Box<userspace::UserStream>> {
+        None
+    }
+
+    /// Give back a user stream [`Host::user_stream_take`] took.
+    fn user_stream_put(&mut self, _res: &Value, _s: Box<userspace::UserStream>) {}
+
     /// The current PHP call stack for `debug_backtrace`/`debug_print_backtrace`:
     /// one entry per frame, innermost first, as
     /// `(function, class, file, line, this_object)` where file/line are the call
@@ -750,7 +780,7 @@ pub trait Host {
     /// `fgets($res)` → one line (incl. newline), or None at EOF.
     fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>>;
     /// `feof($res)`.
-    fn stream_eof(&self, res: &Value) -> bool;
+    fn stream_eof(&mut self, res: &Value) -> bool;
     /// `fclose($res)` (flushes writable streams to their target).
     fn stream_close(&mut self, res: &Value) -> bool;
     /// `fflush($res)`.

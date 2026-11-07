@@ -43,6 +43,7 @@ mod streams;
 mod stub_default;
 mod traits;
 mod types;
+mod user_streams;
 mod zpp;
 
 use std::cell::RefCell;
@@ -241,6 +242,9 @@ pub struct Vm {
     // Built-in wrappers `stream_wrapper_unregister` took out, kept for
     // `stream_wrapper_restore` (None: one served outside `wrappers`).
     wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
+    // User wrappers in `wrappers`, in registration order (php's hash order
+    // for `stream_get_wrappers`).
+    user_wrappers: Vec<Vec<u8>>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for

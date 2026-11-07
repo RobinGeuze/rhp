@@ -152,6 +152,8 @@ pub(crate) enum StreamState {
     Fd(builtins::main::streams::plain_wrapper::FdStream),
     /// A stream on an extension's ops (zip entries).
     Ops(Box<builtins::main::streams::ops::OpsStream>),
+    /// A stream a user wrapper opened; `None` while an operation runs.
+    User(Option<Box<builtins::main::streams::userspace::UserStream>>),
 }
 
 impl Vm {
@@ -257,6 +259,10 @@ impl Vm {
                 .is_some(),
             Some(StreamState::Ops(mut s)) => {
                 s.close(self)?;
+                true
+            }
+            Some(StreamState::User(s)) => {
+                self.close_user_state(s);
                 true
             }
             Some(_) => true,

@@ -375,6 +375,16 @@ fn fn_flock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if let Some(r) = &wb {
         *r.borrow_mut() = Value::Int(0);
     }
+    if host.has_user_wrappers() {
+        let mut lop = [libc::LOCK_SH, libc::LOCK_EX, libc::LOCK_UN][act as usize - 1] as i64;
+        if op & 4 != 0 {
+            lop |= libc::LOCK_NB as i64;
+        }
+        let us = crate::main::streams::userspace::OPTION_LOCKING;
+        if let Some(r) = crate::main::streams::userspace::set_option(host, &h, us, lop, None) {
+            return Ok(Value::Bool(r == 0));
+        }
+    }
     // Socket streams do not implement php's LOCKING option.
     if host.stream_sock_info(&h).is_some() {
         return Ok(Value::Bool(false));

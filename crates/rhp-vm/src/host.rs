@@ -438,16 +438,64 @@ impl Host for Vm {
         let mut rest: Vec<Vec<u8>> = self
             .wrappers
             .keys()
-            .filter(|k| !ORDER.contains(&k.as_slice()))
+            .filter(|k| !ORDER.contains(&k.as_slice()) && !self.user_wrappers.contains(k))
             .cloned()
             .collect();
         rest.sort();
         v.extend(rest);
+        // user wrappers last, in registration order (php's hash order)
+        v.extend(self.user_wrappers.iter().cloned());
         v
+    }
+
+    fn has_user_wrappers(&self) -> bool {
+        !self.user_wrappers.is_empty()
+    }
+
+    fn user_wrapper(
+        &self,
+        protocol: &[u8],
+    ) -> Option<Rc<builtins::main::streams::userspace::UserWrapper>> {
+        self.host_user_wrapper(protocol)
+    }
+
+    fn register_stream_wrapper(
+        &mut self,
+        protocol: &[u8],
+        w: Rc<builtins::main::streams::userspace::UserWrapper>,
+    ) -> bool {
+        self.host_register_wrapper(protocol, w)
+    }
+
+    fn user_stream_insert(
+        &mut self,
+        s: Box<builtins::main::streams::userspace::UserStream>,
+        ctx: Option<Value>,
+    ) -> Value {
+        self.host_user_stream_insert(s, ctx)
+    }
+
+    fn user_stream_take(
+        &mut self,
+        res: &Value,
+    ) -> Option<Box<builtins::main::streams::userspace::UserStream>> {
+        self.host_user_stream_take(res)
+    }
+
+    fn user_stream_put(
+        &mut self,
+        res: &Value,
+        s: Box<builtins::main::streams::userspace::UserStream>,
+    ) {
+        self.host_user_stream_put(res, s)
     }
 
     fn stream_wrapper_unregister(&mut self, scheme: &[u8]) -> bool {
         if let Some(w) = self.wrappers.remove(scheme) {
+            if let Some(i) = self.user_wrappers.iter().position(|u| u == scheme) {
+                self.user_wrappers.remove(i);
+                return true;
+            }
             // the original stays the one restore brings back
             self.wrappers_off.entry(scheme.to_vec()).or_insert(Some(w));
             return true;
@@ -462,6 +510,10 @@ impl Host for Vm {
     fn stream_wrapper_restore(&mut self, scheme: &[u8]) -> builtins::WrapperRestore {
         match self.wrappers_off.remove(scheme) {
             Some(w) => {
+                if let Some(i) = self.user_wrappers.iter().position(|u| u == scheme) {
+                    self.user_wrappers.remove(i);
+                    self.wrappers.remove(scheme);
+                }
                 if let Some(w) = w {
                     self.wrappers.insert(scheme.to_vec(), w);
                 }
@@ -612,6 +664,11 @@ impl Host for Vm {
     }
 
     fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], ctx: &Value) -> Option<Value> {
+        if !self.user_wrappers.is_empty() {
+            if let Some((w, p)) = builtins::main::streams::userspace::locate(self, path) {
+                return self.open_user_stream(&w, path, &p, mode, 0, ctx);
+            }
+        }
         let writable = mode
             .iter()
             .any(|&b| matches!(b, b'w' | b'a' | b'x' | b'c' | b'+'));
@@ -838,6 +895,9 @@ impl Host for Vm {
         maxlen: usize,
         delim: &[u8],
     ) -> Option<Option<Vec<u8>>> {
+        if let Some(r) = self.with_user(res, |s, vm| s.get_record(vm, maxlen, delim)) {
+            return Some(r);
+        }
         let id = res_id(res)?;
         if !self.layer_reads(id) {
             return None;
@@ -888,6 +948,7 @@ impl Host for Vm {
         // Memory / temp streams (returned before the mode is recorded).
         match self.streams.get(&id)? {
             StreamState::Ops(s) => Some(s.mode.clone()),
+            StreamState::User(Some(s)) => Some(s.mode.clone()),
             StreamState::Mem { mode, .. } => Some(
                 match mode {
                     MemMode::ReadOnly => &b"rb"[..],
@@ -901,26 +962,47 @@ impl Host for Vm {
     }
 
     fn stream_write(&mut self, res: &Value, data: &[u8]) -> Option<usize> {
+        if let Some(n) = self.with_user(res, |s, vm| s.write(vm, data)) {
+            return (n >= 0).then_some(n as usize);
+        }
         self.stream_write_filtered(res, data)
     }
 
     fn stream_read(&mut self, res: &Value, len: i64) -> Option<Vec<u8>> {
+        if let Some(r) = self.with_user(res, |s, vm| {
+            if len < 0 {
+                Some(s.copy_to_mem(vm, None).unwrap_or_default())
+            } else {
+                s.read(vm, len as usize)
+            }
+        }) {
+            return r;
+        }
         self.stream_read_filtered(res, len)
     }
 
     fn stream_gets(&mut self, res: &Value) -> Option<Vec<u8>> {
+        if let Some(r) = self.with_user(res, |s, vm| s.get_line(vm, None)) {
+            return r;
+        }
         let r = self.stream_gets_impl(res, None);
         self.deliver_stream_events(res);
         r
     }
 
     fn stream_gets_max(&mut self, res: &Value, max: usize) -> Option<Vec<u8>> {
+        if let Some(r) = self.with_user(res, |s, vm| s.get_line(vm, Some(max + 1))) {
+            return r;
+        }
         let r = self.stream_gets_impl(res, Some(max));
         self.deliver_stream_events(res);
         r
     }
 
-    fn stream_eof(&self, res: &Value) -> bool {
+    fn stream_eof(&mut self, res: &Value) -> bool {
+        if let Some(r) = self.with_user(res, |s, vm| s.stream_eof(vm)) {
+            return r;
+        }
         self.stream_eof_filtered(res)
     }
 
@@ -1303,10 +1385,16 @@ impl Host for Vm {
     }
 
     fn stream_flush(&mut self, res: &Value) -> bool {
+        if let Some(r) = self.with_user(res, |s, vm| s.flush(vm)) {
+            return r == 0;
+        }
         self.stream_flush_filtered(res)
     }
 
     fn stream_rewind(&mut self, res: &Value) -> bool {
+        if let Some(r) = self.with_user(res, |s, vm| s.seek(vm, 0, 0)) {
+            return r == 0;
+        }
         self.stream_rewind_filtered(res)
     }
 
@@ -1320,18 +1408,40 @@ impl Host for Vm {
                 K::Memory
             }
             StreamState::Stdout | StreamState::Stderr | StreamState::Stdin => K::Stdio,
+            StreamState::User(Some(s)) if s.dir => K::Dir,
+            StreamState::User(_) => K::Memory,
         })
     }
 
     fn stream_seek(&mut self, res: &Value, offset: i64, whence: i32) -> bool {
+        if let Some(r) = self.with_user(res, |s, vm| s.seek(vm, offset, whence)) {
+            return r == 0;
+        }
         self.stream_seek_filtered(res, offset, whence)
     }
 
     fn stream_tell(&mut self, res: &Value) -> Option<i64> {
+        if let Some(r) = self.with_user(res, |s, _| s.tell()) {
+            return Some(r);
+        }
         self.stream_tell_filtered(res)
     }
 
     fn stream_truncate(&mut self, res: &Value, size: i64) -> Option<bool> {
+        use builtins::main::streams::userspace as us;
+        if let Some(r) = self.with_user(res, |s, vm| {
+            if s.set_option(vm, us::OPTION_TRUNCATE_API, us::TRUNCATE_SUPPORTED, None)
+                != us::OPTION_RETURN_OK
+            {
+                return None;
+            }
+            Some(
+                s.set_option(vm, us::OPTION_TRUNCATE_API, us::TRUNCATE_SET_SIZE, Some(size))
+                    == us::OPTION_RETURN_OK,
+            )
+        }) {
+            return r;
+        }
         match self.streams.get_mut(&res_id(res)?)? {
             StreamState::File(f) => Some(f.truncate(size)),
             // A read-only memory stream refuses (TEMP_STREAM_READONLY).
@@ -1356,6 +1466,9 @@ impl Host for Vm {
     }
 
     fn stream_fstat(&mut self, res: &Value) -> Option<builtins::StatInfo> {
+        if let Some(r) = self.with_user(res, |s, vm| s.stat(vm)) {
+            return r;
+        }
         let id = res_id(res)?;
         if let Some((uri, _)) = self.streams.record(id).and_then(|s| s.origin.as_ref()) {
             let uri = uri.clone();
@@ -1448,7 +1561,11 @@ impl Host for Vm {
                     rfc2397: None,
                 });
             }
+            if let Some(m) = self.user_stream_meta(id) {
+                return Some(m);
+            }
             Some(match self.streams.get(&id)? {
+                StreamState::User(_) => return None,
                 StreamState::Ops(s) => M {
                     wrapper_type: s.wrapper_label.unwrap_or(""),
                     stream_type: s.label(),
@@ -1636,6 +1753,9 @@ impl Host for Vm {
     }
 
     fn dir_read(&mut self, res: &Value) -> Option<Vec<u8>> {
+        if let Some(r) = self.with_user(res, |s, vm| s.readdir(vm)) {
+            return r;
+        }
         match self.streams.get_mut(&res_id(res)?)? {
             StreamState::Dir { entries, pos, .. } => {
                 let e = entries.get(*pos).cloned();
@@ -1649,6 +1769,9 @@ impl Host for Vm {
     }
 
     fn dir_rewind(&mut self, res: &Value) {
+        if self.with_user(res, |s, vm| s.rewinddir(vm)).is_some() {
+            return;
+        }
         let Some(id) = res_id(res) else { return };
         // php re-reads the directory on rewind (rewinddir(3)).
         let url = match self.streams.get(&id) {
@@ -2573,7 +2696,7 @@ impl Vm {
                 }
                 return r;
             }
-            StreamState::Stdin | StreamState::Dir { .. } => Act::No,
+            StreamState::Stdin | StreamState::Dir { .. } | StreamState::User(_) => Act::No,
         };
         match act {
             Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),

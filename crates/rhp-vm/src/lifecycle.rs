@@ -130,6 +130,7 @@ impl Vm {
             zpp_fcc: None,
             wrappers,
             wrappers_off: HashMap::new(),
+            user_wrappers: Vec::new(),
             main_script_path: None,
             auto_prepend: true,
             streams: StreamTable::default(),

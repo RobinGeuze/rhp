@@ -1591,6 +1591,7 @@ Zend/tests/exceptions/exception_004.phpt
 Zend/tests/exceptions/exception_005.phpt
 Zend/tests/exceptions/exception_006.phpt
 Zend/tests/exceptions/exception_007.phpt
+Zend/tests/exceptions/exception_008.phpt
 Zend/tests/exceptions/exception_009.phpt
 Zend/tests/exceptions/exception_011.phpt
 Zend/tests/exceptions/exception_013.phpt
@@ -4359,6 +4360,7 @@ Zend/tests/try/bug72215_2.phpt
 Zend/tests/try/bug72215_3.phpt
 Zend/tests/try/bug72216.phpt
 Zend/tests/try/bug72629.phpt
+Zend/tests/try/bug73337.phpt
 Zend/tests/try/bug74444.phpt
 Zend/tests/try/catch_002.phpt
 Zend/tests/try/catch_003.phpt
@@ -7221,6 +7223,8 @@ ext/opcache/tests/block_removal_with_duplicate_successors.phpt
 ext/opcache/tests/bool_cp_in_pass1.phpt
 ext/opcache/tests/bool_not_cv.phpt
 ext/opcache/tests/bu69838.phpt
+ext/opcache/tests/bug64353.phpt
+ext/opcache/tests/bug64482.phpt
 ext/opcache/tests/bug65510.phpt
 ext/opcache/tests/bug65559.phpt
 ext/opcache/tests/bug65665.phpt
@@ -7260,6 +7264,7 @@ ext/opcache/tests/bug74152.phpt
 ext/opcache/tests/bug74431.phpt
 ext/opcache/tests/bug74442.phpt
 ext/opcache/tests/bug74456.phpt
+ext/opcache/tests/bug74596.phpt
 ext/opcache/tests/bug74623.phpt
 ext/opcache/tests/bug74663.phpt
 ext/opcache/tests/bug74980.phpt
@@ -7425,6 +7430,7 @@ ext/opcache/tests/jit/assign_036.phpt
 ext/opcache/tests/jit/assign_037.phpt
 ext/opcache/tests/jit/assign_038.phpt
 ext/opcache/tests/jit/assign_039.phpt
+ext/opcache/tests/jit/assign_040.phpt
 ext/opcache/tests/jit/assign_042.phpt
 ext/opcache/tests/jit/assign_043.phpt
 ext/opcache/tests/jit/assign_044.phpt
@@ -7435,6 +7441,7 @@ ext/opcache/tests/jit/assign_049.phpt
 ext/opcache/tests/jit/assign_050.phpt
 ext/opcache/tests/jit/assign_051.phpt
 ext/opcache/tests/jit/assign_052.phpt
+ext/opcache/tests/jit/assign_053.phpt
 ext/opcache/tests/jit/assign_054.phpt
 ext/opcache/tests/jit/assign_055.phpt
 ext/opcache/tests/jit/assign_056.phpt
@@ -7454,6 +7461,7 @@ ext/opcache/tests/jit/assign_dim_op_002.phpt
 ext/opcache/tests/jit/assign_dim_op_003.phpt
 ext/opcache/tests/jit/assign_dim_op_004.phpt
 ext/opcache/tests/jit/assign_dim_op_005.phpt
+ext/opcache/tests/jit/assign_dim_op_006.phpt
 ext/opcache/tests/jit/assign_dim_op_007.phpt
 ext/opcache/tests/jit/assign_dim_undef_exception.phpt
 ext/opcache/tests/jit/assign_obj_002.phpt
@@ -7467,6 +7475,7 @@ ext/opcache/tests/jit/assign_obj_op_002.phpt
 ext/opcache/tests/jit/assign_obj_op_003.phpt
 ext/opcache/tests/jit/assign_obj_ref_001.phpt
 ext/opcache/tests/jit/assign_op_001.phpt
+ext/opcache/tests/jit/assign_op_002.phpt
 ext/opcache/tests/jit/assign_op_003.phpt
 ext/opcache/tests/jit/assign_op_004.phpt
 ext/opcache/tests/jit/assign_op_005.phpt
@@ -7721,6 +7730,7 @@ ext/opcache/tests/jit/init_fcall_003.phpt
 ext/opcache/tests/jit/init_fcall_004.phpt
 ext/opcache/tests/jit/init_static_method_call_001.phpt
 ext/opcache/tests/jit/isset_001.phpt
+ext/opcache/tests/jit/isset_002.phpt
 ext/opcache/tests/jit/jmpz_001.phpt
 ext/opcache/tests/jit/jmpz_002.phpt
 ext/opcache/tests/jit/jmpz_ex_001.phpt
@@ -7826,6 +7836,7 @@ ext/opcache/tests/jit/ucall_001.phpt
 ext/opcache/tests/jit/ucall_002.phpt
 ext/opcache/tests/jit/ucall_003.phpt
 ext/opcache/tests/jit/ucall_004.phpt
+ext/opcache/tests/jit/undef_to_typed_ref.phpt
 ext/opcache/tests/jit/unreachable_block.phpt
 ext/opcache/tests/jit/verify_return_undef.phpt
 ext/opcache/tests/jit/xor_001.phpt
@@ -7913,6 +7924,7 @@ ext/opcache/tests/opt/sccp_023.phpt
 ext/opcache/tests/opt/sccp_025.phpt
 ext/opcache/tests/opt/sccp_027.phpt
 ext/opcache/tests/opt/sccp_028.phpt
+ext/opcache/tests/opt/sccp_029.phpt
 ext/opcache/tests/opt/sccp_030.phpt
 ext/opcache/tests/opt/sccp_033.phpt
 ext/opcache/tests/opt/sccp_034.phpt
@@ -9010,6 +9022,7 @@ ext/simplexml/tests/bug36611.phpt
 ext/simplexml/tests/bug37076.phpt
 ext/simplexml/tests/bug37076_1.phpt
 ext/simplexml/tests/bug37386.phpt
+ext/simplexml/tests/bug38347.phpt
 ext/simplexml/tests/bug38354.phpt
 ext/simplexml/tests/bug38406.phpt
 ext/simplexml/tests/bug38424.phpt
@@ -13047,6 +13060,7 @@ ext/tokenizer/tests/token_get_all_variation6.phpt
 ext/tokenizer/tests/token_get_all_variation7.phpt
 ext/tokenizer/tests/token_get_all_variation8.phpt
 ext/tokenizer/tests/token_get_all_variation9.phpt
+ext/uri/tests/oom_whatwg_idna_host.phpt
 ext/xml/tests/XML_OPTION_PARSE_HUGE.phpt
 ext/xml/tests/XML_OPTION_PARSE_HUGE_during_parsing.phpt
 ext/xml/tests/bug25666.phpt
@@ -13265,6 +13279,10 @@ ext/zip/tests/gh18439.phpt
 ext/zip/tests/gh19688.phpt
 ext/zip/tests/gh19932.phpt
 ext/zip/tests/gh22649.phpt
+ext/zip/tests/gh23276.phpt
+ext/zip/tests/gh23276_cancel_callback.phpt
+ext/zip/tests/gh23276_close_with_open_stream.phpt
+ext/zip/tests/gh23276_progress_callback.phpt
 ext/zip/tests/gh23747.phpt
 ext/zip/tests/oo_add_encoding.phpt
 ext/zip/tests/oo_add_from_string.phpt

@@ -29,6 +29,7 @@ Both engines read tools/php.ini (PHPRC), a php.ini like a distribution's.
                    PHPUnit's synthetic suite with process isolation);
                    minutes per command under rhp, so CI runs it nightly
   --quiet          print the DIFF details only into the output directory
+  --work DIR       the work directory (default tools/work)
 
 php is $RHP_PHP or `php`; composer (for setup) is $COMPOSER or `composer`.
 Each tool runs in tools/work/<tool>/ (vendor/ is cloned there from
@@ -55,6 +56,7 @@ PROJECT = HERE / "tools" / "project"
 WORK = HERE / "tools" / "work"
 PHP_INI = HERE / "tools" / "php.ini"
 TIMEOUT = 900
+BIG_TIMEOUT = 3600  # a big-tier command takes minutes of CPU under rhp
 
 # Normalisation: only what php itself varies from run to run, plus the
 # engine's binary path. Each rule is (name, pattern, replacement); the README
@@ -275,7 +277,7 @@ def spawn(argv, cwd, env, timeout=TIMEOUT):
     return out, err, code, ru.ru_utime + ru.ru_stime, rss
 
 
-def run_one(engine, tool, cmd, run_dir, files, binaries):
+def run_one(engine, tool, cmd, run_dir, files, binaries, timeout=TIMEOUT):
     reset(run_dir, files)
     # A minimal, fixed environment: no CI variables (php-cs-fixer's and
     # PHPStan's output depends on them), no colours, a fixed width, and HOME
@@ -293,7 +295,7 @@ def run_one(engine, tool, cmd, run_dir, files, binaries):
         "PHPRC": str(PHP_INI),
     }
     argv = [engine, tool["bin"], *shlex.split(cmd["args"])]
-    out, err, code, cpu, rss = spawn(argv, run_dir, env)
+    out, err, code, cpu, rss = spawn(argv, run_dir, env, timeout)
 
     def dec(b):
         text = b.decode("utf-8", "replace")
@@ -370,8 +372,9 @@ def cmd_diff(tools, candidate, only, quiet, big):
         for i, cmd in enumerate(t[tier]):
             if only and i not in only:
                 continue
-            ref = run_one(php, t, cmd, run_dir, files, binaries)
-            cand = run_one(candidate, t, cmd, run_dir, files, binaries)
+            timeout = BIG_TIMEOUT if big else TIMEOUT
+            ref = run_one(php, t, cmd, run_dir, files, binaries, timeout)
+            cand = run_one(candidate, t, cmd, run_dir, files, binaries, timeout)
             for who, r in (("php", ref), ("cand", cand)):
                 (out_dir / f"{i:02}.{who}.txt").write_text(
                     f"exit {r['code']}\n--stdout--\n{r['stdout']}--stderr--\n{r['stderr']}"
@@ -416,6 +419,7 @@ def main(argv):
         return 0
     sub, rest = argv[0], argv[1:]
     candidate = os.environ.get("RHP") or str(REPO / "target/release/rhp")
+    global WORK
     only, quiet, big, names = None, False, False, []
     it = iter(rest)
     for a in it:
@@ -427,6 +431,8 @@ def main(argv):
             quiet = True
         elif a == "--big":
             big = True
+        elif a == "--work":
+            WORK = Path(next(it)).resolve()
         else:
             names.append(a)
     tools = load()

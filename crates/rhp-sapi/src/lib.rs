@@ -21,9 +21,8 @@
 
 use std::io::Write;
 
-use rhp_builtins::zend::ParseFailure;
 use rhp_bytecode::Program;
-use rhp_compiler::parse::{Arena, Parsed};
+use rhp_compiler::parse::Arena;
 use rhp_values::{Thrown, Value};
 use rhp_vm::Vm;
 
@@ -173,44 +172,6 @@ impl Sapi for CliSapi {
     }
 }
 
-/// The error php raises parsing `src`: its own grammar, scanner and grammar
-/// action errors (`rhp_builtins::zend`). For code php parses but mago-syntax
-/// does not (mago's bugs, or its recursion limit on deeply nested code),
-/// mago's error, which is not php's.
-fn parse_error(parsed: &Parsed, src: &[u8], short_tags: bool) -> Option<ParseFailure> {
-    rhp_builtins::zend::syntax_error_ex(src, short_tags).or_else(|| {
-        let (message, line) = parsed.parse_error()?;
-        Some(ParseFailure {
-            class: "ParseError",
-            message,
-            line,
-        })
-    })
-}
-
-/// [`parse_error`] as the includer reports it, with the warnings php's
-/// parser raised before it.
-fn parse_failure(
-    parsed: &Parsed,
-    src: &[u8],
-    short_tags: bool,
-) -> Result<Vec<(i64, String, u32)>, IncludeError> {
-    let failure = parse_error(parsed, src, short_tags);
-    let diags = rhp_builtins::zend::take_parse_warnings()
-        .into_iter()
-        .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
-        .collect();
-    match failure {
-        Some(f) => Err(IncludeError::Parse {
-            class: f.class,
-            message: f.message,
-            line: f.line,
-            diags,
-        }),
-        None => Ok(diags),
-    }
-}
-
 /// rhp-builtins as the compiler sees it.
 static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     prelude: rhp_builtins::prelude,
@@ -263,25 +224,47 @@ fn output_filter(p: &mut Program, f: &rhp_builtins::zend::multibyte::OutputFilte
 }
 
 fn compile_source(file: &str, src: &[u8], mode: Mode) -> Result<Program, IncludeError> {
-    let arena = Arena::new();
     let short_tags = rhp_builtins::short_open_tag();
+    // php's own grammar decides what parses (its scanner, grammar and
+    // grammar action errors), with the warnings its parser raised. It runs
+    // before the parse arena exists, so the two never add up in the peak.
+    let php_failure = rhp_builtins::zend::syntax_error_ex(src, short_tags);
+    let parse_diags: Vec<_> = rhp_builtins::zend::take_parse_warnings()
+        .into_iter()
+        .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
+        .collect();
+    if let Some(f) = php_failure {
+        return Err(IncludeError::Parse {
+            class: f.class,
+            message: f.message,
+            line: f.line,
+            diags: parse_diags,
+        });
+    }
+    let arena = Arena::new();
     let parsed = arena.parse_with_short_tags(file.as_bytes(), src, short_tags);
-    // Code php's grammar accepts but mago does not, that php then refuses
-    // to compile.
-    if parsed.has_parse_errors() && rhp_builtins::zend::syntax_error_ex(src, short_tags).is_none() {
-        let diags: Vec<_> = rhp_builtins::zend::take_parse_warnings()
-            .into_iter()
-            .map(|(m, l)| (rhp_builtins::E_COMPILE_WARNING, m, l))
-            .collect();
+    if parsed.has_parse_errors() {
+        // Code php's grammar accepts but mago does not, that php then
+        // refuses to compile.
         if let Some((message, line)) = rhp_compiler::parse::mago_gap_error(src) {
             return Err(IncludeError::Compile {
                 message,
                 line,
-                diags,
+                diags: parse_diags,
+            });
+        }
+        // Code php parses but mago-syntax does not (mago's bugs, or its
+        // recursion limit on deeply nested code): mago's error, which is
+        // not php's.
+        if let Some((message, line)) = parsed.parse_error() {
+            return Err(IncludeError::Parse {
+                class: "ParseError",
+                message,
+                line,
+                diags: parse_diags,
             });
         }
     }
-    let parse_diags = parse_failure(&parsed, src, short_tags)?;
     let r = rhp_compiler::compile(&BUILTINS, parsed.program(), src, file, mode);
     if parse_diags.is_empty() {
         return r.map_err(include_error);

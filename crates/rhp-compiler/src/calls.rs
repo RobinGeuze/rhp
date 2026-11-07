@@ -679,24 +679,7 @@ impl ProtoBuilder<'_> {
     /// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
     /// global builtin constant that is not deprecated.
     pub(crate) fn ct_constant(&self, id: &Identifier) -> Option<Value> {
-        let namespaced_fq =
-            matches!(id, Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
-        if !namespaced_fq {
-            match crate::names::identifier_name(id)
-                .to_ascii_lowercase()
-                .as_slice()
-            {
-                b"true" => return Some(Value::Bool(true)),
-                b"false" => return Some(Value::Bool(false)),
-                b"null" => return Some(Value::Null),
-                _ => {}
-            }
-        }
-        let (name, fallback) = self.cx.resolve_name(id, NameKind::Const);
-        if fallback.is_some() {
-            return None;
-        }
-        (self.cx.builtins.constant)(&name)
+        crate::fold::ct_constant(self.cx, id)
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a

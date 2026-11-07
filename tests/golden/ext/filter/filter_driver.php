@@ -115,3 +115,6 @@ show('bad has_var type', fn() => filter_has_var(42, 'a'));
 var_dump(filter_input(INPUT_GET, 'a', FILTER_DEFAULT, FILTER_NULL_ON_FAILURE));
 show('input throw', fn() => filter_input(INPUT_GET, 'a', FILTER_DEFAULT, FILTER_THROW_ON_FAILURE));
 var_dump(filter_id('validate_email'), filter_id('callback'), filter_id('x'), count(filter_list()));
+
+// convert_to_string warns on NAN
+show('nan', fn() => filter_var(NAN, FILTER_VALIDATE_FLOAT));

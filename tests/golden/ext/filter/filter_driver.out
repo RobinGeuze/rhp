@@ -155,3 +155,5 @@ int(274)
 int(1024)
 bool(false)
 int(21)
+nan: error 2: unexpected NAN value was coerced to string
+bool(false)

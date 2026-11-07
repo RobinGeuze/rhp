@@ -418,7 +418,8 @@ fn zval_filter(
         let s = match &*value {
             Value::Str(_) => None,
             Value::Object(_) => crate::zend::object_handlers::to_string(host, value)?,
-            v => Some(conv::to_string_bytes(v)),
+            // convert_to_string: NAN warns
+            v => Some(crate::zend::zpp::zval_get_string(host, v)?),
         };
         if let Some(s) = s {
             *value = Value::str(s);

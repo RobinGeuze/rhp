@@ -1,0 +1,31 @@
+concat: ~a
+a!
+~b
+cast done
+prop: ~c
+c
+~d
+bool(true)
+~e
+add done
+~f
+caught from f line 8
+~old-static
+after static
+~old-global
+after global
+~old-ref
+after ref
+~old-e
+outer caught from old-e line 8
+finally1
+~loop
+caught from loop
+finally2
+~tmp
+caught esc
+~s1
+~s2
+caught from s2 prev from s1
+1 left
+end

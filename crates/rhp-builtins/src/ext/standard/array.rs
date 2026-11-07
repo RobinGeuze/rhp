@@ -3417,26 +3417,31 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             !unused,
         );
     }
-    let ptr = arr.data_ptr();
+    let mut ptr = arr.data_ptr();
     let mut expect_len = arr.len();
     drop(arr);
-    let same = |v: &Value, len: usize| matches!(v, Value::Array(a) if a.data_ptr() == ptr && a.len() == len);
+    let same = |v: &Value, ptr, len: usize| matches!(v, Value::Array(a) if a.data_ptr() == ptr && a.len() == len);
     // php holds an extra reference to the table while destructors run
     // (GC_ADDREF), so any write by a destructor separates the variable;
     // `held` is that reference. Once the variable has moved on, the rest
     // are still destroyed from the old table.
     let mut held: Option<PhpArray> = None;
     let mut modified = false;
+    let mut pending: Option<Thrown> = None;
+    let trace_mark = PhpArray::new();
     for k in dropped {
         let v = {
             let mut g = rc.borrow_mut();
-            if !modified && same(&g, expect_len) {
+            if !modified && same(&g, ptr, expect_len) {
                 let Value::Array(a) = &mut *g else {
                     unreachable!()
                 };
                 drop(held.take());
                 expect_len -= 1;
+                // (A copy elsewhere, such as an exception trace's argument,
+                // separates the table here: still ours.)
                 let v = a.remove(&k);
+                ptr = a.data_ptr();
                 held = Some(a.clone());
                 v
             } else {
@@ -3445,13 +3450,25 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             }
         };
         drop(v);
-        host.run_released_destructors()?;
+        // A throwing destructor leaves its exception pending; the rest are
+        // still destroyed, each later exception chained to it.
+        if let Err(e) = host.run_released_destructors() {
+            // The exception's trace took the table as an argument: php's
+            // shares it (and sees the deletions); here it would keep the
+            // remaining elements alive. It gets the result at the end.
+            host.trace_replace_array(&e, ptr, &Value::Array(trace_mark.clone()));
+            pending = Some(match pending.take() {
+                Some(p) => host.chain_thrown(e, p),
+                None => e,
+            });
+        }
     }
-    if modified || !same(&rc.borrow(), expect_len) {
-        return Err(Thrown::error(
-            "Error",
-            "Array was modified during array_splice operation",
-        ));
+    if modified || !same(&rc.borrow(), ptr, expect_len) {
+        let e = Thrown::error("Error", "Array was modified during array_splice operation");
+        return Err(match pending {
+            Some(p) => host.chain_thrown(e, p),
+            None => e,
+        });
     }
     if !iter_moves.is_empty() {
         let d = out.make_mut();
@@ -3459,8 +3476,14 @@ fn fn_array_splice(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
             d.iter_add(id, p);
         }
     }
-    *rc.borrow_mut() = Value::Array(out);
-    Ok(Value::Array(removed))
+    *rc.borrow_mut() = Value::Array(out.clone());
+    match pending {
+        Some(e) => {
+            host.trace_replace_array(&e, trace_mark.data_ptr(), &Value::Array(out));
+            Err(e)
+        }
+        None => Ok(Value::Array(removed)),
+    }
 }
 
 /// php_splice's HashTable iterator updates, on positions: an rhp table has

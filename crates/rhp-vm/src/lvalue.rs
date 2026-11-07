@@ -2187,7 +2187,7 @@ impl Vm {
         let cls = h.borrow().class;
         let msg = format!(
             "Indirect modification of overloaded element of {} has no effect",
-            String::from_utf8_lossy(self.class(cls).name.as_bytes())
+            String::from_utf8_lossy(crate::errors::c_name(self.class(cls).name.as_bytes()))
         );
         self.diag(builtins::E_NOTICE, &msg)
     }

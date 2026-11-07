@@ -303,6 +303,9 @@ pub struct Vm {
     // False-to-array deprecations already raised for the open cursor's
     // write (its walk then converts quietly).
     skip_false_dep: u32,
+    // A compound assignment's operator left its operands for the
+    // `AssignLval` to free once the store is done (`free_bin_operands`).
+    compound_free: Option<(Reg, Reg)>,
     // The typed property the open cursor's leaf is, as the last
     // `cursor_through_check` found it.
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,

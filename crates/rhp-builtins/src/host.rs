@@ -104,6 +104,11 @@ pub enum ObCall {
         name: &'static str,
         func: crate::OutputHandlerFn,
     },
+    /// php_output_start_default: a buffer an internal function collects its
+    /// output in (`Bool(false)`: not started; a fatal error may be pending).
+    StartDefault,
+    /// php_output_discard: drop the active buffer and its contents.
+    Discard,
     Flush,
     Clean,
     EndFlush,
@@ -221,6 +226,12 @@ pub trait Host {
         Ok(())
     }
 
+    /// Whether `r` is bound to typed properties (ZEND_REF_HAS_TYPE_SOURCES).
+    fn ref_is_typed(&self, r: &rhp_values::PhpRef) -> bool {
+        let _ = r;
+        false
+    }
+
     /// Make the typed property `key` of `obj`, whose slot holds `r`, a type
     /// source of that reference (ZEND_REF_ADD_TYPE_SOURCE).
     fn add_ref_type_source(
@@ -255,6 +266,14 @@ pub trait Host {
     /// `thrown` raised while `previous` is pending: php makes `previous` the
     /// new exception's previous one. An `exit` in `previous` wins.
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown;
+
+    /// In the traces of `thrown` and its previous exceptions, put `with` in
+    /// place of every argument that is the array stored at `data_ptr`
+    /// (`PhpArray::data_ptr`). php's traces share the argument's table, so
+    /// a function that keeps changing it in place changes what they show.
+    fn trace_replace_array(&mut self, thrown: &Thrown, data_ptr: usize, with: &Value) {
+        let _ = (thrown, data_ptr, with);
+    }
 
     /// A directive's current value (the per-request ini store shared with
     /// `ini_get`/`ini_set`; a null value reads as ""), or None when no loaded

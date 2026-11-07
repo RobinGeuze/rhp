@@ -134,8 +134,10 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   rest), then destructors (globals holding the sole reference, last first, then
   every remaining object in creation order), then all output buffers are flushed.
   Objects with a `__destruct` are tracked; one the program releases is destructed
-  at the next instruction boundary (frame return, overwritten/unset variable, end
-  of an expression statement via `ClearTemps`), reporting the line of the
+  at the next instruction boundary (frame return, overwritten/unset variable,
+  a `static`/`global`/`=&` binding or catch variable replacing it, an
+  instruction consuming an object or array temporary — php's FREE_OP — or the
+  end of an expression statement via `ClearTemps`), reporting the line of the
   instruction before that boundary; a non-public `__destruct` the releasing
   scope may not call throws php's "Call to private X::__destruct()" (a
   warning during shutdown). Gap: an object freed while only a

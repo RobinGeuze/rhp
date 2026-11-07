@@ -453,8 +453,12 @@ FeFree is emitted at the loop end and before `break N`/`continue N`, `return`
 and `goto` leave the loop (only loops inside the innermost try/finally; outer
 ones are left to the frame). On a jump `end` is the loop end: an exception a
 destructor throws there is handled as if thrown at the loop end
-(ZEND_FREE_ON_RETURN). A temporary is not freed on exception unwinding until the
-frame goes (php's live ranges are not modelled). Its HashTable iterator does go:
+(ZEND_FREE_ON_RETURN). A `break`/`continue` through a finally frees the loops
+outside it once the finally ran: the jump goes to a stub after the try
+statement that runs their FeFree and jumps on (php interleaves FAST_CALL and
+FE_FREE the same way). A temporary is not freed on exception unwinding until a
+catch frees the try's temporaries or the exception leaves the frame (php's
+live ranges are not modelled). Its HashTable iterator does go:
 the frame records each running loop's iterator (`Frame::fe_live`), and a catch
 that frees the try's temporaries, the frame going, or the same loop starting
 again drops one its loop left without `FeFree`.
@@ -520,9 +524,17 @@ RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
    takes them), so an object passed as a temporary is freed when the call
    returns and its handle comes back as in php (oop-model.md, "Fresh id")
--- php's live ranges, approximated: `f()[k]` clears the call's result once
-   the element is out, and an exception caught by a try frees the try
-   body's temporaries (`ExRegion::temps` up) before the handler runs
+-- php's FREE_OP, approximated: an instruction that consumes a temporary
+   holding an object or array (binary operators and concatenation past
+   their scalar fast paths, `(string)`, property and dimension reads)
+   clears it (`Vm::free_tmp`), so its destructor runs before the next
+   instruction, reported at this one; a compound assignment's operands go
+   after its store, as php frees OP_DATA last (`AssignLval` frees them; a
+   variable's `Assign` runs inside the operator)
+-- php's live ranges, approximated: an exception caught by a try frees the
+   try body's temporaries (`ExRegion::temps` up), and one leaving a frame
+   frees the frame's, their destructors running (chained) before the
+   handler; a failed `new`'s evaluated arguments go before its object
 -- arg-staging refinements, emitted before the Call* as needed --
 SendRef    { slot, cv }               place MakeRef(cv) into the arg window (by-ref parameter)
 ArgName    { slot, name: NIdx }       tag a window slot named (CallUser rebinds by ParamInfo.name)

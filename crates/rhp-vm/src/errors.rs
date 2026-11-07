@@ -1166,6 +1166,14 @@ impl Vm {
             // without its destructor (zend_cleanup_unfinished_calls).
             for &(start, end, dst) in &proto.new_ranges {
                 if throw_pc > start && throw_pc < end {
+                    // zend_vm_stack_free_args first: the arguments evaluated
+                    // so far (the temporaries above the object) go before it.
+                    let n = self.stack[top].regs.len();
+                    for r in dst as usize + 1..n {
+                        if !matches!(self.stack[top].regs[r], Value::Undef | Value::Null) {
+                            self.reg_set(top, r as rhp_bytecode::Reg, Value::Null);
+                        }
+                    }
                     if let Value::Object(h) = self.reg_get(top, dst) {
                         self.destructibles.retain(|d| !Rc::ptr_eq(d, &h));
                     }
@@ -1205,8 +1213,10 @@ impl Vm {
                 .cloned()
                 .collect();
             for region in regions {
-                if self.free_try_temps(top, region.temps) && !self.destructibles.is_empty() {
-                    // Destructed as they are freed, before the handler.
+                // Destructed as they are freed, before the handler: the
+                // try's temporaries, and a failed builtin's arguments.
+                self.free_try_temps(top, region.temps);
+                if !self.destructibles.is_empty() {
                     match self.collect_released() {
                         Ok(()) => {}
                         Err(e) if !e.is_catchable() => return Err(e),
@@ -1227,16 +1237,18 @@ impl Vm {
                             let obj = self.thrown_to_object(&thrown)?;
                             // php assigns the catch variable like `$e = ...`:
                             // through a reference it holds (a global's cell).
-                            // A typed reference may refuse it: that error is
-                            // thrown from the catch block's start.
+                            // At the catch line: a typed reference may refuse it, and
+                            // the old value's destructor runs there (ZEND_CATCH),
+                            // outside the try.
                             if let Some(vr) = arm.var_reg {
+                                self.stack[top].pc = arm.target as usize + 1;
                                 if let Err(e) = self.cv_assign_as(top, vr, obj, true) {
-                                    self.stack[top].pc = arm.target as usize + 1;
                                     thrown = self.materialize(e, None);
                                     continue 'unwind;
                                 }
+                            } else {
+                                self.stack[top].pc = arm.target as usize;
                             }
-                            self.stack[top].pc = arm.target as usize;
                             self.unsilence_frames(top + 1);
                             return Ok(UnwindResult::Caught);
                         }
@@ -1247,6 +1259,19 @@ impl Vm {
                     self.stack[top].pc = fin as usize;
                     self.unsilence_frames(top + 1);
                     return Ok(UnwindResult::Caught);
+                }
+            }
+            // cleanup_live_vars: the frame's temporaries go before it is
+            // left, their destructors running at the throwing line.
+            if self.free_try_temps(top, proto.num_cvs) && !self.destructibles.is_empty() {
+                match self.collect_released() {
+                    Ok(()) => {}
+                    Err(e) if !e.is_catchable() => return Err(e),
+                    Err(e) => {
+                        let e = self.materialize(e, None);
+                        self.chain_previous(&e, thrown);
+                        thrown = e;
+                    }
                 }
             }
             let popped = self.stack.pop();

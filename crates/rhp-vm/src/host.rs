@@ -124,6 +124,10 @@ impl Host for Vm {
         self.assign_to_ref(r, v, strict).map(|_| ())
     }
 
+    fn ref_is_typed(&self, r: &rhp_values::PhpRef) -> bool {
+        self.typed_refs.has(r)
+    }
+
     fn add_ref_type_source(
         &mut self,
         r: &rhp_values::PhpRef,
@@ -155,6 +159,54 @@ impl Host for Vm {
                 thrown
             }
             other => other,
+        }
+    }
+
+    fn trace_replace_array(&mut self, thrown: &Thrown, data_ptr: usize, with: &Value) {
+        let Thrown::Object(first) = thrown else {
+            return;
+        };
+        let mut cur = Some(first.clone());
+        let mut seen = 0;
+        while let Some(h) = cur.take() {
+            seen += 1;
+            if seen > 64 {
+                break;
+            }
+            let tkey = self.declared_prop_key(&h, b"trace");
+            let pkey = self.declared_prop_key(&h, b"previous");
+            let mut o = h.borrow_mut();
+            if let Some(Value::Array(trace)) = o.properties.get_mut(&tkey) {
+                let is_it = |v: &Value| matches!(v, Value::Array(a) if a.data_ptr() == data_ptr);
+                let args_key = ArrayKey::Str("args".into());
+                let frames: Vec<ArrayKey> = trace.iter().map(|(k, _)| k.clone()).collect();
+                for fk in frames {
+                    let hits: Vec<ArrayKey> = match trace.get(&fk) {
+                        Some(Value::Array(f)) => match f.get(&args_key) {
+                            Some(Value::Array(args)) => args
+                                .iter()
+                                .filter(|(_, v)| is_it(v))
+                                .map(|(k, _)| k.clone())
+                                .collect(),
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+                    for ak in hits {
+                        if let Some(Value::Array(f)) = trace.get_mut(&fk) {
+                            if let Some(Value::Array(args)) = f.get_mut(&args_key) {
+                                if let Some(v) = args.get_mut(&ak) {
+                                    *v = with.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            cur = match o.properties.get(&pkey) {
+                Some(Value::Object(p)) => Some(p.clone()),
+                _ => None,
+            };
         }
     }
 

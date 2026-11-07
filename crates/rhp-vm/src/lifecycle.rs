@@ -158,6 +158,7 @@ impl Vm {
             deferred_undef_src: None,
             deferred_undef_key: None,
             skip_false_dep: 0,
+            compound_free: None,
             cursor_leaf: None,
             cursor_null_key: false,
             cursor_ref_null: 0,

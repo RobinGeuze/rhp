@@ -939,13 +939,19 @@ impl ProtoBuilder<'_> {
             ));
         };
         let cv = self.cv(strip_dollar(d.name));
+        // A compound assignment's result register comes before its operand's
+        // temporaries: that tells the VM it is not `$x = $x <op> ...`
+        // (`Vm::free_bin_operands`).
+        let dst = match a.operator {
+            AssignmentOperator::Assign(_) => 0,
+            _ => self.alloc_temp(),
+        };
         let rhs = self.compile_expr(a.rhs)?;
 
         let value_reg = match &a.operator {
             AssignmentOperator::Assign(_) => rhs,
             op => {
                 // compound: dst = cv <op> rhs
-                let dst = self.alloc_temp();
                 let instr = match op {
                     AssignmentOperator::Addition(_) => Instr::Add { dst, a: cv, b: rhs },
                     AssignmentOperator::Subtraction(_) => Instr::Sub { dst, a: cv, b: rhs },
@@ -989,6 +995,17 @@ impl ProtoBuilder<'_> {
     /// is the result and nothing is written or evaluated further. Otherwise
     /// evaluate `rhs` and assign it. Sub-expressions of `lhs` (keys, objects)
     /// are evaluated exactly once.
+    /// A copy of temporary `r` for an instruction that frees it when `r`
+    /// is needed again afterwards; a variable as it is.
+    fn keep_temp(&mut self, r: Reg) -> Reg {
+        if r < self.num_cvs {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
+    }
+
     fn compile_coalesce_assign(
         &mut self,
         lhs: &Expression,
@@ -1018,9 +1035,20 @@ impl ProtoBuilder<'_> {
             Expression::Access(Access::Property(pa)) => {
                 let obj = self.compile_quiet(pa.object)?;
                 let sel = self.compile_prop_selector(&pa.property)?;
+                // The read frees a temporary container (FREE_OP): read a
+                // copy, the write below needs it.
+                let read = self.keep_temp(obj);
                 match sel {
-                    Sel::Static(name) => self.emit(Instr::FetchPropIs { dst, obj, name }),
-                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs { dst, obj, name }),
+                    Sel::Static(name) => self.emit(Instr::FetchPropIs {
+                        dst,
+                        obj: read,
+                        name,
+                    }),
+                    Sel::Dyn(name) => self.emit(Instr::FetchPropDynIs {
+                        dst,
+                        obj: read,
+                        name,
+                    }),
                 }
                 let jnn = self.code.len();
                 self.emit(Instr::Nop);
@@ -1081,6 +1109,8 @@ impl ProtoBuilder<'_> {
                         t
                     }
                 };
+                // (The write goes through the root again: see above.)
+                cur = self.keep_temp(cur);
                 for step in &steps {
                     let t = self.alloc_temp();
                     match step {

@@ -1566,6 +1566,25 @@ fn read_source(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<Option<V
     ext::standard::md5::read_file_for_hash(host, fname, &target)
 }
 
+/// Run `f` the way php runs code that prints into a buffer it then reads
+/// back (php_output_start_default … php_output_discard): starting the buffer
+/// inside a running output handler is fatal, and with output deactivated
+/// (after such a fatal) it is an Error.
+fn buffered<T>(host: &mut dyn Host, f: impl FnOnce(&mut dyn Host) -> T) -> Result<T, Thrown> {
+    let started = matches!(
+        host.output_control(crate::ObCall::StartDefault)?,
+        Value::Bool(true)
+    );
+    if !started {
+        return Err(host
+            .take_pending_throw()
+            .unwrap_or_else(|| Thrown::error("Error", "Unable to start output handler")));
+    }
+    let r = f(host);
+    host.output_control(crate::ObCall::Discard)?;
+    Ok(r)
+}
+
 fn fn_highlight_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     highlight_file(host, args, "highlight_file")
 }
@@ -1594,13 +1613,16 @@ fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
         failed(host)?;
         return Ok(Value::Bool(false));
     };
-    let html = zend::highlight::highlight(
-        zend::highlight::skip_shebang(&src),
-        &zend::highlight::Colors::from_ini(),
-    );
+    let highlight = |_: &mut dyn Host| {
+        zend::highlight::highlight(
+            zend::highlight::skip_shebang(&src),
+            &zend::highlight::Colors::from_ini(),
+        )
+    };
     if ret {
-        return Ok(Value::str(html));
+        return Ok(Value::str(buffered(host, highlight)?));
     }
+    let html = highlight(host);
     host.write_out(&html);
     Ok(Value::Bool(true))
 }
@@ -1608,10 +1630,12 @@ fn highlight_file(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Va
 fn fn_highlight_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let src = conv::to_string_bytes(&deref(&args[0]));
     let ret = args.get(1).is_some_and(|v| conv::to_bool(&deref(v)));
-    let html = zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
+    let highlight =
+        |_: &mut dyn Host| zend::highlight::highlight(&src, &zend::highlight::Colors::from_ini());
     if ret {
-        return Ok(Value::str(html));
+        return Ok(Value::str(buffered(host, highlight)?));
     }
+    let html = highlight(host);
     host.write_out(&html);
     Ok(Value::Bool(true))
 }
@@ -1619,6 +1643,7 @@ fn fn_highlight_string(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
 fn fn_php_strip_whitespace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "php_strip_whitespace";
     let path = zend::zpp::path_param(host, args, 0, fname, "filename")?;
+    buffered(host, |_| ())?;
     let Some(src) = read_source(host, fname, &path)? else {
         return Ok(Value::str(""));
     };

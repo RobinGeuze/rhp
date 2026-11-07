@@ -1,0 +1,21 @@
+__get p
+__set p gD1
+~1
+--
+get k
+set k vD2
+~2
+--
+~3
+~4
+--
+~5
+--
+~6
+__set p D6
+~7
+set k D7
+end
+~9
+~8
+done

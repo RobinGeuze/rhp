@@ -292,6 +292,10 @@ impl Clone for ArrayData {
                 out.data = alloc_block(hash_layout(self.size()));
                 out.index_mut().fill(EMPTY);
                 let holes = self.count as usize != used;
+                // One past the previous live position: iterators on the
+                // holes before an element move with it, the pointer only
+                // when on it (zend_array_dup_elements).
+                let mut from = 0usize;
                 for (idx, p) in b.iter().enumerate() {
                     if matches!(p.val, Value::Undef) {
                         continue;
@@ -303,12 +307,13 @@ impl Clone for ArrayData {
                         }
                         if let Some(it) = &mut iters {
                             for e in it.iter_mut() {
-                                if e.1 == idx {
+                                if e.1 >= from && e.1 <= idx {
                                     e.1 = to;
                                 }
                             }
                         }
                     }
+                    from = idx + 1;
                     let bucket = Bucket {
                         val: dup(&p.val),
                         h: p.h,

@@ -305,7 +305,9 @@ current element leaves the pointer on the next one. `reset`/`end`/`next`/
 `prev` follow `zend_hash_internal_pointer_*` and `zend_hash_move_*`; the
 past-the-end position (`used()`, php's `nNumUsed`) picks up a later
 append. A copy-on-write separation restarts a past-the-end pointer at 0, as
-`zend_array_dup` does. `array_pop`/`array_shift` are `ArrayData::pop`/
+`zend_array_dup` does; compacting a hash moves the pointer only when it is
+on an element, and iterators on a hole move to the next element.
+`array_pop`/`array_shift` are `ArrayData::pop`/
 `shift`, php's code paths (renumbering in place, moving iterators).
 `array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
 is copied along with the array, so the walk survives a copy-on-write

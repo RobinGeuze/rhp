@@ -332,8 +332,9 @@ pub struct Vm {
     /// The end-of-request resource list close is running: filters see a
     /// null stream.
     closing_resources: bool,
-    /// Open streams with a filter layer (their release is checked at
-    /// function returns: php frees a resource on its last reference).
+    /// Open streams with a filter layer, plus user wrapper streams (their
+    /// release is checked at once: php frees a resource on its last
+    /// reference, and their close runs PHP code).
     filtered_streams: u32,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,

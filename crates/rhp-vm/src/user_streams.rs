@@ -96,6 +96,9 @@ impl Vm {
         ctx: Option<Value>,
     ) -> Value {
         let dir = s.dir;
+        // its release is watched like a filtered stream's: the close
+        // calls the wrapper
+        self.filtered_streams += 1;
         let v = self.make_stream(StreamState::User(Some(s)), "stream");
         if dir {
             self.last_dir = Some(v.clone());

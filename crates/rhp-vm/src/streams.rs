@@ -266,6 +266,7 @@ impl Vm {
                 true
             }
             Some(StreamState::User(s)) => {
+                self.filtered_streams = self.filtered_streams.saturating_sub(1);
                 self.close_user_state(s);
                 true
             }

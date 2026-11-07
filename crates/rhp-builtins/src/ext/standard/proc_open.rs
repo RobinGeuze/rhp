@@ -729,7 +729,7 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     for (k, item) in spec.iter() {
         let index =
             match k {
-                ArrayKey::Int(n) => *n as i32,
+                ArrayKey::Int(n) => n as i32,
                 ArrayKey::Str(_) => return Err(Thrown::error(
                     "ValueError",
                     "proc_open(): Argument #2 ($descriptor_spec) must be an integer indexed array",

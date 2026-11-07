@@ -603,7 +603,7 @@ fn parse_encoding_array(
 ) -> Result<Vec<Enc>, Thrown> {
     let mut out = Vec::new();
     let mut included_auto = false;
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let name = crate::zend::zpp::zval_get_string(host, v)?;
         if name.eq_ignore_ascii_case(b"auto") {
             if !included_auto {
@@ -2307,7 +2307,10 @@ fn find_strings(v: &Value, out: &mut Vec<PhpStr>) -> Result<(), Stopped> {
         let i = *pos;
         *pos += 1;
         next = match top {
-            Value::Array(a) => a.get_index(i).map(|(_, c)| c.clone()),
+            Value::Array(a) => a.fetch_from(i).map(|(p, _, c)| {
+                *pos = p + 1;
+                c.clone()
+            }),
             Value::Object(h) => h.borrow().props().get_index(i).map(|(_, c)| c.clone()),
             Value::Ref(r) => (i == 0).then(|| r.borrow().clone()),
             _ => None,
@@ -2337,12 +2340,9 @@ impl Frame {
         let take = |v: &mut Value| std::mem::replace(v, Value::Null);
         match self {
             Frame::Array(a, pos) => {
-                if *pos >= a.len() {
-                    return None;
-                }
-                let i = *pos;
-                *pos += 1;
-                a.make_mut().entries.get_index_mut(i).map(|(_, v)| take(v))
+                let (p, _, _) = a.fetch_from(*pos)?;
+                *pos = p + 1;
+                a.make_mut().at_mut(p).map(|(_, v)| take(v))
             }
             Frame::Object(h, pos) => {
                 let mut b = h.borrow_mut();
@@ -2366,7 +2366,7 @@ impl Frame {
     fn put_back(&mut self, v: Value) {
         match self {
             Frame::Array(a, pos) => {
-                if let Some((_, slot)) = a.make_mut().entries.get_index_mut(*pos - 1) {
+                if let Some((_, slot)) = a.make_mut().at_mut(*pos - 1) {
                     *slot = v;
                 }
             }

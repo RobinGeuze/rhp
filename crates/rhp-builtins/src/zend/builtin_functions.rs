@@ -830,7 +830,7 @@ fn fn_debug_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
             return Ok(Value::Array(t));
         }
         let mut out = PhpArray::new();
-        for (_, v) in t.iter().take(limit as usize) {
+        for v in t.values().take(limit as usize) {
             out.push(v.clone());
         }
         return Ok(Value::Array(out));
@@ -862,7 +862,7 @@ fn fn_debug_print_backtrace(host: &mut dyn Host, args: &[Value]) -> Result<Value
     let limit = args.get(1).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     if let Some(Value::Array(t)) = host.backtrace(false, options & 2 != 0) {
         let mut frames = PhpArray::new();
-        for (_, v) in t.iter().take(if limit > 0 {
+        for v in t.values().take(if limit > 0 {
             limit as usize
         } else {
             usize::MAX

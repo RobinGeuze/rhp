@@ -968,7 +968,7 @@ fn fn_getopt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     };
     let argv: Vec<Vec<u8>> = argv.iter().map(|a| cstr(a)).collect();
     let mut opts = parse_short_opts(&short);
-    for (_, v) in longs.iter() {
+    for v in longs.values() {
         let mut name = cstr(&conv::to_string_bytes(&deref(v)));
         let mut need = 0;
         if name.last() == Some(&b':') {

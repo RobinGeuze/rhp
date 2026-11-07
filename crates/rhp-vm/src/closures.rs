@@ -199,7 +199,7 @@ impl Vm {
                 Some((sig.name.as_bytes().to_vec(), stub_params(sig.params), None))
             }
             Value::Array(a) => {
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 let [target, m] = &v[..] else { return None };
                 let m = rhp_values::conv::to_string_bytes(m);
                 match target {
@@ -298,7 +298,7 @@ impl Vm {
                 self.lookup_method(cid, &n[i + 2..])
             }
             Value::Array(a) => {
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 let [target, m] = &v[..] else { return None };
                 let m = rhp_values::conv::to_string_bytes(m);
                 let cid = match target {

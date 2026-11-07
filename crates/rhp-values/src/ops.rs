@@ -142,7 +142,7 @@ pub fn add(a: &Value, b: &Value) -> Result<Value, Thrown> {
     if let (Value::Array(x), Value::Array(y)) = (&deref(a), &deref(b)) {
         let mut out = x.clone();
         for (k, v) in y.iter() {
-            if out.get(k).is_none() {
+            if out.get(&k).is_none() {
                 out.insert(k.clone(), v.clone());
             }
         }
@@ -736,7 +736,7 @@ fn compare_arrays(
     COMPARING.with(|c| c.borrow_mut().push(p));
     let r = (|| {
         for (k, xv) in x.iter() {
-            match y.get(k) {
+            match y.get(&k) {
                 Some(yv) => match compare(xv, yv, cx)? {
                     Ordering::Equal => continue,
                     other => return Ok(other),
@@ -847,8 +847,8 @@ fn callables_equal(a: &Value, b: &Value) -> bool {
     match (&a, &b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
         (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
-            let xs: Vec<Value> = x.iter().map(|(_, v)| deref(v)).collect();
-            let ys: Vec<Value> = y.iter().map(|(_, v)| deref(v)).collect();
+            let xs: Vec<Value> = x.values().map(deref).collect();
+            let ys: Vec<Value> = y.values().map(deref).collect();
             let target = match (&xs[0], &ys[0]) {
                 (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
                 (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),

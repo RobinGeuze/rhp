@@ -14,7 +14,7 @@ use crate::{Host, Thrown};
 /// or raise the php `TypeError` naming the function and argument position.
 fn array_values(v: &Value, fname: &str, argno: usize) -> Result<Vec<Value>, Thrown> {
     match deref(v) {
-        Value::Array(arr) => Ok(arr.iter().map(|(_, v)| v.clone()).collect()),
+        Value::Array(arr) => Ok(arr.values().cloned().collect()),
         _ => Err(Thrown::type_error(format!(
             "{fname}(): Argument #{argno} ($values) must be of type array"
         ))),
@@ -668,7 +668,7 @@ fn fn_vsprintf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "vsprintf(): Argument #2 ($values) must be of type array",
         ));
     };
-    let values: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
+    let values: Vec<Value> = arr.values().cloned().collect();
     let out = do_sprintf(host, &fmt, &values, None)?;
     Ok(Value::str(out))
 }

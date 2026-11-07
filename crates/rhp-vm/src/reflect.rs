@@ -1407,7 +1407,7 @@ impl Vm {
         let Value::Array(key) = key else {
             return Ok(None);
         };
-        let mut k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
+        let mut k: Vec<Value> = key.values().cloned().collect();
         // A forged key (the prelude's helpers are callable from PHP) must
         // not index out of bounds.
         if k.len() < 4 {
@@ -1548,7 +1548,7 @@ impl Vm {
             },
             Value::Array(a) if a.len() == 3 => {
                 // [class, property, "get"|"set"]: a property hook.
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 let n = rhp_values::conv::to_string_bytes(&v[0]);
                 let Ok(cid) = self.resolve_class_by_name(&n) else {
                     return Ok(None);
@@ -1565,7 +1565,7 @@ impl Vm {
                     })
             }
             Value::Array(a) => {
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 if v.len() != 2 {
                     return Ok(None);
                 }
@@ -2114,7 +2114,7 @@ impl Vm {
         w: &Value,
     ) -> Option<FnSubject> {
         let Value::Array(a) = w else { return None };
-        let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+        let v: Vec<Value> = a.values().map(deref).collect();
         let [target, name] = &v[..] else { return None };
         let (class, this) = match target {
             Value::Object(h) => (h.borrow().class, Some(target.clone())),

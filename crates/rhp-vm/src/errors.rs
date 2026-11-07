@@ -384,14 +384,14 @@ impl Vm {
         }
         let class = self.class(f.defining_class?).name.clone();
         let args = self.frame_args(i);
-        let mut it = args.iter().map(|(_, v)| v);
+        let mut it = args.values();
         let Some(Value::Str(name)) = it.next() else {
             return None;
         };
         let m = rhp_bytecode::signatures::method(class.as_bytes(), name.as_bytes())?;
         let mut shown = PhpArray::new();
         if let Some(Value::Array(a)) = it.next() {
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 shown.push(deref(v));
             }
         }

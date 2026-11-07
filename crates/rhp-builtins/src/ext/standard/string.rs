@@ -150,14 +150,18 @@ fn replace_in_subject(
         ));
     };
     let mut cur = subject;
-    for (i, (_, sv)) in searches.iter().enumerate() {
+    let mut reps = match replace {
+        Value::Array(reps) => Some(reps.values()),
+        _ => None,
+    };
+    for sv in searches.values() {
         let sbytes = zval_get_string(host, sv)?;
-        let rbytes = match replace {
-            Value::Array(reps) => match reps.get_index(i) {
-                Some((_, v)) => zval_get_string(host, v)?,
+        let rbytes = match (replace, &mut reps) {
+            (_, Some(reps)) => match reps.next() {
+                Some(v) => zval_get_string(host, v)?,
                 None => Vec::new(),
             },
-            other => conv::to_string_bytes(other),
+            (other, None) => conv::to_string_bytes(other),
         };
         if sbytes.is_empty() {
             continue;
@@ -1414,7 +1418,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     }
     if pairs.len() == 1 {
         let (k, v) = pairs.iter().next().expect("one pair");
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let rep = zval_get_string(host, v)?;
         if key.is_empty() {
             host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1429,7 +1433,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     let mut first = [false; 256];
     let (mut minlen, mut maxlen) = (usize::MAX, 0usize);
     for (k, v) in pairs.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         if key.is_empty() {
             if matches!(k, ArrayKey::Str(_)) {
                 host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1504,33 +1508,42 @@ fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
-        for (i, (k, v)) in subj.iter().enumerate() {
+        let values = |v: &Value| match v {
+            Value::Array(a) => Some(a.clone()),
+            _ => None,
+        };
+        let (ra, sa) = (values(&replace), values(&start_arg));
+        let la = length_arg.as_ref().and_then(values);
+        let mut ri = ra.as_ref().map(|a| a.values());
+        let mut si = sa.as_ref().map(|a| a.values());
+        let mut li = la.as_ref().map(|a| a.values());
+        for (k, v) in subj.iter() {
             let sbytes = zval_get_string(host, v)?;
-            // replace: array -> nth element (else ""); scalar -> whole, for all.
-            let rep = match &replace {
-                Value::Array(ra) => match ra.get_index(i) {
-                    Some((_, rv)) => zval_get_string(host, rv)?,
+            // replace: array -> next element (else ""); scalar -> whole, for all.
+            let rep = match &mut ri {
+                Some(it) => match it.next() {
+                    Some(rv) => zval_get_string(host, rv)?,
                     None => Vec::new(),
                 },
-                other => conv::to_string_bytes(other),
+                None => conv::to_string_bytes(&replace),
             };
-            // start: array -> nth element (else 0); scalar -> per-subject.
-            let st = match &start_arg {
-                Value::Array(sa) => match sa.get_index(i) {
-                    Some((_, sv)) => crate::zend::zpp::zval_get_long(host, sv)?,
+            // start: array -> next element (else 0); scalar -> per-subject.
+            let st = match &mut si {
+                Some(it) => match it.next() {
+                    Some(sv) => crate::zend::zpp::zval_get_long(host, sv)?,
                     None => 0,
                 },
-                other => conv::to_int(other),
+                None => conv::to_int(&start_arg),
             };
-            // length: omitted -> to end; array -> nth element (else full string);
-            // scalar -> per-subject.
-            let ln = match &length_arg {
-                None => None,
-                Some(Value::Array(la)) => Some(match la.get_index(i) {
-                    Some((_, lv)) => crate::zend::zpp::zval_get_long(host, lv)?,
+            // length: omitted -> to end; array -> next element (else full
+            // string); scalar -> per-subject.
+            let ln = match (&length_arg, &mut li) {
+                (None, _) => None,
+                (_, Some(it)) => Some(match it.next() {
+                    Some(lv) => crate::zend::zpp::zval_get_long(host, lv)?,
                     None => sbytes.len() as i64,
                 }),
-                Some(other) => Some(conv::to_int(other)),
+                (Some(other), None) => Some(conv::to_int(other)),
             };
             out.insert(
                 k.clone(),
@@ -1823,7 +1836,7 @@ fn fn_strip_tags(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Each element becomes `<tag>`; an empty array allows nothing.
         Some(Value::Array(a)) => {
             let mut set = Vec::new();
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 set.push(b'<');
                 set.extend_from_slice(&crate::zend::zpp::zval_get_string(host, v)?);
                 set.push(b'>');
@@ -2080,7 +2093,7 @@ fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thr
     };
     // php_implode: arrays warn, objects use their string cast (or throw).
     let mut parts: Vec<std::borrow::Cow<[u8]>> = Vec::with_capacity(arr.len());
-    for (_, v) in arr.iter() {
+    for v in arr.values() {
         parts.push(match v {
             Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
             Value::Int(_) | Value::Bool(_) | Value::Null => {
@@ -2588,7 +2601,7 @@ fn fn_setlocale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let Value::Array(arr) = deref(a) else {
             continue;
         };
-        for (_, e) in arr.iter() {
+        for e in arr.values() {
             let s = crate::zend::zpp::zval_get_string(host, &deref(e))?;
             if let Some(r) = try_setlocale(host, cat, &s)? {
                 return Ok(Value::str(r));

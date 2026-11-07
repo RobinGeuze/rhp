@@ -970,7 +970,7 @@ fn mime_parts(
     let mut parts = Vec::new();
     let mut files = false;
     for (k, current) in postfields.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let current = deref(current);
         let prop = |host: &dyn Host, name: &str| {
             host.object_prop(&current, name.as_bytes())
@@ -1025,7 +1025,7 @@ fn mime_parts(
             continue;
         }
         let values: Vec<Value> = match &current {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             other => vec![other.clone()],
         };
         for v in values {
@@ -1947,7 +1947,7 @@ fn set_option(
                 )));
             };
             let mut lines = Vec::with_capacity(a.len());
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 lines.push(crate::zend::zpp::zval_get_string(host, &deref(v))?);
             }
             let mut slist: *mut sys::curl_slist = std::ptr::null_mut();
@@ -2145,7 +2145,7 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
     let mut ok = true;
     for (k, v) in arr.iter() {
         let option = match k {
-            ArrayKey::Int(i) => *i,
+            ArrayKey::Int(i) => i,
             ArrayKey::Str(_) => {
                 return Err(Thrown::error(
                     "ValueError",

@@ -102,7 +102,7 @@ fn resolve_in(
                 return Ok(());
             }
             seen_arrays.push(a.data_ptr());
-            for (_, val) in a.iter() {
+            for val in a.values() {
                 resolve_in(host, val, purpose, seen_arrays, seen_objects)?;
             }
         }
@@ -136,7 +136,7 @@ fn resolve_in(
             };
             let children: Vec<Value> = match view {
                 Some(view) => {
-                    let vals = view.iter().map(|(_, v)| v.clone()).collect();
+                    let vals = view.values().cloned().collect();
                     VIEWS.with(|m| m.borrow_mut().insert(id, view));
                     vals
                 }
@@ -152,7 +152,7 @@ fn resolve_in(
             }
             seen_objects.push(c.id);
             if let Some(view) = host.closure_debug_info(&Value::Closure(c.clone())) {
-                let vals: Vec<Value> = view.iter().map(|(_, v)| v.clone()).collect();
+                let vals: Vec<Value> = view.values().cloned().collect();
                 VIEWS.with(|m| m.borrow_mut().insert(c.id, view));
                 for v in &vals {
                     resolve_in(host, v, purpose, seen_arrays, seen_objects)?;
@@ -424,7 +424,7 @@ impl Dumper<'_> {
                     if a.is_empty() {
                         self.put(b"array(0) interned {\n");
                     } else {
-                        let packed = if is_packed(a) { "packed " } else { "" };
+                        let packed = if a.is_packed() { "packed " } else { "" };
                         self.put(
                             format!("array({}) {packed}refcount({rc}){{\n", a.len()).as_bytes(),
                         );
@@ -446,7 +446,7 @@ impl Dumper<'_> {
                         self.put(b"nesting level too deep");
                         continue;
                     }
-                    dump_key(&mut self.out, k);
+                    dump_key(&mut self.out, &k);
                     self.put(b"=>\n");
                     res = self.value(val, level + 2);
                     if res.is_err() {
@@ -686,30 +686,6 @@ impl Dumper<'_> {
     }
 }
 
-/// Whether php would hold `a` as a packed array (HT_IS_PACKED): integer
-/// keys in ascending order that a packed table of php's sizes (8, then
-/// doubling while at least half full) can hold.
-fn is_packed(a: &PhpArray) -> bool {
-    let mut size: i64 = 8;
-    let mut used: i64 = 0;
-    for (i, (k, _)) in a.iter().enumerate() {
-        let ArrayKey::Int(k) = *k else {
-            return false;
-        };
-        if k < used {
-            return false;
-        }
-        while k >= size {
-            if (i as i64) <= size / 2 || k >= size * 2 {
-                return false;
-            }
-            size *= 2;
-        }
-        used = k + 1;
-    }
-    true
-}
-
 /// `var_dump` of one value, without streaming: the output is returned in
 /// `out` (user code a view runs prints straight to the host).
 #[cfg(test)]
@@ -767,7 +743,7 @@ fn print_r_value(
             }
             let entries: Vec<(Vec<u8>, Value)> = a
                 .iter()
-                .map(|(k, val)| (print_r_key(k), val.clone()))
+                .map(|(k, val)| (print_r_key(&k), val.clone()))
                 .collect();
             printing.arrays.push(id);
             print_r_block(host, out, &entries, indent, printing);
@@ -918,7 +894,7 @@ fn var_export_value(
             seen.arrays.push(a.data_ptr());
             for (k, val) in a.iter() {
                 sp(level + 1, out);
-                export_key(out, k);
+                export_key(out, &k);
                 out.extend_from_slice(b" => ");
                 var_export_value(host, out, val, level + 2, seen);
                 out.extend_from_slice(b",\n");
@@ -1272,7 +1248,7 @@ impl Serializer {
             Value::Array(a) => {
                 out.extend_from_slice(format!("a:{}:{{", a.len()).as_bytes());
                 for (k, val) in a.iter() {
-                    serialize_key(out, k);
+                    serialize_key(out, &k);
                     self.nested(host, out, val)?;
                 }
                 out.push(b'}');
@@ -1341,7 +1317,7 @@ impl Serializer {
             };
             head(out, &cname, data.len());
             for (k, val) in data.iter() {
-                serialize_key(out, k);
+                serialize_key(out, &k);
                 self.nested(host, out, val)?;
             }
             out.push(b'}');
@@ -1444,7 +1420,7 @@ impl Serializer {
             // __sleep() but does not exist"), a repeat is dropped ("is
             // returned from __sleep() multiple times").
             let mut picked: Vec<(PhpStr, Value)> = Vec::new();
-            for (_, n) in names.iter() {
+            for n in names.values() {
                 let n = deref(n);
                 if !matches!(n, Value::Str(_)) {
                     host.emit_diagnostic(
@@ -1973,7 +1949,13 @@ impl Parser<'_, '_> {
                 {
                     return Ok(false);
                 }
-                let mut arr = PhpArray::new();
+                // array_finit_size_mixed: never packed (references into
+                // it may be kept while it fills).
+                let mut arr = if elements > 0 {
+                    PhpArray::with_capacity_mixed(elements as usize)
+                } else {
+                    PhpArray::new()
+                };
                 if elements > 0 {
                     let ok = self.nested_array(&mut arr, elements);
                     *rval.borrow_mut() = Value::Array(arr);
@@ -2457,7 +2439,7 @@ impl Parser<'_, '_> {
             if elements >= HT_MAX_SIZE {
                 return Ok(false);
             }
-            let mut arr = PhpArray::new();
+            let mut arr = PhpArray::with_capacity_mixed(elements as usize);
             let r = self.nested_array(&mut arr, elements);
             if !matches!(r, Ok(true)) {
                 self.host.mark_destructor_called(obj);
@@ -2766,7 +2748,7 @@ impl Unwrap<'_> {
                 }
             }
             Value::Array(a) => {
-                for (_, e) in a.iter() {
+                for e in a.values() {
                     if matches!(e, Value::Ref(_) | Value::Array(_) | Value::Object(_)) {
                         self.count(e);
                     }
@@ -2815,7 +2797,13 @@ impl Unwrap<'_> {
                 {
                     return Value::Array(a);
                 }
-                let mut out = PhpArray::new();
+                // Rebuilt with the same layout (unserialize's arrays are
+                // hash tables).
+                let mut out = if a.is_packed() {
+                    PhpArray::with_capacity(a.len())
+                } else {
+                    PhpArray::with_capacity_mixed(a.len())
+                };
                 for (k, e) in a.iter() {
                     out.insert(k.clone(), self.value(e.clone()));
                 }
@@ -2907,7 +2895,7 @@ fn unserialize_options(
         Some(Value::Bool(false)) => Some(Some(Vec::new())),
         Some(Value::Array(list)) => {
             let mut names = Vec::new();
-            for (_, v) in list.iter() {
+            for v in list.values() {
                 let v = deref(v);
                 // php: a string, or an object through its string cast.
                 if !matches!(v, Value::Str(_) | Value::Object(_)) {
@@ -3449,7 +3437,7 @@ impl SessionUnser {
         unwrap_all(&self.d, &root, !self.nested);
         let v = root.borrow().clone();
         match v {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         }
     }

@@ -388,7 +388,7 @@ fn encode_loop(
         return Ok(());
     };
     for (k, _) in copy.iter() {
-        let key = match k {
+        let key = match &k {
             ArrayKey::Int(n) => {
                 warn(host, &format!("Skipping numeric key {n}"))?;
                 continue;
@@ -396,7 +396,7 @@ fn encode_loop(
             ArrayKey::Str(s) => s.as_bytes().to_vec(),
         };
         let cur = match &*cell.borrow() {
-            Value::Array(a) => a.get(k).cloned(),
+            Value::Array(a) => a.get(&k).cloned(),
             _ => None,
         };
         if let Some(v) = cur {

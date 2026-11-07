@@ -78,7 +78,7 @@ fn fn_is_callable(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         match &v {
             Value::Str(_) | Value::Closure(_) => return Ok(Value::Bool(true)),
             Value::Array(a) if a.len() == 2 => {
-                let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+                let parts: Vec<Value> = a.values().map(deref).collect();
                 return Ok(Value::Bool(
                     matches!(
                         parts[0],
@@ -101,7 +101,7 @@ fn callable_name(host: &dyn Host, v: &Value) -> Vec<u8> {
     };
     match v {
         Value::Array(a) if a.len() == 2 => {
-            let parts: Vec<Value> = a.iter().map(|(_, x)| deref(x)).collect();
+            let parts: Vec<Value> = a.values().map(deref).collect();
             let method = match &parts[1] {
                 Value::Str(m) => m.as_bytes().to_vec(),
                 _ => return b"Array".to_vec(),
@@ -281,7 +281,7 @@ pub(crate) fn fn_array_is_list(host: &mut dyn Host, args: &[Value]) -> Result<Va
     let mut expected: i64 = 0;
     for (k, _) in a.iter() {
         match k {
-            ArrayKey::Int(n) if *n == expected => expected += 1,
+            ArrayKey::Int(n) if n == expected => expected += 1,
             _ => return Ok(Value::Bool(false)),
         }
     }

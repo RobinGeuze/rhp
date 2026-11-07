@@ -416,7 +416,7 @@ impl Host for TestHost<'_> {
         args: Value,
     ) -> Result<Value, Thrown> {
         let args: Vec<Value> = match args {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
         let mut cb = PhpArray::new();

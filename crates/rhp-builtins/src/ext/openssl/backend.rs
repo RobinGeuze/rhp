@@ -613,7 +613,7 @@ pub(super) fn setup_verify(
     }
     let (mut ndirs, mut nfiles) = (0, 0);
     if let Some(Value::Array(a)) = calist.map(deref) {
-        for (_, item) in a.iter() {
+        for item in a.values() {
             let s = try_string(host, item)?;
             let Some(path) = check_path(host, fname, &s, arg_num, false, true, None)? else {
                 continue;
@@ -708,7 +708,7 @@ pub(super) fn array_to_x509_sk(
     }
     let certs = deref(certs);
     let items: Vec<(Value, bool)> = match &certs {
-        Value::Array(a) => a.iter().map(|(_, v)| (v.clone(), true)).collect(),
+        Value::Array(a) => a.values().map(|v| (v.clone(), true)).collect(),
         v => vec![(v.clone(), false)],
     };
     for (v, from_array) in items {

@@ -376,7 +376,7 @@ fn recipient_certs(host: &mut dyn Host, f: &str, v: &Value) -> Result<CertStack,
     }
     let v = deref(v);
     let items: Vec<(Value, bool)> = match &v {
-        Value::Array(a) => a.iter().map(|(_, c)| (c.clone(), true)).collect(),
+        Value::Array(a) => a.values().map(|c| (c.clone(), true)).collect(),
         c => vec![(c.clone(), false)],
     };
     for (c, from_array) in items {

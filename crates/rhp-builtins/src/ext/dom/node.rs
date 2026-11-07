@@ -861,7 +861,7 @@ fn canonicalization(
     let mut have_prefixes = false;
     if let Value::Array(nsp) = &ns_prefixes {
         if exclusive {
-            for (_, v) in nsp.iter() {
+            for v in nsp.values() {
                 if let Value::Str(s) = super::deref(v) {
                     prefixes.push(c(s.as_bytes()));
                 }

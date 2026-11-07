@@ -401,7 +401,7 @@ fn fn_randomizer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let Value::Array(a) = arg(args, 2) else {
                 return Ok(Value::Null);
             };
-            let mut vals: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
+            let mut vals: Vec<Value> = a.values().cloned().collect();
             super::shuffle(&mut vals, &mut |lo, hi| engine_range(host, b, lo, hi))?;
             let mut out = PhpArray::with_capacity(vals.len());
             for v in vals {

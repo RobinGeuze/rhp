@@ -29,7 +29,7 @@ fn convert_variables_recursion_warns() {
         panic!()
     };
     assert_eq!(
-        rhp_values::conv::to_string_bytes(a.get_index(0).unwrap().1),
+        rhp_values::conv::to_string_bytes(a.nth(0).unwrap().1),
         b"\xc3\xa9"
     );
     let (r, d) = crate::test_support::run(
@@ -81,7 +81,7 @@ fn convert_variables_deep_nesting() {
             let mut v = cell.borrow().clone();
             for _ in 0..DEPTH {
                 let Value::Array(a) = v else { panic!() };
-                v = a.get_index(0).unwrap().1.clone();
+                v = a.nth(0).unwrap().1.clone();
             }
             assert_eq!(rhp_values::conv::to_string_bytes(&v), b"\xc3\xa9");
         })
@@ -124,8 +124,8 @@ fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
 fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
     match call(f, args) {
         Value::Array(a) => a
-            .iter()
-            .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
+            .values()
+            .map(|v| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
             .collect(),
         other => panic!("expected array, got {}", other.type_name()),
     }

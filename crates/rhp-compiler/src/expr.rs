@@ -889,7 +889,9 @@ impl ProtoBuilder<'_> {
             return Ok(dst);
         }
         let dst = self.alloc_temp();
-        self.emit(Instr::NewArray { dst, cap: 0 });
+        // ZEND_INIT_ARRAY's size: the number of elements.
+        let cap = els.clone().count() as u32;
+        self.emit(Instr::NewArray { dst, cap });
         for el in els {
             match el {
                 ArrayElement::KeyValue(kv) => {

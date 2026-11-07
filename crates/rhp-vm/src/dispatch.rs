@@ -1073,8 +1073,10 @@ impl Vm {
                     }
                 }
 
-                Instr::NewArray { dst, .. } => {
-                    self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
+                Instr::NewArray { dst, cap } => {
+                    // ZEND_INIT_ARRAY: sized for the literal's elements.
+                    let a = rhp_values::PhpArray::with_capacity(cap as usize);
+                    self.reg_set(top, dst, Value::Array(a));
                 }
                 Instr::ArrPush { arr, val } => {
                     let v = self.elem_operand(top, &proto, val)?;
@@ -2918,11 +2920,11 @@ impl Vm {
         let Value::Array(sig) = &proto.consts[sig as usize] else {
             return Ok(());
         };
-        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let sig: Vec<Value> = sig.values().cloned().collect();
         let fname = conv::to_string_bytes(&sig[0]);
         let variadic = matches!(sig[1], Value::Bool(true));
         let list = |v: &Value| match v {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
         let flags: Vec<Value> = list(&sig[2]);
@@ -3068,10 +3070,7 @@ impl Vm {
             };
             let key = match deref(&k) {
                 Value::Int(n) => ArrayKey::Int(n),
-                Value::Str(s) => match ArrayKey::from_php_str(&s) {
-                    ArrayKey::Int(n) => ArrayKey::Int(n),
-                    _ => ArrayKey::Str(s),
-                },
+                Value::Str(s) => ArrayKey::from_php_str(&s),
                 _ => {
                     return Err(Thrown::error(
                         "Error",
@@ -3401,10 +3400,9 @@ impl Vm {
         if let (Value::Array(a), Value::Int(pos)) =
             (&regs[arr_reg as usize], &regs[pos_reg as usize])
         {
-            let pos = *pos as usize;
-            match a.get_index(pos) {
-                Some((k, v)) => {
-                    let (k, v) = (k.clone(), deref(v));
+            match a.fetch_from(*pos as usize) {
+                Some((pos, k, v)) => {
+                    let v = deref(v);
                     // Bind as a PHP variable: if the loop var is still a
                     // reference (e.g. left over from a prior by-ref loop),
                     // write through it — matching PHP's foreach gotcha.
@@ -3919,7 +3917,7 @@ impl Vm {
         // variable to the yielded reference.
         if let Value::Array(st) = self.reg_get(top, pos_reg) {
             // A hooked plain object: `[position, plan]` (see FeResetRef).
-            if let Some(Value::Int(_)) = st.get_index(0).map(|e| e.1.clone()) {
+            if let Some(Value::Int(_)) = st.nth(0).map(|e| e.1.clone()) {
                 let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) else {
                     self.stack[top].pc = end as usize;
                     return Ok(());
@@ -3939,19 +3937,19 @@ impl Vm {
             }
             // ArrayObject / ArrayIterator storage (see FeResetRef).
             if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) {
                 let fetched = foreach_promote(&mut cell.borrow_mut(), pos as usize);
                 match fetched {
-                    Some((k, elem_rc)) => {
+                    Some((at, k, elem_rc)) => {
                         self.bind_ref_cv(top, val_cv, elem_rc);
                         if key_cv != Reg::MAX {
                             self.cv_assign(top, key_cv, k.to_value())?;
                         }
                         let mut st = PhpArray::new();
                         st.push(Value::Ref(cell));
-                        st.push(Value::Int(pos + 1));
+                        st.push(Value::Int(at as i64 + 1));
                         self.reg_set(top, pos_reg, Value::Array(st));
                     }
                     None => self.stack[top].pc = end as usize,
@@ -3961,8 +3959,8 @@ impl Vm {
             // An object-backed ArrayIterator (see FeResetRef): public
             // properties only (spl_array_skip_protected).
             if let (Some(Value::Object(o)), Some(Value::Int(id))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) {
                 let id = id as u32;
                 match self.prop_iter_next_in(None, &o, id, true)? {
@@ -3980,8 +3978,8 @@ impl Vm {
                 return Ok(());
             }
             let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) else {
                 self.stack[top].pc = end as usize;
                 return Ok(());

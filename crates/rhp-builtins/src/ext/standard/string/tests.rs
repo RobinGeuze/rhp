@@ -472,7 +472,7 @@ fn count_chars_cases() {
         .iter()
         .map(|(k, v)| {
             let ArrayKey::Int(n) = k else { panic!() };
-            (*n, conv::to_int(v))
+            (n, conv::to_int(v))
         })
         .collect();
     assert_eq!(pairs, vec![(101, 1), (104, 1), (108, 2), (111, 1)]);
@@ -750,8 +750,8 @@ fn str_ireplace_cases() {
         panic!("want array")
     };
     let got: Vec<String> = arr
-        .iter()
-        .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
+        .values()
+        .map(|v| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
         .collect();
     assert_eq!(got, vec!["XX".to_string(), "bcX".to_string()]);
 }
@@ -1306,8 +1306,8 @@ fn csv(args: &[Value]) -> Vec<Option<String>> {
     let r = fn_str_getcsv(&mut TestHost::new(), args).unwrap();
     match r {
         Value::Array(a) => a
-            .iter()
-            .map(|(_, v)| match v {
+            .values()
+            .map(|v| match v {
                 Value::Null => None,
                 Value::Str(s) => Some(String::from_utf8(s.as_bytes().to_vec()).unwrap()),
                 _ => unreachable!(),

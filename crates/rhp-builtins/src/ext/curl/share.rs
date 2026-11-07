@@ -194,7 +194,7 @@ pub(super) fn fn_curl_share_init_persistent(
         sys::php("CURL_LOCK_DATA_PSL"),
     ];
     let mut persistent_id: u64 = 0;
-    for (_, entry) in opts.iter() {
+    for entry in opts.values() {
         let entry = deref(entry);
         let Some(option) = try_get_long(host, &entry)? else {
             return Err(Thrown::type_error(format!(
@@ -225,7 +225,7 @@ pub(super) fn fn_curl_share_init_persistent(
         Some(p) => p as *mut CURLSH,
         None => {
             let share = unsafe { sys::curl_share_init() };
-            for (_, l) in list.iter() {
+            for l in list.values() {
                 let l = conv::to_int(l);
                 let r = unsafe {
                     sys::curl_share_setopt(share, sys::php("CURLSHOPT_SHARE") as c_int, l as c_long)

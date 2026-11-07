@@ -1480,8 +1480,8 @@ fn sxe_get_properties_for(
         let mut out = PhpArray::new();
         for (k, v) in a.iter() {
             let key = match k {
-                ArrayKey::Str(s) => ArrayKey::from_php_str(s),
-                k => k.clone(),
+                ArrayKey::Str(s) => ArrayKey::from_php_str(&s),
+                k => k,
             };
             out.insert(key, v.clone());
         }

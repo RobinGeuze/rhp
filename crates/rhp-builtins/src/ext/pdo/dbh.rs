@@ -263,11 +263,22 @@ fn construct_driver(
             b"Looking up the DSN from a URI is deprecated due to possible security concerns with DSNs coming from remote URIs",
         )?;
         let uri = dsn[4..].to_vec();
-        let line = cx.host.stream_open(&uri, b"rb").and_then(|s| {
-            let l = cx.host.stream_gets_max(&s, 511);
-            cx.host.stream_close(&s);
-            l
-        });
+        if uri.is_empty() {
+            return Err(Thrown::error("ValueError", "Path must not be empty"));
+        }
+        // php_stream_open_wrapper with REPORT_ERRORS
+        let line = match cx.host.stream_open(&uri, b"rb") {
+            Some(s) => {
+                let l = cx.host.stream_gets_max(&s, 511);
+                cx.host.stream_close(&s);
+                l
+            }
+            None => {
+                let fname = cx.fname.clone();
+                crate::open_failed(cx.host, &fname, &uri)?;
+                None
+            }
+        };
         let Some(line) = line else {
             let msg = format!(
                 "{}(): Argument #1 ($dsn) must be a valid data source URI",
@@ -381,14 +392,15 @@ pub(crate) fn get_bool_param(cx: &mut Cx, v: &Value) -> Result<bool, Thrown> {
     }
 }
 
-/// zend_argument_value_error for the attribute's value argument.
+/// zend_argument_value_error for the attribute's value argument. From the
+/// constructor's options php passes 3, which names `$password`.
 fn value_arg_error(cx: &Cx, n: usize, msg: &str) -> Thrown {
-    let pname = if n == 3 { "options" } else { "value" };
+    let pname = if n == 3 { "password" } else { "value" };
     cx.value_error(n, pname, msg)
 }
 
 fn value_arg_type_error(cx: &Cx, n: usize, msg: &str) -> Thrown {
-    let pname = if n == 3 { "options" } else { "value" };
+    let pname = if n == 3 { "password" } else { "value" };
     cx.type_error_arg(n, pname, msg)
 }
 

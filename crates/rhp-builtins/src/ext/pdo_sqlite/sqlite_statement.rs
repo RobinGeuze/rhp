@@ -241,7 +241,15 @@ impl StmtDriver for SqliteStmt {
                 let rc = if matches!(v, Value::Null) {
                     unsafe { sys::sqlite3_bind_null(s, idx) }
                 } else {
-                    let n = rhp_values::conv::to_int(&v);
+                    // convert_to_long: its float and object warnings
+                    let n = match crate::zend::object_handlers::object_to_number(
+                        cx.host,
+                        &v,
+                        rhp_values::ops::CastTarget::Int,
+                    )? {
+                        Some(x) => rhp_values::conv::to_int(&x),
+                        None => crate::zend::operators::zval_get_long(cx.host, &v)?,
+                    };
                     param.set_value(Value::Int(n));
                     unsafe { sys::sqlite3_bind_int64(s, idx, n) }
                 };

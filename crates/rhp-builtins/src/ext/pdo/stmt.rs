@@ -1046,7 +1046,7 @@ pub(crate) fn setup_fetch_mode(
                         Value::Array(arr) => {
                             if !arr.is_empty() {
                                 if !has_ctor(cx.host, &cls) {
-                                    return Err(cx.value_error(3, "constructorArgs", "must be empty when class provided in argument #2 ($class) does not have a constructor"));
+                                    return Err(variadic_value_error(cx, 3, "must be empty when class provided in argument #2 ($class) does not have a constructor"));
                                 }
                                 new.ctor_args = Some(arr.clone());
                             }

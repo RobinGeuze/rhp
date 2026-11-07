@@ -699,6 +699,7 @@ Zend/tests/bug70804.phpt
 Zend/tests/bug70895.phpt
 Zend/tests/bug70898.phpt
 Zend/tests/bug70912.phpt
+Zend/tests/bug70914.phpt
 Zend/tests/bug70918.phpt
 Zend/tests/bug71067.phpt
 Zend/tests/bug71086.phpt
@@ -2633,6 +2634,7 @@ Zend/tests/inheritance/bug70997.phpt
 Zend/tests/inheritance/bug71248.phpt
 Zend/tests/inheritance/bug71414.phpt
 Zend/tests/inheritance/bug71428.1.phpt
+Zend/tests/inheritance/bug71428.2.phpt
 Zend/tests/inheritance/bug71428.3.phpt
 Zend/tests/inheritance/bug72119.phpt
 Zend/tests/inheritance/bug72496.phpt
@@ -8198,6 +8200,7 @@ ext/opcache/tests/opt/tmp_001.phpt
 ext/opcache/tests/optimize_func_calls.phpt
 ext/opcache/tests/optimize_func_calls_001.phpt
 ext/opcache/tests/optimize_static_001.phpt
+ext/opcache/tests/optimize_static_003.phpt
 ext/opcache/tests/oss-fuzz-472563272.phpt
 ext/opcache/tests/oss_fuzz_66519.phpt
 ext/opcache/tests/parent_type_not_interned.phpt
@@ -9199,6 +9202,7 @@ ext/reflection/tests/bug76737.phpt
 ext/reflection/tests/bug76936.phpt
 ext/reflection/tests/bug77325.phpt
 ext/reflection/tests/bug77772.phpt
+ext/reflection/tests/bug77882.phpt
 ext/reflection/tests/bug78697.phpt
 ext/reflection/tests/bug78774.phpt
 ext/reflection/tests/bug78895.phpt

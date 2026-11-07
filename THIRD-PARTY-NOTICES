@@ -16,6 +16,13 @@ its complete source with the binary, or meet another option of LGPL-2.1
 section 6. Whoever bundles libgmp (section 18) must keep it a replaceable
 shared library and include the GPL-3.0 and LGPL-3.0 texts.
 
+The WordPress fixture app (tests/apps/wordpress-7.1) commits no WordPress
+code: `tests/apps/apps.py setup` downloads WordPress (GPL-2.0-or-later), the
+SQLite Database Integration plugin (GPL-2.0-or-later) and wp-cli (MIT) at
+pinned versions and checksums into git-ignored paths. Its committed files
+(wp-config.php, setup.php, the request corpus) are rhp's own. None of that
+software is linked into rhp or distributed with it.
+
 1. PCRE2           BSD-3-Clause WITH PCRE2-exception; JIT: BSD-2-Clause
 2. zlib            Zlib
 3. bzip2           bzip2-1.0.6

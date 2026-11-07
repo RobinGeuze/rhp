@@ -1,0 +1,6 @@
+# Downloaded by `apps.py setup` (see apps.toml): WordPress core, the SQLite
+# plugin and its db.php drop-in inside it, and wp-cli.
+/wordpress/
+/wp-cli.phar
+# The database and anything else written at run time.
+/var/

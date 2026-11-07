@@ -337,7 +337,8 @@ jobs:
         run: target/release/rhp-difftest gen readme --php-src php-src --check
 
   # Pinned framework fixture apps (tests/apps/apps.toml): the matrix is read
-  # from the manifest, so adding an app version needs no workflow change.
+  # from the manifest (one {app, php-extensions} entry per app), so adding an
+  # app version needs no workflow change.
   apps-matrix:
     name: fixture apps
     runs-on: ubuntu-latest
@@ -348,10 +349,12 @@ jobs:
       - id: m
         run: echo "apps=$(python3 tests/apps/apps.py matrix)" >> "$GITHUB_OUTPUT"
 
-  # Per app: install vendor/ from the lockfile (no composer scripts; cached on
-  # the lockfile hash), smoke-test its routes under php, then the compile-only
-  # ratchet: `rhp-difftest lint --check-known` fails only on a file rhp newly
-  # refuses; listed files that now compile are a notice, never a failure.
+  # Per app: fetch its pinned downloads (WordPress, ...; cached on the
+  # manifest hash), install vendor/ from the lockfile if it has one (no
+  # composer scripts; cached on the lockfile hash), smoke-test its routes
+  # under php, then the compile-only ratchet: `rhp-difftest lint
+  # --check-known` fails only on a file rhp newly refuses; listed files that
+  # now compile are a notice, never a failure.
   # Last, the request diff ratchet (`rhp-difftest app --check-known`).
   apps-lint:
     name: app ${{ matrix.app }}
@@ -360,18 +363,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ fromJSON(needs.apps-matrix.outputs.apps) }}
+        include: ${{ fromJSON(needs.apps-matrix.outputs.apps) }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-php
         with:
           php-version: '8.5'
+          extra-extensions: ${{ matrix.php-extensions }}
       # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
       - uses: actions/cache@v6
+        if: hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) != ''
         with:
           path: tests/apps/${{ matrix.app }}/vendor
           key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/rhp-apps
+          key: apps-downloads-${{ matrix.app }}-${{ hashFiles('tests/apps/apps.toml') }}
       - uses: actions/download-artifact@v8
         with:
           name: release

@@ -2,8 +2,8 @@
 """Drive the pinned fixture apps listed in tests/apps/apps.toml.
 
     python3 tests/apps/apps.py list                 # app names
-    python3 tests/apps/apps.py matrix               # CI matrix (JSON)
-    python3 tests/apps/apps.py setup [APP...]       # composer install + setup
+    python3 tests/apps/apps.py matrix               # CI matrix (JSON: app, php-extensions)
+    python3 tests/apps/apps.py setup [APP...]       # downloads + composer install + setup
     python3 tests/apps/apps.py smoke [APP...]       # console --version + routes under php -S
     python3 tests/apps/apps.py lint [APP...] [--write-known] [-- LINT ARGS]
     python3 tests/apps/apps.py diff [APP...] [--write-known] [-- APP ARGS]
@@ -15,20 +15,28 @@ the app's `lint` paths with `--check-known <known_refused>` (or
 `--check-known <known_requests>` (or `--write-known`). The binary is
 $RHP_DIFFTEST or target/release/rhp-difftest. CI runs exactly these commands.
 
+`setup` first fetches the app's pinned `[[app.download]]` files (cached in
+$RHP_APPS_CACHE, default ~/.cache/rhp-apps), checks each one's sha256 and
+unpacks archives (their single top directory stripped) into `to`.
+
 Needs python >= 3.11 (tomllib), php and composer.
 """
 
+import hashlib
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import tomllib
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -62,10 +70,64 @@ def run(cmd, cwd):
     subprocess.run(shlex.split(cmd), cwd=cwd, check=True)
 
 
+def cache_dir():
+    c = os.environ.get("RHP_APPS_CACHE")
+    return Path(c) if c else Path.home() / ".cache" / "rhp-apps"
+
+
+def fetch(url, sha256):
+    """The cached file for `url`, downloaded if missing; its sha256 checked."""
+    path = cache_dir() / f"{sha256[:16]}-{url.rsplit('/', 1)[-1]}"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"downloading {url}", flush=True)
+        tmp = path.with_suffix(path.suffix + ".part")
+        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        tmp.replace(path)
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != sha256:
+        path.unlink()
+        sys.exit(f"{url}: sha256 {got}, want {sha256} (removed from the cache)")
+    return path
+
+
+def unpack(archive, dest):
+    """Extract `archive` into `dest` (replaced), stripping its top directory."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
+        if archive.name.endswith(".zip"):
+            with zipfile.ZipFile(archive) as z:
+                z.extractall(tmp)
+        else:
+            with tarfile.open(archive) as t:
+                t.extractall(tmp, filter="data")
+        top = list(Path(tmp).iterdir())
+        if len(top) != 1 or not top[0].is_dir():
+            sys.exit(f"{archive.name}: expected a single top-level directory")
+        top[0].rename(dest)
+
+
+def download(a, d):
+    for dl in a.get("download", []):
+        src = fetch(dl["url"], dl["sha256"])
+        dest = d / dl["to"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.name.endswith((".zip", ".tar.gz", ".tgz")):
+            print(f"[{a['name']}] unpack {src.name} -> {dl['to']}", flush=True)
+            unpack(src, dest)
+        else:
+            print(f"[{a['name']}] copy {src.name} -> {dl['to']}", flush=True)
+            shutil.copyfile(src, dest)
+
+
 def cmd_setup(apps):
     for a in apps:
         d = HERE / a["name"]
-        run(a["install"], d)
+        download(a, d)
+        if a.get("install"):
+            run(a["install"], d)
         for c in a.get("setup", []):
             run(c, d)
 
@@ -92,8 +154,11 @@ def cmd_smoke(apps):
         # The server's log goes to a temp file, printed if anything fails (a
         # 500 under php -S is otherwise undiagnosable in CI).
         log = tempfile.TemporaryFile()
+        # `router = false`: php -S serves the docroot itself, running the
+        # .php file a path names and index.php for any other path.
+        router = [a["front_controller"]] if a.get("router", True) else []
         srv = subprocess.Popen(
-            [php, "-S", f"127.0.0.1:{port}", "-t", a["docroot"], a["front_controller"]],
+            [php, "-S", f"127.0.0.1:{port}", "-t", a["docroot"], *router],
             cwd=d,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -190,7 +255,14 @@ def main(argv):
     if sub == "list":
         print("\n".join(a["name"] for a in apps))
     elif sub == "matrix":
-        print(json.dumps([a["name"] for a in apps]))
+        print(
+            json.dumps(
+                [
+                    {"app": a["name"], "php-extensions": ", ".join(a.get("php_extensions", []))}
+                    for a in apps
+                ]
+            )
+        )
     elif sub == "setup":
         cmd_setup(select(apps, names))
     elif sub == "smoke":

@@ -416,6 +416,20 @@ fn base_env() -> Vec<(String, String)> {
     env
 }
 
+/// The script a request runs and its `SCRIPT_NAME`: the `.php` file under
+/// the docroot that the path names (`/wp-login.php`), as a web server's
+/// `location ~ \.php$` does; any other path goes to the front controller.
+fn script_for(app: &App, uri: &str) -> (PathBuf, String) {
+    let path = uri.split_once('?').map_or(uri, |(p, _)| p);
+    if path.ends_with(".php") && !path.split('/').any(|c| c == "..") {
+        let file = app.docroot.join(path.trim_start_matches('/'));
+        if file.is_file() {
+            return (file, path.to_string());
+        }
+    }
+    (app.front.clone(), app.script_name.clone())
+}
+
 /// The CGI/1.1 environment for one request.
 fn cgi_env(
     app: &App,
@@ -439,8 +453,9 @@ fn cgi_env(
     set("REQUEST_URI", &req.uri);
     set("QUERY_STRING", query);
     set("DOCUMENT_ROOT", &app.docroot.to_string_lossy());
-    set("SCRIPT_FILENAME", &app.front.to_string_lossy());
-    set("SCRIPT_NAME", &app.script_name);
+    let (script, script_name) = script_for(app, &req.uri);
+    set("SCRIPT_FILENAME", &script.to_string_lossy());
+    set("SCRIPT_NAME", &script_name);
     set("HTTP_HOST", "localhost");
     if body_len > 0 || method == "POST" || method == "PUT" || method == "PATCH" {
         let ct = req
@@ -1032,7 +1047,8 @@ fn run_corpus(
             .unwrap_or_default();
         let built = build_request(app, req, &jar, corpus.laravel_key.as_deref());
         let resp = built.map(|(env, body)| {
-            let cwd = app.front.parent().unwrap_or(&app.root);
+            let script = script_for(app, &req.uri).0;
+            let cwd = script.parent().unwrap_or(&app.root);
             let started = Instant::now();
             let r = run_engine(engine, cwd, &env, &body, timeout);
             if verbose {

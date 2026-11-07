@@ -314,7 +314,9 @@ The original notes:
   `url_stat`), the stat family (with php's one-entry stat cache), unlink,
   rename, mkdir, rmdir, touch/chmod/chown/chgrp, opendir/scandir,
   stream_select casts. A stream an include left open when a fatal error
-  unwound closes with the resource list at shutdown.
+  unwound closes with the resource list at shutdown. Not covered:
+  parse_ini_file through a user wrapper, and the `context` property is
+  written without php's visibility and readonly checks.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).

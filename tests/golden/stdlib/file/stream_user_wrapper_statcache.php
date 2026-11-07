@@ -30,3 +30,11 @@ $c = stream_context_create(['cx' => ['a' => 1]]);
 $f = fopen('cx://x', 'r', false, $c);
 var_dump(stream_context_get_options($f));
 var_dump(stream_get_meta_data($f)['wrapper_data']->context === $c);
+// a user dir stream has no "uri" (_php_stream_opendir sets no orig_path)
+class DirMetaWrapper {
+    public $context;
+    function dir_opendir($p, $o) { return true; }
+    function dir_readdir() { return false; }
+}
+stream_wrapper_register('dm', 'DirMetaWrapper');
+var_dump(array_keys(stream_get_meta_data(opendir('dm://x'))));

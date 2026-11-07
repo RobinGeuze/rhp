@@ -1,5 +1,10 @@
 bool(true)
 bool(true)
+int(1)
+array(1) {
+  [0]=>
+  string(4) "http"
+}
 open http://example.invalid/a rb
 string(5) "body
 "

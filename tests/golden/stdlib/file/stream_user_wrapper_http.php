@@ -12,6 +12,8 @@ class HttpMock {
 }
 var_dump(stream_wrapper_unregister('http'));
 var_dump(stream_wrapper_register('http', 'HttpMock', STREAM_IS_URL));
+// listed once, last
+var_dump(array_count_values(stream_get_wrappers())['http'], array_slice(stream_get_wrappers(), -1));
 var_dump(file_get_contents('http://example.invalid/a'));
 $f = fopen('http://example.invalid/b', 'r');
 var_dump(fgets($f));

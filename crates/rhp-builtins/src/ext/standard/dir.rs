@@ -23,12 +23,11 @@ fn do_opendir(
             Some(v @ Value::Resource(_)) => v,
             _ => host.default_stream_context(),
         };
-        let Some(mut s) = crate::main::streams::userspace::opendir(host, &w, &p, 0, Some(&ctx))
-        else {
+        // _php_stream_opendir leaves orig_path unset (no "uri" in the meta data)
+        let Some(s) = crate::main::streams::userspace::opendir(host, &w, &p, 0, Some(&ctx)) else {
             user_dir_failed(host, fname, &path)?;
             return Ok(None);
         };
-        s.orig_path = path.clone();
         let h = host.user_stream_insert(s, Some(ctx));
         return Ok(Some((path, h)));
     }

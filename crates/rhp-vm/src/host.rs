@@ -430,17 +430,16 @@ impl Host for Vm {
             b"zip",
         ];
         let builtin = |s: &[u8]| outside_map_wrapper(s) && !self.wrappers_off.contains_key(s);
+        let user = |s: &[u8]| self.user_wrappers.iter().any(|(u, _)| u == s);
         let mut v: Vec<Vec<u8>> = ORDER
             .iter()
-            .filter(|s| builtin(s) || self.wrappers.contains_key(**s))
+            .filter(|s| builtin(s) || (self.wrappers.contains_key(**s) && !user(s)))
             .map(|s| s.to_vec())
             .collect();
         let mut rest: Vec<Vec<u8>> = self
             .wrappers
             .keys()
-            .filter(|k| {
-                !ORDER.contains(&k.as_slice()) && !self.user_wrappers.iter().any(|(u, _)| u == *k)
-            })
+            .filter(|k| !ORDER.contains(&k.as_slice()) && !user(k))
             .cloned()
             .collect();
         rest.sort();

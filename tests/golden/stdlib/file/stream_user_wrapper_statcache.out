@@ -14,3 +14,23 @@ bool(true)
 array(0) {
 }
 bool(true)
+array(9) {
+  [0]=>
+  string(9) "timed_out"
+  [1]=>
+  string(7) "blocked"
+  [2]=>
+  string(3) "eof"
+  [3]=>
+  string(12) "wrapper_data"
+  [4]=>
+  string(12) "wrapper_type"
+  [5]=>
+  string(11) "stream_type"
+  [6]=>
+  string(4) "mode"
+  [7]=>
+  string(12) "unread_bytes"
+  [8]=>
+  string(8) "seekable"
+}

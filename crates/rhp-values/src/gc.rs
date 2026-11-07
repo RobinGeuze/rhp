@@ -152,6 +152,8 @@ struct State {
     enabled: Cell<bool>,
     active: Cell<bool>,
     protected: Cell<bool>,
+    /// Releases make no roots ([`drop_quietly`]).
+    quiet: Cell<bool>,
     full: Cell<bool>,
     /// A run is due at the next instruction boundary.
     due: Cell<bool>,
@@ -182,6 +184,7 @@ thread_local! {
             enabled: Cell::new(true),
             active: Cell::new(false),
             protected: Cell::new(false),
+            quiet: Cell::new(false),
             full: Cell::new(false),
             due: Cell::new(false),
             runs: Cell::new(0),
@@ -476,7 +479,7 @@ fn add_root(node: impl FnOnce() -> Node, key: Key) {
 /// buffer now.
 fn add_root_in(st: &State, node: impl FnOnce() -> Node, key: Key) -> bool {
     {
-        if st.protected.get() {
+        if st.protected.get() || st.quiet.get() {
             return false;
         }
         let Ok(mut b) = st.buf.try_borrow_mut() else {
@@ -850,6 +853,14 @@ pub fn active() -> bool {
 
 pub fn set_active(on: bool) {
     with(|st| st.active.set(on))
+}
+
+/// Drop `v` without making roots of what it releases: a prelude
+/// function's temporaries, which php's C code never has.
+pub fn drop_quietly(v: Value) {
+    let prev = with(|st| st.quiet.replace(true));
+    drop(v);
+    with(|st| st.quiet.set(prev));
 }
 
 pub fn protected() -> bool {

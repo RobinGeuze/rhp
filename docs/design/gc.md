@@ -24,6 +24,8 @@ dropped:
   (`PhpArray::insert` / `remove`, the cursor writes in lvalue.rs);
 - the values an object, array or closure holds when it is freed
   (`ObjectData::drop`, `ArrayData::drop`, `ClosureData::drop`);
+  a prelude function's foreach array is dropped with `gc::drop_quietly`
+  (php runs that code in C, where the array does not exist);
 - `unserialize()`'s result (php roots it explicitly).
 
 A temporary's release adds no root, as php's `zval_ptr_dtor_nogc`. A

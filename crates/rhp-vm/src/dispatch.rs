@@ -3647,7 +3647,13 @@ impl Vm {
         if clear_arr {
             let old = std::mem::replace(&mut regs[arr as usize], Value::Null);
             let held = matches!(old, Value::Object(_) | Value::Array(_));
-            drop(old);
+            // A prelude loop's array: php runs that code in C, with no
+            // array whose release could buffer the elements.
+            if self.stack[top].proto.is_internal() {
+                rhp_values::gc::drop_quietly(old);
+            } else {
+                drop(old);
+            }
             drop(handle);
             if held && !self.destructibles.is_empty() {
                 if end == NO_PC {

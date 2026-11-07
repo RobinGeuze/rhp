@@ -1,8 +1,9 @@
 # Framework fixture apps
 
-Real, pinned framework applications that rhp is measured against: today a
-compile-only ratchet (`rhp-difftest lint`) and the request diff
-(`rhp-difftest app`: `rhp --cgi` against php-cgi).
+Real, pinned framework applications that rhp is measured against: a
+compile-only ratchet (`rhp-difftest lint`), the request diff
+(`rhp-difftest app`: `rhp --cgi` against php-cgi) and the console battery
+(`apps.py console`: `bin/console`, `artisan` and wp-cli under php and rhp).
 The pinned dev tools (PHPUnit, PHPStan, Psalm, PHP-CS-Fixer, Rector) are
 measured on their own fixture project by `tools.py`; see "Dev tools" below.
 The frameworks' own PHPUnit suites run nightly from `tests/suites/`
@@ -261,6 +262,65 @@ would lose them).
   `container.build_id`/`build_time` masked). Resource metadata such as
   `ReflectionClassResource` hashes in `*.meta` files show up there.
 
+## The console battery (`apps.py console`)
+
+```sh
+cargo build --release -p rhp-cli
+python3 tests/apps/apps.py console                    # every app, --check-known
+python3 tests/apps/apps.py console laravel-13 -- --only inspire,w-queue
+python3 tests/apps/apps.py console wordpress-7.1 -- --candidate "$(command -v php)"  # self-check
+python3 tests/apps/apps.py console symfony-7.4 --write-known
+```
+
+Each app's `console.toml` (the manifest's `console_list`) lists console
+commands: `bin/console` for Symfony (33: `about`, `debug:*`, `lint:*`,
+`cache:*`, `list` in every format, ...), `artisan` for Laravel (56 commands,
+10 `tinker --execute` snippets and 10 workload scripts in
+`laravel-13/console/`, each booting the console kernel and printing
+support, view, security, validation, mail, HTTP, queue, database and
+storage results) and wp-cli for WordPress (73: post, user, option, term,
+comment, menu, widget, rewrite, cron, role, export, search-replace, media,
+i18n, db, `eval` one-liners and the `eval-file` probes in
+`wordpress-7.1/console/`). `console.py` runs them; its docstring has the
+file format.
+
+How a run works:
+
+1. `target/apps-console/<app>/run/` gets a copy of the app. The `shared`
+   paths (`vendor/`, WordPress core, `wp-cli.phar`) are copied once and
+   never reset or compared, so they must stay read-only; the rest is copied
+   fresh. A copy rather than symlinks: PHP resolves included paths, so a
+   symlinked `vendor/` would autoload the app's classes from tests/apps.
+2. `clear` paths are removed and the `prepare` commands run with `php -n`
+   (Symfony: `cache:warmup` from an empty `var/`; WordPress: two boots that
+   schedule its cron events). The result is the pristine state.
+3. Each command runs from the pristine state, first as `php -n`, then as
+   `rhp -n` (plus the list's `ini` settings), in `run/`, with `env -i`
+   plus `PATH`, `HOME` and `TMPDIR` (emptied before each run), `TZ=UTC`,
+   `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, and stdin
+   closed. After each run the files it changed are put back.
+4. A command is `SAME` when the exit code, stdout, stderr and every file it
+   created, changed or deleted are identical after the masks, with their
+   permission bits. SQLite databases are compared by their SQL dump, other
+   binary files by size and md5.
+
+Masks only hide what php itself varies from run to run (the self-check
+against php reports every command `SAME`, three runs in a row), plus the
+engines' paths:
+
+| app | masks |
+|-----|-------|
+| all | the engine binary's path (`<PHP_BINARY>`) |
+| Symfony | the container's build time and build id (`cache:clear`), the time `about` prints |
+| Laravel | migration file times, `generated::` route names, durations and their dot padding, datetimes and Unix times within 3 days of now, session file names and CSRF tokens, `Inspiring` quotes (`inspire`, `make:component`, `make:view`), the key `key:generate --show` prints |
+| WordPress | datetimes and Unix times within 3 days of now, the export's channel date, Site Health's server time, password hashes, wpdb's random `%` placeholder |
+
+Each app's `known-passing-console.txt` lists the commands that are `SAME`
+under rhp; CI's `apps-lint` job fails only when a listed one is not.
+Commands that newly match are printed as hints; regenerate the list with
+`--write-known` (run it twice). Outputs and diffs of the last run are in
+`target/apps-console/<app>/out/`.
+
 ## Adding a framework version
 
 1. Create the app in `tests/apps/<framework>-<version>/`, e.g.
@@ -276,9 +336,12 @@ would lose them).
    php; then `cargo build --release -p rhp-difftest` and
    `python3 tests/apps/apps.py lint <name> --write-known` to create its
    `known-refused.txt`.
-5. Copy `requests.toml` and an empty `known-passing-requests.txt` from the
+5. Copy `requests.toml`, `console.toml` (and `console/`) and empty
+   `known-passing-requests.txt` and `known-passing-console.txt` from the
    existing app of that framework. `python3 tests/apps/apps.py diff <name> --
-   --candidate "$(command -v php-cgi)"` must report every request `SAME`.
+   --candidate "$(command -v php-cgi)"` must report every request `SAME`,
+   and `python3 tests/apps/apps.py console <name> -- --candidate "$(command
+   -v php)"` every command.
 6. Commit the app files, the lockfile, the lists and the manifest entry. The CI
    matrix picks the new entry up automatically.
 

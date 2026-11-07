@@ -16,3 +16,5 @@
 */.phpunit.cache/
 */.env.local
 */.env.*.local
+# apps.py imports console.py.
+__pycache__/

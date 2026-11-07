@@ -1,0 +1,347 @@
+# Console battery for wp-cli (`python3 tests/apps/apps.py console`; format
+# in console.py): wp-cli commands, `eval` one-liners and `eval-file` probes
+# (console/*.php). Each command starts from the database setup.php made, so a
+# command that writes is compared by the database's SQL dump.
+
+# WordPress core's own code and wp-cli never change at run time.
+shared = ["wordpress/wp-admin", "wordpress/wp-includes", "wp-cli.phar"]
+ini = ["memory_limit=512M"]
+# The first boots schedule WordPress's recurring cron events at the time of
+# the run; events due in the same second share one entry, so a command that
+# scheduled them would write a different `cron` option every run. Boot once
+# with php (a plain boot, and an admin one for the admin-only events) so the
+# pristine database has them all.
+prepare = ["wp-cli.phar cron event list", "wp-cli.phar eval-file console/health.php"]
+
+# Times of the run: post and comment dates, transients, cron.
+[[mask]]
+name = "now-epoch"
+builtin = "now-epoch"
+in = ["stdout", "stderr", "files"]
+
+[[mask]]
+name = "now-datetime"
+builtin = "now-datetime"
+in = ["stdout", "stderr", "files"]
+
+# The export's channel date is the time of the run.
+[[mask]]
+name = "export-date"
+pattern = '<pubDate>[^<]*</pubDate>(\n<language>)'
+replace = '<pubDate><NOW></pubDate>\1'
+in = ["stdout"]
+commands = ["export"]
+
+# Site Health's server time.
+[[mask]]
+name = "health-time"
+pattern = 'utc-time=.*'
+replace = 'utc-time=<NOW>'
+in = ["stdout"]
+commands = ["e-health"]
+
+# Password hashes are salted at random.
+[[mask]]
+name = "password-hash"
+pattern = '\$wp\$2y\$\d\d\$[./A-Za-z0-9]{53}|\$P\$[./A-Za-z0-9]{31}'
+replace = "<PASSWORD_HASH>"
+in = ["stdout", "stderr", "files"]
+
+# wpdb escapes % in queries with a random placeholder (wpdb::placeholder_escape).
+[[mask]]
+name = "placeholder-escape"
+pattern = '\{[0-9a-f]{64}\}'
+replace = "{<PLACEHOLDER>}"
+in = ["stdout", "stderr", "files"]
+
+[[command]]
+id = "postlist"
+args = "post list"
+
+[[command]]
+id = "postlistjson"
+args = "post list --format=json --fields=ID,post_title,post_date,post_status,post_name"
+
+[[command]]
+id = "postget"
+args = "post get 1"
+
+[[command]]
+id = "postgetjson"
+args = "post get 1 --format=json"
+
+[[command]]
+id = "userlist"
+args = "user list"
+
+[[command]]
+id = "optionlist"
+args = "option list"
+
+[[command]]
+id = "optionlistjson"
+args = "option list --format=json"
+
+[[command]]
+id = "pluginlist"
+args = "plugin list"
+
+[[command]]
+id = "themelist"
+args = "theme list"
+
+[[command]]
+id = "commentlist"
+args = "comment list"
+
+[[command]]
+id = "termlist"
+args = "term list category"
+
+[[command]]
+id = "menulist"
+args = "menu list"
+
+[[command]]
+id = "sitebn"
+args = "option get siteurl"
+
+[[command]]
+id = "rewritelist"
+args = "rewrite list --format=csv"
+
+[[command]]
+id = "cronlist"
+args = "cron event list --fields=hook,recurrence"
+
+[[command]]
+id = "caplist"
+args = "cap list administrator"
+
+[[command]]
+id = "rolelist"
+args = "role list"
+
+[[command]]
+id = "help"
+args = "help"
+
+[[command]]
+id = "helppost"
+args = "help post"
+
+[[command]]
+id = "coreverify"
+args = "core verify-checksums --version=7.1.4 --locale=en_US"
+
+[[command]]
+id = "postcreate"
+args = "post create --post_title=Hi --post_content=<b>bold</b> --post_status=publish --post_date=2026-01-02T00:00:00"
+
+[[command]]
+id = "postupdate"
+args = "post update 1 --post_title=Changed"
+
+[[command]]
+id = "optupdate"
+args = "option update blogdescription Testing"
+
+[[command]]
+id = "usercreate"
+args = "user create bob bob@example.com --role=author --user_pass=pw --porcelain"
+
+[[command]]
+id = "termcreate"
+args = "term create category News --porcelain"
+
+[[command]]
+id = "commentcreate"
+args = "comment create --comment_post_ID=1 --comment_content=Nice --comment_author=X --comment_date=2026-01-01T00:00:00"
+
+[[command]]
+id = "postdelete"
+args = "post delete 1 --force"
+
+[[command]]
+id = "eval-kses"
+argv = ["eval", "echo wp_kses_post('<a href=\"javascript:x\">y</a><script>z</script><p onclick=1>ok</p>');"]
+
+[[command]]
+id = "eval-mb"
+argv = ["eval", "echo mb_strimwidth(wp_trim_words(str_repeat('héllo wörld ', 50), 10), 0, 40, '…');"]
+
+[[command]]
+id = "eval-fmt"
+argv = ["eval", "echo wpautop(\"a\\n\\nb\\nc\"), wptexturize('\"quotes\" -- ...'), sanitize_title('Héllo Wörld!'), number_format_i18n(1234567.891, 2), size_format(123456789);"]
+
+[[command]]
+id = "eval-date"
+argv = ["eval", "echo date_i18n('l jS F Y H:i', 1767268800), wp_date('c', 1767268800), human_time_diff(0, 3600);"]
+
+[[command]]
+id = "eval-render"
+argv = ["eval", "echo do_blocks(get_post(2)->post_content);"]
+
+[[command]]
+id = "eval-json"
+argv = ["eval", "echo wp_json_encode(get_post(1));"]
+
+[[command]]
+id = "eval-rest"
+argv = ["eval", "$r = rest_do_request('/wp/v2/posts'); echo wp_json_encode($r->get_data());"]
+
+[[command]]
+id = "eval-rest-all"
+argv = ["eval", "$r = rest_do_request('/'); echo wp_json_encode($r->get_data());"]
+
+[[command]]
+id = "eval-feed"
+argv = ["eval", "ob_start(); load_template(ABSPATH . WPINC . '/feed-rss2.php'); echo ob_get_clean();"]
+
+[[command]]
+id = "e-kses"
+args = "eval-file console/kses.php"
+
+[[command]]
+id = "e-fmt"
+args = "eval-file console/fmt.php"
+
+[[command]]
+id = "e-render"
+args = "eval-file console/render.php"
+
+[[command]]
+id = "e-rest"
+args = "eval-file console/rest.php"
+
+[[command]]
+id = "e-feed"
+args = "eval-file console/feed.php"
+
+[[command]]
+id = "e-i18n"
+args = "eval-file console/i18n.php"
+
+[[command]]
+id = "e-misc"
+args = "eval-file console/misc.php"
+
+[[command]]
+id = "e-walker"
+args = "eval-file console/walker.php"
+
+[[command]]
+id = "e-health"
+args = "eval-file console/health.php"
+
+[[command]]
+id = "postgenerate"
+args = "post generate --count=30 --post_date=2026-01-05"
+
+[[command]]
+id = "export"
+args = "export --stdout"
+
+[[command]]
+id = "searchreplace"
+args = "search-replace Welcome Bienvenue --dry-run --report-changed-only"
+
+[[command]]
+id = "searchreplace2"
+args = "search-replace localhost example.org --all-tables"
+
+[[command]]
+id = "mediaimport"
+args = "media import wordpress/wp-admin/images/w-logo-blue.png --title=Logo --porcelain"
+
+[[command]]
+id = "mediaimportjpg"
+args = "media import wordpress/wp-content/themes/twentytwentyfive/assets/images/akaka-falls-state-park-flora.webp --porcelain"
+
+[[command]]
+id = "rewriteflush"
+args = "rewrite flush --hard"
+
+[[command]]
+id = "transient"
+args = "transient set foo bar 3600"
+
+[[command]]
+id = "cacheflush"
+args = "cache flush"
+
+[[command]]
+id = "i18npot"
+args = "i18n make-pot wordpress/wp-content/themes/twentytwentyfive tt5.pot --skip-audit"
+
+[[command]]
+id = "siteempty"
+args = "site empty --yes"
+
+[[command]]
+id = "userimport"
+args = "user list --role=administrator --format=yaml"
+
+[[command]]
+id = "commentgen"
+args = "comment generate --count=5 --post_id=1"
+
+[[command]]
+id = "termlist2"
+args = "term list category --format=json"
+
+[[command]]
+id = "widgetlist"
+args = "widget list sidebar-1"
+
+[[command]]
+id = "sidebarlist"
+args = "sidebar list"
+
+[[command]]
+id = "dbsize"
+args = "db size"
+
+[[command]]
+id = "dbtables"
+args = "db tables"
+
+[[command]]
+id = "dbquery"
+argv = ["db", "query", "SELECT 1"]
+
+[[command]]
+id = "config"
+args = "config list"
+
+[[command]]
+id = "configget"
+args = "config get table_prefix"
+
+[[command]]
+id = "corechecks"
+args = "core check-update"
+
+[[command]]
+id = "langlist"
+args = "language core list"
+
+[[command]]
+id = "roleget"
+args = "role exists editor"
+
+[[command]]
+id = "postmeta"
+args = "post meta list 1"
+
+[[command]]
+id = "menucreate"
+args = "menu create Main --porcelain"
+
+[[command]]
+id = "optionautoload"
+args = "option list --autoload=on --format=count"
+
+[[command]]
+id = "superadmin"
+args = "user meta list 1"

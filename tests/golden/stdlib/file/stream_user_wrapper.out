@@ -1,0 +1,73 @@
+bool(true)
+bool(true)
+[2] stream_wrapper_register(): Protocol mem:// is already defined.
+bool(false)
+write(29)
+close
+int(29)
+bool(true)
+bool(false)
+int(29)
+bool(true)
+read(8192)
+string(9) "line one
+"
+int(9)
+string(4) "line"
+read(8192)
+read(8192)
+string(16) " two
+line three
+"
+bool(true)
+read(8192)
+string(1) "l"
+write(10)
+int(10)
+string(10) "user-space"
+string(10) "user-space"
+string(2) "r+"
+string(7) "mem://a"
+bool(true)
+string(10) "MemWrapper"
+close
+read(8192)
+read(8192)
+close
+array(4) {
+  [0]=>
+  string(8) "line one"
+  [1]=>
+  string(8) "line two"
+  [2]=>
+  string(10) "line three"
+  [3]=>
+  string(9) "line four"
+}
+read(8192)
+close
+string(8) "one
+line"
+read(8192)
+line one
+line two
+line three
+line four
+read(8192)
+close
+[2] fopen(mem://missing): Failed to open stream: "MemWrapper::stream_open" call failed
+bool(false)
+[2] fopen(mem://missing): Failed to open stream: "MemWrapper::stream_open" call failed
+read(8192)
+write(39)
+read(8192)
+int(39)
+close
+close
+bool(true)
+bool(true)
+[2] file_get_contents(): Unable to find the wrapper "mem" - did you forget to enable it when you configured PHP?
+[2] file_get_contents(mem://a): Failed to open stream: No such file or directory
+bool(false)
+[2] stream_wrapper_restore(): mem:// never existed, nothing to restore
+bool(false)

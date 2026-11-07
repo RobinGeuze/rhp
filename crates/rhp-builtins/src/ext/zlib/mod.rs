@@ -217,7 +217,7 @@ pub fn wrappers() -> Vec<WrapperReg> {
 
 /// `$use_include_path`: php_stream_open_wrapper's USE_PATH resolves the
 /// inner path when that file exists on the include path.
-fn include_path_arg(host: &dyn Host, args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
+fn include_path_arg(host: &mut dyn Host, args: &[Value], i: usize, path: Vec<u8>) -> Vec<u8> {
     if !args.get(i).is_some_and(|v| conv::to_bool(&deref(v))) {
         return path;
     }

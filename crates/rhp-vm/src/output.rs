@@ -253,6 +253,11 @@ impl Vm {
                 return format!("{}(): ", nc.name);
             }
         }
+        if let Some(k) = self.include_docref {
+            if self.include_docref_depth == self.stack.len() {
+                return format!("{k}(): ");
+            }
+        }
         match self.stack.last() {
             _ if self.no_code_running() => "PHP Request Shutdown: ".to_string(),
             Some(f) => {

@@ -3,6 +3,7 @@
 //! in [`crate::main::streams::xp_socket`]), timeouts, buffers and
 //! copy/wrapper listing. The resource state lives in the VM.
 
+use crate::main::streams::userspace as us;
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
@@ -28,6 +29,9 @@ use crate::{Host, StreamKind, Thrown};
 fn set_blocking_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let (res, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
     let on = crate::zend::zpp::bool_param(host, args, 1, fname, "enable", true)?;
+    if let Some(r) = us::set_option(host, &res, us::OPTION_BLOCKING, on as i64, None) {
+        return Ok(Value::Bool(r != us::OPTION_RETURN_ERR));
+    }
     Ok(Value::Bool(host.stream_set_blocking(&res, on)))
 }
 
@@ -45,7 +49,15 @@ pub(crate) fn fn_socket_set_blocking(host: &mut dyn Host, args: &[Value]) -> Res
 /// sockets, wrappers) answers -1.
 fn write_buffer_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<Value, Thrown> {
     let (res, _) = crate::ext::standard::file::stream_param(host, args, 0, fname, "stream")?;
-    crate::zend::zpp::zpp_long(host, args, 1, fname, "size")?;
+    let size = crate::zend::zpp::zpp_long(host, args, 1, fname, "size")?;
+    let (mode, ptr) = if size == 0 {
+        (us::BUFFER_NONE, None)
+    } else {
+        (2, Some(size))
+    };
+    if let Some(r) = us::set_option(host, &res, us::OPTION_WRITE_BUFFER, mode, ptr) {
+        return Ok(Value::Int(if r == 0 { 0 } else { -1 }));
+    }
     let file_backed = host.stream_sock_info(&res).is_none()
         && host.stream_meta(&res).is_some_and(|m| {
             m.stream_type == "STDIO" && (m.wrapper_type.is_empty() || m.wrapper_type == "PHP")
@@ -888,13 +900,24 @@ fn set_timeout_impl(host: &mut dyn Host, args: &[Value], fname: &str) -> Result<
     let sec = secs.wrapping_add(usecs / 1_000_000);
     let usec = usecs % 1_000_000;
     let tv = if sec == -1 { None } else { Some((sec, usec)) };
+    if let Some(r) = us::set_option(host, &s, us::OPTION_READ_TIMEOUT, sec, Some(usec)) {
+        return Ok(Value::Bool(r == us::OPTION_RETURN_OK));
+    }
     Ok(Value::Bool(host.stream_set_timeout(&s, tv)))
 }
 
 fn fn_stream_set_read_buffer(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "stream_set_read_buffer";
-    let _ = stream_arg(host, args, 0, fname, "stream")?;
-    let _ = zpp_long(host, args, 1, fname, "size")?;
+    let s = stream_arg(host, args, 0, fname, "stream")?;
+    let size = zpp_long(host, args, 1, fname, "size")?;
+    let (mode, ptr) = if size == 0 {
+        (us::BUFFER_NONE, None)
+    } else {
+        (2, Some(size))
+    };
+    if let Some(r) = us::set_option(host, &s, us::OPTION_READ_BUFFER, mode, ptr) {
+        return Ok(Value::Int(if r == 0 { 0 } else { -1 }));
+    }
     Ok(Value::Int(0))
 }
 
@@ -928,6 +951,9 @@ fn fn_stream_set_chunk_size(host: &mut dyn Host, args: &[Value]) -> Result<Value
             "ValueError",
             format!("{fname}(): Argument #2 ($size) must be greater than 0"),
         ));
+    }
+    if let Some(prev) = us::set_option(host, &s, us::OPTION_SET_CHUNK_SIZE, size, None) {
+        return Ok(Value::Int(prev as i64));
     }
     let Value::Resource(r) = &s else {
         return Ok(Value::Bool(false));
@@ -1122,7 +1148,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         if let Some(a) = a {
             for (_, el) in a.iter() {
                 let el = deref(el);
-                if let Some((fd, _)) = host.stream_select_fd(&el) {
+                if let Some((fd, _)) = select_fd(host, &el)? {
                     if (fd as usize) < libc::FD_SETSIZE {
                         unsafe { libc::FD_SET(fd, &mut sets[i]) };
                         max_fd = max_fd.max(fd);
@@ -1229,7 +1255,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         let Some(a) = a else { continue };
         let mut kept = PhpArray::new();
         for (k, el) in a.iter() {
-            if let Some((fd, _)) = host.stream_select_fd(&deref(el)) {
+            if let Some((fd, _)) = select_fd(host, &deref(el))? {
                 if (fd as usize) < libc::FD_SETSIZE && unsafe { libc::FD_ISSET(fd, &sets[i]) } {
                     kept.insert(k.clone(), el.clone());
                 }
@@ -1238,6 +1264,38 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         write_ref(args.get(i), Value::Array(kept));
     }
     pending.map_or(Ok(Value::Int(n as i64)), Err)
+}
+
+/// php_stream_cast(PHP_STREAM_AS_FD_FOR_SELECT) with errors shown: a user
+/// stream casts to the stream its `stream_cast` returns.
+fn select_fd(host: &mut dyn Host, el: &Value) -> Result<Option<(RawFd, bool)>, Thrown> {
+    let Value::Resource(r) = el else {
+        return Ok(None);
+    };
+    let me = r.id;
+    let was = host.stream_no_fclose(el, true);
+    let inner = us::with(host, el, |s, h| s.cast(h, us::CAST_FOR_SELECT, true, me));
+    host.stream_no_fclose(el, was);
+    let Some(inner) = inner else {
+        return Ok(host.stream_select_fd(el));
+    };
+    let Some(inner) = inner else {
+        return Ok(None);
+    };
+    let fd = select_fd(host, &inner)?;
+    if fd.is_none() {
+        if let Some(m) = host.stream_meta(&inner) {
+            crate::warn(
+                host,
+                "stream_select",
+                &format!(
+                    "Cannot represent a stream of type {} as a select()able descriptor",
+                    m.stream_type
+                ),
+            )?;
+        }
+    }
+    Ok(fd)
 }
 
 /// `stream_isatty($stream)`: isatty(2) on the stream's fd.
@@ -1331,9 +1389,14 @@ fn stream_get_meta_data_impl(
     fname: &str,
 ) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, fname, "stream")?;
-    let Some(m) = host.stream_meta(&h) else {
+    // a user stream's `eof` is php_stream_eof (it asks the stream)
+    let user_eof = us::with(host, &h, |s, h| s.stream_eof(h));
+    let Some(mut m) = host.stream_meta(&h) else {
         return Ok(Value::Bool(false));
     };
+    if let Some(e) = user_eof {
+        m.eof = e;
+    }
     let mut a = PhpArray::new();
     let mut put = |k: &str, v: Value| {
         a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
@@ -1455,6 +1518,9 @@ fn fn_stream_is_local(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 /// `stream_supports_lock`: plain-file and fd streams lock (flock).
 fn fn_stream_supports_lock(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let (h, _) = stream_param(host, args, 0, "stream_supports_lock", "stream")?;
+    if let Some(r) = us::set_option(host, &h, us::OPTION_LOCKING, 0, Some(0)) {
+        return Ok(Value::Bool(r == 0));
+    }
     Ok(Value::Bool(
         crate::ext::standard::file::plain_fd(host, &h).is_some(),
     ))

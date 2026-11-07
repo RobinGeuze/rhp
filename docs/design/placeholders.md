@@ -299,8 +299,27 @@ The original notes:
   `user_filters.rs`, zlib, bz2 and iconv). A filtered stream closes when
   its last variable, element or property reference goes; one whose last
   reference was a temporary closes at the next such check or function
-  return. Not modelled: persistent streams and user stream wrappers
-  (wave 6) carrying filters.
+  return. Not modelled: persistent streams and user wrapper streams
+  carrying filters (the filter calls go to the wrapper's stream unfiltered).
+- User stream wrappers (`stream_wrapper_register`): main/streams/userspace.c
+  is `main/streams/userspace.rs`. A registered wrapper sits in the VM's
+  wrapper table beside the built-in ones; `userspace::locate` is
+  php_stream_locate_url_wrapper for them (also when one replaced `file://`).
+  Its streams (`StreamState::User`) run a port of streams.c's generic layer
+  (read buffer, chunked writes, buffered seeks, liveness checks) over the
+  wrapper's methods; the VM lends the stream out for each operation, so
+  methods may use other streams, and `fclose` from inside read, write, seek
+  and cast is refused as in php. An exception from a method is php's
+  EG(exception): the builtin returns, then it is thrown. Covered: fopen and
+  the stream functions, file_get_contents/file/readfile/copy, the hash
+  functions, include/require (include_path entries searched with a quiet
+  `url_stat`), the stat family (with php's one-entry stat cache), unlink,
+  rename, mkdir, rmdir, touch/chmod/chown/chgrp, opendir/scandir,
+  stream_select casts. A user stream closes as its last reference goes
+  (watched like a filtered stream). A stream an include left open when a
+  fatal error unwound closes with the resource list at shutdown. Not covered:
+  parse_ini_file through a user wrapper, and the `context` property is
+  written without php's visibility and readonly checks.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:
   php uses `mblen()` there, which is the same in the C.UTF-8 LC_CTYPE php
   starts in (see 1.8).

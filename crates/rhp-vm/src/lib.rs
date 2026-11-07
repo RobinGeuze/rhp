@@ -43,6 +43,7 @@ mod streams;
 mod stub_default;
 mod traits;
 mod types;
+mod user_streams;
 mod zpp;
 
 use std::cell::RefCell;
@@ -250,6 +251,9 @@ pub struct Vm {
     // Built-in wrappers `stream_wrapper_unregister` took out, kept for
     // `stream_wrapper_restore` (None: one served outside `wrappers`).
     wrappers_off: HashMap<Vec<u8>, Option<Rc<dyn builtins::StreamWrapper>>>,
+    // User wrappers in `wrappers`, in registration order (php's hash order
+    // for `stream_get_wrappers`).
+    user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
     /// Whether auto_prepend_file runs before the main script (not for
@@ -337,11 +341,18 @@ pub struct Vm {
     /// The include kind while an include opens its file (php's docref
     /// names the include then).
     include_docref: Option<&'static str>,
+    /// The frame depth a user-wrapper include runs its stream at: php's
+    /// docref names the include there.
+    include_docref_depth: usize,
+    /// Streams of includes a fatal error cut short: php closes them with
+    /// the resource list at shutdown.
+    held_streams: Vec<Value>,
     /// The end-of-request resource list close is running: filters see a
     /// null stream.
     closing_resources: bool,
-    /// Open streams with a filter layer (their release is checked at
-    /// function returns: php frees a resource on its last reference).
+    /// Open streams with a filter layer, plus user wrapper streams (their
+    /// release is checked at once: php frees a resource on its last
+    /// reference, and their close runs PHP code).
     filtered_streams: u32,
     // Opaque native resources (e.g. `proc_open` process handles), by id.
     native_resources: HashMap<u32, Box<dyn std::any::Any>>,

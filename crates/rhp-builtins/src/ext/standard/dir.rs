@@ -18,6 +18,19 @@ fn do_opendir(
     let path = path_param(args, 0, fname, "directory")?;
     touch_ctx(host, args, 1);
     crate::main::streams::clear_errno();
+    if let Some((w, p)) = crate::main::streams::userspace::locate(host, &path) {
+        let ctx = match args.get(1).map(deref) {
+            Some(v @ Value::Resource(_)) => v,
+            _ => host.default_stream_context(),
+        };
+        // _php_stream_opendir leaves orig_path unset (no "uri" in the meta data)
+        let Some(s) = crate::main::streams::userspace::opendir(host, &w, &p, 0, Some(&ctx)) else {
+            user_dir_failed(host, fname, &path)?;
+            return Ok(None);
+        };
+        let h = host.user_stream_insert(s, Some(ctx));
+        return Ok(Some((path, h)));
+    }
     if !dir_allowed(host, fname, &path)? {
         dir_open_failed(host, fname, &path)?;
         return Ok(None);
@@ -54,6 +67,22 @@ fn dir_allowed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<bool, Th
         _ => return Ok(true),
     };
     crate::main::fopen_wrappers::check(host, fname, local, true)
+}
+
+/// A user wrapper's dir open failed: its queued error as the reason.
+fn user_dir_failed(host: &mut dyn Host, fname: &str, path: &[u8]) -> Result<(), Thrown> {
+    if host.has_pending_throw() {
+        crate::main::streams::take_wrapper_error();
+        return Ok(());
+    }
+    let reason = crate::main::streams::take_wrapper_error()
+        .unwrap_or_else(|| "operation failed".to_string());
+    crate::warn_arg(
+        host,
+        fname,
+        path,
+        &format!("Failed to open directory: {reason}"),
+    )
 }
 
 /// "fname(path): Failed to open directory: <strerror>".
@@ -218,7 +247,29 @@ fn fn_scandir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     let flags = int_arg(args, 1, 0);
     crate::main::streams::clear_errno();
-    let names = if dir_allowed(host, "scandir", &path)? {
+    let user = crate::main::streams::userspace::locate(host, &path);
+    let names = if let Some((w, p)) = user {
+        // scandir takes a context only when one is given
+        let ctx = match args.get(2).map(deref) {
+            Some(v @ Value::Resource(_)) => Some(v),
+            _ => None,
+        };
+        match crate::main::streams::userspace::opendir(host, &w, &p, 0, ctx.as_ref()) {
+            Some(mut s) => {
+                let mut names = Vec::new();
+                while let Some(n) = s.readdir(host) {
+                    names.push(n);
+                }
+                s.close(host);
+                Some(names)
+            }
+            None => {
+                user_dir_failed(host, "scandir", &path)?;
+                crate::warn(host, "scandir", "(errno 0): Success")?;
+                return Ok(Value::Bool(false));
+            }
+        }
+    } else if dir_allowed(host, "scandir", &path)? {
         host.stream_opendir(&path)
     } else {
         None

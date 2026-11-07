@@ -2,7 +2,7 @@
 # make-shims.sh <dir> [ext...]: write `php` and `php-cgi` shims into <dir>
 # that, when run with `-n`, load php's shared extensions from the command line
 # (see action.yml). Used by this action and by .github/scripts/linux-ci.Dockerfile.
-# Extra extensions (e.g. `pdo pdo_sqlite`, which a fixture app needs) are
+# Extra extensions (e.g. `pdo_mysql`, which a fixture app may need) are
 # injected after the default list, in the order given.
 #
 # - Only an extension whose .so exists and that php hasn't compiled in is
@@ -24,7 +24,9 @@ builtin="$(php -n -m | tr 'A-Z' 'a-z')"
 exts=""
 for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
          mbstring openssl pcntl phar posix session shmop simplexml sockets sodium \
-         sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip "$@"; do
+         sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip pdo pdo_sqlite \
+         "$@"; do
+  case " $exts " in *" $e "*) continue ;; esac
   if ! grep -qx "$e" <<<"$builtin" && [ -f "$extdir/$e.so" ]; then
     exts="$exts $e"
   fi

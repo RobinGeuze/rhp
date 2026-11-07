@@ -1,0 +1,66 @@
+0 "a&b<c>'d\"e\/f\\g"
+1 "a&b\u003Cc\u003E'd\"e\/f\\g"
+2 "a\u0026b<c>'d\"e\/f\\g"
+4 "a&b<c>\u0027d\"e\/f\\g"
+8 "a&b<c>'d\u0022e\/f\\g"
+15 "a\u0026b\u003Cc\u003E\u0027d\u0022e\/f\\g"
+79 "a\u0026b\u003Cc\u003E\u0027d\u0022e/f\\g"
+{"\u003Ck\u003E":"\u0026\u0027"}
+[
+    "\u003Ca\u003E",
+    1000,
+    12
+]
+int(2048)
+"x\u2028y\u2029z\u00e9\ud83d\ude00"
+"x\u2028y\u2029zé😀"
+"x y zé😀"
+"x\u2028y\u2029z\u00e9\ud83d\ude00"
+"\u0000\u0001\b\u000b\f\u001f"
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(10) ""a\ufffdb""
+string(7) ""a�b""
+string(4) ""ab""
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(10) ""a\ufffdb""
+string(7) ""a�b""
+string(4) ""ab""
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(10) ""a\ufffdb""
+string(7) ""a�b""
+string(4) ""ab""
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(10) ""a\ufffdb""
+string(7) ""a�b""
+string(4) ""ab""
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(16) ""a\ufffd\ufffdb""
+string(10) ""a��b""
+string(4) ""ab""
+bool(false)
+string(56) "Malformed UTF-8 characters, possibly incorrectly encoded"
+string(14) ""\ufffd\ufffd""
+string(8) ""��""
+string(2) """"
+string(4) "null"
+int(5)
+string(16) "{"x":null,"y":1}"
+int(5)
+string(12) "{"":1,"b":2}"
+int(5)
+string(25) "{
+    "": 1,
+    "b": 2
+}"
+string(15) "{"":1,"q":null}"
+int(5)
+bool(false)
+int(5)
+bool(false)
+int(7)
+JsonException: Malformed UTF-8 characters, possibly incorrectly encoded 5

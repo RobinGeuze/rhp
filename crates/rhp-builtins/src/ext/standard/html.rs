@@ -179,6 +179,12 @@ fn determine_charset(
     Ok(Cs::Utf8)
 }
 
+/// `php_next_utf8_char`: the code point at `*pos`, or `None` for an
+/// invalid sequence; `*pos` moves past what was read.
+pub(crate) fn php_next_utf8_char(s: &[u8], pos: &mut usize) -> Option<u32> {
+    get_next_char(Cs::Utf8, s, pos).ok()
+}
+
 /// `get_next_char`: the character at `*cursor` and the cursor past it, or
 /// `Err` with the cursor past the invalid sequence (UTR #36 strategy 2).
 fn get_next_char(cs: Cs, s: &[u8], cursor: &mut usize) -> Result<u32, ()> {
@@ -863,6 +869,22 @@ fn html_entities(host: &mut dyn Host, args: &[Value], all: bool, f: &str) -> Res
         double_encode,
         false,
     )?))
+}
+
+/// `php_escape_html_entities_ex(s, all, ENT_QUOTES or ENT_NOQUOTES, no
+/// double encoding)` in the default charset (FILTER_SANITIZE_FULL_SPECIAL_CHARS).
+pub(crate) fn escape_entities(
+    host: &mut dyn Host,
+    fname: &str,
+    s: &[u8],
+    quotes: bool,
+) -> Result<Vec<u8>, Thrown> {
+    let flags = if quotes {
+        ENT_HTML_QUOTE_SINGLE | ENT_HTML_QUOTE_DOUBLE
+    } else {
+        0
+    };
+    escape(host, fname, s, true, flags, None, false, false)
 }
 
 /// `php_escape_html_entities_ex(s, ENT_QUOTES|ENT_SUBSTITUTE, no double

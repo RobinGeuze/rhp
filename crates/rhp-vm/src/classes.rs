@@ -2227,8 +2227,12 @@ impl Vm {
         }
         self.autoload_depths.push(self.stack.len());
         let r = (|| {
-            for loader in self.autoloaders.clone() {
-                self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
+            // php walks the live list: a loader may (un)register loaders,
+            // itself included.
+            let mut i = 0;
+            while let Some(loader) = self.autoloaders.get(i).cloned() {
+                self.run_autoloader(loader.clone(), crate::Value::str(fqcn.clone()))?;
+                i = self.autoloader_next(i, &loader);
                 if self.resolve_class_by_name(&fqcn).is_ok() {
                     return Ok(true);
                 }
@@ -2238,6 +2242,20 @@ impl Vm {
         self.autoload_depths.pop();
         self.in_autoload.remove(&key);
         r
+    }
+
+    /// The built-in `Closure` class (a closure value's class).
+    pub(crate) fn closure_class(&self) -> Option<ClassId> {
+        self.resolve_class_by_name(b"Closure").ok()
+    }
+
+    /// The class of an object value; a closure is a `Closure` object.
+    pub(crate) fn value_class(&self, v: &Value) -> Option<ClassId> {
+        match v {
+            Value::Object(h) => Some(h.borrow().class),
+            Value::Closure(_) => self.closure_class(),
+            _ => None,
+        }
     }
 
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {

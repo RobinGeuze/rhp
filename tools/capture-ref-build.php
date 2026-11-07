@@ -129,6 +129,8 @@ foreach (['ICONV_IMPL', 'ICONV_VERSION', 'GMP_VERSION'] as $c) {
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
 module_rows(['GMP version']);
+ext_row('pdo_sqlite', 'PDO::ATTR_CLIENT_VERSION (sqlite)',
+    fn () => (new PDO('sqlite::memory:'))->getAttribute(PDO::ATTR_CLIENT_VERSION));
 
 echo "# build\n";
 foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'PHP_SBINDIR',

@@ -1,0 +1,140 @@
+int(2)
+string(6) "sqlite"
+int(2)
+string(1) "2"
+bool(true)
+array(4) {
+  ["id"]=>
+  int(1)
+  ["name"]=>
+  string(1) "a"
+  ["score"]=>
+  float(1.5)
+  ["data"]=>
+  NULL
+}
+array(4) {
+  [0]=>
+  int(2)
+  [1]=>
+  string(1) "b"
+  [2]=>
+  float(2.25)
+  [3]=>
+  NULL
+}
+object(stdClass)#3 (4) {
+  ["id"]=>
+  int(3)
+  ["name"]=>
+  string(1) "c"
+  ["score"]=>
+  float(3)
+  ["data"]=>
+  NULL
+}
+bool(false)
+array(8) {
+  ["native_type"]=>
+  string(4) "null"
+  ["pdo_type"]=>
+  int(0)
+  ["sqlite:decl_type"]=>
+  string(7) "INTEGER"
+  ["table"]=>
+  string(1) "t"
+  ["flags"]=>
+  array(0) {
+  }
+  ["name"]=>
+  string(2) "id"
+  ["len"]=>
+  int(-1)
+  ["precision"]=>
+  int(0)
+}
+int(4)
+int(0)
+array(4) {
+  ["id"]=>
+  int(1)
+  [0]=>
+  int(1)
+  ["name"]=>
+  string(1) "a"
+  [1]=>
+  string(1) "a"
+}
+int(1)
+array(4) {
+  ["id"]=>
+  int(2)
+  [0]=>
+  int(2)
+  ["name"]=>
+  string(1) "b"
+  [1]=>
+  string(1) "b"
+}
+int(2)
+array(4) {
+  ["id"]=>
+  int(3)
+  [0]=>
+  int(3)
+  ["name"]=>
+  string(1) "c"
+  [1]=>
+  string(1) "c"
+}
+array(3) {
+  [1]=>
+  string(1) "a"
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(1) "c"
+}
+array(3) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(1) "b"
+  [2]=>
+  string(1) "c"
+}
+string(53) "SQLSTATE[HY000]: General error: 1 no such table: nope"
+string(5) "HY000"
+array(3) {
+  [0]=>
+  string(5) "HY000"
+  [1]=>
+  int(1)
+  [2]=>
+  string(19) "no such table: nope"
+}
+PDOException: SQLSTATE[HY000]: General error: 1 no such table: nope in F:22
+Stack trace:
+#0 F(22): PDO->exec('SELECT * FROM n...')
+#1 {main}
+
+Warning: PDO::query(): SQLSTATE[HY000]: General error: 1 no such table: nope in F on line 24
+bool(false)
+string(5) "HY000"
+array(3) {
+  [0]=>
+  string(5) "HY000"
+  [1]=>
+  int(1)
+  [2]=>
+  string(19) "no such table: nope"
+}
+string(7) "'it''s'"
+bool(true)
+bool(false)
+string(1) "7"
+string(1) "7"
+object(PDOStatement)#3 (1) {
+  ["queryString"]=>
+  string(8) "select ?"
+}

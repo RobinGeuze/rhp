@@ -980,22 +980,20 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
 
     let mut ap = 0usize;
     let mut bp = 0usize;
-    let mut leading = true;
+    let mut ca = at(a, ap);
+    let mut cb = at(b, bp);
+
+    // skip over leading zeros
+    while ca == b'0' && ap + 1 < aend && at(a, ap + 1).is_ascii_digit() {
+        ap += 1;
+        ca = at(a, ap);
+    }
+    while cb == b'0' && bp + 1 < bend && at(b, bp + 1).is_ascii_digit() {
+        bp += 1;
+        cb = at(b, bp);
+    }
+
     loop {
-        let mut ca = at(a, ap);
-        let mut cb = at(b, bp);
-
-        // skip over leading zeros (only at the very start of the strings)
-        while leading && ca == b'0' && ap + 1 < aend && at(a, ap + 1).is_ascii_digit() {
-            ap += 1;
-            ca = at(a, ap);
-        }
-        while leading && cb == b'0' && bp + 1 < bend && at(b, bp + 1).is_ascii_digit() {
-            bp += 1;
-            cb = at(b, bp);
-        }
-        leading = false;
-
         // skip consecutive whitespace
         while is_space(ca) {
             ap += 1;
@@ -1022,9 +1020,10 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
                 return -1;
             } else if bp == bend {
                 return 1;
-            } else {
-                continue;
             }
+            // keep on comparing from the current point
+            ca = at(a, ap);
+            cb = at(b, bp);
         }
 
         if fold_case {
@@ -1046,6 +1045,8 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
         } else if bp >= bend {
             return 1;
         }
+        ca = at(a, ap);
+        cb = at(b, bp);
     }
 }
 
@@ -1887,6 +1888,12 @@ fn tag_find(tag: &[u8], set: &[u8]) -> bool {
 /// PHP code (2), `<!...>` (3) and an HTML comment (4). With `allow`, a tag
 /// in that set is kept.
 fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
+    strip_tags_ex(s, allow, false)
+}
+
+/// `php_strip_tags_ex`; `allow_tag_spaces`: a `<` followed by white space
+/// starts a tag too (ext/filter's FILTER_SANITIZE_STRING).
+pub(crate) fn strip_tags_ex(s: &[u8], allow: Option<&[u8]>, allow_tag_spaces: bool) -> Vec<u8> {
     let allow = allow.map(|a| a.to_ascii_lowercase());
     // The C reads one byte past the end, a NUL.
     let at = |i: usize| s.get(i).copied().unwrap_or(0);
@@ -1905,7 +1912,7 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
             0 => match c {
                 0 => {}
                 b'<' if in_q != 0 => {}
-                b'<' if c_isspace(at(p + 1)) => out.push(c),
+                b'<' if !allow_tag_spaces && c_isspace(at(p + 1)) => out.push(c),
                 b'<' => {
                     lc = b'<';
                     state = 1;
@@ -1920,7 +1927,7 @@ fn strip_tags(s: &[u8], allow: Option<&[u8]>) -> Vec<u8> {
             1 => match c {
                 0 => {}
                 b'<' if in_q != 0 => {}
-                b'<' if c_isspace(at(p + 1)) => reg_char = true,
+                b'<' if !allow_tag_spaces && c_isspace(at(p + 1)) => reg_char = true,
                 b'<' => depth += 1,
                 b'>' if depth > 0 => depth -= 1,
                 b'>' if in_q != 0 => {}
@@ -2704,7 +2711,7 @@ pub(crate) fn parse_query(host: &mut dyn Host, s: Vec<u8>, func: &str) -> Result
     // max_input_vars apply.
     let ini = |n: &[u8]| crate::ini_value(n).flatten().unwrap_or_default();
     let max_vars = crate::main::ini::c_atol(&ini(b"max_input_vars"));
-    let (out, exceeded) = crate::main::php_variables::treat_data(
+    let (mut out, exceeded) = crate::main::php_variables::treat_data(
         crate::main::php_variables::TreatData::Form,
         &s,
         &ini(b"arg_separator.input"),
@@ -2717,6 +2724,8 @@ pub(crate) fn parse_query(host: &mut dyn Host, s: Vec<u8>, func: &str) -> Result
             &format!("Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."),
         )?;
     }
+    // php_sapi_filter(PARSE_STRING): filter.default, as a string.
+    crate::ext::filter::apply_default_filter_strings(host, &mut out);
     Ok(out)
 }
 

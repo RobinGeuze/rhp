@@ -549,6 +549,9 @@ impl Vm {
                 ),
             ));
         }
+        if let Some(f) = self.class(cls).handlers.and_then(|t| t.unset_property) {
+            f(self, &h, pname.as_bytes())?;
+        }
         let scope = self.stack[top].defining_class;
         let res = classes::resolve_prop(&self.classes, cls, scope, &pname);
         if let PropRes::Slot(k) = &res {
@@ -805,6 +808,9 @@ impl Vm {
                         format!("Cannot create dynamic property Directory::${p}")
                     },
                 ));
+            }
+            if let Some(f) = self.class(cls).handlers.and_then(|t| t.write_property) {
+                f(self, &h, pname.as_bytes())?;
             }
             let (res, at) = classes::resolve_prop_at(&self.classes, cls, scope, &pname);
             let val = match &res {

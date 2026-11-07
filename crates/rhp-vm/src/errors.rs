@@ -1410,8 +1410,8 @@ impl Vm {
         // The loops inside the try give up their iterators.
         let f = &mut self.stack[top];
         if let Some(live) = f.fe_live.as_deref_mut() {
-            for (_, arr, by_ref, id) in live.extract_if(.., |l| l.0 >= from) {
-                crate::dispatch::release_fe_iter(&mut f.regs, arr, by_ref, id);
+            for (pos, arr, by_ref, id) in live.extract_if(.., |l| l.0 >= from) {
+                crate::dispatch::release_fe_iter(&mut f.regs, pos, arr, by_ref, id);
             }
         }
         let n = self.stack[top].regs.len();

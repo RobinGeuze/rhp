@@ -96,24 +96,32 @@ fn validate_int_cases() {
     assert!(is_false(&fv(Value::Null, FILTER_VALIDATE_INT)));
     // flags
     assert_eq!(
-        as_int(&fvf(s("0x1A"), FILTER_VALIDATE_INT, FLAG_ALLOW_HEX)),
+        as_int(&fvf(s("0x1A"), FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX)),
         26
     );
-    assert!(is_false(&fvf(s("1A"), FILTER_VALIDATE_INT, FLAG_ALLOW_HEX)));
+    assert!(is_false(&fvf(
+        s("1A"),
+        FILTER_VALIDATE_INT,
+        FILTER_FLAG_ALLOW_HEX
+    )));
     assert_eq!(
-        as_int(&fvf(s("0755"), FILTER_VALIDATE_INT, FLAG_ALLOW_OCTAL)),
+        as_int(&fvf(
+            s("0755"),
+            FILTER_VALIDATE_INT,
+            FILTER_FLAG_ALLOW_OCTAL
+        )),
         493
     );
     assert!(is_false(&fvf(
         s("0789"),
         FILTER_VALIDATE_INT,
-        FLAG_ALLOW_OCTAL
+        FILTER_FLAG_ALLOW_OCTAL
     )));
     // null on failure
     assert!(is_null(&fvf(
         s("abc"),
         FILTER_VALIDATE_INT,
-        FLAG_NULL_ON_FAILURE
+        FILTER_NULL_ON_FAILURE
     )));
     // range
     assert_eq!(
@@ -165,7 +173,7 @@ fn validate_float_cases() {
         as_float(&fvf(
             s("1,234.5"),
             FILTER_VALIDATE_FLOAT,
-            FLAG_ALLOW_THOUSAND
+            FILTER_FLAG_ALLOW_THOUSAND
         )),
         1234.5
     );
@@ -173,19 +181,19 @@ fn validate_float_cases() {
         as_float(&fvf(
             s("1,234,567"),
             FILTER_VALIDATE_FLOAT,
-            FLAG_ALLOW_THOUSAND
+            FILTER_FLAG_ALLOW_THOUSAND
         )),
         1234567.0
     );
     assert!(is_false(&fvf(
         s("1,23"),
         FILTER_VALIDATE_FLOAT,
-        FLAG_ALLOW_THOUSAND
+        FILTER_FLAG_ALLOW_THOUSAND
     )));
     assert!(is_false(&fvf(
         s("12,34.5"),
         FILTER_VALIDATE_FLOAT,
-        FLAG_ALLOW_THOUSAND
+        FILTER_FLAG_ALLOW_THOUSAND
     )));
     // decimal option
     assert_eq!(
@@ -206,32 +214,32 @@ fn validate_float_cases() {
 #[test]
 fn validate_bool_cases() {
     for t in ["1", "true", "on", "yes", "TRUE", "On", "  true  ", "yes "] {
-        assert!(as_bool(&fv(s(t), FILTER_VALIDATE_BOOLEAN)), "{t}");
+        assert!(as_bool(&fv(s(t), FILTER_VALIDATE_BOOL)), "{t}");
     }
     for f in ["0", "false", "off", "no", "FALSE", ""] {
-        assert!(!as_bool(&fv(s(f), FILTER_VALIDATE_BOOLEAN)), "{f}");
+        assert!(!as_bool(&fv(s(f), FILTER_VALIDATE_BOOL)), "{f}");
     }
     for n in ["2", "abc", "00", "1.0", "t", "y", "-1"] {
-        assert!(is_false(&fv(s(n), FILTER_VALIDATE_BOOLEAN)), "{n}");
+        assert!(is_false(&fv(s(n), FILTER_VALIDATE_BOOL)), "{n}");
     }
     // null on failure
     assert!(is_null(&fvf(
         s("abc"),
-        FILTER_VALIDATE_BOOLEAN,
-        FLAG_NULL_ON_FAILURE
+        FILTER_VALIDATE_BOOL,
+        FILTER_NULL_ON_FAILURE
     )));
     assert!(!as_bool(&fvf(
         s(""),
-        FILTER_VALIDATE_BOOLEAN,
-        FLAG_NULL_ON_FAILURE
+        FILTER_VALIDATE_BOOL,
+        FILTER_NULL_ON_FAILURE
     )));
     // non-string
-    assert!(as_bool(&fv(Value::Bool(true), FILTER_VALIDATE_BOOLEAN)));
-    assert!(as_bool(&fv(Value::Int(1), FILTER_VALIDATE_BOOLEAN)));
-    assert!(!as_bool(&fv(Value::Int(0), FILTER_VALIDATE_BOOLEAN)));
-    assert!(is_false(&fv(Value::Int(2), FILTER_VALIDATE_BOOLEAN)));
-    assert!(as_bool(&fv(Value::Float(1.0), FILTER_VALIDATE_BOOLEAN)));
-    assert!(!as_bool(&fv(Value::Null, FILTER_VALIDATE_BOOLEAN)));
+    assert!(as_bool(&fv(Value::Bool(true), FILTER_VALIDATE_BOOL)));
+    assert!(as_bool(&fv(Value::Int(1), FILTER_VALIDATE_BOOL)));
+    assert!(!as_bool(&fv(Value::Int(0), FILTER_VALIDATE_BOOL)));
+    assert!(is_false(&fv(Value::Int(2), FILTER_VALIDATE_BOOL)));
+    assert!(as_bool(&fv(Value::Float(1.0), FILTER_VALIDATE_BOOL)));
+    assert!(!as_bool(&fv(Value::Null, FILTER_VALIDATE_BOOL)));
 }
 
 #[test]
@@ -291,7 +299,7 @@ fn validate_email_cases() {
     // 12 (int) -> "12" has no '@'
     assert!(is_false(&fv(Value::Int(12), FILTER_VALIDATE_EMAIL)));
     // regexp0 allows letters outside ASCII; invalid UTF-8 fails under /u.
-    let uni = FLAG_EMAIL_UNICODE;
+    let uni = FILTER_FLAG_EMAIL_UNICODE;
     assert!(is_false(&fv(s("é@b.de"), FILTER_VALIDATE_EMAIL)));
     assert_eq!(
         as_str(&fvf(s("é@b.de"), FILTER_VALIDATE_EMAIL, uni)),
@@ -346,17 +354,24 @@ fn validate_ip_cases() {
         assert!(is_false(&fv(s(bad), FILTER_VALIDATE_IP)), "{bad}");
     }
     // flags
-    assert!(is_false(&fvf(s("::1"), FILTER_VALIDATE_IP, FLAG_IPV4)));
+    assert!(is_false(&fvf(
+        s("::1"),
+        FILTER_VALIDATE_IP,
+        FILTER_FLAG_IPV4
+    )));
     assert_eq!(
-        as_str(&fvf(s("127.0.0.1"), FILTER_VALIDATE_IP, FLAG_IPV4)),
+        as_str(&fvf(s("127.0.0.1"), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)),
         "127.0.0.1"
     );
     assert!(is_false(&fvf(
         s("127.0.0.1"),
         FILTER_VALIDATE_IP,
-        FLAG_IPV6
+        FILTER_FLAG_IPV6
     )));
-    assert_eq!(as_str(&fvf(s("::1"), FILTER_VALIDATE_IP, FLAG_IPV6)), "::1");
+    assert_eq!(
+        as_str(&fvf(s("::1"), FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)),
+        "::1"
+    );
 }
 
 #[test]
@@ -406,13 +421,13 @@ fn validate_url_cases() {
     assert!(is_false(&fvf(
         s("http://example.com"),
         FILTER_VALIDATE_URL,
-        FLAG_PATH_REQUIRED
+        FILTER_FLAG_PATH_REQUIRED
     )));
     assert_eq!(
         as_str(&fvf(
             s("http://example.com/path"),
             FILTER_VALIDATE_URL,
-            FLAG_PATH_REQUIRED
+            FILTER_FLAG_PATH_REQUIRED
         )),
         "http://example.com/path"
     );
@@ -420,14 +435,14 @@ fn validate_url_cases() {
         as_str(&fvf(
             s("http://example.com/p?x=1"),
             FILTER_VALIDATE_URL,
-            FLAG_QUERY_REQUIRED
+            FILTER_FLAG_QUERY_REQUIRED
         )),
         "http://example.com/p?x=1"
     );
     assert!(is_false(&fvf(
         s("http://example.com/p"),
         FILTER_VALIDATE_URL,
-        FLAG_QUERY_REQUIRED
+        FILTER_FLAG_QUERY_REQUIRED
     )));
 }
 
@@ -463,21 +478,25 @@ fn validate_domain_cases() {
     assert!(is_false(&fv(s(&"a".repeat(64)), FILTER_VALIDATE_DOMAIN)));
     // hostname flag
     assert_eq!(
-        as_str(&fvf(s("localhost"), FILTER_VALIDATE_DOMAIN, FLAG_HOSTNAME)),
+        as_str(&fvf(
+            s("localhost"),
+            FILTER_VALIDATE_DOMAIN,
+            FILTER_FLAG_HOSTNAME
+        )),
         "localhost"
     );
     assert!(is_false(&fvf(
         s("-bad.com"),
         FILTER_VALIDATE_DOMAIN,
-        FLAG_HOSTNAME
+        FILTER_FLAG_HOSTNAME
     )));
     assert!(is_false(&fvf(
         s("ex_ample.com"),
         FILTER_VALIDATE_DOMAIN,
-        FLAG_HOSTNAME
+        FILTER_FLAG_HOSTNAME
     )));
     assert_eq!(
-        as_str(&fvf(s("a-b"), FILTER_VALIDATE_DOMAIN, FLAG_HOSTNAME)),
+        as_str(&fvf(s("a-b"), FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)),
         "a-b"
     );
 }

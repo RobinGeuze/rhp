@@ -1,0 +1,159 @@
+array, default flags: bool(false)
+array, null on failure: NULL
+force array: array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  bool(false)
+  [2]=>
+  array(2) {
+    [0]=>
+    int(2)
+    [1]=>
+    bool(false)
+  }
+}
+force array scalar: array(1) {
+  [0]=>
+  int(7)
+}
+require array scalar: bool(false)
+require scalar array: bool(false)
+getInt on x[]=1: NULL
+stringable: int(12)
+no __toString: bool(false)
+no __toString null: NULL
+closure: bool(false)
+bool true int: int(1)
+float int: int(3)
+null bool: bool(false)
+default option: int(5)
+default with null: int(5)
+range: bool(false)
+hex: int(31)
+octal 0o: int(15)
+float thousand: float(1234.5)
+float decimal: float(1.5)
+unknown filter: error 2: filter_var(): Unknown filter with ID 12345
+bool(false)
+ref: array(2) {
+  [0]=>
+  &int(5)
+  [1]=>
+  bool(false)
+}
+int(5)
+callback: string(3) "ABC"
+callback array: array(2) {
+  [0]=>
+  string(1) "A"
+  [1]=>
+  array(1) {
+    [0]=>
+    string(1) "B"
+  }
+}
+callback closure: bool(true)
+callback int arg: string(6) "string"
+callback invalid: TypeError: filter_var(): Option must be a valid callback
+callback missing: TypeError: filter_var(): Option must be a valid callback
+callback throws: RuntimeException: cb x
+throw int: Filter\FilterFailedException: filter validation failed: filter int not satisfied by 'nope'
+throw ok: int(9)
+throw both: ValueError: filter_var(): Argument #3 ($options) cannot use both FILTER_NULL_ON_FAILURE and FILTER_THROW_ON_FAILURE
+throw array: Filter\FilterFailedException: filter validation failed: not a scalar value (got an array)
+throw not array: Filter\FilterFailedException: filter validation failed: not an array (got float)
+throw object: Filter\FilterFailedException: filter validation failed: object of type N has no __toString() method
+throw default: Filter\FilterFailedException: filter validation failed: filter int not satisfied by 'x'
+throw in array: Filter\FilterFailedException: filter validation failed: filter int not satisfied by 'x'
+string(22) "Filter\FilterException"
+string(9) "Exception"
+10.0.0.1 bool(false)
+string(8) "10.0.0.1"
+bool(false)
+127.0.0.1 string(9) "127.0.0.1"
+bool(false)
+bool(false)
+8.8.8.8 string(7) "8.8.8.8"
+string(7) "8.8.8.8"
+string(7) "8.8.8.8"
+192.88.99.1 string(11) "192.88.99.1"
+string(11) "192.88.99.1"
+string(11) "192.88.99.1"
+::1 string(3) "::1"
+bool(false)
+bool(false)
+fd00::1 bool(false)
+string(7) "fd00::1"
+bool(false)
+64:ff9b::1 string(10) "64:ff9b::1"
+string(10) "64:ff9b::1"
+string(10) "64:ff9b::1"
+::ffff:1.2.3.4 string(14) "::ffff:1.2.3.4"
+bool(false)
+bool(false)
+2001:db8::1 string(11) "2001:db8::1"
+string(11) "2001:db8::1"
+bool(false)
+1.2.3 bool(false)
+bool(false)
+bool(false)
+string(16) "ab&#128;cd&#38;e"
+NULL
+string(14) "a%20b%2F%C3%A9"
+string(58) "&lt;a href=&quot;x&quot;&gt;&#039;&eacute;&#039;&lt;/a&gt;"
+string(29) "&lt;a href="x"&gt;'&lt;/a&gt;"
+string(15) "O\'Re\"il\\ly\0"
+string(8) "1234.5e6"
+string(3) "abc"
+bool(false)
+bool(false)
+bool(false)
+string(19) "http://[::1]:80/x?y"
+regexp missing: ValueError: filter_var(): "regexp" option is missing
+var_array: array(4) {
+  ["id"]=>
+  int(12)
+  ["tags"]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    bool(false)
+  }
+  ["name"]=>
+  string(11) "&#60;b&#62;"
+  ["missing"]=>
+  NULL
+}
+var_array no empty: array(1) {
+  ["a"]=>
+  int(1)
+}
+var_array one filter: array(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  array(2) {
+    [0]=>
+    int(2)
+    [1]=>
+    bool(false)
+  }
+}
+var_array int key: TypeError: filter_var_array(): Argument #2 ($options) must contain only string keys
+var_array unknown: error 2: filter_var_array(): Unknown filter with ID 999
+bool(false)
+NULL
+NULL
+bool(false)
+bad input type: ValueError: filter_input(): Argument #1 ($type) must be an INPUT_* constant
+bad has_var type: ValueError: filter_has_var(): Argument #1 ($input_type) must be an INPUT_* constant
+bool(false)
+input throw: Filter\FilterFailedException: input value 'a' not found
+int(274)
+int(1024)
+bool(false)
+int(21)
+nan: error 2: unexpected NAN value was coerced to string
+bool(false)

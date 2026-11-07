@@ -50,6 +50,7 @@ Kinds:
 | `main/streams/xp_socket.rs` | `BOUND_UNIX` (Unix socket paths bound relative to the request's directory, and the names given) | request | `xp_socket::reset_state` |
 | `ext/json/mod.rs` | `LAST_ERROR` | request | `json::reset_state` |
 | `ext/json/mod.rs` | `SERIALIZING` (objects whose `jsonSerialize()` runs: php's JSON guard) | call | emptied as each call returns |
+| `ext/filter/mod.rs` | `INPUT` (the raw GET/POST/COOKIE/SERVER/ENV arrays filter_input reads, set by the engine as it builds the superglobals) | request | `filter::reset_state` |
 | `ext/pcre/php_pcre.rs` | `LAST_ERROR` | request | `php_pcre::reset_state` |
 | `ext/pcre/mod.rs` | `STATE` (contexts, JIT stack, `pcre.*` settings, pattern cache) | request (settings, cache); thread (contexts) | `pcre::reset` via `php_pcre::reset_state` |
 | `ext/standard/string.rs` | `STRTOK` | request | `string::reset_state` |

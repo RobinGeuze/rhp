@@ -154,7 +154,7 @@ One directory per php-src extension, `ext/<name>/`:
 |---|---|
 | `ext/json/` | ext/json: json.c, the encoder and the parser |
 | `ext/pcre/` | ext/pcre: `mod.rs` is the PCRE2 binding with php_pcre.c's per-thread state, `php_pcre.rs` php_pcre.c's functions |
-| `ext/filter/` | ext/filter |
+| `ext/filter/` | ext/filter: filter.c (`mod.rs`), logical_filters.c, sanitizing_filters.c (with callback_filter.c); the exception classes in `prelude.php` |
 | `ext/opcache/` | ext/opcache's zend_accelerator_module.c; the cache itself is in rhp-vm (`opcache/`) |
 | `ext/random/` | ext/random: random.c (`mod.rs`), the engines (`engine.rs`), randomizer.c, gammasection.c and the engines' methods (`randomizer.rs`); the classes in `prelude.php` |
 | `ext/readline/` | ext/readline/readline.c |
@@ -163,9 +163,9 @@ One directory per php-src extension, `ext/<name>/`:
 | `ext/date/` | ext/date: php_date.c over timelib |
 
 The library-backed extensions (bcmath, bz2, ctype, curl, dom, gmp, hash,
-iconv, intl, libxml, mbstring, openssl, pcntl, phar, posix, reflection,
-simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zip, zlib) keep
-their php-src directory name; libraries.md describes their files.
+iconv, intl, libxml, mbstring, openssl, pcntl, pdo, pdo_sqlite, phar, posix,
+reflection, simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zip, zlib)
+keep their php-src directory name; libraries.md describes their files.
 
 ### sapi/
 

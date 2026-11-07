@@ -52,6 +52,14 @@ pub(crate) struct Stream {
     pub(crate) mem_buffered: Option<usize>,
     /// A filter callback is running (PHP_STREAM_FLAG_NO_FCLOSE).
     pub(crate) no_fclose: bool,
+    /// A temporary file removed when the stream closes (php's
+    /// `temp_name`: tmpfile(), a php://temp stream moved to a file).
+    pub(crate) temp_name: Option<Vec<u8>>,
+    /// A php://temp stream moved to a file by a cast (proc_open): its uri
+    /// and mode, still reported as a TEMP stream.
+    pub(crate) temp_file: Option<(Vec<u8>, MemMode)>,
+    /// The uri of a `php://input` stream (php_stream_input_ops: no stat).
+    pub(crate) input: Option<Vec<u8>>,
 }
 
 impl StreamTable {
@@ -69,6 +77,9 @@ impl StreamTable {
             filters: None,
             mem_buffered: None,
             no_fclose: false,
+            temp_name: None,
+            temp_file: None,
+            input: None,
         };
         self.0.insert(id, s);
     }
@@ -241,11 +252,16 @@ impl Vm {
         let had_throw = self.pending_throw.is_some();
         self.close_flush_filters(id);
         let rec = self.streams.remove(&id);
-        let (state, layer) = match rec {
-            Some(r) => (Some(r.state), r.filters),
-            None => (None, None),
+        let (state, layer, temp_name) = match rec {
+            Some(r) => (Some(r.state), r.filters, r.temp_name),
+            None => (None, None, None),
         };
         let r = self.free_stream_state(state);
+        // php_stdiop_close: a temporary file goes with its stream.
+        if let Some(n) = temp_name {
+            use std::os::unix::ffi::OsStrExt;
+            let _ = std::fs::remove_file(std::ffi::OsStr::from_bytes(&n));
+        }
         self.free_filters(layer);
         if !had_throw && r.is_ok() {
             if let Some(t) = self.pending_throw.take() {
@@ -346,6 +362,48 @@ impl Vm {
             };
             Host::raise_diagnostic(self, d.level, msg.as_bytes());
         }
+    }
+
+    /// `php_stream_fopen_tmpfile`: a "r+b" stream on a new temp file,
+    /// removed when the stream closes.
+    pub(crate) fn open_tmpfile_stream(&mut self) -> Option<Value> {
+        let f = builtins::main::streams::plain_wrapper::fopen_tmpfile()?;
+        let name = f.uri.clone();
+        let v = self.make_stream(StreamState::File(Box::new(f)), "stream");
+        if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+            s.temp_name = Some(name);
+        }
+        Some(v)
+    }
+
+    /// `php_stream_temp_cast`: a php://temp stream still in memory moves to
+    /// a temp file (same data and position) so it has a descriptor.
+    pub(crate) fn temp_stream_to_file(&mut self, id: u32) -> bool {
+        let Some(StreamState::Mem {
+            buf,
+            pos,
+            temp: Some(uri),
+            mode,
+            ..
+        }) = self.streams.get(&id)
+        else {
+            return false;
+        };
+        let (data, pos, uri, mode) = (buf.clone(), *pos, uri.clone(), *mode);
+        let Some(mut f) = builtins::main::streams::plain_wrapper::fopen_tmpfile() else {
+            return false;
+        };
+        // the file stream php allocates takes a resource id
+        self.next_resource_id += 1;
+        f.write(&data);
+        f.seek(pos as i64, 0);
+        let name = f.uri.clone();
+        if let Some(s) = self.streams.record_mut(id) {
+            s.state = StreamState::File(Box::new(f));
+            s.temp_name = Some(name);
+            s.temp_file = Some((uri, mode));
+        }
+        true
     }
 
     /// Allocate a stream resource backed by `state`, returning its resource Value.

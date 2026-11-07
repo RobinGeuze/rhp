@@ -1298,6 +1298,16 @@ impl Vm {
                 } => {
                     self.call_dyn(top, dst, callee, base, argc)?;
                 }
+                Instr::InitDynCall { callee } => {
+                    let closure = match &self.stack[top].regs[callee as usize] {
+                        Value::Closure(_) => true,
+                        Value::Ref(r) => matches!(*r.borrow(), Value::Closure(_)),
+                        _ => false,
+                    };
+                    if !closure {
+                        self.init_dyn_call(top, callee)?;
+                    }
+                }
                 Instr::CallDynV { dst, callee, args } => {
                     let c = self.reg_r(top, callee)?;
                     let arr = self.reg_r(top, args)?;
@@ -2510,10 +2520,13 @@ impl Vm {
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_r(top, val)?;
-                    let result = match v {
+                    // Closures / arrow fns / first-class callables are
+                    // objects of the built-in `Closure` class.
+                    let vcls = self.value_class(&v);
+                    let result = match vcls {
                         // ZEND_INSTANCEOF never autoloads.
-                        Value::Object(h) => match self.resolve_class(top, class) {
-                            Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                        Some(vc) => match self.resolve_class(top, class) {
+                            Ok(cid) => self.class(vc).ancestors.contains(&cid),
                             // self/parent/static without a scope throw
                             // (zend_fetch_class).
                             Err(e)
@@ -2528,17 +2541,7 @@ impl Vm {
                             }
                             Err(_) => false,
                         },
-                        // Closures / arrow fns / first-class callables are
-                        // instances of the built-in `Closure` class.
-                        Value::Closure(_) => match class {
-                            ClassRef::Name(nidx) => {
-                                let n = proto.names[nidx as usize].as_bytes();
-                                let seg = n.rsplit(|&b| b == b'\\').next().unwrap_or(n);
-                                seg.eq_ignore_ascii_case(b"Closure")
-                            }
-                            _ => false,
-                        },
-                        _ => false,
+                        None => false,
                     };
                     self.reg_set(top, dst, Value::Bool(result));
                 }
@@ -3628,26 +3631,25 @@ impl Vm {
         };
         match src {
             None => {
-                // FE_RESET_RW separates the array and puts a HashTable
-                // iterator on it; FeFetchRef follows it.
-                let rc_opt = match &self.stack[top].regs[arr_cv as usize] {
-                    Value::Ref(rc) => Some(rc.clone()),
-                    _ => None,
-                };
-                let add = |slot: &mut Value| {
-                    if let Value::Array(a) = slot {
-                        a.make_mut().iter_add(id, 0);
+                // FE_RESET_RW makes the variable a reference, separates
+                // the array and puts a HashTable iterator on it. Its result
+                // holds the reference while the loop runs (php's live loop
+                // variable): FeFetchRef follows it even when the variable
+                // is rebound (`foreach ($v as &$v)`).
+                let rc = match &self.stack[top].regs[arr_cv as usize] {
+                    Value::Ref(rc) => rc.clone(),
+                    _ => {
+                        let slot = &mut self.stack[top].regs[arr_cv as usize];
+                        let rc = Rc::new(RefCell::new(std::mem::replace(slot, Value::Null)));
+                        *slot = Value::Ref(rc.clone());
+                        self.sync_global_cv(top, arr_cv);
+                        rc
                     }
                 };
-                match rc_opt {
-                    Some(rc) => {
-                        add(&mut rc.borrow_mut());
-                        // FE_RESET_RW's result holds the reference while
-                        // the loop runs (php's live loop variable).
-                        self.stack[top].regs[pos_reg as usize + 1] = Value::Ref(rc);
-                    }
-                    None => add(&mut self.stack[top].regs[arr_cv as usize]),
+                if let Value::Array(a) = &mut *rc.borrow_mut() {
+                    a.make_mut().iter_add(id, 0);
                 }
+                self.stack[top].regs[pos_reg as usize + 1] = Value::Ref(rc);
                 self.reg_set(top, pos_reg, Value::Int(id as i64));
                 self.fe_track(top, pos_reg, arr_cv, true, id);
             }
@@ -3805,7 +3807,8 @@ impl Vm {
         let live = f.fe_live.get_or_insert_default();
         if let Some(i) = live.iter().position(|l| l.0 == pos_reg) {
             let (_, arr, by_ref, old) = live.swap_remove(i);
-            release_fe_iter(&mut f.regs, arr, by_ref, old);
+            // `pos_reg + 1` already holds the new loop's reference.
+            release_fe_iter(&mut f.regs, Reg::MAX, arr, by_ref, old);
         }
         live.push((pos_reg, arr, by_ref, id));
     }
@@ -3834,8 +3837,10 @@ impl Vm {
         if let (true, Value::Int(id)) = (iter, &self.stack[top].regs[pos_reg as usize]) {
             let id = *id;
             let id = id as u32;
-            let cell = match &self.stack[top].regs[arr as usize] {
-                Value::Ref(rc) if by_ref => Some(rc.clone()),
+            // A by-reference loop's array: the reference FeResetRef holds.
+            let regs = &self.stack[top].regs;
+            let cell = match (&regs[pos_reg as usize + 1], &regs[arr as usize]) {
+                (Value::Ref(rc), _) | (_, Value::Ref(rc)) if by_ref => Some(rc.clone()),
                 _ => None,
             };
             match cell {
@@ -3856,6 +3861,11 @@ impl Vm {
         // The iterated object goes before the iterator's own handle
         // (zend_user_it_dtor runs inside the iterator's free_obj).
         let handle = std::mem::replace(&mut regs[pos_reg as usize + 1], Value::Null);
+        // The reference a by-reference loop held: releasing it may leave
+        // a cycle (the variable rebound in the loop).
+        if by_ref {
+            rhp_values::gc::possible_root(&handle);
+        }
         if clear_arr {
             let old = std::mem::replace(&mut regs[arr as usize], Value::Null);
             let held = matches!(old, Value::Object(_) | Value::Array(_));
@@ -4014,6 +4024,26 @@ impl Vm {
             return Ok(());
         };
         let id = id as u32;
+        // An array: through the reference FeResetRef holds.
+        if let Value::Ref(rc) = &self.stack[top].regs[pos_reg as usize + 1] {
+            let rc = rc.clone();
+            let fetched = match &mut *rc.borrow_mut() {
+                v @ Value::Array(_) => Some(foreach_next_ref(v, id)),
+                _ => None,
+            };
+            if let Some(fetched) = fetched {
+                match fetched {
+                    Some((k, elem_rc)) => {
+                        self.bind_ref_cv(top, val_cv, elem_rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k.to_value())?;
+                        }
+                    }
+                    None => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
+        }
         // By-reference foreach over a plain object: alias each
         // accessible property slot so writes through the loop var are
         // visible on the object (matches PHP).
@@ -4078,6 +4108,7 @@ impl Vm {
                         let cls = h.borrow().class;
                         Ok(self.class(cls).name.clone())
                     }
+                    Value::Closure(_) => Ok(PhpStr::from("Closure")),
                     other => Err(Thrown::type_error(format!(
                         "Cannot use \"::class\" on {}",
                         rhp_builtins::zval_value_name(self, &other)
@@ -4584,6 +4615,38 @@ impl Vm {
         Some(Value::Array(a))
     }
 
+    /// `InitDynCall`: resolve the callable (autoloading its class) as the
+    /// call will, keeping only the Error it throws.
+    #[inline(never)]
+    fn init_dyn_call(&mut self, top: usize, callee: Reg) -> Result<(), Thrown> {
+        // A function's name, as most often: found without a copy.
+        let name = match &self.stack[top].regs[callee as usize] {
+            Value::Str(s) => Some(s.clone()),
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(s) = name {
+            let n = s.as_bytes();
+            let n = n.strip_prefix(b"\\").unwrap_or(n);
+            let found = if n.iter().any(u8::is_ascii_uppercase) {
+                self.fn_names.contains_key(&n.to_ascii_lowercase())
+            } else {
+                self.fn_names.contains_key(n)
+            };
+            if found {
+                return Ok(());
+            }
+        }
+        let c = deref(&self.reg_r(top, callee)?);
+        if !matches!(c, Value::Closure(_)) {
+            self.resolve_dynamic_call(&c)?;
+        }
+        Ok(())
+    }
+
     /// `CallDyn`: `$f(...)` with the arguments in a window.
     #[inline(never)]
     fn call_dyn(
@@ -4836,7 +4899,15 @@ impl Vm {
                 return Ok(());
             }
         }
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        // The call consumes its argument registers: php frees the
+        // arguments before the closure it was called on.
+        let ncv = self.stack[top].proto.num_cvs;
+        let args: Vec<Value> = (0..argc)
+            .map(|i| match base + i {
+                r if r >= ncv => self.take_temp(top, r),
+                r => self.reg_get(top, r),
+            })
+            .collect();
         let r = self.closure_method(o, mname, args)?;
         self.reg_set(top, dst, r);
         Ok(())
@@ -4900,8 +4971,9 @@ fn loop_body_start(code: &[Instr], pc: usize) -> Option<usize> {
 
 /// Drop HashTable iterator `id` of a foreach left without its `FeFree` (an
 /// exception, or a jump through a finally) from the array or object in
-/// `arr`: php's live range cleanup. See `Frame::fe_live`.
-pub(crate) fn release_fe_iter(regs: &mut [Value], arr: Reg, by_ref: bool, id: u32) {
+/// `arr` (a by-reference loop: the reference held in `pos + 1`): php's
+/// live range cleanup. See `Frame::fe_live`.
+pub(crate) fn release_fe_iter(regs: &mut [Value], pos: Reg, arr: Reg, by_ref: bool, id: u32) {
     let release = |v: &mut Value| match v {
         Value::Array(a) if by_ref => {
             if a.has_iters() && a.ref_count() == 1 {
@@ -4915,6 +4987,16 @@ pub(crate) fn release_fe_iter(regs: &mut [Value], arr: Reg, by_ref: bool, id: u3
         }
         _ => {}
     };
+    let held = match regs.get(pos as usize + 1) {
+        Some(Value::Ref(rc)) if by_ref => Some(rc.clone()),
+        _ => None,
+    };
+    if let Some(rc) = held {
+        if let Ok(mut v) = rc.try_borrow_mut() {
+            release(&mut v);
+        }
+        return;
+    }
     match regs.get_mut(arr as usize) {
         Some(Value::Ref(rc)) if by_ref => {
             if let Ok(mut v) = rc.try_borrow_mut() {

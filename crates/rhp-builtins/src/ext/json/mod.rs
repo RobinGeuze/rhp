@@ -55,6 +55,7 @@ const JSON_PRETTY_PRINT: i64 = 128;
 const JSON_UNESCAPED_UNICODE: i64 = 256;
 const JSON_PARTIAL_OUTPUT_ON_ERROR: i64 = 512;
 const JSON_PRESERVE_ZERO_FRACTION: i64 = 1024;
+const JSON_UNESCAPED_LINE_TERMINATORS: i64 = 2048;
 const JSON_INVALID_UTF8_IGNORE: i64 = 1_048_576;
 const JSON_INVALID_UTF8_SUBSTITUTE: i64 = 2_097_152;
 const JSON_THROW_ON_ERROR: i64 = 4_194_304;
@@ -107,40 +108,33 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     // php keeps `(int)$depth`.
     let max_depth = args.get(2).map_or(512, |v| conv::to_int(&deref(v)) as i32);
     let mut out = Vec::new();
-    set_last_error(JSON_ERROR_NONE);
     let mut enc = Encoder {
         flags,
         arrays: Vec::new(),
         objects: Vec::new(),
         depth: 0,
         max_depth,
+        error_code: JSON_ERROR_NONE,
     };
-    // An exception thrown by a jsonSerialize() propagates; the encoder's own
-    // error code then stays NONE.
-    let ok = match enc.value(host, &deref(&args[0]), &mut out, 0) {
-        Ok(ok) => ok,
-        Err(e) => {
-            if flags & JSON_THROW_ON_ERROR == 0 || flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
-                set_last_error(JSON_ERROR_NONE);
-            }
-            return Err(e);
+    let r = enc.value(host, &deref(&args[0]), &mut out, 0);
+    // php sets json_last_error() from the encoder's own code, except when
+    // it throws instead (JSON_THROW_ON_ERROR without PARTIAL_OUTPUT).
+    let code = enc.error_code;
+    let partial = flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0;
+    if flags & JSON_THROW_ON_ERROR == 0 || partial {
+        set_last_error(code);
+        // an exception from jsonSerialize() propagates
+        r?;
+        if code != JSON_ERROR_NONE && !partial {
+            return Ok(Value::Bool(false));
         }
-    };
-    if ok {
-        // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
-        // json_last_error code. Without it nothing failed here: a nested
-        // json_encode() (from jsonSerialize()) leaves no code behind.
-        if flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
-            set_last_error(JSON_ERROR_NONE);
-        }
-        Ok(Value::str(out))
     } else {
-        // Failure sets json_last_error at the failure site.
-        if flags & JSON_THROW_ON_ERROR != 0 {
-            return Err(json_exception(host, get_last_error()));
+        r?;
+        if code != JSON_ERROR_NONE {
+            return Err(json_exception(host, code));
         }
-        Ok(Value::Bool(false))
     }
+    Ok(Value::str(out))
 }
 
 fn indent(out: &mut Vec<u8>, level: usize) {
@@ -157,6 +151,8 @@ struct Encoder {
     objects: Vec<u32>,
     depth: i32,
     max_depth: i32,
+    /// php's `encoder->error_code`: the last failure.
+    error_code: i64,
 }
 
 impl Encoder {
@@ -164,7 +160,7 @@ impl Encoder {
     /// elements, so an empty container counts too.
     fn leave_level(&mut self) -> bool {
         if self.depth > self.max_depth {
-            set_last_error(JSON_ERROR_DEPTH);
+            self.error_code = JSON_ERROR_DEPTH;
             if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
                 return false;
             }
@@ -173,10 +169,31 @@ impl Encoder {
         true
     }
 
+    /// A string value; under JSON_PARTIAL_OUTPUT_ON_ERROR a bad one is `null`.
+    fn string(&mut self, s: &[u8], out: &mut Vec<u8>) -> bool {
+        if encode_string(s, out, self.flags) {
+            return true;
+        }
+        self.error_code = JSON_ERROR_UTF8;
+        self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0
+    }
+
+    /// A key: a bad one is `""` under JSON_PARTIAL_OUTPUT_ON_ERROR, else php
+    /// goes on encoding and fails the call at the end.
+    fn key(&mut self, s: &[u8], out: &mut Vec<u8>) {
+        if !encode_string(s, out, self.flags) {
+            self.error_code = JSON_ERROR_UTF8;
+            if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                out.truncate(out.len() - 4);
+                out.extend_from_slice(b"\"\"");
+            }
+        }
+    }
+
     /// A failure `code`: with JSON_PARTIAL_OUTPUT_ON_ERROR, `subst` is written
     /// in place of the value and encoding continues.
-    fn fail(&self, code: i64, out: &mut Vec<u8>, subst: &[u8]) -> bool {
-        set_last_error(code);
+    fn fail(&mut self, code: i64, out: &mut Vec<u8>, subst: &[u8]) -> bool {
+        self.error_code = code;
         if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
             out.extend_from_slice(subst);
             true
@@ -218,14 +235,12 @@ impl Encoder {
                         match num {
                             conv::Num::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
                             conv::Num::Float(f) if f.is_finite() => encode_float(f, out, flags),
-                            conv::Num::Float(_) => {
-                                return Ok(encode_string(s.as_bytes(), out, flags))
-                            }
+                            conv::Num::Float(_) => return Ok(self.string(s.as_bytes(), out)),
                         }
                         return Ok(true);
                     }
                 }
-                return Ok(encode_string(s.as_bytes(), out, flags));
+                return Ok(self.string(s.as_bytes(), out));
             }
             Value::Array(a) => {
                 let id = a.data_ptr();
@@ -389,9 +404,7 @@ impl Encoder {
                 out.push(b'\n');
                 indent(out, level + 1);
             }
-            if !encode_string(k.as_bytes(), out, self.flags) {
-                return Ok(false);
-            }
+            self.key(k.as_bytes(), out);
             out.extend_from_slice(if pretty { b": " } else { b":" });
             if !self.value(host, val, out, level + 1)? {
                 return Ok(false);
@@ -441,12 +454,9 @@ impl Encoder {
                 indent(out, level + 1);
             }
             if !is_list {
-                let ok = match k {
-                    ArrayKey::Int(n) => encode_string(n.to_string().as_bytes(), out, flags),
-                    ArrayKey::Str(s) => encode_string(s.as_bytes(), out, flags),
-                };
-                if !ok {
-                    return Ok(false);
+                match k {
+                    ArrayKey::Int(n) => self.key(n.to_string().as_bytes(), out),
+                    ArrayKey::Str(s) => self.key(s.as_bytes(), out),
                 }
                 out.extend_from_slice(if pretty { b": " } else { b":" });
             }
@@ -485,55 +495,98 @@ fn encode_float(f: f64, out: &mut Vec<u8>, flags: i64) {
 }
 
 /// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.
-fn encode_string(bytes: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
-    let owned;
-    let s = match std::str::from_utf8(bytes) {
-        Ok(s) => s,
-        // JSON_INVALID_UTF8_IGNORE drops, JSON_INVALID_UTF8_SUBSTITUTE replaces
-        // (U+FFFD) each invalid sequence.
-        Err(_) if flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE) != 0 => {
-            let mut t = String::with_capacity(bytes.len());
-            for chunk in bytes.utf8_chunks() {
-                t.push_str(chunk.valid());
-                if !chunk.invalid().is_empty() && flags & JSON_INVALID_UTF8_IGNORE == 0 {
-                    t.push('\u{fffd}');
-                }
-            }
-            owned = t;
-            &owned
-        }
-        Err(_) => {
-            set_last_error(JSON_ERROR_UTF8);
-            return false;
-        }
-    };
-    let unescaped_slashes = flags & JSON_UNESCAPED_SLASHES != 0;
-    let unescaped_unicode = flags & JSON_UNESCAPED_UNICODE != 0;
+/// json_encoder.c `php_json_escape_string` (without the numeric check, which
+/// the caller does). On invalid UTF-8 it drops what it wrote, writes `null`
+/// under JSON_PARTIAL_OUTPUT_ON_ERROR, and returns false.
+fn encode_string(s: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    // The bytes that need more than a copy: controls, `"&'/<>\`, and >= 0x80.
+    const CHARMAP: [u32; 8] = [
+        0xffffffff, 0x500080c4, 0x10000000, 0x00000000, 0xffffffff, 0xffffffff, 0xffffffff,
+        0xffffffff,
+    ];
+    fn u_escape(out: &mut Vec<u8>, us: u32) {
+        out.extend_from_slice(&[
+            b'\\',
+            b'u',
+            DIGITS[(us >> 12) as usize & 0xf],
+            DIGITS[(us >> 8) as usize & 0xf],
+            DIGITS[(us >> 4) as usize & 0xf],
+            DIGITS[us as usize & 0xf],
+        ]);
+    }
+    if s.is_empty() {
+        out.extend_from_slice(b"\"\"");
+        return true;
+    }
+    let checkpoint = out.len();
+    out.reserve(s.len() + 2);
     out.push(b'"');
-    for ch in s.chars() {
-        let cp = ch as u32;
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '/' if !unescaped_slashes => out.extend_from_slice(b"\\/"),
-            '\u{08}' => out.extend_from_slice(b"\\b"),
-            '\u{09}' => out.extend_from_slice(b"\\t"),
-            '\u{0a}' => out.extend_from_slice(b"\\n"),
-            '\u{0c}' => out.extend_from_slice(b"\\f"),
-            '\u{0d}' => out.extend_from_slice(b"\\r"),
-            _ if cp < 0x20 => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ if cp < 0x80 => out.push(cp as u8),
-            _ if unescaped_unicode => {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    let mut i = 0;
+    while i < s.len() {
+        // Copy the run of plain bytes in one go.
+        let start = i;
+        while i < s.len() && CHARMAP[(s[i] >> 5) as usize] & (1 << (s[i] & 31)) == 0 {
+            i += 1;
+        }
+        out.extend_from_slice(&s[start..i]);
+        if i == s.len() {
+            break;
+        }
+        let us = s[i];
+        if us >= 0x80 {
+            let at = i;
+            match crate::ext::standard::html::php_next_utf8_char(s, &mut i) {
+                None if flags & JSON_INVALID_UTF8_IGNORE != 0 => {}
+                None if flags & JSON_INVALID_UTF8_SUBSTITUTE != 0 => {
+                    if flags & JSON_UNESCAPED_UNICODE != 0 {
+                        out.extend_from_slice("\u{fffd}".as_bytes());
+                    } else {
+                        out.extend_from_slice(b"\\ufffd");
+                    }
+                }
+                None => {
+                    out.truncate(checkpoint);
+                    if flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
+                        out.extend_from_slice(b"null");
+                    }
+                    return false;
+                }
+                // U+2028/U+2029 stay escaped unless JSON_UNESCAPED_LINE_TERMINATORS.
+                Some(cp)
+                    if flags & JSON_UNESCAPED_UNICODE != 0
+                        && (flags & JSON_UNESCAPED_LINE_TERMINATORS != 0
+                            || !(0x2028..=0x2029).contains(&cp)) =>
+                {
+                    out.extend_from_slice(&s[at..i]);
+                }
+                Some(cp) if cp >= 0x10000 => {
+                    let v = cp - 0x10000;
+                    u_escape(out, 0xd800 | (v >> 10));
+                    u_escape(out, 0xdc00 | (v & 0x3ff));
+                }
+                Some(cp) => u_escape(out, cp),
             }
-            _ if cp <= 0xFFFF => out.extend_from_slice(format!("\\u{cp:04x}").as_bytes()),
-            _ => {
-                let v = cp - 0x10000;
-                let hi = 0xD800 + (v >> 10);
-                let lo = 0xDC00 + (v & 0x3FF);
-                out.extend_from_slice(format!("\\u{hi:04x}\\u{lo:04x}").as_bytes());
-            }
+            continue;
+        }
+        i += 1;
+        match us {
+            b'"' if flags & JSON_HEX_QUOT != 0 => out.extend_from_slice(b"\\u0022"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'/' if flags & JSON_UNESCAPED_SLASHES != 0 => out.push(b'/'),
+            b'/' => out.extend_from_slice(b"\\/"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b'<' if flags & JSON_HEX_TAG != 0 => out.extend_from_slice(b"\\u003C"),
+            b'>' if flags & JSON_HEX_TAG != 0 => out.extend_from_slice(b"\\u003E"),
+            b'&' if flags & JSON_HEX_AMP != 0 => out.extend_from_slice(b"\\u0026"),
+            b'\'' if flags & JSON_HEX_APOS != 0 => out.extend_from_slice(b"\\u0027"),
+            b'<' | b'>' | b'&' | b'\'' => out.push(us),
+            _ => u_escape(out, us as u32),
         }
     }
     out.push(b'"');
@@ -557,11 +610,35 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     };
     let max_depth = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(512);
     let bigint_as_string = flags & JSON_BIGINT_AS_STRING != 0;
-
-    // Validate UTF-8 before parsing (php returns JSON_ERROR_UTF8 for invalid).
-    if std::str::from_utf8(&json).is_err() {
-        set_last_error(JSON_ERROR_UTF8);
-        return throw_or_null(host, flags, JSON_ERROR_UTF8);
+    // php leaves json_last_error() alone when it throws instead.
+    let throw = flags & JSON_THROW_ON_ERROR != 0;
+    let fail = |host: &mut dyn Host, code: i64| {
+        if throw {
+            return Err(json_exception(host, code));
+        }
+        set_last_error(code);
+        Ok(Value::Null)
+    };
+    if !throw {
+        set_last_error(JSON_ERROR_NONE);
+    }
+    if json.is_empty() {
+        return fail(host, JSON_ERROR_SYNTAX);
+    }
+    if max_depth <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "json_decode(): Argument #3 ($depth) must be greater than 0",
+        ));
+    }
+    if max_depth > i32::MAX as i64 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "json_decode(): Argument #3 ($depth) must be less than {}",
+                i32::MAX
+            ),
+        ));
     }
 
     let mut p = Parser {
@@ -570,6 +647,7 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         max_depth,
         assoc,
         bigint_as_string,
+        invalid_utf8: flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE),
         host,
     };
     p.skip_ws();
@@ -579,16 +657,12 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             p.skip_ws();
             if p.i != p.s.len() {
                 // trailing non-whitespace data.
-                set_last_error(JSON_ERROR_SYNTAX);
-                return throw_or_null(host, flags, JSON_ERROR_SYNTAX);
+                let code = p.unexpected();
+                return fail(p.host, code);
             }
-            set_last_error(JSON_ERROR_NONE);
             Ok(v)
         }
-        Err(code) => {
-            set_last_error(code);
-            throw_or_null(host, flags, code)
-        }
+        Err(code) => fail(p.host, code),
     }
 }
 
@@ -623,23 +697,13 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             ),
         ));
     }
-    let json: Vec<u8> = if flags & JSON_INVALID_UTF8_IGNORE != 0 {
-        String::from_utf8_lossy(&json)
-            .replace('\u{FFFD}', "")
-            .into_bytes()
-    } else {
-        json
-    };
-    if std::str::from_utf8(&json).is_err() {
-        set_last_error(JSON_ERROR_UTF8);
-        return Ok(Value::Bool(false));
-    }
     let mut p = Parser {
         s: &json,
         i: 0,
         max_depth: depth,
         assoc: true,
         bigint_as_string: false,
+        invalid_utf8: flags,
         host,
     };
     p.skip_ws();
@@ -647,7 +711,7 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         Ok(_) => {
             p.skip_ws();
             if p.i != p.s.len() {
-                JSON_ERROR_SYNTAX
+                p.unexpected()
             } else {
                 JSON_ERROR_NONE
             }
@@ -656,14 +720,6 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     };
     set_last_error(code);
     Ok(Value::Bool(code == JSON_ERROR_NONE))
-}
-
-fn throw_or_null(host: &mut dyn Host, flags: i64, code: i64) -> Result<Value, Thrown> {
-    if flags & JSON_THROW_ON_ERROR != 0 {
-        Err(json_exception(host, code))
-    } else {
-        Ok(Value::Null)
-    }
 }
 
 /// `new JsonException(json_last_error_msg(), code)` (php_json_throw...).
@@ -682,6 +738,9 @@ struct Parser<'a, 'h> {
     max_depth: i64,
     assoc: bool,
     bigint_as_string: bool,
+    /// JSON_INVALID_UTF8_IGNORE / _SUBSTITUTE: what a string does with an
+    /// invalid byte (else JSON_ERROR_UTF8).
+    invalid_utf8: i64,
     pub(crate) host: &'h mut dyn Host,
 }
 
@@ -697,12 +756,8 @@ impl Parser<'_, '_> {
     }
 
     /// Parse one JSON value at the current position. `depth` is the nesting level
-    /// of this value (the top-level value is depth 1); exceeding `max_depth`
-    /// yields `JSON_ERROR_DEPTH`.
+    /// of this value (the top-level value is depth 1).
     fn parse_value(&mut self, depth: i64) -> Result<Value, i64> {
-        if depth > self.max_depth {
-            return Err(JSON_ERROR_DEPTH);
-        }
         self.skip_ws();
         match self.peek() {
             Some(b'{') => self.parse_object(depth),
@@ -712,8 +767,48 @@ impl Parser<'_, '_> {
             Some(b'f') => self.parse_literal(b"false", Value::Bool(false)),
             Some(b'n') => self.parse_literal(b"null", Value::Null),
             Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
-            _ => Err(JSON_ERROR_SYNTAX),
+            _ => Err(self.unexpected()),
         }
+    }
+
+    /// PHP_JSON_DEPTH_INC: a container opened at `depth` needs room for
+    /// its members, empty or not.
+    fn depth_inc(&self, depth: i64) -> Result<(), i64> {
+        if depth >= self.max_depth {
+            return Err(JSON_ERROR_DEPTH);
+        }
+        Ok(())
+    }
+
+    /// The error for an unexpected token: php's scanner reports a NUL byte
+    /// outside a string as a control character, and a string token's own
+    /// error (unterminated, bad UTF-8 or escape) before the grammar sees it.
+    fn unexpected(&mut self) -> i64 {
+        match self.peek() {
+            Some(0x00..=0x1f) => JSON_ERROR_CTRL_CHAR,
+            Some(b'"') => {
+                let at = self.i;
+                let r = self.parse_string();
+                self.i = at;
+                r.err().unwrap_or(JSON_ERROR_SYNTAX)
+            }
+            Some(0x80..) if self.utf8_len().is_none() => JSON_ERROR_UTF8,
+            _ => JSON_ERROR_SYNTAX,
+        }
+    }
+
+    /// The length of the well-formed UTF-8 character at the cursor (the
+    /// scanner's UTF8 rule).
+    fn utf8_len(&self) -> Option<usize> {
+        let n = match self.peek()? {
+            0x00..=0x7f => 1,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return None,
+        };
+        let c = self.s.get(self.i..self.i + n)?;
+        std::str::from_utf8(c).ok().map(|_| n)
     }
 
     fn parse_literal(&mut self, lit: &[u8], val: Value) -> Result<Value, i64> {
@@ -727,21 +822,26 @@ impl Parser<'_, '_> {
 
     fn parse_object(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '{'
+        self.depth_inc(depth)?;
         let mut pairs: Vec<(Vec<u8>, Value)> = Vec::new();
         // key -> index in `pairs`, for the duplicate check (php's hash
         // update); built once the object outgrows a linear scan
         let mut index: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
         self.skip_ws();
+        if self.peek() == Some(b']') {
+            // object_end: `]` closes the wrong container
+            return Err(JSON_ERROR_STATE_MISMATCH);
+        }
         if self.peek() != Some(b'}') {
             loop {
                 self.skip_ws();
                 if self.peek() != Some(b'"') {
-                    return Err(JSON_ERROR_SYNTAX);
+                    return Err(self.unexpected());
                 }
                 let key = self.parse_string()?;
                 self.skip_ws();
                 if self.peek() != Some(b':') {
-                    return Err(JSON_ERROR_SYNTAX);
+                    return Err(self.unexpected());
                 }
                 self.i += 1;
                 // php_json_parser_object_update: an object property name may
@@ -778,7 +878,8 @@ impl Parser<'_, '_> {
                         self.i += 1;
                         break;
                     }
-                    _ => return Err(JSON_ERROR_SYNTAX),
+                    Some(b']') => return Err(JSON_ERROR_STATE_MISMATCH),
+                    _ => return Err(self.unexpected()),
                 }
             }
         } else {
@@ -798,11 +899,17 @@ impl Parser<'_, '_> {
 
     fn parse_array(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '['
+        self.depth_inc(depth)?;
         let mut arr = PhpArray::new();
         self.skip_ws();
-        if self.peek() == Some(b']') {
-            self.i += 1;
-            return Ok(Value::Array(arr));
+        match self.peek() {
+            Some(b']') => {
+                self.i += 1;
+                return Ok(Value::Array(arr));
+            }
+            // array_end: `}` closes the wrong container
+            Some(b'}') => return Err(JSON_ERROR_STATE_MISMATCH),
+            _ => {}
         }
         loop {
             let val = self.parse_value(depth + 1)?;
@@ -814,7 +921,8 @@ impl Parser<'_, '_> {
                     self.i += 1;
                     break;
                 }
-                _ => return Err(JSON_ERROR_SYNTAX),
+                Some(b'}') => return Err(JSON_ERROR_STATE_MISMATCH),
+                _ => return Err(self.unexpected()),
             }
         }
         Ok(Value::Array(arr))
@@ -825,7 +933,8 @@ impl Parser<'_, '_> {
         self.i += 1; // consume opening '"'
         let mut out = Vec::new();
         loop {
-            let c = self.peek().ok_or(JSON_ERROR_SYNTAX)?;
+            // the end of the input is the scanner's NUL: a control character
+            let c = self.peek().ok_or(JSON_ERROR_CTRL_CHAR)?;
             match c {
                 b'"' => {
                     self.i += 1;
@@ -850,6 +959,19 @@ impl Parser<'_, '_> {
                 }
                 // Literal control characters are not allowed in JSON strings.
                 0x00..=0x1f => return Err(JSON_ERROR_CTRL_CHAR),
+                0x80.. => match self.utf8_len() {
+                    Some(n) => {
+                        out.extend_from_slice(&self.s[self.i..self.i + n]);
+                        self.i += n;
+                    }
+                    // one invalid byte at a time (the scanner's ANY)
+                    None if self.invalid_utf8 & JSON_INVALID_UTF8_SUBSTITUTE != 0 => {
+                        out.extend_from_slice("\u{fffd}".as_bytes());
+                        self.i += 1;
+                    }
+                    None if self.invalid_utf8 & JSON_INVALID_UTF8_IGNORE != 0 => self.i += 1,
+                    None => return Err(JSON_ERROR_UTF8),
+                },
                 _ => {
                     out.push(c);
                     self.i += 1;
@@ -1040,6 +1162,10 @@ pub fn json_constants() -> Vec<(&'static str, Value)> {
         (
             "JSON_PRESERVE_ZERO_FRACTION",
             Value::Int(JSON_PRESERVE_ZERO_FRACTION),
+        ),
+        (
+            "JSON_UNESCAPED_LINE_TERMINATORS",
+            Value::Int(JSON_UNESCAPED_LINE_TERMINATORS),
         ),
         (
             "JSON_INVALID_UTF8_IGNORE",

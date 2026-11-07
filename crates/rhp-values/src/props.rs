@@ -2,6 +2,7 @@
 //! ones in a map made on demand (php's `properties_table` plus the
 //! `properties` HashTable, see [`PropTable`]).
 
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 use indexmap::{IndexMap, IndexSet};
@@ -59,10 +60,100 @@ impl PropLayout {
 /// count every slot, empty ones included, then the dynamic properties.
 #[derive(Default)]
 pub struct PropTable {
-    /// `None`: no declared properties.
-    layout: Option<Rc<PropLayout>>,
-    slots: Box<[Value]>,
+    slots: Slots,
     dynamic: Option<Box<Map>>,
+}
+
+/// The declared slots: a `[Value]` the length of the layout, behind a thin
+/// pointer (the layout knows the length), so that an object fits a 64-byte
+/// allocation.
+struct Slots {
+    /// `None`: no declared properties. Never an empty layout.
+    layout: Option<Rc<PropLayout>>,
+    /// Owns `layout.len()` values (dangling when there is no layout).
+    ptr: NonNull<Value>,
+}
+
+impl Slots {
+    fn new(layout: &Rc<PropLayout>) -> Self {
+        if layout.is_empty() {
+            return Self::default();
+        }
+        let b: Box<[Value]> = (0..layout.len()).map(|_| Value::Undef).collect();
+        Self::from_box(layout.clone(), b)
+    }
+
+    fn from_box(layout: Rc<PropLayout>, b: Box<[Value]>) -> Self {
+        debug_assert_eq!(b.len(), layout.len());
+        let ptr = NonNull::new(Box::into_raw(b) as *mut Value).expect("box pointer");
+        Slots {
+            layout: Some(layout),
+            ptr,
+        }
+    }
+
+    #[inline]
+    fn layout(&self) -> Option<&PropLayout> {
+        self.layout.as_deref()
+    }
+
+    /// The layout and the values, borrowed apart.
+    #[inline]
+    fn split_mut(&mut self) -> (Option<&PropLayout>, &mut [Value]) {
+        let n = self.layout.as_deref().map_or(0, |l| l.len());
+        // SAFETY: `ptr` owns `n` values (see the field), disjoint from
+        // `layout`.
+        let vals = unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), n) };
+        (self.layout.as_deref(), vals)
+    }
+}
+
+impl Default for Slots {
+    fn default() -> Self {
+        Slots {
+            layout: None,
+            ptr: NonNull::dangling(),
+        }
+    }
+}
+
+impl std::ops::Deref for Slots {
+    type Target = [Value];
+    #[inline]
+    fn deref(&self) -> &[Value] {
+        let n = self.layout.as_deref().map_or(0, |l| l.len());
+        // SAFETY: `ptr` owns `n` values (see the field).
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), n) }
+    }
+}
+
+impl std::ops::DerefMut for Slots {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [Value] {
+        self.split_mut().1
+    }
+}
+
+impl Drop for Slots {
+    fn drop(&mut self) {
+        let n = self.len();
+        if n != 0 {
+            // SAFETY: made by `from_box` from a box of `n` values.
+            drop(unsafe {
+                Box::from_raw(std::ptr::slice_from_raw_parts_mut(self.ptr.as_ptr(), n))
+            });
+        }
+    }
+}
+
+/// Empty slots stay empty (`Value::clone` reads them as null).
+impl Clone for Slots {
+    fn clone(&self) -> Self {
+        match &self.layout {
+            None => Self::default(),
+            Some(l) => Self::from_box(l.clone(), self.iter().map(Value::copy_slot).collect()),
+        }
+    }
 }
 
 impl PropTable {
@@ -73,12 +164,8 @@ impl PropTable {
 
     /// A table with `layout`'s slots, all empty.
     pub fn with_layout(layout: &Rc<PropLayout>) -> Self {
-        if layout.is_empty() {
-            return Self::default();
-        }
         PropTable {
-            layout: Some(layout.clone()),
-            slots: (0..layout.len()).map(|_| Value::Undef).collect(),
+            slots: Slots::new(layout),
             dynamic: None,
         }
     }
@@ -86,7 +173,7 @@ impl PropTable {
     /// The slot of declared key `key`.
     #[inline]
     pub fn slot_of(&self, key: &PhpStr) -> Option<usize> {
-        let i = self.layout.as_deref()?.index_of(key)?;
+        let i = self.slots.layout()?.index_of(key)?;
         (i < self.slots.len()).then_some(i)
     }
 
@@ -190,16 +277,15 @@ impl PropTable {
     /// The properties in order.
     pub fn iter(&self) -> Iter<'_> {
         Iter {
-            layout: self.layout.as_deref(),
+            layout: self.slots.layout(),
             slots: self.slots.iter().enumerate(),
             dynamic: self.dynamic.as_deref().map(|d| d.iter()),
         }
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&PhpStr, &mut Value)> + '_ {
-        let layout = self.layout.as_deref();
-        let slots = self
-            .slots
+        let (layout, slots) = self.slots.split_mut();
+        let slots = slots
             .iter_mut()
             .enumerate()
             .filter(|(_, v)| !v.is_undef())
@@ -220,6 +306,12 @@ impl PropTable {
         self.iter().map(|(_, v)| v)
     }
 
+    /// Whether there are dynamic properties.
+    #[inline]
+    pub fn has_dynamic(&self) -> bool {
+        self.dynamic.as_deref().is_some_and(|d| !d.is_empty())
+    }
+
     /// One past the last position.
     pub fn pos_len(&self) -> usize {
         self.slots.len() + self.dynamic.as_deref().map_or(0, |d| d.len())
@@ -229,7 +321,7 @@ impl PropTable {
     pub fn get_index(&self, pos: usize) -> Option<(&PhpStr, &Value)> {
         let n = self.slots.len();
         if pos < n {
-            let k = self.layout.as_deref()?.key(pos);
+            let k = self.slots.layout()?.key(pos);
             return Some((k, &self.slots[pos]));
         }
         self.dynamic.as_deref()?.get_index(pos - n)
@@ -238,8 +330,8 @@ impl PropTable {
     pub fn get_index_mut(&mut self, pos: usize) -> Option<(&PhpStr, &mut Value)> {
         let n = self.slots.len();
         if pos < n {
-            let k = self.layout.as_deref()?.key(pos);
-            return Some((k, &mut self.slots[pos]));
+            let (layout, slots) = self.slots.split_mut();
+            return Some((layout?.key(pos), &mut slots[pos]));
         }
         self.dynamic.as_deref_mut()?.get_index_mut(pos - n)
     }
@@ -269,12 +361,10 @@ impl PropTable {
     }
 }
 
-/// Empty slots stay empty (`Value::clone` reads them as null).
 impl Clone for PropTable {
     fn clone(&self) -> Self {
         PropTable {
-            layout: self.layout.clone(),
-            slots: self.slots.iter().map(Value::copy_slot).collect(),
+            slots: self.slots.clone(),
             dynamic: self.dynamic.clone(),
         }
     }
@@ -329,5 +419,75 @@ impl<'a> IntoIterator for &'a PropTable {
     type IntoIter = Iter<'a>;
     fn into_iter(self) -> Iter<'a> {
         self.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(x: &str) -> PhpStr {
+        PhpStr::from(x)
+    }
+
+    fn keys(t: &PropTable) -> Vec<String> {
+        t.keys()
+            .map(|k| String::from_utf8_lossy(k.as_bytes()).into_owned())
+            .collect()
+    }
+
+    fn table() -> PropTable {
+        let l = PropLayout::new([s("a"), s("b"), s("c")]);
+        let mut t = PropTable::with_layout(&l);
+        t.insert(s("a"), Value::Int(1));
+        t.insert(s("c"), Value::Int(3));
+        t
+    }
+
+    #[test]
+    fn an_object_fits_64_bytes() {
+        // Rc counts + RefCell flag + ObjectData.
+        assert_eq!(std::mem::size_of::<PropTable>(), 24);
+        assert_eq!(
+            16 + std::mem::size_of::<std::cell::RefCell<crate::ObjectData>>(),
+            64
+        );
+    }
+
+    #[test]
+    fn declared_slots_keep_their_place() {
+        let mut t = table();
+        assert_eq!(keys(&t), ["a", "c"]);
+        t.insert(s("d"), Value::Int(4));
+        t.insert(s("b"), Value::Int(2));
+        assert_eq!(keys(&t), ["a", "b", "c", "d"]);
+        assert_eq!(t.remove(&s("a")).map(|r| r.0), Some(None));
+        assert!(!t.contains_key(&s("a")));
+        *t.get_or_insert_null(s("a")) = Value::Int(9);
+        assert_eq!(keys(&t), ["a", "b", "c", "d"]);
+        assert_eq!(t.len(), 4);
+        assert_eq!(t.pos_len(), 4);
+    }
+
+    #[test]
+    fn dynamic_properties_follow_in_insertion_order() {
+        let mut t = table();
+        t.insert(s("x"), Value::Int(1));
+        t.insert(s("y"), Value::Int(2));
+        assert_eq!(t.remove(&s("x")).map(|r| r.0), Some(Some(3)));
+        t.insert(s("x"), Value::Int(3));
+        assert_eq!(keys(&t), ["a", "c", "y", "x"]);
+        assert_eq!(t.get_index_of(&s("x")), Some(4));
+        assert_eq!(t.get_index_of(&s("b")), None);
+        assert!(t.get_index(1).is_some_and(|(_, v)| v.is_undef()));
+    }
+
+    #[test]
+    fn clone_keeps_empty_slots_empty() {
+        let t = table().clone();
+        assert!(t.get(&s("b")).is_none());
+        assert!(t.slot(1).is_some_and(Value::is_undef));
+        assert_eq!(keys(&t), ["a", "c"]);
+        assert!(PropTable::new().clone().is_empty());
     }
 }

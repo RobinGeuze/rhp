@@ -218,14 +218,16 @@ Walk-the-chain is kept only as the **cache-miss fallback inside the linker**
 
 ## 2. Object instantiation
 
-`ObjectData` is the §5 sketch, unchanged in shape:
+`ObjectData` keeps declared properties in fixed slots and dynamic ones in a
+map made on demand (see oop.md §1.1, `PropTable`):
 
 ```rust
 // rhp-values
 pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,                                    // spl_object_id
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    properties: PropTable,                          // slots + dynamic
+    extra: Option<Box<ObjectExtra>>,
 }
 pub type ObjectHandle = Rc<RefCell<ObjectData>>;    // Value::Object(ObjectHandle)
 ```
@@ -248,8 +250,8 @@ pub type ObjectHandle = Rc<RefCell<ObjectData>>;    // Value::Object(ObjectHandl
    temporary object is released by the call. Objects that only php's cycle
    collector frees, and objects whose destructor rhp runs later than php, still
    give their handle back later than php does.
-3. **Property initialization**, in `classes[cid].properties` order (parent-first,
-   verified below): for each `PropEntry`, insert `name -> v` where `v` is
+3. **Property initialization**, in `classes[cid].props` order (parent-first,
+   verified below): slot `i` of `PropEntry` `i` gets `v`, where `v` is
    `default.clone()` (`PropDefault::Value`), the result of running the `Init`
    thunk (bound to `cid` for `self::`), or `Value::Null` (`PropDefault::Null`).
    Each default `Value` is **cloned per instance** — a `Value::Array` default
@@ -702,8 +704,8 @@ zend_object_handlers.c (vm/src/lazy.rs).
   while the initializer runs, which guards re-entry), the info flags, the
   initializer, an initialized proxy's instance, and the storage keys of the
   slots still lazy (php's IS_PROP_LAZY). It goes away with the object.
-- **Triggers.** A lazy object's declared slots are absent from
-  `properties`, so accesses reach the absent-slot branches of props.rs and
+- **Triggers.** A lazy object's declared slots are empty (absent from the
+  property table), so accesses reach the absent-slot branches of props.rs and
   only there call `lazy_slot` (a lazy slot, or an undefined property with
   no unguarded magic method); the hit path is unchanged. `lazy_init`
   initializes (a ghost reverts its properties when the initializer throws,

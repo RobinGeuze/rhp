@@ -2343,6 +2343,18 @@ impl Vm {
                 let k = match key {
                     Value::Int(n) => ArrayKey::Int(*n),
                     Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    // slow_index_convert: an error handler that drops the
+                    // last reference destroys the array (php's GC_DELREF
+                    // check); only this fetch's two copies are left then.
+                    Value::Float(_) => {
+                        let before = a.ref_count();
+                        let k = self.dim_key(key, true)?;
+                        let after = a.ref_count();
+                        if after < before && after <= 2 {
+                            return Ok(empty);
+                        }
+                        k.unwrap_or(ArrayKey::Int(0))
+                    }
                     _ => match self.dim_key(key, true)? {
                         Some(k) => k,
                         None => {

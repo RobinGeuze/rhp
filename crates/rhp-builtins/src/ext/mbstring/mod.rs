@@ -603,7 +603,7 @@ fn parse_encoding_array(
 ) -> Result<Vec<Enc>, Thrown> {
     let mut out = Vec::new();
     let mut included_auto = false;
-    for (_, v) in a.iter() {
+    for v in a.values() {
         let name = crate::zend::zpp::zval_get_string(host, v)?;
         if name.eq_ignore_ascii_case(b"auto") {
             if !included_auto {
@@ -1800,7 +1800,7 @@ fn encoding_or_pass(name: &[u8]) -> Option<Enc> {
 fn fn_mb_http_output(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_http_output";
     let Some(name) = opt_str_arg(host, args, 0, f)? else {
-        return Ok(Value::str(http_output_encoding().name().to_vec()));
+        return Ok(Value::str(http_output_encoding().name()));
     };
     if name.contains(&0) {
         return Err(value_error(f, 0, "must not contain any null bytes"));
@@ -2307,8 +2307,11 @@ fn find_strings(v: &Value, out: &mut Vec<PhpStr>) -> Result<(), Stopped> {
         let i = *pos;
         *pos += 1;
         next = match top {
-            Value::Array(a) => a.get_index(i).map(|(_, c)| c.clone()),
-            Value::Object(h) => h.borrow().properties.get_index(i).map(|(_, c)| c.clone()),
+            Value::Array(a) => a.fetch_from(i).map(|(p, _, c)| {
+                *pos = p + 1;
+                c.clone()
+            }),
+            Value::Object(h) => h.borrow().props().get_index(i).map(|(_, c)| c.clone()),
             Value::Ref(r) => (i == 0).then(|| r.borrow().clone()),
             _ => None,
         };
@@ -2337,20 +2340,21 @@ impl Frame {
         let take = |v: &mut Value| std::mem::replace(v, Value::Null);
         match self {
             Frame::Array(a, pos) => {
-                if *pos >= a.len() {
-                    return None;
-                }
-                let i = *pos;
-                *pos += 1;
-                a.make_mut().entries.get_index_mut(i).map(|(_, v)| take(v))
+                let (p, _, _) = a.fetch_from(*pos)?;
+                *pos = p + 1;
+                a.make_mut().at_mut(p).map(|(_, v)| take(v))
             }
             Frame::Object(h, pos) => {
-                let i = *pos;
-                *pos += 1;
-                h.borrow_mut()
-                    .properties
-                    .get_index_mut(i)
-                    .map(|(_, v)| take(v))
+                let mut b = h.borrow_mut();
+                loop {
+                    let i = *pos;
+                    *pos += 1;
+                    let (_, v) = b.props_mut().get_index_mut(i)?;
+                    // (An empty declared slot is no property.)
+                    if !v.is_undef() {
+                        return Some(take(v));
+                    }
+                }
             }
             Frame::Cell(_, inner, visited) => {
                 (!std::mem::replace(visited, true)).then(|| take(inner))
@@ -2362,12 +2366,12 @@ impl Frame {
     fn put_back(&mut self, v: Value) {
         match self {
             Frame::Array(a, pos) => {
-                if let Some((_, slot)) = a.make_mut().entries.get_index_mut(*pos - 1) {
+                if let Some((_, slot)) = a.make_mut().at_mut(*pos - 1) {
                     *slot = v;
                 }
             }
             Frame::Object(h, pos) => {
-                if let Some((_, slot)) = h.borrow_mut().properties.get_index_mut(*pos - 1) {
+                if let Some((_, slot)) = h.borrow_mut().props_mut().get_index_mut(*pos - 1) {
                     *slot = v;
                 }
             }

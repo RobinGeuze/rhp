@@ -39,8 +39,8 @@ pub fn cast_to_array(v: Value) -> Value {
         // name (visibility name-mangling for private/protected is not modelled).
         Value::Object(h) => {
             let mut a = PhpArray::new();
-            for (name, val) in &h.borrow().properties {
-                a.insert(crate::ArrayKey::from_bytes(name.as_bytes()), deref(val));
+            for (name, val) in h.borrow().props() {
+                a.insert(crate::ArrayKey::from_php_str(name), deref(val));
             }
             Value::Array(a)
         }
@@ -142,7 +142,7 @@ pub fn add(a: &Value, b: &Value) -> Result<Value, Thrown> {
     if let (Value::Array(x), Value::Array(y)) = (&deref(a), &deref(b)) {
         let mut out = x.clone();
         for (k, v) in y.iter() {
-            if out.get(k).is_none() {
+            if out.get(&k).is_none() {
                 out.insert(k.clone(), v.clone());
             }
         }
@@ -357,12 +357,15 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     // once (no copies of the operands, no growth slack counted against
     // memory_limit).
     let (a, b) = (deref(a), deref(b));
+    let (mut ia, mut ib) = ([0u8; 20], [0u8; 20]);
     let a = match &a {
         Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        Value::Int(n) => std::borrow::Cow::Borrowed(conv::int_digits(*n, &mut ia)),
         v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
     };
     let b = match &b {
         Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        Value::Int(n) => std::borrow::Cow::Borrowed(conv::int_digits(*n, &mut ib)),
         v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
     };
     let len = a.len() + b.len();
@@ -371,11 +374,7 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     if !crate::mem::alloc_check(crate::mem::zstr_size(len)) {
         return Value::Str(PhpStr::from_bytes(Vec::new()));
     }
-    // (The whole block: a later in-place append can use the slack.)
-    let mut bytes = Vec::with_capacity(crate::mem::block_size(len));
-    bytes.extend_from_slice(&a);
-    bytes.extend_from_slice(&b);
-    Value::Str(PhpStr::from_bytes(bytes))
+    Value::Str(PhpStr::concat(&a, &b))
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +736,7 @@ fn compare_arrays(
     COMPARING.with(|c| c.borrow_mut().push(p));
     let r = (|| {
         for (k, xv) in x.iter() {
-            match y.get(k) {
+            match y.get(&k) {
                 Some(yv) => match compare(xv, yv, cx)? {
                     Ordering::Equal => continue,
                     other => return Ok(other),
@@ -848,8 +847,8 @@ fn callables_equal(a: &Value, b: &Value) -> bool {
     match (&a, &b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
         (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
-            let xs: Vec<Value> = x.iter().map(|(_, v)| deref(v)).collect();
-            let ys: Vec<Value> = y.iter().map(|(_, v)| deref(v)).collect();
+            let xs: Vec<Value> = x.values().map(deref).collect();
+            let ys: Vec<Value> = y.values().map(deref).collect();
             let target = match (&xs[0], &ys[0]) {
                 (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
                 (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),
@@ -939,16 +938,31 @@ fn std_compare_objects(
     };
     // Snapshot the property tables: comparing nested values may run user code
     // (`__toString`) that touches these objects.
+    if let Some(pairs) = slot_pairs(x, y, xc, cx) {
+        // No dynamic properties: slot by slot.
+        let _guard = Guard::enter(std::rc::Rc::as_ptr(x) as *const u8 as usize)?;
+        for (p1, p2) in pairs {
+            match (p1.is_undef(), p2.is_undef()) {
+                (false, false) => match compare(&p1, &p2, cx)? {
+                    Ordering::Equal => {}
+                    o => return Ok(o),
+                },
+                (true, true) => {}
+                _ => return Ok(Ordering::Greater),
+            }
+        }
+        return Ok(Ordering::Equal);
+    }
     let xp: Vec<(PhpStr, Value)> = x
         .borrow()
-        .properties
+        .props()
         .iter()
         .filter(|(k, _)| !cx.is_internal_prop(xc, k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let yp: crate::PhpArray = {
         let mut a = crate::PhpArray::new();
-        for (k, v) in y.borrow().properties.iter() {
+        for (k, v) in y.borrow().props().iter() {
             if !cx.is_internal_prop(yc, k) {
                 a.insert(crate::ArrayKey::Str(k.clone()), v.clone());
             }
@@ -966,7 +980,7 @@ fn std_compare_objects(
     let x_dyn: Vec<&(PhpStr, Value)> = xp.iter().filter(|(k, _)| !is_declared(k)).collect();
     let y_dyn = y
         .borrow()
-        .properties
+        .props()
         .keys()
         .filter(|k| !is_declared(k) && !cx.is_internal_prop(yc, k))
         .count();
@@ -1012,6 +1026,30 @@ fn std_compare_objects(
         }
     }
     Ok(Ordering::Equal)
+}
+
+/// The declared slots of two objects of class `class` side by side (empty
+/// ones kept), when neither has dynamic properties.
+fn slot_pairs(
+    x: &crate::ObjectHandle,
+    y: &crate::ObjectHandle,
+    class: crate::ClassId,
+    cx: &mut dyn CompareCx,
+) -> Option<Vec<(Value, Value)>> {
+    let (bx, by) = (x.borrow(), y.borrow());
+    let (px, py) = (bx.props(), by.props());
+    let n = px.pos_len();
+    if px.has_dynamic() || py.has_dynamic() || py.pos_len() != n {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let ((k, v1), (_, v2)) = (px.get_index(i)?, py.get_index(i)?);
+        if !cx.is_internal_prop(class, k) {
+            out.push((v1.copy_slot(), v2.copy_slot()));
+        }
+    }
+    Some(out)
 }
 
 fn cmp_num(a: Num, b: Num) -> Ordering {

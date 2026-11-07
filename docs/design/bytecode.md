@@ -341,7 +341,7 @@ printed by `ast_export.rs`, a port of zend_ast_export over the CST.
 (strict) ending in `ThrowMatchError`.
 
 **Arrays (phase 4)** — build into a temp, then `Assign`/`Mov`; writes use an
-lvalue-cursor stack so no long-lived borrow is held into a COW `IndexMap`.
+lvalue-cursor stack so no long-lived borrow is held into a COW array.
 ```
 NewArray   { dst, cap: u32 }          empty PhpArray (reserve cap)
 ArrPush    { arr, val }               arr[] = deref(val)        (PhpArray::push; make_mut COW on the `arr` slot)
@@ -431,14 +431,15 @@ as in php, each instruction decides how it fetches its operands.
   undefined inside (`use ($x)` reads it, with the warning).
 
 **foreach** — by-value over an array iterates a COW snapshot (Rc bump into a
-hidden reg) by position (`IndexMap::get_index(i)`); a temporary source is moved
+hidden reg) by position (`PhpArray::fetch_from(pos)`, skipping holes); a temporary source is moved
 into that reg. Everything else follows php's HashTable iterators: a by-ref loop
 puts an iterator on the live array (`ArrayData` iterator list, id from
 `next_ht_iter_id`, the same mechanism array_walk uses), so positions survive
 unset/append/splice/shift/unshift and reassignment (an array without the
 iterator is walked from its internal pointer); a plain object by value or by
 ref iterates its live property table through an iterator kept on the object
-(`ObjectData::prop_iter_*`, moved by `remove_prop` / `insert_prop_at`).
+(`ObjectData::prop_iter_*`, moved by `remove_prop`; positions count
+every declared slot, empty ones too).
 `pos_reg + 1` holds a placeholder object for the handle php's
 zend_object_iterator takes (Traversable and hooked objects).
 `keycv` = `Reg::MAX` means "no key target".

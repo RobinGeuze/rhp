@@ -589,7 +589,7 @@ pub trait Host {
         let mut o = obj.borrow_mut();
         match val {
             Some(v) => {
-                o.properties.insert(storage.clone(), v);
+                o.props_mut().insert(storage.clone(), v);
             }
             None => {
                 o.remove_prop(storage);

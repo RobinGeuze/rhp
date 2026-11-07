@@ -9,19 +9,21 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use bstr::BString;
-use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
-
+pub mod array;
 pub mod conv;
 pub mod fmt;
 pub mod gc;
 pub mod handles;
 pub mod mem;
 pub mod ops;
+mod phpstr;
+pub mod props;
 pub mod thrown;
 
+pub use array::{ArrayData, PhpArray};
 pub use handles::{alloc_object_id, release_object_id};
+pub use phpstr::{PhpStr, StrBuilder, StrBytes, StrMut};
+pub use props::{PropLayout, PropTable};
 pub use thrown::Thrown;
 
 // php's error levels (Zend/zend_errors.h).
@@ -237,7 +239,8 @@ pub type PhpRef = Rc<RefCell<Value>>;
 pub struct ObjectData {
     pub class: ClassId,
     pub id: u32,
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
+    /// The properties (see [`ObjectData::props`]).
+    properties: PropTable,
     /// Rarely used state: the native payload and the lazy object info.
     /// Boxed so that objects with neither pay a pointer.
     extra: Option<Box<ObjectExtra>>,
@@ -255,7 +258,7 @@ struct ObjectExtra {
     weak: bool,
     /// HashTable iterators on the property table (foreach over the
     /// object): (id, position), kept on the same property by
-    /// [`ObjectData::remove_prop`] and [`ObjectData::insert_prop_at`].
+    /// [`ObjectData::remove_prop`].
     iters: Vec<(u32, usize)>,
 }
 
@@ -342,17 +345,31 @@ impl Drop for LazyInfo {
 pub type Payload = Rc<dyn std::any::Any>;
 
 impl ObjectData {
-    pub fn new(
-        class: ClassId,
-        id: u32,
-        properties: IndexMap<PhpStr, Value, FxBuildHasher>,
-    ) -> Self {
+    pub fn new(class: ClassId, id: u32, properties: PropTable) -> Self {
         ObjectData {
             class,
             id,
             properties,
             extra: None,
         }
+    }
+
+    /// The property table. Removing goes through
+    /// [`ObjectData::remove_prop`], which keeps iterators in place.
+    #[inline]
+    pub fn props(&self) -> &PropTable {
+        &self.properties
+    }
+
+    #[inline]
+    pub fn props_mut(&mut self) -> &mut PropTable {
+        &mut self.properties
+    }
+
+    /// Swap in a whole new table (lazy object reset and initialization),
+    /// returning the old one. Iterators start over.
+    pub fn replace_props(&mut self, props: PropTable) -> PropTable {
+        std::mem::replace(&mut self.properties, props)
     }
 
     /// The lazy object state; `None` for ordinary objects.
@@ -456,10 +473,11 @@ impl ObjectData {
     }
 
     /// Remove property `key`, keeping the property table's iterators on
-    /// the same properties (php leaves a hole the iterators skip).
+    /// the same properties (php leaves a hole the iterators skip; a
+    /// declared slot stays, empty).
     pub fn remove_prop(&mut self, key: &PhpStr) -> Option<Value> {
-        let (i, _, v) = self.properties.shift_remove_full(key)?;
-        if let Some(e) = self.extra.as_deref_mut() {
+        let (pos, v) = self.properties.remove(key)?;
+        if let (Some(i), Some(e)) = (pos, self.extra.as_deref_mut()) {
             for (_, p) in e.iters.iter_mut() {
                 if *p > i {
                     *p -= 1;
@@ -467,19 +485,6 @@ impl ObjectData {
             }
         }
         Some(v)
-    }
-
-    /// Insert property `key` at index `pos` (a declared slot coming back
-    /// after unset); an iterator at `pos` sees it.
-    pub fn insert_prop_at(&mut self, pos: usize, key: PhpStr, v: Value) {
-        self.properties.shift_insert(pos, key, v);
-        if let Some(e) = self.extra.as_deref_mut() {
-            for (_, p) in e.iters.iter_mut() {
-                if *p > pos {
-                    *p += 1;
-                }
-            }
-        }
     }
 
     /// Register (or move) property-table iterator `id` at `pos`.
@@ -604,7 +609,7 @@ impl ObjectData {
             for v in self.properties.values() {
                 gc::possible_root(v);
             }
-            self.properties.clear();
+            self.properties = PropTable::default();
         }
         release_object_id(id);
     }
@@ -695,81 +700,29 @@ pub struct ClassFlags {
 // PhpStr — binary-safe, copy-on-write byte string
 // ---------------------------------------------------------------------------
 
-/// Owned, binary-safe, copy-on-write PHP string. Clone is O(1); mutation is COW.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PhpStr(Rc<BString>);
-
-impl PhpStr {
-    pub fn from_bytes(b: impl Into<Vec<u8>>) -> Self {
-        PhpStr(Rc::new(BString::new(b.into())))
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_slice()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// COW mutable access: clones the buffer iff it is currently shared.
-    pub fn make_mut(&mut self) -> &mut BString {
-        Rc::make_mut(&mut self.0)
-    }
-
-    /// Mutable access when this is the only handle to the buffer.
-    pub fn get_mut(&mut self) -> Option<&mut BString> {
-        Rc::get_mut(&mut self.0)
-    }
-
-    /// How many values share this buffer (debug_zval_dump's refcount).
-    pub fn ref_count(&self) -> usize {
-        Rc::strong_count(&self.0)
-    }
-
-    /// Whether both share one buffer.
-    pub fn ptr_eq(&self, other: &PhpStr) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Default for PhpStr {
-    fn default() -> Self {
-        PhpStr::from_bytes(Vec::new())
-    }
-}
-
-impl From<&[u8]> for PhpStr {
-    fn from(b: &[u8]) -> Self {
-        PhpStr::from_bytes(b.to_vec())
-    }
-}
-
-impl From<&str> for PhpStr {
-    fn from(s: &str) -> Self {
-        PhpStr::from_bytes(s.as_bytes().to_vec())
-    }
-}
-
-impl std::fmt::Debug for PhpStr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
-    }
-}
+// The type and its unsafe layout code live in `phpstr`.
 
 // ---------------------------------------------------------------------------
 // PhpArray — ordered int|string map with COW value semantics
 // ---------------------------------------------------------------------------
 
 /// PHP array key: canonicalized to int-or-string.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ArrayKey {
     Int(i64),
     Str(PhpStr),
+}
+
+/// One word per key, as php hashes by `h`: the int itself, or the string's
+/// cached hash (no discriminant; equality tells the kinds apart).
+impl std::hash::Hash for ArrayKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ArrayKey::Int(n) => state.write_u64(*n as u64),
+            ArrayKey::Str(s) => state.write_u64(s.hash_value()),
+        }
+    }
 }
 
 impl ArrayKey {
@@ -785,7 +738,7 @@ impl ArrayKey {
             Value::Bool(b) => ArrayKey::Int(if *b { 1 } else { 0 }),
             Value::Null | Value::Undef => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
-            Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+            Value::Str(s) => ArrayKey::from_php_str(s),
             Value::Resource(r) => ArrayKey::Int(r.id as i64),
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
             Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
@@ -801,12 +754,22 @@ impl ArrayKey {
         }
     }
 
+    /// The key for string `s`: an integer for a canonical integer string,
+    /// else the string itself, shared (php adds a reference to the key).
+    #[inline]
+    pub fn from_php_str(s: &PhpStr) -> ArrayKey {
+        match canonical_int_string(s.as_bytes()) {
+            Some(n) => ArrayKey::Int(n),
+            None => ArrayKey::Str(s.clone()),
+        }
+    }
+
     /// Apply the canonical-integer-string rule to raw bytes.
     pub fn from_bytes(s: &[u8]) -> ArrayKey {
         if let Some(n) = canonical_int_string(s) {
             ArrayKey::Int(n)
         } else {
-            ArrayKey::Str(PhpStr::from_bytes(s.to_vec()))
+            ArrayKey::Str(PhpStr::from_slice(s))
         }
     }
 }
@@ -883,355 +846,12 @@ fn float_to_int_wrapping(t: f64) -> i64 {
     }
 }
 
-/// The array buffer; insertion order preserved by IndexMap.
-pub struct ArrayData {
-    pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
-    /// php's nNextFreeElement: the key `$a[] = ...` uses. `i64::MIN` until an
-    /// integer key is inserted (a fresh append then uses 0). Saturates at
-    /// `i64::MAX`; an append fails while that key is occupied.
-    next_free: i64,
-    /// Internal pointer for `current`/`next`/`prev`/`end`/`reset`/`key`.
-    /// `entries.len()` (or more) is past the end. A removal before it moves
-    /// it back, so it keeps pointing at the same element (php's bucket
-    /// position; a removed current element leaves it on the next one).
-    pub pos: usize,
-    /// Positions of the active HashTable iterators (array_walk), by id,
-    /// updated on removal like `pos`. Copied along with the array, as
-    /// zend_array_dup copies iterators. Boxed: one word in every array.
-    #[allow(clippy::box_collection)]
-    iters: Option<Box<Vec<(u32, usize)>>>,
-}
-
-/// php's `zend_array_dup`: a reference held only by the source array
-/// (refcount 1) is not shared with the copy; the copy gets the referenced
-/// value (`zend_array_dup_element`), unless that value is the source array
-/// itself (the self-reference guard).
-impl Clone for ArrayData {
-    fn clone(&self) -> Self {
-        let mut entries = self.entries.clone();
-        let src = self as *const ArrayData as usize;
-        for v in entries.values_mut() {
-            let inner = match v {
-                Value::Ref(rc) if Rc::strong_count(rc) == 2 => match rc.try_borrow() {
-                    Ok(b) => match &*b {
-                        Value::Array(a) if a.data_ptr() == src => None,
-                        other => Some(other.clone()),
-                    },
-                    Err(_) => None,
-                },
-                _ => None,
-            };
-            if let Some(x) = inner {
-                *v = x;
-            }
-        }
-        ArrayData {
-            entries,
-            next_free: self.next_free,
-            // zend_array_dup: a pointer past the end restarts at 0.
-            pos: if self.pos < self.entries.len() {
-                self.pos
-            } else {
-                0
-            },
-            iters: self.iters.clone(),
-        }
-    }
-}
-
-impl Drop for ArrayData {
-    fn drop(&mut self) {
-        gc::array_freed(self as *const ArrayData as usize);
-        for v in self.entries.values() {
-            gc::possible_root(v);
-        }
-    }
-}
-
-impl ArrayData {
-    fn new() -> Self {
-        ArrayData {
-            entries: IndexMap::with_hasher(FxBuildHasher),
-            next_free: i64::MIN,
-            pos: 0,
-            iters: None,
-        }
-    }
-
-    /// Update `next_free` after inserting integer key `k` (append or explicit).
-    #[inline]
-    fn bump_next_int(&mut self, k: i64) {
-        if k >= self.next_free {
-            self.next_free = if k < i64::MAX { k + 1 } else { i64::MAX };
-        }
-    }
-
-    /// The key the next append uses, or `None` when it is occupied
-    /// (zend_hash_next_index_insert failing).
-    #[inline]
-    pub fn next_append_key(&self) -> Option<i64> {
-        let k = if self.next_free == i64::MIN {
-            0
-        } else {
-            self.next_free
-        };
-        if k == i64::MAX && self.entries.contains_key(&ArrayKey::Int(k)) {
-            return None;
-        }
-        Some(k)
-    }
-
-    /// php's nNextFreeElement as array functions see it (`i64::MIN` when no
-    /// integer key was ever inserted).
-    pub fn next_free(&self) -> i64 {
-        self.next_free
-    }
-
-    /// Set nNextFreeElement (array_pop / array_shift / renumbering).
-    pub fn set_next_free(&mut self, n: i64) {
-        self.next_free = n;
-    }
-
-    /// Remove the entry at index `i`, keeping the internal pointer and the
-    /// iterators on the same elements.
-    pub fn remove_index(&mut self, i: usize) -> Option<(ArrayKey, Value)> {
-        let r = self.entries.shift_remove_index(i)?;
-        self.removed_at(i);
-        Some(r)
-    }
-
-    #[inline]
-    fn removed_at(&mut self, i: usize) {
-        if self.pos > i && self.pos != usize::MAX {
-            self.pos -= 1;
-        }
-        if let Some(it) = &mut self.iters {
-            for (_, p) in it.iter_mut() {
-                if *p > i {
-                    *p -= 1;
-                }
-            }
-        }
-    }
-
-    /// Register iterator `id` at position `pos` (zend_hash_iterator_add).
-    pub fn iter_add(&mut self, id: u32, pos: usize) {
-        let it = self.iters.get_or_insert_with(Default::default);
-        match it.iter_mut().find(|(i, _)| *i == id) {
-            Some(e) => e.1 = pos,
-            None => it.push((id, pos)),
-        }
-    }
-
-    /// The position of iterator `id`, if this array (or the array it was
-    /// copied from) has it.
-    pub fn iter_pos(&self, id: u32) -> Option<usize> {
-        self.iters
-            .as_ref()?
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map(|e| e.1)
-    }
-
-    /// Move every iterator `n` places on (zend_hash_iterators_advance).
-    pub fn iters_advance(&mut self, n: usize) {
-        if let Some(it) = &mut self.iters {
-            for (_, p) in it.iter_mut() {
-                *p += n;
-            }
-        }
-    }
-
-    /// Hand this array's iterators to `to`, positions unchanged (a table
-    /// rebuilt in place, as zend_hash_sort and php_splice do).
-    pub fn move_iters_to(&mut self, to: &mut ArrayData) {
-        to.iters = self.iters.take();
-    }
-
-    /// Drop iterator `id` (zend_hash_iterator_del).
-    pub fn iter_del(&mut self, id: u32) {
-        if let Some(it) = &mut self.iters {
-            it.retain(|(i, _)| *i != id);
-            if it.is_empty() {
-                self.iters = None;
-            }
-        }
-    }
-}
-
-/// A PHP array value. Clone is O(1) (Rc bump); mutation is COW via `make_mut`.
-#[derive(Clone)]
-pub struct PhpArray(Rc<ArrayData>);
-
-impl PhpArray {
-    pub fn new() -> Self {
-        PhpArray(Rc::new(ArrayData::new()))
-    }
-
-    /// An empty array with room for `n` elements (array_init_size).
-    pub fn with_capacity(n: usize) -> Self {
-        let mut d = ArrayData::new();
-        d.entries.reserve_exact(n);
-        PhpArray(Rc::new(d))
-    }
-
-    /// Identity of the shared array storage (php's `zend_array *`): equal for
-    /// copies that have not been written since, so a recursive array reached
-    /// through a reference is recognized (`*RECURSION*` / circular-reference
-    /// guards in the dumpers and encoders).
-    pub fn data_ptr(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.entries.len()
-    }
-
-    /// Whether HashTable iterators are registered on this array.
-    pub fn has_iters(&self) -> bool {
-        self.0.iters.is_some()
-    }
-
-    /// The registered HashTable iterators: (id, position).
-    pub fn iters(&self) -> Vec<(u32, usize)> {
-        self.0.iters.as_deref().cloned().unwrap_or_default()
-    }
-
-    /// php's nNextFreeElement (see [`ArrayData::next_free`]).
-    pub fn next_free(&self) -> i64 {
-        self.0.next_free
-    }
-
-    /// The internal pointer (see [`ArrayData::pos`]), read without
-    /// separating.
-    pub fn pos(&self) -> usize {
-        self.0.pos
-    }
-
-    /// The shared storage (the cycle collector's graph walk).
-    pub fn rc(&self) -> &Rc<ArrayData> {
-        &self.0
-    }
-
-    /// An array value for storage `rc`.
-    pub fn from_rc(rc: Rc<ArrayData>) -> Self {
-        PhpArray(rc)
-    }
-
-    /// How many values share this storage (debug_zval_dump's refcount).
-    pub fn ref_count(&self) -> usize {
-        Rc::strong_count(&self.0)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.entries.is_empty()
-    }
-
-    pub fn get(&self, k: &ArrayKey) -> Option<&Value> {
-        self.0.entries.get(k)
-    }
-
-    pub fn iter(&self) -> indexmap::map::Iter<'_, ArrayKey, Value> {
-        self.0.entries.iter()
-    }
-
-    /// The (key, value) at insertion position `i` (for `foreach` iteration).
-    pub fn get_index(&self, i: usize) -> Option<(&ArrayKey, &Value)> {
-        self.0.entries.get_index(i)
-    }
-
-    /// COW mutable access to the backing buffer.
-    pub fn make_mut(&mut self) -> &mut ArrayData {
-        Rc::make_mut(&mut self.0)
-    }
-
-    /// Insert/overwrite at an explicit key (COW). Updates the append counter.
-    pub fn insert(&mut self, key: ArrayKey, value: Value) {
-        let data = self.make_mut();
-        if let ArrayKey::Int(n) = key {
-            data.bump_next_int(n);
-        }
-        if let Some(old) = data.entries.insert(key, value) {
-            gc::possible_root(&old);
-        }
-    }
-
-    /// Append `$a[] = value` (COW); nothing is inserted when the next
-    /// element is already occupied (see [`PhpArray::try_push`]).
-    #[inline]
-    pub fn push(&mut self, value: Value) {
-        self.try_push(value);
-    }
-
-    /// Append `$a[] = value` (COW). Returns false (and inserts nothing) when
-    /// the next element is already occupied.
-    #[inline]
-    pub fn try_push(&mut self, value: Value) -> bool {
-        let data = self.make_mut();
-        let Some(k) = data.next_append_key() else {
-            return false;
-        };
-        data.bump_next_int(k);
-        data.entries.insert(ArrayKey::Int(k), value);
-        true
-    }
-
-    /// COW mutable access to the slot at `key`, inserting `Null` if absent.
-    /// Updates the append counter for integer keys. Used by nested lvalue writes.
-    pub fn get_or_insert_mut(&mut self, key: ArrayKey) -> &mut Value {
-        let data = self.make_mut();
-        if let ArrayKey::Int(n) = key {
-            data.bump_next_int(n);
-        }
-        data.entries.entry(key).or_insert(Value::Null)
-    }
-
-    /// COW mutable access to a freshly appended slot (`$a[]`); `None` when
-    /// the next element is already occupied.
-    pub fn append_mut(&mut self) -> Option<&mut Value> {
-        let data = self.make_mut();
-        let k = data.next_append_key()?;
-        data.bump_next_int(k);
-        Some(data.entries.entry(ArrayKey::Int(k)).or_insert(Value::Null))
-    }
-
-    /// COW mutable access to an existing slot (no insert).
-    pub fn get_mut(&mut self, key: &ArrayKey) -> Option<&mut Value> {
-        self.make_mut().entries.get_mut(key)
-    }
-
-    /// COW remove, preserving insertion order. `next_free` is not lowered.
-    pub fn remove(&mut self, key: &ArrayKey) -> Option<Value> {
-        let data = self.make_mut();
-        let (i, _, v) = data.entries.shift_remove_full(key)?;
-        data.removed_at(i);
-        gc::possible_root(&v);
-        Some(v)
-    }
-}
-
-impl Default for PhpArray {
-    fn default() -> Self {
-        PhpArray::new()
-    }
-}
-
-impl FromIterator<(ArrayKey, Value)> for PhpArray {
-    fn from_iter<T: IntoIterator<Item = (ArrayKey, Value)>>(iter: T) -> Self {
-        let mut a = PhpArray::new();
-        for (k, v) in iter {
-            a.insert(k, v);
-        }
-        a
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Value convenience constructors
 // ---------------------------------------------------------------------------
 
 impl Value {
-    pub fn str(b: impl Into<Vec<u8>>) -> Value {
+    pub fn str(b: impl StrBytes) -> Value {
         Value::Str(PhpStr::from_bytes(b))
     }
 

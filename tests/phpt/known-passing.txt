@@ -1062,7 +1062,6 @@ Zend/tests/closures/closure_use_trailing_comma.phpt
 Zend/tests/closures/closure_use_variable_twice.phpt
 Zend/tests/closures/closure_write_prop.phpt
 Zend/tests/closures/fake_closure_in_internal_func_leaks.phpt
-Zend/tests/closures/gh12073.phpt
 Zend/tests/closures/gh19653_1.phpt
 Zend/tests/closures/gh19653_2.phpt
 Zend/tests/closures/gh8083.phpt
@@ -3581,7 +3580,9 @@ Zend/tests/offsets/object_container_offset_behaviour.phpt
 Zend/tests/offsets/reference_containers_appended.phpt
 Zend/tests/offsets/runtime_compile_time_offset_access.phpt
 Zend/tests/offsets/string_container_offset_behaviour.phpt
+Zend/tests/oom_SplFixedArray___unserialize.phpt
 Zend/tests/oom_SplFixedArray_fromArray_001.phpt
+Zend/tests/oom_SplFixedArray_fromArray_002.phpt
 Zend/tests/oom_after_main_script.phpt
 Zend/tests/oom_array_fill_001.phpt
 Zend/tests/oom_array_fill_002.phpt
@@ -3603,6 +3604,7 @@ Zend/tests/oom_debug_backtrace_args.phpt
 Zend/tests/oom_debug_backtrace_named_args.phpt
 Zend/tests/oom_error_get_last.phpt
 Zend/tests/oom_exception_trace.phpt
+Zend/tests/oom_hard_limit_exceeded_during_complilation.phpt
 Zend/tests/oom_interrupt.phpt
 Zend/tests/oom_interrupt_unfinished_call_frame.phpt
 Zend/tests/oom_interrupt_unfinished_call_frame_fiber.phpt

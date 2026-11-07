@@ -162,7 +162,7 @@ fn fn_get_curve_names(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
     for c in &curves {
         let sn = unsafe { sys::OBJ_nid2sn(c.nid) };
         if !sn.is_null() {
-            a.push(Value::str(cstr_bytes(sn).to_vec()));
+            a.push(Value::str(cstr_bytes(sn)));
         }
     }
     Ok(Value::Array(a))
@@ -944,5 +944,5 @@ fn fn_spki_export_challenge(host: &mut dyn Host, args: &[Value]) -> Result<Value
         return Ok(Value::Bool(false));
     };
     let ch = unsafe { sys::ASN1_STRING_get0_data(spki_challenge(spki.p)) };
-    Ok(Value::str(cstr_bytes(ch.cast()).to_vec()))
+    Ok(Value::str(cstr_bytes(ch.cast())))
 }

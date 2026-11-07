@@ -335,7 +335,7 @@ impl Vm {
                         .ancestors
                         .iter()
                         .any(|&a| self.is_internal_class(a));
-                for (k, p) in o.properties.iter() {
+                for (k, p) in o.props().iter() {
                     // A prelude class's private or protected `__*` array is its native
                     // storage (a C array or HashTable php's get_gc walks
                     // through, not a counted zend_array; ArrayObject's
@@ -358,7 +358,7 @@ impl Vm {
                             && name.starts_with(b"__")
                             && name != b"__s"
                         {
-                            out.extend(a.iter().map(|(_, v)| v.clone()));
+                            out.extend(a.values().cloned());
                             continue;
                         }
                     }
@@ -381,7 +381,7 @@ impl Vm {
                     crate::fibers::fiber_gc_values(h, out);
                 }
             }
-            Value::Array(a) => out.extend(a.iter().map(|(_, v)| v.clone())),
+            Value::Array(a) => out.extend(a.values().cloned()),
             Value::Ref(r) => {
                 if let Ok(b) = r.try_borrow() {
                     out.push(b.clone());
@@ -397,7 +397,7 @@ impl Vm {
                         // `$o->m(...)`: php's Closure holds the method and
                         // `$this`, not an array.
                         Value::Array(a) if a.ref_count() == 1 && gc::slot_of(w) == 0 => {
-                            out.extend(a.iter().map(|(_, v)| v.clone()))
+                            out.extend(a.values().cloned())
                         }
                         other => out.push(other.clone()),
                     }

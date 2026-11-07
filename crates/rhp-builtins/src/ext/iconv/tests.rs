@@ -2,7 +2,7 @@ use super::*;
 use crate::test_support::run;
 
 fn s(b: &[u8]) -> Value {
-    Value::str(b.to_vec())
+    Value::str(b)
 }
 
 /// `(result-as-debug, diagnostics)`.

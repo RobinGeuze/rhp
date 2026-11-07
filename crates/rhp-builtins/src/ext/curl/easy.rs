@@ -530,7 +530,7 @@ unsafe extern "C" fn write_cb(
                 let (Some(fcc), Some(obj)) = (h.fcc, handle_value(cell)) else {
                     return length;
                 };
-                if let Some(r) = call(cell, fcc, vec![obj, Value::str(data.to_vec())]) {
+                if let Some(r) = call(cell, fcc, vec![obj, Value::str(data)]) {
                     return after_call(cell, &r) as usize;
                 }
             }
@@ -574,7 +574,7 @@ unsafe extern "C" fn header_cb(
                 let (Some(fcc), Some(obj)) = (h.fcc, handle_value(cell)) else {
                     return length;
                 };
-                match call(cell, fcc, vec![obj, Value::str(data.to_vec())]) {
+                match call(cell, fcc, vec![obj, Value::str(data)]) {
                     Some(r) => after_call(cell, &r) as usize,
                     None => length,
                 }
@@ -773,7 +773,7 @@ unsafe extern "C" fn sshhostkey_cb(
         let args = vec![
             obj,
             Value::Int(keytype as i64),
-            Value::str(bytes(key, keylen).to_vec()),
+            Value::str(bytes(key, keylen)),
             Value::Int(keylen as i64),
         ];
         let Some(r) = call(cell, fcc, args) else {
@@ -816,7 +816,7 @@ unsafe extern "C" fn debug_cb(
             call(
                 cell,
                 fcc,
-                vec![obj, Value::Int(ty as i64), Value::str(data.to_vec())],
+                vec![obj, Value::Int(ty as i64), Value::str(data)],
             );
         }
         0
@@ -970,7 +970,7 @@ fn mime_parts(
     let mut parts = Vec::new();
     let mut files = false;
     for (k, current) in postfields.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let current = deref(current);
         let prop = |host: &dyn Host, name: &str| {
             host.object_prop(&current, name.as_bytes())
@@ -1025,7 +1025,7 @@ fn mime_parts(
             continue;
         }
         let values: Vec<Value> = match &current {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             other => vec![other.clone()],
         };
         for v in values {
@@ -1947,7 +1947,7 @@ fn set_option(
                 )));
             };
             let mut lines = Vec::with_capacity(a.len());
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 lines.push(crate::zend::zpp::zval_get_string(host, &deref(v))?);
             }
             let mut slist: *mut sys::curl_slist = std::ptr::null_mut();
@@ -2145,7 +2145,7 @@ pub(super) fn fn_curl_setopt_array(host: &mut dyn Host, args: &[Value]) -> Resul
     let mut ok = true;
     for (k, v) in arr.iter() {
         let option = match k {
-            ArrayKey::Int(i) => *i,
+            ArrayKey::Int(i) => i,
             ArrayKey::Str(_) => {
                 return Err(Thrown::error(
                     "ValueError",
@@ -2270,7 +2270,7 @@ fn certinfo(
                 Some(colon) => {
                     hash.insert(
                         ArrayKey::from_bytes(&data[..colon]),
-                        Value::str(data[colon + 1..].to_vec()),
+                        Value::str(&data[colon + 1..]),
                     );
                 }
                 None => crate::warn(

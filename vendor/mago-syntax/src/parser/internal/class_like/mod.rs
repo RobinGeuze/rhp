@@ -59,7 +59,7 @@ where
                     }
                 }
 
-                Sequence::new(members)
+                self.sequence(members)
             },
             right_brace: self.parse_closing_span(T!["}"])?,
         })
@@ -112,7 +112,7 @@ where
                     }
                 }
 
-                Sequence::new(members)
+                self.sequence(members)
             },
             right_brace: self.parse_closing_span(T!["}"])?,
         })
@@ -153,7 +153,7 @@ where
                     }
                 }
 
-                Sequence::new(members)
+                self.sequence(members)
             },
             right_brace: self.parse_closing_span(T!["}"])?,
         })
@@ -192,7 +192,7 @@ where
                         }
                     }
                 }
-                Sequence::new(members)
+                self.sequence(members)
             },
             right_brace: self.parse_closing_span(T!["}"])?,
         })
@@ -233,7 +233,7 @@ where
                         }
                     }
                 }
-                Sequence::new(members)
+                self.sequence(members)
             },
             right_brace: self.parse_closing_span(T!["}"])?,
         })

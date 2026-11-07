@@ -276,9 +276,9 @@ impl Feed<'_> {
         let t = &self.toks[i];
         if self.unclosed_single_quote(t) {
             // the scanner returns it without HANDLE_NEWLINES
-            return t.line as u32;
+            return t.line;
         }
-        let mut line = t.line as u32 + count_newlines(t.text(self.src));
+        let mut line = t.line + count_newlines(t.text(self.src));
         if defers_newline(self.src, self.toks, i) {
             line -= 1;
         }
@@ -347,7 +347,7 @@ impl Feed<'_> {
                 return Err("Encoding must be a literal".into());
             }
             if named {
-                let line = self.last.map_or(0, |l| self.toks[l].line as u32);
+                let line = self.last.map_or(0, |l| self.toks[l].line);
                 let msg = if super::multibyte::enabled() {
                     let name = literal_string(self.src, value.first().map(|&k| &self.toks[k]));
                     if encoding_known(&name) {
@@ -373,7 +373,7 @@ impl Feed<'_> {
         while let Some(t) = self.toks.get(self.i) {
             let i = self.i;
             self.i += 1;
-            let line = t.line as u32;
+            let line = t.line;
             match t.id {
                 T_WHITESPACE | T_OPEN_TAG => continue,
                 T_COMMENT | T_DOC_COMMENT => {
@@ -447,7 +447,7 @@ impl Feed<'_> {
                 // an empty heredoc: the label is checked right away
                 let empty = toks.get(i + 1).filter(|n| n.id == T_END_HEREDOC);
                 if empty.is_some_and(|n| label_indent(src, n).2) {
-                    let line = t.line as u32 + count_newlines(t.text(src));
+                    let line = t.line + count_newlines(t.text(src));
                     return Some((MIXED.into(), line));
                 }
                 // The scan-ahead's check on a body that starts with a
@@ -797,7 +797,7 @@ fn heredoc_info(src: &[u8], toks: &[Tok], i: usize) -> Heredoc {
 /// (raised when the label is found), then strip_multiline_string_indentation.
 fn heredoc_body_error(src: &[u8], toks: &[Tok], i: usize, h: Heredoc) -> Option<(String, u32)> {
     let t = &toks[i];
-    let line = t.line as u32;
+    let line = t.line;
     let label = toks.get(i + 1).filter(|n| n.id == T_END_HEREDOC);
     let at_label = label.is_some();
     if label.is_some_and(|n| label_indent(src, n).2) {
@@ -898,7 +898,7 @@ const SCANNER_ERROR: i32 = i32::MAX;
 
 /// The parser-mode errors php's scanner raises on a token it returns.
 fn scanner_error(t: &Tok, s: &[u8], nowdoc: bool) -> Option<(String, u32)> {
-    let line = t.line as u32;
+    let line = t.line;
     match t.id {
         T_DOUBLE_CAST if s.iter().any(|c| c.eq_ignore_ascii_case(&b'r')) => Some((
             "The (real) cast has been removed, use (float) instead".into(),

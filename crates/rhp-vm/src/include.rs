@@ -48,6 +48,10 @@ pub enum IncludeError {
         line: u32,
         diags: Vec<(i64, String, u32)>,
     },
+    /// Compiling went past php's hard memory limit at `line`: php exits
+    /// there ([`Vm::compile_hard_limit`]), naming the line only when no
+    /// code runs yet (the main script, preloading).
+    HardLimit { line: u32 },
     /// Anything else (an unsupported construct, …).
     Thrown(Thrown),
 }
@@ -125,6 +129,9 @@ impl Vm {
     fn include_error(&mut self, e: IncludeError, file: &str, eval: bool) -> Thrown {
         match e {
             IncludeError::Thrown(t) => t,
+            // php names the executing include or eval, not the file it
+            // was compiling (zend_mm_hard_limit_error).
+            IncludeError::HardLimit { .. } => self.compile_hard_limit(None),
             IncludeError::Compile {
                 message,
                 line,

@@ -1145,7 +1145,7 @@ impl<'s> Ex<'s> {
         // `clone(...)` is the keyword: the parser names the global
         // clone() (ZEND_NAME_FQ).
         let id = match f {
-            Expression::Identifier(id) => Some(id),
+            Expression::Identifier(id) => Some(*id),
             Expression::ConstantAccess(ca) => Some(&ca.name),
             _ => None,
         };

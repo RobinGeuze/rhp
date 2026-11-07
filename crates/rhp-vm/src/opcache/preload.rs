@@ -184,6 +184,10 @@ impl Vm {
                 self.compile_failed(&message, file.as_bytes(), line, &diags, false);
                 return false;
             }
+            Err(IncludeError::HardLimit { line }) => {
+                self.compile_hard_limit(Some((file.as_bytes(), line)));
+                return false;
+            }
             Err(IncludeError::Thrown(_)) => return false,
         };
         self.preload_rec = Some(vec![PreloadRec::new(
@@ -332,7 +336,7 @@ impl Vm {
                 rhp_values::Thrown::Object(o) => {
                     let m = o
                         .borrow()
-                        .properties
+                        .props()
                         .get(&rhp_values::PhpStr::from("message"))
                         .cloned()
                         .unwrap_or(Value::Null);
@@ -555,7 +559,7 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
             FnOrigin::Top(i) => &prog.functions[i],
             FnOrigin::Closure(i) => &prog.closures[i],
         };
-        fns.push(Value::str(f.name.as_bytes().to_vec()));
+        fns.push(Value::str(f.name.as_bytes()));
     }
     if !fns.is_empty() {
         out.insert(s(b"functions"), Value::Array(fns));
@@ -574,7 +578,7 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
             user.get(local - nested)
         };
         if let Some(c) = c {
-            classes.push(Value::str(c.name.as_bytes().to_vec()));
+            classes.push(Value::str(c.name.as_bytes()));
         }
     }
     if !classes.is_empty() {

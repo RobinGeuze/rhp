@@ -478,7 +478,7 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
     let mut out = PhpArray::new();
     if let Value::Object(h) = v {
         let b = h.borrow();
-        for (k, val) in b.properties.iter() {
+        for (k, val) in b.props().iter() {
             out.insert(rhp_values::ArrayKey::Str(k.clone()), val.clone());
         }
     }
@@ -496,7 +496,7 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
             other => other,
         };
         out.insert(
-            rhp_values::ArrayKey::Str(PhpStr::from_bytes(p.name.as_bytes().to_vec())),
+            rhp_values::ArrayKey::Str(PhpStr::from_bytes(p.name.as_bytes())),
             val,
         );
     }

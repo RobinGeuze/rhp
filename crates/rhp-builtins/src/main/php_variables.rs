@@ -65,7 +65,7 @@ fn descend<'a>(arr: &'a mut PhpArray, key: Option<&[u8]>) -> Option<&'a mut PhpA
         None => {
             arr.push(Value::Array(PhpArray::new()));
             // the just-pushed element is the last one
-            let last = arr.iter().last().map(|(k, _)| k.clone())?;
+            let last = arr.last().map(|(k, _)| k.clone())?;
             last
         }
         Some(k) => {

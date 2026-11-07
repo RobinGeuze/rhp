@@ -213,7 +213,7 @@ fn fn_iptcparse(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             Some(Value::Array(l)) => l.clone(),
             _ => PhpArray::new(),
         };
-        list.push(Value::str(s[inx..inx + len].to_vec()));
+        list.push(Value::str(&s[inx..inx + len]));
         a.insert(key, Value::Array(list));
         inx += len;
     }

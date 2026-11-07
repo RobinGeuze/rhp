@@ -215,7 +215,7 @@ fn feature_g_anchor() {
     let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
         panic!()
     };
-    let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
+    let got: Vec<String> = g0.values().map(as_str).collect();
     assert_eq!(got, vec!["1", "2", "3"]);
 }
 
@@ -373,7 +373,7 @@ fn match_all_empty_lazy() {
     let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
         panic!()
     };
-    let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
+    let got: Vec<String> = g0.values().map(as_str).collect();
     assert_eq!(got, vec!["", "a", "", "a", "", "a", ""]);
 }
 
@@ -386,7 +386,7 @@ fn match_all_empty_star() {
     let Some(Value::Array(g0)) = a.get(&ArrayKey::Int(0)) else {
         panic!()
     };
-    let got: Vec<String> = g0.iter().map(|(_, x)| as_str(x)).collect();
+    let got: Vec<String> = g0.values().map(as_str).collect();
     assert_eq!(got, vec!["", "x", "", ""]);
 }
 
@@ -501,7 +501,7 @@ fn split(args: &[Value]) -> Vec<String> {
     let Value::Array(a) = fn_preg_split(&mut TestHost::new(), args).unwrap() else {
         panic!()
     };
-    a.iter().map(|(_, v)| as_str(v)).collect()
+    a.values().map(as_str).collect()
 }
 
 #[test]

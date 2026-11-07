@@ -180,14 +180,11 @@ pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'s
         }
         match (semi, sep) {
             (None, _) => {
-                meta.insert(ArrayKey::from_bytes(b"mediatype"), Value::str(p.to_vec()));
+                meta.insert(ArrayKey::from_bytes(b"mediatype"), Value::str(p));
                 p = &[];
             }
             (Some(semi), Some(sep)) if sep < semi => {
-                meta.insert(
-                    ArrayKey::from_bytes(b"mediatype"),
-                    Value::str(p[..semi].to_vec()),
-                );
+                meta.insert(ArrayKey::from_bytes(b"mediatype"), Value::str(&p[..semi]));
                 p = &p[semi..];
             }
             (Some(semi), _) if semi != 0 || p != b";base64" => {
@@ -207,7 +204,7 @@ pub fn parse_data_url(url: &[u8]) -> Result<(Vec<u8>, rhp_values::PhpArray), &'s
                     if name != b"mediatype" {
                         meta.insert(
                             ArrayKey::from_bytes(name),
-                            Value::str(p[eq + 1..eq + 1 + vlen].to_vec()),
+                            Value::str(&p[eq + 1..eq + 1 + vlen]),
                         );
                     }
                     p = &p[eq + 1 + vlen..];

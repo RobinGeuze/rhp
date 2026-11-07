@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
+use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::random::mt_range;
 use crate::ext::standard::file::path_arg;
@@ -120,7 +120,7 @@ fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
     };
-    Ok(Value::str(s[start..start + take].to_vec()))
+    Ok(Value::str(&s[start..start + take]))
 }
 
 // ---------------------------------------------------------------------------
@@ -150,14 +150,18 @@ fn replace_in_subject(
         ));
     };
     let mut cur = subject;
-    for (i, (_, sv)) in searches.iter().enumerate() {
+    let mut reps = match replace {
+        Value::Array(reps) => Some(reps.values()),
+        _ => None,
+    };
+    for sv in searches.values() {
         let sbytes = zval_get_string(host, sv)?;
-        let rbytes = match replace {
-            Value::Array(reps) => match reps.get_index(i) {
-                Some((_, v)) => zval_get_string(host, v)?,
+        let rbytes = match (replace, &mut reps) {
+            (_, Some(reps)) => match reps.next() {
+                Some(v) => zval_get_string(host, v)?,
                 None => Vec::new(),
             },
-            other => conv::to_string_bytes(other),
+            (other, None) => conv::to_string_bytes(other),
         };
         if sbytes.is_empty() {
             continue;
@@ -200,9 +204,12 @@ pub(crate) fn str_replace_common(
         Value::Array(out)
     } else {
         let s = conv::to_string_bytes(&subject);
-        Value::str(replace_in_subject(
-            host, s, &search, &replace, replace_fn, &mut n,
-        )?)
+        let res = replace_in_subject(host, s, &search, &replace, replace_fn, &mut n)?;
+        match subject {
+            // Nothing replaced: php returns the subject string itself.
+            Value::Str(orig) if n == 0 => Value::Str(orig),
+            _ => Value::str(res),
+        }
     };
     // `&$count`, written when passed.
     if let Some(Value::Ref(r)) = args.get(3) {
@@ -238,13 +245,20 @@ fn resolve_fwd_offset(offset: i64, len: usize, fname: &str) -> Result<usize, Thr
 }
 
 fn strpos_impl(args: &[Value], ci: bool, fname: &str) -> Result<Value, Thrown> {
-    let mut haystack = conv::to_string_bytes(&args[0]);
-    let mut needle = conv::to_string_bytes(&args[1]);
+    // The arguments' own bytes unless they need converting or folding.
+    fn bytes(v: &Value, ci: bool) -> std::borrow::Cow<'_, [u8]> {
+        match v {
+            Value::Str(s) if !ci => std::borrow::Cow::Borrowed(s.as_bytes()),
+            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+        }
+    }
+    let mut haystack = bytes(&args[0], ci);
+    let mut needle = bytes(&args[1], ci);
     let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let start = resolve_fwd_offset(off, haystack.len(), fname)?;
     if ci {
-        haystack.make_ascii_lowercase();
-        needle.make_ascii_lowercase();
+        haystack.to_mut().make_ascii_lowercase();
+        needle.to_mut().make_ascii_lowercase();
     }
     match find_sub(&haystack[start..], &needle) {
         Some(p) => Ok(Value::Int((start + p) as i64)),
@@ -410,7 +424,7 @@ fn trim_impl(
             end -= 1;
         }
     }
-    Ok(Value::str(s[start..end].to_vec()))
+    Ok(Value::str(&s[start..end]))
 }
 
 fn fn_trim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1102,7 +1116,7 @@ fn fn_strpbrk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         set[c as usize] = true;
     }
     match s.iter().position(|&c| set[c as usize]) {
-        Some(i) => Ok(Value::str(s[i..].to_vec())),
+        Some(i) => Ok(Value::str(&s[i..])),
         None => Ok(Value::Bool(false)),
     }
 }
@@ -1212,8 +1226,8 @@ fn find_ci(h: &[u8], n: &[u8]) -> Option<usize> {
 fn split_result(h: &[u8], at: Option<usize>, before: bool) -> Value {
     match at {
         None => Value::Bool(false),
-        Some(p) if before => Value::str(h[..p].to_vec()),
-        Some(p) => Value::str(h[p..].to_vec()),
+        Some(p) if before => Value::str(&h[..p]),
+        Some(p) => Value::str(&h[p..]),
     }
 }
 
@@ -1356,7 +1370,7 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     // php 8.2+: an empty subject yields an empty array.
     for chunk in s.chunks(n) {
-        out.push(Value::str(chunk.to_vec()));
+        out.push(Value::str(chunk));
     }
     Ok(Value::Array(out))
 }
@@ -1404,7 +1418,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     }
     if pairs.len() == 1 {
         let (k, v) = pairs.iter().next().expect("one pair");
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         let rep = zval_get_string(host, v)?;
         if key.is_empty() {
             host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1419,7 +1433,7 @@ fn strtr_array(host: &mut dyn Host, s: Vec<u8>, pairs: &PhpArray) -> Result<Valu
     let mut first = [false; 256];
     let (mut minlen, mut maxlen) = (usize::MAX, 0usize);
     for (k, v) in pairs.iter() {
-        let key = key_bytes(k);
+        let key = key_bytes(&k);
         if key.is_empty() {
             if matches!(k, ArrayKey::Str(_)) {
                 host.docref_diagnostic(crate::E_WARNING, EMPTY_KEY)?;
@@ -1494,33 +1508,42 @@ fn fn_substr_replace(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
     if let Value::Array(subj) = subject {
         let mut out = PhpArray::new();
-        for (i, (k, v)) in subj.iter().enumerate() {
+        let values = |v: &Value| match v {
+            Value::Array(a) => Some(a.clone()),
+            _ => None,
+        };
+        let (ra, sa) = (values(&replace), values(&start_arg));
+        let la = length_arg.as_ref().and_then(values);
+        let mut ri = ra.as_ref().map(|a| a.values());
+        let mut si = sa.as_ref().map(|a| a.values());
+        let mut li = la.as_ref().map(|a| a.values());
+        for (k, v) in subj.iter() {
             let sbytes = zval_get_string(host, v)?;
-            // replace: array -> nth element (else ""); scalar -> whole, for all.
-            let rep = match &replace {
-                Value::Array(ra) => match ra.get_index(i) {
-                    Some((_, rv)) => zval_get_string(host, rv)?,
+            // replace: array -> next element (else ""); scalar -> whole, for all.
+            let rep = match &mut ri {
+                Some(it) => match it.next() {
+                    Some(rv) => zval_get_string(host, rv)?,
                     None => Vec::new(),
                 },
-                other => conv::to_string_bytes(other),
+                None => conv::to_string_bytes(&replace),
             };
-            // start: array -> nth element (else 0); scalar -> per-subject.
-            let st = match &start_arg {
-                Value::Array(sa) => match sa.get_index(i) {
-                    Some((_, sv)) => crate::zend::zpp::zval_get_long(host, sv)?,
+            // start: array -> next element (else 0); scalar -> per-subject.
+            let st = match &mut si {
+                Some(it) => match it.next() {
+                    Some(sv) => crate::zend::zpp::zval_get_long(host, sv)?,
                     None => 0,
                 },
-                other => conv::to_int(other),
+                None => conv::to_int(&start_arg),
             };
-            // length: omitted -> to end; array -> nth element (else full string);
-            // scalar -> per-subject.
-            let ln = match &length_arg {
-                None => None,
-                Some(Value::Array(la)) => Some(match la.get_index(i) {
-                    Some((_, lv)) => crate::zend::zpp::zval_get_long(host, lv)?,
+            // length: omitted -> to end; array -> next element (else full
+            // string); scalar -> per-subject.
+            let ln = match (&length_arg, &mut li) {
+                (None, _) => None,
+                (_, Some(it)) => Some(match it.next() {
+                    Some(lv) => crate::zend::zpp::zval_get_long(host, lv)?,
                     None => sbytes.len() as i64,
                 }),
-                Some(other) => Some(conv::to_int(other)),
+                (Some(other), None) => Some(conv::to_int(other)),
             };
             out.insert(
                 k.clone(),
@@ -1655,11 +1678,8 @@ fn fn_str_word_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         }
         if p > start {
             match format {
-                1 => words.push(Value::str(s[start..p].to_vec())),
-                2 => words.insert(
-                    ArrayKey::Int(start as i64),
-                    Value::str(s[start..p].to_vec()),
-                ),
+                1 => words.push(Value::str(&s[start..p])),
+                2 => words.insert(ArrayKey::Int(start as i64), Value::str(&s[start..p])),
                 _ => count += 1,
             }
         }
@@ -1816,7 +1836,7 @@ fn fn_strip_tags(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         // Each element becomes `<tag>`; an empty array allows nothing.
         Some(Value::Array(a)) => {
             let mut set = Vec::new();
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 set.push(b'<');
                 set.extend_from_slice(&crate::zend::zpp::zval_get_string(host, v)?);
                 set.push(b'>');
@@ -2073,7 +2093,7 @@ fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thr
     };
     // php_implode: arrays warn, objects use their string cast (or throw).
     let mut parts: Vec<std::borrow::Cow<[u8]>> = Vec::with_capacity(arr.len());
-    for (_, v) in arr.iter() {
+    for v in arr.values() {
         parts.push(match v {
             Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
             Value::Int(_) | Value::Bool(_) | Value::Null => {
@@ -2094,14 +2114,14 @@ fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thr
     {
         return Ok(Value::Null);
     }
-    let mut out = Vec::with_capacity(len + glue.len() * parts.len().saturating_sub(1));
+    let mut out = PhpStr::builder(len + glue.len() * parts.len().saturating_sub(1));
     for (i, p) in parts.iter().enumerate() {
         if i > 0 {
-            out.extend_from_slice(&glue);
+            out.push(&glue);
         }
-        out.extend_from_slice(p);
+        out.push(p);
     }
-    Ok(Value::str(out))
+    Ok(Value::Str(out.finish()))
 }
 
 /// `explode`: php_explode / php_explode_negative_limit. The pieces are
@@ -2142,7 +2162,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if rhp_values::mem::has_oom() {
                 return Ok(Value::Array(arr));
             }
-            arr.push(Value::str(bytes[p1..p2].to_vec()));
+            arr.push(Value::str(&bytes[p1..p2]));
             p1 = p2 + delim.len();
             match finder.find(&bytes[p1..]) {
                 Some(o) => p2 = p1 + o,
@@ -2153,7 +2173,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 break;
             }
         }
-        arr.push(Value::str(bytes[p1..].to_vec()));
+        arr.push(Value::str(&bytes[p1..]));
     } else if limit < 0 {
         let mut positions = vec![0];
         let mut p1 = 0;
@@ -2173,7 +2193,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 break;
             }
             let (a, b) = (positions[i], positions[i + 1] - delim.len());
-            arr.push(Value::str(bytes[a..b].to_vec()));
+            arr.push(Value::str(&bytes[a..b]));
         }
     } else {
         arr.push(Value::Str(s.clone()));
@@ -2189,15 +2209,21 @@ pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn fn_strtoupper(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_uppercase();
-    Ok(Value::str(b))
+    let mut s = match deref(&args[0]) {
+        Value::Str(s) => s,
+        v => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+    };
+    s.make_mut().make_ascii_uppercase();
+    Ok(Value::Str(s))
 }
 
 fn fn_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_lowercase();
-    Ok(Value::str(b))
+    let mut s = match deref(&args[0]) {
+        Value::Str(s) => s,
+        v => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+    };
+    s.make_mut().make_ascii_lowercase();
+    Ok(Value::Str(s))
 }
 
 fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2575,7 +2601,7 @@ fn fn_setlocale(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let Value::Array(arr) = deref(a) else {
             continue;
         };
-        for (_, e) in arr.iter() {
+        for e in arr.values() {
             let s = crate::zend::zpp::zval_get_string(host, &deref(e))?;
             if let Some(r) = try_setlocale(host, cat, &s)? {
                 return Ok(Value::str(r));
@@ -2594,7 +2620,7 @@ fn fn_localeconv(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
             if p.is_null() {
                 Value::str("")
             } else {
-                Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec())
+                Value::str(std::ffi::CStr::from_ptr(p).to_bytes())
             }
         };
         let grouping = |p: *const libc::c_char| -> Value {
@@ -2646,7 +2672,7 @@ fn fn_nl_langinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         if p.is_null() {
             return Ok(Value::Bool(false));
         }
-        Ok(Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec()))
+        Ok(Value::str(std::ffi::CStr::from_ptr(p).to_bytes()))
     }
 }
 
@@ -2706,7 +2732,7 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
         base = &base[..base.len() - suffix.len()];
     }
-    Ok(Value::str(base.to_vec()))
+    Ok(Value::str(base))
 }
 
 /// `php_basename` without a suffix: the last component, trailing slashes
@@ -2769,15 +2795,15 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         arr.insert(K::from_bytes(b"dirname"), Value::str(dirname));
     }
     if flags & BASENAME != 0 {
-        arr.insert(K::from_bytes(b"basename"), Value::str(basename.to_vec()));
+        arr.insert(K::from_bytes(b"basename"), Value::str(basename));
     }
     if flags & EXTENSION != 0 {
         if let Some(ext) = extension {
-            arr.insert(K::from_bytes(b"extension"), Value::str(ext.to_vec()));
+            arr.insert(K::from_bytes(b"extension"), Value::str(ext));
         }
     }
     if flags & FILENAME != 0 {
-        arr.insert(K::from_bytes(b"filename"), Value::str(filename.to_vec()));
+        arr.insert(K::from_bytes(b"filename"), Value::str(filename));
     }
     // The array for PATHINFO_ALL; for any other flags its first element.
     if flags == ALL {

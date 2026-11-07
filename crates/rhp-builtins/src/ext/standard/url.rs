@@ -401,12 +401,12 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         return Ok(Value::Bool(false));
     };
     let mut out = rhp_values::PhpArray::new();
-    for (_, h) in headers.iter() {
+    for h in headers.values() {
         let Value::Str(h) = h else { continue };
         let h = h.as_bytes();
         let colon = h.iter().position(|&c| c == b':').filter(|_| assoc);
         let Some(p) = colon else {
-            out.push(Value::str(h.to_vec()));
+            out.push(Value::str(h));
             continue;
         };
         let mut v = p + 1;
@@ -414,7 +414,7 @@ fn fn_get_headers(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             v += 1;
         }
         let key = rhp_values::ArrayKey::from_bytes(&h[..p]);
-        let value = Value::str(h[v..].to_vec());
+        let value = Value::str(&h[v..]);
         match out.get(&key).cloned() {
             None => {
                 out.insert(key, value);

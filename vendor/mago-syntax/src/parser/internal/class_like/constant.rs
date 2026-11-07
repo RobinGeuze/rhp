@@ -4,7 +4,6 @@ use crate::cst::cst::ClassLikeConstant;
 use crate::cst::cst::ClassLikeConstantItem;
 use crate::cst::cst::Modifier;
 use crate::cst::sequence::Sequence;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -48,7 +47,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(items, commas)
+                self.token_separated(items, commas)
             },
             terminator: self.parse_terminator()?,
         })

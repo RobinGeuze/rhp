@@ -8,8 +8,6 @@ use crate::cst::cst::TraitUseConcreteSpecification;
 use crate::cst::cst::TraitUseMethodReference;
 use crate::cst::cst::TraitUsePrecedenceAdaptation;
 use crate::cst::cst::TraitUseSpecification;
-use crate::cst::sequence::Sequence;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -42,7 +40,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(traits, commas)
+                self.token_separated(traits, commas)
             },
             specification: self.parse_trait_use_specification()?,
         })
@@ -63,7 +61,7 @@ where
 
                         adaptations.push(self.parse_trait_use_adaptation()?);
                     }
-                    Sequence::new(adaptations)
+                    self.sequence(adaptations)
                 },
                 right_brace: self.stream.eat_span(T!["}"])?,
             }),
@@ -108,7 +106,7 @@ where
                                 }
                             }
 
-                            TokenSeparatedSequence::new(items, commas)
+                            self.token_separated(items, commas)
                         },
                         terminator: self.parse_terminator()?,
                     }),

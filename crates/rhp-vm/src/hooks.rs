@@ -473,11 +473,8 @@ impl Vm {
                         }
                         // A backed read without a get hook is silent:
                         // uninitialized reads as null.
-                        let v = h.borrow().properties.get(&key).map(deref);
-                        out.insert(
-                            ArrayKey::from_bytes(shown.as_bytes()),
-                            v.unwrap_or(Value::Null),
-                        );
+                        let v = h.borrow().props().get(&key).map(deref);
+                        out.insert(ArrayKey::from_php_str(&shown), v.unwrap_or(Value::Null));
                         continue;
                     }
                     let mut v = self.prop_fetch_as(
@@ -490,18 +487,18 @@ impl Vm {
                     }
                     v
                 }
-                None => match h.borrow().properties.get(&key) {
+                None => match h.borrow().props().get(&key) {
                     Some(Value::Ref(rc)) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
                     Some(v) => v.clone(),
                     None => continue,
                 },
             };
-            out.insert(ArrayKey::from_bytes(shown.as_bytes()), v);
+            out.insert(ArrayKey::from_php_str(&shown), v);
         }
         let dynamic: Vec<(PhpStr, Value)> = {
             let b = h.borrow();
             let entry = self.class(cls);
-            b.properties
+            b.props()
                 .iter()
                 .filter(|(k, _)| !entry.props.contains_key(*k))
                 .map(|(k, v)| (k.clone(), deref(v)))
@@ -513,7 +510,7 @@ impl Vm {
                     continue;
                 }
             }
-            out.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+            out.insert(ArrayKey::from_php_str(&k), v);
         }
         Ok(out)
     }
@@ -579,7 +576,7 @@ impl Vm {
         let Value::Array(st) = state else {
             return Ok(None);
         };
-        let at = |i: usize| st.get_index(i).map(|e| e.1.clone());
+        let at = |i: usize| st.nth(i).map(|e| e.1.clone());
         let (Some(Value::Int(mut pos)), Some(Value::Array(plan))) = (at(0), at(1)) else {
             return Ok(None);
         };
@@ -603,9 +600,9 @@ impl Vm {
             });
             Value::Array(nst)
         };
-        while let Some((_, Value::Array(e))) = plan.get_index(pos as usize) {
+        while let Some((_, Value::Array(e))) = plan.nth(pos as usize) {
             pos += 1;
-            let get = |i: usize| e.get_index(i).map(|x| x.1.clone()).unwrap_or(Value::Null);
+            let get = |i: usize| e.nth(i).map(|x| x.1.clone()).unwrap_or(Value::Null);
             let (Value::Str(shown), Value::Str(key), Value::Int(decl)) = (get(0), get(1), get(2))
             else {
                 continue;
@@ -618,7 +615,7 @@ impl Vm {
             let v = match step {
                 IterStep::Slot(key) => {
                     let mut b = h.borrow_mut();
-                    let Some(slot) = b.properties.get_mut(&key) else {
+                    let Some(slot) = b.props_mut().get_mut(&key) else {
                         continue;
                     };
                     if !by_ref {
@@ -690,7 +687,7 @@ impl Vm {
         // Then the dynamic properties, as they are now.
         loop {
             let mut b = h.borrow_mut();
-            let Some((key, slot)) = b.properties.get_index_mut(dyn_pos) else {
+            let Some((key, slot)) = b.props_mut().get_index_mut(dyn_pos) else {
                 return Ok(None);
             };
             dyn_pos += 1;
@@ -726,7 +723,7 @@ fn get_is_backing_uninit(vm: &Vm, h: &ObjectHandle, pe: &PropEntry, key: &PhpStr
         .as_ref()
         .is_some_and(|hk| hk[HookKind::Get as usize].is_none())
         && !pe.virt
-        && !h.borrow().properties.contains_key(key)
+        && !h.borrow().props().contains_key(key)
         && vm.class(h.borrow().class).props.contains_key(key)
 }
 

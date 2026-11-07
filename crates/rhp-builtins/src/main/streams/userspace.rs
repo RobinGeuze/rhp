@@ -507,8 +507,8 @@ fn open_inner(
     let obj = create_object(host, w, ctx)?;
     let opened = Rc::new(RefCell::new(Value::Null));
     let args = [
-        Value::str(filename.to_vec()),
-        Value::str(mode.to_vec()),
+        Value::str(filename),
+        Value::str(mode),
         Value::Int(options),
         Value::Ref(opened.clone()),
     ];
@@ -557,7 +557,7 @@ pub fn opendir(
     }
     let r = (|| {
         let obj = create_object(host, w, ctx)?;
-        let args = [Value::str(filename.to_vec()), Value::Int(options)];
+        let args = [Value::str(filename), Value::Int(options)];
         match call(host, &obj, "dir_opendir", &args) {
             Call::Missing => {
                 log_error(
@@ -612,7 +612,7 @@ fn url_op(
 
 /// `user_wrapper_unlink`.
 pub fn unlink(host: &mut dyn Host, w: &UserWrapper, url: &[u8], ctx: Option<&Value>) -> bool {
-    url_op(host, w, "unlink", &[Value::str(url.to_vec())], ctx)
+    url_op(host, w, "unlink", &[Value::str(url)], ctx)
 }
 
 /// `user_wrapper_rename`.
@@ -623,7 +623,7 @@ pub fn rename(
     to: &[u8],
     ctx: Option<&Value>,
 ) -> bool {
-    let args = [Value::str(from.to_vec()), Value::str(to.to_vec())];
+    let args = [Value::str(from), Value::str(to)];
     url_op(host, w, "rename", &args, ctx)
 }
 
@@ -636,11 +636,7 @@ pub fn mkdir(
     options: i64,
     ctx: Option<&Value>,
 ) -> bool {
-    let args = [
-        Value::str(url.to_vec()),
-        Value::Int(mode),
-        Value::Int(options),
-    ];
+    let args = [Value::str(url), Value::Int(mode), Value::Int(options)];
     url_op(host, w, "mkdir", &args, ctx)
 }
 
@@ -652,7 +648,7 @@ pub fn rmdir(
     options: i64,
     ctx: Option<&Value>,
 ) -> bool {
-    let args = [Value::str(url.to_vec()), Value::Int(options)];
+    let args = [Value::str(url), Value::Int(options)];
     url_op(host, w, "rmdir", &args, ctx)
 }
 
@@ -665,7 +661,7 @@ pub fn metadata(
     option: i64,
     value: Value,
 ) -> bool {
-    let args = [Value::str(url.to_vec()), Value::Int(option), value];
+    let args = [Value::str(url), Value::Int(option), value];
     url_op(host, w, "stream_metadata", &args, None)
 }
 
@@ -678,7 +674,7 @@ pub fn url_stat(
     ctx: Option<&Value>,
 ) -> Option<StatInfo> {
     let obj = create_object(host, w, ctx)?;
-    let args = [Value::str(url.to_vec()), Value::Int(flags)];
+    let args = [Value::str(url), Value::Int(flags)];
     match call(host, &obj, "url_stat", &args) {
         Call::Missing => {
             not_implemented(host, &w.class, "url_stat", " is not implemented!");
@@ -817,7 +813,7 @@ impl UserStream {
     /// `php_userstreamop_write`.
     fn op_write(&mut self, host: &mut dyn Host, data: &[u8]) -> isize {
         let obj = self.obj.clone();
-        let ret = match call(host, &obj, "stream_write", &[Value::str(data.to_vec())]) {
+        let ret = match call(host, &obj, "stream_write", &[Value::str(data)]) {
             Call::Missing => {
                 not_implemented(host, &self.class(), "stream_write", " is not implemented!");
                 return -1;

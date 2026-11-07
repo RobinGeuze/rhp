@@ -3,7 +3,6 @@ use crate::cst::Sequence;
 use crate::cst::cst::AttributeList;
 use crate::cst::cst::Constant;
 use crate::cst::cst::ConstantItem;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -36,7 +35,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(items, commas)
+                self.token_separated(items, commas)
             },
             terminator: self.parse_terminator()?,
         })

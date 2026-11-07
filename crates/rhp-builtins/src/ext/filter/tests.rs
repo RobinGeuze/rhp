@@ -297,7 +297,7 @@ fn validate_email_cases() {
         as_str(&fvf(s("é@b.de"), FILTER_VALIDATE_EMAIL, uni)),
         "é@b.de"
     );
-    let bad_utf8 = Value::str(b"\xff@b.de".to_vec());
+    let bad_utf8 = Value::str(b"\xff@b.de");
     assert!(is_false(&fvf(bad_utf8, FILTER_VALIDATE_EMAIL, uni)));
     // more than 320 octets
     let long = format!("{}@b.com", "a".repeat(315));

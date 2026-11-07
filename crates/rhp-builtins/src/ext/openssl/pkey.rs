@@ -802,7 +802,7 @@ fn copy_octet_param(a: &mut PhpArray, k: *mut sys::EVP_PKEY, param: &CStr, name:
         sys::EVP_PKEY_get_octet_string_param(k, param.as_ptr(), buf.as_mut_ptr(), 64, &mut len)
     } > 0
     {
-        a.insert(key(name), Value::str(buf[..len].to_vec()));
+        a.insert(key(name), Value::str(&buf[..len]));
     }
 }
 
@@ -1543,15 +1543,11 @@ fn seal(
             set_ref(args, 1, Value::str(buf));
             let mut ekeys = PhpArray::new();
             for (e, l) in eks.iter().zip(&eksl) {
-                ekeys.push(Value::str(e[..*l as usize].to_vec()));
+                ekeys.push(Value::str(&e[..*l as usize]));
             }
             set_ref(args, 2, Value::Array(ekeys));
             if has_iv {
-                set_ref(
-                    args,
-                    5,
-                    Value::str(iv_buf[..iv_len.max(0) as usize].to_vec()),
-                );
+                set_ref(args, 5, Value::str(&iv_buf[..iv_len.max(0) as usize]));
             }
         }
         sys::EVP_CIPHER_CTX_free(ctx);

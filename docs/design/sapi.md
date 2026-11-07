@@ -365,9 +365,14 @@ is raised in Unknown on line 0 before the script runs (php's
 php's hard limit (twice `memory_limit`, or `memory_hard_limit_percent`)
 kills php-cli with exit 137. rhp checks it where the VM or a builtin
 allocates a size it knows first but php can't refuse: string concatenation
-(`.`, `.=`, interpolation), a far string offset, `hash_pbkdf2`. php-cli
-exits as php does; any other SAPI ends just the request with the fatal
-error.
+(`.`, `.=`, interpolation), a far string offset, `hash_pbkdf2`, and
+while compiling: `rhp_values::mem::compiling` makes every new chunk or
+huge block check it, as php's compiler allocates with emalloc. The
+compiler then stops at its next top-level statement
+(`IncludeError::HardLimit`), and the error names the line of the running
+include or eval, as php's does. The main script's compile is not counted
+(as with opcache), so it never reaches the limit. php-cli exits as php
+does; any other SAPI ends just the request with the fatal error.
 
 What still escapes the limit, until more builtins are mirrored:
 
@@ -392,12 +397,13 @@ Limits of the model:
   request heap; otherwise the request that built it is charged and a
   later one credited when it is freed. The compiled-script cache compiles
   the programs it keeps, and changes its tables, that way.
-- rhp's data structures are not php's: an array of ints takes about five
-  times php's memory (an `IndexMap` entry is 40 bytes, and its entries
-  grow to match the index table), strings about the same. Compiling takes
-  about ten times php's memory at its peak (mago-syntax's AST: a
-  `Statement` is 312 bytes, an `Expression` 376), so the hard limit is not
-  checked while compiling. Scripts close to the limit
+- rhp's data structures are not all php's: arrays follow zend_hash's
+  layouts and sizes (packed lists at 16 bytes an element, hashes at 40).
+  Compiling takes two to three times php's memory at its peak: php's
+  grammar check runs first (24 bytes a token), then mago-syntax's tree
+  (16-byte `Expression` and `Statement` references to nodes of their own
+  size, in 32 KiB chunks like php's AST arena) lives while the compiler
+  runs. Scripts close to the limit
   can fail earlier (or later) than under php, and "tried to allocate N" for
   a growing array differs. Sizes a builtin checks up front use php's
   numbers.

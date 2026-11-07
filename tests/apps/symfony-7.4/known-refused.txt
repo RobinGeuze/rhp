@@ -2,5 +2,3 @@
 # `rhp-difftest lint --check-known` fails on a refused file not listed here;
 # delete lines as files start compiling. Format: <file>\t# <reason>
 # Only <file> is matched; the reason is a comment and may change freely.
-vendor/symfony/dependency-injection/Compiler/ResolveInvalidReferencesPass.php	# unsupported foreach target: only simple `$var` targets for now (no list()/destructuring) (line 45)
-vendor/symfony/var-dumper/Cloner/Data.php	# unsupported foreach target: only simple `$var` targets for now (no list()/destructuring) (line 420)

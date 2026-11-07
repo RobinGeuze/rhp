@@ -45,7 +45,7 @@ pub fn closure_invoke_of(c: &Value) -> Option<Value> {
     if a.len() != 2 {
         return None;
     }
-    let mut it = a.iter().map(|(_, v)| deref(v));
+    let mut it = a.values().map(deref);
     match (it.next()?, it.next()?) {
         (cl @ Value::Closure(_), Value::Str(m))
             if m.as_bytes().eq_ignore_ascii_case(b"__invoke") =>

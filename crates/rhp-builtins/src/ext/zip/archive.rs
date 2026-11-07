@@ -392,7 +392,7 @@ pub(super) fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             if p.is_null() {
                 b(false)
             } else {
-                Value::str(unsafe { sys::cstr(p) }.to_vec())
+                Value::str(unsafe { sys::cstr(p) })
             }
         }
         "unchangeArchive" => {
@@ -1393,7 +1393,7 @@ fn extract_to(cx: &mut Cx<'_>) -> Result<Value, Thrown> {
             if a.is_empty() {
                 return Ok(Value::Bool(false));
             }
-            for (_, v) in a.iter() {
+            for v in a.values() {
                 if let Value::Str(s) = deref(v) {
                     if !extract_file(cx, za, &pathto, s.as_bytes(), -1)? {
                         return Ok(Value::Bool(false));

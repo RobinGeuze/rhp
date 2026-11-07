@@ -25,8 +25,7 @@ use std::process::ExitCode;
 use rhp_compiler::parse::cst::{
     Access, ArrayElement, Attribute, BinaryOperator, ClassLikeConstantSelector, ClassLikeMember,
     Expression, FunctionLikeParameterList, FunctionLikeReturnTypeHint, Hint, Identifier, Literal,
-    LiteralStringKind, Method, Modifier, NamespaceBody, Sequence, Statement, TriviaKind,
-    UnaryPrefixOperator,
+    LiteralStringKind, Method, Modifier, NamespaceBody, Sequence, Statement, UnaryPrefixOperator,
 };
 
 /// The stub directories of the extensions rhp provides, and the module name
@@ -428,11 +427,11 @@ fn parse_stub(rel: &str, src: &[u8], ext: &'static str, out: &mut Out) -> Result
         return Err(format!("parse error: {:?}", parsed.parse_error()));
     }
     let prog = parsed.program();
-    let docs = prog
-        .trivia
-        .iter()
-        .filter(|t| t.kind == TriviaKind::DocBlockComment)
-        .map(|t| (t.span.start.offset, t.span.end.offset))
+    // rhp's parser keeps no trivia: the doc comments come from the tokens.
+    let docs = rhp_compiler::parse::tokens(src)
+        .into_iter()
+        .filter(|t| t.kind == rhp_compiler::parse::TokenKind::DocBlockComment)
+        .map(|t| (t.start as u32, t.end as u32))
         .collect();
     let file = File {
         src,

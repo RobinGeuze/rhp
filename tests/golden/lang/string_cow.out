@@ -1,0 +1,41 @@
+string(11) "Hello world"
+string(5) "hello"
+int(3000)
+int(1501)
+string(32) "96dea66d819d3e2ac40d367595a18c7c"
+string(32) "9dad41f37140898dc0cc613648cc9bd1"
+int(6000)
+string(6) "IJABCD"
+string(6) "ab   z"
+string(2) "ab"
+array(2) {
+  ["key"]=>
+  int(1)
+  ["key2"]=>
+  int(2)
+}
+bool(true)
+bool(true)
+array(2) {
+  [12]=>
+  string(7) "int key"
+  ["012"]=>
+  string(10) "string key"
+}
+string(5) "MiXeD"
+string(5) "MiXeD"
+string(5) "MIXED"
+string(5) "mixed"
+string(3) "-42"
+string(20) "-9223372036854775808"
+string(25) "n-9223372036854775808/-70"
+string(25) "MiXeD, MIXED, 3, 1.5, , 1"
+string(0) ""
+string(4) "only"
+int(10000)
+int(10001)
+string(32) "250b37e5d03fcc7dc842578245d781bd"
+string(3) "89!"
+int(1001)
+string(9) "678901234"
+bool(true)

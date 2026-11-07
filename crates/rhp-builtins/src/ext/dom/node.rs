@@ -861,7 +861,7 @@ fn canonicalization(
     let mut have_prefixes = false;
     if let Value::Array(nsp) = &ns_prefixes {
         if exclusive {
-            for (_, v) in nsp.iter() {
+            for v in nsp.values() {
                 if let Value::Str(s) = super::deref(v) {
                     prefixes.push(c(s.as_bytes()));
                 }
@@ -922,7 +922,7 @@ fn canonicalization(
             let size = sys::xmlOutputBufferGetSize(buf);
             let p = sys::xmlOutputBufferGetContent(buf);
             out = if size > 0 && !p.is_null() {
-                Value::str(std::slice::from_raw_parts(p, size).to_vec())
+                Value::str(std::slice::from_raw_parts(p, size))
             } else {
                 Value::str("")
             };

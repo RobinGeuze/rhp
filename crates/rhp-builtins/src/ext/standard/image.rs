@@ -379,7 +379,7 @@ fn read_app(s: &mut Stream, marker: u32, info: &mut PhpArray) -> bool {
     let name = format!("APP{}", marker - M_APP0);
     let key = rhp_values::ArrayKey::from_bytes(name.as_bytes());
     if info.get(&key).is_none() {
-        info.insert(key, Value::str(buf.to_vec()));
+        info.insert(key, Value::str(buf));
     }
     true
 }
@@ -927,9 +927,9 @@ fn from_stream(
     if r.channels != 0 {
         set("channels", Value::Int(r.channels as i64));
     }
-    set("mime", Value::str(mime_type(itype).as_bytes().to_vec()));
-    set("width_unit", Value::str(b"px".to_vec()));
-    set("height_unit", Value::str(b"px".to_vec()));
+    set("mime", Value::str(mime_type(itype).as_bytes()));
+    set("width_unit", Value::str(b"px"));
+    set("height_unit", Value::str(b"px"));
     Ok(Value::Array(a))
 }
 
@@ -1022,7 +1022,7 @@ pub(crate) fn mime_type(t: i64) -> &'static str {
 
 fn fn_image_type_to_mime_type(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let t = conv::to_int(&deref(&args[0]));
-    Ok(Value::str(mime_type(t).as_bytes().to_vec()))
+    Ok(Value::str(mime_type(t).as_bytes()))
 }
 
 fn fn_image_type_to_extension(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1050,7 +1050,7 @@ fn fn_image_type_to_extension(_: &mut dyn Host, args: &[Value]) -> Result<Value,
         _ => return Ok(Value::Bool(false)),
     };
     let ext = if inc_dot { ext } else { &ext[1..] };
-    Ok(Value::str(ext.as_bytes().to_vec()))
+    Ok(Value::str(ext.as_bytes()))
 }
 
 pub fn register(m: &mut crate::Registry) {

@@ -597,7 +597,7 @@ pub(super) fn fn_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         } else if l > slen - fr {
             l = slen - fr;
         }
-        return Ok(Value::str(s[fr as usize..(fr + l) as usize].to_vec()));
+        return Ok(Value::str(&s[fr as usize..(fr + l) as usize]));
     }
     let u = match utf8_to_utf16(&s) {
         Ok(u) => u,
@@ -685,8 +685,8 @@ fn strstr_common(host: &mut dyn Host, args: &[Value], ignore_case: bool) -> Resu
     if !ignore_case && ascii_check(&h) && ascii_check(&n) {
         return Ok(match memnstr(&h, 0, &n) {
             None => Value::Bool(false),
-            Some(o) if part => Value::str(h[..o].to_vec()),
-            Some(o) => Value::str(h[o..].to_vec()),
+            Some(o) if part => Value::str(&h[..o]),
+            Some(o) => Value::str(&h[o..]),
         });
     }
     let Some((_, uchar_pos)) = strpos_utf16(f, &h, &n, 0, ignore_case, false, &locale)? else {
@@ -698,9 +698,9 @@ fn strstr_common(host: &mut dyn Host, args: &[Value], ignore_case: bool) -> Resu
         pos = u8_fwd_1(&h, pos);
     }
     Ok(if part {
-        Value::str(h[..pos].to_vec())
+        Value::str(&h[..pos])
     } else {
-        Value::str(h[pos..].to_vec())
+        Value::str(&h[pos..])
     })
 }
 
@@ -749,7 +749,7 @@ pub(super) fn fn_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         if i == split_len - 1 {
             if pos != UBRK_DONE {
                 let n = (pos - current) as usize;
-                out.push(Value::str(s[pstr..pstr + n].to_vec()));
+                out.push(Value::str(&s[pstr..pstr + n]));
                 if has_oom() {
                     return Ok(Value::Bool(false));
                 }
@@ -763,7 +763,7 @@ pub(super) fn fn_str_split(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         }
     }
     if i != 0 && end_len != 0 {
-        out.push(Value::str(s[end..end + end_len as usize].to_vec()));
+        out.push(Value::str(&s[end..end + end_len as usize]));
     }
     Ok(Value::Array(out))
 }
@@ -834,7 +834,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         if has_next {
             set_next((start + nsize) as i64);
         }
-        return Ok(Value::str(p[..nsize].to_vec()));
+        return Ok(Value::str(&p[..nsize]));
     }
     let mut status = sys::U_ZERO_ERROR;
     let Some(ut) = Utf8Text::open(p, &mut status) else {
@@ -899,7 +899,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     if has_next {
         set_next((start + ret as usize) as i64);
     }
-    Ok(Value::str(p[..ret as usize].to_vec()))
+    Ok(Value::str(&p[..ret as usize]))
 }
 
 /// The CRLF part of `grapheme_ascii_check` over the first `n` bytes (it peeks

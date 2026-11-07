@@ -11,7 +11,7 @@
 use rhp_builtins::Host;
 use rhp_bytecode::{Instr, Reg};
 use rhp_values::mem::{self, Oom};
-use rhp_values::{PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{PhpArray, PhpStr, StrMut, Thrown, Value};
 
 use crate::{ini_bool, Vm};
 
@@ -248,6 +248,25 @@ impl Vm {
     /// process down.
     fn hard_limit_exit(&mut self, oom: Oom) -> Thrown {
         let (file, line) = self.throw_site();
+        self.hard_limit_exit_at(oom, file, line)
+    }
+
+    /// Compiling went past php's hard memory limit
+    /// (`IncludeError::HardLimit`): php exits there, naming the executing
+    /// code, or with none (the main script, preloading) the file and line
+    /// it was compiling (zend_get_compiled_filename / _lineno): `at`.
+    pub fn compile_hard_limit(&mut self, at: Option<(&[u8], u32)>) -> Thrown {
+        let oom = self
+            .mem
+            .take_oom()
+            .unwrap_or(Oom::Hard { limit: 0, tried: 0 });
+        match at {
+            Some((file, line)) => self.hard_limit_exit_at(oom, file.to_vec(), line),
+            None => self.hard_limit_exit(oom),
+        }
+    }
+
+    fn hard_limit_exit_at(&mut self, oom: Oom, file: Vec<u8>, line: u32) -> Thrown {
         let (file, line) = if file.is_empty() {
             (b"Unknown".to_vec(), 0)
         } else {
@@ -303,20 +322,19 @@ fn append_unique(v: &mut Value, tail: Option<&[u8]>) -> Option<PhpStr> {
     Some(s.clone())
 }
 
-/// php's zend_string_extend: grow to a block of the new length (it is
-/// counted as such anyway), checking the limit with php's string sizes.
-/// Past the hard limit nothing is appended: the VM stops at its next check.
-fn append(buf: &mut Vec<u8>, tail: Option<&[u8]>) {
+/// php's zend_string_extend: grow to the new length's block (the string
+/// keeps its block at its length's size), checking the limit with php's
+/// string sizes. Past the hard limit nothing is appended: the VM stops at
+/// its next check.
+fn append(mut buf: StrMut<'_>, tail: Option<&[u8]>) {
     let old = buf.len();
     let new = old + tail.map_or(old, <[u8]>::len);
-    if new > buf.capacity() {
-        if !mem::realloc_check(mem::zstr_size(old), mem::zstr_size(new)) {
-            return;
-        }
-        buf.reserve_exact(mem::block_size(new) - old);
+    let (from, to) = (mem::zstr_size(old), mem::zstr_size(new));
+    if mem::block_size(to) != mem::block_size(from) && !mem::realloc_check(from, to) {
+        return;
     }
     match tail {
         Some(t) => buf.extend_from_slice(t),
-        None => buf.extend_from_within(..),
+        None => buf.extend_self(),
     }
 }

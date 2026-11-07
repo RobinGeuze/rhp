@@ -365,7 +365,7 @@ impl Host for TestHost<'_> {
         match deref(obj) {
             Value::Object(h) => h
                 .borrow()
-                .properties
+                .props()
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
@@ -383,10 +383,7 @@ impl Host for TestHost<'_> {
     }
     fn object_prop_exists(&self, obj: &Value, name: &[u8]) -> bool {
         match obj {
-            Value::Object(h) => h
-                .borrow()
-                .properties
-                .contains_key(&PhpStr::from_bytes(name.to_vec())),
+            Value::Object(h) => h.borrow().props().contains_key(&PhpStr::from_bytes(name)),
             _ => false,
         }
     }
@@ -395,8 +392,8 @@ impl Host for TestHost<'_> {
     }
     fn object_props_mangled(&self, obj: &ObjectHandle) -> PhpArray {
         let mut a = PhpArray::new();
-        for (k, v) in &obj.borrow().properties {
-            a.insert(ArrayKey::from_bytes(k.as_bytes()), v.clone());
+        for (k, v) in obj.borrow().props() {
+            a.insert(ArrayKey::from_php_str(k), v.clone());
         }
         a
     }
@@ -419,15 +416,15 @@ impl Host for TestHost<'_> {
         args: Value,
     ) -> Result<Value, Thrown> {
         let args: Vec<Value> = match args {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
         let mut cb = PhpArray::new();
         cb.push(match obj {
-            Value::Null => Value::str(class.to_vec()),
+            Value::Null => Value::str(class),
             o => o.clone(),
         });
-        cb.push(Value::str(method.to_vec()));
+        cb.push(Value::str(method));
         self.call_callable(&Value::Array(cb), &args)
     }
     fn reflect_is_a(&self, _name: &[u8], _other: &[u8]) -> bool {

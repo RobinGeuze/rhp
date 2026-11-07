@@ -124,7 +124,7 @@ pub(crate) fn notify(
     let args = vec![
         Value::Int(code),
         Value::Int(severity),
-        msg.map_or(Value::Null, |m| Value::str(m.to_vec())),
+        msg.map_or(Value::Null, Value::str),
         Value::Int(msg_code),
         Value::Int(bytes),
         Value::Int(max),
@@ -721,7 +721,7 @@ fn wrap_http_ex(
         header.extend_from_slice(format!(":{} HTTP/1.0\r\n", resource.port).as_bytes());
         match cx.opt("header") {
             Some(Value::Array(a)) => {
-                for (_, h) in a.iter() {
+                for h in a.values() {
                     if let Value::Str(h) = rhp_values::ops::deref(h) {
                         if let Some(pa) = proxy_authorization_header(h.as_bytes()) {
                             header.extend_from_slice(&pa);
@@ -751,7 +751,7 @@ fn wrap_http_ex(
             let mut opts =
                 xp_ssl::stream_opts(cx.host, (!matches!(ctx, Value::Null)).then_some(&ctx));
             if opts.get("peer_name").is_none() {
-                opts = opts.with("peer_name", Value::str(c_str(&resource.host).to_vec()));
+                opts = opts.with("peer_name", Value::str(c_str(&resource.host)));
             }
             ok = xp_ssl::crypto_with_opts(cx.host, s, &ctx, &opts, xp_ssl::SSLV23_CLIENT)?;
             crate::flush_stream_diags(cx.host, cx.fname)?;
@@ -831,7 +831,7 @@ fn wrap_http_ex(
         let tmp: Option<Vec<u8>> = match h {
             Value::Array(a) => {
                 let mut joined = Vec::new();
-                for (_, v) in a.iter() {
+                for v in a.values() {
                     if let Value::Str(s) = rhp_values::ops::deref(v) {
                         joined.extend_from_slice(s.as_bytes());
                         joined.extend_from_slice(b"\r\n");
@@ -1325,7 +1325,7 @@ pub fn open(
         ..
     } = cx;
     if let Some(h) = &headers {
-        let lines = h.iter().map(|(_, v)| conv::to_string_bytes(v)).collect();
+        let lines = h.values().map(conv::to_string_bytes).collect();
         set_last_http_headers(host, Some(lines));
         host.set_local_var(b"http_response_header", Value::Array(h.clone()));
     }

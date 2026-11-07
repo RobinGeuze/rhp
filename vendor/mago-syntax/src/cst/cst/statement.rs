@@ -51,45 +51,47 @@ pub struct ExpressionStatement<'arena> {
     pub terminator: Terminator<'arena>,
 }
 
+// rhp: each variant holds a reference to its node, so the enum is 16 bytes
+// and a node takes its own size in the arena (was the largest variant's).
 /// Represents a PHP statement.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
 #[non_exhaustive]
 pub enum Statement<'arena> {
-    OpeningTag(OpeningTag<'arena>),
-    ClosingTag(ClosingTag),
-    Inline(Inline<'arena>),
-    Namespace(Namespace<'arena>),
-    Use(Use<'arena>),
-    Class(Class<'arena>),
-    Interface(Interface<'arena>),
-    Trait(Trait<'arena>),
-    Enum(Enum<'arena>),
-    Block(Block<'arena>),
-    Constant(Constant<'arena>),
-    Function(Function<'arena>),
-    Declare(Declare<'arena>),
-    Goto(Goto<'arena>),
-    Label(Label<'arena>),
-    Try(Try<'arena>),
-    Foreach(Foreach<'arena>),
-    For(For<'arena>),
-    While(While<'arena>),
-    DoWhile(DoWhile<'arena>),
-    Continue(Continue<'arena>),
-    Break(Break<'arena>),
-    Switch(Switch<'arena>),
-    If(If<'arena>),
-    Return(Return<'arena>),
-    Expression(ExpressionStatement<'arena>),
-    Echo(Echo<'arena>),
-    EchoTag(EchoTag<'arena>),
-    Global(Global<'arena>),
-    Static(Static<'arena>),
-    HaltCompiler(HaltCompiler<'arena>),
-    Unset(Unset<'arena>),
-    Noop(Span),
+    OpeningTag(&'arena OpeningTag<'arena>),
+    ClosingTag(&'arena ClosingTag),
+    Inline(&'arena Inline<'arena>),
+    Namespace(&'arena Namespace<'arena>),
+    Use(&'arena Use<'arena>),
+    Class(&'arena Class<'arena>),
+    Interface(&'arena Interface<'arena>),
+    Trait(&'arena Trait<'arena>),
+    Enum(&'arena Enum<'arena>),
+    Block(&'arena Block<'arena>),
+    Constant(&'arena Constant<'arena>),
+    Function(&'arena Function<'arena>),
+    Declare(&'arena Declare<'arena>),
+    Goto(&'arena Goto<'arena>),
+    Label(&'arena Label<'arena>),
+    Try(&'arena Try<'arena>),
+    Foreach(&'arena Foreach<'arena>),
+    For(&'arena For<'arena>),
+    While(&'arena While<'arena>),
+    DoWhile(&'arena DoWhile<'arena>),
+    Continue(&'arena Continue<'arena>),
+    Break(&'arena Break<'arena>),
+    Switch(&'arena Switch<'arena>),
+    If(&'arena If<'arena>),
+    Return(&'arena Return<'arena>),
+    Expression(&'arena ExpressionStatement<'arena>),
+    Echo(&'arena Echo<'arena>),
+    EchoTag(&'arena EchoTag<'arena>),
+    Global(&'arena Global<'arena>),
+    Static(&'arena Static<'arena>),
+    HaltCompiler(&'arena HaltCompiler<'arena>),
+    Unset(&'arena Unset<'arena>),
+    Noop(&'arena Span),
 }
 
 impl Statement<'_> {
@@ -225,7 +227,7 @@ impl HasSpan for Statement<'_> {
             Statement::Static(statement) => statement.span(),
             Statement::Unset(statement) => statement.span(),
             Statement::HaltCompiler(statement) => statement.span(),
-            Statement::Noop(span) => *span,
+            Statement::Noop(span) => **span,
         }
     }
 }

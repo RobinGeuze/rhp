@@ -54,7 +54,7 @@ impl Vm {
         let obj = self.new_attribute_object(class.as_bytes(), &args)?;
         let read = |k: &str| -> Vec<u8> {
             let b = obj.borrow();
-            match b.properties.get(&PhpStr::from(k)) {
+            match b.props().get(&PhpStr::from(k)) {
                 Some(Value::Str(s)) => s.as_bytes().to_vec(),
                 _ => Vec::new(),
             }
@@ -283,7 +283,7 @@ impl Vm {
         let Some(&cid) = self.class_ids.get(&b"sensitiveparametervalue"[..]) else {
             return v;
         };
-        let mut props = indexmap::IndexMap::with_hasher(rustc_hash::FxBuildHasher);
+        let mut props = self.blank_props(cid);
         let name = PhpStr::from("value");
         let key = self
             .class(cid)

@@ -1306,7 +1306,7 @@ impl Vm {
                 let cases = self.class(cls).enum_cases.clone();
                 let value_key = rhp_values::PhpStr::from("value");
                 for obj in &cases {
-                    let val = obj.borrow().properties.get(&value_key).cloned();
+                    let val = obj.borrow().props().get(&value_key).cloned();
                     if let Some(v) = val {
                         if matches(&v) {
                             return Ok(Value::Object(obj.clone()));

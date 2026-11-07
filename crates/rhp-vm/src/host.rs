@@ -176,7 +176,7 @@ impl Host for Vm {
             let tkey = self.declared_prop_key(&h, b"trace");
             let pkey = self.declared_prop_key(&h, b"previous");
             let mut o = h.borrow_mut();
-            if let Some(Value::Array(trace)) = o.properties.get_mut(&tkey) {
+            if let Some(Value::Array(trace)) = o.props_mut().get_mut(&tkey) {
                 let is_it = |v: &Value| matches!(v, Value::Array(a) if a.data_ptr() == data_ptr);
                 let args_key = ArrayKey::Str("args".into());
                 let frames: Vec<ArrayKey> = trace.iter().map(|(k, _)| k.clone()).collect();
@@ -203,7 +203,7 @@ impl Host for Vm {
                     }
                 }
             }
-            cur = match o.properties.get(&pkey) {
+            cur = match o.props().get(&pkey) {
                 Some(Value::Object(p)) => Some(p.clone()),
                 _ => None,
             };
@@ -993,13 +993,13 @@ impl Host for Vm {
             return false;
         };
         let b = h.borrow();
-        let name = PhpStr::from_bytes(name.to_vec());
+        let name = PhpStr::from_bytes(name);
         match classes::resolve_prop(&self.classes, b.class, Some(b.class), &name) {
             PropRes::Slot(k) => b
-                .properties
+                .props()
                 .get(&k)
                 .is_some_and(|v| !matches!(v, Value::Undef)),
-            PropRes::Dynamic => b.properties.contains_key(&name),
+            PropRes::Dynamic => b.props().contains_key(&name),
             PropRes::Denied(_) => false,
         }
     }
@@ -2090,7 +2090,7 @@ impl Host for Vm {
         // coercive typing.
         let scope = self.resolve_class_by_name(class).ok();
         let top = self.stack.len() - 1;
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         self.prop_store_as(top, deref(obj), pname, val, scope, scope, false)
     }
 
@@ -2106,7 +2106,7 @@ impl Host for Vm {
             return Ok(None);
         }
         let scope = self.resolve_class_by_name(class).ok();
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         self.prop_fetch_as(o, pname, scope).map(Some)
     }
 
@@ -2124,7 +2124,7 @@ impl Host for Vm {
             if self.internal_slot(o.class, key) || pe.virt {
                 continue;
             }
-            if o.properties.contains_key(key) {
+            if o.props().contains_key(key) {
                 before += 1;
             } else if let Some(ty) = &pe.ty {
                 out.push((
@@ -2150,10 +2150,10 @@ impl Host for Vm {
         };
         let scope = self.stack.last().and_then(|f| f.defining_class);
         let b = h.borrow();
-        let name = PhpStr::from_bytes(name.to_vec());
+        let name = PhpStr::from_bytes(name);
         match classes::resolve_prop(&self.classes, b.class, scope, &name) {
-            PropRes::Slot(k) => b.properties.contains_key(&k),
-            PropRes::Dynamic => b.properties.contains_key(&name),
+            PropRes::Slot(k) => b.props().contains_key(&k),
+            PropRes::Dynamic => b.props().contains_key(&name),
             PropRes::Denied(_) => false,
         }
     }
@@ -2165,7 +2165,7 @@ impl Host for Vm {
         let scope = self.stack.last().and_then(|f| f.defining_class);
         let b = h.borrow();
         let mut arr = PhpArray::new();
-        for (key, val) in &b.properties {
+        for (key, val) in b.props() {
             if self.internal_slot(b.class, key) {
                 continue;
             }
@@ -2175,7 +2175,7 @@ impl Host for Vm {
                     Value::Ref(rc) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
                     v => v.clone(),
                 };
-                arr.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+                arr.insert(ArrayKey::from_php_str(&name), v);
             }
         }
         Some(Value::Array(arr))
@@ -2386,7 +2386,7 @@ impl Host for Vm {
         let o = h.borrow();
         // Storage keys are mangled for privates: keep the slots `$obj->name`
         // reaches from the scope, under their plain names.
-        o.properties
+        o.props()
             .iter()
             .filter(|(k, _)| !self.internal_slot(o.class, k))
             .filter_map(|(k, v)| {
@@ -2419,7 +2419,7 @@ impl Host for Vm {
         // parent's private does not count.
         match self.classes.get(class_id as usize) {
             Some(entry) => {
-                let name = PhpStr::from_bytes(prop.to_vec());
+                let name = PhpStr::from_bytes(prop);
                 let inst = entry.prop_visible.get(&name).is_some_and(|k| {
                     let pe = &entry.props[k];
                     pe.visibility != rhp_values::Visibility::Private
@@ -2447,7 +2447,7 @@ impl Host for Vm {
         {
             let mut b = obj.borrow_mut();
             for (k, v) in props {
-                b.properties.insert(rhp_values::PhpStr::from_bytes(k), v);
+                b.props_mut().insert(rhp_values::PhpStr::from_bytes(k), v);
             }
         }
         Value::Object(obj)
@@ -2486,7 +2486,7 @@ impl Host for Vm {
         {
             let mut b = obj.borrow_mut();
             for (k, v) in props {
-                b.properties.insert(rhp_values::PhpStr::from_bytes(k), v);
+                b.props_mut().insert(rhp_values::PhpStr::from_bytes(k), v);
             }
         }
         Some(Value::Object(obj))
@@ -2558,7 +2558,7 @@ impl Host for Vm {
                 return Ok(UnserProp::Fail);
             }
         }
-        if obj.borrow().properties.contains_key(&k) {
+        if obj.borrow().props().contains_key(&k) {
             return Ok(UnserProp::Dynamic(k));
         }
         // A new dynamic property.
@@ -2632,7 +2632,7 @@ impl Host for Vm {
     fn prop_store(&mut self, obj: &ObjectHandle, storage: &PhpStr, val: Option<Value>) {
         let mut od = obj.borrow_mut();
         match val {
-            Some(v) => *classes::prop_slot_mut(&self.classes, &mut od, storage.clone()) = v,
+            Some(v) => *od.props_mut().get_or_insert_null(storage.clone()) = v,
             None => {
                 od.remove_prop(storage);
             }
@@ -2650,7 +2650,7 @@ impl Host for Vm {
             _ => return None,
         };
         let key = self.declared_prop_key(&h, name);
-        let v = h.borrow().properties.get(&key).cloned();
+        let v = h.borrow().props().get(&key).cloned();
         v
     }
 

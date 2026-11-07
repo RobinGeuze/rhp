@@ -6,7 +6,7 @@ fn convert_variables_recursion_warns() {
     // $r = ["\xe9"]; $r[] = &$r;
     let cell: rhp_values::PhpRef = Rc::new(RefCell::new(Value::Null));
     let mut a = PhpArray::new();
-    a.push(Value::str(b"\xe9".to_vec()));
+    a.push(Value::str(b"\xe9"));
     a.push(Value::Ref(cell.clone()));
     *cell.borrow_mut() = Value::Array(a);
     for from in ["ISO-8859-1", "ISO-8859-1,UTF-8"] {
@@ -29,7 +29,7 @@ fn convert_variables_recursion_warns() {
         panic!()
     };
     assert_eq!(
-        rhp_values::conv::to_string_bytes(a.get_index(0).unwrap().1),
+        rhp_values::conv::to_string_bytes(a.nth(0).unwrap().1),
         b"\xc3\xa9"
     );
     let (r, d) = crate::test_support::run(
@@ -37,7 +37,7 @@ fn convert_variables_recursion_warns() {
         &[
             Value::str("UTF-8"),
             Value::str("auto"),
-            Value::str(b"h\xe9llo".to_vec()),
+            Value::str(b"h\xe9llo"),
         ],
     );
     assert!(d.is_empty());
@@ -56,7 +56,7 @@ fn convert_variables_deep_nesting() {
         .stack_size(256 << 20)
         .spawn(|| {
             const DEPTH: usize = 50_000;
-            let mut v = Value::str(b"\xe9".to_vec());
+            let mut v = Value::str(b"\xe9");
             for _ in 0..DEPTH {
                 let mut a = PhpArray::new();
                 a.push(v);
@@ -81,7 +81,7 @@ fn convert_variables_deep_nesting() {
             let mut v = cell.borrow().clone();
             for _ in 0..DEPTH {
                 let Value::Array(a) = v else { panic!() };
-                v = a.get_index(0).unwrap().1.clone();
+                v = a.nth(0).unwrap().1.clone();
             }
             assert_eq!(rhp_values::conv::to_string_bytes(&v), b"\xc3\xa9");
         })
@@ -124,8 +124,8 @@ fn is_false(f: crate::NativeFn, args: &[Value]) -> bool {
 fn split_vec(f: crate::NativeFn, args: &[Value]) -> Vec<String> {
     match call(f, args) {
         Value::Array(a) => a
-            .iter()
-            .map(|(_, v)| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
+            .values()
+            .map(|v| String::from_utf8(rhp_values::conv::to_string_bytes(v)).unwrap())
             .collect(),
         other => panic!("expected array, got {}", other.type_name()),
     }
@@ -308,10 +308,10 @@ fn strimwidth_cases() {
 fn scrub_cases() {
     assert_eq!(calls(fn_mb_scrub, &[s("valid")]), "valid");
     assert_eq!(
-        calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]),
+        calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef")]),
         "abc??def"
     );
-    assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97".to_vec())]), "?");
+    assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97")]), "?");
 }
 
 #[test]

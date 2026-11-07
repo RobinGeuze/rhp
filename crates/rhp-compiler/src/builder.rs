@@ -463,7 +463,7 @@ impl<'c> ProtoBuilder<'c> {
             return i as NIdx;
         }
         let i = self.names.len() as NIdx;
-        self.names.push(PhpStr::from_bytes(bytes.to_vec()));
+        self.names.push(PhpStr::from_bytes(bytes));
         i
     }
 

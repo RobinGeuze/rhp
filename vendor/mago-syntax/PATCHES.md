@@ -12,6 +12,23 @@ source. Drop a change once upstream mago lexes the case like php.
 - `src/lexer/mod.rs`, `matches_start_of_*_document`: a heredoc / nowdoc
   opener ends at `\r` alone too (php's NEWLINE is `\r`, `\n` or `\r\n`).
   Zend/tests/heredoc_nowdoc/bug79934.phpt.
+- Memory (rhp parses a 1.1 MB file into 37 MB of arena instead of 177 MB):
+  - `src/cst/cst/expression.rs`, `src/cst/cst/statement.rs`: every
+    `Expression` and `Statement` variant holds `&'arena Node` (the spans of
+    `Expression::Error` and `Statement::Noop` too), so both enums are 16
+    bytes and each node takes its own size in the arena instead of the
+    largest variant's (376 / 312 bytes). Match ergonomics see through the
+    references, so code that matches on the CST mostly compiles unchanged;
+    the parser allocates each node (`self.arena.alloc(..)`). A candidate to
+    offer upstream (oxc's AST does the same).
+  - `src/parser/internal/alloc.rs` (`new_vec`, `sequence`,
+    `token_separated`, `slice`), `src/parser/stream.rs`,
+    `src/parser/mod.rs`: lists are collected in heap vectors and copied into
+    the arena at their final length. Growing a vector inside the bump arena
+    left every outgrown buffer and the spare capacity behind.
+  - `src/settings.rs` `ParserSettings::discard_trivia`,
+    `src/parser/stream.rs`: skip collecting comments and whitespace
+    (rhp finds doc comments from the tokens).
 
 To update: copy the new release's `src/` and `Cargo.toml` (without the
 `[[test]]`, `[[bench]]` and `[dev-dependencies]` entries) over this

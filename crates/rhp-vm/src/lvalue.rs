@@ -205,7 +205,7 @@ impl PropCtx<'_> {
         }
         if let Err(e) = classes::set_access_ok(self.classes, od.class, self.scope, &key) {
             let holds_object = !rest.is_empty()
-                && matches!(od.properties.get(&key).map(deref), Some(Value::Object(_)));
+                && matches!(od.props().get(&key).map(deref), Some(Value::Object(_)));
             if !holds_object {
                 let op = if rest.is_empty() {
                     leaf_op
@@ -458,7 +458,7 @@ impl Vm {
                             PropRes::Dynamic => (name.clone(), true),
                             PropRes::Denied(_) => break,
                         };
-                    let present = h.borrow().properties.get(&key).map(deref);
+                    let present = h.borrow().props().get(&key).map(deref);
                     match present {
                         Some(v) => Some(v),
                         None => {
@@ -473,7 +473,7 @@ impl Vm {
                                 // property exists (null) before the warning.
                                 self.flush_rw_warnings(std::mem::take(&mut warnings))?;
                                 self.check_dynamic_prop(top, cls, name)?;
-                                h.borrow_mut().properties.insert(key, Value::Null);
+                                h.borrow_mut().props_mut().insert(key, Value::Null);
                             }
                             warnings.push((
                                 builtins::E_WARNING,
@@ -685,8 +685,8 @@ impl Vm {
                     }
                     let cls = h.borrow().class;
                     let present = match classes::resolve_prop(&self.classes, cls, scope, name) {
-                        PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
-                        PropRes::Dynamic => h.borrow().properties.get(name).cloned(),
+                        PropRes::Slot(k) => h.borrow().props().get(&k).cloned(),
+                        PropRes::Dynamic => h.borrow().props().get(name).cloned(),
                         PropRes::Denied(_) => None,
                     };
                     let uninit = match classes::resolve_prop(&self.classes, cls, scope, name) {
@@ -990,7 +990,7 @@ impl Vm {
                     else {
                         return Ok(Through::Plain);
                     };
-                    let val = h.borrow().properties.get(&key).cloned();
+                    let val = h.borrow().props().get(&key).cloned();
                     let Some(pe) = self.class(cls).props.get(&key) else {
                         return Ok(Through::Plain);
                     };
@@ -1079,7 +1079,7 @@ impl Vm {
                             PropRes::Dynamic => (name.clone(), true),
                             PropRes::Denied(_) => return Ok(()),
                         };
-                    let val = h.borrow().properties.get(&key).cloned();
+                    let val = h.borrow().props().get(&key).cloned();
                     match val {
                         Some(v) => v,
                         None => {
@@ -1537,7 +1537,7 @@ impl Vm {
                         PropRes::Dynamic => name.clone(),
                         PropRes::Denied(_) => return None,
                     };
-                    let v = h.borrow().properties.get(&key).cloned();
+                    let v = h.borrow().props().get(&key).cloned();
                     v
                 }
                 _ => None,
@@ -1623,7 +1623,7 @@ impl Vm {
             return Ok(None);
         };
         self.verify_prop_assignable_by_ref(&info, v, strict)?;
-        let old = h.borrow().properties.get(&key).cloned();
+        let old = h.borrow().props().get(&key).cloned();
         if let Some(Value::Ref(old)) = old {
             self.del_prop_ref_source(&old, &h, &key);
         }
@@ -2377,7 +2377,7 @@ impl Vm {
         let _ = quiet;
         match key {
             Value::Int(n) => return Ok(Some(ArrayKey::Int(*n))),
-            Value::Str(s) => return Ok(Some(ArrayKey::from_bytes(s.as_bytes()))),
+            Value::Str(s) => return Ok(Some(ArrayKey::from_php_str(s))),
             _ => {}
         }
         self.dim_key_slow(key)
@@ -2413,7 +2413,7 @@ impl Vm {
     pub(crate) fn init_array_key(&mut self, k: &Value) -> Result<ArrayKey, Thrown> {
         match k {
             Value::Int(n) => Ok(ArrayKey::Int(*n)),
-            Value::Str(s) => Ok(ArrayKey::from_bytes(s.as_bytes())),
+            Value::Str(s) => Ok(ArrayKey::from_php_str(s)),
             _ => match self.dim_key(k, false)? {
                 Some(key) => Ok(key),
                 None => Err(Thrown::type_error(format!(
@@ -2439,7 +2439,7 @@ impl Vm {
             Value::Array(a) => {
                 let k = match key {
                     Value::Int(n) => ArrayKey::Int(*n),
-                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    Value::Str(s) => ArrayKey::from_php_str(s),
                     // slow_index_convert: an error handler that drops the
                     // last reference destroys the array (php's GC_DELREF
                     // check); only this fetch's two copies are left then.
@@ -2696,7 +2696,7 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
             let od = h.borrow();
             match cx.key(od.class, name) {
                 Ok(k) => od
-                    .properties
+                    .props()
                     .get(&k)
                     .map(|c| read_path(c, rest, cx))
                     .unwrap_or(Value::Null),
@@ -2780,7 +2780,7 @@ fn key_diags(k: &Value, null_dep: bool) {
 fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
     match k {
         Value::Int(n) => return Ok(ArrayKey::Int(*n)),
-        Value::Str(s) => return Ok(ArrayKey::from_bytes(s.as_bytes())),
+        Value::Str(s) => return Ok(ArrayKey::from_php_str(s)),
         _ => {}
     }
     let k = deref(k);
@@ -2894,9 +2894,7 @@ fn assign_string_offset(
         if !rhp_values::mem::realloc_check(old, rhp_values::mem::zstr_size(at + 1)) {
             return Ok(());
         }
-        let out = s.make_mut();
-        let grow = at + 1 - out.len();
-        out.reserve_exact(grow);
+        let mut out = s.make_mut();
         out.resize(at, b' ');
         out.push(c);
     } else {
@@ -3037,8 +3035,8 @@ fn assign_path(
         // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE): a typed
         // property that would become an array.
         if matches!(rest.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
-            let at = od.properties.get_index_of(&key);
-            let promotes = at.is_none_or(|i| match &od.properties[i] {
+            let at = od.props().get_index_of(&key);
+            let promotes = at.is_none_or(|i| match &od.props()[i] {
                 Value::Ref(r) => r.try_borrow().is_ok_and(|v| promotes_to_array(&v)),
                 v => promotes_to_array(v),
             });
@@ -3052,10 +3050,10 @@ fn assign_path(
                 return Ok(Some(Box::new(TypedStop::PropInit(od.class, key))));
             }
             if let Some(i) = at {
-                return assign_path(&mut od.properties[i], rest, value, cx);
+                return assign_path(&mut od.props_mut()[i], rest, value, cx);
             }
         }
-        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        let child = od.props_mut().get_or_insert_null(key);
         return assign_path(child, rest, value, cx);
     }
     if let Value::Str(_) = slot {
@@ -3159,7 +3157,7 @@ fn make_ref_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "indirectly modify", rest)?;
-        if rest.is_empty() && !od.properties.contains_key(&key) {
+        if rest.is_empty() && !od.props().contains_key(&key) {
             // zend_handle_fetch_obj_flags (ZEND_FETCH_REF): an uninitialized
             // typed property that does not accept null.
             if let Some(pe) = cx.classes[od.class as usize].props.get(&key) {
@@ -3183,7 +3181,7 @@ fn make_ref_path(
                 }
             }
         }
-        let child = classes::prop_slot_mut(cx.classes, &mut od, key);
+        let child = od.props_mut().get_or_insert_null(key);
         return make_ref_path(child, rest, cx);
     }
     if let Value::Str(_) = slot {
@@ -3231,7 +3229,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 if let Some(old) = od.remove_prop(&key) {
                     replaced(old);
                 }
-            } else if let Some(child) = od.properties.get_mut(&key) {
+            } else if let Some(child) = od.props_mut().get_mut(&key) {
                 unset_path(child, rest, cx)?;
             }
         }
@@ -3299,22 +3297,24 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
     Ok(())
 }
 
-/// For by-reference foreach: promote the array element at insertion index `pos`
-/// to a shared cell and return `(key, cell)`. The element in the array becomes a
-/// `Value::Ref` to that cell, so a later write through the cell is visible in the
-/// array. Returns `None` if `slot` is not an array or `pos` is out of range.
+/// For by-reference foreach: promote the first array element at position
+/// `pos` or later to a shared cell and return `(its position, key, cell)`.
+/// The element in the array becomes a `Value::Ref` to that cell, so a later
+/// write through the cell is visible in the array. Returns `None` if `slot`
+/// is not an array or no element is left.
 pub(crate) fn foreach_promote(
     slot: &mut Value,
     pos: usize,
-) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
+) -> Option<(usize, ArrayKey, Rc<RefCell<Value>>)> {
     let Value::Array(arr) = slot else { return None };
-    if pos >= arr.len() {
-        return None;
-    }
-    let data = arr.make_mut();
-    let (k, v) = data.entries.get_index_mut(pos)?;
-    let key = k.clone();
-    let rc = match v {
+    let (at, _, _) = arr.fetch_from(pos)?;
+    let (key, v) = arr.make_mut().at_mut(at)?;
+    Some((at, key, promote(v)))
+}
+
+/// The cell behind element `v`, making it a reference first.
+fn promote(v: &mut Value) -> Rc<RefCell<Value>> {
+    match v {
         Value::Ref(rc) => rc.clone(),
         other => {
             let inner = std::mem::replace(other, Value::Null);
@@ -3322,8 +3322,7 @@ pub(crate) fn foreach_promote(
             *other = Value::Ref(rc.clone());
             rc
         }
-    };
-    Some((key, rc))
+    }
 }
 
 /// FE_FETCH_RW over the array in `slot`: the element at HashTable iterator
@@ -3335,26 +3334,8 @@ pub(crate) fn foreach_next_ref(
     id: u32,
 ) -> Option<(ArrayKey, Rc<RefCell<Value>>)> {
     let Value::Array(arr) = slot else { return None };
-    let data = arr.make_mut();
-    let len = data.entries.len();
-    let pos = data.iter_pos(id).unwrap_or(data.pos.min(len));
-    if pos >= len {
-        data.iter_add(id, len);
-        return None;
-    }
-    data.iter_add(id, pos + 1);
-    let (k, v) = data.entries.get_index_mut(pos)?;
-    let key = k.clone();
-    let rc = match v {
-        Value::Ref(rc) => rc.clone(),
-        other => {
-            let inner = std::mem::replace(other, Value::Null);
-            let rc = Rc::new(RefCell::new(inner));
-            *other = Value::Ref(rc.clone());
-            rc
-        }
-    };
-    Some((key, rc))
+    let (key, v) = arr.make_mut().iter_step(id)?;
+    Some((key, promote(v)))
 }
 
 /// php's "Undefined array key" warning text for `k`.

@@ -302,7 +302,7 @@ impl Encoder {
             return res;
         }
         if host.is_enum_class(class_id) {
-            let value = h.borrow().properties.get(&PhpStr::from("value")).cloned();
+            let value = h.borrow().props().get(&PhpStr::from("value")).cloned();
             return match value {
                 Some(v) => self.value(host, &deref(&v), out, level),
                 None => Ok(self.fail(JSON_ERROR_NON_BACKED_ENUM, out, b"0")),
@@ -347,7 +347,7 @@ impl Encoder {
                 .collect(),
             None => {
                 let b = h.borrow();
-                b.properties
+                b.props()
                     .iter()
                     .filter(|(k, _)| {
                         host.mangled_prop_name(b.class, k).as_bytes().first() != Some(&0)
@@ -421,7 +421,7 @@ impl Encoder {
         let is_list = !force_object
             && a.iter()
                 .enumerate()
-                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if *n == i as i64));
+                .all(|(i, (k, _))| matches!(k, ArrayKey::Int(n) if n == i as i64));
         let (open, close) = if is_list { (b'[', b']') } else { (b'{', b'}') };
         out.push(open);
         self.depth += 1;
@@ -959,7 +959,7 @@ impl Parser<'_, '_> {
             Err(_) => {
                 // Integer out of i64 range.
                 if self.bigint_as_string {
-                    Ok(Value::str(text.as_bytes().to_vec()))
+                    Ok(Value::str(text.as_bytes()))
                 } else {
                     Ok(Value::Float(text.parse::<f64>().unwrap_or(f64::INFINITY)))
                 }

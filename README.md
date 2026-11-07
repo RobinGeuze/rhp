@@ -43,7 +43,7 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 5,266 | 5,396 | 97.6% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| Zend/tests | 5,268 | 5,396 | 97.6% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 853 | 895 | 95.3% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 22 | 117 | 18.8% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
@@ -83,7 +83,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 3 | 3,684 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **14,867** | **22,219** | **66.9%** | |
+| **total** | **14,869** | **22,219** | **66.9%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
@@ -95,8 +95,8 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 | application | version | what works |
 |---|---|---|
 | Composer | 2.11.1 (phar) | Read-only commands (`list`, `about`, `show` except `--platform`, `validate`, `licenses`, `depends`, `why-not`, `outdated`, `audit`, `search`, ...) print what php prints. `update` and `require` write the same `composer.lock`, and `install --no-autoloader` the same `vendor/`. Generating the autoloader fails (rhp's `^` on two strings returns an int), so `install`, `update`, `require` and `dump-autoload` stop at "Generating autoload files". Installed code may still fail: monolog's `Logger` needs `Fiber`. |
-| Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | 1,749 of its 1,751 PHP files compile under rhp. `bin/console --version`, `list` and `debug:router` print what php prints; `about` differs in its Intl locale line (`n/a`). Every request of the request diff answers 500 instead. |
-| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | Compiles only: 8,164 of its 8,165 PHP files compile under rhp. It does not boot: the container calls `spl_object_id()` on a closure, which rhp rejects, so every artisan command and request fails. |
+| Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | All 1,751 of its PHP files compile under rhp. `bin/console --version`, `list` and `debug:router` print what php prints; `about` differs in its Intl locale line (`n/a`). Every request of the request diff answers 500 instead. |
+| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,165 of its PHP files compile under rhp. `artisan --version`, `list`, `about` and `route:list` print what php prints. Every request of the request diff answers 500 instead. |
 | PHPUnit (`tests/apps/tools`) | 13.4.6 | All 29 checked commands print what php prints: `--version`, `--help`, the `--list-*` commands, configuration validation and migration, test runs (passing, failing and skipped tests, data providers, `--filter`, `--group`, `--stop-on-failure`, random order with a seed) and every output format (testdox, TeamCity, debug, JUnit, event log). |
 | PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | 23 of 25 commands print what php prints: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format. The two runs with 2 parallel workers write the same files and exit with php's code, but list the files in the order the workers finish, which with rhp's slower workers is not php's. |
 | Psalm (`tests/apps/tools`) | 7.0.3 | All 24 checked commands print what php prints: `--version`, `--help`, analysis single-threaded and with `--threads=2` (amphp's event loop on fibers), every checked output format including `xml`, `--show-info`, `--stats`, `--find-dead-code`, `--set-baseline` and `--alter` (psalter, with and without `--dry-run`). |

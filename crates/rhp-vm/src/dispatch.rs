@@ -936,9 +936,14 @@ impl Vm {
                 }
                 Instr::CastString { dst, a } => {
                     let v = self.reg_r(top, a)?;
-                    let s = self.to_string_vm(&v)?;
+                    let s = match &v {
+                        // The string itself, as php's zval_get_string copies it.
+                        Value::Str(s) => Value::Str(s.clone()),
+                        Value::Int(n) => Value::Str(conv::int_str(*n)),
+                        v => Value::str(self.to_string_vm(v)?),
+                    };
                     self.free_tmp(top, proto.num_cvs, a);
-                    self.reg_set(top, dst, Value::str(s));
+                    self.reg_set(top, dst, s);
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_r(top, a)?;
@@ -1068,8 +1073,10 @@ impl Vm {
                     }
                 }
 
-                Instr::NewArray { dst, .. } => {
-                    self.reg_set(top, dst, Value::Array(rhp_values::PhpArray::new()));
+                Instr::NewArray { dst, cap } => {
+                    // ZEND_INIT_ARRAY: sized for the literal's elements.
+                    let a = rhp_values::PhpArray::with_capacity(cap as usize);
+                    self.reg_set(top, dst, Value::Array(a));
                 }
                 Instr::ArrPush { arr, val } => {
                     let v = self.elem_operand(top, &proto, val)?;
@@ -2913,11 +2920,11 @@ impl Vm {
         let Value::Array(sig) = &proto.consts[sig as usize] else {
             return Ok(());
         };
-        let sig: Vec<Value> = sig.iter().map(|(_, v)| v.clone()).collect();
+        let sig: Vec<Value> = sig.values().cloned().collect();
         let fname = conv::to_string_bytes(&sig[0]);
         let variadic = matches!(sig[1], Value::Bool(true));
         let list = |v: &Value| match v {
-            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
         let flags: Vec<Value> = list(&sig[2]);
@@ -3063,10 +3070,7 @@ impl Vm {
             };
             let key = match deref(&k) {
                 Value::Int(n) => ArrayKey::Int(n),
-                Value::Str(s) => match ArrayKey::from_bytes(s.as_bytes()) {
-                    ArrayKey::Int(n) => ArrayKey::Int(n),
-                    _ => ArrayKey::Str(s),
-                },
+                Value::Str(s) => ArrayKey::from_php_str(&s),
                 _ => {
                     return Err(Thrown::error(
                         "Error",
@@ -3345,7 +3349,7 @@ impl Vm {
                     // A plain object iterates its live property table
                     // through a HashTable iterator (FE_RESET_R).
                     let obj = self.lazy_props_object(&obj)?;
-                    if obj.borrow().properties.is_empty() {
+                    if obj.borrow().props().is_empty() {
                         self.reg_set(top, pos_reg, Value::Null);
                         self.stack[top].pc = end as usize;
                     } else {
@@ -3396,10 +3400,9 @@ impl Vm {
         if let (Value::Array(a), Value::Int(pos)) =
             (&regs[arr_reg as usize], &regs[pos_reg as usize])
         {
-            let pos = *pos as usize;
-            match a.get_index(pos) {
-                Some((k, v)) => {
-                    let (k, v) = (k.clone(), deref(v));
+            match a.fetch_from(*pos as usize) {
+                Some((pos, k, v)) => {
+                    let v = deref(v);
                     // Bind as a PHP variable: if the loop var is still a
                     // reference (e.g. left over from a prior by-ref loop),
                     // write through it — matching PHP's foreach gotcha.
@@ -3660,7 +3663,7 @@ impl Vm {
                     self.reg_set(top, pos_reg, st);
                     return Ok(());
                 }
-                if h.borrow().properties.is_empty() {
+                if h.borrow().props().is_empty() {
                     self.reg_set(top, pos_reg, Value::Null);
                     self.stack[top].pc = end as usize;
                 } else {
@@ -3744,10 +3747,10 @@ impl Vm {
         // A table the iterator is not on starts over (php restarts at the
         // internal pointer of a table it lost track of).
         let mut idx = b.prop_iter_pos(id).unwrap_or(0);
-        let n = b.properties.len();
+        let n = b.props().pos_len();
         let mut found = None;
         while idx < n {
-            let (key, val) = b.properties.get_index(idx).unwrap();
+            let (key, val) = b.props().get_index(idx).unwrap();
             idx += 1;
             if val.is_undef() || self.internal_slot(cls, key) {
                 continue;
@@ -3763,10 +3766,10 @@ impl Vm {
         };
         let key = Value::Str(classes::unmangle(&name));
         if !by_ref {
-            return Ok(Some((key, deref(&b.properties[i]))));
+            return Ok(Some((key, deref(&b.props()[i]))));
         }
-        let skey = b.properties.get_index(i).unwrap().0.clone();
-        if !matches!(b.properties[i], Value::Ref(_)) {
+        let skey = b.props().get_index(i).unwrap().0.clone();
+        if !matches!(b.props()[i], Value::Ref(_)) {
             if let Some(pe) = self.class(cls).props.get(&skey).filter(|pe| pe.readonly) {
                 return Err(Thrown::error(
                     "Error",
@@ -3778,7 +3781,7 @@ impl Vm {
                 ));
             }
         }
-        let slot = &mut b.properties[i];
+        let slot = &mut b.props_mut()[i];
         let rc = match slot {
             Value::Ref(rc) => rc.clone(),
             other => {
@@ -3914,7 +3917,7 @@ impl Vm {
         // variable to the yielded reference.
         if let Value::Array(st) = self.reg_get(top, pos_reg) {
             // A hooked plain object: `[position, plan]` (see FeResetRef).
-            if let Some(Value::Int(_)) = st.get_index(0).map(|e| e.1.clone()) {
+            if let Some(Value::Int(_)) = st.nth(0).map(|e| e.1.clone()) {
                 let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) else {
                     self.stack[top].pc = end as usize;
                     return Ok(());
@@ -3934,19 +3937,19 @@ impl Vm {
             }
             // ArrayObject / ArrayIterator storage (see FeResetRef).
             if let (Some(Value::Ref(cell)), Some(Value::Int(pos))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) {
                 let fetched = foreach_promote(&mut cell.borrow_mut(), pos as usize);
                 match fetched {
-                    Some((k, elem_rc)) => {
+                    Some((at, k, elem_rc)) => {
                         self.bind_ref_cv(top, val_cv, elem_rc);
                         if key_cv != Reg::MAX {
                             self.cv_assign(top, key_cv, k.to_value())?;
                         }
                         let mut st = PhpArray::new();
                         st.push(Value::Ref(cell));
-                        st.push(Value::Int(pos + 1));
+                        st.push(Value::Int(at as i64 + 1));
                         self.reg_set(top, pos_reg, Value::Array(st));
                     }
                     None => self.stack[top].pc = end as usize,
@@ -3956,8 +3959,8 @@ impl Vm {
             // An object-backed ArrayIterator (see FeResetRef): public
             // properties only (spl_array_skip_protected).
             if let (Some(Value::Object(o)), Some(Value::Int(id))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) {
                 let id = id as u32;
                 match self.prop_iter_next_in(None, &o, id, true)? {
@@ -3975,8 +3978,8 @@ impl Vm {
                 return Ok(());
             }
             let (Some(Value::Object(g)), Some(Value::Bool(fetched))) = (
-                st.get_index(0).map(|e| e.1.clone()),
-                st.get_index(1).map(|e| e.1.clone()),
+                st.nth(0).map(|e| e.1.clone()),
+                st.nth(1).map(|e| e.1.clone()),
             ) else {
                 self.stack[top].pc = end as usize;
                 return Ok(());
@@ -4138,7 +4141,7 @@ impl Vm {
             }
         };
         if name_b == b"class" {
-            let v = Value::str(self.class(cls).name.as_bytes().to_vec());
+            let v = Value::str(self.class(cls).name.as_bytes());
             self.reg_set(top, dst, v);
         } else {
             // php loads every constant of a backed enum on first
@@ -4565,7 +4568,7 @@ impl Vm {
                 let at = b.windows(2).position(|w| w == b"::")?;
                 (
                     b[..at].to_vec(),
-                    Value::Str(PhpStr::from_bytes(b[at + 2..].to_vec())),
+                    Value::Str(PhpStr::from_bytes(&b[at + 2..])),
                 )
             }
             _ => return None,

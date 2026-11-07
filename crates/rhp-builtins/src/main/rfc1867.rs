@@ -1057,7 +1057,7 @@ pub fn parse(
             files,
             &protected,
             lbuf(&param, "full_path"),
-            Value::str(cstr(&filename).to_vec()),
+            Value::str(cstr(&filename)),
             false,
         );
         let ty = match hdr(b"Content-Type").filter(|_| cancel == 0) {

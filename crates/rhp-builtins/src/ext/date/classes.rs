@@ -339,8 +339,8 @@ fn add_common_properties(
     skip: impl Fn(&[u8]) -> bool,
 ) {
     for (k, v) in host.object_props_mangled(h).iter() {
-        if let ArrayKey::Str(name) = k {
-            if !skip(name.as_bytes()) && myht.get(k).is_none() {
+        if let ArrayKey::Str(name) = &k {
+            if !skip(name.as_bytes()) && myht.get(&k).is_none() {
                 myht.insert(k.clone(), v.clone());
             }
         }
@@ -692,7 +692,7 @@ fn date_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Valu
             } else {
                 wakeup_deprecated(host, &base)?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -1132,7 +1132,7 @@ fn timezone_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<
             } else {
                 wakeup_deprecated(host, "DateTimeZone")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -1492,7 +1492,7 @@ fn interval_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<
             } else {
                 wakeup_deprecated(host, "DateInterval")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -1925,7 +1925,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
         b"dp_construct" => {
             let h = obj(args, 0)?;
             let a: Vec<Value> = match arg(args, 1) {
-                Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+                Value::Array(a) => a.values().cloned().collect(),
                 _ => Vec::new(),
             };
             let fname = "DatePeriod::__construct";
@@ -2046,7 +2046,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
             } else {
                 wakeup_deprecated(host, "DatePeriod")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()

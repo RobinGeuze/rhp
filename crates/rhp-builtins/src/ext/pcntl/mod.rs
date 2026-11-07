@@ -639,7 +639,7 @@ fn fn_sigprocmask(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         libc::sigemptyset(&mut set);
         libc::sigemptyset(&mut old);
     }
-    for (_, v) in sigs.iter() {
+    for v in sigs.values() {
         let v = deref(v);
         let Some(n) = crate::zend::zpp::try_get_long(host, &v)? else {
             return Err(Thrown::type_error(format!(

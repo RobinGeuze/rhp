@@ -548,7 +548,7 @@ pub(crate) fn php_sscanf_internal(
                     }
                 }
                 if flags & SCAN_SUPPRESS == 0
-                    && !sink.put(&mut obj_index, Value::str(s.0[sp..end].to_vec()))
+                    && !sink.put(&mut obj_index, Value::str(&s.0[sp..end]))
                 {
                     nconversions += 1;
                     continue;
@@ -574,7 +574,7 @@ pub(crate) fn php_sscanf_internal(
                     break 'scan;
                 }
                 if flags & SCAN_SUPPRESS == 0
-                    && !sink.put(&mut obj_index, Value::str(s.0[sp..end].to_vec()))
+                    && !sink.put(&mut obj_index, Value::str(&s.0[sp..end]))
                 {
                     nconversions += 1;
                     continue;

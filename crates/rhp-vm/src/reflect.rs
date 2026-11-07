@@ -20,7 +20,7 @@ fn put(a: &mut PhpArray, k: &str, v: Value) {
 }
 
 fn s(b: &[u8]) -> Value {
-    Value::str(b.to_vec())
+    Value::str(b)
 }
 
 fn lc(b: &[u8]) -> Vec<u8> {
@@ -402,10 +402,7 @@ impl Vm {
                     // (An uninitialized typed static is left out.)
                     if let Some(sp) = e.static_props.get(n.as_bytes()) {
                         if !sp.cell.borrow().is_undef() {
-                            out.insert(
-                                ArrayKey::from_bytes(n.as_bytes()),
-                                deref(&sp.cell.borrow()),
-                            );
+                            out.insert(ArrayKey::from_php_str(&n), deref(&sp.cell.borrow()));
                         }
                     }
                 }
@@ -470,8 +467,8 @@ impl Vm {
                 }
                 let b = h.borrow();
                 Ok(Value::Bool(match key {
-                    Some(k) => b.properties.contains_key(&k),
-                    None => b.properties.contains_key(&name),
+                    Some(k) => b.props().contains_key(&k),
+                    None => b.props().contains_key(&name),
                 }))
             }
             b"obj_props" => {
@@ -482,7 +479,7 @@ impl Vm {
                 let b = h.borrow();
                 let entry = &self.classes[b.class as usize];
                 let mut out = PhpArray::new();
-                for k in b.properties.keys() {
+                for k in b.props().keys() {
                     if !entry.props.contains_key(k) && k.as_bytes().first() != Some(&0) {
                         out.push(Value::Str(k.clone()));
                     }
@@ -695,7 +692,7 @@ impl Vm {
             let mut v = cn.unwrap_or_default();
             v.extend_from_slice(b"::");
             v.extend_from_slice(al.method.as_bytes());
-            aliases.insert(ArrayKey::from_bytes(alias.as_bytes()), s(&v));
+            aliases.insert(ArrayKey::from_php_str(alias), s(&v));
         }
         put(&mut a, "trait_aliases", Value::Array(aliases));
         put(
@@ -934,7 +931,7 @@ impl Vm {
 
     fn prop_info(&self, cid: ClassId, name: &[u8]) -> Value {
         let e = &self.classes[cid as usize];
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         // (declaring class, visibility, set visibility, type, readonly, static, default)
         let found = if let Some(key) = self.decl_prop_key(cid, &pname) {
             let pe = &e.props[&key];
@@ -1204,7 +1201,7 @@ impl Vm {
                         continue;
                     }
                     statics.insert(
-                        ArrayKey::from_bytes(name.as_bytes()),
+                        ArrayKey::from_php_str(&name),
                         if uninit {
                             Value::Null
                         } else {
@@ -1225,7 +1222,7 @@ impl Vm {
                 } else {
                     pe.default.clone()
                 };
-                inst.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+                inst.insert(ArrayKey::from_php_str(&name), v);
             }
         }
         let (first, second) = if vars {
@@ -1410,7 +1407,7 @@ impl Vm {
         let Value::Array(key) = key else {
             return Ok(None);
         };
-        let mut k: Vec<Value> = key.iter().map(|(_, v)| v.clone()).collect();
+        let mut k: Vec<Value> = key.values().cloned().collect();
         // A forged key (the prelude's helpers are callable from PHP) must
         // not index out of bounds.
         if k.len() < 4 {
@@ -1486,8 +1483,8 @@ impl Vm {
                 let b = n.as_bytes();
                 let at = b.windows(2).position(|w| w == b"::").unwrap_or(0);
                 let mut pair = PhpArray::new();
-                pair.push(Value::str(b[..at].to_vec()));
-                pair.push(Value::str(b[at + 2..].to_vec()));
+                pair.push(Value::str(&b[..at]));
+                pair.push(Value::str(&b[at + 2..]));
                 self.fn_subject(&Value::Array(pair))?
             }
             Value::Str(n) => {
@@ -1551,7 +1548,7 @@ impl Vm {
             },
             Value::Array(a) if a.len() == 3 => {
                 // [class, property, "get"|"set"]: a property hook.
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 let n = rhp_values::conv::to_string_bytes(&v[0]);
                 let Ok(cid) = self.resolve_class_by_name(&n) else {
                     return Ok(None);
@@ -1568,7 +1565,7 @@ impl Vm {
                     })
             }
             Value::Array(a) => {
-                let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+                let v: Vec<Value> = a.values().map(deref).collect();
                 if v.len() != 2 {
                     return Ok(None);
                 }
@@ -1590,7 +1587,7 @@ impl Vm {
                         Some((p, b"::set")) => (p, 1),
                         _ => return Ok(None),
                     };
-                    let pname = PhpStr::from_bytes(prop.to_vec());
+                    let pname = PhpStr::from_bytes(prop);
                     return Ok(self
                         .decl_prop_key(cid, &pname)
                         .and_then(|k| self.classes[cid as usize].props.get(&k))
@@ -2117,7 +2114,7 @@ impl Vm {
         w: &Value,
     ) -> Option<FnSubject> {
         let Value::Array(a) = w else { return None };
-        let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
+        let v: Vec<Value> = a.values().map(deref).collect();
         let [target, name] = &v[..] else { return None };
         let (class, this) = match target {
             Value::Object(h) => (h.borrow().class, Some(target.clone())),

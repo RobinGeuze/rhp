@@ -14,7 +14,6 @@ use crate::cst::cst::PropertyHookConcreteExpressionBody;
 use crate::cst::cst::PropertyHookList;
 use crate::cst::cst::PropertyItem;
 use crate::cst::sequence::Sequence;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -70,7 +69,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(items, commas)
+                self.token_separated(items, commas)
             },
             terminator: self.parse_terminator()?,
         }))
@@ -116,7 +115,7 @@ where
                     hooks.push(hook);
                 }
 
-                Sequence::new(hooks)
+                self.sequence(hooks)
             },
             right_brace: self.stream.eat_span(T!["}"])?,
         })

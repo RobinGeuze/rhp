@@ -18,8 +18,9 @@ reproduced inline so they can be turned into tests.
   from it) carries the `'arena` lifetime. The arena holds the *AST*; the runtime
   holds *owned* copies. See §7.
 - **Two different sharing disciplines, kept strictly separate:**
-  - *value types with copy-on-write* (`string`, `array`) use `Rc<T>` +
-    `Rc::make_mut` — cheap clone, deep-on-write, **value semantics**.
+  - *value types with copy-on-write* (`string`, `array`) are refcounted
+    (`PhpStr`'s own header, `Rc<ArrayData>`) with a `make_mut` that copies
+    only when shared — cheap clone, deep-on-write, **value semantics**.
   - *handle/reference types* (`object`, PHP `&` references) use
     `Rc<RefCell<T>>` — shared mutable cell, **aliasing semantics**.
   Conflating these (e.g. putting arrays behind `RefCell`) would break PHP's
@@ -93,59 +94,56 @@ copy-on-assign model.
 PHP strings are **byte strings, not UTF-8**: they can hold NULs and arbitrary
 bytes, `strlen` counts bytes, offsets index bytes. So `String`/`str` are wrong.
 
-```rust
-use bstr::BString;
+`PhpStr` is php's `zend_string`: one heap block, a thin 8-byte pointer to it
+(crates/rhp-values/src/phpstr.rs, the only unsafe code for strings).
 
-/// Owned, binary-safe, copy-on-write PHP string.
-/// Clone is O(1) (refcount bump). Mutation is copy-on-write via `make_mut`.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PhpStr(Rc<BString>);
+```text
+ 0  refcount  u32
+ 4  flags     u32   reserved (php's GC type info: interned, immutable)
+ 8  hash      u64   cached, 0 = not computed yet (zend_string's `h`)
+16  len       usize
+24  bytes…
+```
+
+```rust
+pub struct PhpStr { ptr: NonNull<u8>, /* !Send */ }
 
 impl PhpStr {
-    pub fn from_bytes(b: impl Into<Vec<u8>>) -> Self {
-        PhpStr(Rc::new(BString::new(b.into())))
-    }
-    pub fn as_bytes(&self) -> &[u8] { self.0.as_slice() }
-    pub fn len(&self) -> usize { self.0.len() }
-
-    /// COW mutable access: clones the buffer iff it is currently shared.
-    pub fn make_mut(&mut self) -> &mut BString { Rc::make_mut(&mut self.0) }
+    pub fn from_bytes(b: impl StrBytes) -> Self;  // &[u8]/&str copied, Vec/String taken over
+    pub fn as_bytes(&self) -> &[u8];
+    pub fn make_mut(&mut self) -> StrMut<'_>;     // copies first when shared
+    pub fn get_mut(&mut self) -> Option<StrMut<'_>>; // only when unshared
+    pub fn hash_value(&self) -> u64;              // cached
 }
 ```
 
-**Why `Rc<BString>`:**
+- **Cheap clone.** Clone bumps the refcount; strings are copied constantly
+  (every variable read into a temp, every argument).
+- **One allocation.** The block's size is always a function of the length:
+  `zstr_size(len)` (header + bytes + NUL, 8-aligned, as php's
+  `_ZSTR_STRUCT_SIZE`) rounded as zend_mm rounds it. So a short string takes
+  php's 32 bytes, `memory_get_usage()` counts what php counts, and no
+  capacity field is needed: the length gives it.
+- **Copy-on-write.** `StrMut` derefs to `&mut [u8]` and has the
+  length-changing writes (`extend_from_slice`, `extend_self`, `push`,
+  `resize`, `truncate`). Growing within the block is free; growing past it
+  reallocs to the new length's block, like `zend_string_extend` (so `$s .= x`
+  in a loop reallocs as php's does). Taking a `StrMut` clears the cached hash.
+- **Owned buffers.** A `Vec<u8>` up to 4 KiB is copied (cheaper than a
+  realloc); a longer one is realloc'd into the string's block and its bytes
+  moved behind the header, so a large result never exists twice (peak memory
+  and `memory_limit` match php). That is why blocks use alignment 1 and the
+  header is read unaligned. Builders that know their pieces avoid the `Vec`:
+  `PhpStr::concat(a, b)`, `PhpStr::from_slice`, `conv::int_str`.
+- **Hashing.** `Hash` writes the cached hash (FxHash of the bytes, top bit
+  set so it is never 0). `ArrayKey` hashes as one word, the int or the
+  string's hash, as php hashes buckets by `h`. Equality is byte equality
+  (pointer equality first). `ArrayKey::from_php_str` shares a value's string
+  as the key instead of copying it, as php's hash keys addref theirs.
 
-- **Cheap clone.** `Rc` gives O(1) clone, mirroring Zend's refcounted
-  `zend_string`. Strings are copied constantly (every variable read into a temp,
-  every argument), so O(len) clone would dominate.
-- **Mutable on write.** `.=` (append), `$s[$i] = 'x'` (byte assignment),
-  `substr_replace`, etc. need in-place mutation. `BString: Clone`, so
-  `Rc::make_mut` clones the buffer *only* when the `Rc` is shared (refcount > 1)
-  and otherwise mutates in place — exact COW, and it keeps us from aliasing two
-  PHP string values through one buffer.
-- **`bstr` ergonomics.** `BString`/`BStr` give us a full byte-string API (`find`,
-  `split`, case ops) and a *lossy* `Display`/`Debug` for diagnostics, without
-  pretending the bytes are UTF-8.
-
-**Rejected alternatives:**
-
-- `Rc<[u8]>` — single indirection and immutable, but `[u8]: !Clone` means
-  `Rc::make_mut` is unavailable, so there is no clean COW mutation path; every
-  append would hand-roll a realloc+copy. Rejected.
-- `bstr::BString` (owned, no `Rc`) — clone is O(len); loses the cheap-clone
-  property that dominates the hot path. Rejected as the *value* representation
-  (it is the right thing *inside* the `Rc`).
-- Small-string optimization (inline ≤ N bytes, e.g. a hand-rolled SSO enum over
-  `smallvec::SmallVec<[u8; 23]>`) — attractive because PHP creates many tiny
-  strings (keys, identifiers), **but** inline storage makes clone O(len) again,
-  defeating cheap clone, and no SSO crate in our tree is binary-safe
-  (`compact_str` is UTF-8). **Deferred.** `PhpStr` is a newtype wrapping one
-  `Rc`, so we can later turn it into `enum { Inline([u8; N], u8), Shared(Rc<BString>) }`
-  or add an interned-symbol variant for class/function names without touching
-  call sites.
-
-Hashing/equality are over the raw bytes (what PHP array keys need), so
-`#[derive(Hash, Eq)]` on the byte content is correct.
+Not done: interned strings (php's `IS_STR_INTERNED`: no refcounting, the
+empty and one-char strings shared). The flags word is kept for that and for
+an immutable flag (bytecode.md, threading).
 
 ## 3. `PhpArray` — ordered map, COW value semantics
 
@@ -153,9 +151,6 @@ PHP arrays are **insertion-ordered** maps keyed by `int` *or* `string`, with a
 running "next free integer index". Value semantics with copy-on-write.
 
 ```rust
-use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
-
 /// PHP array key: canonicalized to int-or-string (see normalization below).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ArrayKey {
@@ -163,39 +158,63 @@ pub enum ArrayKey {
     Str(PhpStr),
 }
 
-/// The array buffer. Insertion order preserved by IndexMap.
-#[derive(Clone)]
+/// The array buffer: php's HashTable (crates/rhp-values/src/array.rs).
+/// 40 bytes, so its Rc box is php's 56-byte zend_array.
 pub struct ArrayData {
-    /// Ordered entries. FxBuildHasher: fast, non-DoS-resistant hashing — fine
-    /// for a single request (PHP itself is not collision-hardened by default).
-    pub entries: IndexMap<ArrayKey, Value, FxBuildHasher>,
-    /// php's nNextFreeElement: the key `$a[] = ...` uses. `i64::MIN` until
-    /// an integer key is inserted (a fresh array appends at 0).
-    next_free: i64,
-    /// Internal pointer (`current`/`next`/...); `entries.len()` is past the end.
-    pub pos: usize,
-    /// Positions of array_walk's HashTable iterators, by id.
-    iters: Option<Box<Vec<(u32, usize)>>>,
+    data: NonNull<u8>, // the table block, dangling until allocated
+    used: u32,         // nNumUsed: positions in use, holes included
+    size: u32,         // nTableSize (a power of two, at least 8) | HASH bit
+    count: u32,        // nNumOfElements
+    pos: u32,          // nInternalPointer, a position
+    next_free: i64,    // nNextFreeElement; i64::MIN until an int key is used
+    iters: Option<Box<Vec<(u32, usize)>>>, // HashTable iterators: (id, position)
 }
+// The block, one allocation as php's:
+// - packed: `size` Values (the position is the integer key; holes are
+//   `Value::Undef`), plus 8 bytes: HT_PACKED_SIZE.
+// - hash: `size` 32-byte buckets (value, int key or string hash, string
+//   key) in insertion order, then `2 * size` u32 index slots: HT_SIZE.
 
 /// A PHP array value. Clone is O(1) (Rc bump); mutation is COW via `make_mut`.
 #[derive(Clone)]
 pub struct PhpArray(Rc<ArrayData>);
-
-impl PhpArray {
-    pub fn get(&self, k: &ArrayKey) -> Option<&Value> { self.0.entries.get(k) }
-
-    /// COW mutable access: clones the whole buffer iff shared, then mutate.
-    pub fn make_mut(&mut self) -> &mut ArrayData { Rc::make_mut(&mut self.0) }
-}
 ```
+
+The storage is private (a raw block, read through `view`/`view_mut`
+slices): everything goes through methods (`get`, `insert`, `try_push`,
+`remove`, `iter` yielding owned keys, `values`, positions with
+`at`/`fetch_from`/`iter_step`, the pointer with `ptr_*`/`current`).
+
+The two layouts follow zend_hash (Zend/zend_hash.c) so memory and
+`debug_zval_dump`'s `packed` flag match php's:
+
+- **Packed** while integer keys arrive in ascending order within reach of
+  the table: `_zend_hash_index_add_or_update_i`'s rules (a key at or past
+  the end and below `size` is added, filling the gap with holes; one up to
+  twice the size grows the table when it is over half full; anything else,
+  a key into a hole, or a string key converts to a hash). 16 bytes an
+  element.
+- **Hash**: buckets plus the index, 40 bytes an element as php's Bucket and
+  two u32 hash slots are. The index uses linear probing with backward-shift
+  deletion, so it only ever holds live buckets.
+
+Removal leaves a hole (`Value::Undef` in the value slot) and shrinks the
+used part only past trailing holes; a hash table compacts its holes when it
+is full (`zend_hash_rehash`, which moves the pointer and the iterators with
+their elements) and doubles otherwise. A copy (`zend_array_dup`) keeps a
+packed table's holes and compacts a hash's. `Value::Undef` cloned gives
+`Null`, so the copy keeps holes explicitly. A value stored into an array is
+never `Undef` (`insert`/`try_push` store `Null` for it).
+
+A string offset becomes a key that shares the string (`ArrayKey::from_php_str`),
+as php adds a reference to the key instead of copying it.
 
 ### 3a. Copy-on-write
 
 `$b = $a` clones the `Rc` (shared buffer). Any mutation of `$b` goes through
 `PhpArray::make_mut` → `Rc::make_mut`, which clones `ArrayData` **iff** the
-refcount is > 1. The clone is *shallow in the Rust sense*: `IndexMap: Clone`
-clones each `Value`, and every `Value` clone is itself cheap (`Rc` bump / scalar
+refcount is > 1. The clone is *shallow in the Rust sense*: it clones each
+`Value`, and every `Value` clone is itself cheap (`Rc` bump / scalar
 copy). This yields exactly PHP's COW semantics, including the subtle rules:
 
 - Nested arrays are themselves `Rc`-shared after the shallow clone and only
@@ -276,20 +295,29 @@ element to the array as the next element is already occupied`.
 
 ### 3d. Internal pointer and iterators
 
-php's internal pointer and HashTable iterators are bucket positions; a
-deleted bucket leaves a hole, so a position keeps pointing at the same
-element. IndexMap compacts on removal instead, so `PhpArray::remove` (and
-`ArrayData::remove_index`) move `pos` and every registered iterator back
-by one when the removed entry was before them. A removed current element
-leaves the pointer on the next one, and the past-the-end position
-(`entries.len()`) picks up a later append, as php's `nNumUsed` does. A
-copy-on-write separation restarts a past-the-end pointer at 0, as
-`zend_array_dup` does.
-`array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`); it
-is copied along with the array, so the walk survives a copy-on-write
+php's internal pointer and HashTable iterators are positions in the
+table, holes included, and so are rhp's: a removal leaves a hole, so a
+position keeps pointing at the same element, and reading from a position
+skips holes (`fetch_from`, php's `_zend_hash_get_valid_pos`), so a removed
+current element leaves the pointer on the next one. `reset`/`end`/`next`/
+`prev` follow `zend_hash_internal_pointer_*` and `zend_hash_move_*`; the
+past-the-end position (`used()`, php's `nNumUsed`) picks up a later
+append. A copy-on-write separation restarts a past-the-end pointer at 0, as
+`zend_array_dup` does; compacting a hash moves the pointer only when it is
+on an element, and iterators on a hole move to the next element.
+`array_pop`/`array_shift` are `ArrayData::pop`/
+`shift`, php's code paths (renumbering in place, moving iterators).
+`array_walk` registers an iterator (`iter_add`/`iter_pos`/`iter_del`) and
+moves it to the next element before each call (`walk_step`, php's
+`zend_hash_move_forward_ex`), where foreach by reference moves its iterator
+to the next position (`iter_step`, holes included). The iterator is
+copied along with the array, so the walk survives a copy-on-write
 separation, and a different array (the variable reassigned) is walked
-from its internal pointer. The sorts keep iterator positions, and
-`array_splice` moves them the way `php_splice` does (`splice_iterators`).
+from its internal pointer. The sorts drop holes as `zend_hash_sort` does:
+a packed table (and usort's copy) moves its iterators to the next element
+as `zend_hash_rehash` does, a hash keeps their positions; and
+`array_splice` moves them the way `php_splice` does (`splice_iterators`,
+walking the input's positions, holes included).
 
 ## 4. Reference semantics (PHP `&`)
 
@@ -416,10 +444,12 @@ pub struct ObjectData {
     /// The object handle (spl_object_id, `#N`): php's object store, reused
     /// once the object is freed (rhp_values::handles).
     pub id: u32,
-    /// Declared + dynamic properties, in declaration/insertion order.
-    /// Values may themselves be `Value::Ref` for `&`-bound properties.
-    pub properties: IndexMap<PhpStr, Value, FxBuildHasher>,
-    // later: internal/native state, weak-ref registry, handlers.
+    /// Declared properties in the class's slots, then dynamic ones in
+    /// insertion order (`PropTable`, oop.md §1.1). Values may themselves be
+    /// `Value::Ref` for `&`-bound properties.
+    properties: PropTable,
+    /// Native payload, lazy object state, weak flag, iterators (boxed).
+    extra: Option<Box<ObjectExtra>>,
 }
 
 /// Shared object handle. Clone shares (handle semantics). Interior mutability
@@ -429,7 +459,7 @@ pub type ObjectHandle = Rc<RefCell<ObjectData>>;
 
 - **Assignment / passing** copies the `Rc` → shared handle. No COW.
 - **`clone $o`** performs a shallow property copy: new `id`, new `Rc`, cloned
-  `properties` map (then `__clone` runs). This is the one place objects "copy".
+  property table (then `__clone` runs). This is the one place objects "copy".
 - **Identity `===`** is `Rc::ptr_eq` (equivalently equal `id`); `==` compares
   class + property values.
 - **`&` properties** are represented by `Value::Ref` property values, so the
@@ -467,7 +497,7 @@ buffers rather than borrowing: runtime data must outlive any `&'arena` borrow.
 ## 7. Dependency notes
 
 - `indexmap` 2.14 — ordered maps for arrays and object properties.
-- `bstr` 1.13 — binary-safe string buffer (`BString`/`BStr`) inside `PhpStr`.
+- `bstr` 1.13 — byte-string helpers (`BStr` for `PhpStr`'s `Debug`).
 - `rustc-hash` (`FxBuildHasher`) — fast non-cryptographic hashing for the
   per-request maps. Present transitively in the lockfile; add it as a direct dep
   of the runtime crate. (If DoS-resistant hashing is ever wanted it can be

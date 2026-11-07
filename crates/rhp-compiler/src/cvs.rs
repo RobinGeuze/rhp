@@ -223,7 +223,7 @@ impl ProtoBuilder<'_> {
                                         }
                                     }
                                     None => self.scan_expr_vars(&Expression::Variable(
-                                        Variable::Indirect(iv.clone()),
+                                        &Variable::Indirect(iv.clone()),
                                     )),
                                 }
                             }

@@ -236,7 +236,7 @@ fn program_size(p: &Program) -> i64 {
     fn value_size(v: &Value) -> usize {
         match v {
             Value::Str(s) => s.as_bytes().len() + 24,
-            Value::Array(a) => a.iter().map(|(_, v)| 32 + value_size(v)).sum(),
+            Value::Array(a) => a.values().map(|v| 32 + value_size(v)).sum(),
             _ => 0,
         }
     }

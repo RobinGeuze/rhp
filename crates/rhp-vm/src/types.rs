@@ -765,11 +765,11 @@ impl Vm {
                             }
                             ArrayKey::Str(s) => s.clone(),
                         };
-                        b.properties.insert(name, deref(val));
+                        b.props_mut().insert(name, deref(val));
                     }
                 }
                 scalar => {
-                    b.properties
+                    b.props_mut()
                         .insert(rhp_values::PhpStr::from("scalar"), scalar);
                 }
             }

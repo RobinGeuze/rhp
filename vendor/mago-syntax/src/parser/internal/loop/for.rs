@@ -2,8 +2,6 @@ use crate::T;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
-use crate::cst::sequence::Sequence;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -36,7 +34,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(initializations, commas)
+                self.token_separated(initializations, commas)
             },
             initializations_semicolon: self.stream.eat_span(T![";"])?,
             conditions: {
@@ -59,7 +57,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(conditions, commas)
+                self.token_separated(conditions, commas)
             },
             conditions_semicolon: self.stream.eat_span(T![";"])?,
             increments: {
@@ -82,7 +80,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(increments, commas)
+                self.token_separated(increments, commas)
             },
             right_parenthesis: self.stream.eat_span(T![")"])?,
             body: self.parse_for_body()?,
@@ -118,7 +116,7 @@ where
                     }
                 }
 
-                Sequence::new(statements)
+                self.sequence(statements)
             },
             end_for: self.expect_keyword(T!["endfor"])?,
             terminator: self.parse_terminator()?,

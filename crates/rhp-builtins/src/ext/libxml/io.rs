@@ -291,7 +291,7 @@ fn opt_str(p: *const c_char) -> Value {
     if p.is_null() {
         Value::Null
     } else {
-        Value::str(unsafe { cstr(p) }.to_vec())
+        Value::str(unsafe { cstr(p) })
     }
 }
 
@@ -406,7 +406,7 @@ pub(crate) fn to_string(h: &mut dyn Host, v: &Value) -> Result<Vec<u8>, Thrown> 
 pub fn callable_name(h: &dyn Host, cb: &Value) -> Vec<u8> {
     match cb {
         Value::Array(a) if a.len() == 2 => {
-            let parts: Vec<Value> = a.iter().map(|(_, x)| super::deref(x)).collect();
+            let parts: Vec<Value> = a.values().map(super::deref).collect();
             let class = match &parts[0] {
                 Value::Object(_) => h.object_class_name(&parts[0]).unwrap_or_default(),
                 other => conv::to_string_bytes(other),

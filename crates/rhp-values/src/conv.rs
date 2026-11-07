@@ -8,7 +8,7 @@
 //! All rules verified against php 8.5.8 (see `docs/design/php-semantics.md`).
 
 use crate::fmt;
-use crate::Value;
+use crate::{PhpStr, Value};
 
 /// A PHP numeric: the result of interpreting a value/string as a number.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,6 +75,32 @@ pub fn to_string_bytes(v: &Value) -> Vec<u8> {
         Value::Resource(r) => format!("Resource id #{}", r.id).into_bytes(),
         Value::Ref(r) => to_string_bytes(&r.borrow()),
     }
+}
+
+/// An int's decimal digits, written into `buf` (no heap buffer).
+#[inline]
+pub fn int_digits(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut i = buf.len();
+    let mut u = n.unsigned_abs();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        // i64::MIN has 19 digits, so there is room for the sign.
+        i -= 1;
+        buf[i] = b'-';
+    }
+    &buf[i..]
+}
+
+/// An int's decimal string.
+pub fn int_str(n: i64) -> PhpStr {
+    PhpStr::from_slice(int_digits(n, &mut [0; 20]))
 }
 
 /// `(int)` cast.

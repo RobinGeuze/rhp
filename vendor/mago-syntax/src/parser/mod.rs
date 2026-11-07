@@ -8,7 +8,6 @@ use mago_syntax_core::input::Input;
 
 use crate::cst::Program;
 use crate::cst::Statement;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::lexer::Lexer;
 use crate::parser::stream::TokenStream;
@@ -42,7 +41,8 @@ where
     pub(crate) arena: &'arena A,
     pub(crate) state: State,
     pub(crate) stream: TokenStream<'input, 'arena, A>,
-    pub(crate) errors: Vec<'arena, ParseError, A>,
+    // rhp: a heap vector, copied into the arena at the end.
+    pub(crate) errors: std::vec::Vec<ParseError>,
     pub(crate) recovery_end: Option<Span>,
 }
 
@@ -66,11 +66,11 @@ where
     pub fn new(arena: &'arena A, file_id: FileId, content: &'input [u8], settings: ParserSettings) -> Self {
         let input = Input::new(file_id, content);
         let lexer = Lexer::new(input, settings.lexer);
-        let stream = TokenStream::new(arena, lexer, settings.elide_detached_whitespace);
+        let stream = TokenStream::new(arena, lexer, settings.elide_detached_whitespace, settings.discard_trivia);
 
         let end = Position::new(content.len() as u32);
         let recovery_end = settings.recover_incomplete.then_some(Span::new(file_id, end, end));
-        Self { arena, state: State::default(), stream, errors: Vec::new_in(arena), recovery_end }
+        Self { arena, state: State::default(), stream, errors: std::vec::Vec::new(), recovery_end }
     }
 
     fn recover_at_eof(&mut self, error: ParseError) -> Result<Span, ParseError> {
@@ -110,7 +110,7 @@ where
 
     fn parse_condition_body(&mut self, right_parenthesis: Span) -> Result<Statement<'arena>, ParseError> {
         if right_parenthesis.length() == 0 && self.stream.peek_kind(0)? != Some(TokenKind::LeftBrace) {
-            return Ok(Statement::Noop(right_parenthesis));
+            return Ok(Statement::Noop(self.arena.alloc(right_parenthesis)));
         }
 
         self.parse_recovered_body()
@@ -121,11 +121,11 @@ where
             match self.stream.lookahead(0)? {
                 None => {
                     self.push_recovered_error(self.stream.unexpected(None, &[]));
-                    return Ok(Statement::Noop(end));
+                    return Ok(Statement::Noop(self.arena.alloc(end)));
                 }
                 Some(token) if token.kind == TokenKind::RightBrace => {
                     self.push_recovered_error(self.stream.unexpected(Some(token), &[]));
-                    return Ok(Statement::Noop(self.empty_span()));
+                    return Ok(Statement::Noop(self.arena.alloc(self.empty_span())));
                 }
                 Some(_) => {}
             }
@@ -163,7 +163,7 @@ where
 
     /// Parses and returns the program CST.
     fn parse(mut self, source_text: &'arena [u8], file_id: FileId) -> &'arena Program<'arena> {
-        let mut statements = Vec::new_in(self.arena);
+        let mut statements = self.new_vec();
 
         loop {
             let reached_eof = match self.stream.has_reached_eof() {
@@ -198,12 +198,14 @@ where
             }
         }
 
+        let errors = std::mem::take(&mut self.errors);
+        let errors = self.slice(errors);
         self.arena.alloc(Program {
             file_id,
             source_text,
-            statements: Sequence::new(statements),
+            statements: self.sequence(statements),
             trivia: self.stream.get_trivia(),
-            errors: self.errors.leak(),
+            errors,
         })
     }
 }

@@ -310,7 +310,7 @@ fn group_value(
 ) -> Value {
     match ov.get(i).and_then(|o| *o) {
         Some((s, e)) => {
-            let val = Value::str(subject[s..e].to_vec());
+            let val = Value::str(&subject[s..e]);
             if offset_capture {
                 pair(val, s as i64)
             } else {
@@ -740,9 +740,7 @@ fn replace_subject(
 fn as_list(v: &Value) -> (Vec<Vec<u8>>, bool) {
     match deref(v) {
         Value::Array(a) => (
-            a.iter()
-                .map(|(_, x)| rhp_values::conv::to_string_bytes(x))
-                .collect(),
+            a.values().map(rhp_values::conv::to_string_bytes).collect(),
             true,
         ),
         other => (vec![rhp_values::conv::to_string_bytes(&other)], false),
@@ -994,7 +992,7 @@ fn fn_preg_split(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     // One piece; `None` offsets are an unset group's (offset -1).
     let push = |out: &mut PhpArray, piece: &[u8], off: Option<usize>| {
-        let v = Value::str(piece.to_vec());
+        let v = Value::str(piece);
         out.push(if offset_capture {
             pair(v, off.map_or(-1, |o| o as i64))
         } else {

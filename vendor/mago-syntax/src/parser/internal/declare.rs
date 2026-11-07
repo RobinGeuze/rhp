@@ -3,8 +3,6 @@ use crate::cst::cst::Declare;
 use crate::cst::cst::DeclareBody;
 use crate::cst::cst::DeclareColonDelimitedBody;
 use crate::cst::cst::DeclareItem;
-use crate::cst::sequence::Sequence;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -34,7 +32,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(items, commas)
+                self.token_separated(items, commas)
             },
             right_parenthesis: self.stream.eat_span(T![")"])?,
             body: self.parse_declare_body()?,
@@ -81,7 +79,7 @@ where
                         }
                     }
                 }
-                Sequence::new(statements)
+                self.sequence(statements)
             },
             end_declare: self.expect_keyword(T!["enddeclare"])?,
             terminator: self.parse_terminator()?,

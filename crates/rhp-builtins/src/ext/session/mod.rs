@@ -1750,11 +1750,21 @@ pub(crate) fn on_modify(
             }
         }
         b"cookie_lifetime" => {
-            if c_atol(v) < 0 {
+            let n = c_atol(v);
+            if n < 0 {
                 diags.push((E_WARNING, "CookieLifetime cannot be negative".into()));
                 false
-            } else {
+            } else if n > i64::MAX - i64::from(i32::MAX) - 1 {
                 true
+            } else {
+                // OnUpdateLongGEZero.
+                if let Some(e) = crate::main::ini::quantity_error(v) {
+                    diags.push((
+                        QUANTITY,
+                        format!("Invalid \"session.cookie_lifetime\" setting. {e}"),
+                    ));
+                }
+                ini_parse_quantity(v) >= 0
             }
         }
         b"sid_length" => {

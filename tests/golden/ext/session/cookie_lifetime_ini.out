@@ -1,0 +1,16 @@
+[2] Invalid "session.cookie_lifetime" setting. Invalid quantity "abc": no valid leading digits, interpreting as "0" for backwards compatibility
+string(1) "0"
+string(3) "abc"
+[2] Invalid "session.cookie_lifetime" setting. Invalid quantity "12x": unknown multiplier "x", interpreting as "12" for backwards compatibility
+string(3) "abc"
+string(3) "12x"
+string(3) "12x"
+string(2) "5k"
+[2] ini_set(): CookieLifetime cannot be negative
+bool(false)
+string(2) "5k"
+string(2) "5k"
+string(1) "7"
+[2] Invalid "session.cookie_lifetime" setting. Invalid quantity "q": no valid leading digits, interpreting as "0" for backwards compatibility
+bool(true)
+string(1) "q"

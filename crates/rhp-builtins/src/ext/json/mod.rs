@@ -756,12 +756,8 @@ impl Parser<'_, '_> {
     }
 
     /// Parse one JSON value at the current position. `depth` is the nesting level
-    /// of this value (the top-level value is depth 1); exceeding `max_depth`
-    /// yields `JSON_ERROR_DEPTH`.
+    /// of this value (the top-level value is depth 1).
     fn parse_value(&mut self, depth: i64) -> Result<Value, i64> {
-        if depth > self.max_depth {
-            return Err(JSON_ERROR_DEPTH);
-        }
         self.skip_ws();
         match self.peek() {
             Some(b'{') => self.parse_object(depth),
@@ -773,6 +769,15 @@ impl Parser<'_, '_> {
             Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
             _ => Err(self.unexpected()),
         }
+    }
+
+    /// PHP_JSON_DEPTH_INC: a container opened at `depth` needs room for
+    /// its members, empty or not.
+    fn depth_inc(&self, depth: i64) -> Result<(), i64> {
+        if depth >= self.max_depth {
+            return Err(JSON_ERROR_DEPTH);
+        }
+        Ok(())
     }
 
     /// The error for an unexpected token: php's scanner reports a NUL byte
@@ -810,6 +815,7 @@ impl Parser<'_, '_> {
 
     fn parse_object(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '{'
+        self.depth_inc(depth)?;
         let mut pairs: Vec<(Vec<u8>, Value)> = Vec::new();
         // key -> index in `pairs`, for the duplicate check (php's hash
         // update); built once the object outgrows a linear scan
@@ -886,6 +892,7 @@ impl Parser<'_, '_> {
 
     fn parse_array(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '['
+        self.depth_inc(depth)?;
         let mut arr = PhpArray::new();
         self.skip_ws();
         match self.peek() {

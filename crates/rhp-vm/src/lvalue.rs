@@ -584,6 +584,11 @@ impl Vm {
                 }
                 self.skip_false_dep += 1;
                 self.undef_cv(top, key)?;
+                // php's converted array is gone when the handler replaced
+                // the variable.
+                if !matches!(container(self), Value::Bool(false)) {
+                    return Ok(true);
+                }
             }
             Value::Str(s) => {
                 self.undef_cv(top, key)?;

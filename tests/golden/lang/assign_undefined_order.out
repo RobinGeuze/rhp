@@ -44,3 +44,7 @@ array(1) {
 }
 release: Automatic conversion of false to array is deprecated
 string(4) "gone"
+replace: Automatic conversion of false to array is deprecated
+replace: Undefined variable $k8
+string(2) "zz"
+NULL

@@ -61,3 +61,16 @@ set_error_handler(function ($no, $msg) {
 $g = [false];
 $g[0][$k7] = 5;
 var_dump($g);
+
+// A handler that replaces a false container while the key warns: php's
+// converted array is gone, so nothing is written.
+set_error_handler(function ($no, $msg) {
+    echo "replace: $msg\n";
+    if (str_starts_with($msg, 'Undefined variable')) {
+        $GLOBALS['h'] = 'zz';
+    }
+    return true;
+});
+$h = false;
+$res = ($h[$k8] = 6);
+var_dump($h, $res);

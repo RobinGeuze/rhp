@@ -5,6 +5,8 @@ compile-only ratchet (`rhp-difftest lint`) and the request diff
 (`rhp-difftest app`: `rhp --cgi` against php-cgi).
 The pinned dev tools (PHPUnit, PHPStan, Psalm, PHP-CS-Fixer, Rector) are
 measured on their own fixture project by `tools.py`; see "Dev tools" below.
+The frameworks' own PHPUnit suites run nightly from `tests/suites/`
+(see its README).
 
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|

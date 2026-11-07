@@ -754,9 +754,7 @@ The module is deliberately "READ-ONLY, native format only"
 
 Fibers run on their own stacks ([fibers.md](./fibers.md)); the cycle
 collector traverses suspended fibers and runs destructors in php's
-destructor fiber (gc.md). A generator whose frame a destroyed fiber unwinds is
-not marked force-closed, so a `yield` in its `finally` is not refused
-(gh9916-009; zend_generator_dtor_storage's ZEND_GENERATOR_FORCED_CLOSE).
+destructor fiber (gc.md).
 
 ## 10. Prioritized roadmap
 

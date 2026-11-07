@@ -141,8 +141,9 @@ holder does.
   but still iterates the variable live; only that loop's reference is a
   live temporary for the run (php's other live ranges are not modelled).
 
-- Generators: php's generator destructor runs pending `finally` blocks;
-  rhp's only drops the frame.
+- Generators: php's generator destructor runs pending `finally` blocks.
+  rhp's does when the last reference goes (generators.rs `gen_dtor`), but
+  a generator the cycle collector destroys only drops its frame.
 - A generator running inside a suspended fiber is also held by the Rust
   call that resumed it (a method call's handle), so it is kept.
 - A fiber whose callable is not a plain closure (`[$obj, 'method']`, a

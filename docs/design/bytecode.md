@@ -843,6 +843,7 @@ pub enum FinallyCont {
     Jump(PC),           // a break/continue crossing out
     Return(Value),      // a `return v;` crossing out — complete it after finally
     Rethrow(Thrown),    // an exception in flight — resume unwinding after finally
+    ForcedClose,        // a destroyed generator runs its finally blocks, then closes
 }
 ```
 
@@ -855,6 +856,31 @@ control flow wins) — the finally body replaces the top `pending` before
 `FinallyEnd`. `flags.has_finally` lets the common finally-free function skip this
 path entirely. (This unifies isa.md's FAST_CALL/FAST_RET and vm.md's
 `Frame::pending`: `FinallyEnd` *is* FAST_RET; the entry jump *is* FAST_CALL.)
+
+The walks follow zend_dispatch_try_catch_finally_helper and
+zend_handle_loops_and_finally: regions are visited innermost first (the
+exception table lists inner regions before outer ones). An exception
+thrown inside a running finally block that no inner try handles discards
+what that block was finishing; a pending exception becomes the innermost
+`previous` of the new one (zend_exception_set_previous, which drops it
+when it is already in the chain). A `return` or jump discards the pending
+work of each finally block it leaves only after the inner finally blocks
+it must run first have run (`Vm::leave_finallies`).
+
+Generators (generators.rs) follow zend_generators.c. A suspended
+generator's `Frame` lives in its `GenState`; resuming pushes it and runs
+it until `Yield`/`YieldValues` (a yielded value) or `YieldFrom` (attached
+to another generator) hands `yield_out` to the driver. `yield from` over
+a Generator builds php's delegation tree: the delegating generator is a
+child of the one it yields from, values and resumption go to the root,
+and `Vm::gen_resume` moves between nodes in a loop (no Rust recursion per
+level; roots and leaves cache each other as php's `node.ptr` does). A
+generator whose function has finally blocks is destructible: its
+destructor runs the finally blocks around its `yield` with
+`FinallyCont::ForcedClose`, where a `yield` throws. Traces show a resumed
+generator as called from `[internal function]` when a `Generator` method
+(a `NativeCall` with `method_of`) resumed it, followed by the generators
+of the `yield from` chain it runs for (`Vm::gen_resumes`).
 
 ### 3.6 Units: one copy of the bytecode
 

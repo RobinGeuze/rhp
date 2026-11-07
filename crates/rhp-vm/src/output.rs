@@ -247,6 +247,9 @@ impl Vm {
         }
         if let Some(nc) = self.native_calls.last() {
             if nc.caller + 1 >= self.stack.len() {
+                if let Some((class, _)) = &nc.method_of {
+                    return format!("{class}::{}(): ", nc.name);
+                }
                 return format!("{}(): ", nc.name);
             }
         }

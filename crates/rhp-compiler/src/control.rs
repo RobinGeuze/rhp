@@ -724,6 +724,12 @@ impl ProtoBuilder<'_> {
         if has_finally {
             self.finally_rets.push(Vec::new());
             self.finally_breaks.push(Vec::new());
+            // A label right before the try is outside it: a `goto` to it
+            // from the body leaves the try (and runs the finally).
+            let here = self.here();
+            if self.labels.values().any(|(pc, _)| *pc == here) {
+                self.emit(Instr::Nop);
+            }
         }
         let try_start = self.here();
         let temps = self.next_temp;

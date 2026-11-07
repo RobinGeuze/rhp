@@ -14,8 +14,7 @@ use rhp_values::{
 };
 
 use crate::calls::{dyn_method_name, param_is_ref, undefined_function, Args, CallTarget};
-use crate::errors::{enclosing_finally, FinallyCont, UnwindResult};
-use crate::generators::GenStatus;
+use crate::errors::{FinallyCont, UnwindResult};
 use crate::lvalue::StaticOp;
 use crate::lvalue::{
     aa_key, foreach_next_ref, foreach_promote, CursorRoot, CursorStep, DimFetch, DimMode,
@@ -1975,7 +1974,7 @@ impl Vm {
                         Some(FinallyCont::Rethrow(t)) => return Err(t),
                         Some(FinallyCont::Return(v)) => {
                             // An outer finally still has to run first.
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::Return(v));
                                 self.stack[top].pc = f2 as usize;
                             } else if let Some(done) = self.do_return(v) {
@@ -1983,7 +1982,7 @@ impl Vm {
                             }
                         }
                         Some(FinallyCont::ReturnRef(v, ret_pc, kind)) => {
-                            if let Some(f2) = enclosing_finally(&proto, pc, None) {
+                            if let Some(f2) = self.leave_finallies(top, &proto, pc, None) {
                                 self.push_pending(top, f2, FinallyCont::ReturnRef(v, ret_pc, kind));
                                 self.stack[top].pc = f2 as usize;
                             } else {
@@ -2004,6 +2003,11 @@ impl Vm {
                         Some(FinallyCont::Jump(target)) => {
                             self.jump_through_finally(top, &proto, pc, target)
                         }
+                        Some(FinallyCont::ForcedClose) => {
+                            if let Some(done) = self.finally_forced_close(top, &proto, pc)? {
+                                return Ok(done);
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -2015,8 +2019,7 @@ impl Vm {
                         v = self.check_return_type(&proto, top, v)?;
                     }
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::Return(v));
                     }
                 }
@@ -2024,14 +2027,12 @@ impl Vm {
                     // the notice comes with the return, after the finally
                     let v = self.ret_ref_checked(top, &proto, src, kind)?;
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
-                    if let Some(f) = enclosing_finally(&proto, pc, None) {
+                    if let Some(f) = self.leave_finallies(top, &proto, pc, None) {
                         self.push_pending(top, f, FinallyCont::ReturnRef(v, pc, kind));
                     }
                 }
                 Instr::JmpFinally { target } => {
                     let pc = self.stack[top].pc as u32 - 1;
-                    self.drop_left_finallies(top, &proto, pc);
                     self.jump_through_finally(top, &proto, pc, target);
                 }
 
@@ -2776,6 +2777,15 @@ impl Vm {
                     self.exec_yield(top, &proto, dst, key, value)?;
                     return Ok(Value::Null);
                 }
+                Instr::YieldFrom { dst, src, end } => {
+                    if self.exec_yield_from(top, dst, src, end)? {
+                        return Ok(Value::Null);
+                    }
+                }
+                Instr::YieldValues { key, value } => {
+                    self.exec_yield_values(top, key, value)?;
+                    return Ok(Value::Null);
+                }
             }
         }
     }
@@ -3032,17 +3042,17 @@ impl Vm {
         let is_gen = self.generators.contains_key(&id);
         let mut out = Vec::new();
         if is_gen {
-            self.gen_ensure_started(id)?;
+            self.gen_check_open(id)?;
+            self.gen_rewind(id)?;
         } else {
             self.call_iter_method(&it, b"rewind")?;
         }
         loop {
             let (k, v) = if is_gen {
-                let g = &self.generators[&id];
-                if g.status == GenStatus::Finished {
-                    break;
+                match self.gen_fetch(id)? {
+                    Some(kv) => kv,
+                    None => break,
                 }
-                (g.current_key.clone(), g.current_val.clone())
             } else {
                 if !conv::to_bool(&self.call_iter_method(&it, b"valid")?) {
                     break;
@@ -3070,7 +3080,7 @@ impl Vm {
             };
             out.push((key, deref(&v)));
             if is_gen {
-                self.advance_gen(id, Value::Null)?;
+                self.advance_gen(id)?;
             } else {
                 self.call_iter_method(&it, b"next")?;
             }
@@ -3309,15 +3319,12 @@ impl Vm {
                 let oid = obj.borrow().id;
                 let ocls = obj.borrow().class;
                 if self.generators.contains_key(&oid) {
-                    if delegate {
-                        // ZEND_YIELD_FROM attaches the generator
-                        // as it stands; no rewind.
-                        self.gen_ensure_started(oid)?;
-                    } else {
-                        self.gen_check_open(oid)?;
-                        self.fe_iter_handle(top, pos_reg, ocls);
-                        self.gen_rewind(oid)?;
-                    }
+                    // (`yield from` an aggregate's Generator iterates it
+                    // like foreach.)
+                    let _ = delegate;
+                    self.gen_check_open(oid)?;
+                    self.fe_iter_handle(top, pos_reg, ocls);
+                    self.gen_rewind(oid)?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
                 } else if self.class_implements(ocls, b"Iterator") {
@@ -3429,18 +3436,17 @@ impl Vm {
             if self.generators.contains_key(&id) {
                 let first = matches!(self.reg_get(top, pos_reg), Value::Int(0));
                 if !first {
-                    self.advance_gen(id, Value::Null)?;
+                    self.advance_gen(id)?;
                 }
-                let g = &self.generators[&id];
-                if g.status == GenStatus::Finished {
-                    self.stack[top].pc = end as usize;
-                } else {
-                    let (k, v) = (g.current_key.clone(), deref(&g.current_val));
+                if let Some((k, v)) = self.gen_fetch(id)? {
+                    let v = deref(&v);
                     self.cv_assign(top, val_cv, v)?;
                     if key_cv != Reg::MAX {
                         self.cv_assign(top, key_cv, k)?;
                     }
                     self.reg_set(top, pos_reg, Value::Int(1));
+                } else {
+                    self.stack[top].pc = end as usize;
                 }
                 return Ok(());
             }
@@ -3980,14 +3986,12 @@ impl Vm {
                 return self.fe_fetch_ref_internal(top, pos_reg, key_cv, val_cv, end, g, fetched);
             }
             if fetched {
-                self.advance_gen(id, Value::Null)?;
+                self.advance_gen(id)?;
             }
-            let gs = &self.generators[&id];
-            if gs.status == GenStatus::Finished {
+            let Some((k, v)) = self.gen_fetch(id)? else {
                 self.stack[top].pc = end as usize;
                 return Ok(());
-            }
-            let (k, v) = (gs.current_key.clone(), gs.current_val.clone());
+            };
             let rc = match v {
                 Value::Ref(rc) => rc,
                 other => Rc::new(RefCell::new(other)),

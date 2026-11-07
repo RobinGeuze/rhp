@@ -560,6 +560,21 @@ pub enum Instr {
         key: Reg,
         value: Reg,
     },
+    /// `yield from $src` (ZEND_YIELD_FROM): over a Generator, delegate to
+    /// it (the frame suspends and resumes at `end`, the generator's return
+    /// value in `dst`); over an array or Traversable, `dst` is NULL and the
+    /// loop that follows yields its elements with `YieldValues`.
+    YieldFrom {
+        dst: Reg,
+        src: Reg,
+        end: Pc,
+    },
+    /// Yield an element of a `yield from` array or Traversable: its own
+    /// key, no send target, the generator's auto keys untouched.
+    YieldValues {
+        key: Reg,
+        value: Reg,
+    },
 
     /// `match` with no matching arm and no default: throw `\UnhandledMatchError`.
     ThrowMatchError {

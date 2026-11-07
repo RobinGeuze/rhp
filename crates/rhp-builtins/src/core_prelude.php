@@ -37,6 +37,7 @@ interface ArrayAccess {
 }
 interface Countable { public function count(): int; }
 final class Generator implements Iterator {}
+class ClosedGeneratorException extends Exception {}
 // Zend/zend_fibers.c: the engine switches stacks behind __fiber (op codes:
 // rhp_builtins::zend::fibers::FiberOp).
 final class Fiber {

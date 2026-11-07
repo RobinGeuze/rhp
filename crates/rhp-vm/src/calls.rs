@@ -109,6 +109,9 @@ pub(crate) struct NativeCall {
     /// Unknown named arguments a variadic builtin was passed (zpp refuses
     /// them; a trace shows them), borrowed like `args`.
     pub(crate) named: *const [(PhpStr, Value)],
+    /// A method of an internal class run without a frame (the `Generator`
+    /// methods): its class and object.
+    pub(crate) method_of: Option<(&'static str, ObjectHandle)>,
 }
 
 impl Vm {
@@ -292,8 +295,16 @@ impl Vm {
     ) -> Result<(), Thrown> {
         let gid = h.borrow().id;
         if self.generators.contains_key(&gid) {
+            // (Its arguments are by value: an undefined variable warns.)
+            self.bind_undef_args(top, base, argc, |_| false)?;
             let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &args) {
+            if let Some(r) = self.generator_method_call(top, &h, &mname.to_ascii_lowercase(), &args)
+            {
+                // A generator in a temporary is released by the call.
+                drop(h);
+                if self.release_pending() {
+                    self.dtor_check = true;
+                }
                 let r = r?;
                 self.reg_set(top, dst, r);
                 return Ok(());
@@ -541,7 +552,8 @@ impl Vm {
                 self.place_method_named_args("Generator", &mname, argv, named)?
                     .0
             };
-            if let Some(r) = self.generator_method(gid, &mname.to_ascii_lowercase(), &argv) {
+            if let Some(r) = self.generator_method_call(top, &h, &mname.to_ascii_lowercase(), &argv)
+            {
                 let r = r?;
                 self.reg_set(top, dst, r);
                 return Ok(());
@@ -2548,6 +2560,7 @@ impl Vm {
             caller,
             frameless_icall: icall,
             named: extra as *const [(PhpStr, Value)],
+            method_of: None,
         });
         let r = match zpp_error {
             Some(e) => Err(e),
@@ -2719,6 +2732,12 @@ impl Vm {
             if tracked {
                 self.ctor_frames.push((self.stack.len() - 1, ptr));
             }
+        } else if self.class(cls).name.as_bytes() == b"Generator" {
+            // zend_generator_get_constructor.
+            return Err(Thrown::error(
+                "Error",
+                "The \"Generator\" class is reserved for internal use and cannot be manually instantiated",
+            ));
         }
         Ok(())
     }

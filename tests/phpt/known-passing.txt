@@ -522,6 +522,7 @@ Zend/tests/bug39018.phpt
 Zend/tests/bug39018_2.phpt
 Zend/tests/bug39438.phpt
 Zend/tests/bug39542.phpt
+Zend/tests/bug39602.phpt
 Zend/tests/bug39944.phpt
 Zend/tests/bug40261.phpt
 Zend/tests/bug40509.phpt
@@ -2169,11 +2170,13 @@ Zend/tests/generators/get_return_types.phpt
 Zend/tests/generators/gh11028_1.phpt
 Zend/tests/generators/gh11028_2.phpt
 Zend/tests/generators/gh11028_3.phpt
+Zend/tests/generators/gh14387.phpt
 Zend/tests/generators/gh15275-001.phpt
 Zend/tests/generators/gh15275-002.phpt
 Zend/tests/generators/gh15275-003.phpt
 Zend/tests/generators/gh15275-004.phpt
 Zend/tests/generators/gh15275-005.phpt
+Zend/tests/generators/gh15275-006.phpt
 Zend/tests/generators/gh15330-001.phpt
 Zend/tests/generators/gh15330-002.phpt
 Zend/tests/generators/gh15330-003.phpt
@@ -2239,6 +2242,7 @@ Zend/tests/generators/yield_from_multi_tree.phpt
 Zend/tests/generators/yield_from_multi_tree_exception.phpt
 Zend/tests/generators/yield_from_multi_tree_single_nodes.phpt
 Zend/tests/generators/yield_from_non_iterable.phpt
+Zend/tests/generators/yield_from_throw_with_throwing_exception.phpt
 Zend/tests/generators/yield_from_valid_exception.phpt
 Zend/tests/generators/yield_in_finally.phpt
 Zend/tests/generators/yield_in_finally_cleanup.phpt
@@ -2376,6 +2380,7 @@ Zend/tests/gh19844.phpt
 Zend/tests/gh20113.phpt
 Zend/tests/gh20177.phpt
 Zend/tests/gh20183_001.phpt
+Zend/tests/gh20183_002.phpt
 Zend/tests/gh20672.phpt
 Zend/tests/gh20714.phpt
 Zend/tests/gh21504.phpt
@@ -6820,6 +6825,7 @@ ext/gmp/tests/gmp_strval.phpt
 ext/gmp/tests/gmp_sub.phpt
 ext/gmp/tests/gmp_testbit.phpt
 ext/gmp/tests/gmp_xor.phpt
+ext/gmp/tests/overloading.phpt
 ext/gmp/tests/overloading_cmp_op_with_null.phpt
 ext/gmp/tests/overloading_with_array.phpt
 ext/gmp/tests/overloading_with_float.phpt
@@ -7115,6 +7121,7 @@ ext/libxml/tests/image/imagetype_svg.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt
 ext/libxml/tests/libxml_get_external_entity_loader.phpt
+ext/libxml/tests/libxml_get_external_entity_loader_error_callback_name.phpt
 ext/libxml/tests/libxml_set_external_entity_loader_basic.phpt
 ext/libxml/tests/libxml_set_external_entity_loader_error1.phpt
 ext/libxml/tests/libxml_set_external_entity_loader_error2.phpt
@@ -7779,6 +7786,7 @@ ext/opcache/tests/jit/gh18136.phpt
 ext/opcache/tests/jit/gh18262-001.phpt
 ext/opcache/tests/jit/gh18262-002.phpt
 ext/opcache/tests/jit/gh18262-003.phpt
+ext/opcache/tests/jit/gh18262-004.phpt
 ext/opcache/tests/jit/gh18294.phpt
 ext/opcache/tests/jit/gh18898_1.phpt
 ext/opcache/tests/jit/gh18898_2.phpt
@@ -8001,6 +8009,7 @@ ext/opcache/tests/opcache_enable_noop_001.phpt
 ext/opcache/tests/opcache_enable_noop_002.phpt
 ext/opcache/tests/opcache_invalidate_deleted_file.phpt
 ext/opcache/tests/opcache_jit_prof_threshold.phpt
+ext/opcache/tests/opt/assign_obj_001.phpt
 ext/opcache/tests/opt/assign_op_001.phpt
 ext/opcache/tests/opt/assign_op_002.phpt
 ext/opcache/tests/opt/block_pass_001.phpt
@@ -9451,6 +9460,7 @@ ext/simplexml/tests/bug53033.phpt
 ext/simplexml/tests/bug54973.phpt
 ext/simplexml/tests/bug61335.phpt
 ext/simplexml/tests/bug62328.phpt
+ext/simplexml/tests/bug62639.phpt
 ext/simplexml/tests/bug63575.phpt
 ext/simplexml/tests/bug66084_0.phpt
 ext/simplexml/tests/bug66084_1.phpt
@@ -9461,6 +9471,7 @@ ext/simplexml/tests/bug69491.phpt
 ext/simplexml/tests/bug72588.phpt
 ext/simplexml/tests/bug72957.phpt
 ext/simplexml/tests/bug72971.phpt
+ext/simplexml/tests/bug72971_2.phpt
 ext/simplexml/tests/bug74950.phpt
 ext/simplexml/tests/bug75245.phpt
 ext/simplexml/tests/bug76712.phpt
@@ -11942,7 +11953,6 @@ ext/standard/tests/general_functions/php_uname_error.phpt
 ext/standard/tests/general_functions/phpcredits.phpt
 ext/standard/tests/general_functions/phpcredits2.phpt
 ext/standard/tests/general_functions/phpinfo-header-anchors.phpt
-ext/standard/tests/general_functions/phpinfo.phpt
 ext/standard/tests/general_functions/phpinfo2.phpt
 ext/standard/tests/general_functions/print_r_array_circular.phpt
 ext/standard/tests/general_functions/print_r_arrays.phpt
@@ -13929,6 +13939,7 @@ ext/zlib/tests/gzuncompress_basic1.phpt
 ext/zlib/tests/gzuncompress_error1.phpt
 ext/zlib/tests/gzwrite_basic.phpt
 ext/zlib/tests/gzwrite_error2.phpt
+ext/zlib/tests/inflate_add_basic.phpt
 ext/zlib/tests/inflate_add_error.phpt
 ext/zlib/tests/inflate_add_no_dict.phpt
 ext/zlib/tests/inflate_get_read_len.phpt

@@ -1,0 +1,55 @@
+mode 0
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(false)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+mode 1
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(false)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+mode 2
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(false)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+mode 3
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(false)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+mode 4
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(false)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)
+The float 1.0E+42 is not representable as an int, cast occurred
+bool(true)

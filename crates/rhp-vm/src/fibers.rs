@@ -587,10 +587,9 @@ impl Vm {
             }
             Some(found.ok_or_else(|| fiber_error("Cannot fetch information from this fiber"))?)
         };
-        let mut ctx = match &holder {
-            Some(c) => Some(c.borrow_mut().ctx.take().expect("a fiber's context")),
-            None => None,
-        };
+        let mut ctx = holder
+            .as_ref()
+            .map(|c| c.borrow_mut().ctx.take().expect("a fiber's context"));
         if let Some(c) = ctx.as_mut() {
             std::mem::swap(&mut self.stack, &mut c.stack);
             std::mem::swap(&mut self.native_calls, &mut c.native_calls);

@@ -1673,6 +1673,7 @@ Zend/tests/exit_finally_1.phpt
 Zend/tests/exit_finally_2.phpt
 Zend/tests/exit_finally_3.phpt
 Zend/tests/falsetoarray.phpt
+Zend/tests/falsetoarray_002.phpt
 Zend/tests/falsetoarray_003.phpt
 Zend/tests/fe_fetch_dtor_exception.phpt
 Zend/tests/fe_fetch_op2_live_range.phpt
@@ -2347,6 +2348,7 @@ Zend/tests/grammar/regression_012.phpt
 Zend/tests/grammar/regression_013.phpt
 Zend/tests/grammar/semi_reserved_001.phpt
 Zend/tests/grammar/semi_reserved_002.phpt
+Zend/tests/grammar/semi_reserved_003.phpt
 Zend/tests/grammar/semi_reserved_004.phpt
 Zend/tests/grammar/semi_reserved_005.phpt
 Zend/tests/grammar/semi_reserved_006.phpt
@@ -2370,6 +2372,7 @@ Zend/tests/heredoc_nowdoc/bug44830.phpt
 Zend/tests/heredoc_nowdoc/bug47516.phpt
 Zend/tests/heredoc_nowdoc/bug76439.phpt
 Zend/tests/heredoc_nowdoc/bug76439_2.phpt
+Zend/tests/heredoc_nowdoc/bug79934.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-complex-test1.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-complex-test2.phpt
 Zend/tests/heredoc_nowdoc/flexible-heredoc-complex-test3.phpt
@@ -2654,6 +2657,7 @@ Zend/tests/lazy_objects/gc_006.phpt
 Zend/tests/lazy_objects/get_initializer.phpt
 Zend/tests/lazy_objects/get_properties.phpt
 Zend/tests/lazy_objects/gh15823.phpt
+Zend/tests/lazy_objects/gh15999_001.phpt
 Zend/tests/lazy_objects/gh15999_002.phpt
 Zend/tests/lazy_objects/gh17941.phpt
 Zend/tests/lazy_objects/gh17998.phpt
@@ -4057,6 +4061,7 @@ Zend/tests/str_offset_002.phpt
 Zend/tests/str_offset_003.phpt
 Zend/tests/str_offset_004.phpt
 Zend/tests/str_offset_005.phpt
+Zend/tests/str_offset_006.phpt
 Zend/tests/str_offset_007.phpt
 Zend/tests/str_offset_008.phpt
 Zend/tests/strcasecmp_basic.phpt
@@ -4871,6 +4876,9 @@ Zend/tests/type_declarations/typed_properties_109.phpt
 Zend/tests/type_declarations/typed_properties_110.phpt
 Zend/tests/type_declarations/typed_properties_111.phpt
 Zend/tests/type_declarations/typed_properties_112.phpt
+Zend/tests/type_declarations/typed_properties_113.phpt
+Zend/tests/type_declarations/typed_properties_114.phpt
+Zend/tests/type_declarations/typed_properties_115.phpt
 Zend/tests/type_declarations/typed_properties_cache_slot_opt.phpt
 Zend/tests/type_declarations/typed_properties_class_loading.phpt
 Zend/tests/type_declarations/typed_properties_failed_assign_is_not_init.phpt
@@ -8680,6 +8688,13 @@ ext/reflection/tests/ReflectionExtension_getName_basic.phpt
 ext/reflection/tests/ReflectionExtension_getVersion_basic.phpt
 ext/reflection/tests/ReflectionExtension_isPersistant.phpt
 ext/reflection/tests/ReflectionExtension_isTemporary.phpt
+ext/reflection/tests/ReflectionFiber_backtrace.phpt
+ext/reflection/tests/ReflectionFiber_basic.phpt
+ext/reflection/tests/ReflectionFiber_bug_gh11121_1.phpt
+ext/reflection/tests/ReflectionFiber_bug_gh11121_2.phpt
+ext/reflection/tests/ReflectionFiber_errors.phpt
+ext/reflection/tests/ReflectionFiber_notrace_1.phpt
+ext/reflection/tests/ReflectionFiber_notrace_2.phpt
 ext/reflection/tests/ReflectionFunction_construct.001.phpt
 ext/reflection/tests/ReflectionFunction_getClosureScopeClass.phpt
 ext/reflection/tests/ReflectionFunction_getClosureThis.phpt
@@ -9171,6 +9186,7 @@ ext/spl/tests/ArrayObject/bug44615.phpt
 ext/spl/tests/ArrayObject/bug45614.phpt
 ext/spl/tests/ArrayObject/bug54323.phpt
 ext/spl/tests/ArrayObject/bug73209.phpt
+ext/spl/tests/ArrayObject/gh11178.phpt
 ext/spl/tests/ArrayObject/gh15833_1.phpt
 ext/spl/tests/ArrayObject/gh16646.phpt
 ext/spl/tests/ArrayObject/gh16646_2.phpt

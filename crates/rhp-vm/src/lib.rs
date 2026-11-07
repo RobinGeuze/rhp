@@ -378,6 +378,9 @@ pub struct Vm {
     delayed_oom: Option<Box<memory::DelayedOom>>,
     /// EG(active_fiber): the running Fiber object.
     active_fiber: Option<ObjectHandle>,
+    /// The cycle collector's destructor fiber and the state of a
+    /// collection's destructor phase.
+    gc_dtor: gc::DtorState,
     /// Last, so it drops after every value above: the request state kept
     /// outside the Vm is reset when the engine goes.
     _request_state: lifecycle::RequestStateReset,

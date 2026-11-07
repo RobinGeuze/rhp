@@ -171,6 +171,25 @@ impl Graph {
     }
 }
 
+/// GC_G(dtor_fiber) and the destructor phase's state.
+#[derive(Default)]
+pub(crate) struct DtorState {
+    /// GC_G(dtor_fiber): the fiber destructors run in when the collection
+    /// runs inside a fiber; it waits, suspended, for the next collection.
+    fiber: Option<rhp_values::ObjectHandle>,
+    /// GC_G(dtor_fiber_running): the fiber is calling destructors (still
+    /// set when one of them suspended it).
+    running: bool,
+    /// GC_G(dtor_idx), GC_G(dtor_end).
+    idx: u32,
+    end: u32,
+    /// Objects whose destructor left them unreferenced: php leaves them
+    /// in the buffer with a count of zero, and the rerun frees them.
+    zombies: Vec<Value>,
+    /// The destructors' exceptions, chained.
+    pending: Option<Thrown>,
+}
+
 /// One run's result.
 struct Run {
     count: i64,
@@ -188,17 +207,13 @@ impl Vm {
         self.drop_freed_generators();
         let mut total = 0;
         let mut did_rerun = false;
-        // Objects whose destructor left them unreferenced: php leaves them
-        // in the buffer with a count of zero, and the rerun frees them.
-        let mut zombies: Vec<Value> = Vec::new();
-        let mut pending: Option<Thrown> = None;
         let mut dtor_ns = 0u64;
         let mut free_ns = 0u64;
         loop {
             if gc::num_roots() == 0 {
                 break;
             }
-            let run = self.gc_run(&mut zombies, &mut pending, &mut dtor_ns, &mut free_ns);
+            let run = self.gc_run(&mut dtor_ns, &mut free_ns);
             let run = match run {
                 Ok(r) => r,
                 Err(e) => {
@@ -209,6 +224,8 @@ impl Vm {
                     }
                     self.gc_unlist_called();
                     gc::set_active(false);
+                    drop(std::mem::take(&mut self.gc_dtor.zombies));
+                    self.gc_dtor.pending = None;
                     return Err(e);
                 }
             };
@@ -221,7 +238,8 @@ impl Vm {
             break;
         }
         self.gc_unlist_called();
-        drop(zombies);
+        drop(std::mem::take(&mut self.gc_dtor.zombies));
+        let pending = self.gc_dtor.pending.take();
         let all = start.elapsed().as_nanos() as u64;
         gc::add_times(all, dtor_ns, free_ns);
         match pending {
@@ -385,8 +403,6 @@ impl Vm {
     /// One pass of zend_gc_collect_cycles (up to `rerun_gc`).
     fn gc_run(
         &mut self,
-        zombies: &mut Vec<Value>,
-        pending: &mut Option<Thrown>,
         dtor_ns: &mut u64,
         free_ns: &mut u64,
     ) -> Result<Run, Thrown> {
@@ -440,7 +456,9 @@ impl Vm {
             .iter()
             .map(|h| Rc::as_ptr(h) as usize)
             .collect();
-        let zombie_addrs: FxHashSet<usize> = zombies
+        let zombie_addrs: FxHashSet<usize> = self
+            .gc_dtor
+            .zombies
             .iter()
             .filter_map(|z| GNode::of(z).map(|(a, _)| a))
             .collect();
@@ -570,50 +588,10 @@ impl Vm {
                 }
             }
             let t = Instant::now();
-            for idx in FIRST_ROOT..end {
-                let Slot::DtorGarbage(n) = gc::slot(idx) else {
-                    continue;
-                };
-                gc::retag(idx, Slot::Root);
-                let Some(v) = n.upgrade() else {
-                    continue;
-                };
-                let Value::Object(h) = &v else {
-                    continue;
-                };
-                let (cls, id) = {
-                    let o = h.borrow();
-                    (o.class, o.id)
-                };
-                // Not yet destructed (another destructor may have released
-                // it meanwhile). It stays on the destructor list, marked,
-                // until the collection ends (one pass removes them all).
-                let listed = gc::flags(id) & gc::TRACKED != 0;
-                let r = if listed {
-                    gc::set_flag(id, gc::CALLED, true);
-                    self.call_destructor(h.clone())
-                } else {
-                    if self.is_generator_class(cls) && self.gen_has_frame(id) {
-                        self.gen_gc_close(id);
-                    }
-                    Ok(())
-                };
-                if let Err(e) = r {
-                    if !e.is_catchable() {
-                        return Err(e);
-                    }
-                    *pending = Some(match pending.take() {
-                        None => e,
-                        Some(prev) => {
-                            use rhp_builtins::Host;
-                            self.chain_thrown(e, prev)
-                        }
-                    });
-                }
-                self.collect_released()?;
-                if Rc::strong_count(h) - usize::from(listed) == 1 {
-                    zombies.push(v);
-                }
+            if self.active_fiber.is_none() {
+                self.gc_call_destructors(FIRST_ROOT, end, None)?;
+            } else {
+                self.gc_call_destructors_in_fiber(end)?;
             }
             self.gc_unlist_called();
             *dtor_ns += t.elapsed().as_nanos() as u64;
@@ -670,6 +648,133 @@ impl Vm {
         gc::count_collected(count.max(0) as u32);
         gc::set_active(false);
         Ok(Run { count, destructors })
+    }
+
+    /// Set GC_G(dtor_fiber) (the old one is released after).
+    pub(crate) fn gc_dtor_set_fiber(&mut self, f: Option<rhp_values::ObjectHandle>) {
+        let old = std::mem::replace(&mut self.gc_dtor.fiber, f);
+        drop(old);
+    }
+
+    /// gc_call_destructors: the destructors of the garbage in buffer slots
+    /// `idx..end`, from the destructor fiber `fiber` (identified by its
+    /// object's address) or from the collection itself. False when the
+    /// fiber was resumed after a destructor suspended it: the collection
+    /// went on without it.
+    fn gc_call_destructors(
+        &mut self,
+        idx: u32,
+        end: u32,
+        fiber: Option<*const std::cell::RefCell<rhp_values::ObjectData>>,
+    ) -> Result<bool, Thrown> {
+        for idx in idx..end {
+            let Slot::DtorGarbage(n) = gc::slot(idx) else {
+                continue;
+            };
+            gc::retag(idx, Slot::Root);
+            let Some(v) = n.upgrade() else {
+                continue;
+            };
+            let Value::Object(h) = &v else {
+                continue;
+            };
+            let (cls, id) = {
+                let o = h.borrow();
+                (o.class, o.id)
+            };
+            if fiber.is_some() {
+                self.gc_dtor.idx = idx;
+            }
+            // Not yet destructed (another destructor may have released
+            // it meanwhile). It stays on the destructor list, marked,
+            // until the collection ends (one pass removes them all).
+            let listed = gc::flags(id) & gc::TRACKED != 0;
+            let r = if listed {
+                gc::set_flag(id, gc::CALLED, true);
+                self.call_destructor(h.clone())
+            } else {
+                if self.is_generator_class(cls) && self.gen_has_frame(id) {
+                    self.gen_gc_close(id);
+                }
+                Ok(())
+            };
+            if let Some(me) = fiber {
+                let current = self.gc_dtor.fiber.as_ref().map(Rc::as_ptr);
+                if current != Some(me) {
+                    // Resumed after a suspension: what is left is another
+                    // fiber's work.
+                    gc::possible_root(&v);
+                    return r.map(|()| false);
+                }
+            }
+            if let Err(e) = r {
+                if !e.is_catchable() {
+                    return Err(e);
+                }
+                let e = match self.gc_dtor.pending.take() {
+                    None => e,
+                    Some(prev) => {
+                        use rhp_builtins::Host;
+                        self.chain_thrown(e, prev)
+                    }
+                };
+                self.gc_dtor.pending = Some(e);
+            }
+            self.collect_released()?;
+            if Rc::strong_count(h) - usize::from(listed) == 1 {
+                self.gc_dtor.zombies.push(v);
+            }
+        }
+        Ok(true)
+    }
+
+    /// gc_call_destructors_in_fiber: a collection that runs inside a fiber
+    /// calls the destructors in the destructor fiber, so that one may
+    /// suspend; the rest then run in a new destructor fiber.
+    fn gc_call_destructors_in_fiber(&mut self, end: u32) -> Result<(), Thrown> {
+        debug_assert!(!self.gc_dtor.running);
+        self.gc_dtor.idx = FIRST_ROOT;
+        self.gc_dtor.end = end;
+        match self.gc_dtor.fiber.clone() {
+            None => self.gc_start_dtor_fiber()?,
+            Some(f) => drop(self.fiber_resume_internal(&f)?),
+        }
+        while self.gc_dtor.running {
+            // Suspended by a destructor: that fiber is no longer ours (it
+            // may be collected), the remaining destructors run in a new one.
+            let old = self.gc_dtor.fiber.take();
+            self.gc_dtor.idx += 1;
+            drop(old);
+            self.collect_released()?;
+            self.gc_start_dtor_fiber()?;
+        }
+        Ok(())
+    }
+
+    /// gc_destructor_fiber: the destructor fiber's function. Calls the
+    /// destructors of the current collection, then waits for the next one.
+    pub(crate) fn gc_destructor_fiber(
+        &mut self,
+        me: *const std::cell::RefCell<rhp_values::ObjectData>,
+    ) -> Result<(), Thrown> {
+        loop {
+            self.gc_dtor.running = true;
+            let (idx, end) = (self.gc_dtor.idx, self.gc_dtor.end);
+            if !self.gc_call_destructors(idx, end, Some(me))? {
+                return Ok(());
+            }
+            self.gc_dtor.running = false;
+            match self.fiber_suspend_internal() {
+                Ok(_) => {}
+                // Destroyed (at shutdown): php's graceful exit.
+                Err(e) => {
+                    if self.gc_dtor.fiber.as_ref().map(Rc::as_ptr) == Some(me) {
+                        self.gc_dtor.fiber = None;
+                    }
+                    return Err(e);
+                }
+            }
+        }
     }
 
     /// gc_collect_white from node `i`: php's depth-first order (the first

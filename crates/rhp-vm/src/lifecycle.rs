@@ -147,6 +147,7 @@ impl Vm {
             last_fatal_trace: None,
             silence_stack: Vec::new(),
             active_fiber: None,
+            gc_dtor: Default::default(),
             quiet: 0,
             rw_null_keys: 0,
             rw_aborted: false,

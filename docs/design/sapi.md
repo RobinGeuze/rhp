@@ -368,10 +368,11 @@ allocates a size it knows first but php can't refuse: string concatenation
 (`.`, `.=`, interpolation), a far string offset, `hash_pbkdf2`, and
 while compiling: `rhp_values::mem::compiling` makes every new chunk or
 huge block check it, as php's compiler allocates with emalloc. The
-compiler then stops at its next top-level statement and the includer
-reports the line (`IncludeError::HardLimit`); php names the line it was
-compiling. php-cli exits as php does; any other SAPI ends just the
-request with the fatal error.
+compiler then stops at its next top-level statement
+(`IncludeError::HardLimit`), and the error names the line of the running
+include or eval, as php's does. The main script's compile is not counted
+(as with opcache), so it never reaches the limit. php-cli exits as php
+does; any other SAPI ends just the request with the fatal error.
 
 What still escapes the limit, until more builtins are mirrored:
 

@@ -1737,7 +1737,8 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
             passes.iter().any(|p| p.name == pass)
         };
         let mut failed = Vec::new();
-        for k in known.iter().filter(|k| ran(k)) {
+        let checked: Vec<&String> = known.iter().filter(|k| ran(k)).collect();
+        for k in &checked {
             match by_id.get(k.as_str()) {
                 Some(v) if v.same => {}
                 Some(v) => failed.push(format!("{k}: {}", v.detail)),
@@ -1759,7 +1760,7 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
             }
             return Ok(false);
         }
-        println!("all {} known request(s) still SAME", known.len());
+        println!("all {} known request(s) still SAME", checked.len());
     }
     Ok(true)
 }

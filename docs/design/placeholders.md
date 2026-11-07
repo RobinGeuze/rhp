@@ -751,10 +751,7 @@ Fibers run on their own stacks ([fibers.md](./fibers.md)). Left: a suspended
 fiber that is part of a reference cycle is destroyed only at shutdown until
 the cycle collector traverses it (`fibers::fiber_gc_values` is its hook;
 Zend/tests/fibers/destructors_*, gc-cycle-*, gh9735-*, gh10340-003,
-generators/gh15330-*). A generator whose frame a destroyed fiber unwinds is
-not marked force-closed, so a `yield` in its `finally` is not refused
-(gh9916-009; zend_generator_dtor_storage's ZEND_GENERATOR_FORCED_CLOSE).
-`ReflectionFiber` is still the old stub (no executing file/line, callable
+generators/gh15330-*). `ReflectionFiber` is still the old stub (no executing file/line, callable
 or trace; ext/reflection/tests/ReflectionFiber_*).
 
 ## 10. Prioritized roadmap

@@ -116,8 +116,9 @@ holder does.
 - Live temporaries are not taken out of the buffer during a run and put
   back after (zend_gc_remove_root_tmpvars / check_root_tmpvars).
 
-- Generators: php's generator destructor runs pending `finally` blocks;
-  rhp's only drops the frame.
+- Generators: php's generator destructor runs pending `finally` blocks.
+  rhp's does when the last reference goes (generators.rs `gen_dtor`), but
+  a generator the cycle collector destroys only drops its frame.
 - Fibers: no destructor fiber. A suspended fiber's frames must be added
   to `Vm::gc_children` (as a generator's frame is) for a fiber in a cycle
   to be collectable.

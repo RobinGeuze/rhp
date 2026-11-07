@@ -1,0 +1,30 @@
+0 => 'a'
+'x' => 1
+5 => 2
+1 => 'b'
+10 => 'c'
+11 => 'd'
+int(1)
+inner got 'sent'
+int(2)
+outer got inner-ret
+bool(false)
+string(9) "outer-ret"
+inner got NULL
+Error: Generator passed to yield from was aborted without proper return and is unable to continue
+inner finally
+outer finally
+after unset
+caught: from finally
+returning
+string(4) "leaf"
+leaf finally
+mid caught boom
+string(3) "mid"
+dead
+NULL
+NULL
+bool(false)
+Cannot get return value of a generator that hasn't returned
+loop finally
+second <- first

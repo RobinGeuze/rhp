@@ -1,0 +1,12 @@
+string(5) "UTF-8"
+string(12) "636166c3a90a"
+string(12) "636166c3a90a"
+string(4) "pass"
+
+Warning: Cannot modify header information - headers already sent by (output started at /Users/robing/gits/rhp/.claude/worktrees/rest/memory-limit-accounting/tests/golden/ext/mbstring/output_handler.php:4) in /Users/robing/gits/rhp/.claude/worktrees/rest/memory-limit-accounting/tests/golden/ext/mbstring/output_handler.php on line 16
+string(10) "<&eacute;>"
+string(2) "é"
+mb_http_output(): Argument #1 ($encoding) must be a valid encoding, "BAD" given
+mb_http_output(): Argument #1 ($encoding) must not contain any null bytes
+array(0) {
+}

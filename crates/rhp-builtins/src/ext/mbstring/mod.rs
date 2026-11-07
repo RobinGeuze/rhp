@@ -1841,6 +1841,33 @@ fn fn_mb_output_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             .as_deref()
             .is_some_and(|m| m.starts_with(b"text/") || m.starts_with(b"application/xhtml+xml"));
         if send_default || text {
+            // The Content-Type header, unless an output handler is running.
+            let mime: Vec<u8> = match mimetype.filter(|_| text) {
+                Some(m) => match m.iter().position(|&b| b == b';') {
+                    Some(p) => m[..p].to_vec(),
+                    None => m,
+                },
+                None => crate::ini_value(b"default_mimetype")
+                    .flatten()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| b"text/html".to_vec()),
+            };
+            if let Some(charset) = enc.mime_name() {
+                let running = matches!(
+                    host.output_control(crate::ObCall::HandlerRunning),
+                    Ok(Value::Bool(true))
+                );
+                if !running {
+                    let mut line = b"Content-Type: ".to_vec();
+                    line.extend_from_slice(&mime);
+                    line.extend_from_slice(b"; charset=");
+                    line.extend_from_slice(charset);
+                    crate::main::sapi::header_op(
+                        host,
+                        crate::main::sapi::HeaderOp::Replace(&line, 0),
+                    )?;
+                }
+            }
             st(|s| s.outconv = true);
         }
     }

@@ -1025,6 +1025,7 @@ impl Vm {
                 self.sapi_flush();
                 Value::Null
             }
+            ObCall::HandlerRunning => Value::Bool(self.output.running.is_some()),
         })
     }
 

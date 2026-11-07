@@ -163,7 +163,8 @@ One directory per php-src extension, `ext/<name>/`:
 | `ext/date/` | ext/date: php_date.c over timelib |
 
 The library-backed extensions (bcmath, bz2, ctype, curl, dom, gmp, hash,
-iconv, intl, libxml, mbstring, openssl, pcntl, phar, posix, reflection,
+iconv, intl, libxml, mbstring, openssl, pcntl, pdo, pdo_sqlite, phar, posix,
+reflection,
 simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zip, zlib) keep
 their php-src directory name; libraries.md describes their files.
 

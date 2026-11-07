@@ -114,11 +114,10 @@ database, and a request that only reads leaves it as it was (the self-check
 shows 0 files written). WordPress's nonces change
 every 12 hours, so the one on the login page is a `token`.
 
-The plugin needs `pdo_sqlite`, so the entry lists `php_extensions = ["pdo",
-"pdo_sqlite"]`: CI's `apps-lint` job installs them with setup-php and its
-`-n` shims load them, as php-cgi runs with `-n` in the request diff
-(Homebrew's php has both built in). rhp has no PDO yet, so every WordPress request answers with WordPress's
-"PHP PDO Extension is not loaded" page today.
+The plugin needs `pdo_sqlite`. CI's setup-php installs `pdo` and
+`pdo_sqlite` with its default extensions and its `-n` shims load them, as
+php-cgi runs with `-n` in the request diff (Homebrew's php has both built
+in); rhp has both built in.
 
 ## The lint ratchet
 

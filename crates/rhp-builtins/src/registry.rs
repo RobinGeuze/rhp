@@ -130,6 +130,7 @@ pub fn ct_constant(name: &[u8]) -> Option<Value> {
 pub fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
     ext::date::class_constant_deprecation(class, name)
         .or_else(|| ext::zip::class_constant_deprecation(class, name))
+        .or_else(|| ext::pdo::class_constant_deprecation(class, name))
 }
 
 /// The engine's object free hook (`rhp_values::set_object_free_hook`): the

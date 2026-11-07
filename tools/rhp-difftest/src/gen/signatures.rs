@@ -51,6 +51,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/openssl", "openssl"),
     ("ext/pcntl", "pcntl"),
     ("ext/pcre", "pcre"),
+    ("ext/pdo", "PDO"),
+    // Not sqlite_driver.stub.php: PDO_SQLite_Ext only carries the arginfo of
+    // the deprecated driver methods php adds to PDO objects.
+    ("ext/pdo_sqlite/pdo_sqlite.stub.php", "pdo_sqlite"),
     ("ext/phar", "Phar"),
     ("ext/posix", "posix"),
     ("ext/random", "random"),

@@ -128,6 +128,11 @@ pub struct DimensionHandlers {
 /// object (zend/internal_iterator.rs); `by_ref` for `foreach (… as &$v)`.
 pub type GetIteratorFn = fn(&mut dyn Host, &ObjectHandle, bool) -> Result<ObjectHandle, Thrown>;
 
+/// The class's own part of php's `write_property` / `unset_property`
+/// handlers, run before the standard write or unset of property `name`
+/// (PDOStatement's read-only `queryString`); an error stops it.
+pub type PropCheckFn = fn(&mut dyn Host, &ObjectHandle, &[u8]) -> Result<(), Thrown>;
+
 /// `get_gc`: push the values the object's native state holds (what php's
 /// handler returns besides the properties), for the cycle collector. A
 /// value must be one the payload really holds a reference to; leaving
@@ -168,6 +173,10 @@ pub struct ObjectHandlers {
     /// here with the handlers); `None` uses `getIterator()` / `Iterator`.
     pub get_iterator: Option<GetIteratorFn>,
     pub get_gc: Option<GetGcFn>,
+    /// Checks before a property write (`write_property`).
+    pub write_property: Option<PropCheckFn>,
+    /// Checks before a property unset (`unset_property`).
+    pub unset_property: Option<PropCheckFn>,
 }
 
 impl ObjectHandlers {
@@ -183,6 +192,8 @@ impl ObjectHandlers {
         dimension: None,
         get_iterator: None,
         get_gc: None,
+        write_property: None,
+        unset_property: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {

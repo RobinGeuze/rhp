@@ -5,7 +5,7 @@ $helpers = [
     '__closure_bind', '__closure_current', '__closure_from_callable', '__date',
     '__directory_handle', '__directory_op', '__dom', '__dom_iter', '__dom_prop', '__exception_trace_string', '__fiber',
     '__gmp_construct', '__gmp_serialize', '__gmp_unserialize', '__hash_digest', '__internal_iterator', '__weakmap', '__weakref',
-    '__hash_init_options', '__normalizer', '__object_properties_load', '__phar_loadphar', '__phar_mapphar',
+    '__hash_init_options', '__normalizer', '__object_properties_load', '__pdo', '__pdo_row', '__pdo_sqlite', '__pdo_stmt', '__phar_loadphar', '__phar_mapphar',
     '__phar_running', '__phardata_load', '__phardata_save', '__random_engine',
     '__randomizer', '__reflect',
     '__reflect_get_prop', '__reflect_invoke', '__reflect_new_instance_noctor',

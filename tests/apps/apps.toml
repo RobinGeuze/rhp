@@ -101,8 +101,6 @@ docroot = "wordpress"
 front_controller = "wordpress/index.php"
 console = "wp-cli.phar"
 router = false
-# The SQLite drop-in talks to the database through PDO.
-php_extensions = ["pdo", "pdo_sqlite"]
 # No composer: core, the database drop-in and wp-cli are pinned downloads.
 install = ""
 setup = ["php setup.php"]

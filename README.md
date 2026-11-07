@@ -54,7 +54,7 @@ passing, so the percentages are of all php-src tests.
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 686 | 705 | 97.3% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
-| ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
+| ext/filter | 125 | 129 | 96.9% | `filter_var` only |
 | ext/gmp | 96 | 99 | 97.0% | on libgmp |
 | ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 80 | 82 | 97.6% | the system iconv |
@@ -66,6 +66,8 @@ passing, so the percentages are of all php-src tests.
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
 | ext/pcre | 167 | 174 | 96.0% | PCRE2, linked statically |
+| ext/pdo | 5 | 132 | 3.8% | PDO core; the driver tests need `PDOTEST_DSN`, which the runner doesn't set yet |
+| ext/pdo_sqlite | 67 | 89 | 75.3% | `Pdo\Sqlite` on libsqlite3, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
@@ -81,24 +83,24 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 3,684 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 3 | 3,463 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **14,995** | **22,219** | **67.5%** | |
+| **total** | **15,067** | **22,219** | **67.8%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support
 
-Measured on 2026-11-05 (Symfony, including 7.4's `debug:twig` and `lint:twig`, Laravel's requests and WordPress on 2026-11-07) against php 8.5.12; only what was checked is listed.
+Measured on 2026-11-05 (Symfony 8.1 and WordPress on 2026-11-07) against php 8.5.12; only what was checked is listed.
 
 | application | version | what works |
 |---|---|---|
 | Composer | 2.11.1 (phar) | Read-only commands (`list`, `about`, `show` except `--platform`, `validate`, `licenses`, `depends`, `why-not`, `outdated`, `audit`, `search`, ...) print what php prints. `update` and `require` write the same `composer.lock`, and `install --no-autoloader` the same `vendor/`. Generating the autoloader fails (rhp's `^` on two strings returns an int), so `install`, `update`, `require` and `dump-autoload` stop at "Generating autoload files". Installed code may still fail: monolog's `Logger` needs `Fiber`. |
-| Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | All 1,751 of its PHP files compile under rhp. `bin/console --version`, `list`, `debug:router`, `debug:twig` and `lint:twig` print what php prints; `about` differs in its Intl locale line (`n/a`). 6 of the 7 requests of the request diff answer like php-cgi; `submit-post` differs in its JSON body. |
-| Symfony (skeleton + twig-bundle, `tests/apps/symfony-8.1`) | 8.1.11 | All 1,817 of its PHP files compile under rhp. `bin/console --version`, `list`, `debug:router`, `debug:twig` and `lint:twig` print what php prints; `about` differs in its Intl locale line (`n/a`). 6 of the 7 requests of the request diff answer like php-cgi; `submit-post` differs in its JSON body. |
-| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,165 of its PHP files compile under rhp. `artisan --version`, `list`, `about` and `route:list` print what php prints. All 8 requests of the request diff answer like php-cgi, and its own `vendor/bin/phpunit` passes (2 tests) as under php. |
-| WordPress (+ SQLite Database Integration 3.1.3, `tests/apps/wordpress-7.1`) | 7.1.4 | All 1,552 of its PHP files (core, the SQLite plugin, the fixture's config) compile under rhp. rhp has no PDO, so every request of the request diff answers with WordPress's "PHP PDO Extension is not loaded" page (500). wp-cli 2.12.0's `--version` and `core version` print what php prints on stdout, and `cli info` does except its PHP binary and php.ini lines; php, with Homebrew's php.ini, also logs the deprecation wp-cli's bundled react/promise triggers to stderr, which rhp doesn't. Commands that load WordPress (`option get`, `post list`, `help`) fail on the missing PDO. |
+| Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | All 1,751 of its PHP files compile under rhp. `bin/console --version`, `list` and `debug:router` print what php prints; `about` differs in its Intl locale line (`n/a`). Every request of the request diff answers 500 instead. |
+| Symfony (skeleton + twig-bundle, `tests/apps/symfony-8.1`) | 8.1.11 | All 1,817 of its PHP files compile under rhp. `bin/console --version`, `list` and `debug:router` print what php prints; `about` differs in its Intl locale line (`n/a`). Every request of the request diff answers 500 instead (with `APP_DEBUG=1`: undefined constant `FILTER_REQUIRE_SCALAR`). |
+| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,165 of its PHP files compile under rhp. `artisan --version`, `list`, `about` and `route:list` print what php prints. Every request of the request diff answers 500 instead. |
+| WordPress (+ SQLite Database Integration 3.1.3, `tests/apps/wordpress-7.1`) | 7.1.4 | All 1,552 of its PHP files (core, the SQLite plugin, the fixture's config) compile under rhp. All 9 requests of the request diff answer like php-cgi, and the SQLite database they write is identical. wp-cli 2.12.0's `--version` and `core version` print what php prints on stdout, and `cli info` does except its PHP binary and php.ini lines; php, with Homebrew's php.ini, also logs the deprecation wp-cli's bundled react/promise triggers to stderr, which rhp doesn't. Commands that load WordPress work: `option get` and `post list` print what php prints; `help` fails where `proc_open` starts its pager. |
 | PHPUnit (`tests/apps/tools`) | 13.4.6 | All 29 checked commands print what php prints: `--version`, `--help`, the `--list-*` commands, configuration validation and migration, test runs (passing, failing and skipped tests, data providers, `--filter`, `--group`, `--stop-on-failure`, random order with a seed) and every output format (testdox, TeamCity, debug, JUnit, event log). |
 | PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | 23 of 25 commands print what php prints: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format. The two runs with 2 parallel workers write the same files and exit with php's code, but list the files in the order the workers finish, which with rhp's slower workers is not php's. |
 | Psalm (`tests/apps/tools`) | 7.0.3 | All 24 checked commands print what php prints: `--version`, `--help`, analysis single-threaded and with `--threads=2` (amphp's event loop on fibers), every checked output format including `xml`, `--show-info`, `--stats`, `--find-dead-code`, `--set-baseline` and `--alter` (psalter, with and without `--dry-run`). |

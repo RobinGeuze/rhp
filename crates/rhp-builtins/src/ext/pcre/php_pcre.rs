@@ -148,6 +148,46 @@ pub(crate) fn compile_warn(
     Ok(re)
 }
 
+/// pcre_get_compiled_regex_cache for a C caller (ext/fileinfo's libmagic):
+/// [`compile_warn`], but preg_last_error() only changes when the pattern
+/// does not compile, as in php.
+pub(crate) fn regex_cache(
+    host: &mut dyn Host,
+    fname: &str,
+    pattern: &[u8],
+) -> Result<Option<Rc<Regex>>, Thrown> {
+    let before = LAST_ERROR.with(|c| c.get());
+    let re = compile_warn(host, fname, pattern)?;
+    if re.is_some() {
+        set_last_error(before);
+    }
+    Ok(re)
+}
+
+/// php_pcre_match_impl without subpatterns or an offset, for a C caller:
+/// the bounds of the first match. `Err` is a match error, which
+/// preg_last_error() reports.
+pub(crate) fn match_impl(re: &Regex, subject: &[u8]) -> Result<Option<(usize, usize)>, ()> {
+    set_last_error(PREG_NO_ERROR);
+    Ok(find_at(re, subject, 0)?.and_then(|ov| ov[0]))
+}
+
+/// php_pcre_replace_impl with a replacement string, for a C caller: the
+/// result and the number of replacements, `None` on a match error.
+pub(crate) fn replace_impl(
+    re: &Regex,
+    subject: &[u8],
+    rep: &[u8],
+    limit: i64,
+) -> Option<(Vec<u8>, usize)> {
+    set_last_error(PREG_NO_ERROR);
+    replace_driver(re, subject, limit, |ov, out| {
+        expand(rep, |g| group_bytes(ov, subject, g).unwrap_or(b""), out);
+        true
+    })
+    .ok()
+}
+
 /// php's warning for a failed pcre2_jit_compile.
 fn jit_warning(issue: JitIssue) -> String {
     match issue {

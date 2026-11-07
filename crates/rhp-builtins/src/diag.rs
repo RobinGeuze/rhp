@@ -251,3 +251,46 @@ pub fn deprecated(
 ) -> Result<(), Thrown> {
     host.emit_diagnostic(E_DEPRECATED, &docref(fname, msg.as_ref()))
 }
+
+thread_local! {
+    /// `EG(error_handling)`: 0 is EH_NORMAL; under EH_THROW, 1 until the
+    /// first warning became an exception, then 2.
+    static EH_THROW: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// `zend_replace_error_handling(EH_THROW, NULL, ...)` until the guard drops
+/// (zend_restore_error_handling): a warning becomes an `Exception` with
+/// the warning's message, unless one is already thrown; later warnings are
+/// dropped, and no user error handler runs.
+pub(crate) fn replace_error_handling_throw() -> EhThrow {
+    EhThrow(EH_THROW.with(|c| c.replace(1)))
+}
+
+pub(crate) struct EhThrow(u8);
+
+impl Drop for EhThrow {
+    fn drop(&mut self) {
+        let prev = self.0;
+        let _ = EH_THROW.try_with(|c| c.set(prev));
+    }
+}
+
+/// php_error_cb under EH_THROW: what [`Host::emit_diagnostic`] does with a
+/// diagnostic instead of reporting it (`None`: report it).
+pub(crate) fn eh_throw(level: i64, message: &[u8]) -> Option<Result<(), Thrown>> {
+    use crate::{E_COMPILE_WARNING, E_CORE_WARNING, E_USER_WARNING};
+    if level & (E_WARNING | E_CORE_WARNING | E_COMPILE_WARNING | E_USER_WARNING) == 0 {
+        return None;
+    }
+    match EH_THROW.try_with(|c| c.get()).unwrap_or(0) {
+        0 => None,
+        1 => {
+            EH_THROW.with(|c| c.set(2));
+            Some(Err(Thrown::error(
+                "Exception",
+                String::from_utf8_lossy(message).into_owned(),
+            )))
+        }
+        _ => Some(Ok(())),
+    }
+}

@@ -510,6 +510,9 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
                 for (k, v) in rows {
                     o.row(&[&k, &v]);
                 }
+            } else if *e == "fileinfo" {
+                o.row(&["fileinfo support", "enabled"]);
+                o.row(&["libmagic", &crate::ext::fileinfo::libmagic_version()]);
             } else if *e == "zip" {
                 for (k, v) in crate::ext::zip::info_rows() {
                     o.row(&[&k, &v]);

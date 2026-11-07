@@ -1086,6 +1086,9 @@ pub trait Host {
     /// handler threw (e.g. composer's `ErrorException`) so the builtin can
     /// stop right there with `?`.
     fn emit_diagnostic(&mut self, level: i64, message: &[u8]) -> Result<(), Thrown> {
+        if let Some(r) = crate::diag::eh_throw(level, message) {
+            return r;
+        }
         self.raise_diagnostic(level, message);
         match self.take_pending_throw() {
             Some(t) => Err(t),

@@ -1,0 +1,184 @@
+== flags 0
+empty: string(5) "empty"
+one byte: string(26) "very short file (no magic)"
+text: string(10) "ASCII text"
+crlf text: string(38) "ASCII text, with CRLF line terminators"
+utf-8: string(24) "Unicode text, UTF-8 text"
+latin-1: string(13) "ISO-8859 text"
+php: string(22) "PHP script, ASCII text"
+html: string(25) "HTML document, ASCII text"
+xml: string(28) "XML 1.0 document, ASCII text"
+json: string(14) "JSON text data"
+csv: string(14) "CSV ASCII text"
+shell: string(41) "POSIX shell script, ASCII text executable"
+png: string(57) "PNG image data, 16 x 32, 8-bit/color RGBA, non-interlaced"
+gif: string(36) "GIF image data, version 89a, 16 x 32"
+jpeg: string(81) "JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16"
+pdf: string(25) "PDF document, version 1.7"
+gzip: string(31) "gzip compressed data, from Unix"
+zip: string(4) "data"
+elf: string(51) "ELF 64-bit LSB executable, x86-64, version 1 (SYSV)"
+binary: string(4) "data"
+== flags 16
+empty: string(19) "application/x-empty"
+one byte: string(24) "application/octet-stream"
+text: string(10) "text/plain"
+crlf text: string(10) "text/plain"
+utf-8: string(10) "text/plain"
+latin-1: string(10) "text/plain"
+php: string(10) "text/x-php"
+html: string(9) "text/html"
+xml: string(8) "text/xml"
+json: string(16) "application/json"
+csv: string(8) "text/csv"
+shell: string(18) "text/x-shellscript"
+png: string(9) "image/png"
+gif: string(9) "image/gif"
+jpeg: string(10) "image/jpeg"
+pdf: string(15) "application/pdf"
+gzip: string(16) "application/gzip"
+zip: string(24) "application/octet-stream"
+elf: string(24) "application/x-executable"
+binary: string(24) "application/octet-stream"
+== flags 1040
+empty: string(35) "application/x-empty; charset=binary"
+one byte: string(40) "application/octet-stream; charset=binary"
+text: string(28) "text/plain; charset=us-ascii"
+crlf text: string(28) "text/plain; charset=us-ascii"
+utf-8: string(25) "text/plain; charset=utf-8"
+latin-1: string(30) "text/plain; charset=iso-8859-1"
+php: string(28) "text/x-php; charset=us-ascii"
+html: string(27) "text/html; charset=us-ascii"
+xml: string(26) "text/xml; charset=us-ascii"
+json: string(34) "application/json; charset=us-ascii"
+csv: string(26) "text/csv; charset=us-ascii"
+shell: string(36) "text/x-shellscript; charset=us-ascii"
+png: string(25) "image/png; charset=binary"
+gif: string(25) "image/gif; charset=binary"
+jpeg: string(26) "image/jpeg; charset=binary"
+pdf: string(35) "application/pdf; charset=iso-8859-1"
+gzip: string(32) "application/gzip; charset=binary"
+zip: string(40) "application/octet-stream; charset=binary"
+elf: string(40) "application/x-executable; charset=binary"
+binary: string(40) "application/octet-stream; charset=binary"
+== flags 1024
+empty: string(6) "binary"
+one byte: string(6) "binary"
+text: string(8) "us-ascii"
+crlf text: string(8) "us-ascii"
+utf-8: string(5) "utf-8"
+latin-1: string(10) "iso-8859-1"
+php: string(8) "us-ascii"
+html: string(8) "us-ascii"
+xml: string(8) "us-ascii"
+json: string(8) "us-ascii"
+csv: string(8) "us-ascii"
+shell: string(8) "us-ascii"
+png: string(6) "binary"
+gif: string(6) "binary"
+jpeg: string(6) "binary"
+pdf: string(10) "iso-8859-1"
+gzip: string(6) "binary"
+zip: string(6) "binary"
+elf: string(6) "binary"
+binary: string(6) "binary"
+== flags 16777216
+empty: string(3) "???"
+one byte: string(3) "???"
+text: string(3) "???"
+crlf text: string(3) "???"
+utf-8: string(3) "???"
+latin-1: string(3) "???"
+php: string(3) "???"
+html: string(3) "???"
+xml: string(3) "???"
+json: string(3) "???"
+csv: string(3) "???"
+shell: string(3) "???"
+png: string(3) "png"
+gif: string(3) "gif"
+jpeg: string(17) "jpeg/jpg/jpe/jfif"
+pdf: string(3) "pdf"
+gzip: string(3) "???"
+zip: string(3) "???"
+elf: string(3) "???"
+binary: string(3) "???"
+== flags 2048
+empty: string(8) "UNKNUNKN"
+one byte: string(8) "UNKNUNKN"
+text: string(8) "UNKNUNKN"
+crlf text: string(8) "UNKNUNKN"
+utf-8: string(8) "UNKNUNKN"
+latin-1: string(8) "UNKNUNKN"
+php: string(8) "UNKNUNKN"
+html: string(8) "UNKNUNKN"
+xml: string(8) "UNKNUNKN"
+json: string(8) "UNKNUNKN"
+csv: string(8) "UNKNUNKN"
+shell: string(8) "UNKNUNKN"
+png: string(8) "UNKNUNKN"
+gif: string(8) "8BIMGIFf"
+jpeg: string(8) "8BIMJPEG"
+pdf: string(8) "UNKNUNKN"
+gzip: string(8) "UNKNUNKN"
+zip: string(8) "UNKNUNKN"
+elf: string(8) "UNKNUNKN"
+binary: string(8) "UNKNUNKN"
+string(5) "finfo"
+string(9) "image/png"
+bool(true)
+string(28) "text/plain; charset=us-ascii"
+bool(true)
+string(9) "image/gif"
+string(28) "text/plain; charset=us-ascii"
+string(28) "text/plain; charset=us-ascii"
+string(25) "image/png; charset=binary"
+string(10) "text/plain"
+string(9) "directory"
+string(9) "image/png"
+string(9) "directory"
+string(10) "text/plain"
+int(3)
+string(15) "application/pdf"
+string(9) "image/gif"
+string(10) "image/jpeg"
+string(10) "image/jpeg"
+string(41) "the rhp test format, version RHPMAGIC 1.2"
+string(37) "the rhp test format, version RHPMAGIC"
+string(36) "ASCII text, with no line terminators"
+string(22) "application/x-rhp-test"
+ValueError: finfo_file(): Argument #2 ($filename) must not be empty
+ValueError: finfo::file(): Argument #2 ($flags) must not be empty
+ValueError: finfo_file(): Argument #2 ($filename) must not contain any null bytes
+Exception: finfo::__construct(TMP/missing): Failed to open stream: No such file or directory
+ValueError: finfo::__construct(): Argument #2 ($magic_database) must not contain any null bytes
+ValueError: mime_content_type(): Argument #1 ($filename) must not be empty
+TypeError: mime_content_type(): Argument #1 ($filename) must not contain any null bytes
+TypeError: mime_content_type(): Argument #1 ($filename) must be of type resource|string, array given
+Error: Trying to clone an uncloneable object of class finfo
+Exception: Serialization of 'finfo' is not allowed
+Error: Invalid finfo object
+TypeError: finfo_buffer(): Argument #4 ($context) must be of type resource or null, string given
+error 2: finfo_open(TMP/missing): Failed to open stream: No such file or directory
+error 2: finfo_open(TMP/missing): Failed to open stream: No such file or directory
+error 2: finfo_open(): Failed to load magic database at "TMP/missing"
+bool(false)
+error 2: finfo::file(TMP/missing): Failed to open stream: No such file or directory
+bool(false)
+error 8192: finfo_buffer(): The $context parameter has no effect for finfo_buffer()
+string(40) "application/octet-stream; charset=binary"
+error 8192: Function finfo_close() is deprecated since 8.5, as finfo objects are freed automatically
+bool(true)
+int(0)
+int(2)
+int(1040)
+int(16)
+int(1024)
+int(8)
+int(32)
+int(128)
+int(256)
+int(2048)
+int(16777216)
+bool(true)
+bool(true)

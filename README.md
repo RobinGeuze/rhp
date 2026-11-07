@@ -18,8 +18,9 @@ The crates are in `crates/`, the test tooling in `tools/`.
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv.
-- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the Argon2 reference
-  code) into static archives, with safe Rust wrappers and every C symbol renamed `rhp_*`.
+- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
+  magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
+  symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
   statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
@@ -54,6 +55,7 @@ passing, so the percentages are of all php-src tests.
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 686 | 705 | 97.3% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
+| ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
 | ext/gmp | 96 | 99 | 97.0% | on libgmp |
 | ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
@@ -83,11 +85,11 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 3,463 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 3 | 3,399 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **15,071** | **22,219** | **67.8%** | |
+| **total** | **15,131** | **22,219** | **68.1%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support
@@ -96,10 +98,10 @@ Measured on 2026-11-07 against php 8.5.12; only what was checked is listed.
 
 | application | version | what works |
 |---|---|---|
-| Composer | 2.11.1 (phar) | 27 of the 30 `composer_diff.py` steps print what php prints, and `install`, `update`, `require`, `remove` and `reinstall` leave the same `composer.lock` and `vendor/`. The three that differ: `install` counts 12 package suggestions where php counts 11, `show --platform` lacks the extensions rhp does not have, and `diagnose` shows the OpenSSL version rhp links. `dump-autoload` on the Laravel fixture writes php's `installed.php` and `autoload_static.php`. `create-project laravel/laravel` (with `ext-fileinfo` ignored) runs the app's migration and writes the same SQLite database; it counts 67 suggestions where php counts 51. |
+| Composer | 2.11.1 (phar) | 27 of the 30 `composer_diff.py` steps print what php prints, and `install`, `update`, `require`, `remove` and `reinstall` leave the same `composer.lock` and `vendor/`. The three that differ: `install` counts 12 package suggestions where php counts 11, `show --platform` lacks the extensions rhp does not have, and `diagnose` shows the OpenSSL version rhp links. `dump-autoload` on the Laravel fixture writes php's `installed.php` and `autoload_static.php`, and its `install`, `require`, `update`, `outdated` and the app's `artisan --version` print what php prints with `ext-fileinfo` required (no platform requirement ignored). `create-project laravel/laravel` (with `ext-fileinfo` ignored) runs the app's migration and writes the same SQLite database; it counts 67 suggestions where php counts 51. |
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-7.4`) | 7.4.22 | All 1,751 of its PHP files compile under rhp. All 7 requests of the request diff answer like php-cgi, and the Twig cache they write is identical. 32 of 33 checked `bin/console` commands (`list`, `debug:router`, `debug:container`, `debug:twig`, `lint:*`, `cache:clear`, `cache:warmup`, ...) print and write what php does; `about` differs in its Intl locale line (`n/a`). |
 | Symfony (skeleton + twig-bundle, `tests/apps/symfony-8.1`) | 8.1.11 | All 1,817 of its PHP files compile under rhp. All 7 requests of the request diff answer like php-cgi, and the Twig cache they write is identical. 32 of 33 checked `bin/console` commands print and write what php does; `about` differs in its Intl locale line (`n/a`). |
-| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,165 of its PHP files compile under rhp. All 8 requests of the request diff answer like php-cgi, with the same compiled views and session files, and its own `vendor/bin/phpunit` passes (2 tests) as under php. Of 66 checked `artisan` commands, 48 print and write what php does and 7 more differ only by random names, quotes or timing; `tinker` fails (`readline_info()` is missing) and `vendor:publish` needs ext/fileinfo. Eloquent and migrations on SQLite, queued jobs, Blade, mail and validation workloads match php; `Storage` needs ext/fileinfo and `Number::*` needs intl. |
+| Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,165 of its PHP files compile under rhp. All 8 requests of the request diff answer like php-cgi, with the same compiled views and session files, and its own `vendor/bin/phpunit` passes (2 tests) as under php. Of 66 checked `artisan` commands, 48 print and write what php does and 7 more differ only by random names, quotes or timing; `tinker` fails (`readline_info()` is missing). `vendor:publish --all` and `--tag=laravel-errors` write what php writes. Eloquent and migrations on SQLite, queued jobs, Blade, mail, validation and `Storage` workloads match php; `Number::*` needs intl. |
 | WordPress (+ SQLite Database Integration 3.1.3, `tests/apps/wordpress-7.1`) | 7.1.4 | All 1,552 of its PHP files (core, the SQLite plugin, the fixture's config) compile under rhp. All 9 requests of the request diff answer like php-cgi, and the SQLite database they write is identical. Of 80 checked wp-cli 2.12.0 commands (post, user, option, term, comment, menu, widget, rewrite, cron, role, export, search-replace, db and eval probes), 70 print what php prints and leave the same database. `media import` needs ext/gd and `i18n make-pot` `mb_ereg`; `help` runs but prints a deprecation from wp-cli's bundled react/promise that php does not print. |
 | PHPUnit (`tests/apps/tools`) | 13.4.6 | All 29 checked commands print what php prints: `--version`, `--help`, the `--list-*` commands, configuration validation and migration, test runs (passing, failing and skipped tests, data providers, `--filter`, `--group`, `--stop-on-failure`, random order with a seed) and every output format (testdox, TeamCity, debug, JUnit, event log). |
 | PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | All 25 checked commands printed what php prints in the last run: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format. The two runs with 2 parallel workers write the same files and exit with php's code, but list the files in the order the workers finish, so they can differ from php's run to run. |

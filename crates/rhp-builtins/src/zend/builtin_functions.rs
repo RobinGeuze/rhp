@@ -608,6 +608,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     #[cfg(feature = "mbstring-libmbfl")]
     "mbstring",
     "SPL",
+    "fileinfo",
     "filter",
     "gmp",
     "hash",

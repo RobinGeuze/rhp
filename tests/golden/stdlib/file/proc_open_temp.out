@@ -12,3 +12,9 @@ more"
 int(14)
 warning: proc_open(): Cannot represent a stream of type MEMORY as a File Descriptor
 bool(false)
+int(3)
+string(5) "abc2
+"
+warning: proc_open(): Cannot cast a filtered stream on this system
+bool(false)
+string(4) "TEMP"

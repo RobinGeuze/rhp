@@ -257,3 +257,24 @@ bool(true)
 int(0)
 bool(true)
 int(0)
+5b5d 1: 1 1
+5b5d 2: 0 0
+5b5d 3: 0 0
+5b315d 1: 1 1
+5b315d 2: 0 0
+5b315d 3: 0 0
+5b5b5d5d 1: 1 1
+5b5b5d5d 2: 1 1
+5b5b5d5d 3: 0 0
+5b7b7d5d 1: 1 1
+5b7b7d5d 2: 1 1
+5b7b7d5d 3: 0 0
+5b5b7d 1: 1 1
+5b5b7d 2: 1 1
+5b5b7d 3: 2 2
+5b5bff 1: 1 1
+5b5bff 2: 1 1
+5b5bff 3: 5 5
+7b22ff223a317d 1: 1 1
+7b22ff223a317d 2: 5 5
+7b22ff223a317d 3: 5 5

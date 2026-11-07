@@ -36,3 +36,13 @@ foreach (['"abc', '["a\\', "\xff", "[\xff]", "[1}\xff", "\"a\xffb\"", "\xc3\xa9"
     var_dump(json_decode($j, true, 512, JSON_INVALID_UTF8_SUBSTITUTE), json_last_error());
     var_dump(json_validate($j), json_last_error(), json_validate($j, 512, JSON_INVALID_UTF8_IGNORE), json_last_error());
 }
+
+// The depth counts each container when it opens, empty or not.
+foreach (['[]', '[1]', '[[]]', '[{}]', '[[}', "[[\xff", "{\"\xff\":1}"] as $j) {
+    foreach ([1, 2, 3] as $d) {
+        json_decode($j, true, $d);
+        echo bin2hex($j), " $d: ", json_last_error(), " ";
+        json_validate($j, $d);
+        echo json_last_error(), "\n";
+    }
+}

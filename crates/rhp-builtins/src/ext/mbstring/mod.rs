@@ -76,6 +76,8 @@ struct State {
     http_input_set: bool,
     /// `outconv_enabled`: mb_output_handler converts this request's output.
     outconv: bool,
+    /// `outconv_state`: the decoder's state between output chunks.
+    outconv_state: u32,
     /// `current_http_output_encoding` once mb_http_output() set it (else
     /// the ini's).
     http_output: Option<Enc>,
@@ -95,6 +97,7 @@ impl State {
             internal_encoding_set: false,
             http_input_set: false,
             outconv: false,
+            outconv_state: 0,
             http_output: None,
         }
     }
@@ -1773,7 +1776,6 @@ fn fn_mb_strimwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 // conversion
 // ---------------------------------------------------------------------------
 
-/// `mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null)`.
 /// `MBSTRG(current_http_output_encoding)`: mbstring.http_output, else
 /// output_encoding, else default_charset (php_get_output_encoding).
 fn http_output_encoding() -> Enc {
@@ -1821,8 +1823,8 @@ fn fn_mb_http_output(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 /// `mb_output_handler`: converts output from the internal encoding to the
 /// HTTP output encoding when the response is text (or has no Content-Type
-/// yet). Each chunk is converted on its own (php keeps the decoder's state
-/// between chunks).
+/// yet). The decoder's state carries over between chunks, and the encoder
+/// is flushed only by the final chunk, as in php.
 fn fn_mb_output_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_output_handler";
     let s = str_arg(host, args, 0, f)?;
@@ -1874,13 +1876,30 @@ fn fn_mb_output_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if !st(|s| s.outconv) {
         return Ok(Value::Str(s.0));
     }
-    let out = convert_ex(&s, enc, internal());
-    if status & 0x08 != 0 {
-        st(|s| s.outconv = false);
+    let (mode, subst) = illegal_settings();
+    let from = internal();
+    let mut buf = ConvertBuf::new(s.len(), subst, mode);
+    let mut wchar = [0u32; 128];
+    let mut rest: &[u8] = &s;
+    let last = status & 0x08 != 0;
+    let mut state = st(|s| s.outconv_state);
+    while !rest.is_empty() {
+        let n = from.to_wchar(&mut rest, &mut wchar, &mut state);
+        enc.from_wchar(&wchar[..n], &mut buf, rest.is_empty() && last);
     }
-    Ok(Value::str(out))
+    let errors = buf.errors() as usize;
+    st(|s| {
+        s.illegalchars += errors;
+        s.outconv_state = state;
+        if last {
+            s.outconv = false;
+            s.outconv_state = 0;
+        }
+    });
+    Ok(Value::str(buf.result_raw()))
 }
 
+/// `mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null)`.
 fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_convert_encoding";
     let input = deref(&args[0]);

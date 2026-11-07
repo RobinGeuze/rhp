@@ -18,6 +18,7 @@ e-i18n
 e-kses
 e-render
 e-rest
+e-walker
 eval-date
 eval-feed
 eval-fmt

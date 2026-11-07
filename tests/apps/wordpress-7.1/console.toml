@@ -227,6 +227,10 @@ id = "e-misc"
 args = "eval-file console/misc.php"
 
 [[command]]
+id = "e-walker"
+args = "eval-file console/walker.php"
+
+[[command]]
 id = "e-health"
 args = "eval-file console/health.php"
 

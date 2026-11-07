@@ -494,6 +494,9 @@ def main(apps, argv):
             write = True
         else:
             sys.exit(f"console: unknown option {a!r}; see tests/apps/console.py --help")
+    # Commands run in the work directory: a relative path would not resolve there.
+    if os.sep in candidate:
+        candidate = str(Path(candidate).resolve())
     failed = [a["name"] for a in apps if not battery(a, candidate, only, quiet, write)]
     if failed:
         sys.exit(f"console battery failed for: {', '.join(failed)}")

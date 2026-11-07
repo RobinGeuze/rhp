@@ -38,6 +38,7 @@ outputs are kept in tools/work/<tool>/out/. Needs python >= 3.11 (tomllib).
 """
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -57,6 +58,7 @@ WORK = HERE / "tools" / "work"
 PHP_INI = HERE / "tools" / "php.ini"
 TIMEOUT = 900
 BIG_TIMEOUT = 3600  # a big-tier command takes minutes of CPU under rhp
+LINGER = 60  # how long workers may hold the output pipes after the command exits
 
 # Normalisation: only what php itself varies from run to run, plus the
 # engine's binary path. Each rule is (name, pattern, replacement); the README
@@ -167,8 +169,10 @@ def reset(run_dir, files):
 
 def tmp_dir(run_dir):
     """TMPDIR for a run: short, as Psalm's and Rector's workers put unix
-    sockets there and macOS allows socket paths of only 104 bytes."""
-    return Path("/tmp") / f"rhp-tools-{os.getuid()}" / run_dir.name
+    sockets there and macOS allows socket paths of only 104 bytes. A hash of
+    run_dir keeps runs from other checkouts (or --work) apart."""
+    tag = hashlib.sha1(str(run_dir.resolve()).encode()).hexdigest()[:8]
+    return Path("/tmp") / f"rhp-tools-{os.getuid()}" / f"{tag}-{run_dir.name}"
 
 
 def snapshot(run_dir):
@@ -267,13 +271,24 @@ def spawn(argv, cwd, env, timeout=TIMEOUT):
         # Leftover workers would keep the pipes open.
         kill()
     for r in readers:
-        r.join()
+        r.join(LINGER)
+    lingered = any(r.is_alive() for r in readers)
+    if lingered:
+        # Workers that outlived the command still hold the pipes open.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        for r in readers:
+            r.join()
     p.stdout.close()
     p.stderr.close()
     out, err, code = bufs.get("out", b""), bufs.get("err", b""), p.returncode
     if timed_out:
         err += f"\n<TIMEOUT after {timeout}s>".encode()
         code = "timeout"
+    elif lingered:
+        err += f"\n<workers still running {LINGER}s after exit; killed>".encode()
     rss = ru.ru_maxrss / (1 << 20 if sys.platform == "darwin" else 1 << 10)
     return out, err, code, ru.ru_utime + ru.ru_stime, rss
 

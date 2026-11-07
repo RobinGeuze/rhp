@@ -93,7 +93,9 @@ USE = ("php", ["use.php"])
 NO_CURL = ["-d", "disable_functions=curl_multi_exec,curl_multi_init"]
 
 SUITES = {
-    "basic": {"project": "basic", "steps": CMDS, "compare": ["composer.lock", "vendor"]},
+    # use.php runs right after install, as before the suites.
+    "basic": {"project": "basic", "steps": [s for c in CMDS for s in ([c, USE] if c == ["install"] else [c])],
+              "compare": ["composer.lock", "vendor"]},
     "stream": {
         "project": "basic",
         "engine_args": NO_CURL,

@@ -282,7 +282,7 @@ python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # sel
 - Each command runs on a fresh copy of the fixture in `tools/work/<tool>/`
   (`<tool>-big/` for the big tier; a clone of `vendor/` stays there), first
   under php, then under rhp, with a fixed environment: `HOME` inside the
-  run directory, a short `TMPDIR` (`/tmp/rhp-tools-<uid>/<run>`: Psalm's and
+  run directory, a short `TMPDIR` (`/tmp/rhp-tools-<uid>/<hash>-<run>`: Psalm's and
   Rector's workers put unix sockets there, and macOS allows 104 bytes per
   socket path), `TZ=UTC`, `LANG=LC_ALL=C`, `COLUMNS=120`,
   `NO_COLOR=1`, `TERM=dumb`, no CI variables, stdin closed, and

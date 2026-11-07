@@ -1400,6 +1400,13 @@ impl Host for Vm {
         let id = res_id(res).ok_or("Unknown")?;
         let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
         let has_origin = self.streams.record(id).is_some_and(|s| s.origin.is_some());
+        // _php_stream_cast: a filtered stream fails before its cast op runs
+        if self.has_filters(id) {
+            let func = self.native_calls.last().map_or("proc_open", |n| n.name);
+            let msg = format!("{func}(): Cannot cast a filtered stream on this system");
+            self.raise_error(builtins::E_WARNING, &msg);
+            return Err("FILTERED");
+        }
         if matches!(
             self.streams.get(&id),
             Some(StreamState::Mem { temp: Some(_), .. })

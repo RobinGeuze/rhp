@@ -77,6 +77,12 @@ impl Vm {
         self.streams.record(id)?.filters.as_deref()
     }
 
+    /// php_stream_is_filtered: a read or write filter is attached.
+    pub(crate) fn has_filters(&self, id: u32) -> bool {
+        self.layer(id)
+            .is_some_and(|l| !l.read.is_empty() || !l.write.is_empty())
+    }
+
     fn layer_mut(&mut self, id: u32) -> Option<&mut FilterLayer> {
         self.streams.record_mut(id)?.filters.as_deref_mut()
     }

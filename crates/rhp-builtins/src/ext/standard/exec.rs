@@ -86,7 +86,7 @@ fn php_exec(host: &mut dyn Host, mode: u8, cmd: &[u8], out: &mut Option<PhpArray
                 1 => host.write_out(line),
                 2 => {
                     if let Some(a) = out.as_mut() {
-                        a.push(Value::str(strip_trailing_ws(line).to_vec()));
+                        a.push(Value::str(strip_trailing_ws(line)));
                     }
                 }
                 _ => {}
@@ -95,7 +95,7 @@ fn php_exec(host: &mut dyn Host, mode: u8, cmd: &[u8], out: &mut Option<PhpArray
             start = end;
         }
         if let Some(l) = last {
-            ret = Value::str(strip_trailing_ws(l).to_vec());
+            ret = Value::str(strip_trailing_ws(l));
         }
     }
     drop(fd);

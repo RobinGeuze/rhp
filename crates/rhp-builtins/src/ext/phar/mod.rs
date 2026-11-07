@@ -833,8 +833,8 @@ fn fn_phar_running(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
     let rest = &fname[7..];
     let arch_len = with_phar_wrapper(host, |pw| Ok(pw.archive_prefix_len(rest)))?;
     Ok(match arch_len {
-        Some(n) if retphar => Value::str(fname[..n + 7].to_vec()),
-        Some(n) => Value::str(rest[..n].to_vec()),
+        Some(n) if retphar => Value::str(&fname[..n + 7]),
+        Some(n) => Value::str(&rest[..n]),
         None => Value::str(""),
     })
 }

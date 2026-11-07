@@ -285,7 +285,7 @@ fn fn_error_string(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
     }
     let mut buf = [0 as c_char; 256];
     unsafe { sys::ERR_error_string_n(val as c_ulong, buf.as_mut_ptr(), buf.len()) };
-    Ok(Value::str(cstr_bytes(buf.as_ptr()).to_vec()))
+    Ok(Value::str(cstr_bytes(buf.as_ptr())))
 }
 
 // ---------------------------------------------------------------------------

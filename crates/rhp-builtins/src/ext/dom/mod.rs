@@ -486,7 +486,7 @@ pub(crate) fn boolean(args: &[Value], i: usize) -> bool {
 
 /// A libxml2 string as a PHP string ("" for NULL).
 pub(crate) fn xs(p: *const u8) -> Value {
-    Value::str(unsafe { sys::cstr(p) }.to_vec())
+    Value::str(unsafe { sys::cstr(p) })
 }
 
 /// A libxml2 string, or null.

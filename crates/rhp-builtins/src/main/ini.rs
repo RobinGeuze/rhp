@@ -49,22 +49,22 @@ pub fn config_define(name: &[u8], value: &[u8]) {
         let open = name.iter().position(|&b| b == b'[');
         match open.filter(|_| name.ends_with(b"]")) {
             Some(i) => {
-                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(name[..i].to_vec()));
+                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(&name[..i]));
                 let off = &name[i + 1..name.len() - 1];
                 if !matches!(c.get(&key), Some(Value::Array(_))) {
                     c.insert(key.clone(), Value::Array(PhpArray::new()));
                 }
                 if let Some(Value::Array(sub)) = c.get_mut(&key) {
                     if off.is_empty() {
-                        sub.push(Value::str(value.to_vec()));
+                        sub.push(Value::str(value));
                     } else {
-                        sub.insert(ArrayKey::from_bytes(off), Value::str(value.to_vec()));
+                        sub.insert(ArrayKey::from_bytes(off), Value::str(value));
                     }
                 }
             }
             None => {
-                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(name.to_vec()));
-                c.insert(key, Value::str(value.to_vec()));
+                let key = ArrayKey::Str(rhp_values::PhpStr::from_bytes(name));
+                c.insert(key, Value::str(value));
             }
         }
     });
@@ -72,7 +72,7 @@ pub fn config_define(name: &[u8], value: &[u8]) {
 
 /// `cfg_get_entry`: a configuration hash entry.
 pub(crate) fn cfg_get(name: &[u8]) -> Option<rhp_values::Value> {
-    let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name.to_vec()));
+    let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name));
     CONFIG.with(|c| c.borrow().get(&key).cloned())
 }
 

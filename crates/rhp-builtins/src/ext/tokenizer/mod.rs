@@ -172,7 +172,7 @@ fn fn_token_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     for t in lex(host, &code, flags)? {
         let mut a = PhpArray::new();
         a.push(Value::Int(t.id));
-        a.push(Value::str(t.text(&code).to_vec()));
+        a.push(Value::str(t.text(&code)));
         a.push(Value::Int(t.line));
         a.push(Value::Int(t.pos as i64));
         out.push(Value::Array(a));

@@ -1043,7 +1043,7 @@ impl ProtoBuilder<'_> {
                     let Expression::Identifier(id) = aa.index else {
                         unreachable!()
                     };
-                    let k = self.intern_const(Value::str(id.value().to_vec()));
+                    let k = self.intern_const(Value::str(id.value()));
                     let key = self.alloc_temp();
                     self.emit(Instr::LoadConst { dst: key, k });
                     let r = self.alloc_temp();
@@ -1102,7 +1102,7 @@ impl ProtoBuilder<'_> {
         );
         let var = |this: &mut Self| -> Reg {
             if name == b"this" || name == b"GLOBALS" {
-                let k = this.intern_const(Value::str(name.to_vec()));
+                let k = this.intern_const(Value::str(name));
                 let n = this.alloc_temp();
                 this.emit(Instr::LoadConst { dst: n, k });
                 let dst = this.alloc_temp();
@@ -1542,7 +1542,7 @@ impl ProtoBuilder<'_> {
 
     /// Load a byte-string constant into a fresh register.
     pub(crate) fn load_string_const(&mut self, bytes: &[u8]) -> Reg {
-        let k = self.intern_const(Value::str(bytes.to_vec()));
+        let k = self.intern_const(Value::str(bytes));
         let dst = self.alloc_temp();
         self.emit(Instr::LoadConst { dst, k });
         dst

@@ -654,7 +654,7 @@ fn dispatch(
     let retval = match mode {
         Mode::None => return Err(Thrown::error("Error", "No callbacks were registered")),
         Mode::All => {
-            let f = Value::str(function.to_vec());
+            let f = Value::str(function);
             if let Some(why) = cx.host.check_callable(&f)? {
                 return Err(Thrown::error(
                     "Error",

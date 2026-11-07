@@ -6,7 +6,7 @@ fn convert_variables_recursion_warns() {
     // $r = ["\xe9"]; $r[] = &$r;
     let cell: rhp_values::PhpRef = Rc::new(RefCell::new(Value::Null));
     let mut a = PhpArray::new();
-    a.push(Value::str(b"\xe9".to_vec()));
+    a.push(Value::str(b"\xe9"));
     a.push(Value::Ref(cell.clone()));
     *cell.borrow_mut() = Value::Array(a);
     for from in ["ISO-8859-1", "ISO-8859-1,UTF-8"] {
@@ -37,7 +37,7 @@ fn convert_variables_recursion_warns() {
         &[
             Value::str("UTF-8"),
             Value::str("auto"),
-            Value::str(b"h\xe9llo".to_vec()),
+            Value::str(b"h\xe9llo"),
         ],
     );
     assert!(d.is_empty());
@@ -56,7 +56,7 @@ fn convert_variables_deep_nesting() {
         .stack_size(256 << 20)
         .spawn(|| {
             const DEPTH: usize = 50_000;
-            let mut v = Value::str(b"\xe9".to_vec());
+            let mut v = Value::str(b"\xe9");
             for _ in 0..DEPTH {
                 let mut a = PhpArray::new();
                 a.push(v);
@@ -308,10 +308,10 @@ fn strimwidth_cases() {
 fn scrub_cases() {
     assert_eq!(calls(fn_mb_scrub, &[s("valid")]), "valid");
     assert_eq!(
-        calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef".to_vec())]),
+        calls(fn_mb_scrub, &[Value::str(b"abc\xff\xfedef")]),
         "abc??def"
     );
-    assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97".to_vec())]), "?");
+    assert_eq!(calls(fn_mb_scrub, &[Value::str(b"\xe6\x97")]), "?");
 }
 
 #[test]

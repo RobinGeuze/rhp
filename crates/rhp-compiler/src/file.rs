@@ -167,7 +167,7 @@ impl<'s> FileCtx<'s> {
         program: &AstProgram,
         flat: &[(Rc<NsContext>, &Statement)],
     ) -> Self {
-        let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes().to_vec()), src);
+        let mut cx = Self::empty(builtins, PhpStr::from_bytes(file.as_bytes()), src);
         // Before the line map: `__LINE__` folds to 0 here.
         cx.strict_types = detect_strict_types(&cx, program);
         cx.first_declares = first_declares(&cx, program);

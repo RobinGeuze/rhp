@@ -496,7 +496,7 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
             other => other,
         };
         out.insert(
-            rhp_values::ArrayKey::Str(PhpStr::from_bytes(p.name.as_bytes().to_vec())),
+            rhp_values::ArrayKey::Str(PhpStr::from_bytes(p.name.as_bytes())),
             val,
         );
     }

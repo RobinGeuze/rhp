@@ -94,7 +94,7 @@ impl ProtoBuilder<'_> {
                             self.cx.line_of(inline.span().start.offset + skipped as u32);
                     }
                     if !text.is_empty() {
-                        let k = self.intern_const(Value::str(text.to_vec()));
+                        let k = self.intern_const(Value::str(text));
                         self.emit(Instr::EchoConst { k });
                     }
                 }

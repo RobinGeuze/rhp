@@ -259,7 +259,7 @@ impl Vm {
         if let Some(h) = handler {
             let args = vec![
                 Value::Int(level),
-                Value::str(msg.to_vec()),
+                Value::str(msg),
                 Value::str(file.clone()),
                 Value::Int(line),
             ];

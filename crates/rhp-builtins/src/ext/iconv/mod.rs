@@ -1658,7 +1658,7 @@ fn fn_iconv_mime_decode_headers(host: &mut dyn Host, args: &[Value]) -> Result<V
             while v < h.len() && (h[v] == b' ' || h[v] == b'\t') {
                 v += 1;
             }
-            let value = Value::str(h[v..].to_vec());
+            let value = Value::str(&h[v..]);
             // zend_hash_str_find, then add_assoc_stringl_ex (a symtable
             // update: numeric names become integer keys).
             match out.get_mut(&ArrayKey::Str(PhpStr::from_bytes(name))) {

@@ -90,7 +90,7 @@ impl Vm {
                 }
                 v => v.clone(),
             };
-            out.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+            out.insert(ArrayKey::from_php_str(name), v);
         }
         for (name, cell) in &f.dyn_vars {
             if cell.borrow().is_undef() {

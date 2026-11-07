@@ -20,7 +20,7 @@ fn put(a: &mut PhpArray, k: &str, v: Value) {
 }
 
 fn s(b: &[u8]) -> Value {
-    Value::str(b.to_vec())
+    Value::str(b)
 }
 
 fn lc(b: &[u8]) -> Vec<u8> {
@@ -402,10 +402,7 @@ impl Vm {
                     // (An uninitialized typed static is left out.)
                     if let Some(sp) = e.static_props.get(n.as_bytes()) {
                         if !sp.cell.borrow().is_undef() {
-                            out.insert(
-                                ArrayKey::from_bytes(n.as_bytes()),
-                                deref(&sp.cell.borrow()),
-                            );
+                            out.insert(ArrayKey::from_php_str(&n), deref(&sp.cell.borrow()));
                         }
                     }
                 }
@@ -695,7 +692,7 @@ impl Vm {
             let mut v = cn.unwrap_or_default();
             v.extend_from_slice(b"::");
             v.extend_from_slice(al.method.as_bytes());
-            aliases.insert(ArrayKey::from_bytes(alias.as_bytes()), s(&v));
+            aliases.insert(ArrayKey::from_php_str(alias), s(&v));
         }
         put(&mut a, "trait_aliases", Value::Array(aliases));
         put(
@@ -934,7 +931,7 @@ impl Vm {
 
     fn prop_info(&self, cid: ClassId, name: &[u8]) -> Value {
         let e = &self.classes[cid as usize];
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         // (declaring class, visibility, set visibility, type, readonly, static, default)
         let found = if let Some(key) = self.decl_prop_key(cid, &pname) {
             let pe = &e.props[&key];
@@ -1204,7 +1201,7 @@ impl Vm {
                         continue;
                     }
                     statics.insert(
-                        ArrayKey::from_bytes(name.as_bytes()),
+                        ArrayKey::from_php_str(&name),
                         if uninit {
                             Value::Null
                         } else {
@@ -1225,7 +1222,7 @@ impl Vm {
                 } else {
                     pe.default.clone()
                 };
-                inst.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+                inst.insert(ArrayKey::from_php_str(&name), v);
             }
         }
         let (first, second) = if vars {
@@ -1486,8 +1483,8 @@ impl Vm {
                 let b = n.as_bytes();
                 let at = b.windows(2).position(|w| w == b"::").unwrap_or(0);
                 let mut pair = PhpArray::new();
-                pair.push(Value::str(b[..at].to_vec()));
-                pair.push(Value::str(b[at + 2..].to_vec()));
+                pair.push(Value::str(&b[..at]));
+                pair.push(Value::str(&b[at + 2..]));
                 self.fn_subject(&Value::Array(pair))?
             }
             Value::Str(n) => {
@@ -1590,7 +1587,7 @@ impl Vm {
                         Some((p, b"::set")) => (p, 1),
                         _ => return Ok(None),
                     };
-                    let pname = PhpStr::from_bytes(prop.to_vec());
+                    let pname = PhpStr::from_bytes(prop);
                     return Ok(self
                         .decl_prop_key(cid, &pname)
                         .and_then(|k| self.classes[cid as usize].props.get(&k))

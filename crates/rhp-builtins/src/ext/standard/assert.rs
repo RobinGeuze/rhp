@@ -53,7 +53,7 @@ pub(crate) fn ini_update(name: &[u8], v: Option<&[u8]>) {
         // OnChangeCallback
         _ => {
             g.callback
-                .replace(v.filter(|v| !v.is_empty()).map(|v| Value::str(v.to_vec())));
+                .replace(v.filter(|v| !v.is_empty()).map(Value::str));
         }
     });
 }

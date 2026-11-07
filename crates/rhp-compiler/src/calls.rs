@@ -992,7 +992,7 @@ impl ProtoBuilder<'_> {
                             Some(r) => r,
                             None => self.compile_expr(n.value)?,
                         };
-                        let k = self.intern_const(Value::str(n.name.value.to_vec()));
+                        let k = self.intern_const(Value::str(n.name.value));
                         let key = self.alloc_temp();
                         self.emit(Instr::LoadConst { dst: key, k });
                         if unpacked {

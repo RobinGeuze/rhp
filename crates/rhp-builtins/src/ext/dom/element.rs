@@ -149,7 +149,7 @@ pub fn get_attribute(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
             ),
             sys::XML_NAMESPACE_DECL => xs((*(attr as *mut XmlNs)).href),
             // xmlAttribute: an attribute default from the DTD.
-            _ => Value::str(sys::cstr(attribute_decl_default(attr)).to_vec()),
+            _ => Value::str(sys::cstr(attribute_decl_default(attr))),
         })
     }
 }

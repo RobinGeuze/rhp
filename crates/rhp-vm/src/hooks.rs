@@ -474,10 +474,7 @@ impl Vm {
                         // A backed read without a get hook is silent:
                         // uninitialized reads as null.
                         let v = h.borrow().properties.get(&key).map(deref);
-                        out.insert(
-                            ArrayKey::from_bytes(shown.as_bytes()),
-                            v.unwrap_or(Value::Null),
-                        );
+                        out.insert(ArrayKey::from_php_str(&shown), v.unwrap_or(Value::Null));
                         continue;
                     }
                     let mut v = self.prop_fetch_as(
@@ -496,7 +493,7 @@ impl Vm {
                     None => continue,
                 },
             };
-            out.insert(ArrayKey::from_bytes(shown.as_bytes()), v);
+            out.insert(ArrayKey::from_php_str(&shown), v);
         }
         let dynamic: Vec<(PhpStr, Value)> = {
             let b = h.borrow();
@@ -513,7 +510,7 @@ impl Vm {
                     continue;
                 }
             }
-            out.insert(ArrayKey::from_bytes(k.as_bytes()), v);
+            out.insert(ArrayKey::from_php_str(&k), v);
         }
         Ok(out)
     }

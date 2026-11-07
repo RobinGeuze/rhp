@@ -186,7 +186,7 @@ fn param(params: &Value, key: &str) -> Option<Value> {
         Value::Object(o) => o
             .borrow()
             .properties
-            .get(&rhp_values::PhpStr::from_bytes(key.as_bytes().to_vec()))
+            .get(&rhp_values::PhpStr::from_bytes(key.as_bytes()))
             .map(deref),
         _ => None,
     }

@@ -92,7 +92,7 @@ impl ProtoBuilder<'_> {
                     ClassRef::StaticClass
                 } else {
                     let name = name.strip_prefix(b"\\").unwrap_or(name);
-                    let k = self.intern_const(Value::str(name.to_vec()));
+                    let k = self.intern_const(Value::str(name));
                     let dst = self.alloc_temp();
                     self.emit(Instr::LoadConst { dst, k });
                     return Ok(dst);

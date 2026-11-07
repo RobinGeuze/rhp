@@ -440,7 +440,7 @@ fn fn_password_get_info(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         out.insert(ArrayKey::from_bytes(b"options"), Value::Array(options));
         return Ok(Value::Array(out));
     };
-    out.insert(ArrayKey::from_bytes(b"algo"), Value::str(ident.to_vec()));
+    out.insert(ArrayKey::from_bytes(b"algo"), Value::str(ident));
     out.insert(ArrayKey::from_bytes(b"algoName"), Value::str(algo.name()));
     match algo {
         Algo::Bcrypt => {
@@ -466,7 +466,7 @@ fn fn_password_get_info(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 fn fn_password_algos(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     let mut arr = PhpArray::new();
     for (ident, _) in ALGOS {
-        arr.push(Value::str(ident.to_vec()));
+        arr.push(Value::str(ident));
     }
     Ok(Value::Array(arr))
 }

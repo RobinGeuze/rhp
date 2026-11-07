@@ -843,7 +843,7 @@ fn property_get_adr(cx: &mut Cx, sxe: &SxeObject, name: &[u8]) -> Result<Value, 
     if !element_by_name(cx, sxe, node, name)?.is_null() {
         return prop_dim_read(cx, sxe, Some(Member::Name(name.to_vec())), false, Fetch::W);
     }
-    let member = Value::str(name.to_vec());
+    let member = Value::str(name);
     let node = prop_dim_write(cx, sxe, Some(&member), None, false)?;
     let (nsprefix, isprefix) = sxe.nsprefix();
     node_as_zval(
@@ -1096,7 +1096,7 @@ fn prop_dim_delete(
 
 /// sxe_properties_add
 fn properties_add(rv: &mut PhpArray, name: &[u8], value: Value) {
-    let key = ArrayKey::Str(PhpStr::from_bytes(name.to_vec()));
+    let key = ArrayKey::Str(PhpStr::from_bytes(name));
     match rv.get_mut(&key) {
         Some(Value::Array(a)) => {
             a.push(value);
@@ -1480,7 +1480,7 @@ fn sxe_get_properties_for(
         let mut out = PhpArray::new();
         for (k, v) in a.iter() {
             let key = match k {
-                ArrayKey::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                ArrayKey::Str(s) => ArrayKey::from_php_str(s),
                 k => k.clone(),
             };
             out.insert(key, v.clone());
@@ -2117,7 +2117,7 @@ fn m_as_xml(cx: &mut Cx, sxe: &Rc<SxeObject>, _: &Value, args: &[Value]) -> Resu
 fn add_namespace_name(out: &mut PhpArray, prefix: &[u8], href: &[u8]) {
     let key = ArrayKey::from_bytes(prefix);
     if out.get(&key).is_none() {
-        out.insert(key, Value::str(href.to_vec()));
+        out.insert(key, Value::str(href));
     }
 }
 

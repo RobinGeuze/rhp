@@ -40,7 +40,7 @@ pub fn cast_to_array(v: Value) -> Value {
         Value::Object(h) => {
             let mut a = PhpArray::new();
             for (name, val) in &h.borrow().properties {
-                a.insert(crate::ArrayKey::from_bytes(name.as_bytes()), deref(val));
+                a.insert(crate::ArrayKey::from_php_str(name), deref(val));
             }
             Value::Array(a)
         }
@@ -357,12 +357,15 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     // once (no copies of the operands, no growth slack counted against
     // memory_limit).
     let (a, b) = (deref(a), deref(b));
+    let (mut ia, mut ib) = ([0u8; 20], [0u8; 20]);
     let a = match &a {
         Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        Value::Int(n) => std::borrow::Cow::Borrowed(conv::int_digits(*n, &mut ia)),
         v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
     };
     let b = match &b {
         Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        Value::Int(n) => std::borrow::Cow::Borrowed(conv::int_digits(*n, &mut ib)),
         v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
     };
     let len = a.len() + b.len();
@@ -371,11 +374,7 @@ pub fn concat(a: &Value, b: &Value) -> Value {
     if !crate::mem::alloc_check(crate::mem::zstr_size(len)) {
         return Value::Str(PhpStr::from_bytes(Vec::new()));
     }
-    // (The whole block: a later in-place append can use the slack.)
-    let mut bytes = Vec::with_capacity(crate::mem::block_size(len));
-    bytes.extend_from_slice(&a);
-    bytes.extend_from_slice(&b);
-    Value::Str(PhpStr::from_bytes(bytes))
+    Value::Str(PhpStr::concat(&a, &b))
 }
 
 // ---------------------------------------------------------------------------

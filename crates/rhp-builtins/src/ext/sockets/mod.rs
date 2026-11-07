@@ -227,7 +227,7 @@ fn option_table(v: &Value) -> Option<PhpArray> {
         Value::Object(h) => {
             let mut a = PhpArray::new();
             for (k, val) in h.borrow().properties.iter() {
-                a.insert(ArrayKey::from_bytes(k.as_bytes()), val.clone());
+                a.insert(ArrayKey::from_php_str(k), val.clone());
             }
             Some(a)
         }

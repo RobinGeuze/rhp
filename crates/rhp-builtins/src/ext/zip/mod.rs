@@ -613,7 +613,7 @@ pub(crate) fn expand_filepath(path: &[u8]) -> Option<Vec<u8>> {
 pub(crate) fn stat_array(sb: &sys::zip_stat_t) -> Value {
     let mut a = PhpArray::new();
     let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
-    put("name", Value::str(unsafe { sys::cstr(sb.name) }.to_vec()));
+    put("name", Value::str(unsafe { sys::cstr(sb.name) }));
     put("index", Value::Int(sb.index as i64));
     put("crc", Value::Int(sb.crc as i64));
     put("size", Value::Int(sb.size as i64));

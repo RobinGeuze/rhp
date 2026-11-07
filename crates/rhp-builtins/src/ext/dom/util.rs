@@ -184,7 +184,7 @@ pub fn get_content(nodep: *const XmlNode, null_on_failure: bool) -> rhp_values::
             | sys::XML_PI_NODE
             | sys::XML_COMMENT_NODE => {
                 if !(*nodep).content.is_null() {
-                    return Value::str(b((*nodep).content).to_vec());
+                    return Value::str(b((*nodep).content));
                 }
             }
             sys::XML_ATTRIBUTE_NODE => {

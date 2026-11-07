@@ -1823,7 +1823,7 @@ impl SslSock {
             unsafe { sys::SSL_get0_alpn_selected(self.ssl, &mut p, &mut len) };
             if !p.is_null() {
                 let proto = unsafe { std::slice::from_raw_parts(p, len as usize) };
-                put(&mut a, "alpn_protocol", Value::str(proto.to_vec()));
+                put(&mut a, "alpn_protocol", Value::str(proto));
             }
         }
         Value::Array(a)

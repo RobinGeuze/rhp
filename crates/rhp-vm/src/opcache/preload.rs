@@ -555,7 +555,7 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
             FnOrigin::Top(i) => &prog.functions[i],
             FnOrigin::Closure(i) => &prog.closures[i],
         };
-        fns.push(Value::str(f.name.as_bytes().to_vec()));
+        fns.push(Value::str(f.name.as_bytes()));
     }
     if !fns.is_empty() {
         out.insert(s(b"functions"), Value::Array(fns));
@@ -574,7 +574,7 @@ pub(super) fn preload_report(pre: &Preload) -> PhpArray {
             user.get(local - nested)
         };
         if let Some(c) = c {
-            classes.push(Value::str(c.name.as_bytes().to_vec()));
+            classes.push(Value::str(c.name.as_bytes()));
         }
     }
     if !classes.is_empty() {

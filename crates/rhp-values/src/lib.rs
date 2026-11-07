@@ -9,7 +9,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use bstr::BString;
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 
@@ -19,9 +18,11 @@ pub mod gc;
 pub mod handles;
 pub mod mem;
 pub mod ops;
+mod phpstr;
 pub mod thrown;
 
 pub use handles::{alloc_object_id, release_object_id};
+pub use phpstr::{PhpStr, StrBuilder, StrBytes, StrMut};
 pub use thrown::Thrown;
 
 // php's error levels (Zend/zend_errors.h).
@@ -695,81 +696,29 @@ pub struct ClassFlags {
 // PhpStr — binary-safe, copy-on-write byte string
 // ---------------------------------------------------------------------------
 
-/// Owned, binary-safe, copy-on-write PHP string. Clone is O(1); mutation is COW.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PhpStr(Rc<BString>);
-
-impl PhpStr {
-    pub fn from_bytes(b: impl Into<Vec<u8>>) -> Self {
-        PhpStr(Rc::new(BString::new(b.into())))
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_slice()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// COW mutable access: clones the buffer iff it is currently shared.
-    pub fn make_mut(&mut self) -> &mut BString {
-        Rc::make_mut(&mut self.0)
-    }
-
-    /// Mutable access when this is the only handle to the buffer.
-    pub fn get_mut(&mut self) -> Option<&mut BString> {
-        Rc::get_mut(&mut self.0)
-    }
-
-    /// How many values share this buffer (debug_zval_dump's refcount).
-    pub fn ref_count(&self) -> usize {
-        Rc::strong_count(&self.0)
-    }
-
-    /// Whether both share one buffer.
-    pub fn ptr_eq(&self, other: &PhpStr) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Default for PhpStr {
-    fn default() -> Self {
-        PhpStr::from_bytes(Vec::new())
-    }
-}
-
-impl From<&[u8]> for PhpStr {
-    fn from(b: &[u8]) -> Self {
-        PhpStr::from_bytes(b.to_vec())
-    }
-}
-
-impl From<&str> for PhpStr {
-    fn from(s: &str) -> Self {
-        PhpStr::from_bytes(s.as_bytes().to_vec())
-    }
-}
-
-impl std::fmt::Debug for PhpStr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
-    }
-}
+// The type and its unsafe layout code live in `phpstr`.
 
 // ---------------------------------------------------------------------------
 // PhpArray — ordered int|string map with COW value semantics
 // ---------------------------------------------------------------------------
 
 /// PHP array key: canonicalized to int-or-string.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ArrayKey {
     Int(i64),
     Str(PhpStr),
+}
+
+/// One word per key, as php hashes by `h`: the int itself, or the string's
+/// cached hash (no discriminant; equality tells the kinds apart).
+impl std::hash::Hash for ArrayKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ArrayKey::Int(n) => state.write_u64(*n as u64),
+            ArrayKey::Str(s) => state.write_u64(s.hash_value()),
+        }
+    }
 }
 
 impl ArrayKey {
@@ -785,7 +734,7 @@ impl ArrayKey {
             Value::Bool(b) => ArrayKey::Int(if *b { 1 } else { 0 }),
             Value::Null | Value::Undef => ArrayKey::Str(PhpStr::from_bytes(Vec::new())),
             Value::Float(f) => ArrayKey::Int(float_to_int(*f)),
-            Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+            Value::Str(s) => ArrayKey::from_php_str(s),
             Value::Resource(r) => ArrayKey::Int(r.id as i64),
             Value::Ref(r) => return ArrayKey::from_value(&r.borrow()),
             Value::Array(_) | Value::Object(_) | Value::Closure(_) => return None,
@@ -806,7 +755,17 @@ impl ArrayKey {
         if let Some(n) = canonical_int_string(s) {
             ArrayKey::Int(n)
         } else {
-            ArrayKey::Str(PhpStr::from_bytes(s.to_vec()))
+            ArrayKey::Str(PhpStr::from_slice(s))
+        }
+    }
+
+    /// [`ArrayKey::from_bytes`] for a string value: a non-numeric key shares
+    /// the string (php's hash keys addref it).
+    #[inline(never)]
+    pub fn from_php_str(s: &PhpStr) -> ArrayKey {
+        match canonical_int_string(s.as_bytes()) {
+            Some(n) => ArrayKey::Int(n),
+            None => ArrayKey::Str(s.clone()),
         }
     }
 }
@@ -1231,7 +1190,7 @@ impl FromIterator<(ArrayKey, Value)> for PhpArray {
 // ---------------------------------------------------------------------------
 
 impl Value {
-    pub fn str(b: impl Into<Vec<u8>>) -> Value {
+    pub fn str(b: impl StrBytes) -> Value {
         Value::Str(PhpStr::from_bytes(b))
     }
 

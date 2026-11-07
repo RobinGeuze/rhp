@@ -939,13 +939,19 @@ impl ProtoBuilder<'_> {
             ));
         };
         let cv = self.cv(strip_dollar(d.name));
+        // A compound assignment's result register comes before its operand's
+        // temporaries: that tells the VM it is not `$x = $x <op> ...`
+        // (`Vm::free_bin_operands`).
+        let dst = match a.operator {
+            AssignmentOperator::Assign(_) => 0,
+            _ => self.alloc_temp(),
+        };
         let rhs = self.compile_expr(a.rhs)?;
 
         let value_reg = match &a.operator {
             AssignmentOperator::Assign(_) => rhs,
             op => {
                 // compound: dst = cv <op> rhs
-                let dst = self.alloc_temp();
                 let instr = match op {
                     AssignmentOperator::Addition(_) => Instr::Add { dst, a: cv, b: rhs },
                     AssignmentOperator::Subtraction(_) => Instr::Sub { dst, a: cv, b: rhs },

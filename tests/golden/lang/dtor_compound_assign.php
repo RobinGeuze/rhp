@@ -33,3 +33,7 @@ echo "--\n";
 $m->p = new D(6) . "";
 $a['k'] = new D(7) . "";
 echo "end\n";
+// `$x = $x . ...` is a plain assignment: the operand goes first.
+$x = new D(8);
+$x = $x . new D(9);
+echo "done\n";

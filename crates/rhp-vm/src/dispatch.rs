@@ -3090,7 +3090,8 @@ impl Vm {
     /// Store a binary operator's result `v` and free the temporaries it
     /// consumed (FREE_OP). A compound assignment's operands go only after
     /// its store, as php frees OP_DATA last: an `AssignLval` frees them
-    /// (`compound_free`), and a variable's `Assign` runs here first.
+    /// (`compound_free`), and a variable's `Assign` runs here first (the
+    /// compiler puts its result register before the operand's).
     #[inline(never)]
     fn free_bin_operands(
         &mut self,
@@ -3116,7 +3117,9 @@ impl Vm {
                     self.compound_free = Some((a, b));
                     return Ok(());
                 }
-                Some(Instr::Assign { cv, src }) if src == dst && cv == a => {
+                // (`$x = $x <op> ...` has the same shape, but its result
+                // register comes after the operand's.)
+                Some(Instr::Assign { cv, src }) if src == dst && cv == a && dst < b => {
                     self.reg_set(top, dst, v.clone());
                     self.stack[top].pc = pc + 1;
                     if self.typed_refs.is_empty()

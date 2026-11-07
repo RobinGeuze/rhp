@@ -1,4 +1,5 @@
 <?php
+ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 $s = new SplObjectStorage; $o = new stdClass;
 $s->attach($o, 1); var_dump($s->contains($o)); $s->detach($o); var_dump(count($s));
 class T extends SplObjectStorage { function offsetSet($k, $v = null): void { echo "os\n"; parent::offsetSet($k, $v); } function offsetExists($k): bool { echo "oe\n"; return parent::offsetExists($k); } function offsetUnset($k): void { echo "ou\n"; parent::offsetUnset($k);} }

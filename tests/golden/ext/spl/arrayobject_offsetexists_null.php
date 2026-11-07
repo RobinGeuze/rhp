@@ -1,4 +1,5 @@
 <?php
+ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 foreach ([new ArrayObject(['f'=>null, ''=>null, 1=>null, 'x'=>1]), new ArrayIterator(['f'=>null, ''=>null, 1=>null, 'x'=>1])] as $o) {
   var_dump($o->offsetExists('f'), $o->offsetExists('g'), $o->offsetExists(null), $o->offsetExists(1.7), $o->offsetExists(true), $o->offsetExists('x'));
   var_dump(isset($o['f']), isset($o['x']), empty($o['f']), array_key_exists('f', (array)$o->getArrayCopy()));

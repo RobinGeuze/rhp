@@ -1,7 +1,7 @@
 
-Deprecated: Using null as an array offset is deprecated, use an empty string instead in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/ext/spl/arrayobject_offsetexists_null.php on line 3
+Deprecated: Using null as an array offset is deprecated, use an empty string instead in F on line 4
 
-Deprecated: Implicit conversion from float 1.7 to int loses precision in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/ext/spl/arrayobject_offsetexists_null.php on line 3
+Deprecated: Implicit conversion from float 1.7 to int loses precision in F on line 4
 bool(true)
 bool(false)
 bool(true)
@@ -14,9 +14,9 @@ bool(true)
 bool(true)
 TypeError: Cannot access offset of type array in isset or empty
 
-Deprecated: Using null as an array offset is deprecated, use an empty string instead in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/ext/spl/arrayobject_offsetexists_null.php on line 3
+Deprecated: Using null as an array offset is deprecated, use an empty string instead in F on line 4
 
-Deprecated: Implicit conversion from float 1.7 to int loses precision in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/ext/spl/arrayobject_offsetexists_null.php on line 3
+Deprecated: Implicit conversion from float 1.7 to int loses precision in F on line 4
 bool(true)
 bool(false)
 bool(true)

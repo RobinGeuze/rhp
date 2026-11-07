@@ -1,8 +1,61 @@
 int(1)
 int(0)
 p Foo1
+array(1) {
+  [0]=>
+  array(2) {
+    [0]=>
+    object(A)#2 (0) {
+    }
+    [1]=>
+    string(1) "p"
+  }
+}
+bool(false)
+array(3) {
+  [0]=>
+  array(2) {
+    [0]=>
+    object(A)#2 (0) {
+    }
+    [1]=>
+    string(1) "p"
+  }
+  [1]=>
+  array(2) {
+    [0]=>
+    object(A)#2 (0) {
+    }
+    [1]=>
+    string(2) "zz"
+  }
+  [2]=>
+  array(2) {
+    [0]=>
+    object(A)#2 (0) {
+    }
+    [1]=>
+    string(2) "ZZ"
+  }
+}
+p Foo2
+call zz
+call ZZ
+int(5)
+bool(false)
+bool(true)
 
-Fatal error: Uncaught Error: Class "Foo1" not found in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/oop/autoload_unregister_identity.php:5
-Stack trace:
-#0 {main}
-  thrown in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/oop/autoload_unregister_identity.php on line 5
+Notice: spl_autoload_register(): Argument #2 ($do_throw) has been ignored, spl_autoload_register() will always throw in F on line 14
+bool(true)
+p Foo3
+call zz
+call ZZ
+l Foo3
+p Foo4
+call zz
+call ZZ
+spl_autoload_register(): Argument #1 ($callback) must not be the spl_autoload_call() function
+
+Deprecated: spl_autoload_unregister(): Using spl_autoload_call() as a callback for spl_autoload_unregister() is deprecated, to remove all registered autoloaders, call spl_autoload_unregister() for all values returned from spl_autoload_functions() in F on line 19
+array(0) {
+}

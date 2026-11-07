@@ -84,4 +84,11 @@ function loop() {
     var_dump(gc_collect_cycles());
 }
 loop();
+
+echo "-- a closure key whose value holds it\n";
+$m = new WeakMap();
+$c = function () {};
+$m[$c] = [$c, new stdClass()];
+unset($c);
+var_dump(gc_collect_cycles(), count($m));
 echo "done\n";

@@ -145,4 +145,8 @@ holder does.
   rhp's only drops the frame.
 - A generator running inside a suspended fiber is also held by the Rust
   call that resumed it (a method call's handle), so it is kept.
+- A fiber whose callable is not a plain closure (`[$obj, 'method']`, a
+  function name, a closure given named arguments) is started through
+  `call_callable_named`, whose holds are not counted: a suspended one in a
+  cycle is kept.
 - "GC buffer overflow (GC disabled)" at a billion roots.

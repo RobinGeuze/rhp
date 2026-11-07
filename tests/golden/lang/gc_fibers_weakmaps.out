@@ -25,4 +25,7 @@ int(1)
 -- by-reference foreach holds its array
 int(0)
 int(1)
+-- a closure key whose value holds it
+int(3)
+int(0)
 done

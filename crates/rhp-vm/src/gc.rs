@@ -634,10 +634,7 @@ impl Vm {
                         }
                         rhp_values::gc_free_object(h);
                     }
-                    Value::Closure(c) => {
-                        let s = std::mem::take(&mut *c.statics.borrow_mut());
-                        drop(s);
-                    }
+                    Value::Closure(c) => rhp_values::gc_free_closure(c),
                     _ => {}
                 }
                 holds.push(v);

@@ -641,6 +641,17 @@ pub fn gc_free_object(h: &ObjectHandle) {
     release_object_id(id);
 }
 
+/// [`gc_free_object`] for a garbage closure: its weak references and its
+/// static variables go now. Other garbage (a WeakMap entry's value, say)
+/// may still hold it, so its handle goes when the last holder drops it.
+pub fn gc_free_closure(c: &ClosureData) {
+    if c.weakly_referenced.replace(false) {
+        weak_notify(c.id);
+    }
+    let statics = std::mem::take(&mut *c.statics.borrow_mut());
+    drop(statics);
+}
+
 /// What kind of class-like declaration a class table entry is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClassKind {

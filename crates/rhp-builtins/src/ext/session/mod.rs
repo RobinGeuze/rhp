@@ -408,6 +408,30 @@ fn encode_loop(
     Ok(())
 }
 
+/// php_var_serialize for a session encoder: nothing while an exception is
+/// pending; one the value throws is held (EG(exception)).
+fn ser_value(
+    host: &mut dyn Host,
+    ser: &mut crate::ext::standard::var::SessionSer,
+    buf: &mut Vec<u8>,
+    v: &Value,
+) -> Result<(), Thrown> {
+    if has_exception(host) {
+        return Ok(());
+    }
+    ser.value(host, buf, v)?;
+    match ser.take_exception() {
+        // At RSHUTDOWN php reports it as uncaught and bails out: nothing
+        // is written.
+        Some(t) if ps(|p| p.in_shutdown) => Err(t),
+        Some(t) => {
+            throw(host, t);
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
 /// The serializer's encode: `None` is NULL (nothing written).
 fn encode_with(host: &mut dyn Host, s: Serializer) -> Result<Option<Vec<u8>>, Thrown> {
     let mut buf = Vec::new();
@@ -416,7 +440,7 @@ fn encode_with(host: &mut dyn Host, s: Serializer) -> Result<Option<Vec<u8>>, Th
             if let Some(c) = session_vars() {
                 let v = c.borrow().clone();
                 let mut ser = crate::ext::standard::var::SessionSer::begin();
-                let r = ser.value(host, &mut buf, &v);
+                let r = ser_value(host, &mut ser, &mut buf, &v);
                 ser.end();
                 r?;
             }
@@ -430,7 +454,7 @@ fn encode_with(host: &mut dyn Host, s: Serializer) -> Result<Option<Vec<u8>>, Th
                 }
                 buf.push(key.len() as u8);
                 buf.extend_from_slice(key);
-                ser.value(host, &mut buf, v)?;
+                ser_value(host, &mut ser, &mut buf, v)?;
                 Ok(true)
             });
             ser.end();
@@ -453,7 +477,7 @@ fn encode_with(host: &mut dyn Host, s: Serializer) -> Result<Option<Vec<u8>>, Th
                     return Ok(false);
                 }
                 buf.push(b'|');
-                ser.value(host, &mut buf, v)?;
+                ser_value(host, &mut ser, &mut buf, v)?;
                 Ok(true)
             });
             ser.end();

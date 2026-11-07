@@ -1174,6 +1174,10 @@ fn ser_destroy() {
 
 struct Serializer {
     d: Rc<RefCell<SerData>>,
+    /// ext/session's encoders: an exception is held (EG(exception)) and
+    /// every value after it serializes to nothing, as php's
+    /// php_var_serialize_intern returns early once one is pending.
+    held: Option<Option<Thrown>>,
 }
 
 impl Serializer {
@@ -1228,6 +1232,25 @@ impl Serializer {
     }
 
     fn value(&mut self, host: &mut dyn Host, out: &mut Vec<u8>, v: &Value) -> Result<(), Thrown> {
+        match &self.held {
+            None => self.value_inner(host, out, v),
+            Some(Some(_)) => Ok(()),
+            Some(None) => match self.value_inner(host, out, v) {
+                Err(t) if t.is_catchable() => {
+                    self.held = Some(Some(t));
+                    Ok(())
+                }
+                r => r,
+            },
+        }
+    }
+
+    fn value_inner(
+        &mut self,
+        host: &mut dyn Host,
+        out: &mut Vec<u8>,
+        v: &Value,
+    ) -> Result<(), Thrown> {
         crate::zend::call_stack::check()?;
         match self.add_var_hash(v) {
             0 => {}
@@ -1521,7 +1544,10 @@ fn serialize_key(out: &mut Vec<u8>, k: &ArrayKey) {
 
 fn fn_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = Vec::new();
-    let mut s = Serializer { d: ser_init() };
+    let mut s = Serializer {
+        d: ser_init(),
+        held: None,
+    };
     let r = s.value(host, &mut out, &deref(&args[0]));
     ser_destroy();
     r?;
@@ -3341,7 +3367,15 @@ pub(crate) struct SessionSer(Serializer);
 impl SessionSer {
     /// PHP_VAR_SERIALIZE_INIT.
     pub(crate) fn begin() -> Self {
-        SessionSer(Serializer { d: ser_init() })
+        SessionSer(Serializer {
+            d: ser_init(),
+            held: Some(None),
+        })
+    }
+
+    /// The exception a value threw: held, and nothing serialized since.
+    pub(crate) fn take_exception(&mut self) -> Option<Thrown> {
+        self.0.held.as_mut().and_then(Option::take)
     }
 
     pub(crate) fn value(

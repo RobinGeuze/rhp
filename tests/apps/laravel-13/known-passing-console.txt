@@ -53,6 +53,7 @@ route-list-v
 schedule-list
 storage-link
 stub-publish
+vendor-publish-laravel-errors
 version
 view-cache
 w-db
@@ -61,5 +62,6 @@ w-http-debug
 w-mail
 w-queue
 w-security
+w-storage
 w-validation
 w-view

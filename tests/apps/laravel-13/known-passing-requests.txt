@@ -19,6 +19,7 @@ enum-errors
 enum-ok
 upload
 upload-mime
+storage
 boom
 debug/home
 debug/hello-world
@@ -39,4 +40,5 @@ debug/enum-errors
 debug/enum-ok
 debug/upload
 debug/upload-mime
+debug/storage
 debug/boom

@@ -52,6 +52,11 @@ fn stat_path(
     if p.is_empty() || p.contains(&0) {
         return Ok(Some(None));
     }
+    // php_stat's IS_EXISTS_CHECK: the wrapper's stat is quiet
+    let quiet = matches!(fname, "is_file" | "is_dir" | "is_link");
+    if let Some(st) = user_stat(host, &p, link, quiet) {
+        return Ok(Some(st));
+    }
     let url = match crate::locate_url(host, fname, &p)? {
         Located::Plain(local) => {
             if !crate::main::fopen_wrappers::check(host, fname, &local, true)? {
@@ -74,6 +79,17 @@ fn stat_path(
     } else {
         host.stream_stat(&url)
     }))
+}
+
+/// `php_stream_stat_path_ex` through a user wrapper; `None` when no user
+/// wrapper serves `path`.
+fn user_stat(host: &mut dyn Host, path: &[u8], link: bool, quiet: bool) -> Option<Option<StatInfo>> {
+    let st = crate::main::streams::userspace::cached_stat(host, path, link, quiet);
+    if st.is_none() {
+        // a stat of another path takes php's cache over
+        crate::main::streams::userspace::clear_stat_cache();
+    }
+    st
 }
 
 /// The path php_stat's access checks (`file_exists`, `is_readable`, …)
@@ -248,13 +264,19 @@ fn access_check(
     if p.is_empty() || p.contains(&0) {
         return Ok(false);
     }
+    let user = user_stat(host, &p, false, true);
     let url = match access_path(host, fname, &p)? {
+        _ if user.is_some() => Vec::new(),
         Ok(local) => {
             return Ok(local.is_some_and(|l| crate::zend::virtual_cwd::access(&l, amode)));
         }
         Err(url) => url,
     };
-    let Some(s) = host.stream_stat(&url) else {
+    let st = match user {
+        Some(st) => st,
+        None => host.stream_stat(&url),
+    };
+    let Some(s) = st else {
         return Ok(false);
     };
     // php_stat (filestat.c): owner bits if we own it, group bits for our
@@ -323,6 +345,18 @@ fn do_chown(
 ) -> Result<Value, Thrown> {
     let path = path_param(args, 0, fname, "filename")?;
     let who = args.get(1).map(deref).unwrap_or(Value::Null);
+    if !link {
+        if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+            use crate::main::streams::userspace as us;
+            let (opt, v) = match (&who, group) {
+                (Value::Str(_), false) => (us::META_OWNER_NAME, who.clone()),
+                (Value::Str(_), true) => (us::META_GROUP_NAME, who.clone()),
+                (_, false) => (us::META_OWNER, Value::Int(conv::to_int(&who))),
+                (_, true) => (us::META_GROUP, Value::Int(conv::to_int(&who))),
+            };
+            return Ok(Value::Bool(us::metadata(host, &w, &path, opt, v)));
+        }
+    }
     let id: u32 = match &who {
         Value::Int(n) => *n as u32,
         Value::Str(s) => {
@@ -418,6 +452,9 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if p.is_empty() || p.contains(&0) {
         return Ok(Value::Bool(false));
     }
+    if let Some(st) = user_stat(host, &p, false, true) {
+        return Ok(Value::Bool(st.is_some()));
+    }
     Ok(Value::Bool(match access_path(host, "file_exists", &p)? {
         Ok(Some(local)) => host.stream_exists(&local),
         Ok(None) => false,
@@ -438,6 +475,26 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             "mtime",
             "cannot be null when argument #3 ($atime) is an integer",
         ));
+    }
+    if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+        let mut times = PhpArray::new();
+        if !null_at(1) || !null_at(2) {
+            let m = args.get(1).map(deref).map_or(0, |v| conv::to_int(&v));
+            let a = match args.get(2).map(deref) {
+                Some(v) if !matches!(v, Value::Null) => conv::to_int(&v),
+                _ => m,
+            };
+            times.push(Value::Int(m));
+            times.push(Value::Int(a));
+        }
+        let us = crate::main::streams::userspace::META_TOUCH;
+        return Ok(Value::Bool(crate::main::streams::userspace::metadata(
+            host,
+            &w,
+            &path,
+            us,
+            Value::Array(times),
+        )));
     }
     if !crate::main::fopen_wrappers::check(
         host,
@@ -502,6 +559,7 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 /// cache; the realpath cache loses `$filename`'s entry, or all of them.
 fn fn_clearstatcache(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let clear = args.first().is_some_and(|v| conv::to_bool(&deref(v)));
+    crate::main::streams::userspace::clear_stat_cache();
     let path = path_param(args, 1, "clearstatcache", "filename")?;
     if clear {
         use crate::zend::virtual_cwd::realpath_cache;
@@ -540,8 +598,15 @@ fn fn_realpath_cache_get(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thr
 }
 
 fn fn_chmod(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mode = conv::to_int(&deref(&args[1])) as libc::mode_t;
     let path = path_arg(args, 0);
+    if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+        let us = crate::main::streams::userspace::META_ACCESS;
+        let mode = Value::Int(conv::to_int(&deref(&args[1])));
+        return Ok(Value::Bool(crate::main::streams::userspace::metadata(
+            host, &w, &path, us, mode,
+        )));
+    }
+    let mode = conv::to_int(&deref(&args[1])) as libc::mode_t;
     if !crate::main::fopen_wrappers::check(
         host,
         "chmod",

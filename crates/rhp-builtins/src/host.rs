@@ -691,6 +691,11 @@ pub trait Host {
         None
     }
 
+    /// Set PHP_STREAM_FLAG_NO_FCLOSE on a stream; returns the old state.
+    fn stream_no_fclose(&mut self, _res: &Value, _on: bool) -> bool {
+        false
+    }
+
     /// Give back a user stream [`Host::user_stream_take`] took.
     fn user_stream_put(&mut self, _res: &Value, _s: Box<userspace::UserStream>) {}
 

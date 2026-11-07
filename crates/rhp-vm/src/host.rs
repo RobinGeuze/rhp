@@ -482,6 +482,13 @@ impl Host for Vm {
         self.host_user_stream_take(res)
     }
 
+    fn stream_no_fclose(&mut self, res: &Value, on: bool) -> bool {
+        match res_id(res).and_then(|id| self.streams.record_mut(id)) {
+            Some(r) => std::mem::replace(&mut r.no_fclose, on),
+            None => false,
+        }
+    }
+
     fn user_stream_put(
         &mut self,
         res: &Value,
@@ -910,6 +917,11 @@ impl Host for Vm {
     }
 
     fn set_pending_throw(&mut self, t: Thrown) {
+        // an Error a builtin raised gets its object (and trace) now
+        let t = match t {
+            e @ Thrown::Error { .. } => self.materialize(e, None),
+            t => t,
+        };
         match self.pending_throw.take() {
             Some(prev) => {
                 let t = self.chain_thrown(t, prev);
@@ -1000,7 +1012,7 @@ impl Host for Vm {
     }
 
     fn stream_eof(&mut self, res: &Value) -> bool {
-        if let Some(r) = self.with_user(res, |s, vm| s.stream_eof(vm)) {
+        if let Some(r) = self.with_user_free(res, |s, vm| s.stream_eof(vm)) {
             return r;
         }
         self.stream_eof_filtered(res)
@@ -1385,7 +1397,7 @@ impl Host for Vm {
     }
 
     fn stream_flush(&mut self, res: &Value) -> bool {
-        if let Some(r) = self.with_user(res, |s, vm| s.flush(vm)) {
+        if let Some(r) = self.with_user_free(res, |s, vm| s.flush(vm)) {
             return r == 0;
         }
         self.stream_flush_filtered(res)
@@ -1421,7 +1433,7 @@ impl Host for Vm {
     }
 
     fn stream_tell(&mut self, res: &Value) -> Option<i64> {
-        if let Some(r) = self.with_user(res, |s, _| s.tell()) {
+        if let Some(r) = self.with_user_free(res, |s, _| s.tell()) {
             return Some(r);
         }
         self.stream_tell_filtered(res)
@@ -1429,7 +1441,7 @@ impl Host for Vm {
 
     fn stream_truncate(&mut self, res: &Value, size: i64) -> Option<bool> {
         use builtins::main::streams::userspace as us;
-        if let Some(r) = self.with_user(res, |s, vm| {
+        if let Some(r) = self.with_user_free(res, |s, vm| {
             if s.set_option(vm, us::OPTION_TRUNCATE_API, us::TRUNCATE_SUPPORTED, None)
                 != us::OPTION_RETURN_OK
             {
@@ -1466,7 +1478,7 @@ impl Host for Vm {
     }
 
     fn stream_fstat(&mut self, res: &Value) -> Option<builtins::StatInfo> {
-        if let Some(r) = self.with_user(res, |s, vm| s.stat(vm)) {
+        if let Some(r) = self.with_user_free(res, |s, vm| s.stat(vm)) {
             return r;
         }
         let id = res_id(res)?;
@@ -1753,7 +1765,7 @@ impl Host for Vm {
     }
 
     fn dir_read(&mut self, res: &Value) -> Option<Vec<u8>> {
-        if let Some(r) = self.with_user(res, |s, vm| s.readdir(vm)) {
+        if let Some(r) = self.with_user_free(res, |s, vm| s.readdir(vm)) {
             return r;
         }
         match self.streams.get_mut(&res_id(res)?)? {
@@ -1769,7 +1781,7 @@ impl Host for Vm {
     }
 
     fn dir_rewind(&mut self, res: &Value) {
-        if self.with_user(res, |s, vm| s.rewinddir(vm)).is_some() {
+        if self.with_user_free(res, |s, vm| s.rewinddir(vm)).is_some() {
             return;
         }
         let Some(id) = res_id(res) else { return };

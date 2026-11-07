@@ -612,6 +612,12 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         .map(|v| conv::to_bool(&deref(v)))
         .unwrap_or(false);
     touch_ctx(host, args, 3);
+    if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+        let ctx = ctx_or_default(host, args, 3);
+        let us = crate::main::streams::userspace::REPORT_ERRORS | recursive as i64;
+        let ok = crate::main::streams::userspace::mkdir(host, &w, &path, mode, us, Some(&ctx));
+        return Ok(Value::Bool(ok));
+    }
     let (scheme, _) = split_scheme(&path);
     if scheme != b"file" {
         return Ok(Value::Bool(false));
@@ -675,6 +681,14 @@ fn fn_mkdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let from = path_param(args, 0, "copy", "from")?;
     let to = path_param(args, 1, "copy", "to")?;
+    if host.has_user_wrappers()
+        && (crate::main::streams::userspace::locate(host, &from).is_some()
+            || crate::main::streams::userspace::locate(host, &to).is_some())
+    {
+        touch_ctx(host, args, 2);
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
+        return copy_streams(host, &from, &to, &ctx);
+    }
     let ob = crate::main::fopen_wrappers::active();
     if ob
         && matches!(
@@ -778,6 +792,65 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(true))
+}
+
+/// php_copy_file_ctx over streams (a user wrapper on either side): the
+/// stat checks, then a chunked copy from the source to the target.
+fn copy_streams(host: &mut dyn Host, from: &[u8], to: &[u8], ctx: &Value) -> Result<Value, Thrown> {
+    use crate::main::streams::userspace as us;
+    let stat = |host: &mut dyn Host, p: &[u8], quiet: bool| match us::cached_stat(host, p, false, quiet) {
+        Some(s) => s,
+        None => host.stream_stat(p),
+    };
+    if let Some(s) = stat(host, from, false) {
+        if s.is_dir {
+            crate::warn(
+                host,
+                "copy",
+                "The first argument to copy() function cannot be a directory",
+            )?;
+            return Ok(Value::Bool(false));
+        }
+        if let Some(d) = stat(host, to, true) {
+            if d.is_dir {
+                crate::warn(
+                    host,
+                    "copy",
+                    "The second argument to copy() function cannot be a directory",
+                )?;
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
+    if host.has_pending_throw() {
+        return Ok(Value::Bool(false));
+    }
+    let Some(src) = open_stream(host, "copy", from, b"rb", ctx, false)? else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(dst) = open_stream(host, "copy", to, b"wb", ctx, false)? else {
+        host.stream_close(&src);
+        return Ok(Value::Bool(false));
+    };
+    let mut ok = true;
+    loop {
+        match host.stream_read(&src, 8192) {
+            Some(b) if !b.is_empty() => {
+                if host.stream_write(&dst, &b) != Some(b.len()) {
+                    ok = false;
+                    break;
+                }
+            }
+            Some(_) => break,
+            None => {
+                ok = false;
+                break;
+            }
+        }
+    }
+    host.stream_close(&src);
+    host.stream_close(&dst);
+    Ok(Value::Bool(ok))
 }
 
 /// copy() from one local file to another through the default `file://`
@@ -1359,7 +1432,7 @@ fn exec_dir(host: &dyn Host) -> Option<Vec<u8>> {
 /// `php_resolve_path(filename, PG(include_path))`: the real path of the
 /// first include_path entry (then the executing script's directory) that
 /// holds `name`.
-pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn resolve_include_path(host: &mut dyn Host, name: &[u8]) -> Option<Vec<u8>> {
     if name.contains(&0) {
         return None;
     }
@@ -1383,8 +1456,13 @@ pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u
     }
     // A candidate: a wrapper entry is stat'ed through its wrapper, a plain
     // one resolved with realpath.
-    let try_path = |trypath: &[u8], wrapper: bool| -> Option<Vec<u8>> {
+    let try_path = |host: &mut dyn Host, trypath: &[u8], wrapper: bool| -> Option<Vec<u8>> {
         if wrapper {
+            if let Some((w, _)) = crate::main::streams::userspace::locate(host, trypath) {
+                use crate::main::streams::userspace as us;
+                return us::url_stat(host, &w, trypath, us::URL_STAT_QUIET, None)
+                    .map(|_| trypath.to_vec());
+            }
             let (scheme, _) = split_scheme(trypath);
             if scheme.eq_ignore_ascii_case(b"file") {
                 return realpath_bytes(crate::main::streams::file_path(trypath));
@@ -1412,20 +1490,23 @@ pub(crate) fn resolve_include_path(host: &dyn Host, name: &[u8]) -> Option<Vec<u
         let mut trypath = entry.to_vec();
         trypath.push(b'/');
         trypath.extend_from_slice(name);
-        if let Some(r) = try_path(&trypath, wrapper) {
+        if let Some(r) = try_path(host, &trypath, wrapper) {
             return Some(r);
+        }
+        if host.has_pending_throw() {
+            return None;
         }
     }
     let mut trypath = exec_dir(host)?;
     trypath.push(b'/');
     trypath.extend_from_slice(name);
     let wrapper = protocol_len(&trypath).is_some();
-    try_path(&trypath, wrapper)
+    try_path(host, &trypath, wrapper)
 }
 
 /// Where a plain-file open with `use_include_path` goes: the resolved
 /// path, else the name as given.
-pub(crate) fn include_path_target(host: &dyn Host, name: &[u8]) -> Vec<u8> {
+pub(crate) fn include_path_target(host: &mut dyn Host, name: &[u8]) -> Vec<u8> {
     if split_scheme(name).0 != b"file" {
         return name.to_vec();
     }
@@ -1536,6 +1617,10 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     } else {
         url
     };
+    if host.has_user_wrappers() && crate::main::streams::userspace::locate(host, &url).is_some() {
+        let ctx = args.get(2).map(deref).unwrap_or(Value::Null);
+        return get_contents_via_stream(host, &url, &ctx, offset, maxlen);
+    }
     let Some(url) = crate::locate_for_open(host, "file_get_contents", &url)? else {
         return Ok(Value::Bool(false));
     };
@@ -1945,9 +2030,23 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     })
 }
 
+/// The call's context argument, else the default context
+/// (`php_stream_context_from_zval(zcontext, 0)`).
+fn ctx_or_default(host: &mut dyn Host, args: &[Value], idx: usize) -> Value {
+    match args.get(idx).map(deref) {
+        Some(v @ Value::Resource(_)) => v,
+        _ => host.default_stream_context(),
+    }
+}
+
 fn fn_unlink(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 1);
     let path = path_arg(args, 0);
+    if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+        let ctx = ctx_or_default(host, args, 1);
+        let ok = crate::main::streams::userspace::unlink(host, &w, &path, Some(&ctx));
+        return Ok(Value::Bool(ok));
+    }
     if !crate::main::fopen_wrappers::check(host, "unlink", strip_file_scheme(&path), true)? {
         return Ok(Value::Bool(false));
     }
@@ -1983,6 +2082,12 @@ pub(crate) fn os_text(e: &std::io::Error) -> String {
 fn fn_rmdir(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "rmdir", "directory")?;
     touch_ctx(host, args, 1);
+    if let Some((w, _)) = crate::main::streams::userspace::locate(host, &path) {
+        let ctx = ctx_or_default(host, args, 1);
+        let us = crate::main::streams::userspace::REPORT_ERRORS;
+        let ok = crate::main::streams::userspace::rmdir(host, &w, &path, us, Some(&ctx));
+        return Ok(Value::Bool(ok));
+    }
     if !crate::main::fopen_wrappers::check(host, "rmdir", strip_file_scheme(&path), true)? {
         return Ok(Value::Bool(false));
     }
@@ -2008,6 +2113,21 @@ fn rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     touch_ctx(host, args, 2);
     let from_b = path_arg(args, 0);
     let to_b = path_arg(args, 1);
+    let (uf, ut) = (
+        crate::main::streams::userspace::locate(host, &from_b),
+        crate::main::streams::userspace::locate(host, &to_b),
+    );
+    if uf.is_some() || ut.is_some() {
+        let same = matches!((&uf, &ut), (Some((a, _)), Some((b, _))) if std::rc::Rc::ptr_eq(a, b));
+        if !same {
+            crate::warn(host, "rename", "Cannot rename a file across wrapper types")?;
+            return Ok(Value::Bool(false));
+        }
+        let (w, _) = uf.unwrap();
+        let ctx = ctx_or_default(host, args, 2);
+        let ok = crate::main::streams::userspace::rename(host, &w, &from_b, &to_b, Some(&ctx));
+        return Ok(Value::Bool(ok));
+    }
     if !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&from_b), true)?
         || !crate::main::fopen_wrappers::check(host, "rename", strip_file_scheme(&to_b), true)?
     {

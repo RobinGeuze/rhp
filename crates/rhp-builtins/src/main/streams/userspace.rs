@@ -71,6 +71,9 @@ impl StreamWrapper for UserWrapper {
     fn stat(&self, _url: &[u8]) -> Option<StatInfo> {
         None
     }
+    fn has_stream_opener(&self) -> bool {
+        true
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -94,7 +97,55 @@ thread_local! {
     static IN_USER_INCLUDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// php_stat's cache (BG(CurrentStatFile), BG(CurrentLStatFile)) as far
+/// as it shows: for paths a user wrapper stats.
+type StatCache = (Option<(Vec<u8>, StatInfo)>, Option<(Vec<u8>, StatInfo)>);
+
+thread_local! {
+    static STAT_CACHE: RefCell<StatCache> = const { RefCell::new((None, None)) };
+}
+
+/// `php_clear_stat_cache`.
+pub fn clear_stat_cache() {
+    STAT_CACHE.with(|c| *c.borrow_mut() = (None, None));
+}
+
+/// php_stat's `url_stat` through the stat cache: `None` when no user
+/// wrapper serves `filename`.
+pub fn cached_stat(
+    host: &mut dyn Host,
+    filename: &[u8],
+    link: bool,
+    quiet: bool,
+) -> Option<Option<StatInfo>> {
+    if !host.has_user_wrappers() {
+        return None;
+    }
+    let (w, p) = locate(host, filename)?;
+    let hit = STAT_CACHE.with(|c| {
+        let c = c.borrow();
+        let e = if link { &c.1 } else { &c.0 };
+        e.as_ref().filter(|(f, _)| f == filename).map(|(_, s)| s.clone())
+    });
+    if hit.is_some() {
+        return Some(hit);
+    }
+    let flags = if link { URL_STAT_LINK } else { 0 } | if quiet { URL_STAT_QUIET } else { 0 };
+    let st = url_stat(host, &w, &p, flags, None)?;
+    STAT_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if link {
+            c.1 = Some((filename.to_vec(), st.clone()));
+        }
+        if !link || !st.is_link() {
+            c.0 = Some((filename.to_vec(), st.clone()));
+        }
+    });
+    Some(Some(st))
+}
+
 pub(crate) fn reset_state() {
+    clear_stat_cache();
     CURRENT_FILENAME.with(|c| *c.borrow_mut() = None);
     IN_USER_INCLUDE.with(|c| c.set(false));
 }

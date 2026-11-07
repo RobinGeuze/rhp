@@ -896,7 +896,10 @@ impl Vm {
             .streams
             .ids()
             .into_iter()
-            .filter(|id| self.layer(*id).is_some())
+            .filter(|id| {
+                self.layer(*id).is_some()
+                    || matches!(self.streams.get(id), Some(StreamState::User(_)))
+            })
             .collect();
         ids.sort_unstable();
         self.closing_resources = true;

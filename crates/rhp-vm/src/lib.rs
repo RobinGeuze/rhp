@@ -323,6 +323,9 @@ pub struct Vm {
     /// The include kind while an include opens its file (php's docref
     /// names the include then).
     include_docref: Option<&'static str>,
+    /// The frame depth a user-wrapper include runs its stream at: php's
+    /// docref names the include there.
+    include_docref_depth: usize,
     /// The end-of-request resource list close is running: filters see a
     /// null stream.
     closing_resources: bool,

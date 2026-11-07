@@ -382,7 +382,10 @@ impl Vm {
         let prog = self.compile_included_file(&realpath, raw_path.as_slice(), source);
         // zend_destroy_file_handle: the stream closes after compiling
         if let Some(s) = user_stream.take() {
+            self.include_docref = Some(kind.name());
+            self.include_docref_depth = self.stack.len();
             self.close_user_state(Some(s));
+            self.include_docref = None;
         }
         let prog = prog?;
         self.emit_compile_diags(&prog);

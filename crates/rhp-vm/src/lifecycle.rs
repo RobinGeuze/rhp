@@ -163,6 +163,7 @@ impl Vm {
             error_handlers: Vec::new(),
             pending_throw: None,
             include_docref: None,
+            include_docref_depth: 0,
             closing_resources: false,
             filtered_streams: 0,
             native_resources: HashMap::new(),

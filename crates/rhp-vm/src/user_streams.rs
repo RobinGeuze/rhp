@@ -21,10 +21,33 @@ impl Vm {
 
     /// Run `f` on the user stream behind `res`: `None` when it is not one
     /// (or an operation on it is running already).
+    /// The stream cannot be closed meanwhile (PHP_STREAM_FLAG_NO_FCLOSE,
+    /// as php sets it around read, write, seek and cast).
     #[inline]
     pub(crate) fn with_user<R>(
         &mut self,
         res: &Value,
+        f: impl FnOnce(&mut UserStream, &mut Vm) -> R,
+    ) -> Option<R> {
+        self.with_user_as(res, true, f)
+    }
+
+    /// [`Vm::with_user`] for an op php runs without NO_FCLOSE: a close
+    /// meanwhile frees the stream once the op returns.
+    #[inline]
+    pub(crate) fn with_user_free<R>(
+        &mut self,
+        res: &Value,
+        f: impl FnOnce(&mut UserStream, &mut Vm) -> R,
+    ) -> Option<R> {
+        self.with_user_as(res, false, f)
+    }
+
+    #[inline]
+    fn with_user_as<R>(
+        &mut self,
+        res: &Value,
+        guard: bool,
         f: impl FnOnce(&mut UserStream, &mut Vm) -> R,
     ) -> Option<R> {
         let id = res_id(res)?;
@@ -33,7 +56,8 @@ impl Vm {
             return None;
         };
         let mut us = slot.take()?;
-        let was = std::mem::replace(&mut rec.no_fclose, true);
+        let was = rec.no_fclose;
+        rec.no_fclose |= guard;
         let r = f(&mut us, self);
         self.user_put(id, us, was);
         Some(r)
@@ -47,7 +71,7 @@ impl Vm {
                     *slot = Some(us);
                 }
             }
-            // closed meanwhile (cannot happen while no_fclose is set)
+            // closed meanwhile: the close op runs now
             None => {
                 let mut us = us;
                 us.close(self);
@@ -78,7 +102,11 @@ impl Vm {
         s: Box<UserStream>,
         ctx: Option<Value>,
     ) -> Value {
+        let dir = s.dir;
         let v = self.make_stream(StreamState::User(Some(s)), "stream");
+        if dir {
+            self.last_dir = Some(v.clone());
+        }
         if let Some(cid) = ctx.as_ref().and_then(res_id) {
             if let Some(rec) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
                 rec.ctx = Some(cid);
@@ -89,18 +117,16 @@ impl Vm {
 
     pub(crate) fn host_user_stream_take(&mut self, res: &Value) -> Option<Box<UserStream>> {
         let id = res_id(res)?;
-        let rec = self.streams.record_mut(id)?;
-        let s = match &mut rec.state {
-            StreamState::User(slot) => slot.take()?,
-            _ => return None,
-        };
-        rec.no_fclose = true;
-        Some(s)
+        match &mut self.streams.record_mut(id)?.state {
+            StreamState::User(slot) => slot.take(),
+            _ => None,
+        }
     }
 
     pub(crate) fn host_user_stream_put(&mut self, res: &Value, s: Box<UserStream>) {
         let Some(id) = res_id(res) else { return };
-        self.user_put(id, s, false);
+        let was = self.streams.record(id).is_some_and(|r| r.no_fclose);
+        self.user_put(id, s, was);
     }
 
     /// `php_stream_open_wrapper_ex` through a user wrapper, for fopen and
@@ -115,6 +141,10 @@ impl Vm {
         options: i64,
         ctx: &Value,
     ) -> Option<Value> {
+        if w.is_url && !self.user_url_allowed(path)? {
+            builtins::main::streams::note_wrapper_error("no suitable wrapper could be found");
+            return None;
+        }
         // php_stream_context_from_zval(zcontext, 0): the default context
         let ctx = match ctx {
             Value::Resource(_) => Some(ctx.clone()),
@@ -125,6 +155,29 @@ impl Vm {
         s.orig_path = path.to_vec();
         s.opened_for_append(self);
         Some(self.host_user_stream_insert(s, ctx))
+    }
+
+    /// php_stream_locate_url_wrapper's check of a URL wrapper: false
+    /// after its warning when allow_url_fopen (or, inside an include
+    /// through a local user wrapper, allow_url_include) is off.
+    fn user_url_allowed(&mut self, path: &[u8]) -> Option<bool> {
+        let on = |vm: &Self, n: &[u8]| crate::ini_bool(&vm.ini_get(n).unwrap_or_default());
+        let off = if !on(self, b"allow_url_fopen") {
+            "allow_url_fopen"
+        } else if userspace::in_user_include() && !on(self, b"allow_url_include") {
+            "allow_url_include"
+        } else {
+            return Some(true);
+        };
+        let n = path.iter().position(|&b| b == b':').unwrap_or(0);
+        let msg = format!(
+            "{}:// wrapper is disabled in the server configuration by {off}=0",
+            String::from_utf8_lossy(&path[..n])
+        );
+        if let Err(t) = self.docref_diagnostic(builtins::E_WARNING, msg.as_bytes()) {
+            self.pending_throw.get_or_insert(t);
+        }
+        Some(false)
     }
 
     /// Close a user stream whose record was removed from the table.
@@ -154,6 +207,37 @@ impl Vm {
             rfc2397: None,
         })
     }
+}
+
+/// php_resolve_path's walk of include_path: entries split at ':', a
+/// `scheme://` prefix kept whole.
+fn split_include_path(ip: &[u8]) -> Vec<&[u8]> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < ip.len() {
+        let n = ip[i..]
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+            .count();
+        let mut p = i + n;
+        let rest = &ip[p..];
+        // `.://` and `..://` are no stream wrappers
+        if n > 1 && rest.starts_with(b"://") && !(n == 2 && &ip[i..p] == b"..") {
+            p += 3;
+        }
+        let end = ip[p..].iter().position(|&b| b == b':').map(|e| p + e);
+        match end {
+            Some(e) => {
+                out.push(&ip[i..e]);
+                i = e + 1;
+            }
+            None => {
+                out.push(&ip[i..]);
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// What an include through a user wrapper came to.
@@ -222,6 +306,7 @@ impl Vm {
                 userspace::USE_PATH
             };
         self.include_docref = Some(fname);
+        self.include_docref_depth = self.stack.len();
         let opened = userspace::open(self, &w, &open_path, b"rb", options, None);
         if let Some(t) = self.pending_throw.take() {
             self.include_docref = None;
@@ -325,10 +410,7 @@ impl Vm {
         if !ip.windows(3).any(|w| w == b"://") {
             return Ok(None);
         }
-        for dir in ip.split(|&c| c == b':') {
-            if dir.is_empty() {
-                continue;
-            }
+        for dir in split_include_path(&ip) {
             let mut trypath = dir.to_vec();
             trypath.push(b'/');
             trypath.extend_from_slice(raw);

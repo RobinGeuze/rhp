@@ -1148,7 +1148,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         if let Some(a) = a {
             for (_, el) in a.iter() {
                 let el = deref(el);
-                if let Some((fd, _)) = host.stream_select_fd(&el) {
+                if let Some((fd, _)) = select_fd(host, &el)? {
                     if (fd as usize) < libc::FD_SETSIZE {
                         unsafe { libc::FD_SET(fd, &mut sets[i]) };
                         max_fd = max_fd.max(fd);
@@ -1255,7 +1255,7 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         let Some(a) = a else { continue };
         let mut kept = PhpArray::new();
         for (k, el) in a.iter() {
-            if let Some((fd, _)) = host.stream_select_fd(&deref(el)) {
+            if let Some((fd, _)) = select_fd(host, &deref(el))? {
                 if (fd as usize) < libc::FD_SETSIZE && unsafe { libc::FD_ISSET(fd, &sets[i]) } {
                     kept.insert(k.clone(), el.clone());
                 }
@@ -1264,6 +1264,38 @@ fn fn_stream_select(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         write_ref(args.get(i), Value::Array(kept));
     }
     pending.map_or(Ok(Value::Int(n as i64)), Err)
+}
+
+/// php_stream_cast(PHP_STREAM_AS_FD_FOR_SELECT) with errors shown: a user
+/// stream casts to the stream its `stream_cast` returns.
+fn select_fd(host: &mut dyn Host, el: &Value) -> Result<Option<(RawFd, bool)>, Thrown> {
+    let Value::Resource(r) = el else {
+        return Ok(None);
+    };
+    let me = r.id;
+    let was = host.stream_no_fclose(el, true);
+    let inner = us::with(host, el, |s, h| s.cast(h, us::CAST_FOR_SELECT, true, me));
+    host.stream_no_fclose(el, was);
+    let Some(inner) = inner else {
+        return Ok(host.stream_select_fd(el));
+    };
+    let Some(inner) = inner else {
+        return Ok(None);
+    };
+    let fd = select_fd(host, &inner)?;
+    if fd.is_none() {
+        if let Some(m) = host.stream_meta(&inner) {
+            crate::warn(
+                host,
+                "stream_select",
+                &format!(
+                    "Cannot represent a stream of type {} as a select()able descriptor",
+                    m.stream_type
+                ),
+            )?;
+        }
+    }
+    Ok(fd)
 }
 
 /// `stream_isatty($stream)`: isatty(2) on the stream's fd.

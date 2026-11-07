@@ -522,7 +522,8 @@ parameters (user ones, and builtins' through the stub flag `SENS`) become
 default the call path uses, `default_thunk` (a non-constant default
 evaluated alone for `getDefaultValue()`), `default_const` (the name for
 `getDefaultValueConstantName()`) and `default_text`: for a default the
-compiler does not fold, its zend_ast_export text (`ast_export.rs`, names as
+compiler does not fold and that is not built from literals alone, its
+zend_ast_export text (`ast_export.rs`, names as
 zend_compile_const_expr leaves them, constants never substituted, as
 zend_compile_params turns substitution off). `ReflectionParameter::
 __toString()` prints that text (`new \ArrayObject()`, `\N\I::X`) and a

@@ -602,6 +602,8 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     // with opcache.enable=0): the functions exist and report "not started".
     "Zend OPcache",
     "pcntl",
+    "PDO",
+    "pdo_sqlite",
     "Phar",
     "posix",
     "random",

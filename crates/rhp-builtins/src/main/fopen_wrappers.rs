@@ -116,6 +116,17 @@ fn denial(path: &[u8]) -> Option<Denied> {
     })
 }
 
+/// The warning php_check_open_basedir raises for `path`, or `None` when
+/// `path` may be used (for a caller that raises it itself).
+pub fn refusal(path: &[u8]) -> Option<String> {
+    if !active() {
+        return None;
+    }
+    refuse(path).map(|d| match d {
+        Denied::TooLong(m) | Denied::Outside(m) => m,
+    })
+}
+
 /// php_check_open_basedir_ex(path, warn) from builtin `fname`: true when
 /// `path` may be used. A refusal sets errno (EPERM, EINVAL for a path
 /// too long) and raises php's warning.

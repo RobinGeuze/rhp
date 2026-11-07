@@ -501,6 +501,15 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
                 print_date(&mut o);
             } else if *e == "session" {
                 print_session(&mut o);
+            } else if *e == "PDO" || *e == "pdo_sqlite" {
+                let rows = if *e == "PDO" {
+                    crate::ext::pdo::info_rows()
+                } else {
+                    crate::ext::pdo_sqlite::info_rows()
+                };
+                for (k, v) in rows {
+                    o.row(&[&k, &v]);
+                }
             } else if *e == "zip" {
                 for (k, v) in crate::ext::zip::info_rows() {
                     o.row(&[&k, &v]);

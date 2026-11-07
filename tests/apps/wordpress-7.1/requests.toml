@@ -1,0 +1,71 @@
+# Request corpus for `rhp-difftest app wordpress-7.1` (see tests/apps/README.md).
+#
+# Every request runs through php-cgi and then through rhp --cgi, on this same
+# directory, each engine starting from the same pristine state. A path that
+# names a .php file under the docroot (/wp-login.php) runs that file; any
+# other path runs wordpress/index.php (pretty permalinks).
+
+# Writable state, restored from the pristine snapshot before each engine:
+# the SQLite database `setup.php` installed and seeded.
+state = ["var/database"]
+
+# The first request after setup boots the site: it stores the cron schedule
+# (with the time it ran), the default widgets and a few other options. So the
+# corpus runs once through php-cgi first and that database is the pristine
+# state for both engines, as a deploy that has served a request is (warm once,
+# serve many). From then on serving a page only reads it (`@files` lists
+# nothing written).
+warmup = "corpus"
+
+ini = []
+
+# Capture group 1 is a random token, alpha-renamed consistently. WordPress's
+# nonces depend on the time (a new one every 12 hours), so a run that
+# crosses a boundary would see php's and rhp's differ.
+tokens = ['"nonce":"([0-9a-f]{10})"']
+
+[[request]]
+id = "home"
+path = "/"
+status = 200
+
+[[request]]
+id = "post"
+path = "/hello-world/"
+status = 200
+
+[[request]]
+id = "page"
+path = "/sample-page/"
+status = 200
+
+# A plain-permalink URL: canonical redirect to the pretty one.
+[[request]]
+id = "post-by-id"
+path = "/?p=1"
+status = 301
+
+[[request]]
+id = "feed"
+path = "/feed/"
+status = 200
+
+[[request]]
+id = "rest-index"
+path = "/wp-json/"
+status = 200
+
+[[request]]
+id = "rest-posts"
+path = "/wp-json/wp/v2/posts"
+status = 200
+
+[[request]]
+id = "login"
+path = "/wp-login.php"
+status = 200
+
+[[request]]
+id = "not-found"
+path = "/nope/"
+status = 404

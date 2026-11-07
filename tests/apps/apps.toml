@@ -92,3 +92,50 @@ smoke = [
     "GET /up 200",
     "GET /nope 404",
 ]
+
+[[app]]
+name = "wordpress-7.1"
+framework = "wordpress"
+version = "7.1.4"
+docroot = "wordpress"
+front_controller = "wordpress/index.php"
+console = "wp-cli.phar"
+router = false
+# The SQLite drop-in talks to the database through PDO.
+php_extensions = ["pdo", "pdo_sqlite"]
+# No composer: core, the database drop-in and wp-cli are pinned downloads.
+install = ""
+setup = ["php setup.php"]
+lint = ["wordpress", "wp-config.php", "setup.php"]
+known_refused = "known-refused.txt"
+known_requests = "known-passing-requests.txt"
+smoke = [
+    "GET / 200",
+    "GET /hello-world/ 200",
+    "GET /sample-page/ 200",
+    "GET /feed/ 200",
+    "GET /wp-json/ 200",
+    "GET /wp-json/wp/v2/posts 200",
+    "GET /wp-login.php 200",
+    "GET /nope/ 404",
+]
+
+# WordPress core, from wordpress.org; its official sha1 (the .sha1 file next
+# to the tarball) is b175879c4fb2d35300f9abe1153da9b543a35a2b.
+[[app.download]]
+url = "https://downloads.wordpress.org/release/wordpress-7.1.4.tar.gz"
+sha256 = "881e53a4681ff2cd911651b11cccdede5ae477ddf0765af5d6a1a8b219a1d835"
+to = "wordpress"
+
+# The SQLite Database Integration plugin (wordpress.org, which publishes no
+# checksum for plugin zips: this sha256 is the one taken when it was pinned).
+[[app.download]]
+url = "https://downloads.wordpress.org/plugin/sqlite-database-integration.3.1.3.zip"
+sha256 = "f6ce35e8419d0b9326221a907627d905e25c2a5ba2afc86492811f14c851efe0"
+to = "wordpress/wp-content/plugins/sqlite-database-integration"
+
+# wp-cli, the console; sha256 as published with the GitHub release.
+[[app.download]]
+url = "https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar"
+sha256 = "ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"
+to = "wp-cli.phar"

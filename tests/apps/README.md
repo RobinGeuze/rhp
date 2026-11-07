@@ -9,12 +9,15 @@ measured on their own fixture project by `tools.py`; see "Dev tools" below.
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|
 | `symfony-7.4` | `symfony/skeleton` 7.4 + `symfony/twig-bundle`, all `symfony/*` at `7.4.*` | `APP_ENV=prod`, attribute routes in `src/Controller/HelloController.php` |
+| `symfony-8.1` | `symfony/skeleton` 8.1 + `symfony/twig-bundle`, all `symfony/*` at `8.1.*` | the `symfony-7.4` fixture (same `.env`, controller, templates and corpus) on Symfony 8 |
 | `laravel-13`  | `laravel/laravel` 13, every `symfony/*` component pinned to `7.4.*` | `APP_ENV=production`, `APP_DEBUG=false`, file session/cache, sync queue, no database |
+| `wordpress-7.1` | WordPress 7.1.4 (downloaded, not committed) + SQLite Database Integration 3.1.3 | SQLite database seeded by `setup.php`, pretty permalinks, cron and updates off; console: wp-cli 2.12.0 |
 
 `apps.toml` is the manifest: one `[[app]]` entry per app with its docroot,
-front controller, console entry, install/setup commands, the paths to lint
-and the smoke requests. `apps.py` drives everything from it, and CI builds its
-job matrix from it, so the workflow never needs editing for a new app.
+front controller, console entry, pinned downloads, install/setup commands,
+the paths to lint and the smoke requests. `apps.py` drives everything from
+it, and CI builds its job matrix from it, so the workflow never needs
+editing for a new app.
 
 ## What is committed
 
@@ -33,10 +36,17 @@ line differs):
 - `laravel-13`: the `laravel/laravel` 13 application skeleton (app code,
   config, routes, views such as `welcome.blade.php`), MIT as its
   `composer.json` and `README.md` state.
-- `symfony-7.4`: `symfony/skeleton` 7.4 plus the files its Symfony Flex
-  recipes add (`bin/console`, `config/`, `public/index.php`, ...), MIT,
-  "Copyright (c) Fabien Potencier". Its `composer.json` says `"MIT"` like
-  upstream's (Flex's create-project had set `"proprietary"`).
+- `symfony-7.4` and `symfony-8.1`: `symfony/skeleton` 7.4 and 8.1 plus the
+  files their Symfony Flex recipes add (`bin/console`, `config/`,
+  `public/index.php`, ...), MIT, "Copyright (c) Fabien Potencier". Their
+  `composer.json` says `"MIT"` like upstream's (Flex's create-project had set
+  `"proprietary"`). `symfony-8.1` leaves out the skeleton's `AGENTS.md` and
+  `.env.dev`, as `symfony-7.4` has no `.env.dev`.
+- `wordpress-7.1`: no WordPress code is committed. WordPress itself and the
+  SQLite Database Integration plugin are GPL-2.0-or-later, wp-cli is MIT;
+  `apps.py setup` downloads all three (see "WordPress" below) into
+  git-ignored paths. `wp-config.php` and `setup.php` are rhp's own, as
+  THIRD-PARTY-NOTICES says.
 
 The fixture routes, controllers and templates, the request corpora and the
 dev-tool fixture project (`tools/project`) are rhp's own.
@@ -44,7 +54,7 @@ dev-tool fixture project (`tools/project`) are rhp's own.
 ## Running
 
 ```sh
-python3 tests/apps/apps.py setup            # composer install --no-scripts + setup commands
+python3 tests/apps/apps.py setup            # downloads, composer install --no-scripts, setup commands
 python3 tests/apps/apps.py smoke            # console --version + routes under `php -S`
 cargo build --release -p rhp-difftest
 python3 tests/apps/apps.py lint             # rhp-difftest lint --check-known, per app
@@ -55,6 +65,60 @@ python3 tests/apps/apps.py lint laravel-13 --write-known   # regenerate one list
 scripts run `key:generate` and `migrate` (which needs sqlite), and Symfony's
 run `cache:clear`. Whatever an app actually needs (`package:discover`,
 `cache:warmup`) is listed under `setup` in the manifest and run with php.
+
+## WordPress
+
+`wordpress-7.1` has no `composer.json`. Its manifest entry pins three
+downloads (`[[app.download]]`: URL, sha256, destination), which `apps.py
+setup` fetches into `$RHP_APPS_CACHE` (default `~/.cache/rhp-apps`), checks
+and unpacks:
+
+- WordPress 7.1.4 from wordpress.org into `wordpress/` (the docroot). The
+  sha256 was taken from the tarball whose sha1 matched wordpress.org's
+  published one; the manifest records both.
+- [SQLite Database Integration](https://wordpress.org/plugins/sqlite-database-integration/)
+  3.1.3 into `wordpress/wp-content/plugins/`. wordpress.org publishes no
+  checksum for plugin zips, so its sha256 is the one taken when it was
+  pinned.
+- wp-cli 2.12.0 (`wp-cli.phar`, the console; `wp-cli.yml` points it at
+  `wordpress/`), checked against the sha256 published with the release.
+
+Then `php setup.php` copies the plugin's `db.copy` to
+`wordpress/wp-content/db.php` (the drop-in that makes `$wpdb` talk to
+SQLite through PDO), deletes `var/database/` and installs with WordPress's
+own `wp_install()`: title "rhp fixture", user `admin` / `rhp-fixture-password`
+(`admin@example.com`, no mail sent), pretty permalinks `/%postname%/` with
+the rewrite rules stored, the plugin activated, and every post, comment and
+user dated `2026-01-01 12:00:00`. The default content is the corpus: the
+"Hello world!" post, the "Sample Page" page and the comment.
+
+`wp-config.php` sits one directory above `wordpress/`, where WordPress
+looks for it. It keeps the database in `var/database/wordpress.sqlite`
+(outside the docroot) in SQLite's DELETE journal mode rather than the
+plugin's default WAL (a process that exits without closing the database
+leaves `-wal`/`-shm` files, which the next request deletes, as setup did on
+Linux), fixes the keys and salts (test-only), turns off
+WP-Cron, updates and outgoing HTTP, and sets `WP_HOME`/`WP_SITEURL` to
+`http://<HTTP_HOST>`, so the site never redirects to a canonical host
+(`localhost` in the request diff, `127.0.0.1:<port>` under `smoke`).
+
+Two harness rules exist for it. In the request diff, a path that names a
+`.php` file under the docroot (`/wp-login.php`) runs that file, as a web
+server's `location ~ \.php$` does; every other path runs the front
+controller. `router = false` makes `smoke` start `php -S` without a router
+script, which behaves the same. The corpus's `state` is `var/database`. The
+first request after setup writes to it (the cron schedule with its
+timestamps, the default widgets), so the corpus uses `warmup = "corpus"`
+like Symfony's: one php-cgi pass, then both engines start from that
+database, and a request that only reads leaves it as it was (the self-check
+shows 0 files written). WordPress's nonces change
+every 12 hours, so the one on the login page is a `token`.
+
+The plugin needs `pdo_sqlite`, so the entry lists `php_extensions = ["pdo",
+"pdo_sqlite"]`: CI's `apps-lint` job installs them with setup-php and its
+`-n` shims load them, as php-cgi runs with `-n` in the request diff
+(Homebrew's php has both built in). rhp has no PDO yet, so every WordPress request answers with WordPress's
+"PHP PDO Extension is not loaded" page today.
 
 ## The lint ratchet
 
@@ -227,7 +291,8 @@ path:
   declarations followed by `{`; the only `private(set)` text is code that
   Symfony's `var-exporter` *generates* for user classes that have them).
   Symfony 8.1 uses hooks on `Request`/`Response` (every request), which is why
-  the fixtures pin 7.4 for now.
+  the first fixtures pinned 7.4; `symfony-8.1` measures 8.1.11 next to it
+  (all of its files compile).
 - **Laravel and Symfony 7.4:** `laravel/framework` 13 requires
   `^7.4.0 || ^8.0.0` for every Symfony component it uses, so the 7.4 pins
   resolve without conflicts.

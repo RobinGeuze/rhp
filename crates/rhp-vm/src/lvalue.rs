@@ -205,7 +205,7 @@ impl PropCtx<'_> {
         }
         if let Err(e) = classes::set_access_ok(self.classes, od.class, self.scope, &key) {
             let holds_object = !rest.is_empty()
-                && matches!(od.properties.get(&key).map(deref), Some(Value::Object(_)));
+                && matches!(od.props().get(&key).map(deref), Some(Value::Object(_)));
             if !holds_object {
                 let op = if rest.is_empty() {
                     leaf_op
@@ -458,7 +458,7 @@ impl Vm {
                             PropRes::Dynamic => (name.clone(), true),
                             PropRes::Denied(_) => break,
                         };
-                    let present = h.borrow().properties.get(&key).map(deref);
+                    let present = h.borrow().props().get(&key).map(deref);
                     match present {
                         Some(v) => Some(v),
                         None => {
@@ -473,7 +473,7 @@ impl Vm {
                                 // property exists (null) before the warning.
                                 self.flush_rw_warnings(std::mem::take(&mut warnings))?;
                                 self.check_dynamic_prop(top, cls, name)?;
-                                h.borrow_mut().properties.insert(key, Value::Null);
+                                h.borrow_mut().props_mut().insert(key, Value::Null);
                             }
                             warnings.push((
                                 builtins::E_WARNING,
@@ -685,8 +685,8 @@ impl Vm {
                     }
                     let cls = h.borrow().class;
                     let present = match classes::resolve_prop(&self.classes, cls, scope, name) {
-                        PropRes::Slot(k) => h.borrow().properties.get(&k).cloned(),
-                        PropRes::Dynamic => h.borrow().properties.get(name).cloned(),
+                        PropRes::Slot(k) => h.borrow().props().get(&k).cloned(),
+                        PropRes::Dynamic => h.borrow().props().get(name).cloned(),
                         PropRes::Denied(_) => None,
                     };
                     let uninit = match classes::resolve_prop(&self.classes, cls, scope, name) {
@@ -990,7 +990,7 @@ impl Vm {
                     else {
                         return Ok(Through::Plain);
                     };
-                    let val = h.borrow().properties.get(&key).cloned();
+                    let val = h.borrow().props().get(&key).cloned();
                     let Some(pe) = self.class(cls).props.get(&key) else {
                         return Ok(Through::Plain);
                     };
@@ -1079,7 +1079,7 @@ impl Vm {
                             PropRes::Dynamic => (name.clone(), true),
                             PropRes::Denied(_) => return Ok(()),
                         };
-                    let val = h.borrow().properties.get(&key).cloned();
+                    let val = h.borrow().props().get(&key).cloned();
                     match val {
                         Some(v) => v,
                         None => {
@@ -1537,7 +1537,7 @@ impl Vm {
                         PropRes::Dynamic => name.clone(),
                         PropRes::Denied(_) => return None,
                     };
-                    let v = h.borrow().properties.get(&key).cloned();
+                    let v = h.borrow().props().get(&key).cloned();
                     v
                 }
                 _ => None,
@@ -1623,7 +1623,7 @@ impl Vm {
             return Ok(None);
         };
         self.verify_prop_assignable_by_ref(&info, v, strict)?;
-        let old = h.borrow().properties.get(&key).cloned();
+        let old = h.borrow().props().get(&key).cloned();
         if let Some(Value::Ref(old)) = old {
             self.del_prop_ref_source(&old, &h, &key);
         }
@@ -2696,7 +2696,7 @@ fn read_path(slot: &Value, steps: &[CursorStep], cx: &PropCtx) -> Value {
             let od = h.borrow();
             match cx.key(od.class, name) {
                 Ok(k) => od
-                    .properties
+                    .props()
                     .get(&k)
                     .map(|c| read_path(c, rest, cx))
                     .unwrap_or(Value::Null),
@@ -3037,8 +3037,8 @@ fn assign_path(
         // zend_handle_fetch_obj_flags (ZEND_FETCH_DIM_WRITE): a typed
         // property that would become an array.
         if matches!(rest.first(), Some(CursorStep::Key(_) | CursorStep::Append)) {
-            let at = od.properties.get_index_of(&key);
-            let promotes = at.is_none_or(|i| match &od.properties[i] {
+            let at = od.props().get_index_of(&key);
+            let promotes = at.is_none_or(|i| match &od.props()[i] {
                 Value::Ref(r) => r.try_borrow().is_ok_and(|v| promotes_to_array(&v)),
                 v => promotes_to_array(v),
             });
@@ -3052,7 +3052,7 @@ fn assign_path(
                 return Ok(Some(Box::new(TypedStop::PropInit(od.class, key))));
             }
             if let Some(i) = at {
-                return assign_path(&mut od.properties[i], rest, value, cx);
+                return assign_path(&mut od.props_mut()[i], rest, value, cx);
             }
         }
         let child = classes::prop_slot_mut(cx.classes, &mut od, key);
@@ -3159,7 +3159,7 @@ fn make_ref_path(
         };
         let mut od = handle.borrow_mut();
         let key = cx.write_key(&od, name, "indirectly modify", rest)?;
-        if rest.is_empty() && !od.properties.contains_key(&key) {
+        if rest.is_empty() && !od.props().contains_key(&key) {
             // zend_handle_fetch_obj_flags (ZEND_FETCH_REF): an uninitialized
             // typed property that does not accept null.
             if let Some(pe) = cx.classes[od.class as usize].props.get(&key) {
@@ -3231,7 +3231,7 @@ fn unset_path(slot: &mut Value, steps: &[CursorStep], cx: &PropCtx) -> Result<()
                 if let Some(old) = od.remove_prop(&key) {
                     replaced(old);
                 }
-            } else if let Some(child) = od.properties.get_mut(&key) {
+            } else if let Some(child) = od.props_mut().get_mut(&key) {
                 unset_path(child, rest, cx)?;
             }
         }

@@ -11,9 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
 use rhp_values::{ClassId, ClassKind, LazyInfo, ObjectData, ObjectHandle, PhpStr, Thrown, Value};
-use rustc_hash::FxBuildHasher;
 
 use crate::{classes, deref, Vm};
 
@@ -104,8 +102,7 @@ impl Vm {
                 }
                 self.update_class_constants(cls)?;
                 let id = self.alloc_object_id();
-                let props: IndexMap<PhpStr, Value, FxBuildHasher> =
-                    IndexMap::with_hasher(FxBuildHasher);
+                let props = self.blank_props(cls);
                 let h: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
                 self.track_destructible(&h);
                 for (k, pe) in &self.classes[cls as usize].props {
@@ -161,7 +158,7 @@ impl Vm {
                     let ocls_e = &self.classes[ocls as usize];
                     // Dynamic properties go.
                     let keys: Vec<PhpStr> = b
-                        .properties
+                        .props()
                         .keys()
                         .filter(|k| !ocls_e.props.contains_key(*k))
                         .cloned()
@@ -170,7 +167,7 @@ impl Vm {
                         removed.extend(b.remove_prop(&k));
                     }
                     for k in reset {
-                        let present = b.properties.contains_key(&k);
+                        let present = b.props().contains_key(&k);
                         if present {
                             let keep = ocls_e
                                 .props
@@ -295,7 +292,7 @@ impl Vm {
             l.obj_flags &= !LazyInfo::UNINIT;
             (l.initializer.clone(), std::mem::take(&mut l.lazy_props))
         };
-        let snapshot = h.borrow().properties.clone();
+        let snapshot = h.borrow().props().clone();
         let unset_snapshot = self.unset_typed_props.get(&id).cloned();
         self.lazy_fill_defaults(h, &lazy);
         let r = self.call_callable_value(&init, vec![Value::Object(h.clone())]);
@@ -311,7 +308,7 @@ impl Vm {
         };
         if let Some(e) = err {
             // zend_lazy_object_revert_init.
-            let old = std::mem::replace(&mut h.borrow_mut().properties, snapshot);
+            let old = h.borrow_mut().replace_props(snapshot);
             match unset_snapshot {
                 Some(ks) => {
                     self.unset_typed_props.insert(id, ks);
@@ -386,7 +383,8 @@ impl Vm {
             l.flags |= LazyInfo::INITIALIZED;
             l.obj_flags = LazyInfo::PROXY;
             l.lazy_props.clear();
-            (old, std::mem::take(&mut b.properties))
+            let blank = self.blank_props(b.class);
+            (old, b.replace_props(blank))
         };
         let id = h.borrow().id;
         self.unset_typed_props.remove(&id);
@@ -656,7 +654,7 @@ impl Vm {
             }
         }
         let r = self.lazy_raw_write(&h, ocls, &key, rcls, value);
-        let present = h.borrow().properties.contains_key(&key);
+        let present = h.borrow().props().contains_key(&key);
         if r.is_err() && was_lazy && !present && h.borrow().is_lazy_uninit() {
             self.lazy_remark_slot(&h, &key);
         } else if was_lazy {
@@ -683,7 +681,7 @@ impl Vm {
         scope: ClassId,
         val: Value,
     ) -> Result<(), Thrown> {
-        let present = h.borrow().properties.contains_key(key);
+        let present = h.borrow().props().contains_key(key);
         self.check_readonly_write(h, key, present, Some(scope), Some(scope), "modify")?;
         let val = self.verify_prop_type(cls, key, val, false)?;
         let old = {
@@ -761,7 +759,7 @@ impl Vm {
         // The new proxy is allocated before the instance's clone, as in php
         // (object ids).
         let id = self.alloc_object_id();
-        let props: IndexMap<PhpStr, Value, FxBuildHasher> = IndexMap::with_hasher(FxBuildHasher);
+        let props = self.blank_props(cls);
         let p: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
         let new_inst = self.clone_members(&inst)?;
         let icls = new_inst.borrow().class;

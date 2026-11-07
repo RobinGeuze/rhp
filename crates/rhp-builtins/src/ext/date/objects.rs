@@ -713,14 +713,14 @@ pub(crate) fn interval_sync_out(h: &ObjectHandle) {
     };
     let mut o = h.borrow_mut();
     for f in INTERVAL_FIELDS {
-        o.properties
+        o.props_mut()
             .insert(PhpStr::from(f), interval_field(diff, f));
     }
-    o.properties
+    o.props_mut()
         .insert(PhpStr::from("from_string"), Value::Bool(st.from_string));
     if st.from_string {
         let ds = st.date_string.clone().unwrap_or_default();
-        o.properties
+        o.props_mut()
             .insert(PhpStr::from("date_string"), Value::str(ds));
     }
 }
@@ -738,7 +738,7 @@ pub(crate) fn interval_sync_in(host: &mut dyn Host, h: &ObjectHandle) -> Result<
     {
         let o = h.borrow();
         for f in ["y", "m", "d", "h", "i", "s", "f", "invert"] {
-            if let Some(v) = o.properties.get(&PhpStr::from(f)) {
+            if let Some(v) = o.props().get(&PhpStr::from(f)) {
                 vals.push((f, rhp_values::ops::deref(v)));
             }
         }

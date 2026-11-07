@@ -302,7 +302,7 @@ impl Encoder {
             return res;
         }
         if host.is_enum_class(class_id) {
-            let value = h.borrow().properties.get(&PhpStr::from("value")).cloned();
+            let value = h.borrow().props().get(&PhpStr::from("value")).cloned();
             return match value {
                 Some(v) => self.value(host, &deref(&v), out, level),
                 None => Ok(self.fail(JSON_ERROR_NON_BACKED_ENUM, out, b"0")),
@@ -347,7 +347,7 @@ impl Encoder {
                 .collect(),
             None => {
                 let b = h.borrow();
-                b.properties
+                b.props()
                     .iter()
                     .filter(|(k, _)| {
                         host.mangled_prop_name(b.class, k).as_bytes().first() != Some(&0)

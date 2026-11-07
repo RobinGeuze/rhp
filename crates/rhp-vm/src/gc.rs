@@ -335,7 +335,7 @@ impl Vm {
                         .ancestors
                         .iter()
                         .any(|&a| self.is_internal_class(a));
-                for (k, p) in o.properties.iter() {
+                for (k, p) in o.props().iter() {
                     // A prelude class's private or protected `__*` array is its native
                     // storage (a C array or HashTable php's get_gc walks
                     // through, not a counted zend_array; ArrayObject's

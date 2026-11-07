@@ -39,7 +39,7 @@ pub fn cast_to_array(v: Value) -> Value {
         // name (visibility name-mangling for private/protected is not modelled).
         Value::Object(h) => {
             let mut a = PhpArray::new();
-            for (name, val) in &h.borrow().properties {
+            for (name, val) in h.borrow().props() {
                 a.insert(crate::ArrayKey::from_bytes(name.as_bytes()), deref(val));
             }
             Value::Array(a)
@@ -941,14 +941,14 @@ fn std_compare_objects(
     // (`__toString`) that touches these objects.
     let xp: Vec<(PhpStr, Value)> = x
         .borrow()
-        .properties
+        .props()
         .iter()
         .filter(|(k, _)| !cx.is_internal_prop(xc, k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let yp: crate::PhpArray = {
         let mut a = crate::PhpArray::new();
-        for (k, v) in y.borrow().properties.iter() {
+        for (k, v) in y.borrow().props().iter() {
             if !cx.is_internal_prop(yc, k) {
                 a.insert(crate::ArrayKey::Str(k.clone()), v.clone());
             }
@@ -966,7 +966,7 @@ fn std_compare_objects(
     let x_dyn: Vec<&(PhpStr, Value)> = xp.iter().filter(|(k, _)| !is_declared(k)).collect();
     let y_dyn = y
         .borrow()
-        .properties
+        .props()
         .keys()
         .filter(|k| !is_declared(k) && !cx.is_internal_prop(yc, k))
         .count();

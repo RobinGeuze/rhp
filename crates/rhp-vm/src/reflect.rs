@@ -470,8 +470,8 @@ impl Vm {
                 }
                 let b = h.borrow();
                 Ok(Value::Bool(match key {
-                    Some(k) => b.properties.contains_key(&k),
-                    None => b.properties.contains_key(&name),
+                    Some(k) => b.props().contains_key(&k),
+                    None => b.props().contains_key(&name),
                 }))
             }
             b"obj_props" => {
@@ -482,7 +482,7 @@ impl Vm {
                 let b = h.borrow();
                 let entry = &self.classes[b.class as usize];
                 let mut out = PhpArray::new();
-                for k in b.properties.keys() {
+                for k in b.props().keys() {
                     if !entry.props.contains_key(k) && k.as_bytes().first() != Some(&0) {
                         out.push(Value::Str(k.clone()));
                     }

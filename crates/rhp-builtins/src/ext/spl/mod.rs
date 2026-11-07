@@ -53,11 +53,8 @@ fn spl_array_storage(h: &ObjectHandle) -> Option<Value> {
     let b = h.borrow();
     for base in ["ArrayObject", "ArrayIterator"] {
         let key = |n: &str| PhpStr::from(format!("\0{base}\0{n}").as_str());
-        if let Some(s) = b.properties.get(&key("__s")) {
-            let flags = b
-                .properties
-                .get(&key("__f"))
-                .map(|f| conv::to_int(&deref(f)));
+        if let Some(s) = b.props().get(&key("__s")) {
+            let flags = b.props().get(&key("__f")).map(|f| conv::to_int(&deref(f)));
             if flags.unwrap_or(0) & 1 != 0 {
                 return None;
             }
@@ -91,14 +88,14 @@ fn spl_array_get_properties_for(
             }
             let b = h.borrow();
             let mut a = PhpArray::new();
-            for (k, v) in b.properties.iter() {
+            for (k, v) in b.props().iter() {
                 if !host.is_internal_slot(b.class, k) {
                     a.insert(ArrayKey::Str(host.mangled_prop_name(b.class, k)), v.clone());
                 }
             }
             for base in ["ArrayObject", "ArrayIterator"] {
                 let key = PhpStr::from(format!("\0{base}\0__s").as_str());
-                if let Some(st) = b.properties.get(&key) {
+                if let Some(st) = b.props().get(&key) {
                     let name = PhpStr::from(format!("\0{base}\0storage").as_str());
                     a.insert(ArrayKey::Str(name), deref(st));
                     break;

@@ -69,7 +69,7 @@ impl TypedRefs {
                     let Some(h) = w.upgrade() else { continue };
                     // A slot that no longer holds this reference.
                     if let Ok(od) = h.try_borrow() {
-                        match od.properties.get(&s.key) {
+                        match od.props().get(&s.key) {
                             Some(Value::Ref(r)) if Rc::ptr_eq(r, rc) => {}
                             _ => continue,
                         }

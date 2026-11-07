@@ -1361,7 +1361,7 @@ fn fn_gmp_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     let num = gmp_num(&h).0.borrow().to_str(16);
     let mut arr = PhpArray::new();
     arr.push(Value::str(num));
-    if !h.borrow().properties.is_empty() {
+    if !h.borrow().props().is_empty() {
         // zend_proptable_to_symtable: numeric names become integer keys.
         let props = host.object_props_mangled(&h);
         let mut table = PhpArray::new();
@@ -1420,7 +1420,7 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
             ArrayKey::Int(i) => i.to_string().into_bytes(),
         };
         let key = PhpStr::from_bytes(name.clone());
-        if !h.borrow().properties.contains_key(&key) {
+        if !h.borrow().props().contains_key(&key) {
             host.emit_diagnostic(
                 crate::E_DEPRECATED,
                 format!(
@@ -1430,7 +1430,7 @@ fn properties_load(host: &mut dyn Host, h: &ObjectHandle, props: &PhpArray) -> R
                 .as_bytes(),
             )?;
         }
-        h.borrow_mut().properties.insert(key, v.clone());
+        h.borrow_mut().props_mut().insert(key, v.clone());
     }
     Ok(())
 }
@@ -1579,7 +1579,7 @@ fn gmp_get_properties_for(
     let mut table = PhpArray::new();
     {
         let b = h.borrow();
-        for (k, v) in b.properties.iter() {
+        for (k, v) in b.props().iter() {
             table.insert(ArrayKey::Str(host.mangled_prop_name(b.class, k)), v.clone());
         }
     }

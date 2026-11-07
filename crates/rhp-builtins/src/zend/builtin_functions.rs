@@ -544,7 +544,7 @@ fn fn_get_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
                 return Ok(v);
             }
             let mut arr = PhpArray::new();
-            for (k, v) in h.borrow().properties.iter() {
+            for (k, v) in h.borrow().props().iter() {
                 arr.insert(rhp_values::ArrayKey::Str(k.clone()), v.clone());
             }
             Ok(Value::Array(arr))

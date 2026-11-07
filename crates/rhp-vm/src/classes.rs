@@ -770,20 +770,20 @@ pub(crate) fn prop_slot_mut<'o>(
     od: &'o mut ObjectData,
     key: PhpStr,
 ) -> &'o mut Value {
-    if let Some(i) = od.properties.get_index_of(&key) {
-        return &mut od.properties[i];
+    if let Some(i) = od.props().get_index_of(&key) {
+        return &mut od.props_mut()[i];
     }
     let entry = &classes[od.class as usize];
     let pos = match entry.props.get_index_of(&key) {
         Some(slot) => od
-            .properties
+            .props()
             .keys()
             .take_while(|k| entry.props.get_index_of(*k).is_some_and(|j| j < slot))
             .count(),
-        None => od.properties.len(),
+        None => od.props().len(),
     };
     od.insert_prop_at(pos, key, Value::Null);
-    &mut od.properties[pos]
+    &mut od.props_mut()[pos]
 }
 
 /// php's `zend_check_property_access`: is the object slot stored under `key`
@@ -2105,8 +2105,7 @@ impl Vm {
     ) -> ObjectHandle {
         // The id is assigned on first access (see `touch_enum_case`).
         let oid = 0;
-        let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
-            IndexMap::with_hasher(FxBuildHasher);
+        let mut properties = self.blank_props(class_id);
         properties.insert(PhpStr::from("name"), Value::Str(name.clone()));
         if let Some(v) = value {
             properties.insert(PhpStr::from("value"), v);
@@ -2371,11 +2370,15 @@ impl Vm {
         id
     }
 
+    /// An empty property table for an object of `class_id`.
+    pub(crate) fn blank_props(&self, _class_id: ClassId) -> rhp_values::PropTable {
+        rhp_values::PropTable::new()
+    }
+
     /// Allocate a fresh instance of `class_id`, materializing property defaults.
     pub(crate) fn new_object(&mut self, class_id: ClassId) -> ObjectHandle {
         let id = self.alloc_object_id();
-        let mut properties: IndexMap<PhpStr, Value, FxBuildHasher> =
-            IndexMap::with_hasher(FxBuildHasher);
+        let mut properties = self.blank_props(class_id);
         for (name, pe) in &self.classes[class_id as usize].props {
             if pe.starts_uninit() || pe.virt {
                 continue; // uninitialized typed / virtual property: no slot
@@ -2614,7 +2617,7 @@ impl Vm {
                 ConstInit::Expr(_) => e.value = v,
                 ConstInit::EnumCase(_) => {
                     if let Value::Object(h) = &e.value {
-                        h.borrow_mut().properties.insert(PhpStr::from("value"), v);
+                        h.borrow_mut().props_mut().insert(PhpStr::from("value"), v);
                     }
                 }
             }
@@ -2734,12 +2737,12 @@ impl Vm {
         let mut seen: Vec<(Value, PhpStr)> = Vec::with_capacity(entry.enum_cases.len());
         for case in &entry.enum_cases {
             let o = case.borrow();
-            let name = match o.properties.get(&PhpStr::from("name")) {
+            let name = match o.props().get(&PhpStr::from("name")) {
                 Some(Value::Str(s)) => s.clone(),
                 _ => PhpStr::from(""),
             };
             let v = o
-                .properties
+                .props()
                 .get(&PhpStr::from("value"))
                 .cloned()
                 .unwrap_or(Value::Null);

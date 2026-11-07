@@ -2308,7 +2308,7 @@ fn find_strings(v: &Value, out: &mut Vec<PhpStr>) -> Result<(), Stopped> {
         *pos += 1;
         next = match top {
             Value::Array(a) => a.get_index(i).map(|(_, c)| c.clone()),
-            Value::Object(h) => h.borrow().properties.get_index(i).map(|(_, c)| c.clone()),
+            Value::Object(h) => h.borrow().props().get_index(i).map(|(_, c)| c.clone()),
             Value::Ref(r) => (i == 0).then(|| r.borrow().clone()),
             _ => None,
         };
@@ -2348,7 +2348,7 @@ impl Frame {
                 let i = *pos;
                 *pos += 1;
                 h.borrow_mut()
-                    .properties
+                    .props_mut()
                     .get_index_mut(i)
                     .map(|(_, v)| take(v))
             }
@@ -2367,7 +2367,7 @@ impl Frame {
                 }
             }
             Frame::Object(h, pos) => {
-                if let Some((_, slot)) = h.borrow_mut().properties.get_index_mut(*pos - 1) {
+                if let Some((_, slot)) = h.borrow_mut().props_mut().get_index_mut(*pos - 1) {
                     *slot = v;
                 }
             }

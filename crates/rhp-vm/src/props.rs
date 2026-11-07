@@ -54,7 +54,7 @@ impl Vm {
                                 return r.map(|v| deref(&v));
                             }
                         }
-                        if let Some(v) = h.borrow().properties.get(&k) {
+                        if let Some(v) = h.borrow().props().get(&k) {
                             return Ok(deref(v));
                         }
                         // A lazy slot skips __get() and initializes.
@@ -80,7 +80,7 @@ impl Vm {
                             self.incomplete_warning(&h)?;
                             return Ok(Value::Null);
                         }
-                        if let Some(v) = h.borrow().properties.get(&pname) {
+                        if let Some(v) = h.borrow().props().get(&pname) {
                             return Ok(deref(v));
                         }
                         None
@@ -200,7 +200,7 @@ impl Vm {
                                     && classes::set_access_ok(&self.classes, cls, scope, &k)
                                         .is_err()))
                         {
-                            let v = h.borrow().properties.get(&k).map(deref);
+                            let v = h.borrow().props().get(&k).map(deref);
                             match v {
                                 Some(v @ Value::Object(_)) => return Ok(v),
                                 None if unset => return Ok(Value::Null),
@@ -215,12 +215,12 @@ impl Vm {
                         classes::resolve_prop(&self.classes, cls, scope, &pname),
                         PropRes::Dynamic
                     )
-                    && !h.borrow().properties.contains_key(&pname)
+                    && !h.borrow().props().contains_key(&pname)
                     && self.lookup_method(cls, b"__get").is_none()
                 {
                     self.static_as_instance_notice(cls, scope, &pname, b"__get")?;
                     self.check_dynamic_prop(top, cls, &pname)?;
-                    h.borrow_mut().properties.insert(pname, Value::Null);
+                    h.borrow_mut().props_mut().insert(pname, Value::Null);
                     return Ok(Value::Null);
                 }
             }
@@ -293,15 +293,15 @@ impl Vm {
             {
                 match self.hooked_read(&h, cls, k) {
                     Some(r) => return Ok(!matches!(deref(&r?), Value::Null)),
-                    None => h.borrow().properties.get(k).cloned(),
+                    None => h.borrow().props().get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Slot(k) => h.borrow().props().get(k).cloned(),
             PropRes::Dynamic if Some(cls) == self.incomplete_class => {
                 self.incomplete_warning(&h)?;
                 return Ok(false);
             }
-            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Dynamic => h.borrow().props().get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
         if let Some(v) = present {
@@ -408,15 +408,15 @@ impl Vm {
             {
                 match self.hooked_read(&h, cls, k) {
                     Some(r) => return Ok(!self.truthy(&deref(&r?))?),
-                    None => h.borrow().properties.get(k).cloned(),
+                    None => h.borrow().props().get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Slot(k) => h.borrow().props().get(k).cloned(),
             PropRes::Dynamic if Some(cls) == self.incomplete_class => {
                 self.incomplete_warning(&h)?;
                 return Ok(true);
             }
-            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Dynamic => h.borrow().props().get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
         // zend_is_true, through an object's cast_object.
@@ -476,15 +476,15 @@ impl Vm {
             {
                 match self.hooked_read(&h, cls, k) {
                     Some(r) => return r.map(|v| deref(&v)),
-                    None => h.borrow().properties.get(k).cloned(),
+                    None => h.borrow().props().get(k).cloned(),
                 }
             }
-            PropRes::Slot(k) => h.borrow().properties.get(k).cloned(),
+            PropRes::Slot(k) => h.borrow().props().get(k).cloned(),
             PropRes::Dynamic if Some(cls) == self.incomplete_class => {
                 self.incomplete_warning(&h)?;
                 return Ok(Value::Null);
             }
-            PropRes::Dynamic => h.borrow().properties.get(&pname).cloned(),
+            PropRes::Dynamic => h.borrow().props().get(&pname).cloned(),
             PropRes::Denied(_) => None,
         };
         if let Some(v) = present {
@@ -564,7 +564,7 @@ impl Vm {
         };
         let present = key
             .as_ref()
-            .is_some_and(|k| h.borrow().properties.contains_key(k));
+            .is_some_and(|k| h.borrow().props().contains_key(k));
         // zend_std_unset_property: the readonly and set visibility checks,
         // unless an unset (not uninitialized) slot defers to `__unset`.
         if let PropRes::Slot(k) = &res {
@@ -655,7 +655,7 @@ impl Vm {
     /// the "must not be accessed before initialization" Error.
     pub(crate) fn uninit_typed(&self, h: &ObjectHandle, key: &PhpStr) -> bool {
         let b = h.borrow();
-        if b.properties.contains_key(key) {
+        if b.props().contains_key(key) {
             return false;
         }
         let typed = self
@@ -824,7 +824,7 @@ impl Vm {
                 PropRes::Dynamic => (pname.clone(), None),
                 PropRes::Denied(vis) => (pname.clone(), Some(vis)),
             };
-            let present = denied.is_none() && h.borrow().properties.contains_key(&key);
+            let present = denied.is_none() && h.borrow().props().contains_key(&key);
             if !present && denied.is_none() {
                 // A lazy slot (bypassing __set()) or an undefined property
                 // with no unguarded __set() initializes the object, and the
@@ -1049,7 +1049,7 @@ impl Vm {
     fn incomplete_msg(&self, h: &ObjectHandle, what: &str) -> String {
         let name = match h
             .borrow()
-            .properties
+            .props()
             .get(&PhpStr::from("__PHP_Incomplete_Class_Name"))
         {
             Some(Value::Str(s)) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
@@ -1117,7 +1117,7 @@ impl Vm {
         let cls = b.class;
         let mut a = PhpArray::new();
         let entry = self.class(cls);
-        for (key, val) in &b.properties {
+        for (key, val) in b.props() {
             if self.internal_slot(cls, key) {
                 continue;
             }
@@ -1406,7 +1406,7 @@ impl Vm {
         let keys: Vec<PhpStr> = e
             .props
             .iter()
-            .filter(|(k, pe)| pe.readonly && b.properties.contains_key(*k))
+            .filter(|(k, pe)| pe.readonly && b.props().contains_key(k))
             .map(|(k, _)| k.clone())
             .collect();
         if !keys.is_empty() {
@@ -1570,8 +1570,8 @@ impl Vm {
         // argument already passed) are not PHP references.
         let (cls, props) = {
             let od = h.borrow();
-            let mut props = od.properties.clone();
-            for v in props.values_mut() {
+            let mut props = od.props().clone();
+            for (_, v) in props.iter_mut() {
                 if let Value::Ref(rc) = v {
                     if Rc::strong_count(rc) == 2 + self.temp_ref_holders(rc) {
                         let inner = rc.borrow().clone();
@@ -1596,7 +1596,7 @@ impl Vm {
         if !self.typed_refs.is_empty() {
             let refs: Vec<_> = new_obj
                 .borrow()
-                .properties
+                .props()
                 .iter()
                 .filter_map(|(k, v)| match v {
                     Value::Ref(rc) if self.typed_refs.has(rc) => Some((k.clone(), rc.clone())),

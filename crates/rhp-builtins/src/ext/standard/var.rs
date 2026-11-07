@@ -55,7 +55,7 @@ pub fn lazy_prefix(h: &rhp_values::ObjectHandle) -> &'static str {
 /// Engine-internal slots of built-in classes are left out.
 fn mangled_props(host: &dyn crate::Host, h: &rhp_values::ObjectHandle) -> Vec<(PhpStr, Value)> {
     let b = h.borrow();
-    b.properties
+    b.props()
         .iter()
         .filter(|(k, _)| !host.is_internal_slot(b.class, k))
         .map(|(k, v)| (host.mangled_prop_name(b.class, k), v.clone()))
@@ -140,12 +140,7 @@ fn resolve_in(
                     VIEWS.with(|m| m.borrow_mut().insert(id, view));
                     vals
                 }
-                None => h
-                    .borrow()
-                    .properties
-                    .iter()
-                    .map(|(_, v)| v.clone())
-                    .collect(),
+                None => h.borrow().props().iter().map(|(_, v)| v.clone()).collect(),
             };
             for c in &children {
                 resolve_in(host, c, purpose, seen_arrays, seen_objects)?;
@@ -539,7 +534,7 @@ impl Dumper<'_> {
         if !self.zval && self.host.is_enum_class(class) {
             let case = h
                 .borrow()
-                .properties
+                .props()
                 .get(&PhpStr::from("name"))
                 .map(conv::to_string_bytes)
                 .unwrap_or_default();
@@ -605,7 +600,7 @@ impl Dumper<'_> {
                 let b = h.borrow();
                 let host = &*self.host;
                 let mut keys = Vec::new();
-                for (k, v) in b.properties.iter() {
+                for (k, v) in b.props().iter() {
                     if !host.is_internal_slot(b.class, k) {
                         keys.push(ArrayKey::Str(host.mangled_prop_name(b.class, k)));
                         held.hold(v.clone());
@@ -1317,7 +1312,7 @@ impl Serializer {
         if host.is_enum_class(class_id) {
             let case = h
                 .borrow()
-                .properties
+                .props()
                 .get(&PhpStr::from("name"))
                 .map(conv::to_string_bytes)
                 .unwrap_or_default();
@@ -1400,7 +1395,7 @@ impl Serializer {
                 .collect(),
             None => {
                 let b = h.borrow();
-                b.properties
+                b.props()
                     .iter()
                     .filter(|(k, _)| !host.is_internal_slot(class_id, k))
                     .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
@@ -1437,7 +1432,7 @@ impl Serializer {
             let uninit = host.uninit_props(&src);
             let props: Vec<(PhpStr, Value)> = {
                 let b = src.borrow();
-                b.properties
+                b.props()
                     .iter()
                     .filter(|(k, _)| !host.is_internal_slot(class_id, k))
                     .map(|(k, v)| (host.mangled_prop_name(class_id, k), v.clone()))
@@ -2221,7 +2216,7 @@ impl Parser<'_, '_> {
                 UnserProp::Dynamic(k) => (k, false),
                 UnserProp::Fail => return Ok(false),
             };
-            let existing = obj.borrow().properties.get(&storage).cloned();
+            let existing = obj.borrow().props().get(&storage).cloned();
             let cell = match self.reuse(existing.as_ref()) {
                 Some(c) => {
                     if typed {
@@ -2635,7 +2630,7 @@ impl Parser<'_, '_> {
                     ArrayKey::Int(n) => PhpStr::from_bytes(n.to_string().into_bytes()),
                     ArrayKey::Str(s) => s.clone(),
                 };
-                o.properties.insert(key, v.clone());
+                o.props_mut().insert(key, v.clone());
             }
         }
         Ok(())
@@ -2701,7 +2696,7 @@ impl Parser<'_, '_> {
             Some(Value::Object(h))
                 if h.borrow().class == cid
                     && h.borrow()
-                        .properties
+                        .props()
                         .get(&PhpStr::from("name"))
                         .is_some_and(|n| conv::to_string_bytes(n) == case) =>
             {
@@ -2778,7 +2773,7 @@ impl Unwrap<'_> {
                 }
             }
             Value::Object(h) if self.visit(h) => {
-                let props: Vec<Value> = h.borrow().properties.values().cloned().collect();
+                let props: Vec<Value> = h.borrow().props().values().cloned().collect();
                 for p in &props {
                     self.count(p);
                 }
@@ -2830,13 +2825,13 @@ impl Unwrap<'_> {
                 if self.visit(&h) {
                     let mut i = 0;
                     loop {
-                        let Some(val) = h.borrow().properties.get_index(i).map(|(_, v)| v.clone())
+                        let Some(val) = h.borrow().props().get_index(i).map(|(_, v)| v.clone())
                         else {
                             break;
                         };
                         if matches!(val, Value::Ref(_) | Value::Array(_) | Value::Object(_)) {
                             let u = self.value(val);
-                            if let Some((_, slot)) = h.borrow_mut().properties.get_index_mut(i) {
+                            if let Some((_, slot)) = h.borrow_mut().props_mut().get_index_mut(i) {
                                 *slot = u;
                             }
                         }

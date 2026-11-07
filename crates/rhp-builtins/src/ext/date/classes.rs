@@ -692,7 +692,7 @@ fn date_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Valu
             } else {
                 wakeup_deprecated(host, &base)?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -1132,7 +1132,7 @@ fn timezone_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<
             } else {
                 wakeup_deprecated(host, "DateTimeZone")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -1492,7 +1492,7 @@ fn interval_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<
             } else {
                 wakeup_deprecated(host, "DateInterval")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()
@@ -2046,7 +2046,7 @@ fn period_op(host: &mut dyn Host, op: &[u8], args: &[Value]) -> Result<Option<Va
             } else {
                 wakeup_deprecated(host, "DatePeriod")?;
                 h.borrow()
-                    .properties
+                    .props()
                     .iter()
                     .map(|(k, v)| (ArrayKey::Str(k.clone()), v.clone()))
                     .collect()

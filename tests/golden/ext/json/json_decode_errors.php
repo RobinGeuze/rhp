@@ -46,3 +46,11 @@ foreach (['[]', '[1]', '[[]]', '[{}]', '[[}', "[[\xff", "{\"\xff\":1}"] as $j) {
         echo json_last_error(), "\n";
     }
 }
+
+// An unexpected string token reports its own scanner error first.
+foreach (['[1] "abc', '{"a" "b', "[1 \"\xff\"]", '[1 "\ud800"]', '[1 "ok"]'] as $j) {
+    json_decode($j);
+    echo bin2hex($j), ": ", json_last_error(), " ";
+    json_validate($j);
+    echo json_last_error(), "\n";
+}

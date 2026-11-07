@@ -781,10 +781,17 @@ impl Parser<'_, '_> {
     }
 
     /// The error for an unexpected token: php's scanner reports a NUL byte
-    /// outside a string as a control character.
-    fn unexpected(&self) -> i64 {
+    /// outside a string as a control character, and a string token's own
+    /// error (unterminated, bad UTF-8 or escape) before the grammar sees it.
+    fn unexpected(&mut self) -> i64 {
         match self.peek() {
             Some(0x00..=0x1f) => JSON_ERROR_CTRL_CHAR,
+            Some(b'"') => {
+                let at = self.i;
+                let r = self.parse_string();
+                self.i = at;
+                r.err().unwrap_or(JSON_ERROR_SYNTAX)
+            }
             Some(0x80..) if self.utf8_len().is_none() => JSON_ERROR_UTF8,
             _ => JSON_ERROR_SYNTAX,
         }

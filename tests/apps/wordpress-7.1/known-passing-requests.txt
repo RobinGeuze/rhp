@@ -1,3 +1,12 @@
 # wordpress-7.1 requests rhp answers like php-cgi (rhp-difftest app --write-known).
 # CI fails if one stops matching: fix the regression, or remove the line.
+home
+post
+page
+post-by-id
+feed
+rest-index
+rest-posts
+login
+not-found
 @files

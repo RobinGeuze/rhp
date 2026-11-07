@@ -107,7 +107,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: phpt-report
@@ -133,7 +133,7 @@ jobs:
           persist-credentials: false
       # Restore and save separately: a hunt that times out must not throw the
       # (slow) build away.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         id: php-cache
         with:
           path: php-san
@@ -150,7 +150,7 @@ jobs:
       - name: Build php with ASan + UBSan
         if: steps.php-cache.outputs.cache-hit != 'true'
         run: .github/scripts/build-php-sanitizers.sh php-src "$PWD/php-san"
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: steps.php-cache.outputs.cache-hit != 'true'
         with:
           path: php-san
@@ -214,7 +214,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: php-bugs

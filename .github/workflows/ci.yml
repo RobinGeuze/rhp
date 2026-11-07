@@ -147,7 +147,7 @@ jobs:
       - run: >-
           tar -cf release.tar target/release/rhp target/release/rhp-difftest
           LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release
           path: release.tar
@@ -195,7 +195,7 @@ jobs:
           php-version: '8.5'
       # The libraries the build links dynamically (libzip, libgmp, libcurl's).
       - uses: ./.github/actions/native-deps
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar
@@ -304,7 +304,7 @@ jobs:
             /ext/standard/html_tables.h
             /ext/curl/curl_private.h
             **/*.phpt
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: php-dist
           key: php-dist-${{ hashFiles('tools/php-dist.sha256') }}
@@ -321,7 +321,7 @@ jobs:
           echo "PHP_DIST=$RUNNER_TEMP/$dir" >> "$GITHUB_ENV"
       # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar
@@ -368,11 +368,11 @@ jobs:
           php-version: '8.5'
       # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: tests/apps/${{ matrix.app }}/vendor
           key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar

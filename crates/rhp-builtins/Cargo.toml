@@ -50,7 +50,7 @@ xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
 # bcmath: arbitrary-precision integers (the decimal/scale semantics are
 # PHP-specific and hand-rolled in ext/bcmath). gmp links libgmp.
-num-bigint = "0.4"
+num-bigint = "0.5"
 num-traits = "0.2"
 num-integer = "0.1"
 
@@ -72,7 +72,7 @@ libz-sys = "1.1"
 # entries: C libbz2 1.0.8 (frozen, php's version) built from bzip2-sys's
 # bundled source and linked statically.
 # Pinned: bzip2 0.6 defaults to the pure-Rust libbz2-rs instead of C libbz2.
-bzip2 = { version = "=0.5.2", features = ["static"] }
+bzip2 = { version = "=0.6.1", features = ["static"] }
 
 # openssl extension, the TLS stream transports (and so https://) and phar's
 # OpenSSL signatures: the OpenSSL php links,

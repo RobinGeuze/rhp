@@ -512,15 +512,17 @@ fn fn_mime_content_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         (None, Some(res)) => {
             let pos = host.stream_tell(&res).unwrap_or(-1);
-            host.stream_seek(&res, 0, libc::SEEK_SET);
+            // php_stream_seek: an unseekable stream warns, both times.
+            crate::ext::standard::file::stream_seek(host, f, &res, 0, libc::SEEK_SET)?;
             let r = magic_stream(host, f, &mut magic, &res)?;
             let warned = if r.is_none() {
                 identify_failed(host, f, &magic)
             } else {
                 Ok(())
             };
-            host.stream_seek(&res, pos, libc::SEEK_SET);
+            let back = crate::ext::standard::file::stream_seek(host, f, &res, pos, libc::SEEK_SET);
             warned?;
+            back?;
             r
         }
         (None, None) => None,

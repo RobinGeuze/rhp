@@ -105,6 +105,10 @@ show(fn() => finfo_open(FILEINFO_NONE, "$tmp/missing"));
 show(fn() => $finfo->file("$tmp/missing"));
 show(fn() => finfo_buffer($f, 'x', 0, null));
 show(fn() => finfo_close($f));
+// A pipe can't seek: both of mime_content_type's seeks warn.
+$pipe = popen('printf GIF89a', 'r');
+show(fn() => mime_content_type($pipe));
+pclose($pipe);
 restore_error_handler();
 
 foreach (glob("$tmp/*") as $p) unlink($p);

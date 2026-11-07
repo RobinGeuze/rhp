@@ -169,6 +169,9 @@ error 8192: finfo_buffer(): The $context parameter has no effect for finfo_buffe
 string(40) "application/octet-stream; charset=binary"
 error 8192: Function finfo_close() is deprecated since 8.5, as finfo objects are freed automatically
 bool(true)
+error 2: mime_content_type(): Stream does not support seeking
+error 2: mime_content_type(): Stream does not support seeking
+string(9) "image/gif"
 int(0)
 int(2)
 int(1040)

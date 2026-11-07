@@ -33,6 +33,9 @@ pub(crate) enum Callee {
     ),
     /// An enum's built-in `cases`/`from`/`tryFrom` (lowercased).
     EnumStatic(ClassId, Vec<u8>),
+    /// `[$closure, 'bindTo' | 'call']` (lowercased): Closure's own method
+    /// on that closure.
+    ClosureMethod(Rc<rhp_values::ClosureData>, Vec<u8>),
 }
 
 /// What a `C::m()` call runs (see `Vm::static_call_target`).
@@ -507,29 +510,7 @@ impl Vm {
         let arr = self.reg_get(top, args);
         if let Value::Closure(_) = o {
             let (argv, named) = self.split_call_args(&arr)?;
-            // __invoke() takes the closure's own parameters; the variadic
-            // `$args` of call() collects unknown names for the closure.
-            let invoke = mname.eq_ignore_ascii_case(b"__invoke");
-            let (mut argv, named) = if named.is_empty() || invoke {
-                (argv, named)
-            } else {
-                self.place_method_named_args("Closure", &mname, argv, named)?
-            };
-            let r = match mname.to_ascii_lowercase().as_slice() {
-                b"__invoke" if !named.is_empty() => self.call_named(&o, argv, named, None)?,
-                b"call" if !named.is_empty() && !argv.is_empty() => {
-                    let new_this = argv.remove(0);
-                    let bound = self.closure_call_target(&o, &new_this)?;
-                    if matches!(bound, Value::Null) {
-                        Value::Null
-                    } else {
-                        let r = self.call_named(&bound, argv, named, None);
-                        self.closure_call_done(&o, &bound);
-                        r?
-                    }
-                }
-                _ => self.closure_method(&o, &mname, argv)?,
-            };
+            let r = self.closure_method_named(&o, &mname, argv, named)?;
             self.reg_set(top, dst, r);
             return Ok(());
         }
@@ -1337,6 +1318,39 @@ impl Vm {
     /// Invoke a PHP callable value synchronously (string function name,
     /// `[obj_or_class, method]`, an `__invoke` object, or a closure).
     /// Instance methods of a `Closure` value: `bindTo`, `call`, `__invoke`.
+    /// [`Vm::closure_method`] with named arguments too.
+    pub(crate) fn closure_method_named(
+        &mut self,
+        o: &Value,
+        mname: &[u8],
+        argv: Vec<Value>,
+        named: Vec<(PhpStr, Value)>,
+    ) -> Result<Value, Thrown> {
+        // __invoke() takes the closure's own parameters; the variadic
+        // `$args` of call() collects unknown names for the closure.
+        let invoke = mname.eq_ignore_ascii_case(b"__invoke");
+        let (mut argv, named) = if named.is_empty() || invoke {
+            (argv, named)
+        } else {
+            self.place_method_named_args("Closure", mname, argv, named)?
+        };
+        Ok(match mname.to_ascii_lowercase().as_slice() {
+            b"__invoke" if !named.is_empty() => self.call_named(o, argv, named, None)?,
+            b"call" if !named.is_empty() && !argv.is_empty() => {
+                let new_this = argv.remove(0);
+                let bound = self.closure_call_target(o, &new_this)?;
+                if matches!(bound, Value::Null) {
+                    Value::Null
+                } else {
+                    let r = self.call_named(&bound, argv, named, None);
+                    self.closure_call_done(o, &bound);
+                    r?
+                }
+            }
+            _ => self.closure_method(o, mname, argv)?,
+        })
+    }
+
     pub(crate) fn closure_method(
         &mut self,
         closure: &Value,
@@ -1528,7 +1542,11 @@ impl Vm {
         };
         // A dynamic call's arguments come raw: whatever does not bind
         // parameters itself gets plain values.
-        let args = if dynamic && matches!(callee, Callee::Magic(..) | Callee::EnumStatic(..)) {
+        let args = if dynamic
+            && matches!(
+                callee,
+                Callee::Magic(..) | Callee::EnumStatic(..) | Callee::ClosureMethod(..)
+            ) {
             args.iter().map(deref).collect()
         } else {
             args
@@ -1571,6 +1589,10 @@ impl Vm {
             }
             Callee::EnumStatic(cls, lc) => {
                 self.enum_builtin_static(cls, &lc, args, caller == Some(true))
+            }
+            Callee::ClosureMethod(cd, lc) => {
+                let args = args.iter().map(deref).collect();
+                self.closure_method(&Value::Closure(cd), &lc, args)
             }
         }
     }
@@ -1643,7 +1665,9 @@ impl Vm {
                 let sig = rhp_bytecode::signatures::function(name.as_bytes());
                 self.settle_undef_args(args, |i| sig.is_some_and(|s| s.by_ref(i)))
             }
-            Callee::Magic(..) | Callee::EnumStatic(..) => self.settle_undef_args(args, |_| false),
+            Callee::Magic(..) | Callee::EnumStatic(..) | Callee::ClosureMethod(..) => {
+                self.settle_undef_args(args, |_| false)
+            }
         }
     }
 
@@ -1751,7 +1775,7 @@ impl Vm {
                 }
                 Ok(args)
             }
-            Callee::Magic(..) | Callee::EnumStatic(..) => Ok(args),
+            Callee::Magic(..) | Callee::EnumStatic(..) | Callee::ClosureMethod(..) => Ok(args),
         }
     }
 
@@ -2330,10 +2354,15 @@ impl Vm {
                             return self.call_sync_mode(&m, this, called, argv, caller);
                         }
                         None => {
+                            if let Ok(Callee::ClosureMethod(cd, lc)) = self.resolve_callable(c) {
+                                let args = args.iter().map(deref).collect();
+                                let cl = Value::Closure(cd);
+                                return self.closure_method_named(&cl, &lc, args, named);
+                            }
                             return Err(Thrown::unsupported(
                                 "named arguments to this callable",
                                 "deferred",
-                            ))
+                            ));
                         }
                     },
                 },

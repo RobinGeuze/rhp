@@ -618,6 +618,8 @@ impl Vm {
                     Value::Closure(cd) => {
                         return if m.as_bytes().eq_ignore_ascii_case(b"__invoke") {
                             Ok(Callee::Closure(cd))
+                        } else if let Some(c) = self.closure_std_method(cd, m.as_bytes()) {
+                            Ok(c)
                         } else {
                             Err([
                                 &b"class Closure does not have a method \""[..],
@@ -660,6 +662,23 @@ impl Vm {
             }
             _ => Err(b"no array or string given".to_vec()),
         }
+    }
+
+    /// zend_closure_get_method's fallback to Closure's own methods: the
+    /// static ones run as declared, `bindTo`/`call` on the closure.
+    fn closure_std_method(
+        &self,
+        cd: std::rc::Rc<rhp_values::ClosureData>,
+        m: &[u8],
+    ) -> Option<Callee> {
+        let lc = m.to_ascii_lowercase();
+        if matches!(lc.as_slice(), b"bindto" | b"call") {
+            return Some(Callee::ClosureMethod(cd, lc));
+        }
+        let cls = self.closure_class()?;
+        let rm = self.lookup_method(cls, &lc)?;
+        (rm.is_static && rm.visibility == Visibility::Public)
+            .then_some(Callee::Method(rm, None, cls))
     }
 
     /// [`Vm::resolve_callable_ex`] without deprecations: for a callable
@@ -778,6 +797,8 @@ impl Vm {
                     Value::Closure(cd) => {
                         if mname.eq_ignore_ascii_case(b"__invoke") {
                             Ok(Callee::Closure(cd))
+                        } else if let Some(c) = self.closure_std_method(cd, mname) {
+                            Ok(c)
                         } else {
                             Err(err(format!(
                                 "Call to undefined method Closure::{}()",

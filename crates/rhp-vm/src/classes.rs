@@ -2244,6 +2244,20 @@ impl Vm {
         r
     }
 
+    /// The built-in `Closure` class (a closure value's class).
+    pub(crate) fn closure_class(&self) -> Option<ClassId> {
+        self.resolve_class_by_name(b"Closure").ok()
+    }
+
+    /// The class of an object value; a closure is a `Closure` object.
+    pub(crate) fn value_class(&self, v: &Value) -> Option<ClassId> {
+        match v {
+            Value::Object(h) => Some(h.borrow().class),
+            Value::Closure(_) => self.closure_class(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn resolve_class_by_name(&self, name: &[u8]) -> Result<ClassId, Thrown> {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.

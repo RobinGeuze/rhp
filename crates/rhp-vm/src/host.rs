@@ -2708,6 +2708,11 @@ impl Host for Vm {
                 let args = place(self)?;
                 self.call_sync(&m, Some(h), oc, args)
             }
+            // A closure is a Closure object: bindTo()/call() run on it.
+            Value::Closure(cd) if Some(cls) == self.closure_class() => {
+                let (argv, named) = self.split_call_args(&args)?;
+                self.closure_method_named(&Value::Closure(cd), method, argv, named)
+            }
             _ => Err(Thrown::error(
                 "ReflectionException",
                 format!(

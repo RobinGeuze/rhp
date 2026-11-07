@@ -502,8 +502,8 @@ type FeLive = (Reg, Reg, bool, u32);
 impl Drop for Frame {
     fn drop(&mut self) {
         if let Some(live) = self.fe_live.take() {
-            for (_, arr, by_ref, id) in *live {
-                dispatch::release_fe_iter(&mut self.regs, arr, by_ref, id);
+            for (pos, arr, by_ref, id) in *live {
+                dispatch::release_fe_iter(&mut self.regs, pos, arr, by_ref, id);
             }
         }
         // php frees a frame's variables, then its `$this`: the handles come

@@ -277,28 +277,34 @@ impl ProtoBuilder<'_> {
                     self.static_vars.push(vname.to_vec());
                     let (dvar, init) = match item {
                         StaticItem::Abstract(a) => (&a.variable, u32::MAX),
-                        StaticItem::Concrete(c) => match fold_const(self.cx, c.value) {
-                            Ok(v) => (&c.variable, self.intern_const(v)),
-                            Err(_) => {
-                                // php 8.3+: an arbitrary initializer, evaluated
-                                // once on the first execution of the statement.
-                                let var = strip_dollar(c.variable.name);
-                                let cv = self.cv(var);
-                                let name = self.intern_name(var);
-                                let jpos = self.code.len();
-                                self.emit(Instr::Nop); // BindStaticOrJmp (patched)
-                                let src = self.compile_expr(c.value)?;
-                                self.emit(Instr::BindStaticInit { cv, name, src });
-                                let after = self.here();
-                                self.code[jpos] = Instr::BindStaticOrJmp {
-                                    cv,
-                                    name,
-                                    target: after,
-                                };
-                                self.tick_item(item);
-                                continue;
+                        // zend_eval_const_expr: a builtin constant folds too.
+                        StaticItem::Concrete(c) => {
+                            match fold_const(self.cx, c.value).ok().or_else(|| match c.value {
+                                Expression::ConstantAccess(ca) => self.ct_constant(&ca.name),
+                                _ => None,
+                            }) {
+                                Some(v) => (&c.variable, self.intern_const(v)),
+                                None => {
+                                    // php 8.3+: an arbitrary initializer, evaluated
+                                    // once on the first execution of the statement.
+                                    let var = strip_dollar(c.variable.name);
+                                    let cv = self.cv(var);
+                                    let name = self.intern_name(var);
+                                    let jpos = self.code.len();
+                                    self.emit(Instr::Nop); // BindStaticOrJmp (patched)
+                                    let src = self.compile_expr(c.value)?;
+                                    self.emit(Instr::BindStaticInit { cv, name, src });
+                                    let after = self.here();
+                                    self.code[jpos] = Instr::BindStaticOrJmp {
+                                        cv,
+                                        name,
+                                        target: after,
+                                    };
+                                    self.tick_item(item);
+                                    continue;
+                                }
                             }
-                        },
+                        }
                     };
                     let var = strip_dollar(dvar.name);
                     let cv = self.cv(var);

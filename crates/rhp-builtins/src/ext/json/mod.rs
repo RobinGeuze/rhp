@@ -641,17 +641,13 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         ));
     }
 
-    // Validate UTF-8 before parsing (php returns JSON_ERROR_UTF8 for invalid).
-    if std::str::from_utf8(&json).is_err() {
-        return fail(host, JSON_ERROR_UTF8);
-    }
-
     let mut p = Parser {
         s: &json,
         i: 0,
         max_depth,
         assoc,
         bigint_as_string,
+        invalid_utf8: flags & (JSON_INVALID_UTF8_IGNORE | JSON_INVALID_UTF8_SUBSTITUTE),
         host,
     };
     p.skip_ws();
@@ -661,7 +657,8 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             p.skip_ws();
             if p.i != p.s.len() {
                 // trailing non-whitespace data.
-                return fail(p.host, JSON_ERROR_SYNTAX);
+                let code = p.unexpected();
+                return fail(p.host, code);
             }
             Ok(v)
         }
@@ -700,23 +697,13 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
             ),
         ));
     }
-    let json: Vec<u8> = if flags & JSON_INVALID_UTF8_IGNORE != 0 {
-        String::from_utf8_lossy(&json)
-            .replace('\u{FFFD}', "")
-            .into_bytes()
-    } else {
-        json
-    };
-    if std::str::from_utf8(&json).is_err() {
-        set_last_error(JSON_ERROR_UTF8);
-        return Ok(Value::Bool(false));
-    }
     let mut p = Parser {
         s: &json,
         i: 0,
         max_depth: depth,
         assoc: true,
         bigint_as_string: false,
+        invalid_utf8: flags,
         host,
     };
     p.skip_ws();
@@ -724,7 +711,7 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         Ok(_) => {
             p.skip_ws();
             if p.i != p.s.len() {
-                JSON_ERROR_SYNTAX
+                p.unexpected()
             } else {
                 JSON_ERROR_NONE
             }
@@ -751,6 +738,9 @@ struct Parser<'a, 'h> {
     max_depth: i64,
     assoc: bool,
     bigint_as_string: bool,
+    /// JSON_INVALID_UTF8_IGNORE / _SUBSTITUTE: what a string does with an
+    /// invalid byte (else JSON_ERROR_UTF8).
+    invalid_utf8: i64,
     pub(crate) host: &'h mut dyn Host,
 }
 
@@ -781,8 +771,32 @@ impl Parser<'_, '_> {
             Some(b'f') => self.parse_literal(b"false", Value::Bool(false)),
             Some(b'n') => self.parse_literal(b"null", Value::Null),
             Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
-            _ => Err(JSON_ERROR_SYNTAX),
+            _ => Err(self.unexpected()),
         }
+    }
+
+    /// The error for an unexpected token: php's scanner reports a NUL byte
+    /// outside a string as a control character.
+    fn unexpected(&self) -> i64 {
+        match self.peek() {
+            Some(0x00..=0x1f) => JSON_ERROR_CTRL_CHAR,
+            Some(0x80..) if self.utf8_len().is_none() => JSON_ERROR_UTF8,
+            _ => JSON_ERROR_SYNTAX,
+        }
+    }
+
+    /// The length of the well-formed UTF-8 character at the cursor (the
+    /// scanner's UTF8 rule).
+    fn utf8_len(&self) -> Option<usize> {
+        let n = match self.peek()? {
+            0x00..=0x7f => 1,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return None,
+        };
+        let c = self.s.get(self.i..self.i + n)?;
+        std::str::from_utf8(c).ok().map(|_| n)
     }
 
     fn parse_literal(&mut self, lit: &[u8], val: Value) -> Result<Value, i64> {
@@ -801,16 +815,20 @@ impl Parser<'_, '_> {
         // update); built once the object outgrows a linear scan
         let mut index: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
         self.skip_ws();
+        if self.peek() == Some(b']') {
+            // object_end: `]` closes the wrong container
+            return Err(JSON_ERROR_STATE_MISMATCH);
+        }
         if self.peek() != Some(b'}') {
             loop {
                 self.skip_ws();
                 if self.peek() != Some(b'"') {
-                    return Err(JSON_ERROR_SYNTAX);
+                    return Err(self.unexpected());
                 }
                 let key = self.parse_string()?;
                 self.skip_ws();
                 if self.peek() != Some(b':') {
-                    return Err(JSON_ERROR_SYNTAX);
+                    return Err(self.unexpected());
                 }
                 self.i += 1;
                 // php_json_parser_object_update: an object property name may
@@ -847,7 +865,8 @@ impl Parser<'_, '_> {
                         self.i += 1;
                         break;
                     }
-                    _ => return Err(JSON_ERROR_SYNTAX),
+                    Some(b']') => return Err(JSON_ERROR_STATE_MISMATCH),
+                    _ => return Err(self.unexpected()),
                 }
             }
         } else {
@@ -869,9 +888,14 @@ impl Parser<'_, '_> {
         self.i += 1; // consume '['
         let mut arr = PhpArray::new();
         self.skip_ws();
-        if self.peek() == Some(b']') {
-            self.i += 1;
-            return Ok(Value::Array(arr));
+        match self.peek() {
+            Some(b']') => {
+                self.i += 1;
+                return Ok(Value::Array(arr));
+            }
+            // array_end: `}` closes the wrong container
+            Some(b'}') => return Err(JSON_ERROR_STATE_MISMATCH),
+            _ => {}
         }
         loop {
             let val = self.parse_value(depth + 1)?;
@@ -883,7 +907,8 @@ impl Parser<'_, '_> {
                     self.i += 1;
                     break;
                 }
-                _ => return Err(JSON_ERROR_SYNTAX),
+                Some(b'}') => return Err(JSON_ERROR_STATE_MISMATCH),
+                _ => return Err(self.unexpected()),
             }
         }
         Ok(Value::Array(arr))
@@ -894,7 +919,8 @@ impl Parser<'_, '_> {
         self.i += 1; // consume opening '"'
         let mut out = Vec::new();
         loop {
-            let c = self.peek().ok_or(JSON_ERROR_SYNTAX)?;
+            // the end of the input is the scanner's NUL: a control character
+            let c = self.peek().ok_or(JSON_ERROR_CTRL_CHAR)?;
             match c {
                 b'"' => {
                     self.i += 1;
@@ -919,6 +945,19 @@ impl Parser<'_, '_> {
                 }
                 // Literal control characters are not allowed in JSON strings.
                 0x00..=0x1f => return Err(JSON_ERROR_CTRL_CHAR),
+                0x80.. => match self.utf8_len() {
+                    Some(n) => {
+                        out.extend_from_slice(&self.s[self.i..self.i + n]);
+                        self.i += n;
+                    }
+                    // one invalid byte at a time (the scanner's ANY)
+                    None if self.invalid_utf8 & JSON_INVALID_UTF8_SUBSTITUTE != 0 => {
+                        out.extend_from_slice("\u{fffd}".as_bytes());
+                        self.i += 1;
+                    }
+                    None if self.invalid_utf8 & JSON_INVALID_UTF8_IGNORE != 0 => self.i += 1,
+                    None => return Err(JSON_ERROR_UTF8),
+                },
                 _ => {
                     out.push(c);
                     self.i += 1;

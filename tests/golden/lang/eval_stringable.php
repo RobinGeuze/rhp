@@ -7,3 +7,5 @@ var_dump(eval(42 . ';'));
 var_dump(eval('return 7;'));
 class T { function __toString(): string { throw new Exception("ts"); } }
 try { eval(new T); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+// "" compiles to nothing: eval() is false.
+var_dump(eval(''), eval(null), eval(false), eval(' '));

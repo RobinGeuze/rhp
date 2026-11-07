@@ -101,6 +101,10 @@ impl Vm {
             Value::Str(s) => s.as_bytes().to_vec(),
             v => self.to_string_vm(v)?,
         };
+        // compile_string compiles nothing for "": eval() is false.
+        if code.is_empty() {
+            return Ok(Value::Bool(false));
+        }
         // eval() code is already in PHP mode; prepend an open tag so the parser
         // (which starts in inline/HTML mode) enters PHP.
         let mut source = b"<?php ".to_vec();

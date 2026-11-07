@@ -865,6 +865,22 @@ fn html_entities(host: &mut dyn Host, args: &[Value], all: bool, f: &str) -> Res
     )?))
 }
 
+/// `php_escape_html_entities_ex(s, all, ENT_QUOTES or ENT_NOQUOTES, no
+/// double encoding)` in the default charset (FILTER_SANITIZE_FULL_SPECIAL_CHARS).
+pub(crate) fn escape_entities(
+    host: &mut dyn Host,
+    fname: &str,
+    s: &[u8],
+    quotes: bool,
+) -> Result<Vec<u8>, Thrown> {
+    let flags = if quotes {
+        ENT_HTML_QUOTE_SINGLE | ENT_HTML_QUOTE_DOUBLE
+    } else {
+        0
+    };
+    escape(host, fname, s, true, flags, None, false, false)
+}
+
 /// `php_escape_html_entities_ex(s, ENT_QUOTES|ENT_SUBSTITUTE, no double
 /// encoding, quiet)` in the default charset (the URL rewriter's hidden
 /// inputs).

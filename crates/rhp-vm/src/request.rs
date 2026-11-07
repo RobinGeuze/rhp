@@ -485,6 +485,15 @@ impl Vm {
             }
         }
         check_http_proxy(&mut env, &req.env);
+        // ext/filter keeps the raw input (php_sapi_filter), then the
+        // superglobals get filter.default's filter.
+        let (mut get, mut post, mut cookie) = (get, post, cookie);
+        let filtered_server = sapi::filtered_server_vars(&server);
+        sapi::set_filter_input(&get, &post, &cookie, filtered_server, &env);
+        for a in [&mut get, &mut post, &mut cookie] {
+            sapi::apply_default_filter(self, a);
+        }
+        sapi::apply_default_filter_server(self, &mut server);
         // $_REQUEST: request_order, else variables_order (G, P, C once each).
         let rorder = match self.ini_get_opt(b"request_order") {
             Some(o) => o,

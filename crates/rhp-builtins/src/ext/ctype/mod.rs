@@ -103,11 +103,11 @@ fn has(b: u8, class: u16) -> bool {
     class_table()[b as usize] & class != 0
 }
 
-fn is_alnum(b: u8) -> bool {
+pub(crate) fn is_alnum(b: u8) -> bool {
     has(b, ALNUM)
 }
 
-fn is_alpha(b: u8) -> bool {
+pub(crate) fn is_alpha(b: u8) -> bool {
     has(b, ALPHA)
 }
 

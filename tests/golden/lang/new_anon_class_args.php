@@ -11,3 +11,11 @@ class Money { static function castUsing(array $arguments) { return new class(...
   function __construct(protected string $currency = 'EUR') {} function get($v) { return "$v {$this->currency}"; } }; } }
 var_dump(Money::castUsing([])->get(5), Money::castUsing(['USD'])->get(6));
 try { new class(...[1], x: 2) { function __construct($a) {} }; } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+// A constructor that throws: the object is never destructed.
+class D { function __destruct() { echo "dtor\n"; } }
+class E extends D { function __construct($x) { throw new Exception("boomE"); } }
+try { new class(...[1]) extends D { function __construct($x) { throw new Exception("boom"); } }; } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+try { new E(...[1]); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+try { new E(x: 1); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+$c = 'E'; try { new $c(...[1]); } catch (Exception $e) { echo $e->getMessage(), "\n"; }
+echo "end\n";

@@ -466,7 +466,10 @@ fn ini_entry(
         .get(name)?
         .iter()
         .map(|&i| &INI_TABLE[i])
-        .find(|e| module_loaded(e.0))
+        // intl is not reported yet (part of it is implemented), but its
+        // directives are in force: ini_get/ini_set reach them, while
+        // ini_get_all() does not list them.
+        .find(|e| module_loaded(e.0) || e.0 == "intl")
         // php registers pcre.jit only when the PCRE2 it links has a JIT.
         .filter(|e| e.1 != "pcre.jit" || crate::ext::pcre::jit_supported())
 }
@@ -508,6 +511,7 @@ const STRING_UNEMPTY: &[&[u8]] = &[
     b"doc_root",
     b"extension_dir",
     b"include_path",
+    b"intl.default_locale",
     b"sys_temp_dir",
     b"upload_tmp_dir",
     b"variables_order",
@@ -607,6 +611,18 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
             String::from_utf8_lossy(v)
         );
         (vec![msg], None)
+    } else if name == b"intl.error_level" && ini_parse_quantity(v) != 0 {
+        // intl's OnUpdateErrorLevel, raised again when the startup value
+        // is restored over a runtime change.
+        let msg = crate::ext::intl::ERROR_LEVEL_DEPRECATION;
+        STARTUP_DIAGS.with(|d| {
+            d.borrow_mut().restore_leveled.insert(
+                key.clone(),
+                vec![(crate::E_DEPRECATED, format!("PHP Request Shutdown: {msg}"))],
+            )
+        });
+        leveled = Some(vec![(crate::E_DEPRECATED, format!("PHP Startup: {msg}"))]);
+        (Vec::new(), Some(v.to_vec()))
     } else if name == b"report_memleaks" && !ini_parse_bool(v) {
         // OnUpdateReportMemleaks.
         level = crate::E_DEPRECATED;
@@ -919,6 +935,9 @@ pub(crate) fn alter_ini_entry_ex(
     }
     if name == b"report_memleaks" && !ini_parse_bool(&newv) {
         crate::deprecated(host, func, "Directive 'report_memleaks' is deprecated")?;
+    }
+    if name == b"intl.error_level" && ini_parse_quantity(&newv) != 0 {
+        crate::deprecated(host, func, crate::ext::intl::ERROR_LEVEL_DEPRECATION)?;
     }
     if name == b"auto_detect_line_endings" && ini_parse_bool(&newv) {
         host.emit_diagnostic(

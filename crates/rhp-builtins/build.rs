@@ -38,6 +38,7 @@ fn main() {
     icu_checks(&icu);
     println!("cargo:rerun-if-changed=src/ext/intl/shim.c");
     println!("cargo:rerun-if-changed=src/ext/intl/consts.h");
+    println!("cargo:rerun-if-changed=src/ext/intl/class_consts.h");
     cc::Build::new()
         .file("src/ext/intl/shim.c")
         .include(&icu)

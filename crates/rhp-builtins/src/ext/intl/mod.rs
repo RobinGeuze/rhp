@@ -1,19 +1,23 @@
-//! The `intl` extension — the subset Composer and its bundled
-//! `symfony/string` reach for: grapheme-cluster string functions
-//! (`grapheme_*`), Unicode normalization (`normalizer_*` / `Normalizer`) and
-//! IDNA (`idn_to_ascii` / `idn_to_utf8`), plus the global error state
-//! (`intl_get_error_code` / `intl_get_error_message`).
+//! The `intl` extension: grapheme-cluster string functions (`grapheme_*`),
+//! Unicode normalization (`normalizer_*` / `Normalizer`), IDNA
+//! (`idn_to_ascii` / `idn_to_utf8`), `Locale`, `NumberFormatter`,
+//! `Collator`, `IntlException` and the error state (`intl_get_error_code` /
+//! `intl_get_error_message`, the objects' own, `intl.use_exceptions`).
 //!
 //! Like php, rhp calls ICU4C (the build php links, see
 //! docs/design/libraries.md); each function is a port of php-src's
-//! ext/intl C. The global constants are php's (`consts.h`, generated from
-//! the stubs) with the linked ICU's values.
+//! ext/intl C. The constants are php's (`consts.h`, `class_consts.h`,
+//! generated from the stubs) with the linked ICU's values. The classes are
+//! declared in PHP (`prelude.php`); their methods run the procedural
+//! functions' code through `__collator`, `__numfmt` and `__locale`, named
+//! as php's method aliases are in errors. A Collator's or NumberFormatter's
+//! ICU object is its payload.
 //!
 //! `extension_loaded('intl')` stays false: the rest of the extension
-//! (Collator, NumberFormatter, Locale, …) is not implemented, and callers that
-//! gate on the extension would otherwise assume it.
+//! (IntlDateFormatter, MessageFormatter, IntlCalendar, …) is not
+//! implemented, and callers that gate on the extension would otherwise
+//! assume it. Its ini directives are in force (main/ini.rs).
 
-use std::cell::RefCell;
 use std::ffi::CStr;
 use std::ptr;
 use std::sync::OnceLock;
@@ -22,10 +26,17 @@ use rhp_values::Value;
 
 use crate::{Host, Thrown};
 
+mod collator;
+mod error;
+mod formatter;
 mod grapheme;
 mod idn;
+mod locale;
 mod normalizer;
 mod sys;
+
+pub(crate) use error::ERROR_LEVEL_DEPRECATION;
+pub(crate) use error::{error_reset, error_set, error_set_code, error_set_msg, u_error_name};
 
 use sys::{UChar, UErrorCode};
 
@@ -34,7 +45,7 @@ use sys::{UChar, UErrorCode};
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum ConstValue {
+pub(crate) enum ConstValue {
     Int(i64),
     Str(&'static str),
 }
@@ -71,6 +82,87 @@ pub(crate) fn int_const(name: &str) -> i64 {
     }
 }
 
+/// One class constant of the shim's table (class_consts.h).
+pub(crate) struct ClassConst {
+    pub(crate) class: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) value: Option<ConstValue>,
+    pub(crate) attr: &'static str,
+}
+
+fn class_const_table() -> &'static [ClassConst] {
+    static TABLE: OnceLock<Vec<ClassConst>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut out = Vec::new();
+        let s = |p: *const std::ffi::c_char| unsafe { CStr::from_ptr(p) }.to_str().expect("ASCII");
+        // SAFETY: the shim's static array, ended by a null class; its
+        // strings are C literals.
+        unsafe {
+            let mut p = sys::rhp_intl_class_constants();
+            while !(*p).class.is_null() {
+                let value = match (*p).kind {
+                    0 => Some(ConstValue::Int((*p).value)),
+                    1 => Some(ConstValue::Str(s((*p).str))),
+                    _ => None,
+                };
+                out.push(ClassConst {
+                    class: s((*p).class),
+                    name: s((*p).name),
+                    value,
+                    attr: s((*p).attr),
+                });
+                p = p.add(1);
+            }
+        }
+        out
+    })
+}
+
+/// The value of an integer class constant (`NumberFormatter::DECIMAL`).
+pub(crate) fn class_int(class: &str, name: &str) -> i64 {
+    match class_const_table()
+        .iter()
+        .find(|c| c.class == class && c.name == name)
+        .and_then(|c| c.value)
+    {
+        Some(ConstValue::Int(v)) => v,
+        _ => panic!("class_consts.h has no integer {class}::{name}"),
+    }
+}
+
+/// The PHP declarations of `class`'s constants, for the prelude.
+fn class_const_decls(class: &str) -> String {
+    let mut out = String::new();
+    for c in class_const_table().iter().filter(|c| c.class == class) {
+        if !c.attr.is_empty() {
+            out.push_str(&format!("    {}\n", c.attr));
+        }
+        let v = match c.value {
+            Some(ConstValue::Int(i)) => format!("{i}"),
+            Some(ConstValue::Str(s)) => format!("'{s}'"),
+            None => "null".to_string(),
+        };
+        out.push_str(&format!("    public const {} = {v};\n", c.name));
+    }
+    out
+}
+
+/// The E_DEPRECATED a fetch of a `#[\Deprecated]` intl class constant
+/// raises (NumberFormatter::TYPE_CURRENCY).
+pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
+    let c = class_const_table()
+        .iter()
+        .find(|c| c.class.as_bytes().eq_ignore_ascii_case(class) && c.name.as_bytes() == name)?;
+    let since = c
+        .attr
+        .strip_prefix("#[\\Deprecated(since: '")?
+        .strip_suffix("')]")?;
+    Some(format!(
+        "Constant {}::{} is deprecated since {since}",
+        c.class, c.name
+    ))
+}
+
 pub fn constants() -> Vec<(&'static str, Value)> {
     const_table()
         .iter()
@@ -88,63 +180,12 @@ pub fn constants() -> Vec<(&'static str, Value)> {
 // global error state (intl_error.c)
 // ---------------------------------------------------------------------------
 
-/// ICU's `u_errorName`.
-fn u_error_name(code: UErrorCode) -> String {
-    // SAFETY: u_errorName returns a static string for every code.
-    unsafe { CStr::from_ptr(sys::u_errorName(code)) }
-        .to_string_lossy()
-        .into_owned()
-}
-
-struct IntlError {
-    code: UErrorCode,
-    msg: Option<String>,
-}
-
-thread_local! {
-    static ERR: RefCell<IntlError> = const { RefCell::new(IntlError { code: 0, msg: None }) };
-}
-
-/// `intl_error_reset(NULL)`.
-pub(crate) fn error_reset() {
-    ERR.with(|e| {
-        let mut e = e.borrow_mut();
-        e.code = sys::U_ZERO_ERROR;
-        e.msg = None;
-    });
-}
-
-/// `intl_error_set_code(NULL, code)`.
-pub(crate) fn error_set_code(code: UErrorCode) {
-    ERR.with(|e| e.borrow_mut().code = code);
-}
-
-/// `intl_error_set_custom_msg(NULL, msg)`: the message is prefixed with the
-/// calling function's name, as php does for the global error.
-pub(crate) fn error_set_msg(fname: &str, msg: &str) {
-    ERR.with(|e| e.borrow_mut().msg = Some(format!("{fname}(): {msg}")));
-}
-
-/// `intl_error_set(NULL, code, msg)`.
-pub(crate) fn error_set(fname: &str, code: UErrorCode, msg: &str) {
-    error_set_code(code);
-    error_set_msg(fname, msg);
-}
-
 fn fn_intl_get_error_code(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(ERR.with(|e| e.borrow().code) as i64))
+    Ok(Value::Int(error::error_code() as i64))
 }
 
 fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let s = ERR.with(|e| {
-        let e = e.borrow();
-        let name = u_error_name(e.code);
-        match &e.msg {
-            Some(m) => format!("{m}: {name}"),
-            None => name,
-        }
-    });
-    Ok(Value::str(s.into_bytes()))
+    Ok(Value::str(error::error_message().into_bytes()))
 }
 
 fn fn_intl_is_failure(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -240,6 +281,96 @@ pub(crate) fn utf16_to_utf8(src: &[UChar]) -> Result<Vec<u8>, UErrorCode> {
     Ok(buf)
 }
 
+// ---------------------------------------------------------------------------
+// locales (php_intl.c)
+// ---------------------------------------------------------------------------
+
+/// `intl_locale_get_default`: intl.default_locale, else ICU's default.
+pub(crate) fn locale_get_default() -> Vec<u8> {
+    match crate::ini_value(b"intl.default_locale") {
+        Some(Some(v)) if !v.is_empty() => v,
+        // SAFETY: ICU returns its default locale's static name.
+        _ => unsafe { CStr::from_ptr(sys::uloc_getDefault()) }
+            .to_bytes()
+            .to_vec(),
+    }
+}
+
+/// A C string for ICU: the bytes up to the first NUL, as C reads them.
+pub(crate) fn c_string(s: &[u8]) -> std::ffi::CString {
+    let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    std::ffi::CString::new(&s[..end]).expect("no NUL")
+}
+
+/// The bytes of a C string ICU returned (empty for null).
+pub(crate) fn c_bytes(p: *const std::ffi::c_char) -> Vec<u8> {
+    if p.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: a NUL-terminated string from ICU.
+    unsafe { CStr::from_ptr(p) }.to_bytes().to_vec()
+}
+
+/// `canonicalize_locale_string`.
+pub(crate) fn canonicalize_locale_string(locale: &std::ffi::CStr) -> Option<std::ffi::CString> {
+    let mut buf = [0 as std::ffi::c_char; sys::ULOC_FULLNAME_CAPACITY];
+    let mut status = sys::U_ZERO_ERROR;
+    // SAFETY: a buffer of ULOC_FULLNAME_CAPACITY bytes.
+    let len = unsafe {
+        sys::uloc_canonicalize(
+            locale.as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as i32,
+            &mut status,
+        )
+    };
+    if sys::failure(status) || len <= 0 {
+        return None;
+    }
+    // SAFETY: ICU terminated the string (it fit: no failure).
+    Some(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_owned())
+}
+
+/// `INTL_CHECK_LOCALE_LEN`: the global error for an over-long locale;
+/// true when it is one.
+pub(crate) fn locale_too_long(
+    host: &mut dyn Host,
+    fname: &str,
+    len: usize,
+) -> Result<bool, Thrown> {
+    let max = sys::ULOC_FULLNAME_CAPACITY - 1;
+    if len > max {
+        error::set(
+            host,
+            fname,
+            sys::U_ILLEGAL_ARGUMENT_ERROR,
+            &format!("Locale string too long, should be no longer than {max} characters"),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// The UTF-16 units a fixed-size ICU getter writes, read with php's
+/// grow-once pattern: `f(buf, cap, status)` returns the length.
+pub(crate) fn icu_uchars(
+    initial: usize,
+    status: &mut UErrorCode,
+    mut f: impl FnMut(*mut UChar, i32, &mut UErrorCode) -> i32,
+) -> Vec<UChar> {
+    let mut buf: Vec<UChar> = vec![0; initial];
+    let mut len = f(buf.as_mut_ptr(), buf.len() as i32, status);
+    if *status == sys::U_BUFFER_OVERFLOW_ERROR && len as usize >= initial {
+        // one more unit, to avoid U_STRING_NOT_TERMINATED_WARNING
+        let cap = len as usize + 1;
+        *status = sys::U_ZERO_ERROR;
+        buf = vec![0; cap];
+        len = f(buf.as_mut_ptr(), cap as i32, status);
+    }
+    buf.truncate(len.clamp(0, buf.len() as i32) as usize);
+    buf
+}
+
 /// php's `ZEND_HAS_OOM()`: an allocation crossed memory_limit, and the VM
 /// raises the error once the builtin returns.
 pub(crate) fn has_oom() -> bool {
@@ -303,12 +434,50 @@ pub fn register(m: &mut crate::Registry) {
             ("idn_to_utf8", idn::fn_idn_to_utf8),
         ],
     );
-    crate::register_helpers(m, &[("__normalizer", normalizer::fn_method, 1, None)]);
+    collator::register(m);
+    formatter::register(m);
+    locale::register(m);
+    crate::register_helpers(
+        m,
+        &[
+            ("__normalizer", normalizer::fn_method, 1, None),
+            ("__collator", collator::fn_method, 2, None),
+            ("__numfmt", formatter::fn_method, 2, None),
+            ("__locale", locale::fn_method, 1, None),
+        ],
+    );
 }
 
-/// The `Normalizer` class: its static methods share the procedural
-/// functions' code but name themselves in errors.
-pub const PRELUDE_PHP: &str = include_str!("prelude.php");
+/// The object handlers of the intl classes with native state.
+pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
+    crate::zend::object_handlers::ClassHandlers {
+        class: "Collator",
+        handlers: &collator::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "NumberFormatter",
+        handlers: &formatter::HANDLERS,
+        create_object: true,
+    },
+];
+
+/// The intl classes, in php_intl.c's MINIT order: their constants from
+/// the linked ICU, their methods calling the procedural functions' code
+/// (which names the method in errors).
+pub fn prelude() -> &'static str {
+    static PRELUDE: OnceLock<String> = OnceLock::new();
+    PRELUDE.get_or_init(|| {
+        let mut p = include_str!("prelude.php").to_string();
+        for class in ["Collator", "NumberFormatter", "Locale"] {
+            p = p.replace(
+                &format!("    // %CONSTANTS {class}%\n"),
+                &class_const_decls(class),
+            );
+        }
+        p
+    })
+}
 
 #[cfg(test)]
 mod tests;

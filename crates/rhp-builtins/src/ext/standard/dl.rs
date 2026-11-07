@@ -2,14 +2,53 @@
 //! (see sapi/). rhp cannot load php extension modules: the checks and the
 //! "Unable to load" warning are php's; a library that loads is refused as
 //! unsupported.
+//!
+//! A php extension module (a library exporting `get_module`) usually fails
+//! dlopen() under rhp only because it links against php's engine symbols
+//! (`compiler_globals`, ...), which rhp does not have. Such a module counts
+//! as loaded but not runnable, like one that loads: an `extension=` entry
+//! for it is skipped without the startup warning (as by a php built without
+//! DL support, whose `extension=` entries do nothing). See
+//! docs/design/extensions.md ("php extension modules").
 
 use rhp_values::{conv, ops::deref, Value};
 
 use crate::main::ini::{ini_parse_bool, ini_value};
 use crate::{Host, Thrown};
 
-/// dlopen(3) `path`: Ok(()) when it loads (closed again), else dlerror().
+/// Whether `path` is a php extension module: a shared library whose
+/// dynamic symbol table exports `get_module` (`_get_module` on Mach-O), the
+/// symbol php_load_extension looks up. Read without loading it.
+fn is_php_module(path: &[u8]) -> bool {
+    use object::Object;
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(data) = std::fs::read(std::ffi::OsStr::from_bytes(path)) else {
+        return false;
+    };
+    let Ok(file) = object::File::parse(&*data) else {
+        return false;
+    };
+    file.exports().is_ok_and(|exports| {
+        exports
+            .iter()
+            .any(|e| matches!(e.name(), b"get_module" | b"_get_module"))
+    })
+}
+
+/// dlopen(3) `path`: Ok(whether it is a php module) when it loads (closed
+/// again), else dlerror(). A php module that fails to load is Ok(true)
+/// (see the module comment).
 fn load_shlib(path: &[u8]) -> Result<bool, String> {
+    load_shlib_raw(path).or_else(|e| {
+        if is_php_module(path) {
+            Ok(true)
+        } else {
+            Err(e)
+        }
+    })
+}
+
+fn load_shlib_raw(path: &[u8]) -> Result<bool, String> {
     let c = std::ffi::CString::new(path).map_err(|_| String::new())?;
     // SAFETY: a NUL-terminated path; the handle is closed right away.
     unsafe {
@@ -31,7 +70,8 @@ fn load_shlib(path: &[u8]) -> Result<bool, String> {
 
 /// php_load_extension for an `extension=` entry at startup
 /// (MODULE_PERSISTENT): the "Unable to load" message when the library does
-/// not load. One that loads is left alone (rhp cannot run it).
+/// not load. One that loads, or a php module, is left alone (rhp cannot
+/// run it).
 pub(crate) fn startup_extension_error(filename: &[u8]) -> Option<String> {
     let dir = ini_value(b"extension_dir").flatten().unwrap_or_default();
     let has_slash = filename.contains(&b'/');

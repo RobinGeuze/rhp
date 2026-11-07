@@ -125,6 +125,9 @@ pub enum ObCall {
     ImplicitFlush(bool),
     /// `flush()`: sapi_flush.
     SapiFlush,
+    /// Whether an output handler is running (php_output_handler_hook's
+    /// GET_FLAGS succeeds): `bool`.
+    HandlerRunning,
 }
 
 /// The fetch a magic accessor serves ([`Host::magic_fetch`]).

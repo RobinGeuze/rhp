@@ -855,6 +855,7 @@ impl Vm {
             // superglobals (whose warnings then land in it).
             self.output_startup();
             self.seed_superglobals();
+            self.oom_startup()?;
         }
         self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.

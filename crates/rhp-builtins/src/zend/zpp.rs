@@ -167,6 +167,25 @@ pub(crate) fn str_param(
     }
 }
 
+/// [`str_param`] as a php string: a string argument is shared, not copied
+/// (`Z_PARAM_STR` hands the function the caller's `zend_string`).
+pub(crate) fn zstr_param(
+    host: &mut dyn Host,
+    args: &[Value],
+    i: usize,
+    func: &str,
+    pname: &str,
+) -> Result<rhp_values::PhpStr, Thrown> {
+    match &args[i] {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Ref(r) => match &*r.borrow() {
+            Value::Str(s) => Ok(s.clone()),
+            _ => str_param(host, args, i, func, pname).map(rhp_values::PhpStr::from_bytes),
+        },
+        _ => str_param(host, args, i, func, pname).map(rhp_values::PhpStr::from_bytes),
+    }
+}
+
 /// An `array` parameter. The VM's zpp has checked it for a call from user
 /// code; a prelude caller passing anything else gets php's TypeError.
 pub(crate) fn array_param(

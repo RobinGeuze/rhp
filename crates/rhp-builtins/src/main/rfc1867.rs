@@ -18,7 +18,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-use rhp_values::{PhpArray, Value};
+use rhp_values::{mem, PhpArray, Value};
 
 use crate::main::php_variables::register_variable_value;
 use crate::Host;
@@ -434,7 +434,8 @@ impl<'a> MBuf<'a> {
         false
     }
 
-    /// `multipart_buffer_headers`: `None` when no boundary was found.
+    /// `multipart_buffer_headers`: `None` when no boundary was found or the
+    /// headers reached the memory limit.
     fn headers(&mut self) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
         if !self.find_boundary() {
             return None;
@@ -459,14 +460,27 @@ impl<'a> MBuf<'a> {
                 if let (Some(v), Some(k)) = (buf_value.take(), key.take()) {
                     out.push((k, v));
                 }
-                let mut v = c + 1;
-                while v < line.len() && c_isspace(line[v]) {
-                    v += 1;
+                // Keep only the headers the parser uses, and the first of
+                // each.
+                let name = &line[..c];
+                let save = (name.eq_ignore_ascii_case(b"Content-Disposition")
+                    || name.eq_ignore_ascii_case(b"Content-Type"))
+                    && !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+                if save {
+                    let mut v = c + 1;
+                    while v < line.len() && c_isspace(line[v]) {
+                        v += 1;
+                    }
+                    key = Some(name.to_vec());
+                    buf_value = Some(line[v..].to_vec());
                 }
-                key = Some(line[..c].to_vec());
-                buf_value = Some(line[v..].to_vec());
             } else if let Some(b) = buf_value.as_mut() {
                 b.extend_from_slice(&line);
+            } else {
+                continue;
+            }
+            if mem::has_oom() {
+                return None;
             }
         }
         if let (Some(v), Some(k)) = (buf_value, key) {
@@ -789,6 +803,11 @@ pub fn parse(
     let mut skip_upload = false;
 
     while !mb.eof() {
+        // php checks ZEND_HAS_OOM() after each step that allocates and stops
+        // parsing there (fileupload_done).
+        if mem::has_oom() {
+            break;
+        }
         let Some(header) = mb.headers() else {
             break;
         };
@@ -833,17 +852,29 @@ pub fn parse(
                     filename = Some(conv(getword_conf(val, enc)));
                 }
             }
+            if mem::has_oom() {
+                break;
+            }
+        }
+        if mem::has_oom() {
+            break;
         }
 
         // A normal form variable.
         if let (None, Some(p)) = (&filename, param.clone()) {
             let value = mb.read_body().unwrap_or_default();
+            if mem::has_oom() {
+                break;
+            }
             let value = conv(value);
             count += 1;
             if count <= max_input_vars {
                 // php 8.5 registers form fields under the name as sent (no
                 // protected-variable normalisation or check).
                 register_variable_value(post, &p, Value::str(value.clone()), false);
+                if mem::has_oom() {
+                    break;
+                }
             } else if count == max_input_vars.wrapping_add(1) {
                 out.diags.push(Diag::Emit(format!(
                     "Input variables exceeded {max_input_vars}. To increase the limit change max_input_vars in php.ini."
@@ -968,6 +999,9 @@ pub fn parse(
             }
         } else if let Some(t) = &temp {
             uploaded.push(t.clone());
+        }
+        if mem::has_oom() {
+            break;
         }
 
         // is_arr_upload: the name ends in [...]; start_arr is its first '['.

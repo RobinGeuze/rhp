@@ -1142,17 +1142,17 @@ fn fn_zend_version(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(crate::version::ZEND_VERSION))
 }
 
-/// Raw byte-difference `memcmp` over the first `n` bytes: returns the signed
-/// difference of the first differing (unsigned) byte, or 0. Matches the
-/// platform `memcmp` php returns directly.
+/// The platform `memcmp` over the first `n` bytes. php returns its result
+/// as is, and the value differs by libc (macOS: the byte difference; glibc:
+/// depends on the implementation), so call the same function.
 fn memcmp_raw(a: &[u8], b: &[u8], n: usize) -> i64 {
-    for i in 0..n {
-        let d = a[i] as i64 - b[i] as i64;
-        if d != 0 {
-            return d;
-        }
+    assert!(n <= a.len() && n <= b.len());
+    if n == 0 {
+        return 0;
     }
-    0
+    // SAFETY: both slices hold at least `n` bytes (checked above).
+    let r = unsafe { libc::memcmp(a.as_ptr().cast(), b.as_ptr().cast(), n) };
+    r as i64
 }
 
 /// Case-insensitive variant: compares `tolower` of each byte.

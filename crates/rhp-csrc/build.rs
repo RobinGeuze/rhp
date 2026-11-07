@@ -12,6 +12,7 @@ fn main() {
     let argon2 = std::env::var_os("CARGO_FEATURE_ARGON2").is_some();
     let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
     let avifinfo = std::env::var_os("CARGO_FEATURE_AVIFINFO").is_some();
+    let fileinfo = std::env::var_os("CARGO_FEATURE_FILEINFO").is_some();
     println!("cargo:rerun-if-changed=build.rs");
 
     // The shim, for every crate that compiles php-src C (rhp-mbfl-sys reads
@@ -88,6 +89,47 @@ fn main() {
         rerun(&["glue", "vendor/php-src"]);
     }
 
+    if fileinfo {
+        // ext/fileinfo/config.m4: libmagic's sources (strcasestr.c only
+        // where the C library lacks it) with -I libmagic, against the shim.
+        // glue/fileinfo_config.h stands in for php_config.h's macros.
+        let dir = Path::new("vendor/php-src/ext/fileinfo");
+        let mut b = php_cc();
+        b.include(dir.join("libmagic"))
+            .include(dir)
+            .flag("-include")
+            .flag(glue("fileinfo_config.h"))
+            .flag("-include")
+            .flag(glue("prefix_fileinfo.h"));
+        for f in [
+            "apprentice.c",
+            "apptype.c",
+            "ascmagic.c",
+            "buffer.c",
+            "cdf_time.c",
+            "cdf.c",
+            "compress.c",
+            "der.c",
+            "encoding.c",
+            "fsmagic.c",
+            "funcs.c",
+            "is_csv.c",
+            "is_json.c",
+            "is_simh.c",
+            "is_tar.c",
+            "magic.c",
+            "print.c",
+            "readcdf.c",
+            "softmagic.c",
+        ] {
+            b.file(dir.join("libmagic").join(f));
+        }
+        b.file(dir.join("php_libmagic.c"))
+            .file("glue/fileinfo.c")
+            .compile("rhp_csrc_fileinfo");
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
     if argon2 {
         let dir = Path::new("vendor/argon2");
         let mut b = cc::Build::new();
@@ -115,7 +157,10 @@ fn main() {
 
     // Linked after the archives above, which call into it: GNU ld (the
     // default linker on aarch64 Linux) takes archives left to right.
-    php_cc().file("shim/zend_shim.c").compile("rhp_csrc_zend");
+    php_cc()
+        .file("shim/zend_shim.c")
+        .file("shim/php_printf.c")
+        .compile("rhp_csrc_zend");
     rerun(&["shim"]);
 }
 

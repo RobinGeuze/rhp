@@ -1,0 +1,34 @@
+array(3) {
+  ["o"]=>
+  object(stdClass)#2 (0) {
+  }
+  ["z"]=>
+  int(2)
+  ["n"]=>
+  NULL
+}
+x
+y
+int(2)
+0 10
+warning: foreach() argument must be of type array|object, int given
+int(0)
+array(4) {
+  [0]=>
+  int(10)
+  [1]=>
+  int(20)
+  [2]=>
+  int(30)
+  [3]=>
+  int(40)
+}
+1
+warning: foreach() argument must be of type array|object, int given
+int(5)
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}

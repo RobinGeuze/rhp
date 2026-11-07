@@ -441,13 +441,15 @@ ref iterates its live property table through an iterator kept on the object
 (`ObjectData::prop_iter_*`, moved by `remove_prop`; positions count
 every declared slot, empty ones too).
 `pos_reg + 1` holds a placeholder object for the handle php's
-zend_object_iterator takes (Traversable and hooked objects).
+zend_object_iterator takes (Traversable and hooked objects), or, by
+reference over an array, the reference FE_RESET_RW keeps: the loop goes on
+over it when the variable is rebound (`foreach ($v as &$v)`).
 `keycv` = `Reg::MAX` means "no key target".
 ```
 FeReset    { arr_reg, pos_reg, src, end }            start; empty/non-iterable (warns) -> Jmp end
 FeFetch    { arr_reg, pos_reg, keycv, valcv, end }    bind next key?/value, or Jmp end
-FeResetRef { arr_cv, pos_reg, end }                   by-ref: separate + iterator on the array in arr_cv
-FeFetchRef { arr_cv, pos_reg, keycv, valcv, end }     promote the next element to Ref, bind valcv to it
+FeResetRef { arr_cv, pos_reg, end }                   by-ref: make arr_cv a Ref (held in pos_reg+1), separate, add an iterator
+FeFetchRef { arr_cv, pos_reg, keycv, valcv, end }     promote the next element of the held array to Ref, bind valcv to it
 FeFree     { arr, pos_reg, by_ref, clear_arr, end }   ZEND_FE_FREE: drop iterator, handle, temporary
 ```
 FeFree is emitted at the loop end and before `break N`/`continue N`, `return`

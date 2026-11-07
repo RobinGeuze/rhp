@@ -248,6 +248,25 @@ impl Vm {
     /// process down.
     fn hard_limit_exit(&mut self, oom: Oom) -> Thrown {
         let (file, line) = self.throw_site();
+        self.hard_limit_exit_at(oom, file, line)
+    }
+
+    /// Compiling went past php's hard memory limit
+    /// (`IncludeError::HardLimit`): php exits there, naming the executing
+    /// code, or with none (the main script, preloading) the file and line
+    /// it was compiling (zend_get_compiled_filename / _lineno): `at`.
+    pub fn compile_hard_limit(&mut self, at: Option<(&[u8], u32)>) -> Thrown {
+        let oom = self
+            .mem
+            .take_oom()
+            .unwrap_or(Oom::Hard { limit: 0, tried: 0 });
+        match at {
+            Some((file, line)) => self.hard_limit_exit_at(oom, file.to_vec(), line),
+            None => self.hard_limit_exit(oom),
+        }
+    }
+
+    fn hard_limit_exit_at(&mut self, oom: Oom, file: Vec<u8>, line: u32) -> Thrown {
         let (file, line) = if file.is_empty() {
             (b"Unknown".to_vec(), 0)
         } else {

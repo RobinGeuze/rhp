@@ -10,17 +10,18 @@ use super::ids::*;
 pub struct Tok {
     /// A `T_*` id (>= 256) or, for a single-character token, the byte itself.
     pub id: i64,
-    pub line: i64,
-    /// The token is `src[pos..end]`.
-    pub pos: usize,
-    pub end: usize,
+    pub line: u32,
+    /// The token is `src[pos..end]`. 32-bit, like the parse tree's spans:
+    /// 24 bytes a token (php's grammar check holds a whole file's).
+    pub pos: u32,
+    pub end: u32,
     /// Scanned in ST_IN_SCRIPTING (where brackets count for nesting).
     pub scripting: bool,
 }
 
 impl Tok {
     pub fn text<'s>(&self, src: &'s [u8]) -> &'s [u8] {
-        &src[self.pos..self.end]
+        &src[self.pos as usize..self.end as usize]
     }
 }
 
@@ -252,9 +253,9 @@ impl<'a> Lexer<'a> {
         self.line += count_newlines(&self.s[self.p..end]);
         self.out.push(Tok {
             id,
-            line,
-            pos: self.p,
-            end,
+            line: line as u32,
+            pos: self.p as u32,
+            end: end as u32,
             scripting: false,
         });
         self.p = end;
@@ -1161,7 +1162,7 @@ impl Lexer<'_> {
                             // never happens: the rest keeps the tag's line.
                             if id == T_CLOSE_TAG {
                                 if let Some(t) = self.out.last() {
-                                    self.line = t.line;
+                                    self.line = t.line as i64;
                                 }
                             }
                             let e = self.s.len();

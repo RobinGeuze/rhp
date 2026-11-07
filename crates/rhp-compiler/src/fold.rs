@@ -207,6 +207,27 @@ pub(crate) fn php_swaps_operands(cx: &FileCtx, lhs: &Expression, rhs: &Expressio
     }
 }
 
+/// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
+/// global builtin constant that is not deprecated.
+pub(crate) fn ct_constant(cx: &FileCtx, id: &crate::parse::cst::Identifier) -> Option<Value> {
+    let namespaced_fq = matches!(id, crate::parse::cst::Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
+    if !namespaced_fq {
+        match identifier_name(id).to_ascii_lowercase().as_slice() {
+            b"true" => return Some(Value::Bool(true)),
+            b"false" => return Some(Value::Bool(false)),
+            b"null" => return Some(Value::Null),
+            _ => {}
+        }
+    }
+    let (name, fallback) = cx.resolve_name(id, crate::names::NameKind::Const);
+    // php-cli's stream resources are per-request constants, never
+    // substituted (can_ct_eval_const).
+    if fallback.is_some() || matches!(name.as_slice(), b"STDIN" | b"STDOUT" | b"STDERR") {
+        return None;
+    }
+    (cx.builtins.constant)(&name)
+}
+
 /// Whether php's compiler folds `e` to a constant. A binary operation
 /// checks its right operand first, so the left spine of a long chain is
 /// not walked at every level.
@@ -214,6 +235,8 @@ fn is_ct_const(cx: &FileCtx, e: &Expression) -> bool {
     match e {
         Expression::Parenthesized(p) => is_ct_const(cx, p.expression),
         Expression::MagicConstant(_) => true,
+        // `PHP_INT_MAX` is a CONST operand.
+        Expression::ConstantAccess(ca) => ct_constant(cx, &ca.name).is_some(),
         Expression::Binary(b) => {
             is_ct_const(cx, b.rhs) && is_ct_const(cx, b.lhs) && fold_const(cx, e).is_ok()
         }

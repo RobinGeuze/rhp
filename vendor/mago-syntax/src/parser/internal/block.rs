@@ -1,6 +1,5 @@
 use crate::T;
 use crate::cst::cst::Block;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -46,6 +45,6 @@ where
 
         let right_brace = self.parse_closing_span(T!["}"])?;
 
-        Ok(Block { left_brace, statements: Sequence::new(statements), right_brace })
+        Ok(Block { left_brace, statements: self.sequence(statements), right_brace })
     }
 }

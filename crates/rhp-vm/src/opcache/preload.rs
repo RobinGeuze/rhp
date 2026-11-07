@@ -184,6 +184,10 @@ impl Vm {
                 self.compile_failed(&message, file.as_bytes(), line, &diags, false);
                 return false;
             }
+            Err(IncludeError::HardLimit { line }) => {
+                self.compile_hard_limit(Some((file.as_bytes(), line)));
+                return false;
+            }
             Err(IncludeError::Thrown(_)) => return false,
         };
         self.preload_rec = Some(vec![PreloadRec::new(

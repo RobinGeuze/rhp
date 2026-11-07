@@ -85,7 +85,7 @@ where
             cases.push(self.parse_switch_case()?);
         }
 
-        Ok(Sequence::new(cases))
+        Ok(self.sequence(cases))
     }
 
     fn parse_switch_case(&mut self) -> Result<SwitchCase<'arena>, ParseError> {
@@ -130,7 +130,7 @@ where
             }
         }
 
-        Ok(Sequence::new(statements))
+        Ok(self.sequence(statements))
     }
 
     fn parse_switch_case_separator(&mut self) -> Result<SwitchCaseSeparator, ParseError> {

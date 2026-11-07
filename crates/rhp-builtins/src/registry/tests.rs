@@ -126,3 +126,30 @@ fn php_builtins_have_stubs() {
     bad.sort();
     assert!(bad.is_empty(), "{bad:?}");
 }
+
+/// `ct_constant` (a table built once) agrees with a search of `constants`.
+#[test]
+fn ct_constant_matches_constants() {
+    fn same(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Null, Value::Null) => true,
+            (Value::Str(x), Value::Str(y)) => x.as_bytes() == y.as_bytes(),
+            _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+        }
+    }
+    let all = constants();
+    let mut first: HashMap<&str, &Value> = HashMap::new();
+    for (n, v) in &all {
+        first.entry(n).or_insert(v);
+    }
+    for (n, v) in first {
+        match ct_constant(n.as_bytes()) {
+            None => assert!(constant_deprecation(n.as_bytes()).is_some(), "{n}"),
+            Some(got) => assert!(same(&got, v), "{n}"),
+        }
+    }
+    assert!(ct_constant(b"NO_SUCH_CONSTANT").is_none());
+}

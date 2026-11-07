@@ -99,10 +99,29 @@ pub fn ct_constant(name: &[u8]) -> Option<Value> {
     if constant_deprecation(name).is_some() {
         return None;
     }
-    constants()
-        .into_iter()
-        .find(|(n, _)| n.as_bytes() == name)
-        .map(|(_, v)| v)
+    // The compiler asks for every constant operand: look it up in a table
+    // built once per thread (per SAPI kind, as `constants` depends on it),
+    // outside any request's memory.
+    /// The table, and whether it was built for a command-line SAPI.
+    type Table = Option<(bool, HashMap<&'static [u8], Value>)>;
+    thread_local! {
+        static TABLE: std::cell::RefCell<Table> = const { std::cell::RefCell::new(None) };
+    }
+    let cli = main::sapi::is_command_line();
+    TABLE.with(|t| {
+        let mut t = t.borrow_mut();
+        if !t.as_ref().is_some_and(|(c, _)| *c == cli) {
+            rhp_values::mem::uncounted(|| {
+                let mut map = HashMap::new();
+                for (n, v) in constants() {
+                    // The first module's wins, as a linear search finds it.
+                    map.entry(n.as_bytes()).or_insert(v);
+                }
+                *t = Some((cli, map));
+            });
+        }
+        t.as_ref().and_then(|(_, m)| m.get(name).cloned())
+    })
 }
 
 /// The E_DEPRECATED a fetch of a built-in class's `#[\Deprecated]`

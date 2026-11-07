@@ -15,7 +15,7 @@ where
             modifiers.push(modifier);
         }
 
-        Ok(Sequence::new(modifiers))
+        Ok(self.sequence(modifiers))
     }
 
     pub(crate) fn parse_optional_modifier(&mut self) -> Result<Option<Modifier<'arena>>, ParseError> {

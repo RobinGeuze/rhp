@@ -21,6 +21,8 @@ pub struct ParserSettings {
     /// Drop whitespace trivia that no comment precedes within the same token gap.
     /// Docblock and pragma lookups only ever read whitespace that follows a comment.
     pub elide_detached_whitespace: bool,
+    /// rhp: collect no trivia at all (`Program::trivia` stays empty).
+    pub discard_trivia: bool,
 }
 
 impl Default for LexerSettings {

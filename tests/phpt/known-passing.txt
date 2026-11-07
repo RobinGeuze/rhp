@@ -3603,6 +3603,7 @@ Zend/tests/oom_debug_backtrace_args.phpt
 Zend/tests/oom_debug_backtrace_named_args.phpt
 Zend/tests/oom_error_get_last.phpt
 Zend/tests/oom_exception_trace.phpt
+Zend/tests/oom_hard_limit_exceeded_during_complilation.phpt
 Zend/tests/oom_interrupt.phpt
 Zend/tests/oom_interrupt_unfinished_call_frame.phpt
 Zend/tests/oom_interrupt_unfinished_call_frame_fiber.phpt

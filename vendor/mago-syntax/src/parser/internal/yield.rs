@@ -32,10 +32,10 @@ where
         if T!["&"] == next.kind {
             let ampersand_span = self.stream.eat_span(T!["&"])?;
             let referenced_expr = self.parse_expression_with_precedence(Precedence::Reference)?;
-            let value = self.arena.alloc(Expression::UnaryPrefix(UnaryPrefix {
+            let value = self.arena.alloc(Expression::UnaryPrefix(self.arena.alloc(UnaryPrefix {
                 operator: UnaryPrefixOperator::Reference(ampersand_span),
                 operand: referenced_expr,
-            }));
+            })));
 
             return Ok(Yield::Value(YieldValue { r#yield, value: Some(value) }));
         }

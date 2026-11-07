@@ -5,7 +5,6 @@ use crate::cst::cst::ForeachColonDelimitedBody;
 use crate::cst::cst::ForeachKeyValueTarget;
 use crate::cst::cst::ForeachTarget;
 use crate::cst::cst::ForeachValueTarget;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -68,7 +67,7 @@ where
                     }
                 }
 
-                Sequence::new(statements)
+                self.sequence(statements)
             },
             end_foreach: self.expect_keyword(T!["endforeach"])?,
             terminator: self.parse_terminator()?,

@@ -2,7 +2,6 @@ use crate::T;
 use crate::cst::cst::While;
 use crate::cst::cst::WhileBody;
 use crate::cst::cst::WhileColonDelimitedBody;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -56,7 +55,7 @@ where
                     }
                 }
 
-                Sequence::new(statements)
+                self.sequence(statements)
             },
             end_while: self.expect_keyword(T!["endwhile"])?,
             terminator: self.parse_terminator()?,

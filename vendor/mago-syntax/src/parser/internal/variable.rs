@@ -40,22 +40,22 @@ where
 
         let expression = if matches!(self.stream.peek_kind(0)?, Some(T![StringVariableName])) {
             let label = self.stream.eat(T![StringVariableName])?;
-            let name = self.arena.alloc(Expression::Identifier(Identifier::Local(LocalIdentifier {
+            let name = self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(LocalIdentifier {
                 span: label.span_for(self.stream.file_id()),
                 value: label.value,
-            })));
+            }))));
 
             if matches!(self.stream.peek_kind(0)?, Some(T!["["])) {
                 let left_bracket = self.stream.eat_span(T!["["])?;
                 let index = self.parse_expression()?;
                 let right_bracket = self.stream.eat_span(T!["]"])?;
 
-                self.arena.alloc(Expression::ArrayAccess(ArrayAccess {
+                self.arena.alloc(Expression::ArrayAccess(self.arena.alloc(ArrayAccess {
                     array: name,
                     left_bracket,
                     index,
                     right_bracket,
-                }))
+                })))
             } else {
                 name
             }

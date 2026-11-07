@@ -679,24 +679,7 @@ impl ProtoBuilder<'_> {
     /// zend_try_ct_eval_const: `true`/`false`/`null` in any case, or a
     /// global builtin constant that is not deprecated.
     pub(crate) fn ct_constant(&self, id: &Identifier) -> Option<Value> {
-        let namespaced_fq =
-            matches!(id, Identifier::FullyQualified(f) if f.value[1..].contains(&b'\\'));
-        if !namespaced_fq {
-            match crate::names::identifier_name(id)
-                .to_ascii_lowercase()
-                .as_slice()
-            {
-                b"true" => return Some(Value::Bool(true)),
-                b"false" => return Some(Value::Bool(false)),
-                b"null" => return Some(Value::Null),
-                _ => {}
-            }
-        }
-        let (name, fallback) = self.cx.resolve_name(id, NameKind::Const);
-        if fallback.is_some() {
-            return None;
-        }
-        (self.cx.builtins.constant)(&name)
+        crate::fold::ct_constant(self.cx, id)
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
@@ -1921,10 +1904,11 @@ impl ProtoBuilder<'_> {
         // Stand-ins for already computed values: compile_expr hands back
         // the register bound to the node's address.
         let span = p.input.span();
-        let arg_expr = Expression::Static(Keyword {
+        let arg_kw = Keyword {
             span,
             value: b"static",
-        });
+        };
+        let arg_expr = Expression::Static(&arg_kw);
         let args = [Argument::Positional(PositionalArgument {
             ellipsis: None,
             value: &arg_expr,
@@ -1941,6 +1925,7 @@ impl ProtoBuilder<'_> {
         let mark = self.expr_regs.len();
         self.expr_regs
             .push((&arg_expr as *const Expression as usize, operand));
+        let callee_kw;
         let callee_expr;
         let call = match callable {
             Expression::PartialApplication(Pa::Function(f))
@@ -1986,10 +1971,11 @@ impl ProtoBuilder<'_> {
                         return Err(e);
                     }
                 };
-                callee_expr = Expression::Static(Keyword {
+                callee_kw = Keyword {
                     span: other.span(),
                     value: b"static",
-                });
+                };
+                callee_expr = Expression::Static(&callee_kw);
                 self.expr_regs
                     .push((&callee_expr as *const Expression as usize, callee));
                 Call::Function(FunctionCall {

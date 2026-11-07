@@ -134,7 +134,7 @@ fn fn_token_get_all(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         let mut a = PhpArray::with_capacity(3);
         a.push(Value::Int(t.id));
         a.push(Value::Str(texts.get(src)));
-        a.push(Value::Int(t.line));
+        a.push(Value::Int(t.line as i64));
         if shared {
             same_line.insert((t.id, src), a.clone());
         }
@@ -173,7 +173,7 @@ fn fn_token_list(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         let mut a = PhpArray::new();
         a.push(Value::Int(t.id));
         a.push(Value::str(t.text(&code)));
-        a.push(Value::Int(t.line));
+        a.push(Value::Int(t.line as i64));
         a.push(Value::Int(t.pos as i64));
         out.push(Value::Array(a));
     }

@@ -10,7 +10,6 @@ use crate::cst::cst::Parenthesized;
 use crate::cst::cst::PartialApplication;
 use crate::cst::cst::PartialArgument;
 use crate::cst::cst::PartialArgumentList;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::Precedence;
@@ -35,10 +34,10 @@ where
         let clone = self.expect_keyword(T!["clone"])?;
         let next = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
         if next.kind != TokenKind::LeftParenthesis {
-            return Ok(Expression::Clone(Clone {
+            return Ok(Expression::Clone(self.arena.alloc(Clone {
                 clone,
                 object: self.parse_expression_with_precedence(Precedence::Clone)?,
-            }));
+            })));
         }
 
         let left_parenthesis = self.stream.eat_span(T!["("])?;
@@ -62,18 +61,18 @@ where
 
         let partial_args = PartialArgumentList {
             left_parenthesis,
-            arguments: TokenSeparatedSequence::new(arguments, commas),
+            arguments: self.token_separated(arguments, commas),
             right_parenthesis: self.stream.eat_span(T![")"])?,
         };
 
         if partial_args.has_placeholders() {
-            return Ok(Expression::PartialApplication(PartialApplication::Function(FunctionPartialApplication {
-                function: self.arena.alloc(Expression::Identifier(Identifier::Local(LocalIdentifier {
+            return Ok(Expression::PartialApplication(self.arena.alloc(PartialApplication::Function(FunctionPartialApplication {
+                function: self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(LocalIdentifier {
                     span: clone.span,
                     value: clone.value,
-                }))),
+                })))),
                 argument_list: partial_args,
-            })));
+            }))));
         }
 
         // Empty arguments case: clone() with no args is a function call
@@ -85,13 +84,13 @@ where
             );
 
         if is_function_call {
-            return Ok(Expression::Call(Call::Function(FunctionCall {
-                function: self.arena.alloc(Expression::Identifier(Identifier::Local(LocalIdentifier {
+            return Ok(Expression::Call(self.arena.alloc(Call::Function(FunctionCall {
+                function: self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(LocalIdentifier {
                     span: clone.span,
                     value: clone.value,
-                }))),
+                })))),
                 argument_list: partial_args.into_argument_list(self.arena),
-            })));
+            }))));
         }
 
         // At this point we know there's exactly one argument without ellipsis
@@ -109,15 +108,15 @@ where
             ) => return Err(self.stream.unexpected(None, &[])),
         };
 
-        let parenthesized = self.arena.alloc(Expression::Parenthesized(Parenthesized {
+        let parenthesized = self.arena.alloc(Expression::Parenthesized(self.arena.alloc(Parenthesized {
             left_parenthesis: partial_args.left_parenthesis,
             expression: cloned_expression,
             right_parenthesis: partial_args.right_parenthesis,
-        }));
+        })));
 
-        Ok(Expression::Clone(Clone {
+        Ok(Expression::Clone(self.arena.alloc(Clone {
             clone,
             object: self.parse_expression_continuation(parenthesized, Precedence::Clone)?,
-        }))
+        })))
     }
 }

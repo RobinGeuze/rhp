@@ -2,7 +2,6 @@ use crate::T;
 use crate::cst::cst::Namespace;
 use crate::cst::cst::NamespaceBody;
 use crate::cst::cst::NamespaceImplicitBody;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -57,6 +56,6 @@ where
             }
         }
 
-        Ok(NamespaceImplicitBody { terminator, statements: Sequence::new(statements) })
+        Ok(NamespaceImplicitBody { terminator, statements: self.sequence(statements) })
     }
 }

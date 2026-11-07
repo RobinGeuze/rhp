@@ -3,7 +3,6 @@ use crate::cst::cst::Static;
 use crate::cst::cst::StaticAbstractItem;
 use crate::cst::cst::StaticConcreteItem;
 use crate::cst::cst::StaticItem;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -32,7 +31,7 @@ where
                 }
             }
 
-            TokenSeparatedSequence::new(items, commas)
+            self.token_separated(items, commas)
         };
         let terminator = self.parse_terminator()?;
 

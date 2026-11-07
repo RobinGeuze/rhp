@@ -2,7 +2,6 @@ use crate::T;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -21,7 +20,7 @@ where
                     catch_clauses.push(clause);
                 }
 
-                Sequence::new(catch_clauses)
+                self.sequence(catch_clauses)
             },
             finally_clause: self.parse_optional_try_finally_clause()?,
         })

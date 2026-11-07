@@ -801,6 +801,13 @@ pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
             for f in &ctx.stack {
                 f.gc_children(out);
             }
+            // A suspended Generator method holds its object (php's
+            // internal frame with ZEND_CALL_RELEASE_THIS).
+            for n in &ctx.native_calls {
+                if let Some((_, this)) = &n.method_of {
+                    out.push(Value::Object(this.clone()));
+                }
+            }
         }
     }
     true

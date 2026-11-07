@@ -298,10 +298,10 @@ impl Vm {
             // (Its arguments are by value: an undefined variable warns.)
             self.bind_undef_args(top, base, argc, |_| false)?;
             let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
-            if let Some(r) = self.generator_method_call(top, &h, &mname.to_ascii_lowercase(), &args)
-            {
+            let lc = mname.to_ascii_lowercase();
+            if crate::generators::generator_method_name(&lc).is_some() {
                 // A generator in a temporary is released by the call.
-                drop(h);
+                let r = self.generator_method_call(top, h, &lc, &args);
                 if self.release_pending() {
                     self.dtor_check = true;
                 }
@@ -552,8 +552,9 @@ impl Vm {
                 self.place_method_named_args("Generator", &mname, argv, named)?
                     .0
             };
-            if let Some(r) = self.generator_method_call(top, &h, &mname.to_ascii_lowercase(), &argv)
-            {
+            let lc = mname.to_ascii_lowercase();
+            if crate::generators::generator_method_name(&lc).is_some() {
+                let r = self.generator_method_call(top, h, &lc, &argv);
                 let r = r?;
                 self.reg_set(top, dst, r);
                 return Ok(());

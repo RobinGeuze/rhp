@@ -623,25 +623,17 @@ impl Vm {
     /// [`Self::generator_method`] called from frame `top` on `h`: the call
     /// shows in traces as `Generator->name()`, and a generator it resumes
     /// as called from `[internal function]`.
+    /// Takes `h` over: the call holds the object (php's This with
+    /// ZEND_CALL_RELEASE_THIS), which a suspended fiber's collection sees
+    /// through the native call.
     pub(crate) fn generator_method_call(
         &mut self,
         top: usize,
-        h: &ObjectHandle,
+        h: ObjectHandle,
         name_lc: &[u8],
         args: &[Value],
-    ) -> Option<Result<Value, Thrown>> {
-        let name = match name_lc {
-            b"current" => "current",
-            b"key" => "key",
-            b"valid" => "valid",
-            b"next" => "next",
-            b"send" => "send",
-            b"rewind" => "rewind",
-            b"getreturn" => "getReturn",
-            b"throw" => "throw",
-            b"__debuginfo" => "__debugInfo",
-            _ => return None,
-        };
+    ) -> Result<Value, Thrown> {
+        let name = generator_method_name(name_lc).expect("a Generator method");
         let id = h.borrow().id;
         let named: &[(PhpStr, Value)] = &[];
         self.native_calls.push(crate::calls::NativeCall {
@@ -651,15 +643,17 @@ impl Vm {
             caller: top,
             frameless_icall: false,
             named: named as *const [(PhpStr, Value)],
-            method_of: Some(("Generator", h.clone())),
+            method_of: Some(("Generator", h)),
         });
-        let r = self.generator_method(id, name_lc, args);
+        let r = self
+            .generator_method(id, name_lc, args)
+            .expect("a Generator method");
         // An engine error is created with the call still on the trace.
-        let r = r.map(|r| match r {
+        let r = match r {
             Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
             r => r,
-        });
-        self.native_calls.pop();
+        };
+        drop(self.native_calls.pop());
         r
     }
 
@@ -1231,4 +1225,20 @@ impl Frame {
             out.push(Value::Closure(c.clone()));
         }
     }
+}
+
+/// The `Generator` method `name_lc` names (as a trace shows it).
+pub(crate) fn generator_method_name(name_lc: &[u8]) -> Option<&'static str> {
+    Some(match name_lc {
+        b"current" => "current",
+        b"key" => "key",
+        b"valid" => "valid",
+        b"next" => "next",
+        b"send" => "send",
+        b"rewind" => "rewind",
+        b"getreturn" => "getReturn",
+        b"throw" => "throw",
+        b"__debuginfo" => "__debugInfo",
+        _ => return None,
+    })
 }

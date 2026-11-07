@@ -313,8 +313,9 @@ The original notes:
   functions, include/require (include_path entries searched with a quiet
   `url_stat`), the stat family (with php's one-entry stat cache), unlink,
   rename, mkdir, rmdir, touch/chmod/chown/chgrp, opendir/scandir,
-  stream_select casts. A stream an include left open when a fatal error
-  unwound closes with the resource list at shutdown. Not covered:
+  stream_select casts. A user stream closes as its last reference goes
+  (watched like a filtered stream). A stream an include left open when a
+  fatal error unwound closes with the resource list at shutdown. Not covered:
   parse_ini_file through a user wrapper, and the `context` property is
   written without php's visibility and readonly checks.
 - `php_fgetcsv` and `php_sscanf_internal` step through bytes one at a time:

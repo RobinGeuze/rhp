@@ -1800,7 +1800,7 @@ fn encoding_or_pass(name: &[u8]) -> Option<Enc> {
 fn fn_mb_http_output(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_http_output";
     let Some(name) = opt_str_arg(host, args, 0, f)? else {
-        return Ok(Value::str(http_output_encoding().name().to_vec()));
+        return Ok(Value::str(http_output_encoding().name()));
     };
     if name.contains(&0) {
         return Err(value_error(f, 0, "must not contain any null bytes"));

@@ -993,7 +993,7 @@ impl Host for Vm {
             return false;
         };
         let b = h.borrow();
-        let name = PhpStr::from_bytes(name.to_vec());
+        let name = PhpStr::from_bytes(name);
         match classes::resolve_prop(&self.classes, b.class, Some(b.class), &name) {
             PropRes::Slot(k) => b
                 .properties
@@ -2090,7 +2090,7 @@ impl Host for Vm {
         // coercive typing.
         let scope = self.resolve_class_by_name(class).ok();
         let top = self.stack.len() - 1;
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         self.prop_store_as(top, deref(obj), pname, val, scope, scope, false)
     }
 
@@ -2106,7 +2106,7 @@ impl Host for Vm {
             return Ok(None);
         }
         let scope = self.resolve_class_by_name(class).ok();
-        let pname = PhpStr::from_bytes(name.to_vec());
+        let pname = PhpStr::from_bytes(name);
         self.prop_fetch_as(o, pname, scope).map(Some)
     }
 
@@ -2150,7 +2150,7 @@ impl Host for Vm {
         };
         let scope = self.stack.last().and_then(|f| f.defining_class);
         let b = h.borrow();
-        let name = PhpStr::from_bytes(name.to_vec());
+        let name = PhpStr::from_bytes(name);
         match classes::resolve_prop(&self.classes, b.class, scope, &name) {
             PropRes::Slot(k) => b.properties.contains_key(&k),
             PropRes::Dynamic => b.properties.contains_key(&name),
@@ -2175,7 +2175,7 @@ impl Host for Vm {
                     Value::Ref(rc) if Rc::strong_count(rc) == 1 => rc.borrow().clone(),
                     v => v.clone(),
                 };
-                arr.insert(ArrayKey::from_bytes(name.as_bytes()), v);
+                arr.insert(ArrayKey::from_php_str(&name), v);
             }
         }
         Some(Value::Array(arr))
@@ -2419,7 +2419,7 @@ impl Host for Vm {
         // parent's private does not count.
         match self.classes.get(class_id as usize) {
             Some(entry) => {
-                let name = PhpStr::from_bytes(prop.to_vec());
+                let name = PhpStr::from_bytes(prop);
                 let inst = entry.prop_visible.get(&name).is_some_and(|k| {
                     let pe = &entry.props[k];
                     pe.visibility != rhp_values::Visibility::Private

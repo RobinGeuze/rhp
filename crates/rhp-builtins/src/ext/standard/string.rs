@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 
 use rhp_values::ops::deref;
-use rhp_values::{conv, ArrayKey, PhpArray, Value};
+use rhp_values::{conv, ArrayKey, PhpArray, PhpStr, Value};
 
 use crate::ext::random::mt_range;
 use crate::ext::standard::file::path_arg;
@@ -120,7 +120,7 @@ fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             }
         }
     };
-    Ok(Value::str(s[start..start + take].to_vec()))
+    Ok(Value::str(&s[start..start + take]))
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +410,7 @@ fn trim_impl(
             end -= 1;
         }
     }
-    Ok(Value::str(s[start..end].to_vec()))
+    Ok(Value::str(&s[start..end]))
 }
 
 fn fn_trim(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -1102,7 +1102,7 @@ fn fn_strpbrk(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         set[c as usize] = true;
     }
     match s.iter().position(|&c| set[c as usize]) {
-        Some(i) => Ok(Value::str(s[i..].to_vec())),
+        Some(i) => Ok(Value::str(&s[i..])),
         None => Ok(Value::Bool(false)),
     }
 }
@@ -1212,8 +1212,8 @@ fn find_ci(h: &[u8], n: &[u8]) -> Option<usize> {
 fn split_result(h: &[u8], at: Option<usize>, before: bool) -> Value {
     match at {
         None => Value::Bool(false),
-        Some(p) if before => Value::str(h[..p].to_vec()),
-        Some(p) => Value::str(h[p..].to_vec()),
+        Some(p) if before => Value::str(&h[..p]),
+        Some(p) => Value::str(&h[p..]),
     }
 }
 
@@ -1356,7 +1356,7 @@ fn fn_str_split(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut out = PhpArray::new();
     // php 8.2+: an empty subject yields an empty array.
     for chunk in s.chunks(n) {
-        out.push(Value::str(chunk.to_vec()));
+        out.push(Value::str(chunk));
     }
     Ok(Value::Array(out))
 }
@@ -1655,11 +1655,8 @@ fn fn_str_word_count(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
         }
         if p > start {
             match format {
-                1 => words.push(Value::str(s[start..p].to_vec())),
-                2 => words.insert(
-                    ArrayKey::Int(start as i64),
-                    Value::str(s[start..p].to_vec()),
-                ),
+                1 => words.push(Value::str(&s[start..p])),
+                2 => words.insert(ArrayKey::Int(start as i64), Value::str(&s[start..p])),
                 _ => count += 1,
             }
         }
@@ -2094,14 +2091,14 @@ fn implode(host: &mut dyn Host, args: &[Value], func: &str) -> Result<Value, Thr
     {
         return Ok(Value::Null);
     }
-    let mut out = Vec::with_capacity(len + glue.len() * parts.len().saturating_sub(1));
+    let mut out = PhpStr::builder(len + glue.len() * parts.len().saturating_sub(1));
     for (i, p) in parts.iter().enumerate() {
         if i > 0 {
-            out.extend_from_slice(&glue);
+            out.push(&glue);
         }
-        out.extend_from_slice(p);
+        out.push(p);
     }
-    Ok(Value::str(out))
+    Ok(Value::Str(out.finish()))
 }
 
 /// `explode`: php_explode / php_explode_negative_limit. The pieces are
@@ -2142,7 +2139,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if rhp_values::mem::has_oom() {
                 return Ok(Value::Array(arr));
             }
-            arr.push(Value::str(bytes[p1..p2].to_vec()));
+            arr.push(Value::str(&bytes[p1..p2]));
             p1 = p2 + delim.len();
             match finder.find(&bytes[p1..]) {
                 Some(o) => p2 = p1 + o,
@@ -2153,7 +2150,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 break;
             }
         }
-        arr.push(Value::str(bytes[p1..].to_vec()));
+        arr.push(Value::str(&bytes[p1..]));
     } else if limit < 0 {
         let mut positions = vec![0];
         let mut p1 = 0;
@@ -2173,7 +2170,7 @@ fn fn_explode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                 break;
             }
             let (a, b) = (positions[i], positions[i + 1] - delim.len());
-            arr.push(Value::str(bytes[a..b].to_vec()));
+            arr.push(Value::str(&bytes[a..b]));
         }
     } else {
         arr.push(Value::Str(s.clone()));
@@ -2189,15 +2186,21 @@ pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn fn_strtoupper(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_uppercase();
-    Ok(Value::str(b))
+    let mut s = match deref(&args[0]) {
+        Value::Str(s) => s,
+        v => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+    };
+    s.make_mut().make_ascii_uppercase();
+    Ok(Value::Str(s))
 }
 
 fn fn_strtolower(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let mut b = conv::to_string_bytes(&deref(&args[0]));
-    b.make_ascii_lowercase();
-    Ok(Value::str(b))
+    let mut s = match deref(&args[0]) {
+        Value::Str(s) => s,
+        v => PhpStr::from_bytes(conv::to_string_bytes(&v)),
+    };
+    s.make_mut().make_ascii_lowercase();
+    Ok(Value::Str(s))
 }
 
 fn fn_str_contains(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -2594,7 +2597,7 @@ fn fn_localeconv(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
             if p.is_null() {
                 Value::str("")
             } else {
-                Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec())
+                Value::str(std::ffi::CStr::from_ptr(p).to_bytes())
             }
         };
         let grouping = |p: *const libc::c_char| -> Value {
@@ -2646,7 +2649,7 @@ fn fn_nl_langinfo(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
         if p.is_null() {
             return Ok(Value::Bool(false));
         }
-        Ok(Value::str(std::ffi::CStr::from_ptr(p).to_bytes().to_vec()))
+        Ok(Value::str(std::ffi::CStr::from_ptr(p).to_bytes()))
     }
 }
 
@@ -2706,7 +2709,7 @@ fn fn_basename(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     if !suffix.is_empty() && base.len() > suffix.len() && base.ends_with(&suffix[..]) {
         base = &base[..base.len() - suffix.len()];
     }
-    Ok(Value::str(base.to_vec()))
+    Ok(Value::str(base))
 }
 
 /// `php_basename` without a suffix: the last component, trailing slashes
@@ -2769,15 +2772,15 @@ fn fn_pathinfo(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         arr.insert(K::from_bytes(b"dirname"), Value::str(dirname));
     }
     if flags & BASENAME != 0 {
-        arr.insert(K::from_bytes(b"basename"), Value::str(basename.to_vec()));
+        arr.insert(K::from_bytes(b"basename"), Value::str(basename));
     }
     if flags & EXTENSION != 0 {
         if let Some(ext) = extension {
-            arr.insert(K::from_bytes(b"extension"), Value::str(ext.to_vec()));
+            arr.insert(K::from_bytes(b"extension"), Value::str(ext));
         }
     }
     if flags & FILENAME != 0 {
-        arr.insert(K::from_bytes(b"filename"), Value::str(filename.to_vec()));
+        arr.insert(K::from_bytes(b"filename"), Value::str(filename));
     }
     // The array for PATHINFO_ALL; for any other flags its first element.
     if flags == ALL {

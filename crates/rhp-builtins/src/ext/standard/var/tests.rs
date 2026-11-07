@@ -14,7 +14,7 @@ fn ser(v: Value) -> Vec<u8> {
 
 fn unser(s: &[u8]) -> Value {
     let mut h = TestHost::new();
-    fn_unserialize(&mut h, &[Value::str(s.to_vec())]).unwrap()
+    fn_unserialize(&mut h, &[Value::str(s)]).unwrap()
 }
 
 fn arr(items: Vec<(ArrayKey, Value)>) -> Value {
@@ -102,13 +102,10 @@ fn serialize_nested_and_string_keys() {
     ]);
     let v = arr(vec![
         (
-            ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"a".to_vec())),
+            ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"a")),
             Value::Int(1),
         ),
-        (
-            ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"b".to_vec())),
-            inner,
-        ),
+        (ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"b")), inner),
     ]);
     assert_eq!(
         ser(v),
@@ -257,7 +254,7 @@ fn unserialize_error_offsets() {
         (b"a:1:{i:0;i:1}", "Error at offset 9 of 13 bytes"),
     ];
     for (input, want) in cases {
-        let (_, diags) = crate::test_support::run(fn_unserialize, &[Value::str(input.to_vec())]);
+        let (_, diags) = crate::test_support::run(fn_unserialize, &[Value::str(*input)]);
         let last = diags.last().cloned().unwrap_or_default();
         assert_eq!(
             last,

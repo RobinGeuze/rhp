@@ -32,7 +32,7 @@ pub(crate) fn compile_method(
     m: &crate::parse::cst::Method,
     class_name: &PhpStr,
 ) -> Result<(MethodProto, Vec<PropProto>), Thrown> {
-    let name = PhpStr::from_bytes(m.name.value.to_vec());
+    let name = PhpStr::from_bytes(m.name.value);
     let visibility = modifiers_visibility(&m.modifiers);
     let is_static = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Static(_)));
     let is_abstract = has_modifier(&m.modifiers, |md| matches!(md, Modifier::Abstract(_)));
@@ -141,7 +141,7 @@ pub(crate) fn compile_method(
         *cx.cur_property.borrow_mut() = None;
         let attributes = attributes?;
         promoted.push(PropProto {
-            name: PhpStr::from_bytes(var.to_vec()),
+            name: PhpStr::from_bytes(var),
             visibility: vis,
             set_visibility: readonly_set_visibility(&p.modifiers, ro || cx.in_readonly_class.get()),
             is_readonly: ro,

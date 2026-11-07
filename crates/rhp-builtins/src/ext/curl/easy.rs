@@ -530,7 +530,7 @@ unsafe extern "C" fn write_cb(
                 let (Some(fcc), Some(obj)) = (h.fcc, handle_value(cell)) else {
                     return length;
                 };
-                if let Some(r) = call(cell, fcc, vec![obj, Value::str(data.to_vec())]) {
+                if let Some(r) = call(cell, fcc, vec![obj, Value::str(data)]) {
                     return after_call(cell, &r) as usize;
                 }
             }
@@ -574,7 +574,7 @@ unsafe extern "C" fn header_cb(
                 let (Some(fcc), Some(obj)) = (h.fcc, handle_value(cell)) else {
                     return length;
                 };
-                match call(cell, fcc, vec![obj, Value::str(data.to_vec())]) {
+                match call(cell, fcc, vec![obj, Value::str(data)]) {
                     Some(r) => after_call(cell, &r) as usize,
                     None => length,
                 }
@@ -773,7 +773,7 @@ unsafe extern "C" fn sshhostkey_cb(
         let args = vec![
             obj,
             Value::Int(keytype as i64),
-            Value::str(bytes(key, keylen).to_vec()),
+            Value::str(bytes(key, keylen)),
             Value::Int(keylen as i64),
         ];
         let Some(r) = call(cell, fcc, args) else {
@@ -816,7 +816,7 @@ unsafe extern "C" fn debug_cb(
             call(
                 cell,
                 fcc,
-                vec![obj, Value::Int(ty as i64), Value::str(data.to_vec())],
+                vec![obj, Value::Int(ty as i64), Value::str(data)],
             );
         }
         0
@@ -2270,7 +2270,7 @@ fn certinfo(
                 Some(colon) => {
                     hash.insert(
                         ArrayKey::from_bytes(&data[..colon]),
-                        Value::str(data[colon + 1..].to_vec()),
+                        Value::str(&data[colon + 1..]),
                     );
                 }
                 None => crate::warn(

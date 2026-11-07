@@ -182,7 +182,7 @@ fn fn_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             store_errors();
             return Ok(Value::Bool(false));
         }
-        out.insert(key("name"), Value::str(cstr_bytes(name).to_vec()));
+        out.insert(key("name"), Value::str(cstr_bytes(name)));
         openssl_free(name);
         add_assoc_name_entry(&mut out, Some("subject"), subject, short);
         out.insert(
@@ -215,9 +215,9 @@ fn fn_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             store_errors();
             return Ok(Value::Bool(false));
         }
-        out.insert(key("serialNumber"), Value::str(cstr_bytes(dec).to_vec()));
+        out.insert(key("serialNumber"), Value::str(cstr_bytes(dec)));
         openssl_free(dec);
-        out.insert(key("serialNumberHex"), Value::str(cstr_bytes(hex).to_vec()));
+        out.insert(key("serialNumberHex"), Value::str(cstr_bytes(hex)));
         openssl_free(hex);
 
         let nb = sys::X509_get0_notBefore(x);
@@ -231,16 +231,16 @@ fn fn_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 
         let alias = sys::X509_alias_get0(x, ptr::null_mut());
         if !alias.is_null() {
-            out.insert(key("alias"), Value::str(cstr_bytes(alias.cast()).to_vec()));
+            out.insert(key("alias"), Value::str(cstr_bytes(alias.cast())));
         }
         let sig_nid = sys::X509_get_signature_nid(x);
         out.insert(
             key("signatureTypeSN"),
-            Value::str(cstr_bytes(sys::OBJ_nid2sn(sig_nid)).to_vec()),
+            Value::str(cstr_bytes(sys::OBJ_nid2sn(sig_nid))),
         );
         out.insert(
             key("signatureTypeLN"),
-            Value::str(cstr_bytes(sys::OBJ_nid2ln(sig_nid)).to_vec()),
+            Value::str(cstr_bytes(sys::OBJ_nid2ln(sig_nid))),
         );
         out.insert(key("signatureTypeNID"), Value::Int(sig_nid as i64));
 
@@ -262,7 +262,7 @@ fn fn_parse(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             } else {
                 sys::X509_PURPOSE_get0_name(purp)
             };
-            sub.insert(ArrayKey::Int(2), Value::str(cstr_bytes(pname).to_vec()));
+            sub.insert(ArrayKey::Int(2), Value::str(cstr_bytes(pname)));
             purposes.insert(ArrayKey::Int(id as i64), Value::Array(sub));
         }
         out.insert(key("purposes"), Value::Array(purposes));

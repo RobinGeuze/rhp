@@ -404,7 +404,7 @@ impl Vm {
             (b"PATH_TRANSLATED", &script_fn),
             (b"DOCUMENT_ROOT", b""),
         ] {
-            server.insert(ArrayKey::from_bytes(k), Value::str(v.to_vec()));
+            server.insert(ArrayKey::from_bytes(k), Value::str(v));
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -936,9 +936,14 @@ impl Vm {
                 }
                 Instr::CastString { dst, a } => {
                     let v = self.reg_r(top, a)?;
-                    let s = self.to_string_vm(&v)?;
+                    let s = match &v {
+                        // The string itself, as php's zval_get_string copies it.
+                        Value::Str(s) => Value::Str(s.clone()),
+                        Value::Int(n) => Value::Str(conv::int_str(*n)),
+                        v => Value::str(self.to_string_vm(v)?),
+                    };
                     self.free_tmp(top, proto.num_cvs, a);
-                    self.reg_set(top, dst, Value::str(s));
+                    self.reg_set(top, dst, s);
                 }
                 Instr::CastBool { dst, a } => {
                     let v = self.reg_r(top, a)?;
@@ -3063,7 +3068,7 @@ impl Vm {
             };
             let key = match deref(&k) {
                 Value::Int(n) => ArrayKey::Int(n),
-                Value::Str(s) => match ArrayKey::from_bytes(s.as_bytes()) {
+                Value::Str(s) => match ArrayKey::from_php_str(&s) {
                     ArrayKey::Int(n) => ArrayKey::Int(n),
                     _ => ArrayKey::Str(s),
                 },
@@ -4138,7 +4143,7 @@ impl Vm {
             }
         };
         if name_b == b"class" {
-            let v = Value::str(self.class(cls).name.as_bytes().to_vec());
+            let v = Value::str(self.class(cls).name.as_bytes());
             self.reg_set(top, dst, v);
         } else {
             // php loads every constant of a backed enum on first
@@ -4565,7 +4570,7 @@ impl Vm {
                 let at = b.windows(2).position(|w| w == b"::")?;
                 (
                     b[..at].to_vec(),
-                    Value::Str(PhpStr::from_bytes(b[at + 2..].to_vec())),
+                    Value::Str(PhpStr::from_bytes(&b[at + 2..])),
                 )
             }
             _ => return None,

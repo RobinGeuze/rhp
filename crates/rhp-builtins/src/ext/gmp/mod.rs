@@ -1367,7 +1367,7 @@ fn fn_gmp_serialize(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         let mut table = PhpArray::new();
         for (k, v) in props.iter() {
             let key = match k {
-                ArrayKey::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                ArrayKey::Str(s) => ArrayKey::from_php_str(s),
                 k => k.clone(),
             };
             table.insert(key, deref(v));

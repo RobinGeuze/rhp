@@ -2377,7 +2377,7 @@ impl Vm {
         let _ = quiet;
         match key {
             Value::Int(n) => return Ok(Some(ArrayKey::Int(*n))),
-            Value::Str(s) => return Ok(Some(ArrayKey::from_bytes(s.as_bytes()))),
+            Value::Str(s) => return Ok(Some(ArrayKey::from_php_str(s))),
             _ => {}
         }
         self.dim_key_slow(key)
@@ -2413,7 +2413,7 @@ impl Vm {
     pub(crate) fn init_array_key(&mut self, k: &Value) -> Result<ArrayKey, Thrown> {
         match k {
             Value::Int(n) => Ok(ArrayKey::Int(*n)),
-            Value::Str(s) => Ok(ArrayKey::from_bytes(s.as_bytes())),
+            Value::Str(s) => Ok(ArrayKey::from_php_str(s)),
             _ => match self.dim_key(k, false)? {
                 Some(key) => Ok(key),
                 None => Err(Thrown::type_error(format!(
@@ -2439,7 +2439,7 @@ impl Vm {
             Value::Array(a) => {
                 let k = match key {
                     Value::Int(n) => ArrayKey::Int(*n),
-                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    Value::Str(s) => ArrayKey::from_php_str(s),
                     // slow_index_convert: an error handler that drops the
                     // last reference destroys the array (php's GC_DELREF
                     // check); only this fetch's two copies are left then.
@@ -2780,7 +2780,7 @@ fn key_diags(k: &Value, null_dep: bool) {
 fn write_key_of(k: &Value, cx: &PropCtx) -> Result<ArrayKey, Thrown> {
     match k {
         Value::Int(n) => return Ok(ArrayKey::Int(*n)),
-        Value::Str(s) => return Ok(ArrayKey::from_bytes(s.as_bytes())),
+        Value::Str(s) => return Ok(ArrayKey::from_php_str(s)),
         _ => {}
     }
     let k = deref(k);
@@ -2894,9 +2894,7 @@ fn assign_string_offset(
         if !rhp_values::mem::realloc_check(old, rhp_values::mem::zstr_size(at + 1)) {
             return Ok(());
         }
-        let out = s.make_mut();
-        let grow = at + 1 - out.len();
-        out.reserve_exact(grow);
+        let mut out = s.make_mut();
         out.resize(at, b' ');
         out.push(c);
     } else {

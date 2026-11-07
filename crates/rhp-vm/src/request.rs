@@ -469,7 +469,7 @@ impl Vm {
                 let mut a = PhpArray::new();
                 if let Some(q) = req.query_string.as_deref().filter(|q| !q.is_empty()) {
                     for part in q.split(|&b| b == b'+') {
-                        a.push(Value::str(part.to_vec()));
+                        a.push(Value::str(part));
                     }
                 }
                 let argc = a.len() as i64;
@@ -607,7 +607,7 @@ fn import_env_var(arr: &mut PhpArray, k: &[u8], v: &[u8]) {
     if k.is_empty() || k.iter().any(|&b| matches!(b, b' ' | b'.' | b'[')) {
         return;
     }
-    arr.insert(ArrayKey::from_bytes(k), Value::str(v.to_vec()));
+    arr.insert(ArrayKey::from_bytes(k), Value::str(v));
 }
 
 /// `check_http_proxy` (bug #72573): `HTTP_PROXY` only from the real

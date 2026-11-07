@@ -56,7 +56,7 @@ fn fn_apache_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Va
             while p < h.len() && matches!(h[p], b' ' | b'\t') {
                 p += 1;
             }
-            a.insert(ArrayKey::from_bytes(&h[..len]), Value::str(h[p..].to_vec()));
+            a.insert(ArrayKey::from_bytes(&h[..len]), Value::str(&h[p..]));
         }
     }
     Ok(Value::Array(a))

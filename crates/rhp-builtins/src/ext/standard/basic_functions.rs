@@ -482,19 +482,19 @@ fn fn_error_get_last(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thro
         Some((ty, msg, file, line)) => {
             let mut a = rhp_values::PhpArray::new();
             a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type".to_vec())),
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"type")),
                 Value::Int(ty),
             );
             a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message".to_vec())),
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"message")),
                 Value::Str(rhp_values::PhpStr::from_bytes(msg)),
             );
             a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file".to_vec())),
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"file")),
                 Value::Str(rhp_values::PhpStr::from_bytes(file)),
             );
             a.insert(
-                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line".to_vec())),
+                rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(b"line")),
                 Value::Int(line),
             );
             if let Some(t) = host.last_error_trace() {
@@ -1075,7 +1075,7 @@ fn fn_get_current_user(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
         return Ok(Value::str(""));
     }
     let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
-    Ok(Value::str(name.to_bytes().to_vec()))
+    Ok(Value::str(name.to_bytes()))
 }
 
 // ---------------------------------------------------------------------------

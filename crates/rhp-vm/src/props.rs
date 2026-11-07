@@ -94,7 +94,7 @@ impl Vm {
                     Some(getter) => {
                         let write = self.pending_magic_fetch == builtins::MagicFetch::Write
                             && !getter.proto.is_internal();
-                        let arg = Value::str(pname.as_bytes().to_vec());
+                        let arg = Value::str(pname.as_bytes());
                         let r = self.call_magic(&getter, &h, cls, b"__get", &pname, vec![arg])?;
                         if write && !matches!(r, Value::Ref(_) | Value::Object(_)) {
                             let msg = format!(
@@ -322,7 +322,7 @@ impl Vm {
         }
         match self.magic(&h, cls, b"__isset", &pname) {
             Some(m) => {
-                let nm = Value::str(pname.as_bytes().to_vec());
+                let nm = Value::str(pname.as_bytes());
                 let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm])?;
                 self.truthy(&r)
             }
@@ -434,7 +434,7 @@ impl Vm {
         if let Some(inst) = self.proxy_guarded(&h, b"__isset", &pname) {
             return self.prop_empty(top, Value::Object(inst), pname);
         }
-        let nm = || Value::str(pname.as_bytes().to_vec());
+        let nm = || Value::str(pname.as_bytes());
         let Some(m) = self.magic(&h, cls, b"__isset", &pname) else {
             if !matches!(res, PropRes::Slot(_)) && self.lazy_slot(&h, None) {
                 return self.lazy_isset(top, &h, pname, |vm, t, o, n| vm.prop_empty(t, o, n));
@@ -512,7 +512,7 @@ impl Vm {
         if let Some(inst) = self.proxy_guarded(&h, which, &pname) {
             return self.prop_fetch_is(top, Value::Object(inst), pname);
         }
-        let nm = || Value::str(pname.as_bytes().to_vec());
+        let nm = || Value::str(pname.as_bytes());
         if let Some(m) = self.magic(&h, cls, b"__isset", &pname) {
             let r = self.call_magic(&m, &h, cls, b"__isset", &pname, vec![nm()])?;
             if !self.truthy(&r)? {
@@ -601,7 +601,7 @@ impl Vm {
             // Reset IS_PROP_UNINIT, bypassing __unset().
             self.mark_typed_unset(&h, key.as_ref().unwrap());
         } else if let Some(m) = self.magic(&h, cls, b"__unset", &pname) {
-            let nm = Value::str(pname.as_bytes().to_vec());
+            let nm = Value::str(pname.as_bytes());
             self.call_magic(&m, &h, cls, b"__unset", &pname, vec![nm])?;
         } else if matches!(res, PropRes::Dynamic) && self.lazy_slot(&h, None) {
             let inst = self.lazy_init(&h)?;
@@ -876,7 +876,7 @@ impl Vm {
                 // Inaccessible, or not currently set (dynamic / unset declared):
                 // `__set` intercepts when defined.
                 if let Some(setter) = self.magic(&h, cls, b"__set", &pname) {
-                    let nm = Value::str(pname.as_bytes().to_vec());
+                    let nm = Value::str(pname.as_bytes());
                     self.call_magic(&setter, &h, cls, b"__set", &pname, vec![nm, val])?;
                     return Ok(());
                 }
@@ -1127,7 +1127,7 @@ impl Vm {
             } else {
                 deref(val)
             };
-            a.insert(ArrayKey::from_bytes(key.as_bytes()), v);
+            a.insert(ArrayKey::from_php_str(&key), v);
         }
         Value::Array(a)
     }

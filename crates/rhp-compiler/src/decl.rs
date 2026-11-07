@@ -127,7 +127,7 @@ impl FileCtx<'_> {
                     let text = &src[t.start..t.end];
                     // `"/**"{WHITESPACE}` — `/**/` is a plain comment.
                     if text.len() > 4 && text[3].is_ascii_whitespace() {
-                        return Some(PhpStr::from_bytes(text.to_vec()));
+                        return Some(PhpStr::from_bytes(text));
                     }
                 }
                 T::Whitespace | T::SingleLineComment | T::HashComment | T::MultiLineComment => {}
@@ -240,7 +240,7 @@ pub(crate) fn compile_attributes(
                                 crate::ast_export::const_expr(cx.src, e, &names),
                             )),
                         };
-                        arg_show.push((n.map(|n| PhpStr::from_bytes(n.to_vec())), show));
+                        arg_show.push((n.map(PhpStr::from_bytes), show));
                     }
                     let folded: Result<Vec<Value>, Thrown> =
                         items.iter().map(|(_, e)| fold_const(cx, e)).collect();
@@ -1112,7 +1112,7 @@ fn compile_member(
                     None => value,
                 };
                 out.constants.push(ConstProto {
-                    name: PhpStr::from_bytes(item.name.value.to_vec()),
+                    name: PhpStr::from_bytes(item.name.value),
                     visibility,
                     value,
                     type_hint: hint.clone(),
@@ -1146,7 +1146,7 @@ fn compile_member(
                                 .precedences
                                 .push(rhp_bytecode::TraitPrecedence {
                                     trait_name: name(&r.trait_name),
-                                    method: PhpStr::from_bytes(r.method_name.value.to_vec()),
+                                    method: PhpStr::from_bytes(r.method_name.value),
                                     excludes: p.trait_names.iter().map(name).collect(),
                                 });
                         }
@@ -1168,11 +1168,8 @@ fn compile_member(
                             };
                             out.trait_rules.aliases.push(rhp_bytecode::TraitAlias {
                                 trait_name,
-                                method: PhpStr::from_bytes(method.to_vec()),
-                                alias: al
-                                    .alias
-                                    .as_ref()
-                                    .map(|a| PhpStr::from_bytes(a.value.to_vec())),
+                                method: PhpStr::from_bytes(method),
+                                alias: al.alias.as_ref().map(|a| PhpStr::from_bytes(a.value)),
                                 visibility,
                                 is_final,
                             });
@@ -1184,9 +1181,9 @@ fn compile_member(
         ClassLikeMember::EnumCase(ec) => {
             use crate::parse::cst::EnumCaseItem;
             let (name, value) = match &ec.item {
-                EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value.to_vec()), None),
+                EnumCaseItem::Unit(u) => (PhpStr::from_bytes(u.name.value), None),
                 EnumCaseItem::Backed(b) => (
-                    PhpStr::from_bytes(b.name.value.to_vec()),
+                    PhpStr::from_bytes(b.name.value),
                     Some(const_init_or_thunk(cx, b.value, Some(class_name))?),
                 ),
             };
@@ -1353,7 +1350,7 @@ fn compile_property_items(
             offset: var.span.start.offset,
             end_line: cx.line_of(pend),
         };
-        let pname = PhpStr::from_bytes(name_bytes.to_vec());
+        let pname = PhpStr::from_bytes(name_bytes);
         let (hooks, is_virtual) = match p.hooks {
             Some(list) => {
                 let hcx = crate::hooks::HookCtx {

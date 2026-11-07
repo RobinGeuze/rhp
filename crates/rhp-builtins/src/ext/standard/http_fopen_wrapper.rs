@@ -124,7 +124,7 @@ pub(crate) fn notify(
     let args = vec![
         Value::Int(code),
         Value::Int(severity),
-        msg.map_or(Value::Null, |m| Value::str(m.to_vec())),
+        msg.map_or(Value::Null, Value::str),
         Value::Int(msg_code),
         Value::Int(bytes),
         Value::Int(max),
@@ -751,7 +751,7 @@ fn wrap_http_ex(
             let mut opts =
                 xp_ssl::stream_opts(cx.host, (!matches!(ctx, Value::Null)).then_some(&ctx));
             if opts.get("peer_name").is_none() {
-                opts = opts.with("peer_name", Value::str(c_str(&resource.host).to_vec()));
+                opts = opts.with("peer_name", Value::str(c_str(&resource.host)));
             }
             ok = xp_ssl::crypto_with_opts(cx.host, s, &ctx, &opts, xp_ssl::SSLV23_CLIENT)?;
             crate::flush_stream_diags(cx.host, cx.fname)?;

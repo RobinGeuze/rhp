@@ -216,7 +216,7 @@ fn property_reader(r: &Reader, hnd: Prop) -> Result<Value, Thrown> {
             } else {
                 unsafe { f(p) }
             };
-            Value::str(unsafe { sys::cstr(s) }.to_vec())
+            Value::str(unsafe { sys::cstr(s) })
         }
         Prop::Int(f) | Prop::Bool(f) => {
             let mut n = 0;
@@ -306,10 +306,7 @@ fn get_properties_for(
     let r = intern(&v).expect("an XMLReader");
     for (name, hnd) in PROPS {
         if let Ok(val) = property_reader(&r, *hnd) {
-            out.insert(
-                ArrayKey::Str(PhpStr::from_bytes(name.as_bytes().to_vec())),
-                val,
-            );
+            out.insert(ArrayKey::Str(PhpStr::from_bytes(name.as_bytes())), val);
         }
     }
     Ok(Some(out))

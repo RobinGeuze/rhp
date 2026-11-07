@@ -123,7 +123,7 @@ fn fold_const_array<'a>(
                 // isn't a whole int, a resource) or rejects: left to run time.
                 let key = match &k {
                     Value::Int(n) => ArrayKey::Int(*n),
-                    Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+                    Value::Str(s) => ArrayKey::from_php_str(s),
                     Value::Bool(b) => ArrayKey::Int(*b as i64),
                     Value::Float(f)
                         if f.fract() == 0.0
@@ -272,7 +272,7 @@ pub(crate) fn literal_value(lit: &Literal) -> Value {
             _ => Value::Float(big_int_literal(i.raw)),
         },
         Literal::Float(f) => Value::Float(f.value.0),
-        Literal::String(s) => Value::str(s.value.unwrap_or(s.raw).to_vec()),
+        Literal::String(s) => Value::str(s.value.unwrap_or(s.raw)),
         Literal::True(_) => Value::Bool(true),
         Literal::False(_) => Value::Bool(false),
         Literal::Null(_) => Value::Null,

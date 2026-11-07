@@ -11,7 +11,7 @@
 use rhp_builtins::Host;
 use rhp_bytecode::{Instr, Reg};
 use rhp_values::mem::{self, Oom};
-use rhp_values::{PhpArray, PhpStr, Thrown, Value};
+use rhp_values::{PhpArray, PhpStr, StrMut, Thrown, Value};
 
 use crate::{ini_bool, Vm};
 
@@ -303,20 +303,19 @@ fn append_unique(v: &mut Value, tail: Option<&[u8]>) -> Option<PhpStr> {
     Some(s.clone())
 }
 
-/// php's zend_string_extend: grow to a block of the new length (it is
-/// counted as such anyway), checking the limit with php's string sizes.
-/// Past the hard limit nothing is appended: the VM stops at its next check.
-fn append(buf: &mut Vec<u8>, tail: Option<&[u8]>) {
+/// php's zend_string_extend: grow to the new length's block (the string
+/// keeps its block at its length's size), checking the limit with php's
+/// string sizes. Past the hard limit nothing is appended: the VM stops at
+/// its next check.
+fn append(mut buf: StrMut<'_>, tail: Option<&[u8]>) {
     let old = buf.len();
     let new = old + tail.map_or(old, <[u8]>::len);
-    if new > buf.capacity() {
-        if !mem::realloc_check(mem::zstr_size(old), mem::zstr_size(new)) {
-            return;
-        }
-        buf.reserve_exact(mem::block_size(new) - old);
+    let (from, to) = (mem::zstr_size(old), mem::zstr_size(new));
+    if mem::block_size(to) != mem::block_size(from) && !mem::realloc_check(from, to) {
+        return;
     }
     match tail {
         Some(t) => buf.extend_from_slice(t),
-        None => buf.extend_from_within(..),
+        None => buf.extend_self(),
     }
 }

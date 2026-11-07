@@ -291,7 +291,7 @@ fn opt_str(p: *const c_char) -> Value {
     if p.is_null() {
         Value::Null
     } else {
-        Value::str(unsafe { cstr(p) }.to_vec())
+        Value::str(unsafe { cstr(p) })
     }
 }
 

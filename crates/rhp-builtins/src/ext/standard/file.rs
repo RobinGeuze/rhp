@@ -332,7 +332,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             if include_new_line {
                 loop {
                     p += 1;
-                    a.push(Value::str(buf[s..p].to_vec()));
+                    a.push(Value::str(&buf[s..p]));
                     s = p;
                     match find(p) {
                         Some(n) => p = n,
@@ -346,7 +346,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         p += 1;
                         s = p;
                     } else {
-                        a.push(Value::str(buf[s..p - windows_eol].to_vec()));
+                        a.push(Value::str(&buf[s..p - windows_eol]));
                         p += 1;
                         s = p;
                     }
@@ -359,7 +359,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     if s != e {
-        a.push(Value::str(buf[s..e].to_vec()));
+        a.push(Value::str(&buf[s..e]));
     }
     Ok(Value::Array(a))
 }

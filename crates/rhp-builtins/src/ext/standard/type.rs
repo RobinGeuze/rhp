@@ -29,7 +29,7 @@ fn fn_get_debug_type(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             // `Prefix@anonymous\0file:line$n`; only the part before the NUL shows.
             let cname = host.object_class_name(&o).unwrap_or_default();
             let end = cname.iter().position(|&b| b == 0).unwrap_or(cname.len());
-            return Ok(Value::str(cname[..end].to_vec()));
+            return Ok(Value::str(&cname[..end]));
         }
         ref v @ Value::Resource(ref r) => {
             if host.resource_closed(v) {

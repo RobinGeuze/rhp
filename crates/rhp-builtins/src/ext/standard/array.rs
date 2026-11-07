@@ -35,7 +35,7 @@ fn key_strcast(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
 fn key_intstr(v: &Value) -> Option<ArrayKey> {
     match deref(v) {
         Value::Int(n) => Some(ArrayKey::Int(n)),
-        Value::Str(s) => Some(ArrayKey::from_bytes(s.as_bytes())),
+        Value::Str(s) => Some(ArrayKey::from_php_str(&s)),
         _ => None,
     }
 }
@@ -541,7 +541,7 @@ fn fn_array_column(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 /// array or object.
 fn set_zval_key(host: &mut dyn Host, v: &Value) -> Result<ArrayKey, Thrown> {
     Ok(match v {
-        Value::Str(s) => ArrayKey::from_bytes(s.as_bytes()),
+        Value::Str(s) => ArrayKey::from_php_str(s),
         Value::Resource(r) => {
             let id = r.id as i64;
             host.emit_diagnostic(
@@ -2492,7 +2492,7 @@ fn key_strtod(s: &[u8]) -> f64 {
     if s.first().is_some_and(|c| c.is_ascii_whitespace()) {
         return 0.0;
     }
-    conv::to_float(&Value::Str(PhpStr::from_bytes(s.to_vec())))
+    conv::to_float(&Value::Str(PhpStr::from_bytes(s)))
 }
 
 /// The unstable key comparators of php_get_key_compare_func.
@@ -4345,7 +4345,7 @@ fn compact_var(
 ) -> Result<(), Thrown> {
     match deref(entry) {
         Value::Str(name) => match host.scope_var(name.as_bytes()) {
-            crate::ScopeVar::Set(v) => out.insert(ArrayKey::from_bytes(name.as_bytes()), v),
+            crate::ScopeVar::Set(v) => out.insert(ArrayKey::from_php_str(&name), v),
             _ if name.as_bytes() == b"this" => {
                 if let Some(this) = host.scope_this() {
                     out.insert(ArrayKey::from_bytes(b"this"), this);

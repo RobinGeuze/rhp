@@ -959,7 +959,7 @@ impl Parser<'_, '_> {
             Err(_) => {
                 // Integer out of i64 range.
                 if self.bigint_as_string {
-                    Ok(Value::str(text.as_bytes().to_vec()))
+                    Ok(Value::str(text.as_bytes()))
                 } else {
                     Ok(Value::Float(text.parse::<f64>().unwrap_or(f64::INFINITY)))
                 }

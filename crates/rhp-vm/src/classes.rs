@@ -818,7 +818,7 @@ pub(crate) fn unmangle(name: &PhpStr) -> PhpStr {
         return name.clone();
     }
     match b[1..].iter().position(|&c| c == 0) {
-        Some(i) => PhpStr::from_bytes(b[i + 2..].to_vec()),
+        Some(i) => PhpStr::from_bytes(&b[i + 2..]),
         None => name.clone(),
     }
 }

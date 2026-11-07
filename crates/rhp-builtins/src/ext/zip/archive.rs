@@ -392,7 +392,7 @@ pub(super) fn fn_zip(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
             if p.is_null() {
                 b(false)
             } else {
-                Value::str(unsafe { sys::cstr(p) }.to_vec())
+                Value::str(unsafe { sys::cstr(p) })
             }
         }
         "unchangeArchive" => {

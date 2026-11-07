@@ -342,7 +342,7 @@ fn user_default(
         }
         if !matches!(p.default, Some(ParamDefault::Const(_))) {
             match self_name {
-                Some(n) if lc == b"self::class" => folded = Some(Value::str(n.to_vec())),
+                Some(n) if lc == b"self::class" => folded = Some(Value::str(n)),
                 _ => return "<expression>".into(),
             }
         }

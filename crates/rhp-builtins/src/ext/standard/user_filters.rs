@@ -196,10 +196,7 @@ pub(crate) fn create(
     };
     let class = host.object_class_name(&obj).unwrap_or(class);
     let params = params.map(deref).unwrap_or(Value::Null);
-    for (prop, val) in [
-        (&b"filtername"[..], Value::str(name.to_vec())),
-        (b"params", params),
-    ] {
+    for (prop, val) in [(&b"filtername"[..], Value::str(name)), (b"params", params)] {
         if let Err(t) = host.reflect_set_prop(&obj, &class, prop, val) {
             host.set_pending_throw(t);
         }

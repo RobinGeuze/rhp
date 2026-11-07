@@ -922,7 +922,7 @@ fn canonicalization(
             let size = sys::xmlOutputBufferGetSize(buf);
             let p = sys::xmlOutputBufferGetContent(buf);
             out = if size > 0 && !p.is_null() {
-                Value::str(std::slice::from_raw_parts(p, size).to_vec())
+                Value::str(std::slice::from_raw_parts(p, size))
             } else {
                 Value::str("")
             };

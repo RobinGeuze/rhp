@@ -2057,7 +2057,7 @@ impl Parser<'_, '_> {
             return Ok(false);
         }
         self.p = end + 2;
-        *rval.borrow_mut() = Value::str(self.b[cursor..end].to_vec());
+        *rval.borrow_mut() = Value::str(&self.b[cursor..end]);
         Ok(true)
     }
 
@@ -2172,7 +2172,7 @@ impl Parser<'_, '_> {
             elements -= 1;
             let key = match self.key()? {
                 Some(Value::Int(n)) => ArrayKey::Int(n),
-                Some(Value::Str(s)) => ArrayKey::from_bytes(s.as_bytes()),
+                Some(Value::Str(s)) => ArrayKey::from_php_str(&s),
                 _ => return Ok(false),
             };
             // (Containers being built hold only cells.)
@@ -2411,7 +2411,7 @@ impl Parser<'_, '_> {
         self.host
             .instantiate(
                 INCOMPLETE,
-                vec![(INCOMPLETE_NAME.to_vec(), Value::str(name.to_vec()))],
+                vec![(INCOMPLETE_NAME.to_vec(), Value::str(name))],
             )
             .ok_or_else(|| Thrown::error("Error", "no incomplete class"))
     }
@@ -2425,7 +2425,7 @@ impl Parser<'_, '_> {
             return Ok(None);
         }
         let f = Value::str(func.clone());
-        let arg = Value::str(cname.to_vec());
+        let arg = Value::str(cname);
         locked(|| -> Result<(), Thrown> {
             // zend_call_function: "Invalid callback".
             if let Some(why) = self.host.check_callable(&f)? {

@@ -76,7 +76,7 @@ fn fn_gethostname(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Ok(Value::str(buf[..end].to_vec()))
+    Ok(Value::str(&buf[..end]))
 }
 
 /// php's MAXFQDNLEN.
@@ -549,7 +549,7 @@ fn parse_rr(
     a.insert(k("ttl"), Value::Int(ttl as i64));
     if raw {
         a.insert(k("type"), Value::Int(ty as i64));
-        a.insert(k("data"), Value::str(m[cp..cp + dlen].to_vec()));
+        a.insert(k("data"), Value::str(&m[cp..cp + dlen]));
         return Ok((cp + dlen, Some(a)));
     }
     let need = |cp: usize, n: usize| if cp + n > m.len() { Err(()) } else { Ok(()) };
@@ -611,7 +611,7 @@ fn parse_rr(
             }
             let n = dlen - n - 2;
             need(cp, n)?;
-            a.insert(k("value"), Value::str(m[cp..cp + n].to_vec()));
+            a.insert(k("value"), Value::str(&m[cp..cp + n]));
             cp += n;
         }
         T_TXT => {
@@ -626,7 +626,7 @@ fn parse_rr(
                 }
                 if n > 0 {
                     txt.extend_from_slice(&d[l1 + 1..l1 + 1 + n]);
-                    entries.push(Value::str(d[l1 + 1..l1 + 1 + n].to_vec()));
+                    entries.push(Value::str(&d[l1 + 1..l1 + 1 + n]));
                 }
                 l1 += n + 1;
             }

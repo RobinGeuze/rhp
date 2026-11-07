@@ -47,7 +47,7 @@ fn s(b: &str) -> Value {
 }
 
 fn sb(b: &[u8]) -> Value {
-    Value::str(b.to_vec())
+    Value::str(b)
 }
 
 fn call_bytes(f: crate::NativeFn, args: &[Value]) -> Vec<u8> {

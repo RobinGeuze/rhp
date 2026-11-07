@@ -444,10 +444,7 @@ fn addcslashes_cases() {
     assert_eq!(
         calls(
             fn_addcslashes,
-            &[
-                Value::str(b"foo\x7f\x80bar".to_vec()),
-                Value::str(b"\x7f..\xff".to_vec()),
-            ]
+            &[Value::str(b"foo\x7f\x80bar"), Value::str(b"\x7f..\xff"),]
         ),
         "foo\\177\\200bar"
     );
@@ -1187,7 +1184,7 @@ fn chunk_split_cases() {
 }
 
 fn sb(b: &[u8]) -> Value {
-    Value::str(b.to_vec())
+    Value::str(b)
 }
 
 fn call_bytes(f: crate::NativeFn, args: &[Value]) -> Vec<u8> {

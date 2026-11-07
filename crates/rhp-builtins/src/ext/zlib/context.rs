@@ -57,7 +57,7 @@ fn option(options: Option<&Value>, name: &[u8]) -> Option<Value> {
         Some(Value::Object(o)) => o
             .borrow()
             .properties
-            .get(&rhp_values::PhpStr::from_bytes(name.to_vec()))
+            .get(&rhp_values::PhpStr::from_bytes(name))
             .map(deref),
         _ => None,
     }

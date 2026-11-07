@@ -348,12 +348,12 @@ fn fn_gzfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let mut start = 0;
     for (i, &b) in data.iter().enumerate() {
         if b == b'\n' {
-            a.push(Value::str(data[start..=i].to_vec()));
+            a.push(Value::str(&data[start..=i]));
             start = i + 1;
         }
     }
     if start < data.len() {
-        a.push(Value::str(data[start..].to_vec()));
+        a.push(Value::str(&data[start..]));
     }
     Ok(Value::Array(a))
 }

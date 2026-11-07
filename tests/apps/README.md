@@ -246,7 +246,8 @@ env = { APP_DEBUG = "1" }      # added to every request's environment, warm-up i
 Outside the default pass, report and known-list ids are `<pass>/<id>`
 (`debug/w-error`, `cold/@files`), and `--out` writes to `<out>/<app>/<pass>/`.
 `--pass <name>` (repeatable) runs only the named passes; `--check-known`
-then skips the other passes' ids.
+then skips the other passes' ids, and `--write-known` refuses it (the list
+would lose them).
 
 - `debug` (Symfony: `APP_DEBUG=1`; Laravel: `APP_DEBUG=true`, which beats
   `.env` as both frameworks let the real environment win): the exception

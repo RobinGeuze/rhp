@@ -1186,19 +1186,21 @@ impl<'a> Normalizer<'a> {
     }
 
     fn file(&mut self, path: &Path, data: &Option<Vec<u8>>) -> (String, Option<Vec<u8>>) {
-        if let Some(d) = data {
+        // A database's tokens are collected from its dump: the raw pages
+        // can order the same rows differently.
+        let data = data.as_ref().map(|d| match sqlite_dump(d) {
+            Some(dump) => {
+                self.fired.insert("sqlite-dump".into());
+                dump
+            }
+            None => d.clone(),
+        });
+        if let Some(d) = &data {
             self.collect(d);
         }
         let p = self.rename(path.to_string_lossy().as_bytes());
         let p = String::from_utf8_lossy(&p).into_owned();
-        let data = data.as_ref().map(|d| {
-            let d = match sqlite_dump(d) {
-                Some(dump) => {
-                    self.fired.insert("sqlite-dump".into());
-                    dump
-                }
-                None => d.clone(),
-            };
+        let data = data.map(|d| {
             let d = self.rename(&d);
             let d = self.timestamps(d);
             self.masks("files", d)
@@ -1546,6 +1548,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     }
     if (o.check_known.is_some() || o.write_known.is_some()) && o.targets.len() > 1 {
         return Err("--check-known/--write-known take one app".into());
+    }
+    if o.write_known.is_some() && !o.passes.is_empty() {
+        // The list would lose the ids of the passes left out.
+        return Err("--write-known runs every pass: leave out --pass".into());
     }
     Ok(o)
 }

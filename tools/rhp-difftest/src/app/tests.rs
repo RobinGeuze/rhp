@@ -236,7 +236,10 @@ fn a_php_path_runs_that_script() {
 fn corpus_from(toml: &str) -> Result<Corpus, String> {
     let dir = std::env::temp_dir().join(format!("rhp-app-corpus-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("{:x}.toml", toml.len()));
+    // Tests run in parallel: each call gets its own file.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!("{n}.toml"));
     fs::write(&path, toml).unwrap();
     let app = App {
         name: "t".into(),

@@ -355,6 +355,18 @@ impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
                     _ => None,
                 };
             }
+            // ZEND_AST_COALESCE over a folded left side (`X::class ?? 1`).
+            Expression::Binary(b)
+                if matches!(
+                    b.operator,
+                    crate::parse::cst::BinaryOperator::NullCoalesce(_)
+                ) =>
+            {
+                return match self.fold(b.lhs)? {
+                    Value::Null => self.fold(b.rhs),
+                    v => Some(v),
+                };
+            }
             Expression::MagicConstant(MagicConstant::Class(_)) => {
                 return match self.class_name {
                     None => Some(Value::str(Vec::new())),
@@ -489,15 +501,17 @@ pub(crate) fn decl_meta(
 }
 
 /// Reflection data for a parameter default: a standalone thunk for a
-/// non-constant default, and the constant's name when the default is a bare
-/// constant / class-constant reference.
+/// non-constant default, the constant's name when the default is a bare
+/// constant / class-constant reference, and the zend_ast_export text of a
+/// default php does not fold at compile time (zend_compile_params turns
+/// constant substitution off, so every constant stays a name).
 pub(crate) fn param_default_meta(
     cx: &FileCtx,
     p: &crate::parse::cst::FunctionLikeParameter,
     class_name: Option<&PhpStr>,
-) -> (Option<Rc<FunctionProto>>, Option<PhpStr>) {
+) -> (Option<Rc<FunctionProto>>, Option<PhpStr>, Option<PhpStr>) {
     let Some(dv) = &p.default_value else {
-        return (None, None);
+        return (None, None, None);
     };
     let e = dv.value;
     let cname = match e {
@@ -529,12 +543,16 @@ pub(crate) fn param_default_meta(
         }
         _ => None,
     };
-    let thunk = if fold_const(cx, e).is_err() {
-        compile_const_thunk(cx, e, class_name).ok()
-    } else {
-        None
-    };
-    (thunk, cname)
+    if fold_const(cx, e).is_ok() {
+        return (None, cname, None);
+    }
+    let names = AttrNames { cx, class_name };
+    let text = PhpStr::from_bytes(crate::ast_export::const_expr(cx.src, e, &names));
+    (
+        compile_const_thunk(cx, e, class_name).ok(),
+        cname,
+        Some(text),
+    )
 }
 
 /// php's `add_stringable_interface`: a class-like (not a trait) declaring

@@ -2025,6 +2025,9 @@ impl Vm {
                     None => Value::Null,
                 },
             );
+            if let Some(t) = &p.default_text {
+                put(&mut d, "defaultAst", Value::Str(t.clone()));
+            }
             put(
                 &mut d,
                 "type",

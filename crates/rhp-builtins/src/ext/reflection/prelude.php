@@ -120,6 +120,12 @@ class Reflection {
         if ($t['kind'] === 'union') { return new ReflectionUnionType($t); }
         return new ReflectionIntersectionType($t);
     }
+    // zend_type_to_string, which __toString() of a parameter, return,
+    // property or constant prints: a lone `iterable` is Traversable|array.
+    public static function __tstr($t) {
+        if ($t['kind'] === 'named' && $t['name'] === 'iterable') { return 'Traversable|array' . ($t['nullable'] ? '|null' : ''); }
+        return (string) self::__type($t);
+    }
     public static function __fn($loc) {
         return is_array($loc) ? new ReflectionMethod($loc[0], $loc[1]) : new ReflectionFunction($loc);
     }
@@ -310,7 +316,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
             $s .= $pi . "}\n";
         }
         if ($ret !== null || $tent !== null) {
-            $s .= '  ' . $indent . '- ' . ($ret === null ? 'Tentative return' : 'Return') . ' [ ' . Reflection::__type($ret ?? $tent) . " ]\n";
+            $s .= '  ' . $indent . '- ' . ($ret === null ? 'Tentative return' : 'Return') . ' [ ' . Reflection::__tstr($ret ?? $tent) . " ]\n";
         }
         return $s . $indent . "}\n";
     }
@@ -570,7 +576,7 @@ class ReflectionParameter implements Reflector {
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__p['attrs'], $name, $flags, 'ReflectionParameter'); }
     public function __toString(): string {
         $s = 'Parameter #' . $this->__p['pos'] . ' [ <' . ($this->__p['optional'] ? 'optional' : 'required') . '> ';
-        if ($this->__p['type'] !== null) { $s .= Reflection::__type($this->__p['type']) . ' '; }
+        if ($this->__p['type'] !== null) { $s .= Reflection::__tstr($this->__p['type']) . ' '; }
         if ($this->__p['byref']) { $s .= '&'; }
         if ($this->__p['variadic']) { $s .= '...'; }
         $s .= '$' . $this->__p['name'];
@@ -580,7 +586,8 @@ class ReflectionParameter implements Reflector {
                 $s .= ' = ' . ($this->__p['defaultText'] ?? '<default>');
             }
         } elseif ($this->__p['optional'] && !$this->__p['variadic'] && $this->__p['hasDefault']) {
-            $s .= ' = ' . ($this->__p['defaultConst'] ?? Reflection::__fmt($this->getDefaultValue()));
+            // format_default_value: a constant AST prints as exported.
+            $s .= ' = ' . ($this->__p['defaultAst'] ?? Reflection::__fmt($this->getDefaultValue()));
         }
         return $s . ' ]';
     }
@@ -975,7 +982,7 @@ class ReflectionProperty implements Reflector {
         if ($m & 16) { $s .= 'static '; }
         if ($m & 128) { $s .= 'readonly '; }
         if ($m & 512) { $s .= 'virtual '; }
-        if ($this->__i['type'] !== null) { $s .= Reflection::__type($this->__i['type']) . ' '; }
+        if ($this->__i['type'] !== null) { $s .= Reflection::__tstr($this->__i['type']) . ' '; }
         $s .= '$' . $this->name;
         if ($this->__i['hasDefault'] && !($m & 512)) { $s .= ' = ' . Reflection::__fmt($this->__i['default']); }
         $hooks = $this->__i['hooks'] ?? [];
@@ -1125,7 +1132,7 @@ class ReflectionClassConstant implements Reflector {
         $v = $i['value'];
         $m = $i['modifiers'];
         $s = $i['doc'] !== false ? $indent . $i['doc'] . "\n" : '';
-        $type = ($i['type'] ?? null) !== null ? (string) Reflection::__type($i['type']) : match (true) {
+        $type = ($i['type'] ?? null) !== null ? Reflection::__tstr($i['type']) : match (true) {
             is_null($v) => 'null', is_bool($v) => 'bool', is_int($v) => 'int', is_float($v) => 'float',
             is_string($v) => 'string', is_array($v) => 'array', default => get_class($v) };
         $s .= $indent . 'Constant [ ' . (($m & 32) ? 'final ' : '') . (($m & 4) ? 'private' : (($m & 2) ? 'protected' : 'public')) . ' ' . $type . ' ' . $this->name . ' ] { ';

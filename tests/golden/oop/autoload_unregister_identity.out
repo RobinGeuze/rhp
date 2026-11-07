@@ -1,0 +1,8 @@
+int(1)
+int(0)
+p Foo1
+
+Fatal error: Uncaught Error: Class "Foo1" not found in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/oop/autoload_unregister_identity.php:5
+Stack trace:
+#0 {main}
+  thrown in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/oop/autoload_unregister_identity.php on line 5

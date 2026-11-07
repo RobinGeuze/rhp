@@ -396,16 +396,16 @@ impl Host for Vm {
         Ok(())
     }
 
-    fn register_autoloader(&mut self, callback: Value, prepend: bool) {
-        if prepend {
-            self.autoloaders.insert(0, callback);
-        } else {
-            self.autoloaders.push(callback);
-        }
+    fn register_autoloader(&mut self, callback: &Value, prepend: bool) -> Result<(), Thrown> {
+        self.register_autoloader_value(callback, prepend)
+    }
+
+    fn unregister_autoloader(&mut self, callback: &Value) -> Result<bool, Thrown> {
+        self.unregister_autoloader_value(callback)
     }
 
     fn autoload_functions(&self) -> Vec<Value> {
-        self.autoloaders.clone()
+        self.autoload_function_values()
     }
 
     fn autoload_call(&mut self, name: &[u8]) -> Result<(), Thrown> {

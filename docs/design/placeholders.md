@@ -53,7 +53,7 @@ priority order rather than rediscovered one framework crash at a time.
 | 26 | Phar tar/zip formats unsupported | `ext/phar/mod.rs` (native-only) | tar/zip phars | med | low |
 | 27 | ~~zlib compressors not byte-identical to php~~ — **done**: C zlib with php's deflateInit2 params (`ext/zlib/zraw.rs`) | — | — | — | — |
 | 28 | ~~`gzopen` family + `compress.zlib://` wrapper missing~~ — **done** (whole-buffer streams; gzopen's level/strategy mode letters are ignored on write) | `ext/zlib/mod.rs` | — | low | low |
-| 29 | `spl_autoload_unregister` — no-op true, never removes | `ext/spl/mod.rs:39` | dynamic autoloader swapping | med | low |
+| 29 | ~~`spl_autoload_unregister` — no-op true, never removes~~ **done** (§5.1, `vm/autoload.rs`) | — | — | — | — |
 | 30 | ~~`Closure::bindTo`/`Closure::call` instance methods missing~~ **done** (`vm/closures.rs`, with php's binding checks) | — | — | — | — |
 | 31 | ~~var_dump object ids — monotonic, no handle recycling~~ **mostly done** (§9.1): handles reused; frees php's cycle collector or an earlier destructor would make still come later | `rhp-values/src/handles.rs` | `#N` after cyclic garbage or destructed temporaries | low | low |
 | 32 | No `E_WARNING`/`E_NOTICE`/`E_DEPRECATED` diagnostics ever emitted (builtins already report them through `Host::emit_diagnostic` — iconv, openssl, mbstring so far — which every host still discards) | engine-wide | warnings-as-errors, deprecation logs, `@`-suppression semantics | high | med |
@@ -499,23 +499,16 @@ The module is deliberately "READ-ONLY, native format only"
 
 ## 5. SPL / autoload (`crates/rhp-builtins/src/ext/spl/mod.rs`)
 
-### 5.1 `spl_autoload_unregister` — no-op true, never unregisters
-- **Now:** returns `true` without removing anything
-  (`ext/spl/mod.rs:37-41`); the comment names the blocker: "callable identity
-  comparison missing".
-- **OK because:** composer registers its autoloader and never unregisters it;
-  `spl_autoload_register`/`_functions`/`_call` all work (`:19-57`).
-- **Breaks:** code that swaps autoloaders (test frameworks installing/removing a
-  mock autoloader, composer's own `ClassLoader::unregister()`), which would leave
-  stale autoloaders active.
-- **Full impl:** implement PHP's callable-equality so a registered callable can be
-  matched and removed from the `Vm`'s autoloader list. The hard part is identity
-  for all callable forms — a closure (by `Rc` identity), `[obj, 'method']` (object
-  identity + method name), `[class, 'method']` / `"Class::method"` (name equality),
-  a plain `"function"` string. Add a `Host` method `unregister_autoloader(cb)` that
-  applies these rules against the stored list. The same equality logic is reusable
-  for `in_array`/`array_search` over callables.
-- **Effort/priority:** med / low.
+### 5.1 ~~`spl_autoload_unregister` — no-op true, never unregisters~~ **done**
+- The VM keeps each autoloader resolved (php's autoload_func_info:
+  function, object, calling class, closure) and compares entries as
+  autoload_func_info_equals does, so `'A::l'` and `['A', 'l']` are one entry,
+  registering it twice is a no-op, and unregistering removes it
+  (`crates/rhp-vm/src/autoload.rs`). `spl_autoload_functions()` rebuilds the
+  callables from the entries, and a loader runs as it was resolved at
+  registration. Composer's `loadClassLoader` and Symfony's DebugClassLoader
+  both unregister.
+- **Left:** the default `spl_autoload` (registering `null`) is still a no-op.
 
 ### 5.2 ArrayObject / ArrayIterator over an object — a snapshot plus write-through
 - **Now:** the prelude keeps the object's properties as an array
@@ -817,7 +810,7 @@ packages, then **general framework compatibility**, then long-tail parity.
 13. Phar MD5/SHA-1 verify (#3.1 cheap), OpenSSL-signed phars, phar writing /
     self-update (#3.3), bzip2 entries (#3.2) — *low priority*.
 14. zlib byte-identical compressors (native backend, #4.1) — *low*.
-15. `spl_autoload_unregister` callable identity (#5.1) — *low*.
+15. ~~`spl_autoload_unregister` callable identity (#5.1)~~ — done.
 16. var_dump object-id recycling (#9.1), STDIO-constant cleanup (#9.2),
     `php_uname` real host (#1.9), `memory_get_usage` best-effort (#1.6),
     `setlocale`/`gc_*` (#1.7, #1.8) — *low; some are "never" unless a test needs

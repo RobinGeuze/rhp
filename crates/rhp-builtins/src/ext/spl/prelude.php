@@ -17,7 +17,9 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
         $this->__k = array_keys($this->__s); $this->__p = $offset;
     }
     public function count(): int { return count($this->__s); }
-    public function offsetExists($k): bool { return isset($this->__s[$k]); }
+    // spl_array_has_dimension_ex(check_empty=2): the key exists, even
+    // with a null value.
+    public function offsetExists($k): bool { return isset($this->__s[$k]) || ($k === null || is_scalar($k)) && array_key_exists($k === null ? '' : (is_float($k) || is_bool($k) ? (int) $k : $k), $this->__s); }
     public function offsetGet($k): mixed { return $this->__s[$k]; }
     public function offsetSet($k, $v): void {
         if ($k === null) { $this->__s[] = $v; $this->__k[] = array_key_last($this->__s); }
@@ -81,7 +83,9 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     public function getIteratorClass(): string { return $this->__i; }
     public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }
-    public function offsetExists($k): bool { return isset($this->__s[$k]); }
+    // spl_array_has_dimension_ex(check_empty=2): the key exists, even
+    // with a null value.
+    public function offsetExists($k): bool { return isset($this->__s[$k]) || ($k === null || is_scalar($k)) && array_key_exists($k === null ? '' : (is_float($k) || is_bool($k) ? (int) $k : $k), $this->__s); }
     public function offsetGet($k): mixed { if (is_array($k) || is_object($k)) { self::__badKey($k, $this); } return $this->__s[$k]; }
     public function offsetSet($k, $v): void { if ($k === null) { $this->__s[] = $v; if ($this->__o !== null) { __spl_obj_store($this->__o, array_key_last($this->__s), $v); } } else { if (is_array($k) || is_object($k)) { self::__badKey($k, $this); } $this->__s[$k] = $v; if ($this->__o !== null) { __spl_obj_store($this->__o, $k, $v); } } }
     // spl_array get_hash_key's failure (zend_illegal_container_offset).

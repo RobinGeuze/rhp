@@ -881,6 +881,11 @@ pub trait Host {
     /// Wrap an OS file descriptor (e.g. a pipe's parent end) as a `stream`
     /// resource.
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value>;
+    /// `php_stream_fopen_tmpfile` (tmpfile()): a "r+b" stream on a new temp
+    /// file that is unlinked when the stream closes.
+    fn stream_open_tmpfile(&mut self) -> Option<Value> {
+        None
+    }
     /// Record the mode a stream was opened with (`stream_get_meta_data`'s
     /// `mode`), for streams opened without a path (`popen`).
     fn stream_set_mode(&mut self, _res: &Value, _mode: &[u8]) {}

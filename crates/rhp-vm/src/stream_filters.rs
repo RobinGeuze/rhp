@@ -904,6 +904,8 @@ impl Vm {
                 .filter(|id| {
                     self.layer(*id).is_some()
                         || matches!(self.streams.get(id), Some(StreamState::User(_)))
+                        // a leaked tmpfile() is removed too
+                        || self.streams.record(*id).is_some_and(|s| s.temp_name.is_some())
                 })
                 .collect();
             if ids.is_empty() {

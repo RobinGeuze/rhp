@@ -139,6 +139,9 @@ pub struct Vm {
     exception_handlers: Vec<Value>,
     /// `register_shutdown_function` callbacks with their arguments, in order.
     shutdown_functions: Vec<(Value, Vec<Value>)>,
+    /// The entries of `shutdown_functions` registered under a name
+    /// (register_user_shutdown_function), with their index.
+    shutdown_names: Vec<(Vec<u8>, usize)>,
     // lvalue cursor: a root in the current frame (CV or a static-prop cell) +
     // pending path steps. Cursor opcodes are emitted contiguously, so a single
     // cursor never nests.

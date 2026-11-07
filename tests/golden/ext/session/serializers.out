@@ -1,0 +1,174 @@
+== php
+bool(true)
+[2] session_encode(): Skipping numeric key 7
+string(101) "obj|O:1:"P":2:{s:1:"a";i:1;s:1:"b";a:1:{i:0;i:2;}}same|r:1;arr|a:2:{i:0;i:1;i:1;i:2;}ref|R:6;f|d:1.5;"
+bool(true)
+array(5) {
+  ["obj"]=>
+  object(P)#3 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["same"]=>
+  object(P)#3 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["arr"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["ref"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["f"]=>
+  float(1.5)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+== php_binary
+bool(true)
+[2] session_encode(): Skipping numeric key 7
+string(101) "objO:1:"P":2:{s:1:"a";i:1;s:1:"b";a:1:{i:0;i:2;}}samer:1;arra:2:{i:0;i:1;i:1;i:2;}refR:6;fd:1.5;"
+bool(true)
+array(5) {
+  ["obj"]=>
+  object(P)#2 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["same"]=>
+  object(P)#2 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["arr"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["ref"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["f"]=>
+  float(1.5)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+== php_serialize
+bool(true)
+string(155) "a:6:{s:3:"obj";O:1:"P":2:{s:1:"a";i:1;s:1:"b";a:1:{i:0;i:2;}}s:4:"same";r:2;s:3:"arr";a:2:{i:0;i:1;i:1;i:2;}s:3:"ref";R:7;s:1:"f";d:1.5;i:7;s:7:"numeric";}"
+bool(true)
+array(6) {
+  ["obj"]=>
+  object(P)#3 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["same"]=>
+  object(P)#3 (2) {
+    ["a"]=>
+    int(1)
+    ["b"]=>
+    array(1) {
+      [0]=>
+      int(2)
+    }
+  }
+  ["arr"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["ref"]=>
+  &array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+  ["f"]=>
+  float(1.5)
+  [7]=>
+  string(7) "numeric"
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+== bad key
+[2] session_encode(): Failed to write session data. Data contains invalid key "a|b"
+bool(false)
+== decode errors
+[2] session_decode(): Failed to decode session object. Session has been destroyed
+bool(false)
+array(0) {
+}
+int(1)
+[2] session_decode(): Failed to decode session object. Session has been destroyed
+bool(false)
+int(1)
+[2] session_decode(): Failed to decode session object. Session has been destroyed
+bool(false)
+int(1)
+bool(true)
+array(0) {
+}
+bool(true)
+int(5)

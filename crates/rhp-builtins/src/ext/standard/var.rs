@@ -3333,3 +3333,101 @@ fn fn_memory_reset_peak_usage(_: &mut dyn Host, _args: &[Value]) -> Result<Value
     rhp_values::mem::reset_peak();
     Ok(Value::Null)
 }
+
+/// php_var_serialize over one var_hash, for ext/session's encoders: each
+/// session variable is serialized as an element (`PS_ENCODE_LOOP`).
+pub(crate) struct SessionSer(Serializer);
+
+impl SessionSer {
+    /// PHP_VAR_SERIALIZE_INIT.
+    pub(crate) fn begin() -> Self {
+        SessionSer(Serializer { d: ser_init() })
+    }
+
+    pub(crate) fn value(
+        &mut self,
+        host: &mut dyn Host,
+        out: &mut Vec<u8>,
+        v: &Value,
+    ) -> Result<(), Thrown> {
+        self.0.nested(host, out, v)
+    }
+
+    /// PHP_VAR_SERIALIZE_DESTROY.
+    pub(crate) fn end(self) {
+        ser_destroy();
+    }
+}
+
+/// php_var_unserialize over one var_hash, for ext/session's decoders:
+/// the values parsed are unwrapped together, so an `R:` from one session
+/// variable to another leaves both PHP references.
+pub(crate) struct SessionUnser {
+    d: Rc<RefCell<UnserData>>,
+    nested: bool,
+    cells: Vec<Cell>,
+}
+
+impl SessionUnser {
+    /// PHP_VAR_UNSERIALIZE_INIT.
+    pub(crate) fn begin() -> Self {
+        let d = unser_init();
+        let nested = unser_level() > 1;
+        SessionUnser {
+            d,
+            nested,
+            cells: Vec::new(),
+        }
+    }
+
+    /// Parse one value at `at`: whether it parsed, where it ended, and the
+    /// parser's cell holding it (unwrapped by [`Self::take_values`]).
+    /// Warnings name `fname`.
+    pub(crate) fn value(
+        &mut self,
+        host: &mut dyn Host,
+        bytes: &[u8],
+        at: usize,
+        fname: &str,
+    ) -> Result<(bool, usize, Option<Cell>), Thrown> {
+        let mut p = Parser {
+            host,
+            b: bytes,
+            max: bytes.len(),
+            p: at.min(bytes.len()),
+            d: self.d.clone(),
+            fname: fname.to_string(),
+        };
+        let cell = p.new_cell();
+        self.d.borrow_mut().dtor.push(Dtor::Hold(cell.clone()));
+        let r = p.unserialize(&cell);
+        let end = p.p;
+        if matches!(r, Ok(true)) {
+            self.cells.push(cell.clone());
+            return Ok((true, end, Some(cell)));
+        }
+        r.map(|ok| (ok, end, None))
+    }
+
+    /// The values parsed so far, in order (a value an `R:` shares is a
+    /// reference).
+    pub(crate) fn take_values(&mut self) -> Vec<Value> {
+        let mut a = PhpArray::new();
+        for c in self.cells.drain(..) {
+            a.push(Value::Ref(c));
+        }
+        let root: Cell = Rc::new(RefCell::new(Value::Array(a)));
+        unwrap_all(&self.d, &root, !self.nested);
+        let v = root.borrow().clone();
+        match v {
+            Value::Array(a) => a.iter().map(|(_, v)| v.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// PHP_VAR_UNSERIALIZE_DESTROY (the outermost one runs the delayed
+    /// `__wakeup` / `__unserialize` calls; `failed`: none runs).
+    pub(crate) fn end(self, host: &mut dyn Host, failed: bool) -> Result<(), Thrown> {
+        unser_destroy(host, &self.d, failed)
+    }
+}

@@ -59,7 +59,7 @@ Kinds:
 | `ext/standard/basic_functions.rs` | `TICK_FUNCS` (`register_tick_function`) | request | `basic_functions::reset_state` |
 | `ext/standard/basic_functions.rs` | `ORIG_TZ` (the TZ `putenv` replaced in the process environment) | process, as in php | `basic_functions::reset_state` restores it |
 | `ext/standard/string.rs` | `LOCALE_CHANGED` (the C library's locale, set by `setlocale`) | process, as in php | `string::reset_state` resets the locale |
-| `ext/standard/url_scanner_ex.rs` | `STATE` (the URL rewriter) | request | `url_scanner_ex::reset_state` |
+| `ext/standard/url_scanner_ex.rs` | `STATE`, `SESSION_STATE` (the URL rewriters of `output_add_rewrite_var` and of trans-sid) | request | `url_scanner_ex::reset_state` |
 | `ext/standard/browscap.rs` | `DATA` (the parsed browscap file) | thread (php: process) | — |
 | `main/sapi.rs` | `SAPI_NAME`, `SAPI_DEF` (its `SapiDef` and bit), `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
 | `ext/bcmath` | `DEFAULT_SCALE` | request | `bcmath::reset_state` |
@@ -84,6 +84,8 @@ Kinds:
 | `ext/openssl` | `CALLBACK_PANIC` | call | — |
 | `ext/openssl` | `CUSTOM_LIBCTX` | thread | — |
 | `ext/sockets` | `LAST_ERROR` (`socket_last_error`) | request (php: per worker) | `sockets::reset_state` |
+| `ext/session` | `PS` (php's `PS()` globals: status, id, save handler and its open file, user handler callables, `$_SESSION`'s reference; set up on first use, as RINIT would have) | request | `session::reset_state` (RSHUTDOWN, `session::rshutdown`, writes the session first) |
+| `ext/session` | `FRAMES` (session calls in progress: the origin their diagnostics name, the exception they hold) | call | emptied as each call returns |
 
 `ERRORS` and the sockets `LAST_ERROR` are module globals php never resets
 between requests (GINIT): a php-fpm worker's next request can still read

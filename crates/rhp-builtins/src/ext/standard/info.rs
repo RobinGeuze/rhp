@@ -499,6 +499,8 @@ fn print_info(host: &mut dyn Host, flag: i64) -> Vec<u8> {
                 print_mbstring(&mut o);
             } else if *e == "date" {
                 print_date(&mut o);
+            } else if *e == "session" {
+                print_session(&mut o);
             } else if *e == "zip" {
                 for (k, v) in crate::ext::zip::info_rows() {
                     o.row(&[&k, &v]);
@@ -646,6 +648,50 @@ fn print_date(o: &mut Info) {
         "date.timezone",
     ] {
         let show = |v: Option<Vec<u8>>| match v {
+            Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
+            _ => "no value".to_string(),
+        };
+        let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
+        let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
+        o.row(&[name, &show(local), &show(master)]);
+    }
+}
+
+/// PHP_MINFO_FUNCTION(session), then its ini entries.
+fn print_session(o: &mut Info) {
+    o.row(&["Session Support", "enabled"]);
+    o.row(&["Registered save handlers", "files user "]);
+    o.row(&[
+        "Registered serializer handlers",
+        "php_serialize php php_binary ",
+    ]);
+    o.table_start();
+    o.header(&["Directive", "Local Value", "Master Value"]);
+    const BOOLS: &[&str] = &[
+        "auto_start",
+        "cookie_httponly",
+        "cookie_partitioned",
+        "cookie_secure",
+        "lazy_write",
+        "upload_progress.cleanup",
+        "upload_progress.enabled",
+        "use_cookies",
+        "use_only_cookies",
+        "use_strict_mode",
+        "use_trans_sid",
+    ];
+    let names: Vec<&str> = crate::main::ini_table::INI_TABLE
+        .iter()
+        .filter(|e| e.0 == "session")
+        .map(|e| e.1)
+        .collect();
+    for name in names {
+        let boolean = BOOLS.contains(&&name["session.".len()..]);
+        let show = |v: Option<Vec<u8>>| match v {
+            Some(v) if boolean => {
+                let on = crate::main::ini::ini_parse_bool(&v);
+                (if on { "On" } else { "Off" }).to_string()
+            }
             Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
             _ => "no value".to_string(),
         };

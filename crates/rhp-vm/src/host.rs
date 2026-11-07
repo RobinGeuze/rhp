@@ -984,6 +984,61 @@ impl Host for Vm {
         Ok(())
     }
 
+    fn register_named_shutdown(&mut self, name: &[u8], callback: Value) -> bool {
+        match self.shutdown_names.iter().find(|(n, _)| n == name) {
+            Some(&(_, i)) => self.shutdown_functions[i] = (callback, Vec::new()),
+            None => {
+                self.shutdown_names
+                    .push((name.to_vec(), self.shutdown_functions.len()));
+                self.shutdown_functions.push((callback, Vec::new()));
+            }
+        }
+        true
+    }
+
+    fn remove_named_shutdown(&mut self, name: &[u8]) {
+        let Some(pos) = self.shutdown_names.iter().position(|(n, _)| n == name) else {
+            return;
+        };
+        let (_, i) = self.shutdown_names.remove(pos);
+        self.shutdown_functions.remove(i);
+        for (_, j) in &mut self.shutdown_names {
+            if *j > i {
+                *j -= 1;
+            }
+        }
+    }
+
+    fn set_global_ref(&mut self, name: &[u8], cell: rhp_values::PhpRef, delete: bool) {
+        if delete {
+            self.globals.shift_remove(name);
+        }
+        self.jit_globals.remove(name);
+        self.rebind_global(name, cell.clone());
+        for f in self.stack.iter_mut() {
+            let sg = f
+                .proto
+                .superglobals
+                .iter()
+                .find(|(_, n)| n.as_bytes() == name);
+            if let Some(&(cv, _)) = sg {
+                f.regs[cv as usize] = Value::Ref(cell.clone());
+            }
+        }
+        self.ref_globals.insert(name.to_vec());
+        self.dtor_check = true;
+    }
+
+    fn delete_global(&mut self, name: &[u8]) {
+        if self.globals.contains_key(name) {
+            self.unset_superglobal(name);
+        }
+    }
+
+    fn set_module_const(&mut self, name: &[u8], value: Value) {
+        self.constants.insert(name.to_vec(), value);
+    }
+
     fn stream_from_fd(&mut self, fd: std::os::fd::OwnedFd) -> Option<Value> {
         let st = StreamState::Fd(builtins::main::streams::plain_wrapper::FdStream::new(fd));
         Some(self.make_stream(st, "stream"))

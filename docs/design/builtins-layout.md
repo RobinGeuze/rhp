@@ -156,6 +156,7 @@ One directory per php-src extension, `ext/<name>/`:
 | `ext/opcache/` | ext/opcache's zend_accelerator_module.c; the cache itself is in rhp-vm (`opcache/`) |
 | `ext/random/` | ext/random: random.c (`mod.rs`), the engines (`engine.rs`), randomizer.c, gammasection.c and the engines' methods (`randomizer.rs`); the classes in `prelude.php` |
 | `ext/readline/` | ext/readline/readline.c |
+| `ext/session/` | ext/session: session.c, mod_user.c and mod_user_class.c (`mod.rs`, SessionHandler in `prelude.php`), mod_files.c (`mod_files.rs`); trans-sid goes through `ext/standard/url_scanner_ex.rs` |
 | `ext/spl/` | ext/spl: php_spl.c, spl_iterators.c's `iterator_to_array`, the prelude classes |
 | `ext/date/` | ext/date: php_date.c over timelib |
 

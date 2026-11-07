@@ -11,7 +11,9 @@
 #   bin       the entry script, relative to the project; run as `<engine> <bin> <args>`
 #   commands  one argument string per command (shell-split; no shell runs it),
 #             or { args = "...", unordered = true } for a parallel run whose
-#             per-file blocks come in worker completion order
+#             per-file blocks come in worker completion order; a
+#             `known = "reason"` key marks a difference with a known cause in
+#             rhp (KNOWN, not a failure)
 #   big       the big tier (`tools.py diff --big`, nightly in CI): the same
 #             forms, on vendor code (symfony/console, nikic/php-parser) with
 #             the fixture's big-* configs; minutes per command under rhp
@@ -133,8 +135,8 @@ commands = [
     "--clear-cache",
 ]
 big = [
-    "-c big-psalm-console.xml --no-progress --threads=1",
-    "-c big-psalm-console.xml --no-progress --threads=4",
+    { args = "-c big-psalm-console.xml --no-progress --threads=1", known = "no ext/fileinfo: finfo is undefined" },
+    { args = "-c big-psalm-console.xml --no-progress --threads=4", known = "no ext/fileinfo: finfo is undefined" },
     "-c big-psalm-parser.xml --no-progress --threads=1",
     "-c big-psalm-parser.xml --no-progress --threads=4",
 ]

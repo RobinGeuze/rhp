@@ -14,7 +14,9 @@ diff of what differed. Commands marked `unordered` in tools.toml (parallel
 runs, which list files in worker completion order) compare their per-file
 blocks as a set. Each line also shows CPU time (user + sys of the whole
 process tree) and peak RSS under php and the candidate. The summary line per
-tool is `identical/total`. Exit code 0 when every command was SAME.
+tool is `identical/total`. A command marked `known` in tools.toml prints
+KNOWN when it differs and FIXED when it matches (drop the mark then). Exit
+code 0 when every other command was SAME.
 
 Both engines read tools/php.ini (PHPRC), a php.ini like a distribution's.
 
@@ -156,7 +158,15 @@ def reset(run_dir, files):
         (run_dir / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT / rel, run_dir / rel)
     (run_dir / "home").mkdir()
-    (run_dir / "tmp").mkdir()
+    tmp = tmp_dir(run_dir)
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+
+
+def tmp_dir(run_dir):
+    """TMPDIR for a run: short, as Psalm's and Rector's workers put unix
+    sockets there and macOS allows socket paths of only 104 bytes."""
+    return Path("/tmp") / f"rhp-tools-{os.getuid()}" / run_dir.name
 
 
 def snapshot(run_dir):
@@ -269,11 +279,11 @@ def run_one(engine, tool, cmd, run_dir, files, binaries):
     reset(run_dir, files)
     # A minimal, fixed environment: no CI variables (php-cs-fixer's and
     # PHPStan's output depends on them), no colours, a fixed width, and HOME
-    # and TMPDIR inside the run directory (same path for both engines).
+    # inside the run directory and a short TMPDIR (same paths for both engines).
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": str(run_dir / "home"),
-        "TMPDIR": str(run_dir / "tmp"),
+        "TMPDIR": str(tmp_dir(run_dir)),
         "TZ": "UTC",
         "LANG": "C",
         "LC_ALL": "C",
@@ -355,7 +365,7 @@ def cmd_diff(tools, candidate, only, quiet, big):
         out_dir = WORK / f"{name}-out"
         shutil.rmtree(out_dir, ignore_errors=True)
         out_dir.mkdir(parents=True)
-        same_count = total = 0
+        same_count = total = failed = 0
         cpu = [0.0, 0.0]
         for i, cmd in enumerate(t[tier]):
             if only and i not in only:
@@ -373,7 +383,12 @@ def cmd_diff(tools, candidate, only, quiet, big):
             cpu[1] += cand["cpu"]
             label = f"{t['name']} {cmd['args']}".rstrip()
             usage = f"cpu {ref['cpu']:.1f}s/{cand['cpu']:.1f}s rss {ref['rss']:.0f}/{cand['rss']:.0f}MB"
-            print(f"{'SAME' if ok else 'DIFF'}  php={ref['code']} rhp={cand['code']}  {usage:<34} {i:02} {label}", flush=True)
+            # A command with `known = "reason"` differs for a known cause in rhp.
+            verdict = ("FIXED" if cmd.get("known") else "SAME") if ok else ("KNOWN" if cmd.get("known") else "DIFF")
+            failed += verdict == "DIFF"
+            print(f"{verdict:<5} php={ref['code']} rhp={cand['code']}  {usage:<34} {i:02} {label}", flush=True)
+            if verdict == "KNOWN":
+                print(f"      known: {cmd['known']}")
             if not ok:
                 d = describe_diff(ref, cand)
                 (out_dir / f"{i:02}.diff").write_text(d)
@@ -382,17 +397,17 @@ def cmd_diff(tools, candidate, only, quiet, big):
                     print("      " + "\n      ".join(lines[:40]))
                     if len(lines) > 40:
                         print(f"      ... ({len(lines) - 40} more lines in {out_dir / f'{i:02}.diff'})")
-        summary.append((t, same_count, total, cpu))
+        summary.append((t, same_count, total, cpu, failed))
         print(
             f"== {t['name']} {t['version']}: {same_count}/{total} commands identical, "
             f"cpu php {cpu[0]:.1f}s rhp {cpu[1]:.1f}s (outputs in {out_dir})",
             flush=True,
         )
     if len(summary) > 1:
-        for t, s, n, c in summary:
+        for t, s, n, c, _ in summary:
             ratio = f"{c[1] / c[0]:.1f}x" if c[0] else "-"
             print(f"{t['name']:<14} {t['version']:<10} {s}/{n}  cpu {c[0]:.1f}s -> {c[1]:.1f}s ({ratio})")
-    return 0 if all(s == n for _, s, n, _ in summary) else 1
+    return 1 if any(f for *_, f in summary) else 0
 
 
 def main(argv):

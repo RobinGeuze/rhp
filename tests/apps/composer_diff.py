@@ -153,12 +153,14 @@ $log->info('hello', ['a' => 1]);
 echo App\\Hello::hi(), "\\n";
 """
 
-# What a build environment decides, not the engine: the OpenSSL headers each
-# engine was compiled against (Homebrew's php: 4.0.3, rhp: what it links).
-OPENSSL = [
-    (re.compile(r"^(OpenSSL version: ).*$", re.M), r"\1<OPENSSL>"),
-    (re.compile(r"^(lib-openssl\s+).*$", re.M), r"\1<OPENSSL>"),
-    (re.compile(r'("name": "lib-openssl",\s*"version": )"[^"]*"'), r'\1"<OPENSSL>"'),
+# What a build environment decides, not the engine: the OpenSSL and zlib
+# headers each engine was compiled against (Homebrew's php: OpenSSL 4.0.3,
+# rhp: what it links; rhp's ZLIB_VERSION is the macOS reference's 1.2.12,
+# Ubuntu's php has 1.3.1).
+BUILD_LIBS = [
+    (re.compile(r"^(OpenSSL version: ).*$", re.M), r"\1<VERSION>"),
+    (re.compile(r"^(lib-(openssl|zlib)\s+).*$", re.M), r"\1<VERSION>"),
+    (re.compile(r'("name": "lib-(openssl|zlib)",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
 ]
 
 # The library entries of `show --platform` and the extension that reports
@@ -173,7 +175,7 @@ def mask(text, binaries):
         text = text.replace(b, "<PHP_BINARY>")
     text = re.sub(r"Memory usage: [\d.]+MiB \(peak: [\d.]+MiB\), time: [\d.]+s", "<MEM>", text)
     text = re.sub(r"\d+(\.\d+)?\s*(ms|s|seconds)\b", "<T>", text)
-    for pat, rep in OPENSSL:
+    for pat, rep in BUILD_LIBS:
         text = pat.sub(rep, text)
     # Random per run: the secrets a recipe or create-project writes, and the
     # session id Symfony Flex sends to its endpoint.
@@ -262,13 +264,18 @@ def make_project(name, proj):
         return
     # A fixture app: its committed files, without vendor/ and caches.
     app = HERE / name
-    files = subprocess.run(["git", "ls-files", "-z", "."], cwd=app, capture_output=True, check=True).stdout
-    for rel in filter(None, files.decode().split("\0")):
+    git = subprocess.run(["git", "ls-files", "-z", "."], cwd=app, capture_output=True)
+    if git.returncode != 0:
+        # Not a usable checkout (a container's mount of a worktree, ...).
+        shutil.rmtree(proj)
+        shutil.copytree(app, proj, symlinks=True, ignore=shutil.ignore_patterns("vendor", "var", "node_modules"))
+        return
+    for rel in filter(None, git.stdout.decode().split("\0")):
         (proj / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(app / rel, proj / rel)
 
 
-def run_suite(suite, engine, composer, work, only, binaries, common):
+def run_suite(suite, who, engine, composer, work, only, binaries, common):
     proj, home = work / "project", work / "home"
     for d in (proj, home):
         shutil.rmtree(d, ignore_errors=True)
@@ -296,7 +303,7 @@ def run_suite(suite, engine, composer, work, only, binaries, common):
         if step[:2] == ["show", "--platform"]:
             text = only_common(text, common)
         results.append((name, code, mask(text, binaries), cpu, rss))
-    final = work / ("final-" + Path(engine).name)
+    final = work / f"final-{who}"
     shutil.rmtree(final, ignore_errors=True)
     shutil.copytree(proj, final, symlinks=True)
     return results, final
@@ -350,15 +357,16 @@ def main(argv):
     composer = os.environ.get("COMPOSER") or shutil.which("composer")
     if not composer:
         sys.exit("composer_diff: no composer on PATH (set COMPOSER)")
-    binaries = sorted({b for b in (rhp, engine_binary(php), shutil.which(php)) if b and os.path.isabs(b)},
-                      key=len, reverse=True)
+    # WORK/bin/php too: a php may still report its installed path (Debian's).
+    binaries = sorted({b for b in (rhp, engine_binary(php), shutil.which(php), str(work / "bin" / "php"))
+                       if b and os.path.isabs(b)}, key=len, reverse=True)
     common = loaded_extensions(php) & loaded_extensions(rhp)
     counts = {"same": 0, "known": 0, "diff": 0}
     for sname in suites:
         suite = SUITES[sname]
         print(f"== {sname}", flush=True)
-        ref, ref_final = run_suite(suite, php, composer, work, only, binaries, common)
-        cand, cand_final = run_suite(suite, rhp, composer, work, only, binaries, common)
+        ref, ref_final = run_suite(suite, "php", php, composer, work, only, binaries, common)
+        cand, cand_final = run_suite(suite, "rhp", rhp, composer, work, only, binaries, common)
         out = work / "out" / sname
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)

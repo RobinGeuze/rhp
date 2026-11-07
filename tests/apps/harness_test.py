@@ -137,6 +137,10 @@ class Platform(unittest.TestCase):
             "composer 2.11.1 Composer package\next-json 8.5.12 The json PHP extension\n",
         )
 
+    def test_zlib_masked(self):
+        a = composer_diff.mask("lib-zlib 1.3.1 The zlib library\n", [])
+        self.assertEqual(a, composer_diff.mask("lib-zlib 1.2.12 The zlib library\n", []))
+
     def test_openssl_masked(self):
         a = composer_diff.mask("OpenSSL version: OpenSSL 4.0.3 29 Sep 2026\nlib-openssl 4.0.3 OpenSSL 4.0.3\n", [])
         b = composer_diff.mask("OpenSSL version: OpenSSL 4.1.0 23 Oct 2026\nlib-openssl 4.1.0 OpenSSL 4.1.0\n", [])

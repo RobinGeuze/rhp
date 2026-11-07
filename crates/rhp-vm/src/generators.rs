@@ -497,7 +497,24 @@ impl Vm {
         self.gen_resumes.pop();
         self.gen_stack.pop();
         self.yield_out = saved_yield;
+        if self.generators[&id].status == GenStatus::Finished {
+            self.gen_release_current(id);
+        }
         result
+    }
+
+    /// A closed generator's current key and value: php keeps them until
+    /// the object is freed, which rhp notes only later, so they go now
+    /// unless a delegating generator still takes the value over.
+    fn gen_release_current(&mut self, id: u32) {
+        let g = self.gen(id);
+        if g.children.is_empty() {
+            let kv = (
+                std::mem::replace(&mut g.current_key, Value::Null),
+                std::mem::replace(&mut g.current_val, Value::Null),
+            );
+            drop(kv);
+        }
     }
 
     /// zend_generator_ensure_initialized: run a fresh generator to its
@@ -1024,12 +1041,12 @@ impl Vm {
         released
     }
 
-    /// zend_generator_close: the frame goes (its variables are released);
-    /// the current key and value stay until the object is freed.
+    /// zend_generator_close: the frame goes (its variables are released).
     fn gen_close(&mut self, id: u32) {
         let g = self.gen(id);
         g.status = GenStatus::Finished;
         let frame = g.frame.take();
+        self.gen_release_current(id);
         if let Some(f) = &frame {
             self.forget_unfinished_news(f);
         }

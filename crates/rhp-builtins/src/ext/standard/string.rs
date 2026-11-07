@@ -200,9 +200,12 @@ pub(crate) fn str_replace_common(
         Value::Array(out)
     } else {
         let s = conv::to_string_bytes(&subject);
-        Value::str(replace_in_subject(
-            host, s, &search, &replace, replace_fn, &mut n,
-        )?)
+        let res = replace_in_subject(host, s, &search, &replace, replace_fn, &mut n)?;
+        match subject {
+            // Nothing replaced: php returns the subject string itself.
+            Value::Str(orig) if n == 0 => Value::Str(orig),
+            _ => Value::str(res),
+        }
     };
     // `&$count`, written when passed.
     if let Some(Value::Ref(r)) = args.get(3) {
@@ -238,13 +241,20 @@ fn resolve_fwd_offset(offset: i64, len: usize, fname: &str) -> Result<usize, Thr
 }
 
 fn strpos_impl(args: &[Value], ci: bool, fname: &str) -> Result<Value, Thrown> {
-    let mut haystack = conv::to_string_bytes(&args[0]);
-    let mut needle = conv::to_string_bytes(&args[1]);
+    // The arguments' own bytes unless they need converting or folding.
+    fn bytes(v: &Value, ci: bool) -> std::borrow::Cow<'_, [u8]> {
+        match v {
+            Value::Str(s) if !ci => std::borrow::Cow::Borrowed(s.as_bytes()),
+            v => std::borrow::Cow::Owned(conv::to_string_bytes(v)),
+        }
+    }
+    let mut haystack = bytes(&args[0], ci);
+    let mut needle = bytes(&args[1], ci);
     let off = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(0);
     let start = resolve_fwd_offset(off, haystack.len(), fname)?;
     if ci {
-        haystack.make_ascii_lowercase();
-        needle.make_ascii_lowercase();
+        haystack.to_mut().make_ascii_lowercase();
+        needle.to_mut().make_ascii_lowercase();
     }
     match find_sub(&haystack[start..], &needle) {
         Some(p) => Ok(Value::Int((start + p) as i64)),

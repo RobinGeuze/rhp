@@ -155,7 +155,14 @@ impl ProtoBuilder<'_> {
         // gives up on unpacking and named arguments), so no CallFlags.
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
             let known = self.known_params(&name_bytes, &fallback);
-            let args = self.build_args_array_known(Some(&fc.argument_list), known.as_ref())?;
+            // An unknown function asked about by-reference parameters:
+            // resolved (INIT_FCALL_BY_NAME) before the arguments run.
+            let target = (known.is_none() && self.needs_ref_target(&fc.argument_list)).then(|| {
+                let mut callee = None;
+                ArgRefTarget::Func(self.resolve_callee(&mut callee, &name_bytes, &fallback))
+            });
+            let args =
+                self.build_args_array_known(Some(&fc.argument_list), known.as_ref(), target)?;
             if let Some((named, msg)) = &extra {
                 let k = self.intern_const(Value::str(msg.clone()));
                 let val = self.alloc_temp();
@@ -407,7 +414,7 @@ impl ProtoBuilder<'_> {
                 let cv = self.cv(var);
                 let func = self.resolve_callee(&mut callee, &name_bytes, &fallback);
                 let idx = i as u16;
-                if !later_arg_may_write(&fc.argument_list, i) {
+                if !later_arg_may_write_list(&fc.argument_list, i) {
                     slots.push(ArgSlot::VarEx { cv, func, idx });
                 } else {
                     // a later argument may change the variable: send it now
@@ -683,8 +690,8 @@ impl ProtoBuilder<'_> {
     }
 
     /// `$f(args)` — call a runtime callable value. The callee is evaluated to a
-    /// register; arguments are passed by value (the signature is unknown at the
-    /// call site, so by-ref parameters are not honoured for dynamic calls).
+    /// register; the callee decides at run time which arguments it takes by
+    /// reference.
     fn compile_dynamic_call(
         &mut self,
         fc: &crate::parse::cst::FunctionCall,
@@ -707,7 +714,8 @@ impl ProtoBuilder<'_> {
         };
 
         if has_spread(&fc.argument_list) || has_named(&fc.argument_list) {
-            let args = self.build_args_array(Some(&fc.argument_list))?;
+            let args =
+                self.build_args_array(Some(&fc.argument_list), Some(ArgRefTarget::Value(callee)))?;
             let dst = self.alloc_temp();
             self.emit(Instr::CallDynV { dst, callee, args });
             return Ok(dst);
@@ -838,11 +846,15 @@ impl ProtoBuilder<'_> {
 
     /// Build a `PhpArray` of the call arguments (used when the call has a
     /// spread `...$x`): positional args are pushed, spreads are merged.
+    /// `target` is the callee when only the run time knows it: a variable
+    /// or element sent before a later argument that may change it asks it
+    /// whether the parameter is by reference (SEND_VAR_EX / SEND_FUNC_ARG).
     pub(crate) fn build_args_array(
         &mut self,
         args: Option<&crate::parse::cst::ArgumentList>,
+        target: Option<ArgRefTarget>,
     ) -> Result<Reg, Thrown> {
-        self.build_args_array_known(args, None)
+        self.build_args_array_known(args, None, target)
     }
 
     /// The parameters of a function the compiler knows by name (a function
@@ -884,18 +896,36 @@ impl ProtoBuilder<'_> {
         &mut self,
         args: Option<&crate::parse::cst::ArgumentList>,
         known: Option<&KnownParams>,
+        target: Option<ArgRefTarget>,
     ) -> Result<Reg, Thrown> {
-        if let Some(list) = args {
-            self.check_arg_order(list);
+        match args {
+            Some(list) => {
+                let v: Vec<Argument> = list.arguments.iter().cloned().collect();
+                self.build_args_array_of(list.left_parenthesis.start.offset, &v, known, target)
+            }
+            None => self.build_args_array_of(0, &[], known, target),
         }
+    }
+
+    /// [`ProtoBuilder::build_args_array_known`] over the arguments `list`
+    /// (an anonymous class's are a partial list); `lparen` is where they start.
+    pub(crate) fn build_args_array_of(
+        &mut self,
+        lparen: u32,
+        list: &[Argument],
+        known: Option<&KnownParams>,
+        target: Option<ArgRefTarget>,
+    ) -> Result<Reg, Thrown> {
+        self.check_arg_order_of(lparen, list);
         let dst = self.alloc_temp();
         self.emit(Instr::NewArray { dst, cap: 0 });
-        if let Some(list) = args {
+        {
             let mut names: Vec<&[u8]> = Vec::new();
             let (mut pos, mut unpacked) = (0usize, false);
-            for (ai, arg) in list.arguments.iter().enumerate() {
-                // An unknown callee gets a variable by value when a later
-                // argument may change it (php sends it before that runs).
+            for (ai, arg) in list.iter().enumerate() {
+                // A later argument may change a variable sent now: an
+                // unknown callee is asked at once whether it takes it by
+                // reference (SEND_VAR_EX sends before that argument runs).
                 let late = known.is_none() && later_arg_may_write(list, ai);
                 match arg {
                     // A repeated name: zend_handle_named_arg finds the slot
@@ -911,6 +941,11 @@ impl ProtoBuilder<'_> {
                     Argument::Positional(p) if p.ellipsis.is_none() && !unpacked => {
                         let idx = known.and_then(|k| k.param(Some(pos), None));
                         pos += 1;
+                        if let (None, Some(t)) = (known, target) {
+                            if self.push_func_arg(dst, p.value, t, pos - 1, late)? {
+                                continue;
+                            }
+                        }
                         match self.compile_known_ref_arg(p.value, known, idx, late)? {
                             Some(r) => self.emit(Instr::ArrPushRef { arr: dst, val: r }),
                             None => {
@@ -1138,10 +1173,16 @@ impl ProtoBuilder<'_> {
     /// zend_compile_args' compile-time order checks: no positional argument
     /// after a named one or an unpack, no unpack after a named argument.
     pub(crate) fn check_arg_order(&self, list: &crate::parse::cst::ArgumentList) {
+        let v: Vec<Argument> = list.arguments.iter().cloned().collect();
+        self.check_arg_order_of(list.left_parenthesis.start.offset, &v);
+    }
+
+    /// [`ProtoBuilder::check_arg_order`] over a slice of arguments.
+    pub(crate) fn check_arg_order_of(&self, lparen: u32, list: &[Argument]) {
         let (mut named, mut unpack) = (false, false);
         // php reports the line it last compiled: the previous argument's.
-        let mut prev = list.left_parenthesis.start.offset;
-        for arg in list.arguments.iter() {
+        let mut prev = lparen;
+        for arg in list.iter() {
             let at = std::mem::replace(&mut prev, arg.span().start.offset);
             let msg = match arg {
                 Argument::Named(_) => {
@@ -1281,52 +1322,7 @@ impl ProtoBuilder<'_> {
         target: ArgRefTarget,
         idx: u16,
     ) -> Result<Reg, Thrown> {
-        let flag = self.alloc_temp();
-        match target {
-            ArgRefTarget::Method(obj, name) => self.emit(Instr::MethodArgIsRef {
-                dst: flag,
-                obj,
-                name,
-                idx,
-            }),
-            ArgRefTarget::Static(class, name) => self.emit(Instr::StaticArgIsRef {
-                dst: flag,
-                class,
-                name,
-                idx,
-            }),
-            ArgRefTarget::Func(func) => self.emit(Instr::FuncArgIsRef {
-                dst: flag,
-                func,
-                idx,
-            }),
-            ArgRefTarget::Value(callee) => self.emit(Instr::ValueArgIsRef {
-                dst: flag,
-                callee,
-                idx,
-            }),
-            // `$o->$m(...)`: asked as the callable `[$o, $m]`.
-            ArgRefTarget::MethodDyn(obj, name) => {
-                let callee = self.alloc_temp();
-                self.emit(Instr::NewArray {
-                    dst: callee,
-                    cap: 2,
-                });
-                self.emit(Instr::ArrPush {
-                    arr: callee,
-                    val: obj,
-                });
-                self.emit(Instr::ArrPush {
-                    arr: callee,
-                    val: name,
-                });
-                self.emit(Instr::ValueArgIsRef {
-                    dst: flag,
-                    callee,
-                    idx,
-                });
-            }
-        }
+        let flag = self.emit_arg_is_ref(target, idx);
         let t = self.alloc_temp();
         let jf = self.code.len();
         self.emit(Instr::Nop); // JmpFalse flag -> by_value
@@ -1358,6 +1354,138 @@ impl ProtoBuilder<'_> {
         Ok(t)
     }
 
+    /// A positional argument at `idx` of a spread / named call to a callee
+    /// known only at run time, pushed onto `arr` as php sends it: an
+    /// element / property by SEND_FUNC_ARG, a variable a later argument
+    /// may change by SEND_VAR_EX (asked now). False when it is neither.
+    fn push_func_arg(
+        &mut self,
+        arr: Reg,
+        e: &Expression,
+        target: ArgRefTarget,
+        idx: usize,
+        late: bool,
+    ) -> Result<bool, Thrown> {
+        let Ok(idx) = u16::try_from(idx) else {
+            return Ok(false);
+        };
+        if let (true, Some(var)) = (late, send_var_ex_name(e)) {
+            let cv = self.cv(var);
+            let flag = self.emit_arg_is_ref(target, idx);
+            let jf = self.code.len();
+            self.emit(Instr::Nop); // JmpFalse flag -> by_value
+            let t = self.alloc_temp();
+            self.emit(Instr::MakeRef { dst: t, cv });
+            self.emit(Instr::ArrPushRef { arr, val: t });
+            let jend = self.code.len();
+            self.emit(Instr::Nop); // Jmp -> end
+            let by_value = self.here();
+            self.code[jf] = Instr::JmpFalse {
+                cond: flag,
+                target: by_value,
+            };
+            let r = self.compile_expr(e)?;
+            self.emit(Instr::ArrPush { arr, val: r });
+            let end = self.here();
+            self.code[jend] = Instr::Jmp { target: end };
+            return Ok(true);
+        }
+        if matches!(
+            e,
+            Expression::ArrayAccess(_)
+                | Expression::ArrayAppend(_)
+                | Expression::Access(Access::Property(_))
+                | Expression::Access(Access::StaticProperty(_))
+        ) && self.func_arg_root(e).is_some()
+        {
+            let t = self.compile_func_arg(e, target, idx)?;
+            self.emit(Instr::ArrPushRef { arr, val: t });
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Whether a spread / named call to an unknown function has an argument
+    /// [`ProtoBuilder::push_func_arg`] sends by asking the callee.
+    fn needs_ref_target(&self, list: &crate::parse::cst::ArgumentList) -> bool {
+        let v: Vec<Argument> = list.arguments.iter().cloned().collect();
+        v.iter()
+            .enumerate()
+            .take_while(|(_, a)| matches!(a, Argument::Positional(p) if p.ellipsis.is_none()))
+            .any(|(i, a)| {
+                let Argument::Positional(p) = a else {
+                    return false;
+                };
+                (send_var_ex_name(p.value).is_some() && later_arg_may_write(&v, i))
+                    || (matches!(
+                        p.value,
+                        Expression::ArrayAccess(_)
+                            | Expression::ArrayAppend(_)
+                            | Expression::Access(Access::Property(_))
+                            | Expression::Access(Access::StaticProperty(_))
+                    ) && self.func_arg_root(p.value).is_some())
+            })
+    }
+
+    /// Whether parameter `idx` of `target` is by reference, into a new
+    /// register.
+    fn emit_arg_is_ref(&mut self, target: ArgRefTarget, idx: u16) -> Reg {
+        let flag = self.alloc_temp();
+        match target {
+            ArgRefTarget::Method(obj, name) => self.emit(Instr::MethodArgIsRef {
+                dst: flag,
+                obj,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Static(class, name) => self.emit(Instr::StaticArgIsRef {
+                dst: flag,
+                class,
+                name,
+                idx,
+            }),
+            ArgRefTarget::Func(func) => self.emit(Instr::FuncArgIsRef {
+                dst: flag,
+                func,
+                idx,
+            }),
+            ArgRefTarget::Value(callee) => self.emit(Instr::ValueArgIsRef {
+                dst: flag,
+                callee,
+                idx,
+            }),
+            // `$o->$m(...)`: asked as the callable `[$o, $m]`.
+            // The receiver is copied: a push moves an object out of a
+            // temporary, and the call still needs it.
+            ArgRefTarget::MethodDyn(obj, name) => {
+                let callee = self.alloc_temp();
+                self.emit(Instr::NewArray {
+                    dst: callee,
+                    cap: 2,
+                });
+                let recv = self.alloc_temp();
+                self.emit(Instr::Mov {
+                    dst: recv,
+                    src: obj,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: recv,
+                });
+                self.emit(Instr::ArrPush {
+                    arr: callee,
+                    val: name,
+                });
+                self.emit(Instr::ValueArgIsRef {
+                    dst: flag,
+                    callee,
+                    idx,
+                });
+            }
+        }
+        flag
+    }
+
     /// A by-value argument that is a plain variable compiles to the variable's
     /// own register, which is only read when the argument window is filled
     /// after every argument ran. Snapshot it into a temp now when a later
@@ -1370,7 +1498,7 @@ impl ProtoBuilder<'_> {
         expr: &Expression,
         r: Reg,
     ) -> Reg {
-        if !later_arg_may_write(list, i)
+        if !later_arg_may_write_list(list, i)
             || !matches!(expr, Expression::Variable(Variable::Direct(_)))
         {
             return r;
@@ -1409,7 +1537,8 @@ impl ProtoBuilder<'_> {
             match self.compile_selector(selector)? {
                 Sel::Static(name) => {
                     if has_spread(args) || has_named(args) {
-                        let args = self.build_args_array(Some(args))?;
+                        let args = self
+                            .build_args_array(Some(args), Some(ArgRefTarget::Method(obj, name)))?;
                         let dst = self.alloc_temp();
                         self.emit(Instr::CallMethodV {
                             dst,
@@ -1438,7 +1567,10 @@ impl ProtoBuilder<'_> {
                 }
                 Sel::Dyn(name) => {
                     if has_spread(args) || has_named(args) {
-                        let args = self.build_args_array(Some(args))?;
+                        let args = self.build_args_array(
+                            Some(args),
+                            Some(ArgRefTarget::MethodDyn(obj, name)),
+                        )?;
                         let dst = self.alloc_temp();
                         self.emit(Instr::CallMethodDynV {
                             dst,
@@ -1495,7 +1627,10 @@ impl ProtoBuilder<'_> {
         match self.compile_selector(&smc.method)? {
             Sel::Static(name) => {
                 if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
-                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let args = self.build_args_array(
+                        Some(&smc.argument_list),
+                        Some(ArgRefTarget::Static(class, name)),
+                    )?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallStaticV {
                         dst,
@@ -1524,7 +1659,7 @@ impl ProtoBuilder<'_> {
             }
             Sel::Dyn(name) => {
                 if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
-                    let args = self.build_args_array(Some(&smc.argument_list))?;
+                    let args = self.build_args_array(Some(&smc.argument_list), None)?;
                     let dst = self.alloc_temp();
                     self.emit(Instr::CallStaticDynV {
                         dst,
@@ -1625,7 +1760,7 @@ impl ProtoBuilder<'_> {
         }
         let name = self.intern_name(&pname);
         if has_spread(&smc.argument_list) || has_named(&smc.argument_list) {
-            let args = self.build_args_array(Some(&smc.argument_list))?;
+            let args = self.build_args_array(Some(&smc.argument_list), None)?;
             let dst = self.alloc_temp();
             self.emit(Instr::CallParentHook {
                 dst,
@@ -1825,19 +1960,31 @@ fn send_var_ex_name<'a>(e: &Expression<'a>) -> Option<&'a [u8]> {
 
 /// Whether an argument after the `i`th may write a variable (anything but
 /// a literal, a constant or a plain variable).
-fn later_arg_may_write(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
-    list.arguments.iter().skip(i + 1).any(|a| {
-        let value = match a {
-            Argument::Positional(q) => q.value,
-            Argument::Named(n) => n.value,
-        };
-        !matches!(
-            value,
-            Expression::Literal(_)
-                | Expression::ConstantAccess(_)
-                | Expression::Variable(Variable::Direct(_))
-        )
-    })
+fn later_arg_may_write(list: &[Argument], i: usize) -> bool {
+    list.iter().skip(i + 1).any(arg_may_write)
+}
+
+/// [`later_arg_may_write`] for an argument list.
+fn later_arg_may_write_list(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
+    list.arguments.iter().skip(i + 1).any(arg_may_write)
+}
+
+/// The expression an argument passes.
+fn arg_value<'a>(a: &Argument<'a>) -> &'a Expression<'a> {
+    match a {
+        Argument::Positional(q) => q.value,
+        Argument::Named(n) => n.value,
+    }
+}
+
+/// An argument other than a literal, a constant or a plain variable.
+fn arg_may_write(a: &Argument) -> bool {
+    !matches!(
+        arg_value(a),
+        Expression::Literal(_)
+            | Expression::ConstantAccess(_)
+            | Expression::Variable(Variable::Direct(_))
+    )
 }
 
 /// Whether `e` is a `$var[...]` / `$var->p` / `C::$p[...]` chain rooted at a

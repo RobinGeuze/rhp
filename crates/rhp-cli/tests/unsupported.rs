@@ -3,8 +3,8 @@
 //! builtins refused at run time. (Goldens can't express these: php supports
 //! the constructs, so there is no php output to compare against.)
 //!
-//! The tests use constructs rhp refuses (spread arguments to an anonymous class,
-//! create_function); a construct that lands needs another one here.
+//! The tests use constructs rhp refuses (a catch of a non-class type such as
+//! `int`, create_function); a construct that lands needs another one here.
 //!
 //! The interactive shell (`-a`) is here too: php's answer depends on its
 //! build (the reference php has readline, CI's does not), so the CLI
@@ -64,7 +64,7 @@ fn main_script_refusal_names_file_and_line() {
     let c = Case::new("main");
     let main = c.file(
         "main.php",
-        "<?php\n$a = [];\n\n$o = new stdClass;\n$o->p = new class(...[1]) {};\n",
+        "<?php\n$a = [];\n\n$o = new stdClass;\ntry {} catch (int $e) {}\n",
     );
     let (out, err, code) = run(&main);
     assert_eq!(out, "", "a compile-time refusal runs nothing");
@@ -72,8 +72,8 @@ fn main_script_refusal_names_file_and_line() {
     assert_eq!(
         refusal(&err),
         format!(
-            "RHP_UNSUPPORTED: anonymous class argument is not supported \
-             (spread / named / placeholder arguments deferred) in {} on line 5",
+            "RHP_UNSUPPORTED: catch type is not supported \
+             (only class-name catch types) in {} on line 5",
             main.display()
         )
     );
@@ -84,7 +84,7 @@ fn included_file_refusal_names_included_file() {
     let c = Case::new("include");
     let inc = c.file(
         "inc.php",
-        "<?php\nfunction f() {\n    $a = [];\n    $a['k']['j'] = strlen(new class(...[1]) {});\n}\n",
+        "<?php\nfunction f() {\n    $a = [];\n    try {} catch (int $e) {}\n}\n",
     );
     let main = c.file(
         "main.php",
@@ -96,8 +96,8 @@ fn included_file_refusal_names_included_file() {
     assert_eq!(
         refusal(&err),
         format!(
-            "RHP_UNSUPPORTED: anonymous class argument is not supported \
-             (spread / named / placeholder arguments deferred) in {} on line 4",
+            "RHP_UNSUPPORTED: catch type is not supported \
+             (only class-name catch types) in {} on line 4",
             inc.display()
         )
     );
@@ -109,14 +109,14 @@ fn method_refusal_names_expression_line() {
     let c = Case::new("member");
     let main = c.file(
         "main.php",
-        "<?php\nclass C {\n    public $x = 1;\n\n    public function y() { return [1,\n        new class(...[1]) {}]; }\n}\n",
+        "<?php\nclass C {\n    public $x = 1;\n\n    public function y() { $a = [1,\n        2]; try {} catch (int $e) {} }\n}\n",
     );
     let err = run(&main).1;
     assert_eq!(
         refusal(&err),
         format!(
-            "RHP_UNSUPPORTED: anonymous class argument is not supported \
-             (spread / named / placeholder arguments deferred) in {} on line 6",
+            "RHP_UNSUPPORTED: catch type is not supported \
+             (only class-name catch types) in {} on line 6",
             main.display()
         )
     );

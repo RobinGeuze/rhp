@@ -33,7 +33,7 @@ fn prelude_is_identical_across_compiles() {
          $f = function() { return 1; };\n",
     );
     // A failed compile in between must not disturb the cache.
-    let bad = "<?php\n$x = new class(...[1]) {};\n";
+    let bad = "<?php\ntry {} catch (int $e) {}\n";
     assert!(compile_file("bad.php", bad.as_bytes(), Mode::Main).is_err());
     let b = main_prog("<?php\n$g = fn() => 2;\n");
 

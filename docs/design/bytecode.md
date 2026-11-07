@@ -554,7 +554,12 @@ array (int keys positional, string keys named) and uses the `_V` path
 PACKED_ARGS`): the VM places the names with the callee's `proto.params`
 (`place_named_args`) or a builtin's stub arginfo (`place_builtin_named_args`).
 The compiler only resolves by-reference parameters by name, for a callee it
-knows. The fixed-arity register-window path is the fast path.
+knows. For a callee only the run time knows, a positional argument before
+the unpack that is an element / property (SEND_FUNC_ARG), or a variable a
+later argument may change (SEND_VAR_EX), asks the callee (`*ArgIsRef`) as it
+is sent and goes into the array as a reference or a value; any other
+variable goes in as a reference that a by-value parameter dereferences.
+The fixed-arity register-window path is the fast path.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

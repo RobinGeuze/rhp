@@ -1,0 +1,18 @@
+[m-lit1]|[m-lit0]|[m-call1]|[m-cv0]|[m-cv1]|[s-lit0]|[m-plain]|[m-only]|[G]
+string(2) "v!"
+string(1) "v"
+array(1) {
+  ["k"]=>
+  string(3) "[G]"
+}
+object(stdClass)#2 (1) {
+  ["p"]=>
+  string(3) "[z]"
+}
+string(3) "[G]"
+string(3) "[G]"
+string(5) "{ufG}"
+string(6) "{uf2G}"
+string(2) "DG"
+string(4) "old!"
+string(13) "<li>item</li>"

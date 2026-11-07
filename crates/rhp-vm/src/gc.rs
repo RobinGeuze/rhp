@@ -205,6 +205,15 @@ impl Vm {
             return Ok(0);
         }
         self.drop_freed_generators();
+        if gc::num_roots() != 0 {
+            // zend_gc_remove_root_tmpvars.
+            for v in self.gc_root_tmpvars() {
+                let idx = gc::slot_of(&v);
+                if idx != 0 {
+                    drop(gc::remove_slot(idx));
+                }
+            }
+        }
         let mut total = 0;
         let mut did_rerun = false;
         let mut dtor_ns = 0u64;
@@ -240,12 +249,35 @@ impl Vm {
         self.gc_unlist_called();
         drop(std::mem::take(&mut self.gc_dtor.zombies));
         let pending = self.gc_dtor.pending.take();
+        // zend_gc_check_root_tmpvars (no collection may start meanwhile).
+        gc::set_active(true);
+        for v in self.gc_root_tmpvars() {
+            gc::check_possible_root(&v);
+        }
+        gc::set_active(false);
         let all = start.elapsed().as_nanos() as u64;
         gc::add_times(all, dtor_ns, free_ns);
         match pending {
             Some(e) => Err(e),
             None => Ok(total),
         }
+    }
+
+    /// The values the running stack's live loop temporaries hold (php's
+    /// ZEND_LIVE_LOOP variables): what a by-reference foreach's reference
+    /// holds.
+    fn gc_root_tmpvars(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for f in &self.stack {
+            for &(pos, _, by_ref, _) in f.fe_live.iter().flat_map(|l| l.iter()) {
+                if let (true, Some(Value::Ref(r))) = (by_ref, f.regs.get(pos as usize + 1)) {
+                    if let Ok(v) = r.try_borrow() {
+                        out.push(v.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Take the objects whose destructor the collection called off the
@@ -482,20 +514,6 @@ impl Vm {
         for e in 0..g.eph.len() {
             let j = g.eph[e].v as usize;
             g.nodes[j].rc -= 1;
-        }
-        if std::env::var_os("RHP_GC_DEBUG").is_some() {
-            for n in &g.nodes {
-                if let Some(v) = n.n.upgrade() {
-                    let what = match &v {
-                        Value::Object(h) => format!("obj {} #{}", String::from_utf8_lossy(self.class(h.borrow().class).name.as_bytes()), h.borrow().id),
-                        Value::Array(_) => "array".into(),
-                        Value::Ref(_) => "ref".into(),
-                        Value::Closure(c) => format!("closure #{}", c.id),
-                        _ => "?".into(),
-                    };
-                    eprintln!("gc node {what} rc={} strong={}", n.rc, n.n.strong() - 1);
-                }
-            }
         }
         // gc_scan_roots: whatever a node with outside references reaches
         // is black, the rest white.

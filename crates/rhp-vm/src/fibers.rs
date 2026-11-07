@@ -61,7 +61,6 @@ enum Status {
 pub(crate) struct ExecCtx {
     stack: Vec<Frame>,
     native_calls: Vec<NativeCall>,
-    fiber_call_args: Vec<*const [Value]>,
     gen_stack: Vec<u32>,
     yield_out: Option<(Value, Value, Reg)>,
     magic_fetch: (usize, builtins::MagicFetch),
@@ -363,7 +362,6 @@ impl Vm {
         let ctx = ExecCtx {
             stack: vec![entry_frame()],
             native_calls: Vec::new(),
-            fiber_call_args: Vec::new(),
             gen_stack: Vec::new(),
             yield_out: None,
             magic_fetch: (0, builtins::MagicFetch::default()),
@@ -392,7 +390,6 @@ impl Vm {
         use std::mem::swap;
         swap(&mut self.stack, &mut c.stack);
         swap(&mut self.native_calls, &mut c.native_calls);
-        swap(&mut self.fiber_call_args, &mut c.fiber_call_args);
         swap(&mut self.gen_stack, &mut c.gen_stack);
         swap(&mut self.yield_out, &mut c.yield_out);
         swap(&mut self.magic_fetch, &mut c.magic_fetch);
@@ -711,16 +708,6 @@ pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
         if let Some(ctx) = &d.ctx {
             for f in &ctx.stack {
                 f.gc_children(out);
-            }
-            // The arguments of the builtin calls the fiber is suspended in.
-            for n in &ctx.native_calls {
-                // SAFETY: see `NativeCall::args`; the calls are suspended
-                // with the fiber, so their argument vectors are alive.
-                out.extend(unsafe { &*n.args }.iter().cloned());
-            }
-            for &a in &ctx.fiber_call_args {
-                // SAFETY: as above (`Vm::fiber_call_args`).
-                out.extend(unsafe { &*a }.iter().cloned());
             }
         }
     }

@@ -135,10 +135,6 @@ pub struct Vm {
     timeout_wait: Option<(usize, usize)>,
     /// Builtin calls in progress (innermost last), for exception traces.
     native_calls: Vec<NativeCall>,
-    /// The argument slices of the untracked builtin calls (from prelude
-    /// code) in progress inside a fiber, like `NativeCall::args`: the cycle
-    /// collector counts what a suspended fiber's calls hold.
-    fiber_call_args: Vec<*const [Value]>,
     /// `set_exception_handler` stack (innermost last; null = none).
     exception_handlers: Vec<Value>,
     /// `register_shutdown_function` callbacks with their arguments, in order.

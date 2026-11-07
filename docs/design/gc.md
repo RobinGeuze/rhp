@@ -65,9 +65,10 @@ The counts are `Rc::strong_count`s, read but never changed. A run:
 
 1. walks the graph reachable from the roots, recording each node's edges:
    an object's properties, lazy initializer and instance, a generator's
-   frame and values, a native class's `get_gc` handler; an array's
-   elements; a reference's value; a closure's captures, bound `$this` and
-   static variables;
+   frame and values, a suspended fiber's callable, result and the frames
+   on its stack (zend_fiber_object_gc), a native class's `get_gc`
+   handler; an array's elements; a reference's value; a closure's
+   captures, bound `$this` and static variables;
 2. gives each node `strong_count - edges into it from the graph - the
    references php does not have` (the destructor list's, and the hold on
    a destructed object, below);
@@ -84,6 +85,19 @@ properties; the walk goes through such an array to its elements (php's
 get_gc lists them, and the C storage is not a counted zend_array) when
 the property is its only holder and it is not buffered itself.
 
+WeakMap entries are php's special edges: a WeakMap (zend_weakmap_get_gc)
+and a weakly referenced key (zend_weakmap_get_object_key_entry_gc) both
+reach the entry's value, which loses the map's one reference, and the value
+is live only while both the map and the key are (a node not reached by the
+walk counts as live). An object the collector frees clears its weak
+references (zend_weakrefs_notify), which drops its entries.
+
+A fiber's machine stack holds values the walk cannot see. fiber_execute
+calls a closure callable directly, so its own hold on the callable and the
+arguments is counted; the arguments of a builtin call in progress are not
+traversed, as in php (zend_unfinished_execution_gc stops at internal
+frames), so a fiber suspended inside `Fiber::suspend($v)` keeps `$v`.
+
 An edge the walk cannot see counts as an outside reference: the value is
 kept, never freed early. Native payloads that hold values must list them
 in `ObjectHandlers::get_gc` to be collectable.
@@ -99,6 +113,19 @@ until the rerun and subtracts it. Exceptions from the destructors are
 chained (each later one gets the earlier as previous) and thrown from
 `gc_collect_cycles()`.
 
+When the collection runs inside a fiber, the destructors run in php's
+destructor fiber (gc_call_destructors_in_fiber): a Fiber object whose
+function is `gc_destructor_fiber` (it shows in traces). A destructor may
+suspend it; the collection then gives that fiber up (it is destroyed when
+nothing else holds it) and runs the rest in a new one. The idle destructor
+fiber is kept, suspended, for the next collection. A collection made due
+while an exception unwinds runs when the frame's variables are freed, as
+php's does (its destructors' exceptions chain onto the unwinding one).
+
+Before a run the live loop temporaries of the running frames (the
+reference a by-reference foreach holds) leave the buffer, and are buffered
+again after it (zend_gc_remove_root_tmpvars / check_root_tmpvars).
+
 Freeing goes in buffer order: an object's storage is released and its
 handle returns to the free list right away (`rhp_values::gc_free_object`),
 even while other garbage still holds the `Rc`; a garbage generator's state
@@ -110,18 +137,12 @@ holder does.
 - "Lazy object was released during initialization": php notices that the
   initializer dropped the last reference; rhp's callers hold their own
   `Rc`, so the count cannot tell (gh15999_001).
-- foreach by reference iterates the variable live, without holding the
-  reference php's iterator holds, so a loop over a cycle can be
-  collected early (gc_047; foreach-semantics changes this).
-- Live temporaries are not taken out of the buffer during a run and put
-  back after (zend_gc_remove_root_tmpvars / check_root_tmpvars).
+- foreach by reference holds the variable's reference (when it is one)
+  but still iterates the variable live; only that loop's reference is a
+  live temporary for the run (php's other live ranges are not modelled).
 
 - Generators: php's generator destructor runs pending `finally` blocks;
   rhp's only drops the frame.
-- Fibers: no destructor fiber. A suspended fiber's frames must be added
-  to `Vm::gc_children` (as a generator's frame is) for a fiber in a cycle
-  to be collectable.
-- WeakMap entries: php's special edges (a WeakMap value kept alive only
-  through its key) are not modelled; WeakMap / WeakReference hold strong
-  references today.
+- A generator running inside a suspended fiber is also held by the Rust
+  call that resumed it (a method call's handle), so it is kept.
 - "GC buffer overflow (GC disabled)" at a billion roots.

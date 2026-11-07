@@ -93,7 +93,6 @@ impl Vm {
             ticks_count: 0,
             timeout_wait: None,
             native_calls: Vec::new(),
-            fiber_call_args: Vec::new(),
             exception_handlers: Vec::new(),
             shutdown_functions: Vec::new(),
             cursor_root: CursorRoot::Cv(0),

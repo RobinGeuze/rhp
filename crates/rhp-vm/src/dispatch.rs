@@ -3469,7 +3469,12 @@ impl Vm {
                     }
                 };
                 match rc_opt {
-                    Some(rc) => add(&mut rc.borrow_mut()),
+                    Some(rc) => {
+                        add(&mut rc.borrow_mut());
+                        // FE_RESET_RW's result holds the reference while
+                        // the loop runs (php's live loop variable).
+                        self.stack[top].regs[pos_reg as usize + 1] = Value::Ref(rc);
+                    }
                     None => add(&mut self.stack[top].regs[arr_cv as usize]),
                 }
                 self.reg_set(top, pos_reg, Value::Int(id as i64));

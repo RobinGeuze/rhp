@@ -62,7 +62,10 @@ is never destroyed (a fatal error's bailout) is dropped with
 `Coroutine::force_reset`, leaking what its stack held, as php does.
 
 The cycle collector reaches what a suspended fiber holds through
-`fibers::fiber_gc_values` (php's zend_fiber_object_gc).
+`fibers::fiber_gc_values` (php's zend_fiber_object_gc), and runs the
+destructors of a collection inside a fiber in its own destructor fiber
+(see gc.md). A fiber resumed only to be destroyed is not linked to its
+resumer: traces from it end at its bottom, as php's do.
 
 ## Stack size
 

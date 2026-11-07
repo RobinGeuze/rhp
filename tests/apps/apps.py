@@ -7,13 +7,16 @@
     python3 tests/apps/apps.py smoke [APP...]       # console --version + routes under php -S
     python3 tests/apps/apps.py lint [APP...] [--write-known] [-- LINT ARGS]
     python3 tests/apps/apps.py diff [APP...] [--write-known] [-- APP ARGS]
+    python3 tests/apps/apps.py console [APP...] [--write-known] [-- OPTIONS]
 
 With no APP, every app in the manifest. `lint` runs `rhp-difftest lint` over
 the app's `lint` paths with `--check-known <known_refused>` (or
 `--write-known` to regenerate the list). `diff` runs `rhp-difftest app`
 (the app's requests.toml through php-cgi and `rhp --cgi`) with
 `--check-known <known_requests>` (or `--write-known`). The binary is
-$RHP_DIFFTEST or target/release/rhp-difftest. CI runs exactly these commands.
+$RHP_DIFFTEST or target/release/rhp-difftest. `console` runs the app's
+console list (console.toml) under php and rhp and checks
+known-passing-console.txt; see console.py. CI runs exactly these commands.
 
 `setup` first fetches the app's pinned `[[app.download]]` files (cached in
 $RHP_APPS_CACHE, default ~/.cache/rhp-apps), checks each one's sha256 and
@@ -271,6 +274,10 @@ def main(argv):
         cmd_lint(select(apps, names), write_known, extra)
     elif sub == "diff":
         cmd_diff(select(apps, names), write_known, extra)
+    elif sub == "console":
+        import console
+
+        console.main(select(apps, names), (["--write-known"] if write_known else []) + extra)
     else:
         sys.exit(f"unknown command {sub!r}; see --help")
 

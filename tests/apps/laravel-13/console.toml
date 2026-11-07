@@ -1,0 +1,377 @@
+# Console battery for artisan (`python3 tests/apps/apps.py console`; format
+# in console.py): artisan commands, `tinker --execute` snippets and workload
+# scripts (console/*.php, each boots the console kernel and prints sections).
+# No database exists, so the commands that need one fail under both engines.
+
+shared = ["vendor"]
+
+# Migration file names carry the time of the run.
+[[mask]]
+name = "migration-time"
+pattern = '\d{4}_\d\d_\d\d_\d{6}'
+replace = "<MIGRATION_TIME>"
+in = ["stdout", "stderr", "files", "paths"]
+
+# Unnamed routes get a random name when cached.
+[[mask]]
+name = "generated-route"
+pattern = 'generated::[A-Za-z0-9]{16}'
+replace = "generated::<RANDOM>"
+in = ["files"]
+
+# Durations (and the dots padding them to the width) in TwoColumnDetail lines.
+[[mask]]
+name = "duration"
+pattern = ' \.+ [\d.]+ ?(ms|s) '
+replace = " <DOTS> <DURATION> "
+in = ["stdout"]
+
+# Times of the run: log lines, cache expiry stamps.
+[[mask]]
+name = "now-datetime"
+builtin = "now-datetime"
+in = ["stdout", "stderr", "files"]
+
+[[mask]]
+name = "now-epoch"
+builtin = "now-epoch"
+in = ["stdout", "stderr", "files"]
+
+# Random session ids (file names) and CSRF tokens.
+[[mask]]
+name = "session-file"
+pattern = 'sessions/[A-Za-z0-9]{40}$'
+replace = "sessions/<ID>"
+in = ["paths"]
+
+[[mask]]
+name = "csrf-token"
+pattern = '"_token":"[A-Za-z0-9]{40}"'
+replace = '"_token":"<TOKEN>"'
+in = ["files"]
+
+# A random quote from Illuminate\Foundation\Inspiring.
+[[mask]]
+name = "inspiring-quote"
+pattern = '“ .* ”\n  — .*'
+replace = "<QUOTE>"
+in = ["stdout"]
+commands = ["inspire"]
+
+[[mask]]
+name = "inspiring-comment"
+pattern = '<!-- .* -->'
+replace = "<!-- <QUOTE> -->"
+in = ["files"]
+commands = ["make-component", "make-view"]
+
+[[mask]]
+name = "random-key"
+pattern = 'base64:[A-Za-z0-9+/]{43}='
+replace = "base64:<KEY>"
+in = ["stdout"]
+commands = ["key-generate-show"]
+
+[[command]]
+id = "version"
+args = "--version"
+
+[[command]]
+id = "list"
+args = "list"
+
+[[command]]
+id = "about"
+args = "about"
+
+[[command]]
+id = "about-json"
+args = "about --json"
+
+[[command]]
+id = "route-list"
+args = "route:list"
+
+[[command]]
+id = "route-list-json"
+args = "route:list --json"
+
+[[command]]
+id = "route-list-v"
+args = "route:list -v"
+
+[[command]]
+id = "env"
+args = "env"
+
+[[command]]
+id = "config-show-app"
+args = "config:show app"
+
+[[command]]
+id = "config-show-session"
+args = "config:show session"
+
+[[command]]
+id = "config-cache"
+args = "config:cache"
+
+[[command]]
+id = "config-clear"
+args = "config:clear"
+
+[[command]]
+id = "route-cache"
+args = "route:cache"
+
+[[command]]
+id = "view-cache"
+args = "view:cache"
+
+[[command]]
+id = "event-list"
+args = "event:list"
+
+[[command]]
+id = "event-cache"
+args = "event:cache"
+
+[[command]]
+id = "optimize"
+args = "optimize"
+
+[[command]]
+id = "optimize-clear"
+args = "optimize:clear"
+
+[[command]]
+id = "cache-clear"
+args = "cache:clear"
+
+[[command]]
+id = "help-migrate"
+args = "help migrate"
+
+[[command]]
+id = "make-controller"
+args = "make:controller FooController --resource"
+
+[[command]]
+id = "make-model"
+args = "make:model Post -mfs"
+
+[[command]]
+id = "make-middleware"
+args = "make:middleware EnsureX"
+
+[[command]]
+id = "make-command"
+args = "make:command SendEmails"
+
+[[command]]
+id = "make-request"
+args = "make:request StorePostRequest"
+
+[[command]]
+id = "make-job"
+args = "make:job ProcessPodcast"
+
+[[command]]
+id = "make-mail"
+args = "make:mail OrderShipped --markdown=mail.orders.shipped"
+
+[[command]]
+id = "make-event"
+args = "make:event OrderPlaced"
+
+[[command]]
+id = "make-listener"
+args = "make:listener SendNotification --event=OrderPlaced"
+
+[[command]]
+id = "make-test"
+args = "make:test UserTest --unit"
+
+[[command]]
+id = "make-component"
+args = "make:component Alert"
+
+[[command]]
+id = "make-notification"
+args = "make:notification InvoicePaid"
+
+[[command]]
+id = "make-policy"
+args = "make:policy PostPolicy --model=Post"
+
+[[command]]
+id = "make-rule"
+args = "make:rule Uppercase"
+
+[[command]]
+id = "make-enum"
+args = "make:enum Status --string"
+
+[[command]]
+id = "make-class"
+args = "make:class Services/Foo"
+
+[[command]]
+id = "make-view"
+args = "make:view home.index"
+
+[[command]]
+id = "make-cast"
+args = "make:cast Json"
+
+[[command]]
+id = "make-migration"
+args = "make:migration create_flights_table"
+
+[[command]]
+id = "tinker-01"
+argv = ["tinker", "--execute=echo 1+1;"]
+
+[[command]]
+id = "tinker-02"
+argv = ["tinker", "--execute=echo collect([3,1,2])->sort()->values()->toJson(), PHP_EOL; echo Str::of('hello world')->title()->slug(), PHP_EOL; echo now()->setDate(2020,1,2)->startOfDay()->toIso8601String(), PHP_EOL;"]
+
+[[command]]
+id = "tinker-03"
+argv = ["tinker", "--execute=echo encrypt('x') !== '' ? 'ok' : 'no', PHP_EOL; echo decrypt(encrypt(['a'=>1]))['a'], PHP_EOL; echo strlen(bcrypt('secret')), PHP_EOL; echo Hash::check('secret', bcrypt('secret')) ? 'y':'n', PHP_EOL;"]
+
+[[command]]
+id = "tinker-04"
+argv = ["tinker", "--execute=echo view('hello', ['name'=>'x','items'=>[1,2]])->render();"]
+
+[[command]]
+id = "tinker-05"
+argv = ["tinker", "--execute=echo json_encode(Validator::make(['email'=>'nope','age'=>'x'], ['email'=>'required|email','age'=>'integer|min:3','name'=>'required'])->errors()->toArray());"]
+
+[[command]]
+id = "tinker-06"
+argv = ["tinker", "--execute=Cache::put('k', ['v'=>1], 60); echo json_encode(Cache::get('k'));"]
+
+[[command]]
+id = "tinker-07"
+argv = ["tinker", "--execute=Log::info('hello', ['a'=>1]); echo 'logged';"]
+
+[[command]]
+id = "tinker-08"
+argv = ["tinker", "--execute=echo (new App\\Models\\User(['name'=>'a','email'=>'b@c.d']))->toJson();"]
+
+[[command]]
+id = "tinker-09"
+argv = ["tinker", "--execute=echo App\\Models\\User::where('id', 1)->toSql();"]
+
+[[command]]
+id = "tinker-10"
+argv = ["tinker", "--execute=echo App\\Models\\User::count();"]
+
+[[command]]
+id = "migrate-pretend-force"
+args = "migrate --pretend --force"
+
+[[command]]
+id = "migrate-status"
+args = "migrate:status"
+
+[[command]]
+id = "db-show"
+args = "db:show"
+
+[[command]]
+id = "schedule-list"
+args = "schedule:list"
+
+[[command]]
+id = "queue-work-once"
+args = "queue:work --once --stop-when-empty"
+
+[[command]]
+id = "storage-link"
+args = "storage:link"
+
+[[command]]
+id = "vendor-publish-laravel-errors"
+args = "vendor:publish --tag=laravel-errors"
+
+[[command]]
+id = "lang-publish"
+args = "lang:publish"
+
+[[command]]
+id = "stub-publish"
+args = "stub:publish"
+
+[[command]]
+id = "config-publish-session"
+args = "config:publish session"
+
+[[command]]
+id = "down-secret"
+args = "down --secret=abc"
+
+[[command]]
+id = "inspire"
+args = "inspire"
+
+[[command]]
+id = "key-generate-show"
+args = "key:generate --show"
+
+[[command]]
+id = "package-discover"
+args = "package:discover"
+
+[[command]]
+id = "clear-compiled"
+args = "clear-compiled"
+
+[[command]]
+id = "route-list-path"
+args = "route:list --path=api"
+
+[[command]]
+id = "completion-bash"
+args = "completion bash"
+
+[[command]]
+id = "w-support"
+script = "console/support.php"
+
+[[command]]
+id = "w-view"
+script = "console/view.php"
+
+[[command]]
+id = "w-security"
+script = "console/security.php"
+
+[[command]]
+id = "w-validation"
+script = "console/validation.php"
+
+[[command]]
+id = "w-mail"
+script = "console/mail.php"
+
+[[command]]
+id = "w-http"
+script = "console/http.php"
+
+[[command]]
+id = "w-http-debug"
+script = "console/http-debug.php"
+
+[[command]]
+id = "w-queue"
+script = "console/queue.php"
+
+[[command]]
+id = "w-db"
+script = "console/db.php"
+
+[[command]]
+id = "w-storage"
+script = "console/storage.php"

@@ -1,0 +1,159 @@
+# Console battery for bin/console (`python3 tests/apps/apps.py console`;
+# format in console.py). Each command starts from a var/ warmed by
+# `php -n bin/console cache:warmup`, so rhp runs on php's compiled container.
+
+shared = ["vendor"]
+clear = ["var"]
+prepare = ["bin/console cache:warmup"]
+
+# cache:clear rebuilds the container: its build time, and the build id
+# hashed from it, are the time of the run.
+[[mask]]
+name = "build-time"
+builtin = "now-epoch"
+in = ["files"]
+
+[[mask]]
+name = "build-id"
+pattern = "'container.build_id' => '[0-9a-f]{8}'"
+replace = "'container.build_id' => '<ID>'"
+in = ["files"]
+
+# `about` prints the current time.
+[[mask]]
+name = "iso-now"
+pattern = '\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d'
+replace = "<NOW>"
+in = ["stdout"]
+
+[[command]]
+id = "version"
+args = "--version"
+
+[[command]]
+id = "list"
+args = "list"
+
+[[command]]
+id = "about"
+args = "about"
+
+[[command]]
+id = "help-cache-clear"
+args = "help cache:clear"
+
+[[command]]
+id = "debug-router"
+args = "debug:router"
+
+[[command]]
+id = "debug-router-hello"
+args = "debug:router hello"
+
+[[command]]
+id = "router-match-hellox"
+args = "router:match /hello/x"
+
+[[command]]
+id = "debug-container"
+args = "debug:container"
+
+[[command]]
+id = "debug-container-parameters"
+args = "debug:container --parameters"
+
+[[command]]
+id = "debug-container-router"
+args = "debug:container router"
+
+[[command]]
+id = "debug-container-tags"
+args = "debug:container --tags"
+
+[[command]]
+id = "debug-autowiring"
+args = "debug:autowiring"
+
+[[command]]
+id = "debug-config-framework"
+args = "debug:config framework"
+
+[[command]]
+id = "debug-config-twig"
+args = "debug:config twig"
+
+[[command]]
+id = "config-dump-reference-framework"
+args = "config:dump-reference framework"
+
+[[command]]
+id = "config-dump-reference-twig"
+args = "config:dump-reference twig"
+
+[[command]]
+id = "debug-event-dispatcher"
+args = "debug:event-dispatcher"
+
+[[command]]
+id = "debug-twig"
+args = "debug:twig"
+
+[[command]]
+id = "lint-twig-templates"
+args = "lint:twig templates"
+
+[[command]]
+id = "lint-yaml-config"
+args = "lint:yaml config"
+
+[[command]]
+id = "lint-container"
+args = "lint:container"
+
+[[command]]
+id = "cache-pool-list"
+args = "cache:pool:list"
+
+[[command]]
+id = "cache-clear"
+args = "cache:clear"
+
+[[command]]
+id = "cache-warmup"
+args = "cache:warmup"
+
+[[command]]
+id = "cache-pool-clear-cache.app"
+args = "cache:pool:clear cache.app"
+
+[[command]]
+id = "assets-install-public"
+args = "assets:install public"
+
+[[command]]
+id = "debug-dotenv"
+args = "debug:dotenv"
+
+[[command]]
+id = "secrets-list"
+args = "secrets:list"
+
+[[command]]
+id = "completion-bash"
+args = "completion bash"
+
+[[command]]
+id = "list-json"
+args = "list --format=json"
+
+[[command]]
+id = "list-xml"
+args = "list --format=xml"
+
+[[command]]
+id = "debug-container-json-router"
+args = "debug:container --format=json router"
+
+[[command]]
+id = "debug-translation-en"
+args = "debug:translation en"

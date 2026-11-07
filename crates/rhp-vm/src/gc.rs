@@ -370,14 +370,14 @@ impl Vm {
                         out.push(Value::Object(i.clone()));
                     }
                 }
-                let (cls, id) = (o.class, o.id);
+                let (cls, id, extra) = (o.class, o.id, o.has_extra());
                 drop(o);
                 if self.generators.contains_key(&id) && self.is_generator_class(cls) {
                     self.gen_gc_children(id, out);
                 }
                 if let Some(get_gc) = self.class(cls).handlers.and_then(|t| t.get_gc) {
                     get_gc(h, out);
-                } else {
+                } else if extra {
                     crate::fibers::fiber_gc_values(h, out);
                 }
             }
@@ -820,7 +820,10 @@ impl Vm {
                     }
                 }
             }
-            if let Some(vs) = g.eph_out.get(&cur) {
+            if let Some(vs) = (!g.eph_out.is_empty())
+                .then(|| g.eph_out.get(&cur))
+                .flatten()
+            {
                 for &j in vs {
                     let c = &mut g.nodes[j as usize];
                     if !c.black && !c.collected {
@@ -864,6 +867,9 @@ fn gc_weak_entries(g: &mut Graph, i: u32, v: &Value, todo: &mut Vec<u32>) {
             let Ok(o) = h.try_borrow() else {
                 return;
             };
+            if !o.has_extra() {
+                return;
+            }
             let weak = o.is_weakly_referenced().then_some(o.id);
             drop(o);
             if let Some(map) = weakrefs::map_gc_entries(h, &mut ents) {
@@ -935,7 +941,10 @@ fn gc_remove_nested(g: &mut Graph, root: &Node) -> i64 {
         };
         if proceed {
             let mut edges = Vec::new();
-            if let Some(vs) = g.eph_out.get(&cur) {
+            if let Some(vs) = (!g.eph_out.is_empty())
+                .then(|| g.eph_out.get(&cur))
+                .flatten()
+            {
                 if g.maps.values().any(|&m| m == cur) {
                     edges.extend_from_slice(vs);
                 } else {

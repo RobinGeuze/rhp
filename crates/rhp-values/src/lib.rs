@@ -434,6 +434,12 @@ impl ObjectData {
         self.extra.get_or_insert_with(Default::default).weak = true;
     }
 
+    /// Whether the object has native state, lazy info, iterators or the
+    /// weakly referenced flag (a cheap test before looking for one).
+    pub fn has_extra(&self) -> bool {
+        self.extra.is_some()
+    }
+
     /// Whether [`ObjectData::set_weakly_referenced`] was called.
     pub fn is_weakly_referenced(&self) -> bool {
         self.extra.as_ref().is_some_and(|e| e.weak)

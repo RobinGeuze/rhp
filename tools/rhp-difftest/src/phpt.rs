@@ -197,6 +197,7 @@ const DIAGNOSTIC_PREFIXES: &[&str] = &[
 /// rhp gets the setting as `-d` too. Every `opcache.*` directive also
 /// reaches rhp (see [`opcache_skip`] for the ones whose tests can't match).
 const RHP_INI: &[&str] = &[
+    "allow_url_fopen",
     "allow_url_include",
     "arg_separator.input",
     "assert.active",

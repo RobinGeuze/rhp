@@ -1152,6 +1152,7 @@ impl Host for Vm {
         if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
             s.nonblocking = !blocked;
             s.ctx = ctx.as_ref().and_then(res_id);
+            s.ctx_hold = ctx.filter(|c| matches!(c, Value::Resource(_)));
         }
         Some(v)
     }

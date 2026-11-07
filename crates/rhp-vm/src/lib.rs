@@ -326,6 +326,9 @@ pub struct Vm {
     /// The frame depth a user-wrapper include runs its stream at: php's
     /// docref names the include there.
     include_docref_depth: usize,
+    /// Streams of includes a fatal error cut short: php closes them with
+    /// the resource list at shutdown.
+    held_streams: Vec<Value>,
     /// The end-of-request resource list close is running: filters see a
     /// null stream.
     closing_resources: bool,

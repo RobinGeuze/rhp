@@ -37,6 +37,9 @@ pub(crate) struct Stream {
     pub(crate) data_url: Option<(Value, Vec<u8>, Vec<u8>)>,
     /// The stream's context resource id (php's `stream->ctx`).
     pub(crate) ctx: Option<u32>,
+    /// The context resource value the stream holds a reference to
+    /// (php's GC_ADDREF in php_stream_context_set).
+    pub(crate) ctx_hold: Option<Value>,
     /// Opened on `php://output`: writes go through the output buffers like
     /// `echo` (unlike `php://stdout`).
     pub(crate) output: bool,
@@ -60,6 +63,7 @@ impl StreamTable {
             fd_name: None,
             data_url: None,
             ctx: None,
+            ctx_hold: None,
             output: false,
             nonblocking: false,
             filters: None,
@@ -275,6 +279,13 @@ impl Vm {
     pub(crate) fn reap_dropped_streams(&mut self) -> Result<(), Thrown> {
         let mut thrown = None;
         for id in rhp_values::take_dropped_streams() {
+            // the resource list forgets a resource nothing holds any more
+            if let Some(ws) = self.resource_list.get_mut(&id) {
+                ws.retain(|w| w.strong_count() > 0);
+                if ws.is_empty() {
+                    self.resource_list.remove(&id);
+                }
+            }
             // The CLI std streams live for the whole request, unless filters
             // have to run as they close.
             if matches!(

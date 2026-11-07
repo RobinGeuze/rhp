@@ -110,6 +110,7 @@ impl Vm {
         if let Some(cid) = ctx.as_ref().and_then(res_id) {
             if let Some(rec) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
                 rec.ctx = Some(cid);
+                rec.ctx_hold = ctx;
             }
         }
         v
@@ -178,6 +179,17 @@ impl Vm {
             self.pending_throw.get_or_insert(t);
         }
         Some(false)
+    }
+
+    /// The end of an include's stream: closed, unless a fatal error is
+    /// unwinding (then the stream waits for the shutdown's resource close).
+    pub(crate) fn end_include_stream(&mut self, s: Box<UserStream>) {
+        if matches!(self.pending_throw, Some(rhp_values::Thrown::Exit(_))) {
+            let v = self.host_user_stream_insert(s, None);
+            self.held_streams.push(v);
+        } else {
+            self.close_user_state(Some(s));
+        }
     }
 
     /// Close a user stream whose record was removed from the table.
@@ -378,7 +390,7 @@ impl Vm {
         }
         self.include_docref = None;
         if failed || self.pending_throw.is_some() {
-            self.close_user_state(Some(s));
+            self.end_include_stream(s);
             if let Some(t) = self.pending_throw.take() {
                 return Err(t);
             }

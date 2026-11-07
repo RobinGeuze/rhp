@@ -76,9 +76,14 @@ final class WeakMap implements ArrayAccess, Countable, IteratorAggregate {
     public function count(): int { return __weakmap('count', $this); }
     public function getIterator(): Iterator { return __weakmap('iterator', $this); }
 }
+// Methods in stub order (get_class_methods, getMethods). A closure value
+// runs bindTo()/call() natively; their bodies here are never reached.
 final class Closure {
-    public static function fromCallable($callback) { return __closure_from_callable($callback); }
+    private function __construct() {}
     public static function bind($closure, $newThis, $newScope = 'static') { return __closure_bind($closure, $newThis, $newScope); }
+    public function bindTo($newThis, $newScope = 'static') { return __closure_bind($this, $newThis, $newScope); }
+    public function call($newThis, ...$args) { return null; }
+    public static function fromCallable($callback) { return __closure_from_callable($callback); }
     public static function getCurrent(): Closure { return __closure_current(); }
 }
 class Exception implements Throwable {

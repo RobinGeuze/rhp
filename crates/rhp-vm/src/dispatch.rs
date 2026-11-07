@@ -2510,10 +2510,13 @@ impl Vm {
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_r(top, val)?;
-                    let result = match v {
+                    // Closures / arrow fns / first-class callables are
+                    // objects of the built-in `Closure` class.
+                    let vcls = self.value_class(&v);
+                    let result = match vcls {
                         // ZEND_INSTANCEOF never autoloads.
-                        Value::Object(h) => match self.resolve_class(top, class) {
-                            Ok(cid) => self.class(h.borrow().class).ancestors.contains(&cid),
+                        Some(vc) => match self.resolve_class(top, class) {
+                            Ok(cid) => self.class(vc).ancestors.contains(&cid),
                             // self/parent/static without a scope throw
                             // (zend_fetch_class).
                             Err(e)
@@ -2528,17 +2531,7 @@ impl Vm {
                             }
                             Err(_) => false,
                         },
-                        // Closures / arrow fns / first-class callables are
-                        // instances of the built-in `Closure` class.
-                        Value::Closure(_) => match class {
-                            ClassRef::Name(nidx) => {
-                                let n = proto.names[nidx as usize].as_bytes();
-                                let seg = n.rsplit(|&b| b == b'\\').next().unwrap_or(n);
-                                seg.eq_ignore_ascii_case(b"Closure")
-                            }
-                            _ => false,
-                        },
-                        _ => false,
+                        None => false,
                     };
                     self.reg_set(top, dst, Value::Bool(result));
                 }
@@ -4105,6 +4098,7 @@ impl Vm {
                         let cls = h.borrow().class;
                         Ok(self.class(cls).name.clone())
                     }
+                    Value::Closure(_) => Ok(PhpStr::from("Closure")),
                     other => Err(Thrown::type_error(format!(
                         "Cannot use \"::class\" on {}",
                         rhp_builtins::zval_value_name(self, &other)
@@ -4863,7 +4857,15 @@ impl Vm {
                 return Ok(());
             }
         }
-        let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
+        // The call consumes its argument registers: php frees the
+        // arguments before the closure it was called on.
+        let ncv = self.stack[top].proto.num_cvs;
+        let args: Vec<Value> = (0..argc)
+            .map(|i| match base + i {
+                r if r >= ncv => self.take_temp(top, r),
+                r => self.reg_get(top, r),
+            })
+            .collect();
         let r = self.closure_method(o, mname, args)?;
         self.reg_set(top, dst, r);
         Ok(())

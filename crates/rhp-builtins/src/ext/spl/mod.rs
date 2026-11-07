@@ -285,6 +285,8 @@ fn relation(
     let autoload = bool_param(host, args, 1, func, "autoload", true)?;
     let id = match &v {
         Value::Object(h) => Some(h.borrow().class),
+        // A closure is an object of class Closure.
+        Value::Closure(_) => host.resolve_class(b"Closure"),
         Value::Str(s) => {
             if autoload {
                 host.resolve_class_autoload(s.as_bytes())?

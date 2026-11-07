@@ -42,6 +42,12 @@ pub trait Sapi {
         Vec::new()
     }
 
+    /// The SAPI's own ini settings (`sapi_module.ini_entries`, php-cli's
+    /// `HARDCODED_INI`): applied after php.ini, before `-d` settings.
+    fn ini_entries(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
     /// Whether `header()` lines are stored (`sapi_module.header_handler`:
     /// php-cli's returns 0, so its header list stays empty).
     fn stores_headers(&self) -> bool {

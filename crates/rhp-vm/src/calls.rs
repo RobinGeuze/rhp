@@ -1533,6 +1533,19 @@ impl Vm {
         } else {
             args
         };
+        self.run_callee(callee, args, caller, dynamic)
+    }
+
+    /// Run a resolved callable (zend_call_known_function) with arguments
+    /// already settled for its by-reference parameters; `dynamic`: a `$f()`
+    /// call's raw arguments.
+    pub(crate) fn run_callee(
+        &mut self,
+        callee: Callee,
+        args: Vec<Value>,
+        caller: Option<bool>,
+        dynamic: bool,
+    ) -> Result<Value, Thrown> {
         match callee {
             Callee::Closure(cd) => self.run_closure_sync(&cd, Args::Slice(&args), caller),
             Callee::Function(f) => self.run_proto_sync(f, None, None, None, args, caller),

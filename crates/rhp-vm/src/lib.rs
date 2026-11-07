@@ -11,6 +11,7 @@
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
 mod attributes;
+mod autoload;
 mod callables;
 mod calls;
 mod classes;
@@ -203,7 +204,7 @@ pub struct Vm {
     /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
     internal_classes: usize,
     // Registered `spl_autoload_register` callables, in call order.
-    autoloaders: Vec<Value>,
+    autoloaders: Vec<autoload::Autoloader>,
     /// Lowercased class names whose autoload is in progress (php's
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.

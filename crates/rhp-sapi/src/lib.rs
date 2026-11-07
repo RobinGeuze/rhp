@@ -134,6 +134,16 @@ pub enum Outcome {
     },
 }
 
+/// php-cli's `HARDCODED_INI` (sapi/cli/php_cli.c): set after php.ini, so
+/// a php.ini cannot change them, but `-d` can.
+pub const CLI_HARDCODED_INI: &[(&str, &str)] = &[
+    ("html_errors", "0"),
+    ("implicit_flush", "1"),
+    ("output_buffering", "0"),
+    ("max_execution_time", "0"),
+    ("max_input_time", "-1"),
+];
+
 /// php-cli: output straight to stdout as it is produced (so it interleaves
 /// with stderr and child processes), no header store, status 0.
 pub struct CliSapi;
@@ -145,8 +155,12 @@ impl Sapi for CliSapi {
 
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
         // sapi_cli_ini_defaults (the built-in table already holds the CLI's
-        // HARDCODED_INI values).
+        // HARDCODED_INI values as defaults).
         vec![("display_errors", "1")]
+    }
+
+    fn ini_entries(&self) -> Vec<(&'static str, &'static str)> {
+        CLI_HARDCODED_INI.to_vec()
     }
 
     fn stores_headers(&self) -> bool {
@@ -393,12 +407,17 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         }
     };
 
+    let entries = sapi.ini_entries();
     let mut vm = Vm::new(sapi);
     if let Some(dir) = &req.cwd {
         vm.set_cwd(dir);
     }
     if let Some(files) = &req.ini_files {
         load_ini_files(&mut vm, files);
+    }
+    // php_init_config parses sapi_module.ini_entries after php.ini.
+    for (k, v) in entries {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
     }
     for (k, v) in &req.ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());

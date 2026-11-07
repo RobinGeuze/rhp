@@ -526,8 +526,13 @@ pub trait Host {
         scope: Option<&Value>,
     ) -> Result<Value, Thrown>;
 
-    /// Register an `spl_autoload_register` callable (optionally prepending).
-    fn register_autoloader(&mut self, callback: Value, prepend: bool);
+    /// Register an `spl_autoload_register` callable (optionally prepending)
+    /// unless an equal one is registered.
+    fn register_autoloader(&mut self, callback: &Value, prepend: bool) -> Result<(), Thrown>;
+
+    /// `spl_autoload_unregister`: remove the registered callable equal to
+    /// `callback`; false when there is none.
+    fn unregister_autoloader(&mut self, callback: &Value) -> Result<bool, Thrown>;
 
     /// The registered autoloader callables (`spl_autoload_functions`).
     fn autoload_functions(&self) -> Vec<Value>;

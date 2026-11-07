@@ -2227,8 +2227,12 @@ impl Vm {
         }
         self.autoload_depths.push(self.stack.len());
         let r = (|| {
-            for loader in self.autoloaders.clone() {
-                self.call_callable_value(&loader, vec![crate::Value::str(fqcn.clone())])?;
+            // php walks the live list: a loader may (un)register loaders,
+            // itself included.
+            let mut i = 0;
+            while let Some(loader) = self.autoloaders.get(i).cloned() {
+                self.run_autoloader(loader.clone(), crate::Value::str(fqcn.clone()))?;
+                i = self.autoloader_next(i, &loader);
                 if self.resolve_class_by_name(&fqcn).is_ok() {
                     return Ok(true);
                 }

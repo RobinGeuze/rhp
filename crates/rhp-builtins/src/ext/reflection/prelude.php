@@ -669,6 +669,8 @@ class ReflectionClass implements Reflector {
         $nim = 0;
         foreach ($this->getMethods() as $rm) {
             if ($rm->isPrivate() && strcasecmp($rm->class, $this->name) !== 0) { continue; }
+            // _class_string walks the function table: no invoke handler.
+            if ($this->name === 'Closure' && $rm->name === '__invoke') { continue; }
             if ($rm->isStatic()) { $sm .= "\n" . $rm->__str($this->name, $sub); $nsm++; } else { $im .= "\n" . $rm->__str($this->name, $sub); $nim++; }
         }
         $s .= "\n" . $indent . '  - Static methods [' . $nsm . '] {' . ($nsm ? $sm : "\n") . $indent . "  }\n";

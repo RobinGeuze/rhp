@@ -69,3 +69,10 @@ function counter() {
 var_dump(counter(), counter());
 var_dump((new ReflectionFunction('counter'))->getStaticVariables());
 var_dump((new ReflectionFunction(counter(...)))->getStaticVariables());
+// Closure's bindTo()/call() through ReflectionMethod, and the invoke
+// handler left out of __toString().
+$cl = function ($n) { return $this->v + $n; };
+$obj = new class { public $v = 40; };
+var_dump((new ReflectionMethod('Closure', 'call'))->invoke($cl, $obj, 2));
+var_dump((new ReflectionMethod('Closure', 'bindTo'))->invokeArgs($cl, [$obj])(1));
+echo new ReflectionObject($cl);

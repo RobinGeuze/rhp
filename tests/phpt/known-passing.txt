@@ -8876,7 +8876,11 @@ ext/reflection/tests/005.phpt
 ext/reflection/tests/006.phpt
 ext/reflection/tests/007.phpt
 ext/reflection/tests/010.phpt
+ext/reflection/tests/011.phpt
 ext/reflection/tests/012.phpt
+ext/reflection/tests/013.phpt
+ext/reflection/tests/014.phpt
+ext/reflection/tests/016.phpt
 ext/reflection/tests/017.phpt
 ext/reflection/tests/018.phpt
 ext/reflection/tests/019.phpt
@@ -8885,6 +8889,7 @@ ext/reflection/tests/021.phpt
 ext/reflection/tests/022.phpt
 ext/reflection/tests/023.phpt
 ext/reflection/tests/024.phpt
+ext/reflection/tests/027.phpt
 ext/reflection/tests/028.phpt
 ext/reflection/tests/ReflectionAttribute_newInstance_deprecated.phpt
 ext/reflection/tests/ReflectionAttribute_newInstance_exception.phpt
@@ -9002,12 +9007,16 @@ ext/reflection/tests/ReflectionEnum_toString.phpt
 ext/reflection/tests/ReflectionEnum_toString_backed_int.phpt
 ext/reflection/tests/ReflectionEnum_toString_backed_string.phpt
 ext/reflection/tests/ReflectionEnum_toString_unbacked.phpt
+ext/reflection/tests/ReflectionExtension_bug66218.phpt
 ext/reflection/tests/ReflectionExtension_constructor_basic.phpt
 ext/reflection/tests/ReflectionExtension_constructor_error.phpt
 ext/reflection/tests/ReflectionExtension_double_construct.phpt
+ext/reflection/tests/ReflectionExtension_getClassNames_basic.phpt
 ext/reflection/tests/ReflectionExtension_getClassNames_variation1.phpt
+ext/reflection/tests/ReflectionExtension_getDependencies_variation2.phpt
 ext/reflection/tests/ReflectionExtension_getName_basic.phpt
 ext/reflection/tests/ReflectionExtension_getVersion_basic.phpt
+ext/reflection/tests/ReflectionExtension_info_basic.phpt
 ext/reflection/tests/ReflectionExtension_isPersistant.phpt
 ext/reflection/tests/ReflectionExtension_isTemporary.phpt
 ext/reflection/tests/ReflectionFiber_backtrace.phpt
@@ -9035,6 +9044,13 @@ ext/reflection/tests/ReflectionFunction_isDeprecated_basic.phpt
 ext/reflection/tests/ReflectionFunction_isDeprecated_userland.phpt
 ext/reflection/tests/ReflectionFunction_isGenerator_basic.phpt
 ext/reflection/tests/ReflectionFunction_isVariadic_basic.phpt
+ext/reflection/tests/ReflectionGenerator_after_termination.phpt
+ext/reflection/tests/ReflectionGenerator_basic.phpt
+ext/reflection/tests/ReflectionGenerator_getFunction.phpt
+ext/reflection/tests/ReflectionGenerator_getTrace.phpt
+ext/reflection/tests/ReflectionGenerator_in_Generator.phpt
+ext/reflection/tests/ReflectionGenerator_isClosed.phpt
+ext/reflection/tests/ReflectionGenerator_isClosed_002.phpt
 ext/reflection/tests/ReflectionMethod_006.phpt
 ext/reflection/tests/ReflectionMethod_basic1.phpt
 ext/reflection/tests/ReflectionMethod_basic2.phpt
@@ -9045,6 +9061,7 @@ ext/reflection/tests/ReflectionMethod_constructor_error2.phpt
 ext/reflection/tests/ReflectionMethod_createFromMethodName.phpt
 ext/reflection/tests/ReflectionMethod_createFromMethodName_abstract.phpt
 ext/reflection/tests/ReflectionMethod_createFromMethodName_anonymous_class.phpt
+ext/reflection/tests/ReflectionMethod_defaultArg.phpt
 ext/reflection/tests/ReflectionMethod_double_construct_closure.phpt
 ext/reflection/tests/ReflectionMethod_getClosureThis.phpt
 ext/reflection/tests/ReflectionMethod_getClosure_basic.phpt
@@ -9100,6 +9117,7 @@ ext/reflection/tests/ReflectionParameter_invalidMethodInConstructor.phpt
 ext/reflection/tests/ReflectionParameter_isDefault.phpt
 ext/reflection/tests/ReflectionParameter_isVariadic_basic.phpt
 ext/reflection/tests/ReflectionParameter_leading_backslash.phpt
+ext/reflection/tests/ReflectionParameter_new_initializer.phpt
 ext/reflection/tests/ReflectionParameter_toString_basic.phpt
 ext/reflection/tests/ReflectionProperty_basic1.phpt
 ext/reflection/tests/ReflectionProperty_basic2.phpt
@@ -9194,6 +9212,7 @@ ext/reflection/tests/bug70982.phpt
 ext/reflection/tests/bug71018.phpt
 ext/reflection/tests/bug72174.phpt
 ext/reflection/tests/bug74454.phpt
+ext/reflection/tests/bug74673.phpt
 ext/reflection/tests/bug74949.phpt
 ext/reflection/tests/bug75186.phpt
 ext/reflection/tests/bug75231.phpt
@@ -9273,6 +9292,7 @@ ext/reflection/tests/gh22905/Reflection_getAttributes.phpt
 ext/reflection/tests/gh8080.phpt
 ext/reflection/tests/gh8982.phpt
 ext/reflection/tests/gh9409.phpt
+ext/reflection/tests/gh9447.phpt
 ext/reflection/tests/gh9470.phpt
 ext/reflection/tests/internal_parameter_default_value/ReflectionParameter_getDefaultValueConstantName_Internal.phpt
 ext/reflection/tests/internal_parameter_default_value/ReflectionParameter_getDefaultValue_Internal.phpt
@@ -12157,6 +12177,7 @@ ext/standard/tests/general_functions/php_uname_error.phpt
 ext/standard/tests/general_functions/phpcredits.phpt
 ext/standard/tests/general_functions/phpcredits2.phpt
 ext/standard/tests/general_functions/phpinfo-header-anchors.phpt
+ext/standard/tests/general_functions/phpinfo.phpt
 ext/standard/tests/general_functions/phpinfo2.phpt
 ext/standard/tests/general_functions/print_r_array_circular.phpt
 ext/standard/tests/general_functions/print_r_arrays.phpt

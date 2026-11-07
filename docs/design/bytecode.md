@@ -517,6 +517,16 @@ declared by `DeclareAttrConst { name, src, attrs }`, which keeps
 when a class using it is linked. Trace arguments of `#[\SensitiveParameter]`
 parameters (user ones, and builtins' through the stub flag `SENS`) become
 `SensitiveParameterValue` objects.
+
+**Parameter defaults for Reflection.** `ParamInfo` keeps, beside the
+default the call path uses, `default_thunk` (a non-constant default
+evaluated alone for `getDefaultValue()`), `default_const` (the name for
+`getDefaultValueConstantName()`) and `default_text`: for a default the
+compiler does not fold, its zend_ast_export text (`ast_export.rs`, names as
+zend_compile_const_expr leaves them, constants never substituted, as
+zend_compile_params turns substitution off). `ReflectionParameter::
+__toString()` prints that text (`new \ArrayObject()`, `\N\I::X`) and a
+folded default as its value (format_default_value).
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value

@@ -1,7 +1,15 @@
 
-Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w1-runtime-small/tests/golden/oop/callable_return_this.php on line 2
+Deprecated: Use of "self" in callables is deprecated in F on line 3
 bool(false)
 string(7) "self::h"
 P::pr(): Return value must be of type callable, array returned
 P::s(): Return value must be of type callable, array returned
 P::k(): Return value must be of type callable, string returned
+string(7) "self::h"
+array(2) {
+  [0]=>
+  string(4) "self"
+  [1]=>
+  string(1) "h"
+}
+string(7) "self::h"

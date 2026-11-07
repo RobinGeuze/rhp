@@ -547,12 +547,45 @@ pub(crate) fn param_default_meta(
         return (None, cname, None);
     }
     let names = AttrNames { cx, class_name };
+    let thunk = compile_const_thunk(cx, e, class_name).ok();
+    // Built only from parts php evaluates at compile time (`[1, 2][0]`,
+    // `true ? 1 : 2`): php keeps the value, which the thunk gives.
+    if folds_whole(&names, e) {
+        return (thunk, cname, None);
+    }
     let text = PhpStr::from_bytes(crate::ast_export::const_expr(cx.src, e, &names));
-    (
-        compile_const_thunk(cx, e, class_name).ok(),
-        cname,
-        Some(text),
-    )
+    (thunk, cname, Some(text))
+}
+
+/// Whether zend_eval_const_expr folds all of `e` to a value: every part is
+/// a literal or something `names` folds.
+fn folds_whole(names: &AttrNames, e: &Expression) -> bool {
+    use crate::ast_export::ConstExprNames;
+    use crate::parse::cst::ArrayElement;
+    if names.fold(e).is_some() {
+        return true;
+    }
+    let el = |el: &ArrayElement| match el {
+        ArrayElement::KeyValue(kv) => folds_whole(names, kv.key) && folds_whole(names, kv.value),
+        ArrayElement::Value(v) => folds_whole(names, v.value),
+        ArrayElement::Variadic(v) => folds_whole(names, v.value),
+        ArrayElement::Missing(_) => true,
+    };
+    match crate::util::unparen(e) {
+        Expression::Literal(_) => true,
+        Expression::CompositeString(_) => crate::ast_export::plain_string(e).is_some(),
+        Expression::Array(a) => a.elements.iter().all(el),
+        Expression::LegacyArray(a) => a.elements.iter().all(el),
+        Expression::UnaryPrefix(u) => folds_whole(names, u.operand),
+        Expression::Binary(b) => folds_whole(names, b.lhs) && folds_whole(names, b.rhs),
+        Expression::Conditional(c) => {
+            folds_whole(names, c.condition)
+                && c.then.is_none_or(|t| folds_whole(names, t))
+                && folds_whole(names, c.r#else)
+        }
+        Expression::ArrayAccess(aa) => folds_whole(names, aa.array) && folds_whole(names, aa.index),
+        _ => false,
+    }
 }
 
 /// php's `add_stringable_interface`: a class-like (not a trait) declaring

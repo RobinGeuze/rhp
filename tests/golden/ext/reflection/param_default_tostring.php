@@ -22,4 +22,7 @@ echo (new \ReflectionFunction('M\f'))->getParameters()[0]->getType(), "\n";
 namespace {
 function g($f = PHP_EOL, $j = E_ALL | E_USER_ERROR, $l = [PHP_INT_MAX => 1], $n = true, $o = NULL) {}
 echo preg_replace('/^  @@.*\n/m', '', (string) new ReflectionFunction('g'));
+// Literal-only parts php folds at compile time print as the value.
+function h($a = 'abc'[0], $b = [1, 2][1], $c = true ? 1 : 2, $d = 1 ?: 2, $e = [...[1, 2]], $f = ['a' => 1]['a'], $g = 2 ** 3 . 'x') {}
+foreach ((new ReflectionFunction('h'))->getParameters() as $p) echo $p, "\n";
 }

@@ -48,3 +48,10 @@ Function [ <user> function g ] {
     Parameter #4 [ <optional> $o = NULL ]
   }
 }
+Parameter #0 [ <optional> $a = 'a' ]
+Parameter #1 [ <optional> $b = 2 ]
+Parameter #2 [ <optional> $c = 1 ]
+Parameter #3 [ <optional> $d = 1 ]
+Parameter #4 [ <optional> $e = [1, 2] ]
+Parameter #5 [ <optional> $f = 1 ]
+Parameter #6 [ <optional> $g = '8x' ]

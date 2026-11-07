@@ -76,7 +76,8 @@ enum FnSubject {
         cd: Rc<rhp_values::ClosureData>,
         class: ClassId,
         name: Vec<u8>,
-        is_static: bool,
+        /// The object `__call` runs on (None for `__callStatic`).
+        this: Option<Value>,
     },
     /// A closure object (`proto` is its body).
     Closure {
@@ -1734,8 +1735,8 @@ impl Vm {
                 cd,
                 class,
                 name,
-                is_static,
-            } => return self.trampoline_info(cd, *class, name, *is_static),
+                this,
+            } => return self.trampoline_info(cd, *class, name, this),
             FnSubject::Func(f) => (f.proto.clone(), f.proto.is_internal()),
             FnSubject::Method { m, .. } => {
                 (m.proto.clone(), self.is_internal_class(m.defining_class))
@@ -2118,15 +2119,15 @@ impl Vm {
         let Value::Array(a) = w else { return None };
         let v: Vec<Value> = a.iter().map(|(_, v)| deref(v)).collect();
         let [target, name] = &v[..] else { return None };
-        let (class, is_static) = match target {
-            Value::Object(h) => (h.borrow().class, false),
+        let (class, this) = match target {
+            Value::Object(h) => (h.borrow().class, Some(target.clone())),
             other => (
                 self.resolve_class_by_name(&rhp_values::conv::to_string_bytes(other))
                     .ok()?,
-                true,
+                None,
             ),
         };
-        let magic: &[u8] = if is_static {
+        let magic: &[u8] = if this.is_none() {
             b"__callStatic"
         } else {
             b"__call"
@@ -2136,7 +2137,7 @@ impl Vm {
             cd: cd.clone(),
             class,
             name: rhp_values::conv::to_string_bytes(name),
-            is_static,
+            this,
         })
     }
 
@@ -2147,8 +2148,9 @@ impl Vm {
         cd: &Rc<rhp_values::ClosureData>,
         cid: ClassId,
         name: &[u8],
-        is_static: bool,
+        this: &Option<Value>,
     ) -> Value {
+        let is_static = this.is_none();
         let cname = self.classes[cid as usize].name.clone();
         let mut a = PhpArray::new();
         put(&mut a, "ext", Value::Bool(false));
@@ -2195,6 +2197,7 @@ impl Vm {
         put(&mut a, "params", Value::Array(params));
         put(&mut a, "nreq", Value::Int(0));
         put(&mut a, "closure", Value::Bool(true));
+        put(&mut a, "this", this.clone().unwrap_or(Value::Null));
         put(&mut a, "loc", Value::Closure(cd.clone()));
         Value::Array(a)
     }

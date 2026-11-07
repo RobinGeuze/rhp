@@ -20,6 +20,7 @@ class Magic {
 foreach ([Magic::stat(...), (new Magic)->inst(...)] as $c) {
     $rf = new ReflectionFunction($c);
     var_dump($rf->getName(), $rf->isVariadic(), $rf->getNumberOfParameters(), $rf->isInternal());
+    var_dump($rf->isStatic(), $rf->getClosureThis() instanceof Magic);
     $p = $rf->getParameters()[0];
     var_dump($p->getName(), $p->isVariadic(), $p->isOptional(), (string) $p->getType());
     echo $rf;

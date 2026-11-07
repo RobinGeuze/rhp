@@ -10,6 +10,8 @@ string(4) "stat"
 bool(true)
 int(1)
 bool(true)
+bool(true)
+bool(false)
 string(9) "arguments"
 bool(true)
 bool(true)
@@ -34,6 +36,8 @@ array(2) {
 string(4) "inst"
 bool(true)
 int(1)
+bool(true)
+bool(false)
 bool(true)
 string(9) "arguments"
 bool(true)
@@ -64,7 +68,7 @@ array(3) {
   ["a"]=>
   int(3)
 }
-Error: Only arrays can be unpacked in constant expression @32
+Error: Only arrays can be unpacked in constant expression @33
 array(1) {
   [0]=>
   int(5)

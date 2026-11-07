@@ -568,27 +568,32 @@ impl Vm {
     }
 }
 
-/// zend_fiber_object_gc: the values a Fiber object holds, for the cycle
-/// collector: its callable, arguments and result and, while it is
-/// suspended, every value of its suspended frames (variables,
-/// temporaries, extra arguments, variables created by name).
-#[allow(dead_code)] // the cycle collector's traversal hook
-pub(crate) fn fiber_gc_values(h: &ObjectHandle) -> Vec<Value> {
-    let Some(cell) = h.borrow().payload::<FiberCell>() else {
-        return Vec::new();
+/// zend_fiber_object_gc: the values Fiber object `h` holds, for the cycle
+/// collector: its callable and result and, while it is suspended, what
+/// every frame on its stack holds (variables, temporaries, extra
+/// arguments, variables created by name, the running closure). False when
+/// `h` is no Fiber.
+pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
+    let Ok(o) = h.try_borrow() else {
+        return false;
     };
-    let d = cell.borrow();
-    let mut out = vec![d.callable.clone(), d.result.clone()];
+    let Some(cell) = o.payload::<FiberCell>() else {
+        return false;
+    };
+    drop(o);
+    let Ok(d) = cell.try_borrow() else {
+        return true;
+    };
+    out.push(d.callable.clone());
+    out.push(d.result.clone());
     out.extend(d.args.iter().cloned());
     out.extend(d.named.iter().map(|(_, v)| v.clone()));
     if d.status == Status::Suspended {
         if let Some(ctx) = &d.ctx {
             for f in &ctx.stack {
-                out.extend(f.regs.iter().cloned());
-                out.extend(f.extra_args.iter().cloned());
-                out.extend(f.dyn_vars.values().map(|c| Value::Ref(c.clone())));
+                f.gc_children(out);
             }
         }
     }
-    out
+    true
 }

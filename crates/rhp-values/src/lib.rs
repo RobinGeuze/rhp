@@ -434,6 +434,11 @@ impl ObjectData {
         self.extra.get_or_insert_with(Default::default).weak = true;
     }
 
+    /// Whether [`ObjectData::set_weakly_referenced`] was called.
+    pub fn is_weakly_referenced(&self) -> bool {
+        self.extra.as_ref().is_some_and(|e| e.weak)
+    }
+
     /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
     pub fn take_payload(&mut self) -> Option<Payload> {
         let extra = self.extra.as_deref_mut()?;
@@ -613,6 +618,9 @@ pub fn gc_free_object(h: &ObjectHandle) {
     gc::object_freed(id);
     if let Some(mut extra) = extra {
         drop(extra.native.take());
+        if extra.weak && id != 0 {
+            weak_notify(id);
+        }
         drop(extra.lazy.take());
     }
     if id != 0 {

@@ -98,11 +98,30 @@ struct GInfo {
     kept: bool,
 }
 
+/// A WeakMap entry the walk reached (php's weakmap special edges): its
+/// value is held by the map, but kept only while both the map and the key
+/// are live.
+struct Eph {
+    /// The map state's address (`weakrefs::map_gc_entries`).
+    map: usize,
+    /// The key's address.
+    key: usize,
+    v: u32,
+}
+
 #[derive(Default)]
 struct Graph {
     nodes: Vec<GInfo>,
     index: FxHashMap<usize, u32>,
     edges: Vec<u32>,
+    eph: Vec<Eph>,
+    /// (map, key) of the entries in `eph`.
+    eph_seen: FxHashSet<(usize, usize)>,
+    /// The WeakMap nodes, by state address.
+    maps: FxHashMap<usize, u32>,
+    /// The entry values a key or map node reaches through its weak edges
+    /// (zend_weakmap_get_object_entry_gc / zend_weakmap_get_entry_gc).
+    eph_out: FxHashMap<u32, Vec<u32>>,
 }
 
 impl Graph {
@@ -132,6 +151,23 @@ impl Graph {
 
     fn find(&self, addr: usize) -> Option<u32> {
         self.index.get(&addr).copied()
+    }
+
+    /// Record WeakMap entry (map, key) -> `v`, reached from node `from`.
+    fn add_eph(&mut self, from: u32, map: usize, key: usize, v: &Value, todo: &mut Vec<u32>) {
+        let Some((addr, n)) = GNode::of(v) else {
+            return;
+        };
+        let j = self.intern(addr, n, todo);
+        self.eph_out.entry(from).or_default().push(j);
+        if self.eph_seen.insert((map, key)) {
+            self.eph.push(Eph { map, key, v: j });
+        }
+    }
+
+    /// Whether node at `addr` is live: black, or not reached at all.
+    fn live_addr(&self, addr: usize) -> bool {
+        self.find(addr).is_none_or(|i| self.nodes[i as usize].black)
     }
 }
 
@@ -291,6 +327,8 @@ impl Vm {
                 }
                 if let Some(get_gc) = self.class(cls).handlers.and_then(|t| t.get_gc) {
                     get_gc(h, out);
+                } else {
+                    crate::fibers::fiber_gc_values(h, out);
                 }
             }
             Value::Array(a) => out.extend(a.iter().map(|(_, v)| v.clone())),
@@ -378,6 +416,7 @@ impl Vm {
                 continue;
             };
             self.gc_children(&v, &mut kids);
+            gc_weak_entries(&mut g, i, &v, &mut todo);
             drop(v);
             let first = g.edges.len() as u32;
             for c in kids.drain(..) {
@@ -421,6 +460,11 @@ impl Vm {
             let j = g.edges[e] as usize;
             g.nodes[j].rc -= 1;
         }
+        // A WeakMap entry's value: the map's one reference.
+        for e in 0..g.eph.len() {
+            let j = g.eph[e].v as usize;
+            g.nodes[j].rc -= 1;
+        }
         // gc_scan_roots: whatever a node with outside references reaches
         // is black, the rest white.
         let mut stack: Vec<u32> = (0..g.nodes.len() as u32)
@@ -429,14 +473,29 @@ impl Vm {
         for &i in &stack {
             g.nodes[i as usize].black = true;
         }
-        while let Some(i) = stack.pop() {
-            let n = &g.nodes[i as usize];
-            for k in n.first..n.first + n.len {
-                let j = g.edges[k as usize];
-                if !g.nodes[j as usize].black {
-                    g.nodes[j as usize].black = true;
-                    stack.push(j);
+        loop {
+            while let Some(i) = stack.pop() {
+                let n = &g.nodes[i as usize];
+                for k in n.first..n.first + n.len {
+                    let j = g.edges[k as usize];
+                    if !g.nodes[j as usize].black {
+                        g.nodes[j as usize].black = true;
+                        stack.push(j);
+                    }
                 }
+            }
+            // A WeakMap entry is live when its map and its key are.
+            for e in &g.eph {
+                let map_live = g.maps.get(&e.map).is_none_or(|&m| g.nodes[m as usize].black);
+                if map_live && g.live_addr(e.key) && !g.nodes[e.v as usize].black {
+                    stack.push(e.v);
+                }
+            }
+            if stack.is_empty() {
+                break;
+            }
+            for &i in &stack {
+                g.nodes[i as usize].black = true;
             }
         }
         let _ = roots;
@@ -625,6 +684,15 @@ impl Vm {
                     }
                 }
             }
+            if let Some(vs) = g.eph_out.get(&cur) {
+                for &j in vs {
+                    let c = &mut g.nodes[j as usize];
+                    if !c.black && !c.collected {
+                        c.collected = true;
+                        stack.push(j);
+                    }
+                }
+            }
             let mut next = None;
             let (first, len) = {
                 let x = &g.nodes[cur as usize];
@@ -646,6 +714,38 @@ impl Vm {
                 Some(j) => cur = j,
                 None => return count,
             }
+        }
+    }
+}
+
+/// The WeakMap entries node `i` (`v`) reaches: a WeakMap's entries, and
+/// those keyed by a weakly referenced object or closure.
+fn gc_weak_entries(g: &mut Graph, i: u32, v: &Value, todo: &mut Vec<u32>) {
+    use rhp_builtins::zend::weakrefs;
+    let mut ents = Vec::new();
+    let key_id = match v {
+        Value::Object(h) => {
+            let Ok(o) = h.try_borrow() else {
+                return;
+            };
+            let weak = o.is_weakly_referenced().then_some(o.id);
+            drop(o);
+            if let Some(map) = weakrefs::map_gc_entries(h, &mut ents) {
+                g.maps.insert(map, i);
+                for (key, val) in ents.drain(..) {
+                    g.add_eph(i, map, key, &val, todo);
+                }
+            }
+            weak
+        }
+        Value::Closure(c) => c.weakly_referenced.get().then_some(c.id),
+        _ => None,
+    };
+    if let Some(id) = key_id {
+        let key = g.nodes[i as usize].n.addr();
+        weakrefs::key_gc_entries(id, &mut ents);
+        for (map, val) in ents.drain(..) {
+            g.add_eph(i, map, key, &val, todo);
         }
     }
 }
@@ -698,7 +798,15 @@ fn gc_remove_nested(g: &mut Graph, root: &Node) -> i64 {
             }
         };
         if proceed {
-            let edges = g.edges(cur).to_vec();
+            let mut edges = Vec::new();
+            if let Some(vs) = g.eph_out.get(&cur) {
+                if g.maps.values().any(|&m| m == cur) {
+                    edges.extend_from_slice(vs);
+                } else {
+                    stack.extend_from_slice(vs);
+                }
+            }
+            edges.extend_from_slice(g.edges(cur));
             if let Some((&first, rest)) = edges.split_first() {
                 stack.extend_from_slice(rest);
                 cur = first;

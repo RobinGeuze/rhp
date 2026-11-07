@@ -728,6 +728,8 @@ impl Parser<'_, '_> {
     fn parse_object(&mut self, depth: i64) -> Result<Value, i64> {
         self.i += 1; // consume '{'
         let mut pairs: Vec<(Vec<u8>, Value)> = Vec::new();
+        // key -> index in `pairs`, for the duplicate check (php's hash update)
+        let mut index: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
         self.skip_ws();
         if self.peek() != Some(b'}') {
             loop {
@@ -748,10 +750,12 @@ impl Parser<'_, '_> {
                 }
                 let val = self.parse_value(depth + 1)?;
                 // Duplicate keys: last wins (overwrite in place, keep position).
-                if let Some(slot) = pairs.iter_mut().find(|(k, _)| *k == key) {
-                    slot.1 = val;
-                } else {
-                    pairs.push((key, val));
+                match index.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(e) => pairs[*e.get()].1 = val,
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        pairs.push((e.key().clone(), val));
+                        e.insert(pairs.len() - 1);
+                    }
                 }
                 self.skip_ws();
                 match self.peek() {

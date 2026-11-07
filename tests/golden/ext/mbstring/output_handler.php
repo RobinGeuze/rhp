@@ -1,6 +1,11 @@
 <?php
 // mb_output_handler(): converts to the HTTP output encoding, passes
 // through with "pass", and mb_http_output() validates names.
+// Warnings print the script's basename, not the checkout's path.
+set_error_handler(function ($no, $msg) {
+    echo "Warning: ", str_replace(__FILE__, basename(__FILE__), $msg), "\n";
+    return true;
+});
 var_dump(mb_http_output());
 mb_http_output('ISO-8859-1');
 ob_start('mb_output_handler');

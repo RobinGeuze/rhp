@@ -100,12 +100,10 @@ impl Vm {
         if dir {
             self.last_dir = Some(v.clone());
         }
-        if let Some(cid) = ctx.as_ref().and_then(res_id) {
-            if let Some(rec) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
-                rec.ctx = Some(cid);
-                rec.ctx_hold = ctx;
-            }
-        }
+        // php leaves a user stream's `ctx` unset (the wrapper object's
+        // `context` property holds the context): stream_context_get_options
+        // on the stream gets a fresh context
+        let _ = ctx;
         v
     }
 
@@ -224,8 +222,9 @@ pub(crate) enum UserInclude {
         stream: Box<UserStream>,
     },
     /// The open failed: the reason for "Failed to open stream" (none:
-    /// no such warning).
-    Failed(Option<String>),
+    /// no such warning) and the path it names (the include_path match
+    /// when the name resolved).
+    Failed(Option<String>, Vec<u8>),
     /// An `_once` include of a file already included.
     AlreadyIncluded,
 }
@@ -246,7 +245,7 @@ impl Vm {
         // through include_path (whose wrapper entries get a quiet url_stat)
         let (w, open_path, resolved) = if userspace::protocol_len(raw).is_some() {
             match userspace::locate(self, raw) {
-                Some((w, p)) => (w, p, false),
+                Some((w, p)) => (w, p, None),
                 None => return Ok(None),
             }
         } else {
@@ -260,12 +259,12 @@ impl Vm {
                         if kind.is_once() && self.included_files.contains(&r) {
                             return Ok(Some(UserInclude::AlreadyIncluded));
                         }
-                        (w, p, true)
+                        (w, p, Some(r))
                     }
                     None => return Ok(None),
                 },
                 None => match userspace::locate(self, raw) {
-                    Some((w, p)) => (w, p, false),
+                    Some((w, p)) => (w, p, None),
                     None => return Ok(None),
                 },
             }
@@ -288,14 +287,15 @@ impl Vm {
                     String::from_utf8_lossy(&raw[..n])
                 );
                 self.diag(builtins::E_WARNING, &msg)?;
-                return Ok(Some(UserInclude::Failed(Some(
-                    "no suitable wrapper could be found".into(),
-                ))));
+                return Ok(Some(UserInclude::Failed(
+                    Some("no suitable wrapper could be found".into()),
+                    raw.to_vec(),
+                )));
             }
         }
         let options = userspace::STREAM_OPEN_FOR_INCLUDE
             | STREAM_OPEN_FOR_ZEND_STREAM
-            | if resolved {
+            | if resolved.is_some() {
                 STREAM_ASSUME_REALPATH
             } else {
                 userspace::USE_PATH
@@ -318,7 +318,9 @@ impl Vm {
             self.include_docref = None;
             let reason = builtins::main::streams::take_wrapper_error()
                 .unwrap_or_else(|| "operation failed".to_string());
-            return Ok(Some(UserInclude::Failed(Some(reason))));
+            // zend_stream_open names the resolved path
+            let shown = resolved.unwrap_or_else(|| raw.to_vec());
+            return Ok(Some(UserInclude::Failed(Some(reason), shown)));
         };
         let mut s = opened.stream;
         s.orig_path = raw.to_vec();
@@ -386,7 +388,7 @@ impl Vm {
             if let Some(t) = self.pending_throw.take() {
                 return Err(t);
             }
-            return Ok(Some(UserInclude::Failed(None)));
+            return Ok(Some(UserInclude::Failed(None, raw.to_vec())));
         }
         Ok(Some(UserInclude::Opened {
             key,

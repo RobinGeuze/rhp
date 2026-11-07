@@ -54,7 +54,7 @@ fn stat_path(
     }
     // php_stat's IS_EXISTS_CHECK: the wrapper's stat is quiet
     let quiet = matches!(fname, "is_file" | "is_dir" | "is_link");
-    if let Some(st) = user_stat(host, &p, link, quiet) {
+    if let Some(st) = user_stat(host, &p, link, quiet, true) {
         return Ok(Some(st));
     }
     let url = match crate::locate_url(host, fname, &p)? {
@@ -82,12 +82,14 @@ fn stat_path(
 }
 
 /// `php_stream_stat_path_ex` through a user wrapper; `None` when no user
-/// wrapper serves `path`.
+/// wrapper serves `path`. `other_clears`: a stat of a path no user
+/// wrapper serves takes php's cache over.
 fn user_stat(
     host: &mut dyn Host,
     path: &[u8],
     link: bool,
     quiet: bool,
+    other_clears: bool,
 ) -> Option<Option<StatInfo>> {
     let st = crate::main::streams::userspace::cached_stat(
         host,
@@ -96,8 +98,7 @@ fn user_stat(
         quiet,
         crate::main::streams::userspace::URL_STAT_IGNORE_OPEN_BASEDIR,
     );
-    if st.is_none() {
-        // a stat of another path takes php's cache over
+    if st.is_none() && other_clears {
         crate::main::streams::userspace::clear_stat_cache();
     }
     st
@@ -272,7 +273,8 @@ fn access_check(
     if p.is_empty() || p.contains(&0) {
         return Ok(false);
     }
-    let user = user_stat(host, &p, false, true);
+    // a plain file's access check uses access(2): php's cache stays
+    let user = user_stat(host, &p, false, true, false);
     let url = match access_path(host, fname, &p)? {
         _ if user.is_some() => Vec::new(),
         Ok(local) => {
@@ -460,7 +462,7 @@ fn fn_file_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     if p.is_empty() || p.contains(&0) {
         return Ok(Value::Bool(false));
     }
-    if let Some(st) = user_stat(host, &p, false, true) {
+    if let Some(st) = user_stat(host, &p, false, true, false) {
         return Ok(Value::Bool(st.is_some()));
     }
     Ok(Value::Bool(match access_path(host, "file_exists", &p)? {

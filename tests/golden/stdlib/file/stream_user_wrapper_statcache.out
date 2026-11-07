@@ -1,0 +1,16 @@
+url_stat sc://yes 6
+bool(true)
+url_stat sc://no 6
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+int(3)
+bool(true)
+url_stat sc://yes 4
+int(3)
+url_stat sc://yes 6
+bool(true)
+array(0) {
+}
+bool(true)

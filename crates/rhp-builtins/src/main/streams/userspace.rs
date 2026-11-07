@@ -126,7 +126,10 @@ pub fn cached_stat(
     }
     let flags =
         if link { URL_STAT_LINK } else { 0 } | if quiet { URL_STAT_QUIET } else { 0 } | extra;
-    let st = url_stat(host, &w, &p, flags, None)?;
+    // a failed stat leaves the cache as it was
+    let Some(st) = url_stat(host, &w, &p, flags, None) else {
+        return Some(None);
+    };
     STAT_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if link {
@@ -1535,6 +1538,8 @@ fn fn_stream_wrapper_register(host: &mut dyn Host, args: &[Value]) -> Result<Val
         class: name.clone(),
         is_url: flags & IS_URL != 0,
     });
+    // the wrapper is a resource (le_protocols), freed again on failure
+    host.consume_resource_ids(1);
     let valid = protocol
         .iter()
         .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));

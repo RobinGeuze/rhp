@@ -226,6 +226,7 @@ impl Vm {
         let mut reason_override = None;
         let mut quiet_open = false;
         let mut user_stream = None;
+        let mut user_shown = None;
         let user = if self.user_wrappers.is_empty() {
             None
         } else {
@@ -237,9 +238,10 @@ impl Vm {
                     user_stream = Some(stream);
                     Some((key, IncludeSource::Streamed(data)))
                 }
-                crate::user_streams::UserInclude::Failed(reason) => {
+                crate::user_streams::UserInclude::Failed(reason, name) => {
                     quiet_open = reason.is_none();
                     reason_override = reason;
+                    user_shown = Some(name);
                     None
                 }
                 crate::user_streams::UserInclude::AlreadyIncluded => return Ok(Value::Bool(true)),
@@ -305,7 +307,10 @@ impl Vm {
             })
         };
         // The plain-files opener's open_basedir check of the resolved path.
-        let mut shown = path_str.clone();
+        let mut shown = match user_shown {
+            Some(n) => String::from_utf8_lossy(&n).into_owned(),
+            None => path_str.clone(),
+        };
         let found = match found {
             Some((real, IncludeSource::File(_)))
                 if builtins::main::fopen_wrappers::active()

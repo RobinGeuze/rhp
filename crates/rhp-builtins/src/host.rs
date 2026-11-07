@@ -684,7 +684,8 @@ pub trait Host {
         false
     }
 
-    /// A stream resource over a user stream; `ctx` is the context it holds.
+    /// A stream resource over a user stream; `ctx` is the context it was
+    /// opened with (php leaves the stream's own `ctx` unset).
     #[allow(clippy::boxed_local)]
     fn user_stream_insert(&mut self, _s: Box<userspace::UserStream>, _ctx: Option<Value>) -> Value {
         Value::Bool(false)

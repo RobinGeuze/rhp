@@ -66,6 +66,8 @@ fn a_broken_reference_is_a_harness_error() {
         content_type: None,
         flow: None,
         status,
+        pass_status: BTreeMap::from([("debug".to_string(), 500)]),
+        in_warmup: true,
     };
     let ok = |status| {
         Ok(Response {
@@ -92,12 +94,19 @@ fn a_broken_reference_is_a_harness_error() {
         Err("no cookie \"XSRF-TOKEN\" in the jar".into()),
         ok(500),
     ];
-    let bad = reference_failures(&reqs, &resps);
+    let bad = reference_failures(&reqs.iter().collect::<Vec<_>>(), "default", &resps);
     let ids: Vec<&str> = bad.iter().map(|b| b.split(' ').next().unwrap()).collect();
     assert_eq!(ids, ["crashed", "wrong-status", "unsent", "error-page"]);
     assert!(
         bad[1].ends_with("status 200 (the corpus expects 419)"),
         "{bad:?}"
+    );
+    // `pass_status = { debug = 500 }` overrides the status in that pass.
+    let bad = reference_failures(&reqs.iter().collect::<Vec<_>>(), "debug", &resps);
+    let ids: Vec<&str> = bad.iter().map(|b| b.split(' ').next().unwrap()).collect();
+    assert_eq!(
+        ids,
+        ["fine", "fine-404", "crashed", "wrong-status", "unsent"]
     );
 }
 
@@ -122,16 +131,16 @@ fn cookie_jar_sets_and_expires() {
 fn tokens_rename_consistently_and_rules_are_named() {
     let corpus = Corpus {
         state: vec![],
-        warmup: Warmup::None,
         warmup_clear: vec![],
         warmup_drop: vec![],
         ini: vec![],
         tokens: vec![regex(r"sid=([A-Za-z0-9]+)").unwrap()],
         masks: vec![],
+        passes: vec![],
         laravel_key: None,
         requests: vec![],
     };
-    let mut n = Normalizer::new(&corpus, Some(("8.5.9".into(), "8.5.8".into())));
+    let mut n = Normalizer::new(&corpus, "default", Some(("8.5.9".into(), "8.5.8".into())));
     let r = Response {
         status: 200,
         headers: vec![
@@ -171,14 +180,23 @@ fn snapshot_restore_round_trips() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("var/cache/x")).unwrap();
     fs::write(dir.join("var/cache/x/a.php"), "A").unwrap();
-    let state = vec!["var/cache".to_string(), "var/missing".to_string()];
+    fs::create_dir_all(dir.join("config")).unwrap();
+    fs::write(dir.join("config/ref.php"), "R").unwrap();
+    let state = vec![
+        "var/cache".to_string(),
+        "var/missing".to_string(),
+        "config/ref.php".to_string(),
+    ];
     let snap = take_snapshot(&dir, &state);
     fs::write(dir.join("var/cache/x/a.php"), "changed").unwrap();
     fs::write(dir.join("var/cache/new.php"), "N").unwrap();
+    fs::write(dir.join("config/ref.php"), "R2").unwrap();
     let after = take_snapshot(&dir, &state);
     let w = written_files(&snap, &after);
-    assert_eq!(w.len(), 2);
+    assert_eq!(w.len(), 3);
+    assert!(w.contains_key(Path::new("config/ref.php")));
     restore_snapshot(&dir, &state, &snap).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("config/ref.php")).unwrap(), "R");
     assert_eq!(
         fs::read_to_string(dir.join("var/cache/x/a.php")).unwrap(),
         "A"
@@ -212,5 +230,140 @@ fn a_php_path_runs_that_script() {
     assert_eq!(script_for(&app, "/missing.php"), front);
     assert_eq!(script_for(&app, "/../secret.php"), front);
     assert_eq!(script_for(&app, "/x?next=/login.php"), front);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn corpus_from(toml: &str) -> Result<Corpus, String> {
+    let dir = std::env::temp_dir().join(format!("rhp-app-corpus-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{:x}.toml", toml.len()));
+    fs::write(&path, toml).unwrap();
+    let app = App {
+        name: "t".into(),
+        root: dir.clone(),
+        docroot: dir.clone(),
+        front: dir.join("index.php"),
+        script_name: "/index.php".into(),
+    };
+    let c = load_corpus(&app, &path);
+    let _ = fs::remove_file(&path);
+    c
+}
+
+#[test]
+fn passes_parse_and_select() {
+    let c = corpus_from(
+        r#"
+warmup = "corpus"
+[[pass]]
+name = "debug"
+env = { APP_DEBUG = "1" }
+only = ["b"]
+[[pass]]
+name = "cold"
+warmup = "none"
+clear = ["var/cache"]
+[[mask]]
+name = "ids"
+pattern = "id-\\d+"
+pass = ["debug"]
+[[request]]
+id = "a"
+path = "/a"
+flow = "f"
+[[request]]
+id = "b"
+path = "/b"
+flow = "f"
+[[request]]
+id = "c"
+path = "/c"
+"#,
+    )
+    .unwrap();
+    let names: Vec<&str> = c.passes.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["default", "debug", "cold"]);
+    let (default, debug, cold) = (&c.passes[0], &c.passes[1], &c.passes[2]);
+    assert_eq!(default.warmup, Warmup::Corpus);
+    assert_eq!(debug.warmup, Warmup::Corpus);
+    assert_eq!(cold.warmup, Warmup::None);
+    assert_eq!(cold.clear, ["var/cache"]);
+    assert_eq!(debug.env, [("APP_DEBUG".to_string(), "1".to_string())]);
+    assert_eq!(default.key("a"), "a");
+    assert_eq!(debug.key("@files"), "debug/@files");
+    // `only = ["b"]` brings in the rest of b's flow, in corpus order.
+    let ids =
+        |p: &Pass| -> Vec<String> { p.select(&c.requests).iter().map(|r| r.id.clone()).collect() };
+    assert_eq!(ids(debug), ["a", "b"]);
+    assert_eq!(ids(cold), ["a", "b", "c"]);
+    assert_eq!(c.masks[0].passes, ["debug"]);
+
+    let mut n = Normalizer::new(&c, "debug", None);
+    assert_eq!(n.masks("body", b"x id-12".to_vec()), b"x ");
+    let mut n = Normalizer::new(&c, "cold", None);
+    assert_eq!(n.masks("body", b"x id-12".to_vec()), b"x id-12");
+
+    for bad in [
+        "[[pass]]\nname = \"default\"",
+        "[[pass]]\nname = \"Debug\"",
+        "[[pass]]\nname = \"x\"\nwarmup = \"later\"",
+        "[[mask]]\nname = \"m\"\npattern = \"x\"\npass = [\"nope\"]",
+    ] {
+        assert!(corpus_from(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn cookie_max_age_is_masked_but_deletion_is_kept() {
+    let corpus = corpus_from("").unwrap();
+    let mut n = Normalizer::new(&corpus, "default", None);
+    let r = Response {
+        headers: vec![
+            (
+                "Set-Cookie".into(),
+                "a=b; expires=Wed, 18 May 2033 03:33:20 GMT; Max-Age=205027315; path=/".into(),
+            ),
+            (
+                "Set-Cookie".into(),
+                "gone=deleted; expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0".into(),
+            ),
+        ],
+        ..Response::default()
+    };
+    let out = n.response(&r);
+    assert_eq!(
+        out.headers[0].1,
+        "a=b; expires=<DATE>; Max-Age=<SECS>; path=/"
+    );
+    assert_eq!(out.headers[1].1, "gone=deleted; expires=<DATE>; Max-Age=0");
+}
+
+#[test]
+fn sqlite_files_are_compared_as_dumps() {
+    assert_eq!(sqlite_dump(b"not a database"), None);
+    let dir = std::env::temp_dir().join(format!("rhp-app-sqlite-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("t.sqlite");
+    let made = Command::new("sqlite3")
+        .arg(&db)
+        .arg("CREATE TABLE t(k TEXT, v TEXT); INSERT INTO t VALUES('when', '2026-01-01 12:00:00');")
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: no sqlite3");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    let data = fs::read(&db).unwrap();
+    let dump = String::from_utf8(sqlite_dump(&data).unwrap()).unwrap();
+    assert!(dump.contains("CREATE TABLE t(k TEXT, v TEXT);"), "{dump}");
+    let corpus = corpus_from("").unwrap();
+    let mut n = Normalizer::new(&corpus, "default", None);
+    let (_, out) = n.file(Path::new("var/t.sqlite"), &Some(data));
+    let out = String::from_utf8(out.unwrap()).unwrap();
+    assert!(
+        out.contains("INSERT INTO t VALUES('when','<TIMESTAMP>');"),
+        "{out}"
+    );
+    assert!(n.fired.contains("sqlite-dump"));
     let _ = fs::remove_dir_all(&dir);
 }

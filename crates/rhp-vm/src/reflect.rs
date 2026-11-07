@@ -362,6 +362,13 @@ impl Vm {
                 }
                 Ok(Value::Array(out))
             }
+            b"gen" => match arg(args, 1) {
+                Value::Object(h) => {
+                    let opts = rhp_values::conv::to_int(&arg(args, 2));
+                    self.gen_reflect(&arg_bytes(args, 0), &h, opts)
+                }
+                _ => Ok(Value::Null),
+            },
             // ReflectionExtension::getFunctions(): the names of the
             // internal functions of module `name` (lowercased).
             b"ext_functions" => {

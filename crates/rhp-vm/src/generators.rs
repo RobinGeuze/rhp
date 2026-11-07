@@ -1242,3 +1242,133 @@ pub(crate) fn generator_method_name(name_lc: &[u8]) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+impl Vm {
+    /// Generator `id`'s frame: suspended in its state, or running on the
+    /// stack (its line then comes from the running instruction).
+    fn gen_frame(&self, id: u32) -> Option<&Frame> {
+        let g = self.generators.get(&id)?;
+        if let Some(f) = &g.frame {
+            return Some(f);
+        }
+        let &(at, _, _) = self.gen_resumes.iter().rev().find(|r| r.1 == id)?;
+        self.stack.get(at)
+    }
+
+    /// `__reflect('gen', $op, $generator, $options)`: ReflectionGenerator
+    /// (php_reflection.c). `closed` works on any generator; the other ops
+    /// answer null for a closed one (the prelude throws first).
+    pub(crate) fn gen_reflect(
+        &mut self,
+        op: &[u8],
+        h: &ObjectHandle,
+        opts: i64,
+    ) -> Result<Value, Thrown> {
+        let id = h.borrow().id;
+        let Some(g) = self.generators.get(&id) else {
+            return Ok(Value::Null);
+        };
+        let closed = g.status == GenStatus::Finished;
+        if op == b"closed" {
+            return Ok(Value::Bool(closed));
+        }
+        if op == b"fn" {
+            // generator->func: a closure's object, a method's scope, or a
+            // function name.
+            let mut a = PhpArray::new();
+            let (proto, class) = &g.func;
+            let key = |s: &str| ArrayKey::Str(PhpStr::from(s));
+            let closure = h.borrow().payload::<Rc<rhp_values::ClosureData>>();
+            if let Some(c) = closure {
+                a.insert(key("closure"), Value::Closure((*c).clone()));
+            } else {
+                if let Some(c) = class {
+                    a.insert(key("class"), Value::Str(self.class(*c).name.clone()));
+                }
+                a.insert(key("name"), Value::Str(proto.name.clone()));
+            }
+            return Ok(Value::Array(a));
+        }
+        if closed {
+            return Ok(Value::Null);
+        }
+        let not_started = g.status == GenStatus::NotStarted;
+        let Some(f) = self.gen_frame(id) else {
+            return Ok(Value::Null);
+        };
+        Ok(match op {
+            // An unstarted generator stands at its declaration.
+            b"line" if not_started => Value::Int(f.proto.meta.start_line as i64),
+            b"line" => Value::Int(crate::errors::frame_line(f) as i64),
+            b"file" => Value::Str(f.proto.debug.file.clone()),
+            b"this" => match frame_this(f) {
+                Some(o) => Value::Object(o),
+                None => Value::Null,
+            },
+            // zend_generator_get_current: the generator that runs.
+            b"current" => {
+                let mut cur = h.clone();
+                let mut g = id;
+                while let Some((p, ph)) = self.generators.get(&g).and_then(|s| s.parent.clone()) {
+                    g = p;
+                    cur = ph;
+                }
+                Value::Object(cur)
+            }
+            b"trace" => Value::Array(self.gen_trace(id, opts)),
+            _ => Value::Null,
+        })
+    }
+
+    /// ReflectionGenerator::getTrace(): the frames from the running
+    /// generator of `id`'s tree back to `id` itself, each called from the
+    /// next one's `yield from`; `id`'s own frame has no caller.
+    fn gen_trace(&self, id: u32, opts: i64) -> PhpArray {
+        let (provide_object, ignore_args) = (opts & 1 != 0, opts & 2 != 0);
+        let mut chain: Vec<&Frame> = Vec::new();
+        let mut g = Some(id);
+        while let Some(cur) = g {
+            if let Some(f) = self.gen_frame(cur) {
+                chain.push(f);
+            }
+            g = self.gen_parent(cur);
+        }
+        chain.reverse();
+        let key = |s: &str| ArrayKey::Str(PhpStr::from(s));
+        let mut out = PhpArray::new();
+        for (n, f) in chain.iter().enumerate() {
+            let mut e = PhpArray::new();
+            if let Some(caller) = chain.get(n + 1) {
+                e.insert(key("file"), Value::Str(caller.proto.debug.file.clone()));
+                e.insert(
+                    key("line"),
+                    Value::Int(crate::errors::frame_line(caller) as i64),
+                );
+            }
+            e.insert(key("function"), Value::Str(f.proto.name.clone()));
+            if let Some(c) = f.defining_class {
+                e.insert(key("class"), Value::Str(self.class(c).name.clone()));
+                let this = frame_this(f);
+                let ty = if this.is_some() { "->" } else { "::" };
+                if let (true, Some(o)) = (provide_object, this) {
+                    e.insert(key("object"), Value::Object(o));
+                }
+                e.insert(key("type"), Value::str(ty));
+            }
+            if !ignore_args {
+                e.insert(key("args"), Value::Array(self.frame_args_of(f)));
+            }
+            out.push(Value::Array(e));
+        }
+        out
+    }
+}
+
+/// The `$this` of a generator frame.
+fn frame_this(f: &Frame) -> Option<ObjectHandle> {
+    let cv = f.proto.this_cv?;
+    match deref(&f.regs[cv as usize]) {
+        Value::Object(h) => Some(h),
+        _ => None,
+    }
+}

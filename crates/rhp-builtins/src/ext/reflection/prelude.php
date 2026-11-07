@@ -1210,13 +1210,22 @@ final class ReflectionReference {
 final class ReflectionGenerator {
     private $__g;
     public function __construct(Generator $generator) { $this->__g = $generator; }
-    public function getExecutingLine(): int { return 0; }
-    public function getExecutingFile(): string { return ''; }
-    public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array { return []; }
-    public function getFunction(): ReflectionFunctionAbstract { throw new ReflectionException('Cannot fetch information from a terminated Generator'); }
-    public function getThis(): ?object { return null; }
-    public function getExecutingGenerator(): Generator { return $this->__g; }
-    public function isClosed(): bool { return !$this->__g->valid(); }
+    private function __op($op, $opts = 0) {
+        if (__reflect('gen', 'closed', $this->__g)) { throw new ReflectionException('Cannot fetch information from a closed Generator'); }
+        return __reflect('gen', $op, $this->__g, $opts);
+    }
+    public function getExecutingLine(): int { return $this->__op('line'); }
+    public function getExecutingFile(): string { return $this->__op('file'); }
+    public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array { return $this->__op('trace', $options); }
+    public function getFunction(): ReflectionFunctionAbstract {
+        $f = __reflect('gen', 'fn', $this->__g);
+        if (isset($f['closure'])) { return new ReflectionFunction($f['closure']); }
+        if (isset($f['class'])) { return new ReflectionMethod($f['class'], $f['name']); }
+        return new ReflectionFunction($f['name']);
+    }
+    public function getThis(): ?object { return $this->__op('this'); }
+    public function getExecutingGenerator(): Generator { return $this->__op('current'); }
+    public function isClosed(): bool { return __reflect('gen', 'closed', $this->__g); }
 }
 
 final class ReflectionFiber {

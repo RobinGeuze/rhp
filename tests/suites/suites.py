@@ -230,6 +230,8 @@ def run_part(s, d, eng, part, out):
         "COLUMNS": "120",
         "NO_COLOR": "1",
         "TERM": "dumb",
+        # The same php.ini for both engines and their subprocesses.
+        "PHPRC": str(HERE / "php.ini"),
         "WP_PHP_BINARY": shlex.join(eng),
         **s.get("env", {}),
     }

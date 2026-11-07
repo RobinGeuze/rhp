@@ -50,7 +50,8 @@ python3 tests/suites/suites.py run laravel-13 --engine rhp --out /tmp/suites --p
 
 - Each part is one PHPUnit process, run with a fixed environment (`HOME` and
   `TMPDIR` under the output dir, `TZ=UTC`, `LANG=LC_ALL=C`, `COLUMNS=120`,
-  `NO_COLOR=1`, `TERM=dumb`), the part's timeout, and
+  `NO_COLOR=1`, `TERM=dumb`, `PHPRC=tests/suites/php.ini`: both engines
+  read the same php.ini, not the machine's), the part's timeout, and
   `--log-teamcity`/`--log-junit`. Outcomes are read from the TeamCity log,
   which PHPUnit writes as tests finish, so when the engine dies only the
   rest of that part is lost; the test that was running counts as `crash`.

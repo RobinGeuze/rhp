@@ -406,7 +406,9 @@ pub(super) fn validate_domain_ex(d: &[u8], flags: i64) -> bool {
     let hostname = flags & FILTER_FLAG_HOSTNAME != 0;
     // The C string: past the end is the NUL.
     let at = |i: usize| d.get(i).copied().unwrap_or(0);
-    let alnum = |b: u8| b.is_ascii_alphanumeric();
+    // isalnum() under php's C.UTF-8 LC_CTYPE (bytes past 0x7f are
+    // letters on macOS).
+    let alnum = crate::ext::ctype::is_alnum;
     let mut l = d.len();
     let mut e = d.len();
     // Ignore a trailing dot
@@ -464,7 +466,8 @@ fn is_userinfo_valid(s: &[u8]) -> bool {
     let mut p = 0;
     while p < s.len() {
         let c = s[p];
-        if c.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:".contains(&c) {
+        if crate::ext::ctype::is_alpha(c) || c.is_ascii_digit() || b"-._~!$&'()*+,;=:".contains(&c)
+        {
             p += 1;
         } else if c == b'%'
             && p as isize <= s.len() as isize - 3

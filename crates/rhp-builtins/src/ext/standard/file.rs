@@ -85,6 +85,14 @@ pub(crate) fn touch_ctx(host: &mut dyn Host, args: &[Value], idx: usize) {
     }
 }
 
+/// An http(s) URL the built-in http wrapper serves (no user wrapper
+/// replaced it).
+fn builtin_http(host: &dyn Host, path: &[u8]) -> bool {
+    crate::ext::standard::http_fopen_wrapper::is_http(path)
+        && !(host.has_user_wrappers()
+            && crate::main::streams::userspace::locate(host, path).is_some())
+}
+
 fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let path = path_param(args, 0, "fopen", "filename")?;
     let mode = str_arg(args, 1);
@@ -92,7 +100,7 @@ fn fn_fopen(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 3);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+    if builtin_http(host, &path) {
         return Ok(crate::ext::standard::http_fopen_wrapper::open_arg(
             host,
             "fopen",
@@ -248,7 +256,7 @@ fn fn_file(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let include_new_line = flags & IGNORE_NEW_LINES == 0;
     let skip_blank = flags & SKIP_EMPTY_LINES != 0;
     crate::main::streams::clear_errno();
-    let mut opened = crate::ext::standard::http_fopen_wrapper::is_http(&path);
+    let mut opened = builtin_http(host, &path);
     let data = if opened {
         match crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
@@ -742,7 +750,7 @@ fn fn_copy(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
     }
     crate::main::streams::clear_errno();
-    let data = if crate::ext::standard::http_fopen_wrapper::is_http(&from) {
+    let data = if builtin_http(host, &from) {
         match crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
             "copy",
@@ -1031,7 +1039,7 @@ fn fn_readfile(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 2);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+    if builtin_http(host, &path) {
         let Some(data) = crate::ext::standard::http_fopen_wrapper::get_contents(
             host,
             "readfile",
@@ -1609,7 +1617,7 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
     touch_ctx(host, args, 2);
-    if crate::ext::standard::http_fopen_wrapper::is_http(&url) {
+    if builtin_http(host, &url) {
         return Ok(
             match crate::ext::standard::http_fopen_wrapper::get_contents(
                 host,
@@ -1944,7 +1952,7 @@ fn fn_file_put_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if path.is_empty() {
         return Err(Thrown::error("ValueError", "Path must not be empty"));
     }
-    if crate::ext::standard::http_fopen_wrapper::is_http(&path) {
+    if builtin_http(host, &path) {
         // the http wrapper refuses to write
         if let Some(res) = crate::ext::standard::http_fopen_wrapper::open_arg(
             host,

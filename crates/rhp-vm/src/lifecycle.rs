@@ -157,6 +157,7 @@ impl Vm {
             deferred_undef_src: None,
             cursor_leaf: None,
             cursor_null_key: false,
+            cursor_ref_null: 0,
             last_error: None,
             error_handlers: Vec::new(),
             pending_throw: None,

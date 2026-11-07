@@ -1,0 +1,14 @@
+warning: Array to string conversion (prop_name_const_array.inc:6)
+warning: Array to string conversion (prop_name_const_array.inc:7)
+warning: Array to string conversion (prop_name_const_array.inc:9)
+warning: Array to string conversion (prop_name_const_array.inc:9)
+warning: Array to string conversion (prop_name_const_array.inc:10)
+object(stdClass)#2 (1) {
+  ["Array"]=>
+  string(2) "2x"
+}
+bool(true)
+string(2) "2x"
+object(stdClass)#2 (0) {
+}
+xy

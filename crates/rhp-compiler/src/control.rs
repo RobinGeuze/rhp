@@ -678,7 +678,7 @@ impl ProtoBuilder<'_> {
                 // `unset($o->prop)`: remove a declared property, else `__unset`.
                 Expression::Access(Access::Property(pa)) => {
                     let obj = self.compile_unset_object(pa.object)?;
-                    match self.compile_selector(&pa.property)? {
+                    match self.compile_prop_selector(&pa.property)? {
                         Sel::Static(name) => self.emit(Instr::UnsetProp { obj, name }),
                         Sel::Dyn(name) => self.emit(Instr::UnsetPropDyn { obj, name }),
                     }

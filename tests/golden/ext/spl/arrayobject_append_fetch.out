@@ -1,0 +1,7 @@
+R::offsetGet(): Argument #1 ($k) not passed
+V::offsetGet(): Argument #1 not passed
+get(dflt)
+start
+Array to string conversion (line 15)
+Undefined property: E::$Array (line 15)
+NULL

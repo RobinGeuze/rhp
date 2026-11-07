@@ -890,6 +890,7 @@ Zend/tests/class_name/class_on_constant_evaluated_expression.phpt
 Zend/tests/class_name/class_on_object.phpt
 Zend/tests/class_name/parent_class_name_without_parent.phpt
 Zend/tests/class_name/self_class_const_in_unknown_scope.phpt
+Zend/tests/class_properties_const.phpt
 Zend/tests/class_properties_dynamic.phpt
 Zend/tests/class_properties_static.phpt
 Zend/tests/class_underscore_as_name.phpt
@@ -1015,6 +1016,7 @@ Zend/tests/closures/closure_call_leak_with_exception.phpt
 Zend/tests/closures/closure_compare.phpt
 Zend/tests/closures/closure_const_expr/attributes.phpt
 Zend/tests/closures/closure_const_expr/attributes_ast_printing.phpt
+Zend/tests/closures/closure_const_expr/attributes_ast_printing_runtime.phpt
 Zend/tests/closures/closure_const_expr/attributes_autoload.phpt
 Zend/tests/closures/closure_const_expr/attributes_scope_001.phpt
 Zend/tests/closures/closure_const_expr/attributes_scope_002.phpt
@@ -1767,6 +1769,7 @@ Zend/tests/fibers/unfinished-fiber.phpt
 Zend/tests/fibers/unstarted-fiber.phpt
 Zend/tests/first_class_callable/constexpr/attributes.phpt
 Zend/tests/first_class_callable/constexpr/attributes_ast_printing.phpt
+Zend/tests/first_class_callable/constexpr/attributes_ast_printing_runtime.phpt
 Zend/tests/first_class_callable/constexpr/attributes_scope_001.phpt
 Zend/tests/first_class_callable/constexpr/attributes_scope_002.phpt
 Zend/tests/first_class_callable/constexpr/autoload.phpt
@@ -2674,6 +2677,8 @@ Zend/tests/lazy_objects/gh20504-005.phpt
 Zend/tests/lazy_objects/gh20657-001.phpt
 Zend/tests/lazy_objects/gh20657-002.phpt
 Zend/tests/lazy_objects/gh20854.phpt
+Zend/tests/lazy_objects/gh20873.phpt
+Zend/tests/lazy_objects/gh20875.phpt
 Zend/tests/lazy_objects/gh20875_proxy_get_no_init.phpt
 Zend/tests/lazy_objects/gh20905.phpt
 Zend/tests/lazy_objects/gh21478-isset.phpt
@@ -3454,7 +3459,9 @@ Zend/tests/offset_null.phpt
 Zend/tests/offset_object.phpt
 Zend/tests/offset_string.phpt
 Zend/tests/offsets/ArrayAccess_container_offset_behaviour.phpt
+Zend/tests/offsets/ArrayObject_container_offset_behaviour.phpt
 Zend/tests/offsets/appending_containers.phpt
+Zend/tests/offsets/appending_containers_in_fetch.phpt
 Zend/tests/offsets/array_container_offset_behaviour.phpt
 Zend/tests/offsets/array_offset.phpt
 Zend/tests/offsets/false_container_offset_behaviour.phpt
@@ -3465,6 +3472,7 @@ Zend/tests/offsets/null_offset_dep_promoted.phpt
 Zend/tests/offsets/null_offset_no_uaf.phpt
 Zend/tests/offsets/null_offset_unset_via_error_handler.phpt
 Zend/tests/offsets/object_container_offset_behaviour.phpt
+Zend/tests/offsets/reference_containers_appended.phpt
 Zend/tests/offsets/runtime_compile_time_offset_access.phpt
 Zend/tests/offsets/string_container_offset_behaviour.phpt
 Zend/tests/oom_SplFixedArray_fromArray_001.phpt
@@ -8538,6 +8546,7 @@ ext/reflection/tests/024.phpt
 ext/reflection/tests/028.phpt
 ext/reflection/tests/ReflectionAttribute_newInstance_deprecated.phpt
 ext/reflection/tests/ReflectionAttribute_newInstance_exception.phpt
+ext/reflection/tests/ReflectionAttribute_toString.phpt
 ext/reflection/tests/ReflectionClassConstant_double_construct.phpt
 ext/reflection/tests/ReflectionClassConstant_getValue.phpt
 ext/reflection/tests/ReflectionClassConstant_isDeprecated_userland.phpt
@@ -8858,6 +8867,8 @@ ext/reflection/tests/closures_005.phpt
 ext/reflection/tests/default_value_leak.phpt
 ext/reflection/tests/final_property_indicated.phpt
 ext/reflection/tests/gh10623.phpt
+ext/reflection/tests/gh11937_1.phpt
+ext/reflection/tests/gh11937_2.phpt
 ext/reflection/tests/gh12856.phpt
 ext/reflection/tests/gh12908.phpt
 ext/reflection/tests/gh15902/ReflectionClass-callable.phpt
@@ -9101,7 +9112,9 @@ ext/spl/tests/AppendIterator_invalid_ctor.phpt
 ext/spl/tests/ArrayObject/ArrayObject__serialize_saves_iterator_class.phpt
 ext/spl/tests/ArrayObject/ArrayObject_dump_during_sort.phpt
 ext/spl/tests/ArrayObject/ArrayObject_get_object_vars.phpt
+ext/spl/tests/ArrayObject/ArrayObject_illegal_offset.phpt
 ext/spl/tests/ArrayObject/ArrayObject_modify_shared_object_properties.phpt
+ext/spl/tests/ArrayObject/ArrayObject_proptable_canonicalization.phpt
 ext/spl/tests/ArrayObject/ArrayObject_unserialize_empty_string.phpt
 ext/spl/tests/ArrayObject/arrayIterator_ksort_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject___construct_basic6.phpt
@@ -9143,9 +9156,11 @@ ext/spl/tests/ArrayObject/bug38618.phpt
 ext/spl/tests/ArrayObject/bug41691.phpt
 ext/spl/tests/ArrayObject/bug44615.phpt
 ext/spl/tests/ArrayObject/bug45614.phpt
+ext/spl/tests/ArrayObject/bug54323.phpt
 ext/spl/tests/ArrayObject/bug73209.phpt
 ext/spl/tests/ArrayObject/gh15833_1.phpt
 ext/spl/tests/ArrayObject/gh16646.phpt
+ext/spl/tests/ArrayObject/gh16646_2.phpt
 ext/spl/tests/CallbackFilterIteratorTest.phpt
 ext/spl/tests/DirectoryIterator_by_reference.phpt
 ext/spl/tests/DirectoryIterator_empty_constructor.phpt
@@ -10550,6 +10565,7 @@ ext/standard/tests/class_object/get_object_vars_basic_002.phpt
 ext/standard/tests/class_object/get_object_vars_variation_001.phpt
 ext/standard/tests/class_object/get_object_vars_variation_002.phpt
 ext/standard/tests/class_object/get_object_vars_variation_004.phpt
+ext/standard/tests/class_object/get_object_vars_variation_005.phpt
 ext/standard/tests/class_object/get_parent_class_variation_001.phpt
 ext/standard/tests/class_object/get_parent_class_variation_002.phpt
 ext/standard/tests/class_object/interface_exists_variation3.phpt
@@ -13490,6 +13506,7 @@ tests/basic/bug54514.phpt
 tests/basic/bug55500.phpt
 tests/basic/bug61000.phpt
 tests/basic/bug67988.phpt
+tests/basic/bug71273.phpt
 tests/basic/bug73969.phpt
 tests/basic/bug78236.phpt
 tests/basic/bug78929.phpt

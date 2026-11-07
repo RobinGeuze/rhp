@@ -92,6 +92,19 @@ fn refuse(c: u8) -> i32 {
 /// php-cli: parse `args` (`args[0]` is the program name) as php's `main`
 /// and `do_cli` do, then run the script. Returns the exit status.
 pub fn main(args: &[String]) -> i32 {
+    let raw: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+    main_bytes(&raw)
+}
+
+/// [`main`] for the process's own arguments, which need not be UTF-8: the
+/// script's `$argv` keeps their bytes; options are parsed from a lossy
+/// UTF-8 copy.
+pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
+    let args: Vec<String> = raw
+        .iter()
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    let args = &args[..];
     let argv0 = args.first().map_or("", String::as_str);
 
     // main(): the ini settings, help, and invalid options, which only this
@@ -302,9 +315,6 @@ pub fn main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let rest = args[optind..]
-        .iter()
-        .map(|s| s.as_bytes().to_vec())
-        .collect();
+    let rest = raw[optind..].to_vec();
     crate::run_cli(script, ini, rest, ini_files)
 }

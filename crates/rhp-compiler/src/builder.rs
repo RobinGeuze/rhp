@@ -36,6 +36,9 @@ pub(crate) struct ProtoBuilder<'c> {
     /// For a closure, PHP 8.5's generated name `{closure:<scope>:<line>}` used by
     /// `__FUNCTION__`/`__METHOD__` inside it (the proto name stays "{closure}").
     pub(crate) magic_fn_name: Option<PhpStr>,
+    /// Overrides the enclosing scope in the closure names this builder
+    /// generates (an attribute thunk names closures after the function).
+    pub(crate) closure_qual: Option<Vec<u8>>,
     pub(crate) code: Vec<Instr>,
     pub(crate) consts: Vec<Value>,
     pub(crate) names: Vec<PhpStr>,
@@ -152,6 +155,7 @@ impl<'c> ProtoBuilder<'c> {
             returns_ref: false,
             scope_kind: ScopeKind::Function,
             magic_fn_name: None,
+            closure_qual: None,
             code: Vec::new(),
             consts: Vec::new(),
             names: Vec::new(),

@@ -16,15 +16,62 @@ pub(crate) fn assert_message(src: &[u8], arg: &Argument) -> Vec<u8> {
     let mut x = Ex {
         out: b"assert(".to_vec(),
         src,
+        ce: None,
     };
     x.arg(arg, 0, 0);
     x.out.push(b')');
     x.out
 }
 
+/// zend_ast_export of a compiled constant expression (an attribute
+/// argument): names are printed as zend_compile_const_expr left them and
+/// foldable parts as their value.
+pub(crate) fn const_expr(src: &[u8], e: &Expression, ce: &dyn ConstExprNames) -> Vec<u8> {
+    let mut x = Ex {
+        out: Vec::new(),
+        src,
+        ce: Some(ce),
+    };
+    x.ex(e, 0, 0);
+    x.out
+}
+
+/// A heredoc, nowdoc or double-quoted string without interpolation: its
+/// value (the parser makes it a plain string zval).
+pub(crate) fn plain_string(e: &Expression) -> Option<Vec<u8>> {
+    match unparen(e) {
+        Expression::CompositeString(cs) if !matches!(cs, CompositeString::ShellExecute(_)) => {
+            let x = Ex {
+                out: Vec::new(),
+                src: b"",
+                ce: None,
+            };
+            x.plain_composite(cs)
+        }
+        _ => None,
+    }
+}
+
+/// What a compiled constant expression's export needs from the compiler.
+pub(crate) trait ConstExprNames {
+    /// The value zend_eval_const_expr folds `e` to, if any.
+    fn fold(&self, e: &Expression) -> Option<Value>;
+    /// A class name in a `new` or static call (zend_compile_const_expr_class_reference).
+    fn class_ref(&self, id: &Identifier) -> Vec<u8>;
+    /// The class of a class constant (zend_compile_const_expr_class_const).
+    fn class_const_class(&self, id: &Identifier) -> Vec<u8>;
+    /// A first-class callable's function name (zend_compile_const_expr_fcc).
+    fn function(&self, id: &Identifier) -> Vec<u8>;
+    /// A constant php could not substitute (zend_compile_const_expr_const).
+    fn constant(&self, id: &Identifier) -> Vec<u8>;
+    /// The generated name of a closure (ZEND_AST_OP_ARRAY).
+    fn closure_name(&self, c: &Closure) -> Vec<u8>;
+}
+
 struct Ex<'s> {
     out: Vec<u8>,
     src: &'s [u8],
+    ce: Option<&'s dyn ConstExprNames>,
 }
 
 /// The parts of a ZEND_AST_VAR: its child is a name, an expression
@@ -198,7 +245,45 @@ impl<'s> Ex<'s> {
                 }
             }
             Value::Str(s) => self.quoted_str(s.as_bytes()),
+            Value::Array(a) => {
+                self.c(b'[');
+                for (i, (k, v)) in a.iter().enumerate() {
+                    if i > 0 {
+                        self.s(", ");
+                    }
+                    match k {
+                        rhp_values::ArrayKey::Int(n) => self.s(&n.to_string()),
+                        rhp_values::ArrayKey::Str(k) => self.quoted_str(k.as_bytes()),
+                    }
+                    self.s(" => ");
+                    self.zval(&rhp_values::ops::deref(v));
+                }
+                self.c(b']');
+            }
             _ => {}
+        }
+    }
+
+    /// A class name in a const expression: `self`/`parent`/`static` stay.
+    fn ce_class(&mut self, e: &Expression, indent: usize, of_const: bool) -> bool {
+        let Some(ce) = self.ce else {
+            return false;
+        };
+        match unparen(e) {
+            Expression::Identifier(id) => {
+                let n = if of_const {
+                    ce.class_const_class(id)
+                } else {
+                    ce.class_ref(id)
+                };
+                self.b(&n);
+                true
+            }
+            Expression::Self_(_) | Expression::Static(_) | Expression::Parent(_) => {
+                self.ns_name(e, indent);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -629,6 +714,32 @@ impl<'s> Ex<'s> {
 
     /// zend_ast_export_ex for an expression.
     fn ex(&mut self, e: &Expression, priority: u32, indent: usize) {
+        if let Some(ce) = self.ce {
+            if !matches!(unparen(e), Expression::Literal(_)) {
+                if let Some(v) = ce.fold(e) {
+                    if matches!(
+                        v,
+                        Value::Null
+                            | Value::Bool(_)
+                            | Value::Int(_)
+                            | Value::Float(_)
+                            | Value::Str(_)
+                            | Value::Array(_)
+                    ) {
+                        return self.zval(&v);
+                    }
+                }
+            }
+            match unparen(e) {
+                Expression::ConstantAccess(c) => return self.b(&ce.constant(&c.name)),
+                Expression::Closure(c) => {
+                    self.s("Closure(");
+                    self.b(&ce.closure_name(c));
+                    return self.c(b')');
+                }
+                _ => {}
+            }
+        }
         match e {
             Expression::Parenthesized(p) => match unparen(p.expression) {
                 // ZEND_PARENTHESIZED_ARROW_FUNC
@@ -788,7 +899,10 @@ impl<'s> Ex<'s> {
             Expression::Call(call) => self.call(call, indent),
             Expression::PartialApplication(pa) => match pa {
                 PartialApplication::Function(f) => {
-                    self.callee(f.function, indent);
+                    match (self.ce, unparen(f.function)) {
+                        (Some(ce), Expression::Identifier(id)) => self.b(&ce.function(id)),
+                        _ => self.callee(f.function, indent),
+                    }
                     self.c(b'(');
                     self.partial_args(&f.argument_list, indent);
                     self.c(b')');
@@ -802,7 +916,9 @@ impl<'s> Ex<'s> {
                     self.c(b')');
                 }
                 PartialApplication::StaticMethod(s) => {
-                    self.ns_name(s.class, indent);
+                    if !self.ce_class(s.class, indent, false) {
+                        self.ns_name(s.class, indent);
+                    }
                     self.s("::");
                     self.member(&s.method, indent);
                     self.c(b'(');
@@ -827,7 +943,9 @@ impl<'s> Ex<'s> {
                     self.export_var(sv_of(&p.property), indent);
                 }
                 Access::ClassConstant(c) => {
-                    self.ns_name(c.class, indent);
+                    if !self.ce_class(c.class, indent, true) {
+                        self.ns_name(c.class, indent);
+                    }
                     self.s("::");
                     match &c.constant {
                         ClassLikeConstantSelector::Identifier(id)
@@ -845,7 +963,9 @@ impl<'s> Ex<'s> {
             },
             Expression::Instantiation(n) => {
                 self.s("new ");
-                self.ns_name(n.class, indent);
+                if !self.ce_class(n.class, indent, false) {
+                    self.ns_name(n.class, indent);
+                }
                 self.c(b'(');
                 if let Some(args) = &n.argument_list {
                     self.args(args, indent);

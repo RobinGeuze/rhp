@@ -496,6 +496,24 @@ The module is deliberately "READ-ONLY, native format only"
   for `in_array`/`array_search` over callables.
 - **Effort/priority:** med / low.
 
+### 5.2 ArrayObject / ArrayIterator over an object — a snapshot plus write-through
+- **Now:** the prelude keeps the object's properties as an array
+  (`get_object_vars` when constructed); offset writes, unsets and
+  `exchangeArray()` also write through to the object (`__spl_obj_store`),
+  and `append()` throws as php does.
+- **Breaks:** properties the object gains or changes afterwards are not seen
+  through the ArrayObject; private/protected properties are not in the
+  snapshot; `$ao[] = v` and integer offsets land under string keys in the
+  object (php keeps integer keys in a properties table); nested writes
+  (`$ao['a']['b'] = v`) do not reach the object; ArrayIterator has no
+  write-through. Over another ArrayObject / ArrayIterator php shares that
+  one's storage (SPL_ARRAY_USE_OTHER); rhp does not see its elements and
+  writes stay in the outer one.
+- **Full impl:** let the storage be the object's property table itself
+  (spl_array_get_hash_table), which needs a properties table that can hold
+  integer keys.
+- **Effort/priority:** med / low.
+
 ---
 
 ## 6. Closures (`crates/rhp-builtins/src/core_prelude.php`, `crates/rhp-vm/src/lib.rs`)
@@ -723,6 +741,9 @@ The module is deliberately "READ-ONLY, native format only"
 - `#[\NoDiscard]` on an internal function is honoured only where the
   prelude declares it (DateTimeImmutable); natively implemented methods
   carry no attributes.
+- `ReflectionAttribute::__toString()` prints a class constant php
+  substitutes at compile time (`K::Y` of a class declared earlier in the
+  file) as the expression, not its value.
 
 ### 9.4 Fibers — gaps
 

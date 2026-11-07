@@ -108,41 +108,33 @@ fn fn_json_encode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     // php keeps `(int)$depth`.
     let max_depth = args.get(2).map_or(512, |v| conv::to_int(&deref(v)) as i32);
     let mut out = Vec::new();
-    set_last_error(JSON_ERROR_NONE);
     let mut enc = Encoder {
         flags,
         arrays: Vec::new(),
         objects: Vec::new(),
         depth: 0,
         max_depth,
-        key_failed: false,
+        error_code: JSON_ERROR_NONE,
     };
-    // An exception thrown by a jsonSerialize() propagates; the encoder's own
-    // error code then stays NONE.
-    let ok = match enc.value(host, &deref(&args[0]), &mut out, 0) {
-        Ok(ok) => ok,
-        Err(e) => {
-            if flags & JSON_THROW_ON_ERROR == 0 || flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
-                set_last_error(JSON_ERROR_NONE);
-            }
-            return Err(e);
+    let r = enc.value(host, &deref(&args[0]), &mut out, 0);
+    // php sets json_last_error() from the encoder's own code, except when
+    // it throws instead (JSON_THROW_ON_ERROR without PARTIAL_OUTPUT).
+    let code = enc.error_code;
+    let partial = flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0;
+    if flags & JSON_THROW_ON_ERROR == 0 || partial {
+        set_last_error(code);
+        // an exception from jsonSerialize() propagates
+        r?;
+        if code != JSON_ERROR_NONE && !partial {
+            return Ok(Value::Bool(false));
         }
-    };
-    if ok && !enc.key_failed {
-        // With JSON_PARTIAL_OUTPUT_ON_ERROR a substituted failure keeps its
-        // json_last_error code. Without it nothing failed here: a nested
-        // json_encode() (from jsonSerialize()) leaves no code behind.
-        if flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
-            set_last_error(JSON_ERROR_NONE);
-        }
-        Ok(Value::str(out))
     } else {
-        // Failure sets json_last_error at the failure site.
-        if flags & JSON_THROW_ON_ERROR != 0 {
-            return Err(json_exception(host, get_last_error()));
+        r?;
+        if code != JSON_ERROR_NONE {
+            return Err(json_exception(host, code));
         }
-        Ok(Value::Bool(false))
     }
+    Ok(Value::str(out))
 }
 
 fn indent(out: &mut Vec<u8>, level: usize) {
@@ -159,8 +151,8 @@ struct Encoder {
     objects: Vec<u32>,
     depth: i32,
     max_depth: i32,
-    /// A key failed to encode (php keeps going, then fails the call).
-    key_failed: bool,
+    /// php's `encoder->error_code`: the last failure.
+    error_code: i64,
 }
 
 impl Encoder {
@@ -168,7 +160,7 @@ impl Encoder {
     /// elements, so an empty container counts too.
     fn leave_level(&mut self) -> bool {
         if self.depth > self.max_depth {
-            set_last_error(JSON_ERROR_DEPTH);
+            self.error_code = JSON_ERROR_DEPTH;
             if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR == 0 {
                 return false;
             }
@@ -178,27 +170,30 @@ impl Encoder {
     }
 
     /// A string value; under JSON_PARTIAL_OUTPUT_ON_ERROR a bad one is `null`.
-    fn string(&self, s: &[u8], out: &mut Vec<u8>) -> bool {
-        encode_string(s, out, self.flags) || self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0
+    fn string(&mut self, s: &[u8], out: &mut Vec<u8>) -> bool {
+        if encode_string(s, out, self.flags) {
+            return true;
+        }
+        self.error_code = JSON_ERROR_UTF8;
+        self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0
     }
 
     /// A key: a bad one is `""` under JSON_PARTIAL_OUTPUT_ON_ERROR, else php
     /// goes on encoding and fails the call at the end.
     fn key(&mut self, s: &[u8], out: &mut Vec<u8>) {
         if !encode_string(s, out, self.flags) {
+            self.error_code = JSON_ERROR_UTF8;
             if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                 out.truncate(out.len() - 4);
                 out.extend_from_slice(b"\"\"");
-            } else {
-                self.key_failed = true;
             }
         }
     }
 
     /// A failure `code`: with JSON_PARTIAL_OUTPUT_ON_ERROR, `subst` is written
     /// in place of the value and encoding continues.
-    fn fail(&self, code: i64, out: &mut Vec<u8>, subst: &[u8]) -> bool {
-        set_last_error(code);
+    fn fail(&mut self, code: i64, out: &mut Vec<u8>, subst: &[u8]) -> bool {
+        self.error_code = code;
         if self.flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
             out.extend_from_slice(subst);
             true
@@ -501,8 +496,8 @@ fn encode_float(f: f64, out: &mut Vec<u8>, flags: i64) {
 
 /// Append a JSON string literal for `bytes`. Returns false on invalid UTF-8.
 /// json_encoder.c `php_json_escape_string` (without the numeric check, which
-/// the caller does). On invalid UTF-8 it sets JSON_ERROR_UTF8, drops what it
-/// wrote, writes `null` under JSON_PARTIAL_OUTPUT_ON_ERROR, and returns false.
+/// the caller does). On invalid UTF-8 it drops what it wrote, writes `null`
+/// under JSON_PARTIAL_OUTPUT_ON_ERROR, and returns false.
 fn encode_string(s: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     // The bytes that need more than a copy: controls, `"&'/<>\`, and >= 0x80.
@@ -552,7 +547,6 @@ fn encode_string(s: &[u8], out: &mut Vec<u8>, flags: i64) -> bool {
                 }
                 None => {
                     out.truncate(checkpoint);
-                    set_last_error(JSON_ERROR_UTF8);
                     if flags & JSON_PARTIAL_OUTPUT_ON_ERROR != 0 {
                         out.extend_from_slice(b"null");
                     }
@@ -616,11 +610,40 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     };
     let max_depth = args.get(2).map(|v| conv::to_int(&deref(v))).unwrap_or(512);
     let bigint_as_string = flags & JSON_BIGINT_AS_STRING != 0;
+    // php leaves json_last_error() alone when it throws instead.
+    let throw = flags & JSON_THROW_ON_ERROR != 0;
+    let fail = |host: &mut dyn Host, code: i64| {
+        if throw {
+            return Err(json_exception(host, code));
+        }
+        set_last_error(code);
+        Ok(Value::Null)
+    };
+    if !throw {
+        set_last_error(JSON_ERROR_NONE);
+    }
+    if json.is_empty() {
+        return fail(host, JSON_ERROR_SYNTAX);
+    }
+    if max_depth <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "json_decode(): Argument #3 ($depth) must be greater than 0",
+        ));
+    }
+    if max_depth > i32::MAX as i64 {
+        return Err(Thrown::error(
+            "ValueError",
+            format!(
+                "json_decode(): Argument #3 ($depth) must be less than {}",
+                i32::MAX
+            ),
+        ));
+    }
 
     // Validate UTF-8 before parsing (php returns JSON_ERROR_UTF8 for invalid).
     if std::str::from_utf8(&json).is_err() {
-        set_last_error(JSON_ERROR_UTF8);
-        return throw_or_null(host, flags, JSON_ERROR_UTF8);
+        return fail(host, JSON_ERROR_UTF8);
     }
 
     let mut p = Parser {
@@ -638,16 +661,11 @@ fn fn_json_decode(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
             p.skip_ws();
             if p.i != p.s.len() {
                 // trailing non-whitespace data.
-                set_last_error(JSON_ERROR_SYNTAX);
-                return throw_or_null(host, flags, JSON_ERROR_SYNTAX);
+                return fail(p.host, JSON_ERROR_SYNTAX);
             }
-            set_last_error(JSON_ERROR_NONE);
             Ok(v)
         }
-        Err(code) => {
-            set_last_error(code);
-            throw_or_null(host, flags, code)
-        }
+        Err(code) => fail(p.host, code),
     }
 }
 
@@ -715,14 +733,6 @@ fn fn_json_validate(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     };
     set_last_error(code);
     Ok(Value::Bool(code == JSON_ERROR_NONE))
-}
-
-fn throw_or_null(host: &mut dyn Host, flags: i64, code: i64) -> Result<Value, Thrown> {
-    if flags & JSON_THROW_ON_ERROR != 0 {
-        Err(json_exception(host, code))
-    } else {
-        Ok(Value::Null)
-    }
 }
 
 /// `new JsonException(json_last_error_msg(), code)` (php_json_throw...).

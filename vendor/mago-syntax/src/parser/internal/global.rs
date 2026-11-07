@@ -1,6 +1,5 @@
 use crate::T;
 use crate::cst::cst::Global;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -30,7 +29,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(variables, commas)
+                self.token_separated(variables, commas)
             },
             terminator: self.parse_terminator()?,
         })

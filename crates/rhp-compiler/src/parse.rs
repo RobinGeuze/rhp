@@ -15,7 +15,6 @@ use mago_allocator::LocalArena;
 use mago_database::file::FileId;
 use mago_syntax::cst::Program;
 use mago_syntax::lexer::Lexer;
-use mago_syntax::parser::parse_file_content;
 use mago_syntax::settings::LexerSettings;
 use mago_syntax_core::input::Input;
 
@@ -162,9 +161,7 @@ impl Arena {
     ///
     /// `source` is copied into the arena, so it need not outlive the call.
     pub fn parse<'a>(&'a self, logical_name: &[u8], source: &[u8]) -> Parsed<'a> {
-        let file_id = FileId::new(logical_name);
-        let program = parse_file_content(&self.arena, file_id, source);
-        Parsed { program }
+        self.parse_with_short_tags(logical_name, source, true)
     }
 
     /// [`Arena::parse`] with `<?` opening PHP code or not (short_open_tag).
@@ -179,6 +176,8 @@ impl Arena {
             lexer: LexerSettings {
                 enable_short_tags: short_tags,
             },
+            // Doc comments are found from the tokens when needed.
+            discard_trivia: true,
             ..Default::default()
         };
         let program = mago_syntax::parser::parse_file_content_with_settings(

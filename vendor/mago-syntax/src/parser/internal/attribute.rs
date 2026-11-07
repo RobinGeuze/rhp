@@ -18,7 +18,7 @@ where
             inner.push(self.parse_attribute_list()?);
         }
 
-        Ok(Sequence::new(inner))
+        Ok(self.sequence(inner))
     }
 
     pub(crate) fn parse_attribute_list(&mut self) -> Result<AttributeList<'arena>, ParseError> {

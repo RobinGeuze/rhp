@@ -1921,10 +1921,11 @@ impl ProtoBuilder<'_> {
         // Stand-ins for already computed values: compile_expr hands back
         // the register bound to the node's address.
         let span = p.input.span();
-        let arg_expr = Expression::Static(Keyword {
+        let arg_kw = Keyword {
             span,
             value: b"static",
-        });
+        };
+        let arg_expr = Expression::Static(&arg_kw);
         let args = [Argument::Positional(PositionalArgument {
             ellipsis: None,
             value: &arg_expr,
@@ -1941,6 +1942,7 @@ impl ProtoBuilder<'_> {
         let mark = self.expr_regs.len();
         self.expr_regs
             .push((&arg_expr as *const Expression as usize, operand));
+        let callee_kw;
         let callee_expr;
         let call = match callable {
             Expression::PartialApplication(Pa::Function(f))
@@ -1986,10 +1988,11 @@ impl ProtoBuilder<'_> {
                         return Err(e);
                     }
                 };
-                callee_expr = Expression::Static(Keyword {
+                callee_kw = Keyword {
                     span: other.span(),
                     value: b"static",
-                });
+                };
+                callee_expr = Expression::Static(&callee_kw);
                 self.expr_regs
                     .push((&callee_expr as *const Expression as usize, callee));
                 Call::Function(FunctionCall {

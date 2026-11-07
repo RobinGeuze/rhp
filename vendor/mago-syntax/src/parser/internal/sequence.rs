@@ -91,7 +91,7 @@ where
             let close = self.recover_at_eof(self.stream.unexpected_kind(None, close_kind))?;
             return Ok(TokenSeparatedSequenceResult {
                 open,
-                sequence: TokenSeparatedSequence::new(elements, separators),
+                sequence: self.token_separated(elements, separators),
                 close,
             });
         };
@@ -104,7 +104,7 @@ where
 
         Ok(TokenSeparatedSequenceResult {
             open,
-            sequence: TokenSeparatedSequence::new(elements, separators),
+            sequence: self.token_separated(elements, separators),
             close: current.span_for(self.stream.file_id()),
         })
     }

@@ -25,7 +25,6 @@ use crate::cst::cst::ShellExecuteString;
 use crate::cst::cst::StringPart;
 use crate::cst::cst::UnaryPrefix;
 use crate::cst::cst::UnaryPrefixOperator;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::DocumentKind;
@@ -85,7 +84,7 @@ where
 
         let right_double_quote = self.stream.eat_span(T!["\""])?;
 
-        Ok(InterpolatedString { prefix, left_double_quote, parts: Sequence::new(parts), right_double_quote })
+        Ok(InterpolatedString { prefix, left_double_quote, parts: self.sequence(parts), right_double_quote })
     }
 
     pub(crate) fn parse_shell_execute_string(&mut self) -> Result<ShellExecuteString<'arena>, ParseError> {
@@ -97,7 +96,7 @@ where
 
         let right_backtick = self.stream.eat_span(T!["`"])?;
 
-        Ok(ShellExecuteString { left_backtick, parts: Sequence::new(parts), right_backtick })
+        Ok(ShellExecuteString { left_backtick, parts: self.sequence(parts), right_backtick })
     }
 
     pub(crate) fn parse_document_string(&mut self) -> Result<DocumentString<'arena>, ParseError> {
@@ -167,7 +166,7 @@ where
             open,
             kind,
             indentation,
-            parts: Sequence::new(parts),
+            parts: self.sequence(parts),
             label: self.bytes(&label),
             close: close.span_for(self.stream.file_id()),
         })
@@ -250,11 +249,11 @@ where
 
         let Some(minus_span) = minus else {
             return Ok(if integer_offset_is_canonical(number.value) {
-                self.arena.alloc(Expression::Literal(Literal::Integer(LiteralInteger {
+                self.arena.alloc(Expression::Literal(self.arena.alloc(Literal::Integer(LiteralInteger {
                     span: number_span,
                     raw: number.value,
                     value: parse_literal_integer(number.value),
-                })))
+                }))))
             } else {
                 self.string_key_offset(number.value, number_span)
             });
@@ -266,14 +265,14 @@ where
         let raw = self.bytes(&raw);
 
         Ok(if integer_offset_is_canonical(raw) {
-            self.arena.alloc(Expression::UnaryPrefix(UnaryPrefix {
+            self.arena.alloc(Expression::UnaryPrefix(self.arena.alloc(UnaryPrefix {
                 operator: UnaryPrefixOperator::Negation(minus_span),
-                operand: self.arena.alloc(Expression::Literal(Literal::Integer(LiteralInteger {
+                operand: self.arena.alloc(Expression::Literal(self.arena.alloc(Literal::Integer(LiteralInteger {
                     span: number_span,
                     raw: number.value,
                     value: parse_literal_integer(number.value),
-                }))),
-            }))
+                })))),
+            })))
         } else {
             self.string_key_offset(raw, minus_span.join(number_span))
         })
@@ -286,7 +285,7 @@ where
     }
 
     fn string_key_offset(&self, value: &'arena [u8], span: Span) -> &'arena Expression<'arena> {
-        self.arena.alloc(Expression::Identifier(Identifier::Local(LocalIdentifier { span, value })))
+        self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(LocalIdentifier { span, value }))))
     }
 }
 

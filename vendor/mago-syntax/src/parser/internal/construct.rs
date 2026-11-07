@@ -27,7 +27,7 @@ where
     pub(crate) fn parse_construct(&mut self) -> Result<Expression<'arena>, ParseError> {
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
-        Ok(Expression::Construct(match token.kind {
+        let construct = match token.kind {
             T!["isset"] => {
                 let isset = self.expect_keyword(T!["isset"])?;
                 let result = self.parse_comma_separated_sequence(T!["("], T![")"], |p| p.parse_expression())?;
@@ -79,14 +79,14 @@ where
                     let partial_args = self.parse_partial_argument_list()?;
 
                     if partial_args.has_placeholders() {
-                        return Ok(Expression::PartialApplication(PartialApplication::Function(
+                        return Ok(Expression::PartialApplication(self.arena.alloc(PartialApplication::Function(
                             FunctionPartialApplication {
-                                function: self.arena.alloc(Expression::Identifier(Identifier::Local(
+                                function: self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(
                                     LocalIdentifier { span: exit.span, value: exit.value },
-                                ))),
+                                )))),
                                 argument_list: partial_args,
                             },
-                        )));
+                        ))));
                     }
 
                     Construct::Exit(ExitConstruct {
@@ -105,14 +105,14 @@ where
                     let partial_args = self.parse_partial_argument_list()?;
 
                     if partial_args.has_placeholders() {
-                        return Ok(Expression::PartialApplication(PartialApplication::Function(
+                        return Ok(Expression::PartialApplication(self.arena.alloc(PartialApplication::Function(
                             FunctionPartialApplication {
-                                function: self.arena.alloc(Expression::Identifier(Identifier::Local(
+                                function: self.arena.alloc(Expression::Identifier(self.arena.alloc(Identifier::Local(
                                     LocalIdentifier { span: die.span, value: die.value },
-                                ))),
+                                )))),
                                 argument_list: partial_args,
                             },
-                        )));
+                        ))));
                     }
 
                     Construct::Die(DieConstruct { die, arguments: Some(partial_args.into_argument_list(self.arena)) })
@@ -137,6 +137,7 @@ where
                     ],
                 ));
             }
-        }))
+        };
+        Ok(Expression::Construct(self.arena.alloc(construct)))
     }
 }

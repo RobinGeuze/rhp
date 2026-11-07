@@ -1790,7 +1790,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     Expression::Instantiation(node) => Node::Instantiation(node),
                     Expression::MagicConstant(node) => Node::MagicConstant(node),
                     Expression::Pipe(node) => Node::Pipe(node),
-                    Expression::Error(span) => Node::Error(*span),
+                    Expression::Error(span) => Node::Error(**span),
                 };
                 f(child);
             }

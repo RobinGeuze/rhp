@@ -7,7 +7,6 @@ use crate::cst::cst::IfColonDelimitedBodyElseIfClause;
 use crate::cst::cst::IfStatementBody;
 use crate::cst::cst::IfStatementBodyElseClause;
 use crate::cst::cst::IfStatementBodyElseIfClause;
-use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -42,7 +41,7 @@ where
                     else_if_clauses.push(else_if_clause);
                 }
 
-                Sequence::new(else_if_clauses)
+                self.sequence(else_if_clauses)
             },
             else_clause: self.parse_optional_if_statement_body_else_clause()?,
         })
@@ -109,7 +108,7 @@ where
                     }
                 }
 
-                Sequence::new(statements)
+                self.sequence(statements)
             },
             else_if_clauses: {
                 let mut else_if_clauses = self.new_vec();
@@ -117,7 +116,7 @@ where
                     else_if_clauses.push(else_if_clause);
                 }
 
-                Sequence::new(else_if_clauses)
+                self.sequence(else_if_clauses)
             },
             else_clause: self.parse_optional_if_colon_delimited_body_else_clause()?,
             endif: self.expect_keyword(T!["endif"])?,
@@ -161,7 +160,7 @@ where
                     }
                 }
 
-                Sequence::new(statements)
+                self.sequence(statements)
             },
         })
     }
@@ -198,7 +197,7 @@ where
                         }
                     }
                 }
-                Sequence::new(statements)
+                self.sequence(statements)
             },
         })
     }

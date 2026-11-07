@@ -3,7 +3,6 @@ use crate::cst::cst::Match;
 use crate::cst::cst::MatchArm;
 use crate::cst::cst::MatchDefaultArm;
 use crate::cst::cst::MatchExpressionArm;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::TokenKind;
@@ -61,7 +60,7 @@ where
                     }
                 }
 
-                TokenSeparatedSequence::new(conditions, commas)
+                self.token_separated(conditions, commas)
             },
             arrow: self.stream.eat_span(T!["=>"])?,
             expression: self.parse_expression()?,

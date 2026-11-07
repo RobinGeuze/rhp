@@ -27,7 +27,10 @@ where
     arena: &'arena A,
     lexer: Lexer<'input>,
     buffer: LookaheadBuf<Token<'input>, 4>,
-    trivia: Vec<'arena, Trivia<'input>, A>,
+    // rhp: a heap vector, copied into the arena at its final length.
+    trivia: std::vec::Vec<Trivia<'input>>,
+    // rhp: drop comments and whitespace instead of collecting them.
+    discard_trivia: bool,
     position: Position,
     file_id: FileId,
     elide_detached_whitespace: bool,
@@ -42,6 +45,7 @@ where
         arena: &'arena A,
         lexer: Lexer<'input>,
         elide_detached_whitespace: bool,
+        discard_trivia: bool,
     ) -> TokenStream<'input, 'arena, A> {
         let position = lexer.current_position();
         let file_id_cached = lexer.file_id();
@@ -50,7 +54,8 @@ where
             arena,
             lexer,
             buffer: LookaheadBuf::new(),
-            trivia: Vec::new_in(arena),
+            trivia: std::vec::Vec::new(),
+            discard_trivia,
             position,
             file_id: file_id_cached,
             elide_detached_whitespace,
@@ -261,10 +266,11 @@ where
     /// Consumes the comments collected by the lexer and returns them.
     #[inline]
     pub fn get_trivia(&mut self) -> Sequence<'arena, Trivia<'arena>> {
-        let mut trivia = Vec::new_in(self.arena);
-        std::mem::swap(&mut self.trivia, &mut trivia);
-
-        Sequence::new(trivia)
+        let trivia = std::mem::take(&mut self.trivia);
+        if trivia.is_empty() {
+            return Sequence::empty();
+        }
+        Sequence::from_slice(self.arena.alloc_slice_fill_iter(trivia))
     }
 
     /// Fills the token buffer until at least `n` tokens are available, unless the lexer returns EOF.
@@ -295,6 +301,9 @@ where
                     };
 
                     if let Some(kind) = trivia_kind {
+                        if self.discard_trivia {
+                            continue;
+                        }
                         if kind == TriviaKind::WhiteSpace {
                             if self.after_comment || !self.elide_detached_whitespace {
                                 self.trivia.push(Trivia {

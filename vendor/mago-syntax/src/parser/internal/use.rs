@@ -12,7 +12,6 @@ use crate::cst::cst::UseItemAlias;
 use crate::cst::cst::UseItemSequence;
 use crate::cst::cst::UseItems;
 use crate::cst::cst::UseType;
-use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 
@@ -58,7 +57,7 @@ where
             }
         }
 
-        Ok(UseItemSequence { file_id: self.stream.file_id(), start, items: TokenSeparatedSequence::new(items, commas) })
+        Ok(UseItemSequence { file_id: self.stream.file_id(), start, items: self.token_separated(items, commas) })
     }
 
     pub(crate) fn parse_typed_use_item_sequence(&mut self) -> Result<TypedUseItemSequence<'arena>, ParseError> {
@@ -75,7 +74,7 @@ where
             }
         }
 
-        Ok(TypedUseItemSequence { r#type, items: TokenSeparatedSequence::new(items, commas) })
+        Ok(TypedUseItemSequence { r#type, items: self.token_separated(items, commas) })
     }
 
     pub(crate) fn parse_typed_use_item_list(&mut self) -> Result<TypedUseItemList<'arena>, ParseError> {
@@ -105,7 +104,7 @@ where
             namespace,
             namespace_separator,
             left_brace,
-            items: TokenSeparatedSequence::new(items, commas),
+            items: self.token_separated(items, commas),
             right_brace,
         })
     }
@@ -135,7 +134,7 @@ where
             namespace,
             namespace_separator,
             left_brace,
-            items: TokenSeparatedSequence::new(items, commas),
+            items: self.token_separated(items, commas),
             right_brace,
         })
     }

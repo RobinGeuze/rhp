@@ -1,0 +1,59 @@
+# Request corpus for `rhp-difftest app symfony-8.1` (see tests/apps/README.md).
+#
+# Every request runs through php-cgi and then through rhp --cgi, on this same
+# directory, each engine starting from the same pristine state.
+
+# Writable state, restored from the pristine snapshot before each engine.
+state = ["var/cache", "var/log", "var/share"]
+
+# The prod cache is warmed through the SAPI that serves it: clear what
+# `bin/console cache:warmup` (the CLI flavour) left, run the corpus once
+# through php-cgi, and snapshot that. The Twig cache is then dropped again so
+# each engine compiles the templates itself (its output is diffed as @files).
+warmup = "corpus"
+warmup_clear = ["var/cache"]
+warmup_drop = ["var/cache/prod/twig"]
+
+# Extra `-d` settings for both engines.
+ini = []
+
+# Capture group 1 of each pattern is a random token, alpha-renamed
+# consistently (<TOK1>, <TOK2>, ...) across headers, bodies, steps and files.
+tokens = ['PHPSESSID=([A-Za-z0-9,-]+)']
+
+[[request]]
+id = "home"
+path = "/"
+status = 200
+
+[[request]]
+id = "hello-bob"
+path = "/hello/Bob"
+status = 200
+
+[[request]]
+id = "json-query"
+path = "/json?a=1&b[]=x"
+status = 200
+
+[[request]]
+id = "twig-ann"
+path = "/twig/Ann"
+status = 200
+
+[[request]]
+id = "submit-post"
+method = "POST"
+path = "/submit"
+status = 201
+body = "x=1&y=two&list[]=a&list[]=b"
+
+[[request]]
+id = "not-found"
+path = "/nope"
+status = 404
+
+[[request]]
+id = "method-not-allowed"
+path = "/submit"
+status = 405

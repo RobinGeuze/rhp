@@ -1,0 +1,4 @@
+# Files rhp refuses to compile (rhp-difftest lint --write-known).
+# `rhp-difftest lint --check-known` fails on a refused file not listed here;
+# delete lines as files start compiling. Format: <file>\t# <reason>
+# Only <file> is matched; the reason is a comment and may change freely.

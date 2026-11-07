@@ -187,3 +187,30 @@ fn snapshot_restore_round_trips() {
     assert!(!dir.join("var/missing").exists());
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_php_path_runs_that_script() {
+    let dir = std::env::temp_dir().join(format!("rhp-app-script-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("web")).unwrap();
+    fs::write(dir.join("web/index.php"), "").unwrap();
+    fs::write(dir.join("web/login.php"), "").unwrap();
+    fs::write(dir.join("secret.php"), "").unwrap();
+    let app = App {
+        name: "t".into(),
+        root: dir.clone(),
+        docroot: dir.join("web"),
+        front: dir.join("web/index.php"),
+        script_name: "/index.php".into(),
+    };
+    let front = (dir.join("web/index.php"), "/index.php".to_string());
+    assert_eq!(
+        script_for(&app, "/login.php?x=1"),
+        (dir.join("web/login.php"), "/login.php".to_string())
+    );
+    assert_eq!(script_for(&app, "/hello/"), front);
+    assert_eq!(script_for(&app, "/missing.php"), front);
+    assert_eq!(script_for(&app, "/../secret.php"), front);
+    assert_eq!(script_for(&app, "/x?next=/login.php"), front);
+    let _ = fs::remove_dir_all(&dir);
+}

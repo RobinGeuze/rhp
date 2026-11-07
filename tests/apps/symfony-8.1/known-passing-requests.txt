@@ -1,0 +1,2 @@
+# symfony-8.1 requests rhp answers like php-cgi (rhp-difftest app --write-known).
+# CI fails if one stops matching: fix the regression, or remove the line.

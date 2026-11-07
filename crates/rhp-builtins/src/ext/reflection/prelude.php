@@ -250,7 +250,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
         return $o;
     }
     public function getShortName(): string { return $this->__i['short']; }
-    public function getStaticVariables(): array { return []; }
+    public function getStaticVariables(): array { return $this->__i['internal'] ? [] : __reflect('statics', $this->__l); }
     public function returnsReference(): bool { return $this->__i['returnsRef']; }
     public function hasReturnType(): bool { return $this->__i['ret'] !== null; }
     public function getReturnType(): ?ReflectionType { return Reflection::__type($this->__i['ret']); }
@@ -367,9 +367,17 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
             // Closure with the closure's own signature.
             $i = __reflect('fn', $objectOrMethod);
             unset($i['closure'], $i['this'], $i['scope'], $i['calledScope'], $i['used']);
+            // A user closure's arginfo is ZEND_ACC_USER_ARG_INFO here: no
+            // default values (an internal function's FCC keeps its own).
+            $user = !$i['internal'] || isset($i['userArgInfo']);
+            if ($user) {
+                foreach ($i['params'] as $k => $p) {
+                    $i['params'][$k] = ['hasDefault' => false, 'defaultConst' => null, 'defaultText' => null] + $p;
+                }
+            }
             // zend_get_closure_invoke_method keeps the function's attributes.
             $i = ['name' => '__invoke', 'short' => '__invoke', 'ns' => '', 'class' => 'Closure', 'internal' => true,
-                  'ext' => false, 'userArgInfo' => true, 'file' => false, 'start' => false, 'end' => false, 'doc' => false,
+                  'ext' => false, 'userArgInfo' => $user ?: null, 'file' => false, 'start' => false, 'end' => false, 'doc' => false,
                   'vis' => 1, 'modifiers' => 1, 'static' => false, 'abstract' => false, 'final' => false,
                   'prototype' => null] + $i;
             $this->__i = $i;
@@ -509,7 +517,11 @@ class ReflectionParameter implements Reflector {
     public function getName(): string { return $this->__p['name']; }
     public function isPassedByReference(): bool { return $this->__p['byref']; }
     public function canBePassedByValue(): bool { return !$this->__p['byref'] || ($this->__p['preferRef'] ?? false); }
-    public function getDeclaringFunction(): ReflectionFunctionAbstract { return Reflection::__fn($this->__l); }
+    public function getDeclaringFunction(): ReflectionFunctionAbstract {
+        // The closure invoke handler's parameters belong to Closure::__invoke.
+        if ($this->__l instanceof Closure && ($this->__f['class'] ?? null) === 'Closure') { return new ReflectionMethod($this->__l, '__invoke'); }
+        return Reflection::__fn($this->__l);
+    }
     public function getDeclaringClass(): ?ReflectionClass {
         if (isset($this->__f['class'])) { return new ReflectionClass($this->__f['class']); }
         $s = $this->__f['scope'] ?? null;
@@ -697,6 +709,10 @@ class ReflectionClass implements Reflector {
         foreach (__reflect('methods', $this->name) as $m) {
             $rm = new ReflectionMethod($this->name, $m[0]);
             if ($filter === null || ($rm->getModifiers() & $filter)) { $o[] = $rm; }
+        }
+        // The closure invoke handler (an empty one without an object).
+        if ($this->name === 'Closure' && ($filter === null || ($filter & ReflectionMethod::IS_PUBLIC))) {
+            $o[] = new ReflectionMethod($this->__o ?? static function () {}, '__invoke');
         }
         return $o;
     }

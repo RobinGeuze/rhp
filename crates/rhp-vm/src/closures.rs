@@ -79,6 +79,16 @@ fn declared_statics(p: &FunctionProto) -> Vec<(PhpStr, Value)> {
     out
 }
 
+/// A static variable's cell as zend_array_dup copies it: a reference
+/// nothing else holds becomes its value.
+fn dup_cell(c: &rhp_values::PhpRef) -> Value {
+    if Rc::strong_count(c) == 1 {
+        c.borrow().clone()
+    } else {
+        Value::Ref(c.clone())
+    }
+}
+
 impl Vm {
     /// zend_closure_get_debug_info: what `var_dump`/`print_r` show for a
     /// Closure.
@@ -106,35 +116,17 @@ impl Vm {
                 put(&mut a, "name", Value::Str(p.name.clone()));
                 put(&mut a, "file", Value::Str(p.debug.file.clone()));
                 put(&mut a, "line", Value::Int(p.meta.start_line as i64));
-                // Captured variables are static variables in php, before
-                // the declared ones.
-                let mut st = PhpArray::new();
-                for (i, v) in cd.captures.iter().enumerate() {
-                    if p.this_cv == Some(i as u16) {
-                        if this.is_none() {
-                            if let Value::Object(h) = deref(v) {
-                                this = Some(h);
-                            }
-                        }
-                        continue;
-                    }
-                    if matches!(v, Value::Undef) {
-                        continue;
-                    }
-                    if let Some(n) = p.cv_var_names.get(i) {
-                        // zend_array_dup of the static variables.
-                        st.insert(rhp_values::ArrayKey::Str(n.clone()), copy_elem(v));
+                // `$this` captured like a variable.
+                if this.is_none() {
+                    if let Some(Value::Object(h)) = p
+                        .this_cv
+                        .and_then(|r| cd.captures.get(r as usize))
+                        .map(deref)
+                    {
+                        this = Some(h);
                     }
                 }
-                let own = cd.statics.borrow();
-                for (n, init) in declared_statics(p) {
-                    let v = match own.iter().find(|(k, _)| *k == n) {
-                        Some((_, c)) if Rc::strong_count(c) == 1 => c.borrow().clone(),
-                        Some((_, c)) => Value::Ref(c.clone()),
-                        None => init,
-                    };
-                    st.insert(rhp_values::ArrayKey::Str(n), v);
-                }
+                let st = self.closure_statics(cd);
                 if !st.is_empty() {
                     put(&mut a, "static", Value::Array(st));
                 }
@@ -236,21 +228,62 @@ impl Vm {
         if f.proto.is_internal() {
             return None;
         }
+        let st = self.function_statics(&f.proto, f.unit, None);
+        (!st.is_empty()).then_some(st)
+    }
+
+    /// A user function's or method's static variables (zend_array_dup of
+    /// `static_variables_ptr`): current values, the declared initial value
+    /// for one not bound yet. `cls` is a method's class.
+    pub(crate) fn function_statics(
+        &self,
+        proto: &Rc<FunctionProto>,
+        unit: crate::UnitId,
+        cls: Option<rhp_values::ClassId>,
+    ) -> PhpArray {
         let mut st = PhpArray::new();
-        for (name, init) in declared_statics(&f.proto) {
+        for (name, init) in declared_statics(proto) {
             let key = (
-                Rc::as_ptr(&f.proto) as usize,
-                f.unit,
-                None,
+                Rc::as_ptr(proto) as usize,
+                unit,
+                cls,
                 name.as_bytes().to_vec(),
             );
             let v = match self.statics.get(&key) {
-                Some(c) => deref(&c.borrow()),
+                Some(c) => dup_cell(c),
                 None => init,
             };
             st.insert(rhp_values::ArrayKey::Str(name), v);
         }
-        (!st.is_empty()).then_some(st)
+        st
+    }
+
+    /// A closure's static variables: its captured variables (php binds
+    /// them as static variables), then the declared ones.
+    pub(crate) fn closure_statics(&self, cd: &ClosureData) -> PhpArray {
+        let mut st = PhpArray::new();
+        let Some(f) = self.closures.get(cd.fnidx as usize) else {
+            return st;
+        };
+        let p = &f.proto;
+        for (i, v) in cd.captures.iter().enumerate() {
+            if p.this_cv == Some(i as u16) || matches!(v, Value::Undef) {
+                continue;
+            }
+            if let Some(n) = p.cv_var_names.get(i) {
+                // zend_array_dup of the static variables.
+                st.insert(rhp_values::ArrayKey::Str(n.clone()), copy_elem(v));
+            }
+        }
+        let own = cd.statics.borrow();
+        for (n, init) in declared_statics(p) {
+            let v = match own.iter().find(|(k, _)| *k == n) {
+                Some((_, c)) => dup_cell(c),
+                None => init,
+            };
+            st.insert(rhp_values::ArrayKey::Str(n), v);
+        }
+        st
     }
 
     /// A class named in a first-class callable: `self`, `parent` and

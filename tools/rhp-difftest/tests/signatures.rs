@@ -20,6 +20,8 @@ foreach (array_merge(get_declared_classes(), get_declared_interfaces(), get_decl
     foreach ($r->getMethods() as $m) {
         // An enum's cases/from/tryFrom come from the engine, not a stub.
         if ($r->isEnum() && in_array(strtolower($m->getName()), ['cases', 'from', 'tryfrom'], true)) { continue; }
+        // Closure's __invoke is the invoke handler getMethods() adds, not a stub method.
+        if ($r->getName() === 'Closure' && $m->getName() === '__invoke') { continue; }
         if ($m->getDeclaringClass()->getName() === $r->getName()) { echo "M ", $r->getName(), " ", $m->getName(), "\n"; }
     }
 }

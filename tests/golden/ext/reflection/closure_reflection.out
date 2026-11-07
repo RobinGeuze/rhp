@@ -1,0 +1,137 @@
+string(7) "getPath"
+bool(true)
+string(1) "A"
+string(1) "A"
+bool(false)
+string(19) "{closure:A::mk():6}"
+bool(true)
+string(1) "A"
+string(1) "A"
+bool(false)
+string(19) "{closure:A::mk():6}"
+bool(false)
+string(1) "A"
+string(1) "A"
+bool(true)
+string(1) "s"
+bool(false)
+string(1) "A"
+string(1) "A"
+bool(true)
+NULL
+NULL
+string(1) "B"
+bool(false)
+Method [ <internal> public method __invoke ] {
+
+  - Parameters [3] {
+    Parameter #0 [ <required> $a ]
+    Parameter #1 [ <optional> $b = <default> ]
+    Parameter #2 [ <optional> $d = <default> ]
+  }
+}
+Parameter #2 [ <optional> $d = <default> ]
+Internal error: Failed to retrieve the default value
+string(16) "ReflectionMethod"
+string(8) "__invoke"
+string(8) "__invoke"
+bool(true)
+bool(true)
+Method [ <internal> public method __invoke ] {
+
+  - Parameters [3] {
+    Parameter #0 [ <required> string $haystack ]
+    Parameter #1 [ <required> string $needle ]
+    Parameter #2 [ <optional> int $offset = 0 ]
+  }
+  - Return [ int|false ]
+}
+Closure::__construct 0
+Closure::bind 3
+Closure::bindTo 2
+Closure::call 2
+Closure::fromCallable 1
+Closure::getCurrent 0
+Closure::__invoke 0
+Closure::__construct 0
+Closure::bind 3
+Closure::bindTo 2
+Closure::call 2
+Closure::fromCallable 1
+Closure::getCurrent 0
+Closure::__invoke 3
+bind
+fromCallable
+getCurrent
+array(6) {
+  ["x"]=>
+  &int(1)
+  ["y"]=>
+  int(2)
+  ["s"]=>
+  NULL
+  ["t"]=>
+  int(3)
+  ["u"]=>
+  int(8)
+  ["w"]=>
+  NULL
+}
+array(6) {
+  ["x"]=>
+  &int(1)
+  ["y"]=>
+  int(2)
+  ["s"]=>
+  NULL
+  ["t"]=>
+  int(3)
+  ["u"]=>
+  int(8)
+  ["w"]=>
+  int(2)
+}
+array(2) {
+  ["y"]=>
+  int(2)
+  ["x"]=>
+  int(1)
+}
+array(1) {
+  ["q"]=>
+  int(1)
+}
+array(1) {
+  ["q"]=>
+  int(2)
+}
+array(1) {
+  ["q"]=>
+  int(2)
+}
+array(0) {
+}
+array(1) {
+  ["q"]=>
+  int(2)
+}
+array(0) {
+}
+array(0) {
+}
+array(1) {
+  ["n"]=>
+  &int(2)
+}
+array(1) {
+  ["n"]=>
+  &int(2)
+}
+array(1) {
+  ["n"]=>
+  int(2)
+}
+array(1) {
+  ["n"]=>
+  int(2)
+}

@@ -16,11 +16,13 @@ pub mod argon2;
 pub mod avifinfo;
 #[cfg(feature = "crypt")]
 pub mod crypt;
+#[cfg(feature = "fileinfo")]
+pub mod fileinfo;
 #[cfg(feature = "timelib")]
 pub mod timelib;
 
 use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
-use std::ffi::c_void;
+use std::ffi::{c_char, c_int, c_void};
 
 /// Bytes before each block emalloc hands out: the block's layout (size and
 /// alignment), for efree (C frees by pointer only). 16 keeps malloc's
@@ -214,6 +216,70 @@ pub unsafe extern "C" fn rhp_csrc_safe_ferealloc(
         return std::ptr::null_mut();
     }
     rhp_csrc_erealloc(ptr, n)
+}
+
+/// Copy `bytes` and a NUL into `buf` (`cap` bytes), cut to fit; the length
+/// copied.
+///
+/// # Safety
+///
+/// `buf` holds `cap` writable bytes, `cap > 0`.
+unsafe fn put_c(bytes: &[u8], buf: *mut c_char, cap: usize) -> usize {
+    let n = bytes.len().min(cap - 1);
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
+    *buf.add(n) = 0;
+    n
+}
+
+/// shim/php_printf.c's `php_conv_fp` (main/snprintf.c), for a finite
+/// `num`: the digits in `buf` (NUL-terminated) and their length.
+///
+/// # Safety
+///
+/// `buf` holds `cap` writable bytes, `cap > 0`; `is_negative` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn rhp_csrc_conv_fp(
+    format: c_char,
+    num: f64,
+    add_dp: bool,
+    precision: c_int,
+    dec_point: c_char,
+    is_negative: *mut bool,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
+    let (digits, neg) = rhp_values::fmt::conv_fp(
+        format as u8,
+        num,
+        precision.max(0) as usize,
+        add_dp,
+        dec_point as u8,
+    );
+    *is_negative = neg;
+    put_c(&digits, buf, cap)
+}
+
+/// shim/php_printf.c's `zend_gcvt(value, ndigit, dec_point, exp_char, buf)`.
+///
+/// # Safety
+///
+/// `buf` holds `cap` writable bytes, `cap > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn rhp_csrc_gcvt(
+    value: f64,
+    ndigit: c_int,
+    dec_point: c_char,
+    exp_char: c_char,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
+    let mut s = rhp_values::fmt::zend_gcvt(value, ndigit as i64, exp_char as u8);
+    if dec_point as u8 != b'.' {
+        s.iter_mut()
+            .filter(|c| **c == b'.')
+            .for_each(|c| *c = dec_point as u8);
+    }
+    put_c(&s, buf, cap)
 }
 
 #[cfg(test)]

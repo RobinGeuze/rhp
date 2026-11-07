@@ -5,6 +5,9 @@ This crate's own files (src/, shim/, glue/, build.rs, tools/) are licensed
 under MIT OR Apache-2.0, like the rest of rhp. shim/ re-declares the subset of
 php-src's Zend/ and main/ header API that the vendored C uses; those
 declarations follow php-src's (Zend Engine License 2.00 / PHP License 3.01).
+shim/php_printf.c ports main/snprintf.c's and main/spprintf.c's format
+converter (PHP License 3.01, parts under the Apache Group's 1995-1998
+licence; THIRD-PARTY-NOTICES section 32).
 The vendored files under vendor/ keep their own licence headers and are
 listed below. Everything here is compiled into static archives; rhp ships its
 source. The repository's THIRD-PARTY-NOTICES carries the same entries with the
@@ -54,6 +57,13 @@ ext/date/lib/
   timezonedb.h is the one file not copied verbatim: it holds the database
   twice, and the copy keeps only the "slim" branch parse_tz.c compiles
   (TIMELIB_SUPPORT_SLIM_FILE). The compiled object is byte-identical.
+
+ext/fileinfo/libmagic/
+  BSD-2-Clause (ext/fileinfo/libmagic/LICENSE). libmagic 5.46: Copyright (c)
+  Ian F. Darwin 1986-1995, maintained 1994- by Christos Zoulas, with php's
+  patches (PHP License). ext/fileinfo/data_file.c is the magic database
+  compiled from libmagic's Magdir; php_libmagic.c and php_libmagic.h are
+  php's own (PHP License).
 
 ext/standard/libavifinfo/
   BSD-2-Clause (ext/standard/libavifinfo/LICENSE), with the Alliance for

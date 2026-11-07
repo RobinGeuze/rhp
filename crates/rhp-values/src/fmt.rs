@@ -83,6 +83,52 @@ pub fn zend_gcvt(f: f64, ndigit: i64, exponent: u8) -> Vec<u8> {
     gcvt(f, mode, exponent)
 }
 
+/// main/snprintf.c's `php_conv_fp` for a finite number: `F`, `e` or `E`
+/// with `precision` places (at most 318, php's `NDIG - 2`), `#` (`add_dp`)
+/// keeping the point, and `dec_point` for `F`. The digits come without the
+/// sign; the flag says whether the number was negative (zero never is).
+pub fn conv_fp(
+    format: u8,
+    num: f64,
+    precision: usize,
+    add_dp: bool,
+    dec_point: u8,
+) -> (Vec<u8>, bool) {
+    let precision = precision.min(318);
+    let abs = num.abs();
+    let negative = num != 0.0 && num.is_sign_negative();
+    let mut out = match format {
+        b'F' => {
+            let mut s = format!("{abs:.precision$}").into_bytes();
+            if dec_point != b'.' {
+                s.iter_mut()
+                    .filter(|c| **c == b'.')
+                    .for_each(|c| *c = dec_point);
+            }
+            // A zero with no places has no point: php prints its digit only.
+            if precision == 0 && add_dp && num != 0.0 {
+                s.push(dec_point);
+            }
+            s
+        }
+        _ => {
+            let r = format!("{abs:.precision$e}");
+            let (m, e) = r.split_once('e').unwrap_or((&r, "0"));
+            let exp: i64 = e.parse().unwrap_or(0);
+            let mut s = m.as_bytes().to_vec();
+            if precision == 0 && add_dp {
+                s.push(b'.');
+            }
+            s.push(format);
+            s.push(if exp < 0 { b'-' } else { b'+' });
+            s.extend_from_slice(exp.unsigned_abs().to_string().as_bytes());
+            s
+        }
+    };
+    out.shrink_to_fit();
+    (out, negative)
+}
+
 enum Mode {
     /// Round to exactly N significant digits (C `%.*G` style).
     Precision(usize),

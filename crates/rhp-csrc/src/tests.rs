@@ -112,10 +112,96 @@ fn archives_define_only_prefixed_symbols() {
     if cfg!(feature = "crypt") {
         want.push("librhp_csrc_crypt.a");
     }
+    if cfg!(feature = "fileinfo") {
+        want.push("librhp_csrc_fileinfo.a");
+    }
     if cfg!(feature = "timelib") {
         want.push("librhp_csrc_timelib.a");
     }
     want.push("librhp_csrc_zend.a");
     assert_eq!(seen, want);
     assert!(bad.is_empty(), "unprefixed symbols:\n{}", bad.join("\n"));
+}
+
+mod php_printf {
+    use std::ffi::{c_char, c_int};
+
+    extern "C" {
+        fn rhp_csrc_snprintf(buf: *mut c_char, len: usize, format: *const c_char, ...) -> c_int;
+        fn rhp_csrc_spprintf(
+            pbuf: *mut *mut c_char,
+            max_len: usize,
+            format: *const c_char,
+            ...
+        ) -> usize;
+    }
+
+    fn sn(f: impl FnOnce(*mut c_char, usize) -> c_int) -> (String, c_int) {
+        let mut buf = [0 as c_char; 64];
+        let n = f(buf.as_mut_ptr(), buf.len());
+        let s = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+        (s.to_string_lossy().into_owned(), n)
+    }
+
+    /// main/snprintf.c's conversions, where they differ from the C
+    /// library's: exponents without padding, %g as zend_gcvt, NAN/INF, the
+    /// 0 flag kept with a precision, "(null)".
+    #[test]
+    fn prints_like_php() {
+        unsafe {
+            let cases: Vec<((String, c_int), &str)> = vec![
+                (
+                    sn(|b, l| rhp_csrc_snprintf(b, l, c"%e".as_ptr(), 1.5f64)),
+                    "1.500000e+0",
+                ),
+                (
+                    sn(|b, l| rhp_csrc_snprintf(b, l, c"%g|%g".as_ptr(), 1e-5f64, 1e20f64)),
+                    "1.0e-5|1.0e+20",
+                ),
+                (
+                    sn(|b, l| rhp_csrc_snprintf(b, l, c"%.2f|%f".as_ptr(), 2.345f64, f64::NAN)),
+                    "2.35|NAN",
+                ),
+                (
+                    sn(|b, l| {
+                        rhp_csrc_snprintf(b, l, c"%#x|%#x|%08.4x".as_ptr(), 0u32, 255u32, 0xabcu32)
+                    }),
+                    "0|0xff|00000abc",
+                ),
+                (
+                    sn(|b, l| {
+                        rhp_csrc_snprintf(
+                            b,
+                            l,
+                            c"%-5s|%.2s|%s".as_ptr(),
+                            c"ab".as_ptr(),
+                            c"xyz".as_ptr(),
+                            std::ptr::null::<c_char>(),
+                        )
+                    }),
+                    "ab   |xy|(null)",
+                ),
+                (
+                    sn(|b, l| {
+                        rhp_csrc_snprintf(b, l, c"%lld|%zu|%+d".as_ptr(), -5i64, 7usize, 3 as c_int)
+                    }),
+                    "-5|7|+3",
+                ),
+            ];
+            for ((got, n), want) in cases {
+                assert_eq!(got, want);
+                assert_eq!(n as usize, want.len());
+            }
+            // Cut to the buffer, the full length returned.
+            let mut small = [0 as c_char; 4];
+            let n = rhp_csrc_snprintf(small.as_mut_ptr(), 4, c"%s".as_ptr(), c"abcdef".as_ptr());
+            assert_eq!(n, 6);
+            assert_eq!(std::ffi::CStr::from_ptr(small.as_ptr()).to_bytes(), b"abc");
+            let mut p = std::ptr::null_mut();
+            let n = rhp_csrc_spprintf(&mut p, 0, c"%e|%d".as_ptr(), f64::INFINITY, 42 as c_int);
+            assert_eq!(std::ffi::CStr::from_ptr(p).to_bytes(), b"inf|42");
+            assert_eq!(n, 6);
+            super::super::rhp_csrc_efree(p.cast());
+        }
+    }
 }

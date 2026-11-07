@@ -337,8 +337,20 @@ impl ProtoBuilder<'_> {
                 r
             }
             Expression::Pipe(p) => self.compile_pipe(p),
-            Expression::ArrowFunction(af) => self.compile_arrow(af),
-            Expression::Closure(cl) => self.compile_closure(cl),
+            // zend_compile_func_decl leaves CG(zend_lineno) at the
+            // function's last line: what follows reports there.
+            Expression::ArrowFunction(af) => {
+                use mago_span::HasSpan;
+                let r = self.compile_arrow(af);
+                self.cur_line = self.cx.line_of(af.span().end.offset.saturating_sub(1));
+                r
+            }
+            Expression::Closure(cl) => {
+                use mago_span::HasSpan;
+                let r = self.compile_closure(cl);
+                self.cur_line = self.cx.line_of(cl.span().end.offset.saturating_sub(1));
+                r
+            }
             Expression::PartialApplication(pa) => self.compile_fcc(pa),
             Expression::Yield(y) => self.compile_yield(y),
             Expression::MagicConstant(mc) => self.compile_magic_const(mc),

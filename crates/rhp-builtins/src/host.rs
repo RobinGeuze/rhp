@@ -104,6 +104,11 @@ pub enum ObCall {
         name: &'static str,
         func: crate::OutputHandlerFn,
     },
+    /// php_output_start_default: a buffer an internal function collects its
+    /// output in (`Bool(false)`: not started; a fatal error may be pending).
+    StartDefault,
+    /// php_output_discard: drop the active buffer and its contents.
+    Discard,
     Flush,
     Clean,
     EndFlush,
@@ -219,6 +224,12 @@ pub trait Host {
     fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
         *r.borrow_mut() = v;
         Ok(())
+    }
+
+    /// Whether `r` is bound to typed properties (ZEND_REF_HAS_TYPE_SOURCES).
+    fn ref_is_typed(&self, r: &rhp_values::PhpRef) -> bool {
+        let _ = r;
+        false
     }
 
     /// Make the typed property `key` of `obj`, whose slot holds `r`, a type

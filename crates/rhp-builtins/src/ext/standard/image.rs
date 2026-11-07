@@ -947,7 +947,8 @@ fn from_any(host: &mut dyn Host, args: &[Value], from_path: bool) -> Result<Valu
     };
     let want_info = args.len() >= 2;
     if want_info {
-        crate::zend::zpp::set_ref(args, 1, Value::Array(PhpArray::new()));
+        // zend_try_array_init: the old value's destructor runs now.
+        crate::zend::zpp::try_assign_ref(host, args, 1, Value::Array(PhpArray::new()))?;
     }
     let data = if from_path {
         match read_path(host, fname, &input)? {

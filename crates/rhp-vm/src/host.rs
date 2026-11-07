@@ -124,6 +124,10 @@ impl Host for Vm {
         self.assign_to_ref(r, v, strict).map(|_| ())
     }
 
+    fn ref_is_typed(&self, r: &rhp_values::PhpRef) -> bool {
+        self.typed_refs.has(r)
+    }
+
     fn add_ref_type_source(
         &mut self,
         r: &rhp_values::PhpRef,

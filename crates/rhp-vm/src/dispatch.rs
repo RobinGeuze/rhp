@@ -638,8 +638,10 @@ impl Vm {
             }
             let instr = proto.code[pc];
 
-            // Run destructors of objects the program has just released.
-            if self.dtor_check {
+            // Run destructors of objects the program has just released (a
+            // compound assignment's operator frees its operand only once
+            // the store is done: ZEND_ASSIGN_OBJ_OP & co. free OP_DATA last).
+            if self.dtor_check && !matches!(instr, Instr::AssignLval { .. }) {
                 self.dtor_check = false;
                 if self.filtered_streams > 0 {
                     // A filtered stream's last reference went away: its
@@ -832,7 +834,10 @@ impl Vm {
                         _ => false,
                     };
                     let v = if slow(&x) || slow(&y) {
-                        self.concat_object(&x, &y)?
+                        let v = self.concat_object(&x, &y)?;
+                        self.free_tmp(top, a);
+                        self.free_tmp(top, b);
+                        v
                     } else {
                         ops::concat(&x, &y)
                     };
@@ -919,6 +924,7 @@ impl Vm {
                 Instr::CastString { dst, a } => {
                     let v = self.reg_r(top, a)?;
                     let s = self.to_string_vm(&v)?;
+                    self.free_tmp(top, a);
                     self.reg_set(top, dst, Value::str(s));
                 }
                 Instr::CastBool { dst, a } => {
@@ -1185,7 +1191,7 @@ impl Vm {
                     let cell = self.global_cell(gname.as_bytes());
                     cell_define(&cell);
                     self.ref_globals.insert(gname.as_bytes().to_vec());
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.rebind_cv(top, cv, Value::Ref(cell));
                 }
                 Instr::BindGlobalDyn { name } => self.bind_global_dyn(top, name)?,
                 Instr::BindStatic { cv, name, init } => {
@@ -1202,7 +1208,7 @@ impl Vm {
                     let key = self.static_key(top, &proto, sname);
                     if let Some(c) = self.static_table(top).get(&key) {
                         let cell = c.clone();
-                        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                        self.rebind_cv(top, cv, Value::Ref(cell));
                         self.sync_global_cv(top, cv);
                         self.stack[top].pc = target as usize;
                     }
@@ -1220,7 +1226,7 @@ impl Vm {
                         .entry(key)
                         .or_insert_with(|| Rc::new(RefCell::new(v)))
                         .clone();
-                    self.stack[top].regs[cv as usize] = Value::Ref(cell);
+                    self.rebind_cv(top, cv, Value::Ref(cell));
                     self.sync_global_cv(top, cv);
                 }
                 Instr::DeclareConst { name, src } => {
@@ -1289,6 +1295,8 @@ impl Vm {
                     let a = self.reg_r(top, arr)?;
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Read)?;
+                    drop(a);
+                    self.free_tmp(top, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchW { dst, arr, key } => {
@@ -1342,6 +1350,8 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     let r = self.dim_read(&a, &k, DimMode::Is)?;
+                    drop(a);
+                    self.free_tmp(top, arr);
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchList { dst, arr, key } => {
@@ -1753,6 +1763,19 @@ impl Vm {
                         // php writes the property even so: a readonly one
                         // throws over the operator's TypeError.
                         Err(e) => {
+                            // zend_{pre,post}_incdec_overloaded_property: the
+                            // unchanged copy goes to write_property (no __set
+                            // runs with the exception pending).
+                            if let MagicSplit::Leaf(h, _) = self.cursor_magic_split(top, &steps) {
+                                let cls = h.borrow().class;
+                                if self.lookup_method(cls, b"__set").is_none() {
+                                    if let Err(w) = self.cursor_write(top, &steps, old) {
+                                        use rhp_builtins::Host;
+                                        return Err(self.chain_thrown(w, e));
+                                    }
+                                }
+                                return Err(e);
+                            }
                             return Err(match self.cursor_readonly_leaf_err(top, &steps) {
                                 Some(ro) => {
                                     use rhp_builtins::Host;
@@ -1995,12 +2018,14 @@ impl Vm {
                     let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
+                    self.free_tmp(top, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDyn { dst, obj, name } => {
                     let o = self.reg_r(top, obj)?;
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch(top, o, pname)?;
+                    self.free_tmp(top, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropW { dst, obj, name } => {
@@ -2031,6 +2056,7 @@ impl Vm {
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch_is(top, o, pname)?;
+                    self.free_tmp(top, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropDynIs { dst, obj, name } => {
@@ -2044,6 +2070,7 @@ impl Vm {
                     }
                     let pname = self.dyn_prop_name(top, name)?;
                     let v = self.prop_fetch_is(top, o, pname)?;
+                    self.free_tmp(top, obj);
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
@@ -2499,12 +2526,7 @@ impl Vm {
 
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);
-                    let old = std::mem::replace(
-                        &mut self.stack[top].regs[dst_cv as usize],
-                        Value::Ref(rc),
-                    );
-                    rhp_values::gc::possible_root(&old);
-                    drop(old);
+                    self.rebind_cv(top, dst_cv, Value::Ref(rc));
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
@@ -2515,9 +2537,7 @@ impl Vm {
                         self.cv_assign(top, dst_cv, v)?;
                         continue;
                     }
-                    let old = std::mem::replace(&mut self.stack[top].regs[dst_cv as usize], v);
-                    rhp_values::gc::possible_root(&old);
-                    drop(old);
+                    self.rebind_cv(top, dst_cv, v);
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::FetchListW { dst, src, key } => {
@@ -3044,7 +3064,10 @@ impl Vm {
         {
             f(&x, &y)?
         } else {
-            self.bin_slow(op, f, &x, &y)?
+            let v = self.bin_slow(op, f, &x, &y)?;
+            self.free_tmp(top, a);
+            self.free_tmp(top, b);
+            v
         };
         self.reg_set(top, dst, v);
         Ok(())
@@ -3056,6 +3079,8 @@ impl Vm {
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
         let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
         let v = self.long_op(op, &x, &y)?;
+        self.free_tmp(top, a);
+        self.free_tmp(top, b);
         self.reg_set(top, dst, v);
         Ok(())
     }
@@ -4509,8 +4534,20 @@ impl Vm {
                 c
             }
         };
-        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        self.rebind_cv(top, cv, Value::Ref(cell));
         self.sync_global_cv(top, cv);
+    }
+
+    /// Point CV `cv` at a new value without writing through a reference it
+    /// holds (`=&`, `static`, `global`). The old value is released as php's
+    /// i_zval_ptr_dtor does: its destructor runs before the next instruction,
+    /// reported at this one.
+    pub(crate) fn rebind_cv(&mut self, top: usize, cv: Reg, v: Value) {
+        let old = std::mem::replace(&mut self.stack[top].regs[cv as usize], v);
+        rhp_values::gc::possible_root(&old);
+        if (matches!(old, Value::Ref(_)) && self.release_pending()) || self.release_tracked(&old) {
+            self.dtor_check = true;
+        }
     }
 }
 
@@ -4550,6 +4587,26 @@ impl Vm {
                     || self.lookup_method(cls, b"__destruct").is_some()
             }
             _ => false,
+        }
+    }
+
+    /// php's FREE_OP of a TMP operand: the consuming instruction releases a
+    /// temporary holding an object or array, so its destructor runs before
+    /// the next instruction, reported at this one (and caught by the try
+    /// around it). Scalars stay: dropping them changes nothing.
+    #[inline]
+    fn free_tmp(&mut self, top: usize, r: Reg) {
+        let f = &mut self.stack[top];
+        if r < f.proto.num_cvs {
+            return;
+        }
+        let slot = &mut f.regs[r as usize];
+        if matches!(slot, Value::Object(_) | Value::Array(_) | Value::Closure(_)) {
+            let old = std::mem::replace(slot, Value::Null);
+            if !self.destructibles.is_empty() {
+                self.dtor_check = true;
+            }
+            drop(old);
         }
     }
 
@@ -4617,7 +4674,8 @@ impl Vm {
                 c
             }
         };
-        self.stack[top].regs[cv as usize] = Value::Ref(cell);
+        drop(st);
+        self.rebind_cv(top, cv, Value::Ref(cell));
         true
     }
 }

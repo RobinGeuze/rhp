@@ -1,0 +1,45 @@
+Error: Call to undefined function nope()
+Error: Call to undefined function nope()
+Error: Call to undefined function nope()
+Error: Call to undefined method A::nope()
+Error: Call to undefined method A::nope()
+Error: Call to undefined method A::nope()
+Error: Class "B" not found
+Error: Class "B" not found
+Error: Class "B" not found
+Error: Call to undefined method A::x()
+Error: Call to undefined method A::x()
+Error: Call to undefined method A::x()
+Error: First array member is not a valid class name or object
+Error: First array member is not a valid class name or object
+Error: First array member is not a valid class name or object
+Error: Array callback must have exactly two elements
+Error: Array callback must have exactly two elements
+Error: Array callback must have exactly two elements
+Error: Value of type int is not callable
+Error: Value of type int is not callable
+Error: Value of type int is not callable
+Error: Value of type null is not callable
+Error: Value of type null is not callable
+Error: Value of type null is not callable
+Error: Object of type stdClass is not callable
+Error: Object of type stdClass is not callable
+Error: Object of type stdClass is not callable
+args
+int(1)
+args
+thr
+Exception: x
+args
+string(2) "s1"
+args
+thr
+Exception: x
+Error: Call to undefined function nope3()
+Error: Non-static method A::n() cannot be called statically
+autoload Zed
+Error: Class "Zed" not found
+autoload Zed2
+Error: Class "Zed2" not found
+args
+int(2)

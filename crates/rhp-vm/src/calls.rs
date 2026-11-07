@@ -2266,7 +2266,14 @@ impl Vm {
             let arr = self.reg_get(top, args);
             let (argv, named) = self.split_call_args(&arr)?;
             let argv = self.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+            // As new_construct: a constructor that throws skips __destruct.
+            let tracked = !self.destructibles.is_empty()
+                && self.destructibles.iter().rev().any(|d| Rc::ptr_eq(d, &obj));
+            let ptr = Rc::as_ptr(&obj) as usize;
             self.push_method_frame(&m, Some(obj), cls, Args::Slice(&argv), Reg::MAX)?;
+            if tracked {
+                self.ctor_frames.push((self.stack.len() - 1, ptr));
+            }
         } else {
             self.new_without_ctor(top, args)?;
         }

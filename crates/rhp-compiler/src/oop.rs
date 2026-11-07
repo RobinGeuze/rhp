@@ -246,9 +246,12 @@ impl ProtoBuilder<'_> {
         // With arguments, the object exists before they run (ZEND_NEW).
         let early = ac.argument_list.as_ref().is_some_and(|l| {
             !l.arguments.is_empty()
-                && l.arguments
-                    .iter()
-                    .all(|a| matches!(a, PartialArgument::Positional(p) if p.ellipsis.is_none()))
+                && l.arguments.iter().all(|a| {
+                    matches!(
+                        a,
+                        PartialArgument::Positional(_) | PartialArgument::Named(_)
+                    )
+                })
         });
         let obj = early.then(|| {
             let dst = self.alloc_temp();
@@ -256,6 +259,40 @@ impl ProtoBuilder<'_> {
             self.emit(Instr::NewObj { dst, class });
             (dst, start)
         });
+        // `new class(...$a)` / `new class(name: $v)`: the arguments as an
+        // array, placed by the constructor's parameters (NewCallV).
+        if let (Some((dst, start)), Some(list)) = (obj, &ac.argument_list) {
+            let spread = list.arguments.iter().any(|a| {
+                matches!(a, PartialArgument::Positional(p) if p.ellipsis.is_some())
+                    || matches!(a, PartialArgument::Named(_))
+            });
+            if spread {
+                let v: Vec<crate::parse::cst::Argument> = list
+                    .arguments
+                    .iter()
+                    .filter_map(|a| match a {
+                        PartialArgument::Positional(p) => {
+                            Some(crate::parse::cst::Argument::Positional(p.clone()))
+                        }
+                        PartialArgument::Named(n) => {
+                            Some(crate::parse::cst::Argument::Named(n.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let ctor = self.intern_name(b"__construct");
+                let args = self.build_args_array_of(
+                    list.left_parenthesis.start.offset,
+                    &v,
+                    None,
+                    Some(ArgRefTarget::Static(class, ctor)),
+                )?;
+                self.new_ranges
+                    .push((start, self.code.len() as rhp_bytecode::Pc, dst));
+                self.emit(Instr::NewCallV { dst, args });
+                return Ok(dst);
+            }
+        }
         let mut regs = Vec::new();
         if let Some(list) = &ac.argument_list {
             for arg in list.arguments.iter() {
@@ -272,7 +309,7 @@ impl ProtoBuilder<'_> {
                     _ => {
                         return Err(Thrown::unsupported(
                             "anonymous class argument",
-                            "spread / named / placeholder arguments deferred",
+                            "placeholder arguments deferred",
                         ))
                     }
                 }
@@ -330,7 +367,9 @@ impl ProtoBuilder<'_> {
         let start = self.code.len() as rhp_bytecode::Pc;
         self.emit(Instr::NewObj { dst, class });
         if has_spread(list) || has_named(list) {
-            let args = self.build_args_array(Some(list))?;
+            let ctor = self.intern_name(b"__construct");
+            let args =
+                self.build_args_array(Some(list), Some(ArgRefTarget::Static(class, ctor)))?;
             self.new_ranges
                 .push((start, self.code.len() as rhp_bytecode::Pc, dst));
             self.emit(Instr::NewCallV { dst, args });

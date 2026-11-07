@@ -522,6 +522,11 @@ CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = 
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
 CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err if undefined), then as CallUser/Builtin
 CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
+InitDynCall { callee }                            INIT_DYNAMIC_CALL's checks before the arguments run (throws what the call would)
+-- InitDynCall is emitted only when an argument is more than a literal or
+   a plain variable (otherwise running the arguments first can't be seen);
+   a call by name to an undefined function still runs its arguments first
+   (php's INIT_FCALL_BY_NAME throws before them)
 Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
 RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
@@ -556,7 +561,12 @@ array (int keys positional, string keys named) and uses the `_V` path
 PACKED_ARGS`): the VM places the names with the callee's `proto.params`
 (`place_named_args`) or a builtin's stub arginfo (`place_builtin_named_args`).
 The compiler only resolves by-reference parameters by name, for a callee it
-knows. The fixed-arity register-window path is the fast path.
+knows. For a callee only the run time knows, a positional argument before
+the unpack that is an element / property (SEND_FUNC_ARG), or a variable a
+later argument may change (SEND_VAR_EX), asks the callee (`*ArgIsRef`) as it
+is sent and goes into the array as a reference or a value; any other
+variable goes in as a reference that a by-value parameter dereferences.
+The fixed-arity register-window path is the fast path.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

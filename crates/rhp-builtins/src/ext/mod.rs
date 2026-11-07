@@ -364,9 +364,9 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             cli_only: false,
             functions: filter::register,
             constants: filter::constants,
-            prelude_php: "",
+            prelude_php: filter::PRELUDE_PHP,
             wrappers: no_wrappers,
-            reset: no_state,
+            reset: filter::reset_state,
             object_freed: None,
         },
         ModuleDef {

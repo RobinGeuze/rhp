@@ -90,6 +90,7 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
     ext::curl::constant_deprecation(name)
         .or_else(|| ext::date::constant_deprecation(name))
         .or_else(|| ext::dom::constant_deprecation(name))
+        .or_else(|| ext::filter::constant_deprecation(name))
         .or_else(|| ext::standard::assert::constant_deprecation(name))
 }
 

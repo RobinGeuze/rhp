@@ -27,6 +27,10 @@ use rhp_values::{Thrown, Value};
 use crate::sapi::{sapi_def, SapiDef};
 use crate::Host;
 
+pub use crate::ext::filter::{
+    apply_default_filter, apply_default_filter_server, filtered_server_vars,
+    set_request_input as set_filter_input,
+};
 pub use crate::main::php_variables::{post_form_vars, treat_data, url_decode, TreatData};
 
 /// What a server embedding the engine provides for one request (php's

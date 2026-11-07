@@ -615,6 +615,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     } else if let Some(msg) = crate::ext::standard::assert::ini_deprecation(name, v) {
         level = crate::E_DEPRECATED;
         (vec![format!("PHP Startup: {msg}")], Some(v.to_vec()))
+    } else if name == b"filter.default" && crate::ext::filter::default_is_deprecated(v) {
+        // UpdateDefaultFilter (zend_error: no "PHP Startup").
+        level = crate::E_DEPRECATED;
+        let msg = "The filter.default ini setting is deprecated".to_string();
+        (vec![msg], Some(v.to_vec()))
     } else if name == b"auto_detect_line_endings" && ini_parse_bool(v) {
         // OnUpdateAutoDetectLineEndings (zend_error: no "PHP Startup").
         level = crate::E_DEPRECATED;

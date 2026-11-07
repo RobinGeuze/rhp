@@ -296,6 +296,7 @@ impl Vm {
             id: 0,
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 

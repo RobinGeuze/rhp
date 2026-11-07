@@ -976,14 +976,6 @@ fn fn_error_reporting(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
     Ok(Value::Int(old))
 }
 
-fn fn_true(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(true))
-}
-
-fn fn_zero(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
-}
-
 fn fn_class_alias(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let class = str_param(host, args, 0, "class_alias", "class")?;
     let alias = str_param(host, args, 1, "class_alias", "alias")?;
@@ -1053,27 +1045,54 @@ fn request_start() -> std::time::Instant {
     *START.get_or_init(std::time::Instant::now)
 }
 
-/// `gc_status()`: rhp's values are reference counted without a cycle
-/// collector, so the collector never runs; the shape matches php's.
+/// `gc_status()` (zend_gc_get_status).
 fn fn_gc_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    let st = rhp_values::gc::status();
     let mut a = PhpArray::new();
     let mut put = |k: &str, v: Value| a.insert(ArrayKey::from_bytes(k.as_bytes()), v);
-    put("running", Value::Bool(false));
-    put("protected", Value::Bool(false));
-    put("full", Value::Bool(false));
-    put("runs", Value::Int(0));
-    put("collected", Value::Int(0));
-    put("threshold", Value::Int(10001));
-    put("buffer_size", Value::Int(16384));
-    put("roots", Value::Int(0));
+    let n = |f: fn(&rhp_values::gc::Status) -> u32| Value::Int(st.as_ref().map_or(0, f) as i64);
+    let secs =
+        |f: fn(&rhp_values::gc::Status) -> u64| Value::Float(st.as_ref().map_or(0, f) as f64 / 1e9);
+    put(
+        "running",
+        Value::Bool(st.as_ref().is_some_and(|s| s.running)),
+    );
+    put(
+        "protected",
+        Value::Bool(st.as_ref().is_some_and(|s| s.protected)),
+    );
+    put("full", Value::Bool(st.as_ref().is_some_and(|s| s.full)));
+    put("runs", n(|s| s.runs));
+    put("collected", n(|s| s.collected));
+    put("threshold", n(|s| s.threshold));
+    put("buffer_size", n(|s| s.buf_size));
+    put("roots", n(|s| s.num_roots));
     put(
         "application_time",
         Value::Float(request_start().elapsed().as_secs_f64()),
     );
-    put("collector_time", Value::Float(0.0));
-    put("destructor_time", Value::Float(0.0));
-    put("free_time", Value::Float(0.0));
+    put("collector_time", secs(|s| s.collector_time));
+    put("destructor_time", secs(|s| s.dtor_time));
+    put("free_time", secs(|s| s.free_time));
     Ok(Value::Array(a))
+}
+
+fn fn_gc_collect_cycles(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    host.gc_collect_cycles().map(Value::Int)
+}
+
+fn fn_gc_enable(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    crate::main::ini::alter_ini_entry(host, b"zend.enable_gc", b"1".to_vec(), "gc_enable")?;
+    Ok(Value::Null)
+}
+
+fn fn_gc_disable(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    crate::main::ini::alter_ini_entry(host, b"zend.enable_gc", b"0".to_vec(), "gc_disable")?;
+    Ok(Value::Null)
+}
+
+fn fn_gc_enabled(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(rhp_values::gc::enabled()))
 }
 
 fn fn_gc_mem_caches(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
@@ -1361,9 +1380,10 @@ pub fn register(m: &mut crate::Registry) {
             ("trigger_error", fn_trigger_error),
             ("user_error", fn_trigger_error),
             ("error_reporting", fn_error_reporting),
-            ("gc_enable", fn_true),
-            ("gc_disable", fn_true),
-            ("gc_collect_cycles", fn_zero),
+            ("gc_enable", fn_gc_enable),
+            ("gc_disable", fn_gc_disable),
+            ("gc_enabled", fn_gc_enabled),
+            ("gc_collect_cycles", fn_gc_collect_cycles),
             ("class_alias", fn_class_alias),
             ("get_defined_constants", fn_get_defined_constants),
             ("gc_status", fn_gc_status),

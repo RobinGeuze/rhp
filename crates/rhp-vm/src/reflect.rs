@@ -522,6 +522,7 @@ impl Vm {
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 
@@ -548,6 +549,7 @@ impl Vm {
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 

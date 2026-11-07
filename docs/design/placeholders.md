@@ -140,8 +140,7 @@ this engine emits no diagnostics", plus "a handful of no-op-ish runtime knobs"
   scope may not call throws php's "Call to private X::__destruct()" (a
   warning during shutdown). Gap: an object freed while only a
   non-tracked container held it is destructed late (at the next check) rather than
-  exactly at release, and cycles are destructed at shutdown (php's GC may run
-  earlier).
+  exactly at release.
 
 The original notes:
 - **Now:** accepts and discards; returns `Null` (`php_fns.rs:162-165`). The comment
@@ -170,13 +169,9 @@ The original notes:
 - **Effort/priority:** low / low.
 
 ### 1.7 `gc_enable`/`gc_disable`/`gc_collect_cycles`
-- **Now:** no-ops (`true`/`true`/`0`) (`php_fns.rs:445-448`). `set_time_limit`
-  is real now: it sets max_execution_time, whose timer
-  (`rhp_builtins::zend::timeout`) the command-line SAPIs arm.
-- **OK because:** rhp uses `Rc` + the planned cycle story is separate.
-- **Full impl:** `gc_collect_cycles` could return a real freed-count if/when a
-  cycle collector exists; otherwise these are permanently cosmetic. Leave as-is.
-- **Effort/priority:** low / low (likely never).
+- **Done:** php's cycle collector (gc.md). `set_time_limit` is real too: it
+  sets max_execution_time, whose timer (`rhp_builtins::zend::timeout`) the
+  command-line SAPIs arm.
 
 ### 1.8 `setlocale`
 - **Now:** calls the C library's setlocale (process-wide, as php does, ZTS
@@ -696,13 +691,12 @@ The module is deliberately "READ-ONLY, native format only"
   destructors start. Objects, closures, generators and enum cases take them.
   Argument temporaries move into calls and a method call on a temporary releases
   its object, so most objects are freed when php frees them.
-- **Breaks:** objects php's cycle collector frees (rhp's `Rc` cycles leak, so
-  their handles never come back); destructible objects, which rhp destructs and
+- **Breaks:** destructible objects, which rhp destructs and
   frees at its next release check rather than at the exact refcount drop; other
   temporaries that stay in a register until it is overwritten. `#N` then differs
   from php.
 - **Full impl:** free every dead temporary (php's FREE opcodes / liveness), run
-  destructors at the refcount drop, a cycle collector.
+  destructors at the refcount drop.
 
 ### 9.2 STDIN/STDOUT/STDERR constants — stale placeholder ints, shadowed at runtime
 - **Now:** `builtins/lib.rs:436-441` defines `STDIN`/`STDOUT`/`STDERR` as

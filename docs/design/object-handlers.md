@@ -37,8 +37,10 @@ h.borrow_mut().take_payload();                            // free early (`close(
 - Get an `Rc<T>` and release the object borrow before calling the host or
   PHP; mutate through `Cell`/`RefCell` inside `T`. A builtin's clone keeps
   the state alive until it returns, as php's refcount would.
-- Never a strong reference back to the object: that is a cycle, and rhp has
-  no cycle collector. Keep a `Weak` (ext/xml's `index`). Values a payload
+- Never a strong reference back to the object: keep a `Weak` (ext/xml's
+  `index`). The cycle collector sees a payload's values only through the
+  class's `get_gc` handler (gc.md); without one they count as outside
+  references and keep a cycle alive. Values a payload
   holds for PHP (ext/xml's handlers and `xml_set_object` target) can still
   form a cycle through the object; ext/xml keeps a thread-local list of
   weak references to its parsers and drops those values at the next

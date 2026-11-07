@@ -15,6 +15,7 @@ use rustc_hash::FxBuildHasher;
 
 pub mod conv;
 pub mod fmt;
+pub mod gc;
 pub mod handles;
 pub mod mem;
 pub mod ops;
@@ -173,6 +174,10 @@ pub struct ClosureData {
     /// php's IS_OBJ_WEAKLY_REFERENCED: a WeakReference or WeakMap holds
     /// this closure, so freeing it notifies them ([`set_weak_notify_hook`]).
     pub weakly_referenced: std::cell::Cell<bool>,
+    /// In the cycle collector's root buffer (php's GC_INFO): a release of
+    /// a buffered closure skips the buffer lookup. (Objects have no room
+    /// for it: the slow path's `last` cache serves a repeated `$this`.)
+    pub gc_buffered: std::cell::Cell<bool>,
 }
 
 impl ClosureData {
@@ -196,10 +201,14 @@ impl Drop for ClosureData {
             weak_notify(self.id);
         }
         // What the closure holds is freed before its handle goes back.
+        for v in &self.captures {
+            gc::possible_root(v);
+        }
         self.captures.clear();
         self.bound_this = None;
         self.wrapped = None;
         self.statics.get_mut().clear();
+        gc::object_freed(self.id);
         release_object_id(self.id);
     }
 }
@@ -283,6 +292,27 @@ impl LazyInfo {
     pub const INITIALIZED: u8 = 1 << 2;
     pub const SKIP_INITIALIZATION_ON_SERIALIZE: u8 = 1 << 3;
     pub const SKIP_DESTRUCTOR: u8 = 1 << 4;
+
+    /// php keeps the initializer twice (the callable and its call info):
+    /// releasing the first leaves a count, so the callable becomes a
+    /// possible root just before it is freed (zend_lazy_object_info_dtor).
+    pub fn release_initializer(init: &Value) {
+        match init {
+            Value::Closure(_) | Value::Object(_) => gc::check_possible_root(init),
+            Value::Array(a) => {
+                if let Some(o @ Value::Object(_)) = a.get(&ArrayKey::Int(0)) {
+                    gc::possible_root(o);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for LazyInfo {
+    fn drop(&mut self) {
+        LazyInfo::release_initializer(&self.initializer);
+    }
 }
 
 /// The native state an internal class keeps with each of its objects: what
@@ -526,6 +556,21 @@ pub fn set_object_free_hook(f: fn(u32)) {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
+        if self.id == 0 && self.properties.is_empty() && self.extra.is_none() {
+            // Freed by the cycle collector already (or an enum case never
+            // accessed).
+            return;
+        }
+        gc::object_freed(self.id);
+        self.free_storage();
+    }
+}
+
+impl ObjectData {
+    /// php's free_obj plus the handle going back to the free list. The
+    /// cycle collector calls it on garbage that other garbage may still
+    /// reference: afterwards the object is an empty shell with handle 0.
+    fn free_storage(&mut self) {
         // php's free_obj: the native state goes first, then the lazy
         // info (zend_object_std_dtor), then the properties.
         if let Some(mut extra) = self.extra.take() {
@@ -535,17 +580,51 @@ impl Drop for ObjectData {
             }
             drop(extra.lazy.take());
         }
+        let id = std::mem::take(&mut self.id);
         // `try_with`: thread-local teardown may already have run.
-        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
-            f(self.id);
+        if id != 0 {
+            if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+                f(id);
+            }
         }
         // The handle goes back after what the properties held (php frees the
         // object, then puts its handle on the free list).
         if !self.properties.is_empty() {
+            for v in self.properties.values() {
+                gc::possible_root(v);
+            }
             self.properties.clear();
         }
-        release_object_id(self.id);
+        release_object_id(id);
     }
+}
+
+/// Free a garbage object found by the cycle collector (the collector's
+/// "destroy zvals" step): its storage goes now, even though other garbage
+/// still holds the handle. Nothing runs PHP code here.
+pub fn gc_free_object(h: &ObjectHandle) {
+    let (extra, props, id) = {
+        let Ok(mut o) = h.try_borrow_mut() else {
+            return;
+        };
+        let id = std::mem::take(&mut o.id);
+        (o.extra.take(), std::mem::take(&mut o.properties), id)
+    };
+    gc::object_freed(id);
+    if let Some(mut extra) = extra {
+        drop(extra.native.take());
+        drop(extra.lazy.take());
+    }
+    if id != 0 {
+        if let Ok(Some(f)) = OBJECT_FREE_HOOK.try_with(|h| h.get()) {
+            f(id);
+        }
+    }
+    for v in props.values() {
+        gc::possible_root(v);
+    }
+    drop(props);
+    release_object_id(id);
 }
 
 /// What kind of class-like declaration a class table entry is.
@@ -835,6 +914,15 @@ impl Clone for ArrayData {
     }
 }
 
+impl Drop for ArrayData {
+    fn drop(&mut self) {
+        gc::array_freed(self as *const ArrayData as usize);
+        for v in self.entries.values() {
+            gc::possible_root(v);
+        }
+    }
+}
+
 impl ArrayData {
     fn new() -> Self {
         ArrayData {
@@ -995,6 +1083,16 @@ impl PhpArray {
         self.0.pos
     }
 
+    /// The shared storage (the cycle collector's graph walk).
+    pub fn rc(&self) -> &Rc<ArrayData> {
+        &self.0
+    }
+
+    /// An array value for storage `rc`.
+    pub fn from_rc(rc: Rc<ArrayData>) -> Self {
+        PhpArray(rc)
+    }
+
     /// How many values share this storage (debug_zval_dump's refcount).
     pub fn ref_count(&self) -> usize {
         Rc::strong_count(&self.0)
@@ -1028,7 +1126,9 @@ impl PhpArray {
         if let ArrayKey::Int(n) = key {
             data.bump_next_int(n);
         }
-        data.entries.insert(key, value);
+        if let Some(old) = data.entries.insert(key, value) {
+            gc::possible_root(&old);
+        }
     }
 
     /// Append `$a[] = value` (COW); nothing is inserted when the next
@@ -1080,6 +1180,7 @@ impl PhpArray {
         let data = self.make_mut();
         let (i, _, v) = data.entries.shift_remove_full(key)?;
         data.removed_at(i);
+        gc::possible_root(&v);
         Some(v)
     }
 }

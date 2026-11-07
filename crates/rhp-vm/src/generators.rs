@@ -10,6 +10,36 @@ use crate::calls::native_method_count_error;
 use crate::errors::UnwindResult;
 use crate::{deref, Frame, Vm};
 
+thread_local! {
+    /// Handles freed while generators exist: a freed generator's state is
+    /// dropped at the next [`Vm::drop_freed_generators`].
+    static FREED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// This thread's generator table is not empty: frees are noted.
+    static LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Set once any engine made a generator: until then a free notes nothing.
+static WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The engine's object free hook: the builtins' per-handle state, and the
+/// handle noted for the generator table.
+pub(crate) fn object_freed(id: u32) {
+    rhp_builtins::object_freed(id);
+    if WATCH.load(std::sync::atomic::Ordering::Relaxed) && LIVE.try_with(|l| l.get()) == Ok(true) {
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.push(id);
+            }
+        });
+    }
+}
+
+/// A new engine: nothing noted.
+pub(crate) fn reset_freed() {
+    let _ = LIVE.try_with(|l| l.set(false));
+    let _ = FREED.try_with(|f| f.borrow_mut().clear());
+}
+
 /// Status of a generator.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum GenStatus {
@@ -58,6 +88,15 @@ impl Vm {
         if let Some(c) = frame.closure.clone() {
             obj.borrow_mut().set_payload(Rc::new(c));
         }
+        WATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = LIVE.try_with(|l| l.set(true));
+        // A free of an earlier object with this handle is not this
+        // generator's.
+        let _ = FREED.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.retain(|&x| x != id);
+            }
+        });
         self.generators.insert(
             id,
             GenState {
@@ -415,5 +454,126 @@ impl Vm {
         };
         self.yield_out = Some((key_val, val, dst));
         Ok(())
+    }
+}
+
+impl Vm {
+    /// Drop the state of generators whose object was freed (php frees the
+    /// frame with the generator; its variables are released then).
+    pub(crate) fn drop_freed_generators(&mut self) {
+        let ids = FREED.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.is_empty() {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *f)
+            }
+        });
+        for id in ids {
+            if let Some(g) = self.generators.get(&id) {
+                if g.status != GenStatus::Running {
+                    if let Some(g) = self.generators.remove(&id) {
+                        if let Some(f) = &g.frame {
+                            self.forget_unfinished_news(f);
+                        }
+                        drop(g);
+                    }
+                }
+            }
+        }
+        self.gen_table_changed();
+    }
+
+    /// After states left the generator table: with none left, frees are
+    /// no longer noted.
+    pub(crate) fn gen_table_changed(&mut self) {
+        if self.generators.is_empty() {
+            reset_freed();
+        }
+    }
+
+    /// A suspended frame is destroyed: objects whose `new` had not called
+    /// the constructor yet are never destructed (zend_cleanup_unfinished_calls).
+    fn forget_unfinished_news(&mut self, f: &Frame) {
+        let pc = f.pc as u32;
+        for &(start, end, dst) in &f.proto.new_ranges {
+            if pc > start && pc < end {
+                if let Some(Value::Object(h)) = f.regs.get(dst as usize) {
+                    self.destructibles.retain(|d| !Rc::ptr_eq(d, h));
+                }
+            }
+        }
+    }
+
+    /// The values generator `id`'s state holds (zend_generator_get_gc):
+    /// the suspended frame's registers and the current and returned values.
+    pub(crate) fn gen_gc_children(&self, id: u32, out: &mut Vec<Value>) {
+        let Some(g) = self.generators.get(&id) else {
+            return;
+        };
+        if let Some(f) = &g.frame {
+            f.gc_children(out);
+        }
+        out.push(g.current_key.clone());
+        out.push(g.current_val.clone());
+        out.push(g.return_val.clone());
+    }
+
+    /// Whether generator `id` still has a frame to destroy (php's
+    /// generator `dtor_obj` has work to do).
+    pub(crate) fn gen_has_frame(&self, id: u32) -> bool {
+        self.generators.get(&id).is_some_and(|g| g.frame.is_some())
+    }
+
+    /// The cycle collector destroys generator `id`: its frame and values
+    /// go (returned, for the caller to drop).
+    pub(crate) fn gen_gc_close(&mut self, id: u32) {
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
+        if g.status == GenStatus::Running {
+            return;
+        }
+        let frame = g.frame.take();
+        g.status = GenStatus::Finished;
+        if let Some(f) = &frame {
+            self.forget_unfinished_news(f);
+        }
+        let Some(g) = self.generators.get_mut(&id) else {
+            return;
+        };
+        let cur = (
+            std::mem::replace(&mut g.current_key, Value::Null),
+            std::mem::replace(&mut g.current_val, Value::Null),
+        );
+        drop(cur);
+        drop(frame);
+    }
+
+    /// The generator object of handle `id` is being freed by the cycle
+    /// collector: its state goes with it.
+    pub(crate) fn gen_gc_free(&mut self, id: u32) -> Option<GenState> {
+        let g = self.generators.get(&id)?;
+        if g.status == GenStatus::Running {
+            return None;
+        }
+        let g = self.generators.remove(&id)?;
+        self.gen_table_changed();
+        if let Some(f) = &g.frame {
+            self.forget_unfinished_news(f);
+        }
+        Some(g)
+    }
+}
+
+impl Frame {
+    /// The values a suspended frame holds.
+    pub(crate) fn gc_children(&self, out: &mut Vec<Value>) {
+        out.extend(self.regs.iter().map(Value::copy_slot));
+        out.extend(self.extra_args.iter().cloned());
+        out.extend(self.dyn_vars.values().map(|r| Value::Ref(r.clone())));
+        if let Some(c) = &self.closure {
+            out.push(Value::Closure(c.clone()));
+        }
     }
 }

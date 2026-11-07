@@ -278,6 +278,7 @@ const RHP_INI: &[&str] = &[
     "variables_order",
     "zend.assertions",
     "zend.detect_unicode",
+    "zend.enable_gc",
     "zend.exception_ignore_args",
     "zend.exception_string_param_max_len",
     "zend.max_allowed_stack_size",

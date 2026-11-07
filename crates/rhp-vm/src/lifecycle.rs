@@ -34,6 +34,8 @@ impl Drop for RequestStateReset {
 fn reset_request_state() {
     builtins::reset_request_state();
     rhp_values::handles::reset_object_ids();
+    rhp_values::gc::reset();
+    crate::generators::reset_freed();
     crate::lvalue::reset_path_diags();
 }
 
@@ -63,7 +65,7 @@ impl Vm {
         for reg in builtins::stream_wrappers() {
             wrappers.insert(reg.scheme.as_bytes().to_vec(), (reg.factory)());
         }
-        rhp_values::set_object_free_hook(builtins::object_freed);
+        rhp_values::set_object_free_hook(crate::generators::object_freed);
         rhp_values::set_weak_notify_hook(builtins::zend::weakrefs::notify);
         builtins::zend::weakrefs::reset();
         Vm {
@@ -485,6 +487,7 @@ impl Vm {
             .handlers
             .is_some_and(|t| t.dtor_obj.is_some() || t.free_obj_host.is_some());
         if native || self.lookup_method(cls, b"__destruct").is_some() {
+            rhp_values::gc::set_flag(h.borrow().id, rhp_values::gc::TRACKED, true);
             self.destructibles.push(h.clone());
         }
     }
@@ -494,7 +497,11 @@ impl Vm {
     /// (zend_objects_destroy_object), then `free_obj_host` unless the
     /// destructor kept a reference.
     pub(crate) fn call_destructor(&mut self, h: ObjectHandle) -> Result<(), Thrown> {
-        let cls = h.borrow().class;
+        let (cls, id) = {
+            let o = h.borrow();
+            (o.class, o.id)
+        };
+        rhp_values::gc::set_flag(id, rhp_values::gc::TRACKED, false);
         let handlers = self.class(cls).handlers;
         let native = match handlers.and_then(|t| t.dtor_obj) {
             Some(f) => f(self, &h),
@@ -569,6 +576,7 @@ impl Vm {
     /// Destruct every tracked object nothing references any more (a full
     /// scan, repeated until no destructor releases further objects).
     pub(crate) fn collect_released_now(&mut self) -> Result<(), Thrown> {
+        self.drop_freed_generators();
         loop {
             if !self.destructibles.iter().any(|h| Rc::strong_count(h) == 1) {
                 return Ok(());
@@ -584,6 +592,12 @@ impl Vm {
             let mut pending: Option<Thrown> = None;
             let mut it = released.into_iter();
             while let Some(h) = it.next() {
+                // The cycle collector destructed it already (it leaves the
+                // list when the collection ends).
+                let id = h.borrow().id;
+                if rhp_values::gc::flags(id) & rhp_values::gc::CALLED != 0 {
+                    continue;
+                }
                 match self.call_destructor(h) {
                     Ok(()) => {}
                     Err(e) if !e.is_catchable() => {

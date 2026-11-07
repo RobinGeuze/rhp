@@ -351,6 +351,7 @@ impl Vm {
             && (cv as usize) < f.proto.cv_var_names.len()
             && matches!(f.regs[cv as usize], Value::Ref(_))
         {
+            rhp_values::gc::possible_root(&self.stack[top].regs[cv as usize]);
             self.stack[top].regs[cv as usize] = Value::Undef;
             self.sync_global_cv(top, cv);
             self.dtor_check = true;
@@ -368,9 +369,18 @@ impl Vm {
     /// (A filtered stream released here closes at the next check: this path
     /// is too hot to watch for it.)
     pub(crate) fn reg_set(&mut self, top: usize, r: Reg, v: Value) {
-        let slot = &mut self.stack[top].regs[r as usize];
-        if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_)) {
-            self.dtor_check = true;
+        let f = &mut self.stack[top];
+        let slot = &mut f.regs[r as usize];
+        if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot {
+            // A variable's old value (a temporary's goes without, as php's
+            // zval_ptr_dtor_nogc).
+            if r < f.proto.num_cvs && !f.proto.is_internal() {
+                rhp_values::gc::possible_root(slot);
+            }
+            if !self.destructibles.is_empty() && matches!(slot, Value::Object(_) | Value::Array(_))
+            {
+                self.dtor_check = true;
+            }
         }
         *slot = v;
     }
@@ -520,6 +530,9 @@ impl Vm {
         } else {
             std::mem::replace(slot, v)
         };
+        if !self.stack[top].proto.is_internal() {
+            rhp_values::gc::possible_root(&old);
+        }
         if self.release_tracked(&old) {
             self.dtor_check = true;
         }
@@ -603,11 +616,11 @@ impl Vm {
             debug_assert!(Rc::ptr_eq(&proto, &self.stack[top].proto));
             let frame = &mut self.stack[top];
             let pc = frame.pc;
-            if pc < proto.code.len() && !self.mem.attention() {
+            if pc < proto.code.len() && !self.mem.tick() {
                 frame.pc = pc + 1;
             } else {
                 // The frame's pc is still `pc` here (oom_tick reports at it).
-                if self.mem.attention() {
+                if self.mem.tick() {
                     self.oom_tick(top, pc)?;
                 }
                 if pc >= proto.code.len() {
@@ -2460,7 +2473,12 @@ impl Vm {
 
                 Instr::BindRef { dst_cv, src_cv } => {
                     let rc = self.promote(top, src_cv);
-                    self.stack[top].regs[dst_cv as usize] = Value::Ref(rc);
+                    let old = std::mem::replace(
+                        &mut self.stack[top].regs[dst_cv as usize],
+                        Value::Ref(rc),
+                    );
+                    rhp_values::gc::possible_root(&old);
+                    drop(old);
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::RefAssign { dst_cv, src } => {
@@ -2471,7 +2489,9 @@ impl Vm {
                         self.cv_assign(top, dst_cv, v)?;
                         continue;
                     }
-                    self.stack[top].regs[dst_cv as usize] = v;
+                    let old = std::mem::replace(&mut self.stack[top].regs[dst_cv as usize], v);
+                    rhp_values::gc::possible_root(&old);
+                    drop(old);
                     self.sync_global_cv(top, dst_cv);
                 }
                 Instr::FetchListW { dst, src, key } => {
@@ -4163,6 +4183,7 @@ impl Vm {
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())
@@ -4264,6 +4285,7 @@ impl Vm {
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         });
         self.reg_set(top, dst, Value::Closure(cd));
         Ok(())

@@ -786,6 +786,9 @@ pub(crate) fn ini_apply(name: &[u8], v: Option<&[u8]>) {
         b"zend.assertions" => crate::zend::set_assertions(v.map_or(1, ini_parse_quantity)),
         b"assert.active" | b"assert.bail" | b"assert.warning" | b"assert.exception"
         | b"assert.callback" => crate::ext::standard::assert::ini_update(name, v),
+        b"zend.enable_gc" => {
+            rhp_values::gc::enable(v.is_none_or(ini_parse_bool));
+        }
         b"zend.exception_ignore_args" => {
             crate::zend::exceptions::set_ignore_args(v.is_some_and(ini_parse_bool))
         }

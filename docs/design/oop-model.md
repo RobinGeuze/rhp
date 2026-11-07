@@ -15,10 +15,9 @@ object carries a `ClassId(u32)`, and the class table lives **in the `Vm`**, neve
 in a `Value`; opcodes delegate to `ops::`/`conv::`/`registry()` where applicable;
 the ISA stays JIT-lowerable (fixed `Copy` operands, side tables, `ClassId`-guarded
 inline caches). Objects are **handle** types (`Rc<RefCell<ObjectData>>`):
-assignment shares the handle, `clone` copies. The deferred cycle collector still
-applies — object graphs cycle (`$o->self = $o`, a static prop holding an object)
-and `Rc` leaks them until mark-and-sweep lands; none of the types below change
-when it does.
+assignment shares the handle, `clone` copies. Object graphs that cycle
+(`$o->self = $o`) are freed by the cycle collector (gc.md), which works on
+these types as they are.
 
 All behavior claims are verified against `php` 8.5.8 and reproduced inline so they
 become fixtures.
@@ -633,11 +632,8 @@ pub struct Vm {
 
 ## 8. Deferred / out-of-scope in this cut (noted, not forgotten)
 
-- **Cycle collection.** `ObjectData.properties` can hold `Value::Object` handles
-  back to the same object, and static-prop cells / class constants can root object
-  graphs; `Rc` leaks cycles until the deferred mark-and-sweep collector lands. The
-  types above are unchanged by it — the collector walks `ObjectData` + the `Vm`
-  static-prop/const roots.
+- **Cycle collection.** Done: php's trial-deletion collector over the
+  `Rc` counts, see gc.md.
 - **Typed-uninitialized properties.** Verified distinct state
   (`uninitialized(int)`, and `Error: must not be accessed before initialization`),
   but we store no type hints this cut, so `PropDefault::Null` materializes both

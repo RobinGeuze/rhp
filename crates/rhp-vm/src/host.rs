@@ -142,6 +142,10 @@ impl Host for Vm {
             .is_some_and(|f| f.proto.strict_types)
     }
 
+    fn gc_collect_cycles(&mut self) -> Result<i64, Thrown> {
+        Vm::gc_collect_cycles(self)
+    }
+
     fn chain_thrown(&mut self, thrown: Thrown, previous: Thrown) -> Thrown {
         match previous {
             Thrown::Error { .. } | Thrown::Object(_) => {
@@ -971,6 +975,7 @@ impl Host for Vm {
                     id: 0,
                     statics: Default::default(),
                     weakly_referenced: Default::default(),
+                    gc_buffered: Default::default(),
                 }))
             }
             _ => callback,
@@ -2500,6 +2505,7 @@ impl Host for Vm {
             id: rhp_values::alloc_object_id(),
             statics: Default::default(),
             weakly_referenced: Default::default(),
+            gc_buffered: Default::default(),
         }))
     }
 }

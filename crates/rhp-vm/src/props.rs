@@ -591,7 +591,11 @@ impl Vm {
         if present {
             let key = key.unwrap();
             self.consume_reinit(&h, &key);
-            h.borrow_mut().remove_prop(&key);
+            let old = h.borrow_mut().remove_prop(&key);
+            if let Some(old) = &old {
+                rhp_values::gc::possible_root(old);
+            }
+            drop(old);
             self.mark_typed_unset(&h, &key);
         } else if was_uninit {
             // Reset IS_PROP_UNINIT, bypassing __unset().
@@ -940,7 +944,7 @@ impl Vm {
             };
             let mut od = h.borrow_mut();
             let slot = classes::prop_slot_mut(&self.classes, &mut od, key);
-            match slot {
+            let old = match slot {
                 Value::Ref(rc) => {
                     let rc = rc.clone();
                     drop(od);
@@ -948,10 +952,16 @@ impl Vm {
                     if want_result && self.typed_refs.has(&rc) {
                         self.typed_write_result = Some(v);
                     }
-                    drop(old);
+                    old
                 }
-                other => *other = val,
-            }
+                other => {
+                    let old = std::mem::replace(other, val);
+                    drop(od);
+                    old
+                }
+            };
+            rhp_values::gc::possible_root(&old);
+            drop(old);
             return Ok(());
         }
         if let Value::Closure(_) = o {
@@ -1618,6 +1628,7 @@ fn clone_closure(cd: &rhp_values::ClosureData) -> Value {
         id: rhp_values::alloc_object_id(),
         statics: cd.statics_copy(),
         weakly_referenced: Default::default(),
+        gc_buffered: Default::default(),
     }))
 }
 

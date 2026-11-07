@@ -128,6 +128,12 @@ pub struct DimensionHandlers {
 /// object (zend/internal_iterator.rs); `by_ref` for `foreach (… as &$v)`.
 pub type GetIteratorFn = fn(&mut dyn Host, &ObjectHandle, bool) -> Result<ObjectHandle, Thrown>;
 
+/// `get_gc`: push the values the object's native state holds (what php's
+/// handler returns besides the properties), for the cycle collector. A
+/// value must be one the payload really holds a reference to; leaving
+/// one out only keeps garbage alive.
+pub type GetGcFn = fn(&ObjectHandle, &mut Vec<Value>);
+
 /// php's `clone_obj` slot.
 #[derive(Clone, Copy)]
 pub enum CloneObj {
@@ -161,6 +167,7 @@ pub struct ObjectHandlers {
     /// php's `ce->get_iterator` for `foreach` (a class field in php, kept
     /// here with the handlers); `None` uses `getIterator()` / `Iterator`.
     pub get_iterator: Option<GetIteratorFn>,
+    pub get_gc: Option<GetGcFn>,
 }
 
 impl ObjectHandlers {
@@ -175,6 +182,7 @@ impl ObjectHandlers {
         free_obj_host: None,
         dimension: None,
         get_iterator: None,
+        get_gc: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {

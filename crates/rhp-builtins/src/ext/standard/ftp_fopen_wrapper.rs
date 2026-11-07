@@ -736,6 +736,7 @@ fn quiet_op<'a>(host: &'a mut dyn Host, fname: &'a str, ctx: &Value) -> Op<'a> {
 }
 
 /// `php_stream_ftp_url_stat`.
+#[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS, u32 on Linux
 pub fn url_stat(
     host: &mut dyn Host,
     fname: &str,

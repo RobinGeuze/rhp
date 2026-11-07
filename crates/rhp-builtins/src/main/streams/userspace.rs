@@ -342,6 +342,7 @@ fn docref_plain(host: &mut dyn Host, level: i64, msg: &[u8]) {
 }
 
 /// `statbuf_from_array`.
+#[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS, u32 on Linux
 fn statbuf_from_array(host: &mut dyn Host, a: &PhpArray) -> StatInfo {
     let mut s = StatInfo::default();
     let mut get = |k: &str| -> Option<i64> {

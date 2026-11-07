@@ -218,10 +218,13 @@ impl Vm {
         line: i64,
         user_handler: bool,
     ) {
-        if self.pending_throw.is_some() && self.user_handler_takes(level, user_handler) {
+        match &self.pending_throw {
+            // a fatal error / exit is unwinding (php bailed out)
+            Some(Thrown::Exit(_)) => return,
             // the user handler's call is skipped while an exception is
             // pending (zend_call_function), and nothing is shown
-            return;
+            Some(_) if self.user_handler_takes(level, user_handler) => return,
+            _ => {}
         }
         self.last_fatal_trace = None;
         // A diagnostic prelude code silenced with `@` is engine plumbing (php's

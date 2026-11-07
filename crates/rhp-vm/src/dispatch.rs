@@ -284,6 +284,24 @@ impl Vm {
         Ok(())
     }
 
+    /// `LvalKey` with undefined `key`: the last key of an assignment is
+    /// read when the write has checked the container (`None`: the step is
+    /// pushed, see `assign_undef_key`); any other warns now.
+    #[cold]
+    #[inline(never)]
+    fn lval_undef_key_step(&mut self, top: usize, key: Reg) -> Result<Option<Value>, Thrown> {
+        let f = &self.stack[top];
+        if key < f.proto.num_cvs
+            && self.deferred_undef_key.is_none()
+            && matches!(f.proto.code.get(f.pc), Some(Instr::AssignLval { .. }))
+        {
+            self.deferred_undef_key = Some(key);
+            self.cursor_steps.push(CursorStep::Key(Value::Null));
+            return Ok(None);
+        }
+        self.lval_undef_key(top, key).map(Some)
+    }
+
     /// An undefined variable as a key of the open cursor: the warning may
     /// run an error handler, which must not disturb the cursor. php has
     /// fetched the container already (a null one made an array): when the
@@ -1391,20 +1409,10 @@ impl Vm {
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
-                        // The last key of an assignment: read when the
-                        // write has checked the container.
-                        if key < proto.num_cvs
-                            && self.deferred_undef_key.is_none()
-                            && matches!(
-                                proto.code.get(self.stack[top].pc),
-                                Some(Instr::AssignLval { .. })
-                            )
-                        {
-                            self.deferred_undef_key = Some(key);
-                            self.cursor_steps.push(CursorStep::Key(Value::Null));
-                            continue;
+                        match self.lval_undef_key_step(top, key)? {
+                            Some(v) => v,
+                            None => continue,
                         }
-                        self.lval_undef_key(top, key)?
                     } else {
                         self.reg_get(top, key)
                     };

@@ -195,7 +195,7 @@ jobs:
           php-version: '8.5'
       # The libraries the build links dynamically (libzip, libgmp, libcurl's).
       - uses: ./.github/actions/native-deps
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar
@@ -321,7 +321,7 @@ jobs:
           echo "PHP_DIST=$RUNNER_TEMP/$dir" >> "$GITHUB_ENV"
       # The libraries the build links dynamically.
       - uses: ./.github/actions/native-deps
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar
@@ -372,7 +372,7 @@ jobs:
         with:
           path: tests/apps/${{ matrix.app }}/vendor
           key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release
       - run: tar -xf release.tar

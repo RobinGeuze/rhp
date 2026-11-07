@@ -404,6 +404,7 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                     && host
                         .class_name(cid)
                         .is_some_and(|n| n.eq_ignore_ascii_case(b"Closure")))
+                || enum_has_builtin_method(host, cid, &method)
         })
         .unwrap_or(false);
     let found = found || {
@@ -411,6 +412,22 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
         matches!(obj, Value::Object(_)) && spl_inner_has_method(host, &obj, &method, 0)
     };
     Ok(Value::Bool(found))
+}
+
+/// zend_enum_register_funcs: an enum's `cases()`, and a backed enum's
+/// `from()` and `tryFrom()`.
+fn enum_has_builtin_method(host: &dyn Host, cid: u32, method: &[u8]) -> bool {
+    if !host.is_enum_class(cid) {
+        return false;
+    }
+    let lc = method.to_ascii_lowercase();
+    match &lc[..] {
+        b"cases" => true,
+        b"from" | b"tryfrom" => host
+            .class_name(cid)
+            .is_some_and(|n| host.reflect_is_a(&n, b"BackedEnum")),
+        _ => false,
+    }
 }
 
 /// spl_dual_it_get_method / spl_recursive_it_get_method: an SPL outer

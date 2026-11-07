@@ -273,6 +273,29 @@ impl Vm {
                 self.fiber_switch(h, &cell, Err(graceful_exit()))
                     .map(|_| Value::Null)
             }
+            FiberOp::ReflectCallable => {
+                let d = cell.borrow();
+                if d.status == Status::Dead {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot fetch the callable from a fiber that has terminated",
+                    ));
+                }
+                Ok(d.callable.clone())
+            }
+            FiberOp::ReflectTrace | FiberOp::ReflectLine | FiberOp::ReflectFile => {
+                if matches!(status, Status::Init | Status::Dead) {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Cannot fetch information from a fiber that has not been started or is terminated",
+                    ));
+                }
+                let opts = match arg(0) {
+                    Value::Int(n) => n,
+                    _ => 1,
+                };
+                self.fiber_reflect(h, op, opts)
+            }
             FiberOp::GetCurrent | FiberOp::Suspend => unreachable!(),
         }
     }
@@ -536,6 +559,69 @@ impl Vm {
             cur = d.prev.clone();
         }
         None
+    }
+
+    /// ReflectionFiber's getTrace() / getExecutingLine() / getExecutingFile()
+    /// on started fiber `h`: its own frames (php's fiber->execute_data, or
+    /// the running frames when `h` is the active fiber), not those of the
+    /// context that resumed it.
+    fn fiber_reflect(&mut self, h: &ObjectHandle, op: FiberOp, opts: i64) -> Result<Value, Thrown> {
+        let active = self.active_fiber.as_ref().is_some_and(|a| Rc::ptr_eq(a, h));
+        // Where `h`'s context is kept: its own cell while suspended, the
+        // cell of the fiber it resumed while that one runs.
+        let holder = if active {
+            None
+        } else if cell_of(h).borrow().status == Status::Suspended {
+            Some(cell_of(h))
+        } else {
+            let mut cur = self.active_fiber.clone();
+            let mut found = None;
+            while let Some(f) = cur {
+                let c = cell_of(&f);
+                let prev = c.borrow().prev.clone();
+                if prev.as_ref().is_some_and(|p| Rc::ptr_eq(p, h)) {
+                    found = Some(c);
+                    break;
+                }
+                cur = prev;
+            }
+            Some(found.ok_or_else(|| fiber_error("Cannot fetch information from this fiber"))?)
+        };
+        let mut ctx = holder
+            .as_ref()
+            .map(|c| c.borrow_mut().ctx.take().expect("a fiber's context"));
+        if let Some(c) = ctx.as_mut() {
+            std::mem::swap(&mut self.stack, &mut c.stack);
+            std::mem::swap(&mut self.native_calls, &mut c.native_calls);
+        }
+        let r = match op {
+            FiberOp::ReflectTrace => {
+                let provide_object = opts & 1 != 0;
+                let ignore_args = opts & 2 != 0;
+                Value::Array(self.build_trace_part(provide_object, ignore_args, active, active))
+            }
+            _ => {
+                use rhp_bytecode::ProtoFlags as F;
+                let user = self
+                    .stack
+                    .iter()
+                    .rev()
+                    .find(|f| !f.proto.is_internal() && !f.proto.flags.contains(F::CONST_EXPR));
+                match (user, op) {
+                    (Some(f), FiberOp::ReflectLine) => {
+                        Value::Int(crate::errors::frame_line(f) as i64)
+                    }
+                    (Some(f), _) => Value::Str(f.proto.debug.file.clone()),
+                    (None, _) => Value::Null,
+                }
+            }
+        };
+        if let (Some(mut c), Some(cell)) = (ctx, holder) {
+            std::mem::swap(&mut self.stack, &mut c.stack);
+            std::mem::swap(&mut self.native_calls, &mut c.native_calls);
+            cell.borrow_mut().ctx = Some(c);
+        }
+        Ok(r)
     }
 
     /// The trace frames of the contexts below the running fiber: each

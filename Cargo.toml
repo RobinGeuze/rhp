@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "tools/*"]
+exclude = ["vendor/mago-syntax"]
 
 [workspace.package]
 edition = "2021"
@@ -18,3 +19,7 @@ bstr = "1.13"
 indexmap = "2.14"
 rustc-hash = "2"
 smallvec = "1.16"
+
+# mago-syntax with rhp's lexer fixes (vendor/mago-syntax/PATCHES.md).
+[patch.crates-io]
+mago-syntax = { path = "vendor/mago-syntax" }

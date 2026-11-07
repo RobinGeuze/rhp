@@ -1198,10 +1198,10 @@ final class ReflectionFiber {
     private $__f;
     public function __construct(Fiber $fiber) { $this->__f = $fiber; }
     public function getFiber(): Fiber { return $this->__f; }
-    public function getExecutingFile(): ?string { return null; }
-    public function getExecutingLine(): ?int { return null; }
-    public function getCallable(): callable { throw new Error('Cannot fetch the callable from a fiber that has terminated'); }
-    public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array { return []; }
+    public function getExecutingFile(): ?string { return __fiber(13, $this->__f); }
+    public function getExecutingLine(): ?int { return __fiber(12, $this->__f); }
+    public function getCallable(): callable { return __fiber(14, $this->__f); }
+    public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array { return __fiber(11, $this->__f, $options); }
 }
 
 class ReflectionExtension implements Reflector {

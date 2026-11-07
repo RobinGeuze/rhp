@@ -35,6 +35,13 @@ fiber's bottom frame to the frame that resumed it. An error raised while the fib
 stack has no user frame yet (the callable is a builtin, or its arguments
 fail to bind) is reported at the resumer's line (`fiber_resumer_site`).
 
+ReflectionFiber's getTrace(), getExecutingLine() and getExecutingFile()
+(`fiber_reflect`) read the fiber's own frames where its `ExecCtx` is kept:
+the running stack for the active fiber, its own cell while suspended, and
+the cell of the fiber it resumed while that one runs (`FiberData::prev`
+points back to it). The trace stops at the fiber's bottom frame, as php's
+does by cutting `stack_bottom->prev_execute_data`.
+
 ## The switch
 
 `Fiber::start()/resume()/throw()` call `fiber_switch`: swap the context,

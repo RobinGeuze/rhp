@@ -81,6 +81,10 @@ openssl-sys = "0.9.118"
 # CSPRNG for random_bytes/random_int/mt_rand.
 getrandom = "0.2"
 
+# dl.rs: reads a shared library's exported symbols to tell a php extension
+# module (one exporting get_module) from other libraries without loading it.
+object = { version = "0.37", default-features = false, features = ["read_core", "elf", "macho", "std", "unaligned"] }
+
 [build-dependencies]
 # Compiles the libxml2, ICU and curl shims against the headers of the
 # libraries it links.

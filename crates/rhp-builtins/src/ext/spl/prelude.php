@@ -4,7 +4,9 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $__s = []; private $__f = 0; private $__k = []; private $__p = 0;
-    public function __construct($array = [], int $flags = 0) { if (is_object($array)) { __spl_deprecated('ArrayIterator::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
+    // The backing object (foreach by reference reaches its property slots).
+    private $__o = null;
+    public function __construct($array = [], int $flags = 0) { $this->__o = is_object($array) && !($array instanceof ArrayObject || $array instanceof ArrayIterator) ? $array : null; if (is_object($array)) { __spl_deprecated('ArrayIterator::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
     public function current(): mixed { $k = $this->__k[$this->__p] ?? null; return $k === null ? null : ($this->__s[$k] ?? null); }
     public function key(): mixed { return $this->__k[$this->__p] ?? null; }
     public function next(): void { $this->__p++; }

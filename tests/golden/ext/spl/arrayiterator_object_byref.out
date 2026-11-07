@@ -1,0 +1,31 @@
+
+Deprecated: Creation of dynamic property P::$dyn is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/wave5-cleanup/tests/golden/ext/spl/arrayiterator_object_byref.php on line 13
+a
+d
+dyn
+object(P)#1 (5) {
+  ["a"]=>
+  int(10)
+  ["b":protected]=>
+  int(2)
+  ["c":"P":private]=>
+  int(3)
+  ["d"]=>
+  int(40)
+  ["dyn"]=>
+  int(50)
+}
+Cannot assign string to reference held by property P::$d of type int
+int(7)
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  int(3)
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}

@@ -284,13 +284,31 @@ impl Vm {
         Ok(())
     }
 
+    /// `LvalKey` with undefined `key`: the last key of an assignment is
+    /// read when the write has checked the container (`None`: the step is
+    /// pushed, see `assign_undef_key`); any other warns now.
+    #[cold]
+    #[inline(never)]
+    fn lval_undef_key_step(&mut self, top: usize, key: Reg) -> Result<Option<Value>, Thrown> {
+        let f = &self.stack[top];
+        if key < f.proto.num_cvs
+            && self.deferred_undef_key.is_none()
+            && matches!(f.proto.code.get(f.pc), Some(Instr::AssignLval { .. }))
+        {
+            self.deferred_undef_key = Some(key);
+            self.cursor_steps.push(CursorStep::Key(Value::Null));
+            return Ok(None);
+        }
+        self.lval_undef_key(top, key).map(Some)
+    }
+
     /// An undefined variable as a key of the open cursor: the warning may
     /// run an error handler, which must not disturb the cursor. php has
     /// fetched the container already (a null one made an array): when the
     /// handler replaces the variable, the write still goes to that
     /// container (an object's offsetSet) and is lost for the variable.
     #[cold]
-    fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
+    pub(crate) fn lval_undef_key(&mut self, top: usize, key: Reg) -> Result<Value, Thrown> {
         let target = match self.cursor_root {
             CursorRoot::Cv(cv) => match self.reg_get(top, cv) {
                 Value::Null => {
@@ -784,7 +802,7 @@ impl Vm {
                     }
                 }
                 Instr::Pow { dst, a, b } => {
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let v = self.pow_op(&x, &y)?;
                     self.reg_set(top, dst, v);
                 }
@@ -825,7 +843,7 @@ impl Vm {
                     if self.concat_in_place(top, &proto.code, pc, proto.num_cvs, dst, a, b) {
                         continue;
                     }
-                    let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+                    let (x, y) = self.bin_operands(top, dst, a, b)?;
                     let slow = |v: &Value| match v {
                         Value::Object(_) | Value::Array(_) | Value::Closure(_) => true,
                         Value::Float(f) => f.is_nan(),
@@ -1391,7 +1409,10 @@ impl Vm {
                 }
                 Instr::LvalKey { key } => {
                     let k = if self.stack[top].regs[key as usize].is_undef() {
-                        self.lval_undef_key(top, key)?
+                        match self.lval_undef_key_step(top, key)? {
+                            Some(v) => v,
+                            None => continue,
+                        }
                     } else {
                         self.reg_get(top, key)
                     };
@@ -1526,6 +1547,9 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
+                        continue;
+                    }
                     // (After a compound assignment's FetchLvalRw raised them
                     // already, `rw_null_keys` counts them.)
                     if self.cursor_null_key && self.rw_null_keys == 0 {
@@ -3038,7 +3062,7 @@ impl Vm {
         op: Op,
         f: fn(&Value, &Value) -> Result<Value, Thrown>,
     ) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
         let v = if matches!(x, Value::Int(_) | Value::Float(_))
             && matches!(y, Value::Int(_) | Value::Float(_))
         {
@@ -3050,11 +3074,50 @@ impl Vm {
         Ok(())
     }
 
+    /// The operands of binary op `dst = a <op> b`. `$a <op>= $b` compiles to
+    /// the op followed by `Assign` back to `$a`; php's ZEND_ASSIGN_OP reads
+    /// op2 first, so with both undefined `$b` warns first (and reads as
+    /// null whatever the handler did).
+    fn bin_operands(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
+        if self.stack[top].regs[a as usize].is_undef() {
+            return self.bin_operands_undef(top, dst, a, b);
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bin_operands_undef(
+        &mut self,
+        top: usize,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+    ) -> Result<(Value, Value), Thrown> {
+        let f = &self.stack[top];
+        if a != b
+            && b < f.proto.num_cvs
+            && f.regs[b as usize].is_undef()
+            && matches!(f.proto.code.get(f.pc),
+                Some(Instr::Assign { cv, src }) if *cv == a && *src == dst)
+        {
+            self.undef_cv(top, b)?;
+            return Ok((self.reg_r(top, a)?, Value::Null));
+        }
+        Ok((self.reg_r(top, a)?, self.reg_r(top, b)?))
+    }
+
     /// `% << >> | & ^` past the int fast path: `long_op` (compare.rs).
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn bin_inf(&mut self, top: usize, dst: Reg, a: Reg, b: Reg, op: Op) -> Result<(), Thrown> {
-        let (x, y) = (self.reg_r(top, a)?, self.reg_r(top, b)?);
+        let (x, y) = self.bin_operands(top, dst, a, b)?;
         let v = self.long_op(op, &x, &y)?;
         self.reg_set(top, dst, v);
         Ok(())
@@ -3431,6 +3494,20 @@ impl Vm {
                 .spl_array_owner(&obj, b"getiterator")
                 .or_else(|| self.spl_array_owner(&obj, b"current"));
             if let Some(owner) = spl {
+                // Backed by an object: its property table (spl_array's
+                // object storage), `pos_reg` holding [object, iterator id].
+                if let Some(backing) = self.spl_array_backing(&obj, owner)? {
+                    let cls = obj.borrow().class;
+                    self.fe_iter_handle(top, pos_reg, cls);
+                    let backing = self.lazy_props_object(&backing)?;
+                    let id = rhp_values::next_ht_iter_id();
+                    backing.borrow_mut().prop_iter_set(id, 0);
+                    let mut st = PhpArray::new();
+                    st.push(Value::Object(backing));
+                    st.push(Value::Int(id as i64));
+                    self.reg_set(top, pos_reg, Value::Array(st));
+                    return Ok(());
+                }
                 // `pos_reg` holds [storage reference, position].
                 let cell = self.spl_array_storage(&obj, owner)?;
                 let cls = obj.borrow().class;
@@ -3555,7 +3632,17 @@ impl Vm {
         id: u32,
         by_ref: bool,
     ) -> Result<Option<(Value, Value)>, Thrown> {
-        let caller = self.stack[top].defining_class;
+        self.prop_iter_next_in(self.stack[top].defining_class, h, id, by_ref)
+    }
+
+    /// [`Self::prop_iter_next`] with the properties `caller` may see.
+    fn prop_iter_next_in(
+        &mut self,
+        caller: Option<ClassId>,
+        h: &ObjectHandle,
+        id: u32,
+        by_ref: bool,
+    ) -> Result<Option<(Value, Value)>, Thrown> {
         let mut b = h.borrow_mut();
         let cls = b.class;
         // A table the iterator is not on starts over (php restarts at the
@@ -3767,6 +3854,27 @@ impl Vm {
                         self.reg_set(top, pos_reg, Value::Array(st));
                     }
                     None => self.stack[top].pc = end as usize,
+                }
+                return Ok(());
+            }
+            // An object-backed ArrayIterator (see FeResetRef): public
+            // properties only (spl_array_skip_protected).
+            if let (Some(Value::Object(o)), Some(Value::Int(id))) = (
+                st.get_index(0).map(|e| e.1.clone()),
+                st.get_index(1).map(|e| e.1.clone()),
+            ) {
+                let id = id as u32;
+                match self.prop_iter_next_in(None, &o, id, true)? {
+                    Some((k, Value::Ref(rc))) => {
+                        self.bind_ref_cv(top, val_cv, rc);
+                        if key_cv != Reg::MAX {
+                            self.cv_assign(top, key_cv, k)?;
+                        }
+                    }
+                    _ => {
+                        o.borrow_mut().prop_iter_del(id);
+                        self.stack[top].pc = end as usize;
+                    }
                 }
                 return Ok(());
             }

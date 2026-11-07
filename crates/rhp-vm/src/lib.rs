@@ -297,6 +297,12 @@ pub struct Vm {
     // An undefined variable assigned below a `__get` property: php reads
     // it (and warns) after fetching the container.
     deferred_undef_src: Option<Reg>,
+    // An undefined variable as the last key of an assignment's path: php
+    // reads it after checking the container (see `assign_undef_key`).
+    deferred_undef_key: Option<Reg>,
+    // False-to-array deprecations already raised for the open cursor's
+    // write (its walk then converts quietly).
+    skip_false_dep: u32,
     // The typed property the open cursor's leaf is, as the last
     // `cursor_through_check` found it.
     cursor_leaf: Option<(ClassId, ClassId, PhpStr, Rc<rhp_bytecode::TypeHint>)>,

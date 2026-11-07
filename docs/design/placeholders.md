@@ -500,7 +500,10 @@ The module is deliberately "READ-ONLY, native format only"
 - **Now:** the prelude keeps the object's properties as an array
   (`get_object_vars` when constructed); offset writes, unsets and
   `exchangeArray()` also write through to the object (`__spl_obj_store`),
-  and `append()` throws as php does.
+  and `append()` throws as php does. `foreach` by reference over an
+  ArrayIterator backed by an object walks the object's public property
+  slots themselves (typed properties as type sources, readonly ones
+  refused).
 - **Breaks:** properties the object gains or changes afterwards are not seen
   through the ArrayObject; private/protected properties are not in the
   snapshot; `$ao[] = v` and integer offsets land under string keys in the
@@ -754,8 +757,6 @@ Zend/tests/fibers/destructors_*, gc-cycle-*, gh9735-*, gh10340-003,
 generators/gh15330-*). A generator whose frame a destroyed fiber unwinds is
 not marked force-closed, so a `yield` in its `finally` is not refused
 (gh9916-009; zend_generator_dtor_storage's ZEND_GENERATOR_FORCED_CLOSE).
-`ReflectionFiber` is still the old stub (no executing file/line, callable
-or trace; ext/reflection/tests/ReflectionFiber_*).
 
 ## 10. Prioritized roadmap
 

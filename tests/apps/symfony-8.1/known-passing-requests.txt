@@ -4,6 +4,7 @@ home
 hello-bob
 json-query
 twig-ann
+submit-post
 not-found
 method-not-allowed
 @files

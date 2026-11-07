@@ -5,13 +5,13 @@
 //! than store a self-referential `arena + &Program` (which needs `unsafe`), the
 //! caller holds the [`Arena`] on the stack and [`Arena::parse`] hands back a
 //! [`Parsed`] whose lifetime is tied to it. The borrow checker then guarantees
-//! the AST cannot outlive the arena — no `unsafe` anywhere.
+//! the AST cannot outlive the arena. The arena's allocator ([`bump`]) is the
+//! one `unsafe` part.
 //!
 //! This is sound *and* sufficient because the AST is consumed within a single
 //! scope: the bytecode compiler turns it into **owned** `rhp_bytecode` (no
 //! `'arena` borrow escapes) before the arena drops.
 
-use mago_allocator::LocalArena;
 use mago_database::file::FileId;
 use mago_syntax::cst::Program;
 use mago_syntax::lexer::Lexer;
@@ -140,7 +140,7 @@ pub fn mago_gap_error(source: &[u8]) -> Option<(String, u32)> {
 /// Owns a parse arena. Create one per source file, parse into it, use the AST,
 /// then drop it. Cheap to create.
 pub struct Arena {
-    arena: LocalArena,
+    arena: bump::Bump,
 }
 
 impl Default for Arena {
@@ -152,7 +152,7 @@ impl Default for Arena {
 impl Arena {
     pub fn new() -> Self {
         Arena {
-            arena: LocalArena::new(),
+            arena: bump::Bump::new(),
         }
     }
 
@@ -281,5 +281,6 @@ fn describe_token(kind: TokenKind, text: &[u8]) -> String {
     }
 }
 
+mod bump;
 #[cfg(test)]
 mod tests;

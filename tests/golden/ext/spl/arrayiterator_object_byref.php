@@ -2,6 +2,7 @@
 // foreach by reference over an ArrayIterator backed by an object reaches
 // the object's public property slots (spl_array's object storage).
 
+#[AllowDynamicProperties]
 class P {
     public $a = 1;
     protected $b = 2;

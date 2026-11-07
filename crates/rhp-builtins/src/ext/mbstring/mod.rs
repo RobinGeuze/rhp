@@ -74,6 +74,11 @@ struct State {
     /// / mbstring.http_input have a value of their own.
     internal_encoding_set: bool,
     http_input_set: bool,
+    /// `outconv_enabled`: mb_output_handler converts this request's output.
+    outconv: bool,
+    /// `current_http_output_encoding` once mb_http_output() set it (else
+    /// the ini's).
+    http_output: Option<Enc>,
 }
 
 impl State {
@@ -89,6 +94,8 @@ impl State {
             ini_internal: encodings::utf8(),
             internal_encoding_set: false,
             http_input_set: false,
+            outconv: false,
+            http_output: None,
         }
     }
 }
@@ -1767,6 +1774,86 @@ fn fn_mb_strimwidth(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
 // ---------------------------------------------------------------------------
 
 /// `mb_convert_encoding(array|string $string, string $to_encoding, array|string|null $from_encoding = null)`.
+/// `MBSTRG(current_http_output_encoding)`: mbstring.http_output, else
+/// output_encoding, else default_charset (php_get_output_encoding).
+fn http_output_encoding() -> Enc {
+    if let Some(e) = st(|s| s.http_output) {
+        return e;
+    }
+    let name = ini(b"mbstring.http_output")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| php_encoding(b"output_encoding"));
+    encoding_or_pass(&name).unwrap_or_else(encodings::utf8)
+}
+
+/// php_mb_get_encoding_or_pass.
+fn encoding_or_pass(name: &[u8]) -> Option<Enc> {
+    if name == b"pass" {
+        return Some(encodings::pass());
+    }
+    Encoding::by_name(name)
+}
+
+/// `mb_http_output`: the HTTP output encoding's name, or set it.
+fn fn_mb_http_output(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_http_output";
+    let Some(name) = opt_str_arg(host, args, 0, f)? else {
+        return Ok(Value::str(http_output_encoding().name().to_vec()));
+    };
+    if name.contains(&0) {
+        return Err(value_error(f, 0, "must not contain any null bytes"));
+    }
+    match encoding_or_pass(&name) {
+        Some(e) => {
+            st(|s| s.http_output = Some(e));
+            Ok(Value::Bool(true))
+        }
+        None => Err(value_error(
+            f,
+            0,
+            &format!(
+                "must be a valid encoding, \"{}\" given",
+                String::from_utf8_lossy(&name)
+            ),
+        )),
+    }
+}
+
+/// `mb_output_handler`: converts output from the internal encoding to the
+/// HTTP output encoding when the response is text (or has no Content-Type
+/// yet). Each chunk is converted on its own (php keeps the decoder's state
+/// between chunks).
+fn fn_mb_output_handler(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let f = "mb_output_handler";
+    let s = str_arg(host, args, 0, f)?;
+    let status = long_arg(host, args, 1, f)?;
+    let enc = http_output_encoding();
+    if enc == encodings::pass() {
+        return Ok(Value::Str(s.0));
+    }
+    if status & 0x01 != 0 {
+        let (send_default, mimetype) = match host.response() {
+            Some(r) => (r.send_default_content_type, r.mimetype.clone()),
+            None => (true, None),
+        };
+        // http_output_conv_mimetypes' default: ^(text/|application/xhtml\+xml)
+        let text = mimetype
+            .as_deref()
+            .is_some_and(|m| m.starts_with(b"text/") || m.starts_with(b"application/xhtml+xml"));
+        if send_default || text {
+            st(|s| s.outconv = true);
+        }
+    }
+    if !st(|s| s.outconv) {
+        return Ok(Value::Str(s.0));
+    }
+    let out = convert_ex(&s, enc, internal());
+    if status & 0x08 != 0 {
+        st(|s| s.outconv = false);
+    }
+    Ok(Value::str(out))
+}
+
 fn fn_mb_convert_encoding(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "mb_convert_encoding";
     let input = deref(&args[0]);
@@ -2710,6 +2797,8 @@ pub fn register(m: &mut crate::Registry) {
             ("mb_strwidth", fn_mb_strwidth),
             ("mb_strimwidth", fn_mb_strimwidth),
             ("mb_convert_encoding", fn_mb_convert_encoding),
+            ("mb_output_handler", fn_mb_output_handler),
+            ("mb_http_output", fn_mb_http_output),
             ("mb_convert_case", fn_mb_convert_case),
             ("mb_strtoupper", fn_mb_strtoupper),
             ("mb_strtolower", fn_mb_strtolower),

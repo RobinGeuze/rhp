@@ -1654,7 +1654,7 @@ impl Vm {
     }
 
     /// [`Vm::wrap_by_ref_args`] for a resolved callee.
-    fn callee_by_ref_args(
+    pub(crate) fn callee_by_ref_args(
         &mut self,
         callee: &Callee,
         args: Vec<Value>,

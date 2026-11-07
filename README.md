@@ -43,7 +43,7 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 5,136 | 5,396 | 95.2% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| Zend/tests | 5,172 | 5,396 | 95.8% | Fibers 112/113; lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 834 | 895 | 93.2% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 22 | 117 | 18.8% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
 | sapi/cgi | 5 | 24 | 20.8% | `rhp --cgi` against php-cgi |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 93 | 161 | 57.8% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 3 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **14,319** | **22,219** | **64.4%** | |
+| **total** | **14,355** | **22,219** | **64.6%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, fileinfo, ftp, gd, gettext, imap, ldap, mysqli, odbc, pdo, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pdo_sqlite, pgsql, session, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
@@ -99,7 +99,7 @@ Measured on 2026-11-05 against php 8.5.12; only what was checked is listed.
 | PHPUnit (`tests/apps/tools`) | 13.4.6 | All 29 checked commands print what php prints: `--version`, `--help`, the `--list-*` commands, configuration validation and migration, test runs (passing, failing and skipped tests, data providers, `--filter`, `--group`, `--stop-on-failure`, random order with a seed) and every output format (testdox, TeamCity, debug, JUnit, event log). |
 | PHP-CS-Fixer (`tests/apps/tools`) | 3.95.28 | 24 of 25 commands print what php prints: `--version`, `list`, `help`, `describe`, `list-sets`, `list-files`, `check` and `fix` (dry runs with `--diff`, real fixes that write the same files, `--rules`, `--stop-on-violation`, a single path, without cache) in every output format, and runs with 2 parallel workers. The parallel runs write the same files but list them in the order the workers finish, which with rhp's slower workers is sometimes not php's: one of the two differed in the measured run. |
 | Psalm (`tests/apps/tools`) | 7.0.3 | 22 of 24 commands print what php prints: `--version`, `--help`, single-threaded analysis with every checked output format but `xml`, `--show-info`, `--stats`, `--find-dead-code`, `--set-baseline` and `--alter` (psalter, with and without `--dry-run`). `--threads=2` stops at `Fiber` (amphp's event loop), and `--output-format=xml` fails because rhp's `property_exists()` doesn't see `DOMDocument`'s properties (`preserveWhiteSpace`, `formatOutput`). |
-| PHPStan (`tests/apps/tools`) | 2.3.5 | 4 of 25 commands print what php prints: `--version`, `list`, `help analyse` and `analyse --no-progress --memory-limit=512M`. Every other command (`analyse`, `diagnose`, `dump-parameters`, `clear-result-cache`, ...) runs out of the default 128M memory limit while PHPStan tokenises files (rhp's `token_get_all()` needs about 2.4 times php's memory). A php build of PHPStan's native extension module is skipped without a warning, as in a php without DL support (see docs/design/extensions.md). |
+| PHPStan (`tests/apps/tools`) | 2.3.5 | 3 of 25 commands print what php prints: `--version`, `list` and `help analyse`. Every other command (`analyse`, `diagnose`, `dump-parameters`, `clear-result-cache`, ...) runs out of the default 128M memory limit while PHPStan tokenises files (rhp's `token_get_all()` needs about 2.4 times php's memory). With `--memory-limit=512M` analysis runs but reports an internal error: rhp's `[$a, $b] = $a;` overwrites `$a` before it reads `$b`. |
 | Rector (`tests/apps/tools`) | 2.8.4 | 5 of 20 commands print what php prints: `--version`, `list`, `help process` and `list-rules` (text and JSON). Every `process` run fails on each file because `stream_wrapper_restore()` is missing, and parallel runs stop at `Random\Randomizer`, which rhp lacks. |
 
 ## Build and test

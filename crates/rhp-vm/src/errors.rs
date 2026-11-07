@@ -1270,7 +1270,13 @@ impl Vm {
             // caller handles the exception, so its locals are destructed
             // ahead of the caller's catch / finally.
             drop(popped);
-            if let Err(e) = self.collect_released() {
+            let mut r = self.collect_released();
+            // A collection the frame's release made due runs there too
+            // (php collects inside the release that fills the buffer).
+            if r.is_ok() && self.mem.gc_is_due() {
+                r = self.gc_auto();
+            }
+            if let Err(e) = r {
                 if !e.is_catchable() {
                     // `exit` in such a destructor discards the exception.
                     return Err(e);

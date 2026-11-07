@@ -434,6 +434,17 @@ impl ObjectData {
         self.extra.get_or_insert_with(Default::default).weak = true;
     }
 
+    /// Whether the object has native state, lazy info, iterators or the
+    /// weakly referenced flag (a cheap test before looking for one).
+    pub fn has_extra(&self) -> bool {
+        self.extra.is_some()
+    }
+
+    /// Whether [`ObjectData::set_weakly_referenced`] was called.
+    pub fn is_weakly_referenced(&self) -> bool {
+        self.extra.as_ref().is_some_and(|e| e.weak)
+    }
+
     /// Detach the native state (php's `free_obj` run early, e.g. `close()`).
     pub fn take_payload(&mut self) -> Option<Payload> {
         let extra = self.extra.as_deref_mut()?;
@@ -613,6 +624,9 @@ pub fn gc_free_object(h: &ObjectHandle) {
     gc::object_freed(id);
     if let Some(mut extra) = extra {
         drop(extra.native.take());
+        if extra.weak && id != 0 {
+            weak_notify(id);
+        }
         drop(extra.lazy.take());
     }
     if id != 0 {
@@ -625,6 +639,17 @@ pub fn gc_free_object(h: &ObjectHandle) {
     }
     drop(props);
     release_object_id(id);
+}
+
+/// [`gc_free_object`] for a garbage closure: its weak references and its
+/// static variables go now. Other garbage (a WeakMap entry's value, say)
+/// may still hold it, so its handle goes when the last holder drops it.
+pub fn gc_free_closure(c: &ClosureData) {
+    if c.weakly_referenced.replace(false) {
+        weak_notify(c.id);
+    }
+    let statics = std::mem::take(&mut *c.statics.borrow_mut());
+    drop(statics);
 }
 
 /// What kind of class-like declaration a class table entry is.

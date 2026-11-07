@@ -98,11 +98,30 @@ struct GInfo {
     kept: bool,
 }
 
+/// A WeakMap entry the walk reached (php's weakmap special edges): its
+/// value is held by the map, but kept only while both the map and the key
+/// are live.
+struct Eph {
+    /// The map state's address (`weakrefs::map_gc_entries`).
+    map: usize,
+    /// The key's address.
+    key: usize,
+    v: u32,
+}
+
 #[derive(Default)]
 struct Graph {
     nodes: Vec<GInfo>,
     index: FxHashMap<usize, u32>,
     edges: Vec<u32>,
+    eph: Vec<Eph>,
+    /// (map, key) of the entries in `eph`.
+    eph_seen: FxHashSet<(usize, usize)>,
+    /// The WeakMap nodes, by state address.
+    maps: FxHashMap<usize, u32>,
+    /// The entry values a key or map node reaches through its weak edges
+    /// (zend_weakmap_get_object_entry_gc / zend_weakmap_get_entry_gc).
+    eph_out: FxHashMap<u32, Vec<u32>>,
 }
 
 impl Graph {
@@ -133,6 +152,42 @@ impl Graph {
     fn find(&self, addr: usize) -> Option<u32> {
         self.index.get(&addr).copied()
     }
+
+    /// Record WeakMap entry (map, key) -> `v`, reached from node `from`.
+    fn add_eph(&mut self, from: u32, map: usize, key: usize, v: &Value, todo: &mut Vec<u32>) {
+        let Some((addr, n)) = GNode::of(v) else {
+            return;
+        };
+        let j = self.intern(addr, n, todo);
+        self.eph_out.entry(from).or_default().push(j);
+        if self.eph_seen.insert((map, key)) {
+            self.eph.push(Eph { map, key, v: j });
+        }
+    }
+
+    /// Whether node at `addr` is live: black, or not reached at all.
+    fn live_addr(&self, addr: usize) -> bool {
+        self.find(addr).is_none_or(|i| self.nodes[i as usize].black)
+    }
+}
+
+/// GC_G(dtor_fiber) and the destructor phase's state.
+#[derive(Default)]
+pub(crate) struct DtorState {
+    /// GC_G(dtor_fiber): the fiber destructors run in when the collection
+    /// runs inside a fiber; it waits, suspended, for the next collection.
+    fiber: Option<rhp_values::ObjectHandle>,
+    /// GC_G(dtor_fiber_running): the fiber is calling destructors (still
+    /// set when one of them suspended it).
+    running: bool,
+    /// GC_G(dtor_idx), GC_G(dtor_end).
+    idx: u32,
+    end: u32,
+    /// Objects whose destructor left them unreferenced: php leaves them
+    /// in the buffer with a count of zero, and the rerun frees them.
+    zombies: Vec<Value>,
+    /// The destructors' exceptions, chained.
+    pending: Option<Thrown>,
 }
 
 /// One run's result.
@@ -150,19 +205,24 @@ impl Vm {
             return Ok(0);
         }
         self.drop_freed_generators();
+        if gc::num_roots() != 0 {
+            // zend_gc_remove_root_tmpvars.
+            for v in self.gc_root_tmpvars() {
+                let idx = gc::slot_of(&v);
+                if idx != 0 {
+                    drop(gc::remove_slot(idx));
+                }
+            }
+        }
         let mut total = 0;
         let mut did_rerun = false;
-        // Objects whose destructor left them unreferenced: php leaves them
-        // in the buffer with a count of zero, and the rerun frees them.
-        let mut zombies: Vec<Value> = Vec::new();
-        let mut pending: Option<Thrown> = None;
         let mut dtor_ns = 0u64;
         let mut free_ns = 0u64;
         loop {
             if gc::num_roots() == 0 {
                 break;
             }
-            let run = self.gc_run(&mut zombies, &mut pending, &mut dtor_ns, &mut free_ns);
+            let run = self.gc_run(&mut dtor_ns, &mut free_ns);
             let run = match run {
                 Ok(r) => r,
                 Err(e) => {
@@ -173,6 +233,8 @@ impl Vm {
                     }
                     self.gc_unlist_called();
                     gc::set_active(false);
+                    drop(std::mem::take(&mut self.gc_dtor.zombies));
+                    self.gc_dtor.pending = None;
                     return Err(e);
                 }
             };
@@ -185,13 +247,37 @@ impl Vm {
             break;
         }
         self.gc_unlist_called();
-        drop(zombies);
+        drop(std::mem::take(&mut self.gc_dtor.zombies));
+        let pending = self.gc_dtor.pending.take();
+        // zend_gc_check_root_tmpvars (no collection may start meanwhile).
+        gc::set_active(true);
+        for v in self.gc_root_tmpvars() {
+            gc::check_possible_root(&v);
+        }
+        gc::set_active(false);
         let all = start.elapsed().as_nanos() as u64;
         gc::add_times(all, dtor_ns, free_ns);
         match pending {
             Some(e) => Err(e),
             None => Ok(total),
         }
+    }
+
+    /// The values the running stack's live loop temporaries hold (php's
+    /// ZEND_LIVE_LOOP variables): what a by-reference foreach's reference
+    /// holds.
+    fn gc_root_tmpvars(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for f in &self.stack {
+            for &(pos, _, by_ref, _) in f.fe_live.iter().flat_map(|l| l.iter()) {
+                if let (true, Some(Value::Ref(r))) = (by_ref, f.regs.get(pos as usize + 1)) {
+                    if let Ok(v) = r.try_borrow() {
+                        out.push(v.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Take the objects whose destructor the collection called off the
@@ -284,13 +370,15 @@ impl Vm {
                         out.push(Value::Object(i.clone()));
                     }
                 }
-                let (cls, id) = (o.class, o.id);
+                let (cls, id, extra) = (o.class, o.id, o.has_extra());
                 drop(o);
                 if self.generators.contains_key(&id) && self.is_generator_class(cls) {
                     self.gen_gc_children(id, out);
                 }
                 if let Some(get_gc) = self.class(cls).handlers.and_then(|t| t.get_gc) {
                     get_gc(h, out);
+                } else if extra {
+                    crate::fibers::fiber_gc_values(h, out);
                 }
             }
             Value::Array(a) => out.extend(a.iter().map(|(_, v)| v.clone())),
@@ -345,13 +433,7 @@ impl Vm {
     }
 
     /// One pass of zend_gc_collect_cycles (up to `rerun_gc`).
-    fn gc_run(
-        &mut self,
-        zombies: &mut Vec<Value>,
-        pending: &mut Option<Thrown>,
-        dtor_ns: &mut u64,
-        free_ns: &mut u64,
-    ) -> Result<Run, Thrown> {
+    fn gc_run(&mut self, dtor_ns: &mut u64, free_ns: &mut u64) -> Result<Run, Thrown> {
         gc::count_run();
         gc::set_active(true);
 
@@ -378,6 +460,7 @@ impl Vm {
                 continue;
             };
             self.gc_children(&v, &mut kids);
+            gc_weak_entries(&mut g, i, &v, &mut todo);
             drop(v);
             let first = g.edges.len() as u32;
             for c in kids.drain(..) {
@@ -401,7 +484,9 @@ impl Vm {
             .iter()
             .map(|h| Rc::as_ptr(h) as usize)
             .collect();
-        let zombie_addrs: FxHashSet<usize> = zombies
+        let zombie_addrs: FxHashSet<usize> = self
+            .gc_dtor
+            .zombies
             .iter()
             .filter_map(|z| GNode::of(z).map(|(a, _)| a))
             .collect();
@@ -421,6 +506,11 @@ impl Vm {
             let j = g.edges[e] as usize;
             g.nodes[j].rc -= 1;
         }
+        // A WeakMap entry's value: the map's one reference.
+        for e in 0..g.eph.len() {
+            let j = g.eph[e].v as usize;
+            g.nodes[j].rc -= 1;
+        }
         // gc_scan_roots: whatever a node with outside references reaches
         // is black, the rest white.
         let mut stack: Vec<u32> = (0..g.nodes.len() as u32)
@@ -429,14 +519,32 @@ impl Vm {
         for &i in &stack {
             g.nodes[i as usize].black = true;
         }
-        while let Some(i) = stack.pop() {
-            let n = &g.nodes[i as usize];
-            for k in n.first..n.first + n.len {
-                let j = g.edges[k as usize];
-                if !g.nodes[j as usize].black {
-                    g.nodes[j as usize].black = true;
-                    stack.push(j);
+        loop {
+            while let Some(i) = stack.pop() {
+                let n = &g.nodes[i as usize];
+                for k in n.first..n.first + n.len {
+                    let j = g.edges[k as usize];
+                    if !g.nodes[j as usize].black {
+                        g.nodes[j as usize].black = true;
+                        stack.push(j);
+                    }
                 }
+            }
+            // A WeakMap entry is live when its map and its key are.
+            for e in &g.eph {
+                let map_live = g
+                    .maps
+                    .get(&e.map)
+                    .is_none_or(|&m| g.nodes[m as usize].black);
+                if map_live && g.live_addr(e.key) && !g.nodes[e.v as usize].black {
+                    stack.push(e.v);
+                }
+            }
+            if stack.is_empty() {
+                break;
+            }
+            for &i in &stack {
+                g.nodes[i as usize].black = true;
             }
         }
         let _ = roots;
@@ -497,50 +605,10 @@ impl Vm {
                 }
             }
             let t = Instant::now();
-            for idx in FIRST_ROOT..end {
-                let Slot::DtorGarbage(n) = gc::slot(idx) else {
-                    continue;
-                };
-                gc::retag(idx, Slot::Root);
-                let Some(v) = n.upgrade() else {
-                    continue;
-                };
-                let Value::Object(h) = &v else {
-                    continue;
-                };
-                let (cls, id) = {
-                    let o = h.borrow();
-                    (o.class, o.id)
-                };
-                // Not yet destructed (another destructor may have released
-                // it meanwhile). It stays on the destructor list, marked,
-                // until the collection ends (one pass removes them all).
-                let listed = gc::flags(id) & gc::TRACKED != 0;
-                let r = if listed {
-                    gc::set_flag(id, gc::CALLED, true);
-                    self.call_destructor(h.clone())
-                } else {
-                    if self.is_generator_class(cls) && self.gen_has_frame(id) {
-                        self.gen_gc_close(id);
-                    }
-                    Ok(())
-                };
-                if let Err(e) = r {
-                    if !e.is_catchable() {
-                        return Err(e);
-                    }
-                    *pending = Some(match pending.take() {
-                        None => e,
-                        Some(prev) => {
-                            use rhp_builtins::Host;
-                            self.chain_thrown(e, prev)
-                        }
-                    });
-                }
-                self.collect_released()?;
-                if Rc::strong_count(h) - usize::from(listed) == 1 {
-                    zombies.push(v);
-                }
+            if self.active_fiber.is_none() {
+                self.gc_call_destructors(FIRST_ROOT, end, None)?;
+            } else {
+                self.gc_call_destructors_in_fiber(end)?;
             }
             self.gc_unlist_called();
             *dtor_ns += t.elapsed().as_nanos() as u64;
@@ -566,10 +634,7 @@ impl Vm {
                         }
                         rhp_values::gc_free_object(h);
                     }
-                    Value::Closure(c) => {
-                        let s = std::mem::take(&mut *c.statics.borrow_mut());
-                        drop(s);
-                    }
+                    Value::Closure(c) => rhp_values::gc_free_closure(c),
                     _ => {}
                 }
                 holds.push(v);
@@ -599,6 +664,133 @@ impl Vm {
         Ok(Run { count, destructors })
     }
 
+    /// Set GC_G(dtor_fiber) (the old one is released after).
+    pub(crate) fn gc_dtor_set_fiber(&mut self, f: Option<rhp_values::ObjectHandle>) {
+        let old = std::mem::replace(&mut self.gc_dtor.fiber, f);
+        drop(old);
+    }
+
+    /// gc_call_destructors: the destructors of the garbage in buffer slots
+    /// `idx..end`, from the destructor fiber `fiber` (identified by its
+    /// object's address) or from the collection itself. False when the
+    /// fiber was resumed after a destructor suspended it: the collection
+    /// went on without it.
+    fn gc_call_destructors(
+        &mut self,
+        idx: u32,
+        end: u32,
+        fiber: Option<*const std::cell::RefCell<rhp_values::ObjectData>>,
+    ) -> Result<bool, Thrown> {
+        for idx in idx..end {
+            let Slot::DtorGarbage(n) = gc::slot(idx) else {
+                continue;
+            };
+            gc::retag(idx, Slot::Root);
+            let Some(v) = n.upgrade() else {
+                continue;
+            };
+            let Value::Object(h) = &v else {
+                continue;
+            };
+            let (cls, id) = {
+                let o = h.borrow();
+                (o.class, o.id)
+            };
+            if fiber.is_some() {
+                self.gc_dtor.idx = idx;
+            }
+            // Not yet destructed (another destructor may have released
+            // it meanwhile). It stays on the destructor list, marked,
+            // until the collection ends (one pass removes them all).
+            let listed = gc::flags(id) & gc::TRACKED != 0;
+            let r = if listed {
+                gc::set_flag(id, gc::CALLED, true);
+                self.call_destructor(h.clone())
+            } else {
+                if self.is_generator_class(cls) && self.gen_has_frame(id) {
+                    self.gen_gc_close(id);
+                }
+                Ok(())
+            };
+            if let Some(me) = fiber {
+                let current = self.gc_dtor.fiber.as_ref().map(Rc::as_ptr);
+                if current != Some(me) {
+                    // Resumed after a suspension: what is left is another
+                    // fiber's work.
+                    gc::possible_root(&v);
+                    return r.map(|()| false);
+                }
+            }
+            if let Err(e) = r {
+                if !e.is_catchable() {
+                    return Err(e);
+                }
+                let e = match self.gc_dtor.pending.take() {
+                    None => e,
+                    Some(prev) => {
+                        use rhp_builtins::Host;
+                        self.chain_thrown(e, prev)
+                    }
+                };
+                self.gc_dtor.pending = Some(e);
+            }
+            self.collect_released()?;
+            if Rc::strong_count(h) - usize::from(listed) == 1 {
+                self.gc_dtor.zombies.push(v);
+            }
+        }
+        Ok(true)
+    }
+
+    /// gc_call_destructors_in_fiber: a collection that runs inside a fiber
+    /// calls the destructors in the destructor fiber, so that one may
+    /// suspend; the rest then run in a new destructor fiber.
+    fn gc_call_destructors_in_fiber(&mut self, end: u32) -> Result<(), Thrown> {
+        debug_assert!(!self.gc_dtor.running);
+        self.gc_dtor.idx = FIRST_ROOT;
+        self.gc_dtor.end = end;
+        match self.gc_dtor.fiber.clone() {
+            None => self.gc_start_dtor_fiber()?,
+            Some(f) => drop(self.fiber_resume_internal(&f)?),
+        }
+        while self.gc_dtor.running {
+            // Suspended by a destructor: that fiber is no longer ours (it
+            // may be collected), the remaining destructors run in a new one.
+            let old = self.gc_dtor.fiber.take();
+            self.gc_dtor.idx += 1;
+            drop(old);
+            self.collect_released()?;
+            self.gc_start_dtor_fiber()?;
+        }
+        Ok(())
+    }
+
+    /// gc_destructor_fiber: the destructor fiber's function. Calls the
+    /// destructors of the current collection, then waits for the next one.
+    pub(crate) fn gc_destructor_fiber(
+        &mut self,
+        me: *const std::cell::RefCell<rhp_values::ObjectData>,
+    ) -> Result<(), Thrown> {
+        loop {
+            self.gc_dtor.running = true;
+            let (idx, end) = (self.gc_dtor.idx, self.gc_dtor.end);
+            if !self.gc_call_destructors(idx, end, Some(me))? {
+                return Ok(());
+            }
+            self.gc_dtor.running = false;
+            match self.fiber_suspend_internal() {
+                Ok(_) => {}
+                // Destroyed (at shutdown): php's graceful exit.
+                Err(e) => {
+                    if self.gc_dtor.fiber.as_ref().map(Rc::as_ptr) == Some(me) {
+                        self.gc_dtor.fiber = None;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     /// gc_collect_white from node `i`: php's depth-first order (the first
     /// white child next, the others on the stack). Returns the count.
     fn gc_collect_white(
@@ -625,6 +817,18 @@ impl Vm {
                     }
                 }
             }
+            if let Some(vs) = (!g.eph_out.is_empty())
+                .then(|| g.eph_out.get(&cur))
+                .flatten()
+            {
+                for &j in vs {
+                    let c = &mut g.nodes[j as usize];
+                    if !c.black && !c.collected {
+                        c.collected = true;
+                        stack.push(j);
+                    }
+                }
+            }
             let mut next = None;
             let (first, len) = {
                 let x = &g.nodes[cur as usize];
@@ -646,6 +850,41 @@ impl Vm {
                 Some(j) => cur = j,
                 None => return count,
             }
+        }
+    }
+}
+
+/// The WeakMap entries node `i` (`v`) reaches: a WeakMap's entries, and
+/// those keyed by a weakly referenced object or closure.
+fn gc_weak_entries(g: &mut Graph, i: u32, v: &Value, todo: &mut Vec<u32>) {
+    use rhp_builtins::zend::weakrefs;
+    let mut ents = Vec::new();
+    let key_id = match v {
+        Value::Object(h) => {
+            let Ok(o) = h.try_borrow() else {
+                return;
+            };
+            if !o.has_extra() {
+                return;
+            }
+            let weak = o.is_weakly_referenced().then_some(o.id);
+            drop(o);
+            if let Some(map) = weakrefs::map_gc_entries(h, &mut ents) {
+                g.maps.insert(map, i);
+                for (key, val) in ents.drain(..) {
+                    g.add_eph(i, map, key, &val, todo);
+                }
+            }
+            weak
+        }
+        Value::Closure(c) => c.weakly_referenced.get().then_some(c.id),
+        _ => None,
+    };
+    if let Some(id) = key_id {
+        let key = g.nodes[i as usize].n.addr();
+        weakrefs::key_gc_entries(id, &mut ents);
+        for (map, val) in ents.drain(..) {
+            g.add_eph(i, map, key, &val, todo);
         }
     }
 }
@@ -698,7 +937,18 @@ fn gc_remove_nested(g: &mut Graph, root: &Node) -> i64 {
             }
         };
         if proceed {
-            let edges = g.edges(cur).to_vec();
+            let mut edges = Vec::new();
+            if let Some(vs) = (!g.eph_out.is_empty())
+                .then(|| g.eph_out.get(&cur))
+                .flatten()
+            {
+                if g.maps.values().any(|&m| m == cur) {
+                    edges.extend_from_slice(vs);
+                } else {
+                    stack.extend_from_slice(vs);
+                }
+            }
+            edges.extend_from_slice(g.edges(cur));
             if let Some((&first, rest)) = edges.split_first() {
                 stack.extend_from_slice(rest);
                 cur = first;

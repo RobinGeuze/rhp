@@ -4,7 +4,9 @@
 # directory, each engine starting from the same pristine state.
 
 # Writable state, restored from the pristine snapshot before each engine.
-state = ["var/cache", "var/log", "var/share"]
+# Under APP_DEBUG the kernel rewrites config/reference.php (the config
+# reference for the enabled bundles), so it is state too.
+state = ["var/cache", "var/log", "var/share", "config/reference.php"]
 
 # The prod cache is warmed through the SAPI that serves it: clear what
 # `bin/console cache:warmup` (the CLI flavour) left, run the corpus once
@@ -20,6 +22,47 @@ ini = []
 # Capture group 1 of each pattern is a random token, alpha-renamed
 # consistently (<TOK1>, <TOK2>, ...) across headers, bodies, steps and files.
 tokens = ['PHPSESSID=([A-Za-z0-9,-]+)']
+
+# More passes over the same corpus (ids `<pass>/<id>` in the known list).
+# `debug`: APP_DEBUG=1, so errors print Symfony's exception page.
+[[pass]]
+name = "debug"
+env = { APP_DEBUG = "1" }
+
+# `cold`: no warm-up and an empty var/cache, so each engine compiles the
+# container (and everything else in the cache) itself; @files diffs them.
+[[pass]]
+name = "cold"
+warmup = "none"
+clear = ["var/cache"]
+
+# The exception page's var-dumper ids (`sf-dump-<mt_rand>`), the log
+# panel's times and object handles (`#123`, until handle numbers match).
+[[mask]]
+name = "sf-dump-id"
+pattern = 'sf-dump-\d+'
+replace = "sf-dump-N"
+pass = ["debug"]
+
+[[mask]]
+name = "log-time"
+pattern = '>\d\d:\d\d:\d\d<'
+replace = ">HH:MM:SS<"
+pass = ["debug"]
+
+[[mask]]
+name = "object-handle"
+pattern = '(class=sf-dump-ref>)#\d+'
+replace = "$1#N"
+pass = ["debug"]
+
+# The compiled container records when and from what it was built.
+[[mask]]
+name = "container-build"
+pattern = "'container\\.build_(id|time)' => [^,]+,"
+replace = "'container.build_$1' => <BUILD>,"
+in = ["files"]
+pass = ["cold"]
 
 [[request]]
 id = "home"
@@ -57,3 +100,154 @@ status = 404
 id = "method-not-allowed"
 path = "/submit"
 status = 405
+
+# The wide corpus: sessions and flashes, redirects, URL generation, cookies,
+# errors, streamed and file responses (with Range and HEAD), ETags, request
+# parsing, uploads, Twig, PUT/PATCH bodies.
+
+[[request]]
+id = "w-session-1"
+flow = "sess"
+path = "/w/session"
+status = 200
+
+[[request]]
+id = "w-session-2"
+flow = "sess"
+path = "/w/session"
+status = 200
+
+[[request]]
+id = "w-flash"
+flow = "sess"
+path = "/w/flash"
+status = 200
+
+[[request]]
+id = "w-redirect"
+path = "/w/redirect"
+status = 302
+
+[[request]]
+id = "w-urls"
+path = "/w/urls/41"
+status = 200
+
+[[request]]
+id = "w-urls-bad"
+path = "/w/urls/abc"
+status = 404
+
+[[request]]
+id = "w-cookie"
+path = "/w/cookie"
+headers = ["Cookie: x=1; y=a%20b; arr[k]=v"]
+status = 200
+
+[[request]]
+id = "w-error"
+path = "/w/error"
+status = 500
+
+[[request]]
+id = "w-denied"
+path = "/w/denied"
+status = 403
+
+[[request]]
+id = "w-warning"
+path = "/w/warning"
+# Under APP_DEBUG the warning becomes an ErrorException.
+pass_status = { debug = 500 }
+
+[[request]]
+id = "w-stream"
+path = "/w/stream"
+status = 200
+
+[[request]]
+id = "w-file"
+path = "/w/file"
+status = 200
+
+[[request]]
+id = "w-file-range"
+path = "/w/file"
+headers = ["Range: bytes=5-20"]
+status = 206
+
+[[request]]
+id = "w-file-head"
+method = "HEAD"
+path = "/w/file"
+status = 200
+
+[[request]]
+id = "w-json-hex"
+path = "/w/json-hex"
+status = 200
+
+[[request]]
+id = "w-etag"
+path = "/w/etag"
+status = 200
+
+[[request]]
+id = "w-etag-304"
+path = "/w/etag"
+headers = ["If-None-Match: \"abc\""]
+status = 304
+
+[[request]]
+id = "w-request"
+path = "/w/request?i=42&b=yes&s=ab12-%C3%A9&arr[]=1"
+headers = ["Accept-Language: fr-CH, fr;q=0.9, en;q=0.8, de;q=0.7, *;q=0.5", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "X-Requested-With: XMLHttpRequest", "Accept-Charset: utf-8, iso-8859-1;q=0.5", "If-None-Match: \"a\", W/\"b\""]
+status = 200
+
+[[request]]
+id = "w-upload"
+method = "POST"
+path = "/w/upload"
+content_type = "multipart/form-data; boundary=XyZ"
+body = "--XyZ\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue é\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a b.txt\"\r\nContent-Type: text/plain\r\n\r\nhello upload\nline2\r\n--XyZ\r\nContent-Disposition: form-data; name=\"img\"; filename=\"p.png\"\r\nContent-Type: image/png\r\n\r\n\u0089PNG\r\n\u001a\n\r\n--XyZ--\r\n"
+status = 200
+
+[[request]]
+id = "w-twig"
+path = "/w/twig"
+status = 200
+
+[[request]]
+id = "w-put-json"
+method = "PUT"
+path = "/w/put"
+content_type = "application/json"
+body = "{\"a\":[1,2,{\"b\":null}],\"c\":\"\\u00e9\"}"
+status = 200
+
+[[request]]
+id = "w-patch-form"
+method = "PATCH"
+path = "/w/put"
+body = "a=1&b[]=2"
+status = 200
+
+[[request]]
+id = "w-head"
+method = "HEAD"
+path = "/hello/Head"
+status = 200
+
+[[request]]
+id = "w-method-override"
+method = "POST"
+path = "/w/put"
+body = "_method=DELETE&z=1"
+# http_method_override is off: the POST itself is not allowed.
+status = 405
+
+[[request]]
+id = "w-trailing-slash"
+path = "/hello/x/"
+# The router redirects to the route without the slash.
+status = 301

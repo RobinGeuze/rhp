@@ -10,8 +10,8 @@ The frameworks' own PHPUnit suites run nightly from `tests/suites/`
 
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|
-| `symfony-7.4` | `symfony/skeleton` 7.4 + `symfony/twig-bundle`, all `symfony/*` at `7.4.*` | `APP_ENV=prod`, attribute routes in `src/Controller/HelloController.php` |
-| `symfony-8.1` | `symfony/skeleton` 8.1 + `symfony/twig-bundle`, all `symfony/*` at `8.1.*` | the `symfony-7.4` fixture (same `.env`, controller, templates and corpus) on Symfony 8 |
+| `symfony-7.4` | `symfony/skeleton` 7.4 + `symfony/twig-bundle` and `symfony/mime`, all `symfony/*` at `7.4.*` | `APP_ENV=prod`, attribute routes in `src/Controller/{Hello,Wide}Controller.php` |
+| `symfony-8.1` | `symfony/skeleton` 8.1 + `symfony/twig-bundle` and `symfony/mime`, all `symfony/*` at `8.1.*` | the `symfony-7.4` fixture (same `.env`, controller, templates and corpus) on Symfony 8 |
 | `laravel-13`  | `laravel/laravel` 13, every `symfony/*` component pinned to `7.4.*` | `APP_ENV=production`, `APP_DEBUG=false`, file session/cache, sync queue, no database |
 | `wordpress-7.1` | WordPress 7.1.4 (downloaded, not committed) + SQLite Database Integration 3.1.3 | SQLite database seeded by `setup.php`, pretty permalinks, cron and updates off; console: wp-cli 2.12.0 |
 
@@ -114,7 +114,23 @@ timestamps, the default widgets), so the corpus uses `warmup = "corpus"`
 like Symfony's: one php-cgi pass, then both engines start from that
 database, and a request that only reads leaves it as it was (the self-check
 shows 0 files written). WordPress's nonces change
-every 12 hours, so the one on the login page is a `token`.
+every 12 hours, so the one on the login page is a `token`. The comment POST
+has `warmup = false`: posted in the warm-up too, it would be a duplicate.
+
+`setup.php` also installs `mu-plugins/rhp-auth.php` (test only) into
+`wordpress/wp-content/mu-plugins/`: a request with an `X-Rhp-User: <id>`
+header is logged in as that user, through a pluggable
+`wp_validate_auth_cookie()` that skips the session token. That makes the
+wp-admin screens in the corpus deterministic; the real login (`login-ok`,
+302 plus auth cookies) is in the corpus too. Its masks cover what WordPress
+derives from the clock or random numbers: the `wp-settings-time` cookie, the
+auth cookies' expiry, session token and HMAC, wpdb's `{<64 hex>}`
+placeholder escape, wp-admin's clock (user settings, post lock, time-format
+previews, Site Health's times, cron's "overdue by"), the embed secret and
+share ids, `antispambot()`'s entity mix, `data-pw` and the comment
+moderation hash; in the database dump, Unix times and session tokens. The database is compared as `sqlite3 .dump` text (see
+`sqlite-dump` below), so the harness needs the `sqlite3` command when a
+request writes to it.
 
 The plugin needs `pdo_sqlite`. CI's setup-php installs `pdo` and
 `pdo_sqlite` with its default extensions and its `-n` shims load them, as
@@ -149,7 +165,8 @@ Each app's `requests.toml` is its request corpus: `[[request]]` entries with
 an `id`, `method`, `path` (plus query), `headers` (`"Name: value"` strings),
 `body`, `content_type`, an optional `flow` and the expected `status`.
 Requests in one flow share a cookie jar; other requests start with an empty
-one. The `status` is checked against the reference only (any status below
+one. `pass_status = { debug = 500 }` overrides `status` in one pass, and
+`warmup = false` leaves a request out of the warm-up run (below). The `status` is checked against the reference only (any status below
 500 when it is left out): if php-cgi doesn't answer as the corpus says, the
 run stops with exit code 2, because a broken php-cgi setup would otherwise
 make every request `DIFF`, or `SAME` when both engines print the same error
@@ -159,7 +176,8 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
 ### How a run works
 
-1. The harness snapshots the app's writable `state` dirs, and produces the
+1. The harness snapshots the app's writable `state` (dirs, or single files
+   such as Symfony's `config/reference.php`), and produces the
    pristine state (see warm-up below).
 2. It runs the whole corpus through the reference
    `php-cgi -n -d opcache.enable=0`, then through the candidate
@@ -170,7 +188,7 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
    `SCRIPT_NAME`, `REQUEST_URI`, `QUERY_STRING`, `REQUEST_METHOD`,
    `HTTP_HOST`, `SERVER_*`, `REMOTE_ADDR`, `CONTENT_TYPE`/`LENGTH`,
    `HTTP_COOKIE`, `HTTP_*` from `headers`, `REDIRECT_STATUS=1` and
-   `DOCUMENT_ROOT`). The body goes on stdin. Each engine keeps its own cookie
+   `DOCUMENT_ROOT`), plus the pass's `env`. The body goes on stdin. Each engine keeps its own cookie
    jar: php's cookies are never replayed to rhp.
 3. Responses are parsed into a status, an ordered list of headers, the body
    and stderr. Named rules then normalize them, and the report lists the
@@ -178,13 +196,14 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
    | rule | what it does |
    |------|--------------|
-   | `date-header` | Rewrites `Date`, `Last-Modified` and `Expires` values to `<HTTPDATE>` |
-   | `cookie-expires` | Rewrites the `expires=` attribute of a `Set-Cookie` to `<DATE>`. `Max-Age` is kept |
+   | `date-header` | Rewrites every `Date` value (xmlrpc.php writes its own, `+0000`), and `Last-Modified` and `Expires` values that are HTTP dates, to `<HTTPDATE>` |
+   | `cookie-expires` | Rewrites the `expires=` attribute of a `Set-Cookie` to `<DATE>` and a positive `Max-Age=` to `<SECS>` (both count from the second the response was made). `Max-Age=0`, a deletion, is kept |
    | `php-version` | Rewrites php's version in `X-Powered-By` to the candidate's |
    | `laravel-cookie` | Decrypts encrypted cookies with the `APP_KEY` from `.env` (AES-256-CBC, with the MAC checked) and shows them as `decrypted(<prefix>\|<value>)` |
    | `token-rename` | Renames each capture of the corpus `tokens` patterns, and each decrypted cookie value, to `<TOKn>`. Numbering follows the order of first appearance in the run, so equal tokens stay equal across headers, bodies, steps and written files |
    | `log-timestamp` | Masks ISO 8601 and `Y-m-d H:i:s` timestamps in stderr and in written files |
-   | `mask:<name>` | Applies a corpus `[[mask]]` (`name`, `pattern`, `replace`, `in = ["body", "headers", "stderr", "files"]`) |
+   | `sqlite-dump` | Shows a written SQLite database (any file starting with `SQLite format 3`) as `sqlite3 -readonly <file> .dump` prints it, then applies the other file rules to that text. The bytes differ between any two runs (page layout, free list, change counter) |
+   | `mask:<name>` | Applies a corpus `[[mask]]` (`name`, `pattern`, `replace`, `in = ["body", "headers", "stderr", "files"]`, and `pass = [...]` to limit it to some passes) |
 
 4. The files each engine created, changed or deleted under the state dirs,
    such as compiled Blade views, the Twig cache and session files, are
@@ -192,9 +211,8 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
 When the run ends, the state dirs are put back as they were found.
 `--check-known known-passing-requests.txt` fails only when a listed id is not
-`SAME`. Ids that are newly `SAME` are printed as hints. Both lists start
-empty, because rhp can't serve the apps yet. `--write-known` regenerates a
-list. Run it twice to check determinism.
+`SAME`. Ids that are newly `SAME` are printed as hints. `--write-known`
+regenerates a list. Run it twice to check determinism.
 
 ### Warm-up: the Symfony prod cache
 
@@ -209,9 +227,39 @@ engines, and is the same thing a deploy does: warm once, serve many.
 The snapshot then drops `var/cache/prod/twig` (`warmup_drop`), so each engine
 compiles the Twig templates itself and the compiled output is diffed under
 `@files`. With the container warm, rhp only has to *serve* the app; whether it
-can also *compile* the container is a separate check for later, run from an
-empty cache. Laravel uses `warmup = "none"`: its views compile lazily, so
-each engine compiles them.
+can also *compile* the container is the `cold` pass (below). Laravel uses
+`warmup = "none"`: its views compile lazily, so each engine compiles them.
+
+### Passes
+
+The corpus runs once per pass. The `default` pass is the one described
+above; each `[[pass]]` table adds another run of the corpus, under other
+conditions, from the app state as the run found it:
+
+```toml
+[[pass]]
+name = "debug"                 # [a-z0-9-]+
+env = { APP_DEBUG = "1" }      # added to every request's environment, warm-up included
+# warmup = "none"              # overrides the corpus `warmup`
+# clear = ["var/cache"]        # state dirs emptied right before the pristine snapshot
+# only = ["boom"]              # just these requests (and the rest of their flows)
+```
+
+Outside the default pass, report and known-list ids are `<pass>/<id>`
+(`debug/w-error`, `cold/@files`), and `--out` writes to `<out>/<app>/<pass>/`.
+`--pass <name>` (repeatable) runs only the named passes; `--check-known`
+then skips the other passes' ids, and `--write-known` refuses it (the list
+would lose them).
+
+- `debug` (Symfony: `APP_DEBUG=1`; Laravel: `APP_DEBUG=true`, which beats
+  `.env` as both frameworks let the real environment win): the exception
+  pages. Symfony's needs masks for the var-dumper ids (`sf-dump-<mt_rand>`),
+  the log panel's times and object handles (`#58`); the masks name the pass.
+- `cold` (Symfony): `warmup = "none"` and `clear = ["var/cache"]`, so each
+  engine compiles the container, routes and Twig cache itself from an empty
+  cache, and `@files` compares everything it wrote (with
+  `container.build_id`/`build_time` masked). Resource metadata such as
+  `ReflectionClassResource` hashes in `*.meta` files show up there.
 
 ## Adding a framework version
 

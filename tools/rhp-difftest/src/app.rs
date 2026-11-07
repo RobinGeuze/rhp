@@ -63,6 +63,55 @@ struct Mask {
     replace: Vec<u8>,
     /// Where it applies: any of "headers", "body", "stderr", "files".
     targets: Vec<String>,
+    /// The passes it applies in (`pass = [...]`); empty means every pass.
+    passes: Vec<String>,
+}
+
+/// One run of the whole corpus under its own conditions. The corpus always
+/// has the `default` pass; `[[pass]]` tables add more, e.g. one with
+/// `APP_DEBUG=1` in the environment, or one that starts from an empty cache.
+#[derive(Clone, Debug)]
+struct Pass {
+    name: String,
+    /// Extra environment for every request of the pass (warm-up included).
+    env: Vec<(String, String)>,
+    warmup: Warmup,
+    /// State dirs emptied right before the pristine snapshot.
+    clear: Vec<String>,
+    /// Only these request ids (with the flows they need); `None` = all.
+    only: Option<BTreeSet<String>>,
+}
+
+impl Pass {
+    /// The id a verdict has in reports and known-passing lists:
+    /// `<pass>/<id>`, or the bare id in the default pass.
+    fn key(&self, id: &str) -> String {
+        if self.name == "default" {
+            id.to_string()
+        } else {
+            format!("{}/{id}", self.name)
+        }
+    }
+
+    /// The requests this pass runs, in corpus order: all, or those `only`
+    /// names plus every request of their flows (a flow's later steps need
+    /// its earlier ones).
+    fn select<'r>(&self, requests: &'r [Request]) -> Vec<&'r Request> {
+        let Some(only) = &self.only else {
+            return requests.iter().collect();
+        };
+        let flows: BTreeSet<&str> = requests
+            .iter()
+            .filter(|r| only.contains(&r.id))
+            .filter_map(|r| r.flow.as_deref())
+            .collect();
+        requests
+            .iter()
+            .filter(|r| {
+                only.contains(&r.id) || r.flow.as_deref().is_some_and(|f| flows.contains(f))
+            })
+            .collect()
+    }
 }
 
 struct Request {
@@ -79,16 +128,30 @@ struct Request {
     /// The status the reference must answer with (`status = 404`); without
     /// it, any status below 500. See [`reference_failures`].
     status: Option<u16>,
+    /// Per-pass overrides of `status` (`pass_status = { debug = 500 }`).
+    pass_status: BTreeMap<String, u16>,
+    /// `warmup = false`: left out of the warm-up run, for a request whose
+    /// effect must not be in the pristine state (a comment posted twice
+    /// is a duplicate).
+    in_warmup: bool,
+}
+
+impl Request {
+    /// The status the reference must answer with in `pass`.
+    fn expected_status(&self, pass: &str) -> Option<u16> {
+        self.pass_status.get(pass).copied().or(self.status)
+    }
 }
 
 struct Corpus {
     state: Vec<String>,
-    warmup: Warmup,
     warmup_clear: Vec<String>,
     warmup_drop: Vec<String>,
     ini: Vec<String>,
     tokens: Vec<Regex>,
     masks: Vec<Mask>,
+    /// `default` first, then the `[[pass]]` tables in order.
+    passes: Vec<Pass>,
     /// Laravel's `APP_KEY` (decoded), when the app encrypts its cookies.
     laravel_key: Option<Vec<u8>>,
     requests: Vec<Request>,
@@ -156,7 +219,66 @@ fn load_corpus(app: &App, path: &Path) -> Result<Corpus, String> {
                 v if v.is_empty() => vec!["body".into()],
                 v => v,
             },
+            passes: strs_of(m, "pass")?,
         });
+    }
+    let mut passes = vec![Pass {
+        name: "default".into(),
+        env: Vec::new(),
+        warmup,
+        clear: Vec::new(),
+        only: None,
+    }];
+    for p in t
+        .get("pass")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let p = p.as_table().ok_or("pass: expected tables")?;
+        let name = str_of(p, "name").ok_or("pass: needs a name")?;
+        let ok = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !ok || passes.iter().any(|q| q.name == name) {
+            return Err(format!(
+                "pass {name:?}: duplicate, reserved or not [a-z0-9-]+"
+            ));
+        }
+        let mut env = Vec::new();
+        if let Some(e) = p.get("env") {
+            let e = e.as_table().ok_or("pass env: expected a table")?;
+            for (k, v) in e {
+                let v = v
+                    .as_str()
+                    .ok_or_else(|| format!("pass {name}: env {k} must be a string"))?;
+                env.push((k.clone(), v.to_string()));
+            }
+        }
+        let warmup = match str_of(p, "warmup").as_deref() {
+            None => warmup,
+            Some("none") => Warmup::None,
+            Some("corpus") => Warmup::Corpus,
+            Some(w) => return Err(format!("pass {name}: unknown warmup {w:?}")),
+        };
+        let only = match p.get("only") {
+            None => None,
+            Some(_) => Some(strs_of(p, "only")?.into_iter().collect()),
+        };
+        passes.push(Pass {
+            name,
+            env,
+            warmup,
+            clear: strs_of(p, "clear")?,
+            only,
+        });
+    }
+    let known = |n: &String| passes.iter().any(|p| &p.name == n);
+    for m in &masks {
+        if let Some(bad) = m.passes.iter().find(|n| !known(n)) {
+            return Err(format!("mask {}: no pass {bad:?}", m.name));
+        }
     }
     let laravel_key = match str_of(&t, "encrypted_cookies").as_deref() {
         None => None,
@@ -192,7 +314,27 @@ fn load_corpus(app: &App, path: &Path) -> Result<Corpus, String> {
                     .ok_or_else(|| format!("{id}: header {h:?} has no ':'"))
             })
             .collect::<Result<_, _>>()?;
+        let mut pass_status = BTreeMap::new();
+        if let Some(ps) = r.get("pass_status") {
+            let ps = ps
+                .as_table()
+                .ok_or_else(|| format!("{id}: pass_status must be a table"))?;
+            for (k, v) in ps {
+                let n = v
+                    .as_integer()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .ok_or_else(|| format!("{id}: pass_status.{k} must be an HTTP status code"))?;
+                pass_status.insert(k.clone(), n);
+            }
+        }
         requests.push(Request {
+            pass_status,
+            in_warmup: match r.get("warmup") {
+                None => true,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| format!("{id}: warmup must be true or false"))?,
+            },
             method: str_of(r, "method").unwrap_or_else(|| "GET".into()),
             uri: str_of(r, "path").ok_or_else(|| format!("{id}: needs a path"))?,
             headers,
@@ -210,14 +352,23 @@ fn load_corpus(app: &App, path: &Path) -> Result<Corpus, String> {
             id,
         });
     }
+    for r in &requests {
+        if let Some(bad) = r
+            .pass_status
+            .keys()
+            .find(|n| !passes.iter().any(|p| &&p.name == n))
+        {
+            return Err(format!("{}: pass_status names no pass {bad:?}", r.id));
+        }
+    }
     Ok(Corpus {
         state: strs_of(&t, "state")?,
-        warmup,
         warmup_clear: strs_of(&t, "warmup_clear")?,
         warmup_drop: strs_of(&t, "warmup_drop")?,
         ini: strs_of(&t, "ini")?,
         tokens,
         masks,
+        passes,
         laravel_key,
         requests,
     })
@@ -312,7 +463,16 @@ struct Snapshot {
 
 fn take_snapshot(root: &Path, state: &[String]) -> Snapshot {
     fn walk(root: &Path, rel: &Path, snap: &mut Snapshot) {
-        let Ok(entries) = fs::read_dir(root.join(rel)) else {
+        let p = root.join(rel);
+        if p.is_file() {
+            // A state entry can be a single file (`config/reference.php`).
+            if let Ok(data) = fs::read(&p) {
+                let mtime = fs::metadata(&p).ok().and_then(|m| m.modified().ok());
+                snap.files.insert(rel.to_path_buf(), (data, mtime));
+            }
+            return;
+        }
+        let Ok(entries) = fs::read_dir(p) else {
             return;
         };
         snap.dirs.insert(rel.to_path_buf());
@@ -342,8 +502,10 @@ fn take_snapshot(root: &Path, state: &[String]) -> Snapshot {
 fn restore_snapshot(root: &Path, state: &[String], snap: &Snapshot) -> std::io::Result<()> {
     for s in state {
         let p = root.join(s);
-        if fs::symlink_metadata(&p).is_ok() {
-            fs::remove_dir_all(&p)?;
+        match fs::symlink_metadata(&p) {
+            Ok(m) if m.is_dir() => fs::remove_dir_all(&p)?,
+            Ok(_) => fs::remove_file(&p)?,
+            Err(_) => {}
         }
     }
     for d in &snap.dirs {
@@ -351,6 +513,9 @@ fn restore_snapshot(root: &Path, state: &[String], snap: &Snapshot) -> std::io::
     }
     for (rel, (data, mtime)) in &snap.files {
         let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(&p, data)?;
         if let Some(t) = mtime {
             let _ = fs::File::options()
@@ -819,6 +984,8 @@ fn log_timestamp_masks() -> Vec<Regex> {
 /// they behave alike.
 struct Normalizer<'a> {
     corpus: &'a Corpus,
+    /// The pass being normalized (masks can be limited to passes).
+    pass: &'a str,
     /// `(engine's PHP_VERSION, the candidate's)` for `X-Powered-By`.
     version: Option<(String, String)>,
     tokens: Vec<(Vec<u8>, String)>,
@@ -827,9 +994,10 @@ struct Normalizer<'a> {
 }
 
 impl<'a> Normalizer<'a> {
-    fn new(corpus: &'a Corpus, version: Option<(String, String)>) -> Self {
+    fn new(corpus: &'a Corpus, pass: &'a str, version: Option<(String, String)>) -> Self {
         Normalizer {
             corpus,
+            pass,
             version,
             tokens: Vec::new(),
             timestamps: log_timestamp_masks(),
@@ -864,7 +1032,8 @@ impl<'a> Normalizer<'a> {
     fn masks(&mut self, target: &str, data: Vec<u8>) -> Vec<u8> {
         let mut out = data;
         for m in &self.corpus.masks {
-            if m.targets.iter().any(|t| t == target) {
+            let in_pass = m.passes.is_empty() || m.passes.iter().any(|p| p == self.pass);
+            if in_pass && m.targets.iter().any(|t| t == target) {
                 let next = regex_replace(&m.re, &out, &m.replace);
                 if next != out {
                     self.fired.insert(format!("mask:{}", m.name));
@@ -891,7 +1060,14 @@ impl<'a> Normalizer<'a> {
         let mut r = r.clone();
         for (k, v) in &mut r.headers {
             let lk = k.to_ascii_lowercase();
-            if matches!(lk.as_str(), "date" | "last-modified" | "expires") && v.contains(" GMT") {
+            // `Date` is always the time of the response (xmlrpc.php writes
+            // its own, with `+0000`); the others only when they are dates.
+            let dated = match lk.as_str() {
+                "date" => true,
+                "last-modified" | "expires" => v.contains(" GMT"),
+                _ => false,
+            };
+            if dated {
                 *v = "<HTTPDATE>".into();
                 self.fired.insert("date-header".into());
             }
@@ -905,9 +1081,13 @@ impl<'a> Normalizer<'a> {
                 }
             }
             if lk == "set-cookie" {
+                // `expires=` and a positive `Max-Age=` both count from the
+                // time of the request; `Max-Age=0` (a deletion) stays.
                 let re = regex(r"(?i)(;\s*expires=)[^;]*").unwrap();
-                let next = String::from_utf8_lossy(&regex_replace(&re, v.as_bytes(), b"$1<DATE>"))
-                    .into_owned();
+                let next = regex_replace(&re, v.as_bytes(), b"$1<DATE>");
+                let re = regex(r"(?i)(;\s*max-age=)[1-9][0-9]*").unwrap();
+                let next =
+                    String::from_utf8_lossy(&regex_replace(&re, &next, b"$1<SECS>")).into_owned();
                 if next != *v {
                     self.fired.insert("cookie-expires".into());
                     *v = next;
@@ -987,19 +1167,79 @@ impl<'a> Normalizer<'a> {
         }
     }
 
+    /// Every written file, taken in the order of their renamed paths: a
+    /// session file is named by its random id, so the raw order would
+    /// number the tokens first seen inside them differently per engine.
+    fn files(
+        &mut self,
+        written: &BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> BTreeMap<String, Option<Vec<u8>>> {
+        let mut order: Vec<(Vec<u8>, &PathBuf)> = written
+            .keys()
+            .map(|p| (self.rename(p.to_string_lossy().as_bytes()), p))
+            .collect();
+        order.sort();
+        order
+            .into_iter()
+            .map(|(_, p)| self.file(p, &written[p]))
+            .collect()
+    }
+
     fn file(&mut self, path: &Path, data: &Option<Vec<u8>>) -> (String, Option<Vec<u8>>) {
-        if let Some(d) = data {
+        // A database's tokens are collected from its dump: the raw pages
+        // can order the same rows differently.
+        let data = data.as_ref().map(|d| match sqlite_dump(d) {
+            Some(dump) => {
+                self.fired.insert("sqlite-dump".into());
+                dump
+            }
+            None => d.clone(),
+        });
+        if let Some(d) = &data {
             self.collect(d);
         }
         let p = self.rename(path.to_string_lossy().as_bytes());
         let p = String::from_utf8_lossy(&p).into_owned();
-        let data = data.as_ref().map(|d| {
-            let d = self.rename(d);
+        let data = data.map(|d| {
+            let d = self.rename(&d);
             let d = self.timestamps(d);
             self.masks("files", d)
         });
         (p, data)
     }
+}
+
+const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
+
+/// A SQLite database file as `sqlite3 .dump` prints it: its schema and
+/// rows as SQL text, without the page layout, free lists and change
+/// counter, which differ between any two runs. `None` when `data` is not a
+/// SQLite database; the dump's own error text when it can't be dumped.
+fn sqlite_dump(data: &[u8]) -> Option<Vec<u8>> {
+    if !data.starts_with(SQLITE_MAGIC) {
+        return None;
+    }
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("rhp-app-dump-{}-{n}.sqlite", std::process::id()));
+    let out = fs::write(&tmp, data).and_then(|()| {
+        Command::new("sqlite3")
+            .arg("-readonly")
+            .arg(&tmp)
+            .arg(".dump")
+            .stdin(Stdio::null())
+            .output()
+    });
+    let _ = fs::remove_file(&tmp);
+    Some(match out {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(o) => format!(
+            "<sqlite3 .dump failed: {}>\n",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )
+        .into_bytes(),
+        Err(e) => format!("<sqlite3 .dump: {e}>\n").into_bytes(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,9 +1260,11 @@ fn build_request(
     req: &Request,
     jar: &Jar,
     key: Option<&[u8]>,
+    pass_env: &[(String, String)],
 ) -> Result<(Env, Vec<u8>), String> {
     let body = expand(&String::from_utf8_lossy(&req.body), jar, key)?;
     let mut env = cgi_env(app, &req.method, req, body.len(), &jar.header());
+    env.extend(pass_env.iter().cloned());
     for (k, v) in &req.headers {
         let v = expand(v, jar, key)?;
         env.push((header_var(k), String::from_utf8_lossy(&v).into_owned()));
@@ -1033,19 +1275,24 @@ fn build_request(
 fn run_corpus(
     app: &App,
     corpus: &Corpus,
+    pass: &Pass,
     engine: &Engine,
+    warmup: bool,
     timeout: Duration,
     verbose: bool,
 ) -> Vec<Result<Response, String>> {
     let mut jars: HashMap<String, Jar> = HashMap::new();
     let mut out = Vec::new();
-    for req in &corpus.requests {
+    for req in pass.select(&corpus.requests) {
+        if warmup && !req.in_warmup {
+            continue;
+        }
         let mut jar = req
             .flow
             .as_ref()
             .and_then(|f| jars.get(f).cloned())
             .unwrap_or_default();
-        let built = build_request(app, req, &jar, corpus.laravel_key.as_deref());
+        let built = build_request(app, req, &jar, corpus.laravel_key.as_deref(), &pass.env);
         let resp = built.map(|(env, body)| {
             let script = script_for(app, &req.uri).0;
             let cwd = script.parent().unwrap_or(&app.root);
@@ -1055,7 +1302,7 @@ fn run_corpus(
                 eprintln!(
                     "  [{}] {} {} {} -> {} ({:.0} ms)",
                     engine.label,
-                    req.id,
+                    pass.key(&req.id),
                     req.method,
                     req.uri,
                     r.status,
@@ -1185,14 +1432,18 @@ fn first_difference(a: &Result<Response, String>, b: &Result<Response, String>) 
 /// says nothing about the candidate: a broken php-cgi setup (a missing
 /// extension, an unwritable cache) would otherwise just turn every request
 /// DIFF, or worse, SAME when both engines print the same error page.
-fn reference_failures(requests: &[Request], responses: &[Result<Response, String>]) -> Vec<String> {
+fn reference_failures(
+    requests: &[&Request],
+    pass: &str,
+    responses: &[Result<Response, String>],
+) -> Vec<String> {
     requests
         .iter()
         .zip(responses)
         .filter_map(|(req, r)| {
             let why = match r {
                 Err(e) => format!("not sent: {e}"),
-                Ok(r) => match (&r.error, req.status) {
+                Ok(r) => match (&r.error, req.expected_status(pass)) {
                     (Some(e), _) => e.clone(),
                     (None, Some(want)) if r.status != want => {
                         format!("status {} (the corpus expects {want})", r.status)
@@ -1234,6 +1485,8 @@ app path, and compares the normalized responses and written files.
   --check-known <file>   exit 1 if a listed request id is not SAME (one app only)
   --write-known <file>   write the SAME request ids (one app only)
   --out <dir>            write each engine's normalized responses + a diff summary
+  --pass <name>          run only this pass of the corpus (repeatable; default:
+                         every pass: `default` and the corpus `[[pass]]` tables)
   --verbose              log every request as it runs
 ";
 
@@ -1246,6 +1499,8 @@ struct Opts {
     check_known: Option<PathBuf>,
     write_known: Option<PathBuf>,
     out: Option<PathBuf>,
+    /// `--pass`: run only these passes (default: all).
+    passes: Vec<String>,
     verbose: bool,
 }
 
@@ -1259,6 +1514,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         check_known: None,
         write_known: None,
         out: None,
+        passes: Vec::new(),
         verbose: false,
     };
     let mut it = args.iter();
@@ -1280,6 +1536,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--check-known" => o.check_known = Some(val()?.into()),
             "--write-known" => o.write_known = Some(val()?.into()),
             "--out" => o.out = Some(val()?.into()),
+            "--pass" => o.passes.push(val()?),
             "--verbose" | "-v" => o.verbose = true,
             "-h" | "--help" => return Err(String::new()),
             s if s.starts_with('-') => return Err(format!("unknown option {s:?}")),
@@ -1291,6 +1548,10 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     }
     if (o.check_known.is_some() || o.write_known.is_some()) && o.targets.len() > 1 {
         return Err("--check-known/--write-known take one app".into());
+    }
+    if o.write_known.is_some() && !o.passes.is_empty() {
+        // The list would lose the ids of the passes left out.
+        return Err("--write-known runs every pass: leave out --pass".into());
     }
     Ok(o)
 }
@@ -1373,70 +1634,225 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
         engine_version(&cand, &scratch),
     );
     println!(
-        "app {}: reference `{}` (PHP {}) vs candidate `{}` (PHP {}), {} requests",
+        "app {}: reference `{}` (PHP {}) vs candidate `{}` (PHP {}), {} requests, passes: {}",
         app.name,
         reference.cmd.join(" "),
         ref_v.as_deref().unwrap_or("?"),
         cand.cmd.join(" "),
         cand_v.as_deref().unwrap_or("?"),
-        corpus.requests.len()
+        corpus.requests.len(),
+        corpus
+            .passes
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
-    // The app as found, put back at the end whatever happens in between.
-    let original = take_snapshot(&app.root, &corpus.state);
-    let result = (|| -> Result<(Vec<EngineRun>, Snapshot), String> {
-        let io = |e: std::io::Error| format!("restoring app state: {e}");
-        if corpus.warmup == Warmup::Corpus {
-            for c in &corpus.warmup_clear {
-                let p = app.root.join(c);
-                if p.is_dir() {
-                    fs::remove_dir_all(&p).map_err(io)?;
-                    fs::create_dir_all(&p).map_err(io)?;
-                }
-            }
-            let warm = run_corpus(&app, &corpus, &reference, timeout, o.verbose);
-            let failed = warm
-                .iter()
-                .filter(|r| !matches!(r, Ok(r) if r.error.is_none()))
-                .count();
-            if failed > 0 {
-                eprintln!("warning: {failed} warm-up request(s) failed under php-cgi");
-            }
-            for d in &corpus.warmup_drop {
-                let p = app.root.join(d);
-                if p.is_dir() {
-                    fs::remove_dir_all(&p).map_err(io)?;
-                }
-            }
-        }
-        let pristine = take_snapshot(&app.root, &corpus.state);
-        let mut runs = Vec::new();
-        for engine in [&reference, &cand] {
-            restore_snapshot(&app.root, &corpus.state, &pristine).map_err(io)?;
-            let responses = run_corpus(&app, &corpus, engine, timeout, o.verbose);
-            let after = take_snapshot(&app.root, &corpus.state);
-            runs.push(EngineRun {
-                responses,
-                written: written_files(&pristine, &after),
-            });
-        }
-        Ok((runs, pristine))
-    })();
-    let restored = restore_snapshot(&app.root, &corpus.state, &original);
-    let _ = fs::remove_dir_all(&scratch);
-    let (runs, _pristine) = result?;
-    restored.map_err(|e| format!("restoring the app's original state: {e}"))?;
-
-    // Normalize each run with its own token numbering.
+    let passes: Vec<&Pass> = corpus
+        .passes
+        .iter()
+        .filter(|p| o.passes.is_empty() || o.passes.contains(&p.name))
+        .collect();
+    if let Some(bad) = o
+        .passes
+        .iter()
+        .find(|n| !corpus.passes.iter().any(|p| &&p.name == n))
+    {
+        return Err(format!("no pass {bad:?} in the corpus"));
+    }
     let version_pair = match (&ref_v, &cand_v) {
         (Some(r), Some(c)) => Some((r.clone(), c.clone())),
         _ => None,
     };
-    let mut norm_ref = Normalizer::new(&corpus, version_pair);
-    let mut norm_cand = Normalizer::new(&corpus, None);
+
+    // The app as found, put back at the end whatever happens in between.
+    let original = take_snapshot(&app.root, &corpus.state);
+    let ctx = PassCtx {
+        o,
+        app: &app,
+        corpus: &corpus,
+        reference: &reference,
+        cand: &cand,
+        timeout,
+        version_pair,
+        original: &original,
+    };
+    let mut results = Vec::new();
+    let mut failure = None;
+    for pass in &passes {
+        if passes.len() > 1 {
+            println!("pass {}:", pass.name);
+        }
+        match run_pass(&ctx, pass) {
+            Ok(r) => results.push(r),
+            Err(e) => {
+                failure = Some(e);
+                break;
+            }
+        }
+    }
+    let restored = restore_snapshot(&app.root, &corpus.state, &original);
+    let _ = fs::remove_dir_all(&scratch);
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    restored.map_err(|e| format!("restoring the app's original state: {e}"))?;
+
+    let verdicts: Vec<&Verdict> = results.iter().flat_map(|r| &r.verdicts).collect();
+    let same = verdicts.iter().filter(|v| v.same).count();
+    println!("{}: {same} same, {} diff", app.name, verdicts.len() - same);
+
+    let broken: Vec<&String> = results.iter().flat_map(|r| &r.broken).collect();
+    if !broken.is_empty() {
+        return Err(format!(
+            "the reference php-cgi did not answer {} request(s) as the corpus expects \
+             (a setup problem, not an rhp one; see --out/-v):\n  {}",
+            broken.len(),
+            broken
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
+    }
+    if let Some(p) = &o.write_known {
+        let mut s = format!(
+            "# {} requests rhp answers like php-cgi (rhp-difftest app --write-known).\n\
+             # CI fails if one stops matching: fix the regression, or remove the line.\n",
+            app.name
+        );
+        for v in verdicts.iter().filter(|v| v.same) {
+            s.push_str(&v.id);
+            s.push('\n');
+        }
+        fs::write(p, s).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("wrote {same} request id(s) to {}", p.display());
+    }
+    if let Some(p) = &o.check_known {
+        let known = read_known(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let by_id: HashMap<&str, &Verdict> = verdicts.iter().map(|v| (v.id.as_str(), *v)).collect();
+        // A key of a pass that was not run (`--pass`) is not checked.
+        let ran = |k: &str| {
+            let pass = k.split_once('/').map_or("default", |(p, _)| p);
+            let pass = if corpus.passes.iter().any(|p| p.name == pass) {
+                pass
+            } else {
+                "default"
+            };
+            passes.iter().any(|p| p.name == pass)
+        };
+        let mut failed = Vec::new();
+        let checked: Vec<&String> = known.iter().filter(|k| ran(k)).collect();
+        for k in &checked {
+            match by_id.get(k.as_str()) {
+                Some(v) if v.same => {}
+                Some(v) => failed.push(format!("{k}: {}", v.detail)),
+                None => failed.push(format!("{k}: no such request in the corpus")),
+            }
+        }
+        let newly: Vec<&str> = verdicts
+            .iter()
+            .filter(|v| v.same && !known.contains(&v.id))
+            .map(|v| v.id.as_str())
+            .collect();
+        if !newly.is_empty() {
+            println!("newly SAME (add to {}): {}", p.display(), newly.join(" "));
+        }
+        if !failed.is_empty() {
+            println!("{} known request(s) regressed:", failed.len());
+            for f in &failed {
+                println!("  {f}");
+            }
+            return Ok(false);
+        }
+        println!("all {} known request(s) still SAME", checked.len());
+    }
+    Ok(true)
+}
+
+/// What every pass of one app shares.
+struct PassCtx<'a> {
+    o: &'a Opts,
+    app: &'a App,
+    corpus: &'a Corpus,
+    reference: &'a Engine,
+    cand: &'a Engine,
+    timeout: Duration,
+    version_pair: Option<(String, String)>,
+    /// The state as the run found it; each pass starts from it.
+    original: &'a Snapshot,
+}
+
+struct PassResult {
+    /// Keyed `<pass>/<id>` outside the default pass, `@files` last.
+    verdicts: Vec<Verdict>,
+    /// The requests php-cgi did not answer as the corpus expects.
+    broken: Vec<String>,
+}
+
+/// Run one pass: its pristine state, both engines, the comparison, the
+/// printed report and `--out`.
+fn run_pass(c: &PassCtx, pass: &Pass) -> Result<PassResult, String> {
+    let (app, corpus) = (c.app, c.corpus);
+    let io = |e: std::io::Error| format!("restoring app state: {e}");
+    restore_snapshot(&app.root, &corpus.state, c.original).map_err(io)?;
+    if pass.warmup == Warmup::Corpus {
+        for d in &corpus.warmup_clear {
+            let p = app.root.join(d);
+            if p.is_dir() {
+                fs::remove_dir_all(&p).map_err(io)?;
+                fs::create_dir_all(&p).map_err(io)?;
+            }
+        }
+        let warm = run_corpus(app, corpus, pass, c.reference, true, c.timeout, c.o.verbose);
+        let failed = warm
+            .iter()
+            .filter(|r| !matches!(r, Ok(r) if r.error.is_none()))
+            .count();
+        if failed > 0 {
+            eprintln!("warning: {failed} warm-up request(s) failed under php-cgi");
+        }
+        for d in &corpus.warmup_drop {
+            let p = app.root.join(d);
+            if p.is_dir() {
+                fs::remove_dir_all(&p).map_err(io)?;
+            }
+        }
+    }
+    for d in &pass.clear {
+        let p = app.root.join(d);
+        if p.is_dir() {
+            fs::remove_dir_all(&p).map_err(io)?;
+            fs::create_dir_all(&p).map_err(io)?;
+        }
+    }
+    let pristine = take_snapshot(&app.root, &corpus.state);
+    let mut runs = Vec::new();
+    for engine in [c.reference, c.cand] {
+        restore_snapshot(&app.root, &corpus.state, &pristine).map_err(io)?;
+        let responses = run_corpus(app, corpus, pass, engine, false, c.timeout, c.o.verbose);
+        let after = take_snapshot(&app.root, &corpus.state);
+        runs.push(EngineRun {
+            responses,
+            written: written_files(&pristine, &after),
+        });
+    }
+    let requests = pass.select(&corpus.requests);
+    let wrote_sqlite = runs
+        .iter()
+        .flat_map(|r| r.written.values().flatten())
+        .any(|d| d.starts_with(SQLITE_MAGIC));
+    if wrote_sqlite && Command::new("sqlite3").arg("-version").output().is_err() {
+        return Err("a SQLite database was written: comparing it needs the sqlite3 command".into());
+    }
+
+    // Normalize each run with its own token numbering.
+    let mut norm_ref = Normalizer::new(corpus, &pass.name, c.version_pair.clone());
+    let mut norm_cand = Normalizer::new(corpus, &pass.name, None);
     let mut verdicts = Vec::new();
     let mut rendered: [Vec<(String, String)>; 2] = [Vec::new(), Vec::new()];
-    for (i, req) in corpus.requests.iter().enumerate() {
+    for (i, req) in requests.iter().enumerate() {
         norm_ref.fired.clear();
         norm_cand.fired.clear();
         let a = runs[0].responses[i]
@@ -1459,7 +1875,7 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
         rendered[0].push((req.id.clone(), render(&a)));
         rendered[1].push((req.id.clone(), render(&b)));
         verdicts.push(Verdict {
-            id: req.id.clone(),
+            id: pass.key(&req.id),
             same,
             detail,
             rules: norm_ref.fired.union(&norm_cand.fired).cloned().collect(),
@@ -1468,16 +1884,8 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
     // Written files, normalized with the same token maps.
     norm_ref.fired.clear();
     norm_cand.fired.clear();
-    let files_a: BTreeMap<String, Option<Vec<u8>>> = runs[0]
-        .written
-        .iter()
-        .map(|(p, d)| norm_ref.file(p, d))
-        .collect();
-    let files_b: BTreeMap<String, Option<Vec<u8>>> = runs[1]
-        .written
-        .iter()
-        .map(|(p, d)| norm_cand.file(p, d))
-        .collect();
+    let files_a = norm_ref.files(&runs[0].written);
+    let files_b = norm_cand.files(&runs[1].written);
     let files_detail = {
         let names: BTreeSet<&String> = files_a.keys().chain(files_b.keys()).collect();
         let differing: Vec<String> = names
@@ -1515,14 +1923,17 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
         }
     };
     verdicts.push(Verdict {
-        id: "@files".into(),
+        id: pass.key("@files"),
         same: files_detail.0,
         detail: files_detail.1,
         rules: norm_ref.fired.union(&norm_cand.fired).cloned().collect(),
     });
 
-    if let Some(dir) = &o.out {
-        let base = dir.join(&app.name);
+    if let Some(dir) = &c.o.out {
+        let mut base = dir.join(&app.name);
+        if pass.name != "default" {
+            base = base.join(&pass.name);
+        }
         for (k, label) in ["php-cgi", "candidate"].iter().enumerate() {
             let d = base.join(label);
             let _ = fs::create_dir_all(d.join("files"));
@@ -1557,60 +1968,17 @@ fn run_app(o: &Opts, target: &str, php_cgi: &Path, candidate: &[String]) -> Resu
             v.detail
         );
     }
-    let same = verdicts.iter().filter(|v| v.same).count();
-    println!("{}: {same} same, {} diff", app.name, verdicts.len() - same);
-
-    let broken = reference_failures(&corpus.requests, &runs[0].responses);
-    if !broken.is_empty() {
-        return Err(format!(
-            "the reference php-cgi did not answer {} request(s) as the corpus expects \
-             (a setup problem, not an rhp one; see --out/-v):\n  {}",
-            broken.len(),
-            broken.join("\n  ")
-        ));
-    }
-    if let Some(p) = &o.write_known {
-        let mut s = format!(
-            "# {} requests rhp answers like php-cgi (rhp-difftest app --write-known).\n\
-             # CI fails if one stops matching: fix the regression, or remove the line.\n",
-            app.name
-        );
-        for v in verdicts.iter().filter(|v| v.same) {
-            s.push_str(&v.id);
-            s.push('\n');
-        }
-        fs::write(p, s).map_err(|e| format!("{}: {e}", p.display()))?;
-        println!("wrote {same} request id(s) to {}", p.display());
-    }
-    if let Some(p) = &o.check_known {
-        let known = read_known(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        let by_id: HashMap<&str, &Verdict> = verdicts.iter().map(|v| (v.id.as_str(), v)).collect();
-        let mut failed = Vec::new();
-        for k in &known {
-            match by_id.get(k.as_str()) {
-                Some(v) if v.same => {}
-                Some(v) => failed.push(format!("{k}: {}", v.detail)),
-                None => failed.push(format!("{k}: no such request in the corpus")),
+    let broken = reference_failures(&requests, &pass.name, &runs[0].responses)
+        .into_iter()
+        .map(|b| {
+            if pass.name == "default" {
+                b
+            } else {
+                format!("{}/{b}", pass.name)
             }
-        }
-        let newly: Vec<&str> = verdicts
-            .iter()
-            .filter(|v| v.same && !known.contains(&v.id))
-            .map(|v| v.id.as_str())
-            .collect();
-        if !newly.is_empty() {
-            println!("newly SAME (add to {}): {}", p.display(), newly.join(" "));
-        }
-        if !failed.is_empty() {
-            println!("{} known request(s) regressed:", failed.len());
-            for f in &failed {
-                println!("  {f}");
-            }
-            return Ok(false);
-        }
-        println!("all {} known request(s) still SAME", known.len());
-    }
-    Ok(true)
+        })
+        .collect();
+    Ok(PassResult { verdicts, broken })
 }
 
 #[cfg(test)]

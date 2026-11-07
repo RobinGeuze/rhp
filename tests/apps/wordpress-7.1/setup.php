@@ -5,6 +5,8 @@
  *
  * 1. Puts the SQLite Database Integration drop-in in place: the plugin's
  *    db.copy as wordpress/wp-content/db.php, as its readme says to.
+ *    Installs the test-only mu-plugin mu-plugins/rhp-auth.php (requests
+ *    with `X-Rhp-User: <id>` are logged in as that user).
  * 2. Creates a fresh database with WordPress's own wp_install(): fixed title,
  *    admin user, password and e-mail; no mail is sent.
  * 3. Seeds it reproducibly: pretty permalinks (rewrite rules stored, so no
@@ -28,6 +30,8 @@ if ( ! is_file( "$rhp_plugin/db.copy" ) ) {
 
 // 1. The drop-in.
 copy( "$rhp_plugin/db.copy", "$rhp_wp/wp-content/db.php" );
+@mkdir( "$rhp_wp/wp-content/mu-plugins", 0777, true );
+copy( "$rhp_root/mu-plugins/rhp-auth.php", "$rhp_wp/wp-content/mu-plugins/rhp-auth.php" );
 
 // 2. A fresh database.
 $rhp_db_dir = "$rhp_root/var/database";

@@ -672,7 +672,7 @@ fn b64(s: &str) -> Option<Vec<u8>> {
 /// `mac`): verify the HMAC-SHA256 over `iv . value`, then AES-256-CBC.
 /// `Err` says why it isn't a valid payload under `key`.
 fn laravel_decrypt(payload: &[u8], key: &[u8]) -> Result<Vec<u8>, &'static str> {
-    use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+    use cbc::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
     use hmac::{digest::KeyInit, Mac};
     let json = b64(std::str::from_utf8(payload).map_err(|_| "not utf-8")?).ok_or("not base64")?;
     let json = String::from_utf8(json).map_err(|_| "not json")?;
@@ -701,7 +701,7 @@ fn laravel_decrypt(payload: &[u8], key: &[u8]) -> Result<Vec<u8>, &'static str> 
     let mut buf = b64(&value).ok_or("bad value")?;
     cbc::Decryptor::<aes::Aes256>::new_from_slices(key, &iv)
         .map_err(|_| "bad key/iv length")?
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .decrypt_padded::<Pkcs7>(&mut buf)
         .map(<[u8]>::to_vec)
         .map_err(|_| "bad padding")
 }

@@ -1,15 +1,15 @@
 use super::*;
 
 fn encrypt(plain: &[u8], key: &[u8], iv: &[u8; 16]) -> String {
-    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
     use base64::Engine as _;
+    use cbc::cipher::{block_padding::Pkcs7, BlockModeEncrypt, KeyIvInit};
     use hmac::{digest::KeyInit, Mac};
     let b = base64::engine::general_purpose::STANDARD;
     let mut buf = plain.to_vec();
     buf.resize(plain.len() + 16, 0);
     let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
         .unwrap()
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, plain.len())
+        .encrypt_padded::<Pkcs7>(&mut buf, plain.len())
         .unwrap()
         .to_vec();
     let (iv, value) = (b.encode(iv), b.encode(ct));

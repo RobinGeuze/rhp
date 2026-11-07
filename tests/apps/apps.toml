@@ -20,6 +20,15 @@
 #   known_requests    the request-diff ratchet (`rhp-difftest app`; corpus in
 #                     requests.toml next to it)
 #   smoke             "METHOD PATH STATUS" requests checked under php -S
+#   router            false: php -S runs without a router script (it runs the
+#                     .php file a path names, else index.php); default true,
+#                     the front controller routes every request
+#   php_extensions    extensions php must load beyond setup-php's list, in
+#                     load order; CI installs them and its `-n` shims load
+#                     them (the request diff runs php-cgi -n)
+#   [[app.download]]  pinned files fetched by `apps.py setup` before install:
+#                     `url`, `sha256` (checked), `to` (an archive is unpacked
+#                     there without its top directory, anything else copied)
 
 [[app]]
 name = "symfony-7.4"

@@ -939,9 +939,14 @@ impl LocalFile {
 
     /// php's `php_stream_cast(PHP_STREAM_AS_FD)` before handing the
     /// descriptor to another process (`proc_open`): read-ahead is dropped and
-    /// the descriptor moved back to the logical position.
+    /// the descriptor moved to the stream's position, even when a child
+    /// moved it since (a pipe or FIFO ignores the seek).
     pub fn sync_for_cast(&mut self) {
-        self.sync();
+        unsafe {
+            libc::lseek(self.fd(), self.pos as libc::off_t, libc::SEEK_SET);
+        }
+        self.rbuf.clear();
+        self.rpos = 0;
     }
 }
 

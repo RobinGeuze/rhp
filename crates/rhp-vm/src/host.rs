@@ -723,6 +723,10 @@ impl Host for Vm {
         self.stream_open_ctx(path, mode, &Value::Null)
     }
 
+    fn stream_open_tmpfile(&mut self) -> Option<Value> {
+        self.open_tmpfile_stream()
+    }
+
     fn stream_open_ctx(&mut self, path: &[u8], mode: &[u8], ctx: &Value) -> Option<Value> {
         if !self.user_wrappers.is_empty() {
             if let Some((w, p)) = builtins::main::streams::userspace::locate(self, path) {
@@ -758,7 +762,7 @@ impl Host for Vm {
             return Some(v);
         } else if path.eq_ignore_ascii_case(b"php://input") {
             // The request body: a read-only buffer, re-readable per open.
-            return Some(self.make_stream(
+            let v = self.make_stream(
                 StreamState::Mem {
                     buf: self.request_body(),
                     pos: 0,
@@ -768,7 +772,11 @@ impl Host for Vm {
                     mode: MemMode::ReadOnly,
                 },
                 "stream",
-            ));
+            );
+            if let Some(s) = res_id(&v).and_then(|id| self.streams.record_mut(id)) {
+                s.input = Some(path.to_vec());
+            }
+            return Some(v);
         } else if path == b"php://memory" || path.starts_with(b"php://temp") {
             let temp = path.starts_with(b"php://temp").then(|| path.to_vec());
             let is_temp = temp.is_some();
@@ -1392,6 +1400,24 @@ impl Host for Vm {
         let id = res_id(res).ok_or("Unknown")?;
         let fail = |o: Option<std::os::fd::OwnedFd>| o.ok_or("STDIO");
         let has_origin = self.streams.record(id).is_some_and(|s| s.origin.is_some());
+        // _php_stream_cast: a filtered stream fails before its cast op runs
+        if self.has_filters(id) {
+            let func = self.native_calls.last().map_or("proc_open", |n| n.name);
+            let msg = format!("{func}(): Cannot cast a filtered stream on this system");
+            self.raise_error(builtins::E_WARNING, &msg);
+            return Err("FILTERED");
+        }
+        if matches!(
+            self.streams.get(&id),
+            Some(StreamState::Mem { temp: Some(_), .. })
+        ) && !has_origin
+            && !self.temp_stream_to_file(id)
+        {
+            let func = self.native_calls.last().map_or("proc_open", |n| n.name);
+            let msg = format!("{func}(): Unable to create temporary file.");
+            self.raise_error(builtins::E_WARNING, &msg);
+            return Err("TEMP");
+        }
         match self.streams.get_mut(&id).ok_or("Unknown")? {
             StreamState::Stdin => fail(dup_raw(0)),
             StreamState::Stdout => fail(dup_raw(1)),
@@ -1404,7 +1430,6 @@ impl Host for Vm {
                 f.sync_for_cast();
                 fail(builtins::main::streams::plain_wrapper::dup_raw(f.fd()))
             }
-            StreamState::Mem { temp: Some(_), .. } => Err("TEMP"),
             _ if has_origin => Err("Unknown"),
             StreamState::Mem { .. } => Err("MEMORY"),
             _ => Err("Unknown"),
@@ -1604,6 +1629,10 @@ impl Host for Vm {
             return r;
         }
         let id = res_id(res)?;
+        if self.streams.record(id)?.input.is_some() {
+            // php_stream_input_ops has no stat
+            return None;
+        }
         if let Some((uri, _)) = self.streams.record(id).and_then(|s| s.origin.as_ref()) {
             let uri = uri.clone();
             return self.wrapper_for(&uri)?.stat(&uri);
@@ -1714,6 +1743,28 @@ impl Host for Vm {
                     wrapper_data: None,
                     rfc2397: None,
                 },
+                // a php://temp stream moved to a file is still TEMP
+                StreamState::File(f) if self.streams.record(id)?.temp_file.is_some() => {
+                    let (uri, mode) = self.streams.record(id)?.temp_file.clone()?;
+                    M {
+                        wrapper_type: "PHP",
+                        stream_type: "TEMP",
+                        mode: match mode {
+                            MemMode::ReadOnly => b"rb".to_vec(),
+                            MemMode::Append => b"a+b".to_vec(),
+                            MemMode::ReadWrite => b"w+b".to_vec(),
+                        },
+                        uri,
+                        unread_bytes: f.unread() as i64,
+                        seekable: true,
+                        eof: f.eof(),
+                        blocked: true,
+                        timed_out: false,
+                        crypto: None,
+                        wrapper_data: None,
+                        rfc2397: None,
+                    }
+                }
                 StreamState::File(f) => M {
                     wrapper_type: "plainfile",
                     stream_type: "STDIO",
@@ -1808,13 +1859,22 @@ impl Host for Vm {
                     eof, temp, mode, ..
                 } => M {
                     wrapper_type: "PHP",
-                    stream_type: if temp.is_some() { "TEMP" } else { "MEMORY" },
+                    stream_type: if self.streams.record(id)?.input.is_some() {
+                        "Input"
+                    } else if temp.is_some() {
+                        "TEMP"
+                    } else {
+                        "MEMORY"
+                    },
                     mode: match mode {
                         MemMode::ReadOnly => b"rb".to_vec(),
                         MemMode::Append => b"a+b".to_vec(),
                         MemMode::ReadWrite => b"w+b".to_vec(),
                     },
-                    uri: temp.clone().unwrap_or_else(|| b"php://memory".to_vec()),
+                    uri: match (&self.streams.record(id)?.input, temp) {
+                        (Some(uri), _) | (None, Some(uri)) => uri.clone(),
+                        (None, None) => b"php://memory".to_vec(),
+                    },
                     unread_bytes: 0,
                     seekable: true,
                     eof: *eof,

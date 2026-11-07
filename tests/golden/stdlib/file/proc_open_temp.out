@@ -1,0 +1,20 @@
+bool(true)
+int(0)
+string(10) "pre:world
+"
+string(3) "PHP"
+string(4) "TEMP"
+string(3) "w+b"
+string(10) "php://temp"
+int(10)
+string(14) "pre:world
+more"
+int(14)
+warning: proc_open(): Cannot represent a stream of type MEMORY as a File Descriptor
+bool(false)
+int(3)
+string(5) "abc2
+"
+warning: proc_open(): Cannot cast a filtered stream on this system
+bool(false)
+string(4) "TEMP"

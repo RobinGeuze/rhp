@@ -175,79 +175,6 @@ fn xml_get_encoding(name: &[u8]) -> Option<&'static str> {
         .find(|e| e.as_bytes().eq_ignore_ascii_case(name))
 }
 
-/// ext/standard/html.c `php_next_utf8_char`: the code point at `*pos`, or
-/// `None` for an invalid sequence; `*pos` moves past what was read.
-fn next_utf8_char(s: &[u8], pos: &mut usize) -> Option<u32> {
-    let lead = |c: u8| c < 0x80 || (0xC2..=0xF4).contains(&c);
-    let trail = |c: u8| (0x80..=0xBF).contains(&c);
-    let p = *pos;
-    let avail = s.len() - p;
-    let fail = |pos: &mut usize, n: usize| {
-        *pos = p + n;
-        None
-    };
-    let c = s[p];
-    if c < 0x80 {
-        *pos = p + 1;
-        Some(c as u32)
-    } else if c < 0xC2 {
-        fail(pos, 1)
-    } else if c < 0xE0 {
-        if avail < 2 {
-            return fail(pos, 1);
-        }
-        if !trail(s[p + 1]) {
-            return fail(pos, if lead(s[p + 1]) { 1 } else { 2 });
-        }
-        let ch = ((c as u32 & 0x1f) << 6) | (s[p + 1] as u32 & 0x3f);
-        if ch < 0x80 {
-            return fail(pos, 2);
-        }
-        *pos = p + 2;
-        Some(ch)
-    } else if c < 0xF0 {
-        if avail < 3 || !trail(s[p + 1]) || !trail(s[p + 2]) {
-            return if avail < 2 || lead(s[p + 1]) {
-                fail(pos, 1)
-            } else if avail < 3 || lead(s[p + 2]) {
-                fail(pos, 2)
-            } else {
-                fail(pos, 3)
-            };
-        }
-        let ch =
-            ((c as u32 & 0x0f) << 12) | ((s[p + 1] as u32 & 0x3f) << 6) | (s[p + 2] as u32 & 0x3f);
-        if ch < 0x800 || (0xd800..=0xdfff).contains(&ch) {
-            return fail(pos, 3);
-        }
-        *pos = p + 3;
-        Some(ch)
-    } else if c < 0xF5 {
-        if avail < 4 || !trail(s[p + 1]) || !trail(s[p + 2]) || !trail(s[p + 3]) {
-            return if avail < 2 || lead(s[p + 1]) {
-                fail(pos, 1)
-            } else if avail < 3 || lead(s[p + 2]) {
-                fail(pos, 2)
-            } else if avail < 4 || lead(s[p + 3]) {
-                fail(pos, 3)
-            } else {
-                fail(pos, 4)
-            };
-        }
-        let ch = ((c as u32 & 0x07) << 18)
-            | ((s[p + 1] as u32 & 0x3f) << 12)
-            | ((s[p + 2] as u32 & 0x3f) << 6)
-            | (s[p + 3] as u32 & 0x3f);
-        if !(0x10000..=0x10FFFF).contains(&ch) {
-            return fail(pos, 4);
-        }
-        *pos = p + 4;
-        Some(ch)
-    } else {
-        fail(pos, 1)
-    }
-}
-
 /// xml.c xml_utf8_decode: UTF-8 to the target encoding, php's own
 /// ISO-8859-1 and US-ASCII decoders ('?' for what they cannot hold).
 fn xml_utf8_decode(s: &[u8], encoding: &str) -> Vec<u8> {
@@ -259,7 +186,7 @@ fn xml_utf8_decode(s: &[u8], encoding: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     let mut pos = 0;
     while pos < s.len() {
-        let c = match next_utf8_char(s, &mut pos) {
+        let c = match crate::ext::standard::html::php_next_utf8_char(s, &mut pos) {
             Some(c) if c <= 0xFF => c,
             _ => b'?' as u32,
         };

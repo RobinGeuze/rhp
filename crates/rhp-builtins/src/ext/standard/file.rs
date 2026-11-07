@@ -1431,16 +1431,10 @@ fn fn_fputcsv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     })
 }
 
-/// `tmpfile()`: a new unlinked temporary file opened "w+b".
+/// `tmpfile()`: a new temporary file opened "r+b", removed on close.
 fn fn_tmpfile(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    let Some(path) = open_temp(&temp_dir(), b"php") else {
-        return Ok(Value::Bool(false));
-    };
-    let r = host.stream_open(&path, b"w+b");
-    if let Ok(c) = CString::new(path) {
-        unsafe { libc::unlink(c.as_ptr()) };
-    }
-    Ok(r.unwrap_or(Value::Bool(false)))
+    // php_stream_fopen_tmpfile: the file is unlinked when the stream closes.
+    Ok(host.stream_open_tmpfile().unwrap_or(Value::Bool(false)))
 }
 
 /// `fpassthru($stream)`: output the rest of the stream; bytes written.

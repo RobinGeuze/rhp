@@ -980,22 +980,20 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
 
     let mut ap = 0usize;
     let mut bp = 0usize;
-    let mut leading = true;
+    let mut ca = at(a, ap);
+    let mut cb = at(b, bp);
+
+    // skip over leading zeros
+    while ca == b'0' && ap + 1 < aend && at(a, ap + 1).is_ascii_digit() {
+        ap += 1;
+        ca = at(a, ap);
+    }
+    while cb == b'0' && bp + 1 < bend && at(b, bp + 1).is_ascii_digit() {
+        bp += 1;
+        cb = at(b, bp);
+    }
+
     loop {
-        let mut ca = at(a, ap);
-        let mut cb = at(b, bp);
-
-        // skip over leading zeros (only at the very start of the strings)
-        while leading && ca == b'0' && ap + 1 < aend && at(a, ap + 1).is_ascii_digit() {
-            ap += 1;
-            ca = at(a, ap);
-        }
-        while leading && cb == b'0' && bp + 1 < bend && at(b, bp + 1).is_ascii_digit() {
-            bp += 1;
-            cb = at(b, bp);
-        }
-        leading = false;
-
         // skip consecutive whitespace
         while is_space(ca) {
             ap += 1;
@@ -1022,9 +1020,10 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
                 return -1;
             } else if bp == bend {
                 return 1;
-            } else {
-                continue;
             }
+            // keep on comparing from the current point
+            ca = at(a, ap);
+            cb = at(b, bp);
         }
 
         if fold_case {
@@ -1046,6 +1045,8 @@ pub(crate) fn strnatcmp_ex(a: &[u8], b: &[u8], fold_case: bool) -> i64 {
         } else if bp >= bend {
             return 1;
         }
+        ca = at(a, ap);
+        cb = at(b, bp);
     }
 }
 

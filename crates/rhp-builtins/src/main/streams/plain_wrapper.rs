@@ -112,7 +112,8 @@ pub struct FdStream {
     /// `send` with `MSG_DONTWAIT`).
     pub(crate) sock: Option<SockInfo>,
     /// The failed `send(2)` of the last write (socket streams).
-    last_send_error: Option<SendError>,
+    /// (boxed: a rare error, kept off the stream's size)
+    last_send_error: Option<Box<SendError>>,
     /// php's "dechunk" read filter (an http response with
     /// `Transfer-Encoding: chunked`).
     dechunk: Option<Dechunk>,
@@ -308,7 +309,7 @@ impl FdStream {
 
     /// The failed send of the last `write`, if it failed (taken).
     pub fn take_send_error(&mut self) -> Option<SendError> {
-        self.last_send_error.take()
+        self.last_send_error.take().map(|e| *e)
     }
 
     /// `stream_set_timeout` on a socket stream (php's READ_TIMEOUT option):
@@ -757,10 +758,10 @@ impl FdStream {
                         }
                     }
                 }
-                self.last_send_error = Some(SendError {
+                self.last_send_error = Some(Box::new(SendError {
                     count: rest.len(),
                     errno: err,
-                });
+                }));
                 return if done == 0 { None } else { Some(done) };
             };
             if self.notify {

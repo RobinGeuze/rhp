@@ -513,9 +513,9 @@ impl<'c> ProtoBuilder<'c> {
         for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
-            // RECV_INIT runs on the parameter's line
             let saved_line = self.cur_line;
             {
+                // RECV_INIT runs on the parameter's line
                 use mago_span::HasSpan;
                 self.cur_line = self.cx.line_of(expr.span().start.offset);
             }

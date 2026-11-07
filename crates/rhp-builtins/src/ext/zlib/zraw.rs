@@ -334,6 +334,7 @@ impl ZStream {
     }
 
     /// `total_in`.
+    #[allow(clippy::unnecessary_cast)] // uLong's width differs by platform
     pub fn total_in(&self) -> u64 {
         self.s.total_in as u64
     }

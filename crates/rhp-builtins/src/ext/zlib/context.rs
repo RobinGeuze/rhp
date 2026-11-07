@@ -112,11 +112,7 @@ fn long_option(options: Option<&Value>, name: &[u8], default: i64) -> i64 {
 }
 
 /// The `$options` argument: an array or an object (`H`), else a TypeError.
-fn options_arg<'a>(
-    host: &dyn Host,
-    args: &'a [Value],
-    fname: &str,
-) -> Result<Option<Value>, Thrown> {
+fn options_arg(host: &dyn Host, args: &[Value], fname: &str) -> Result<Option<Value>, Thrown> {
     match args.get(1).map(deref) {
         None => Ok(None),
         Some(v @ (Value::Array(_) | Value::Object(_))) => Ok(Some(v)),

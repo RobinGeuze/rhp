@@ -79,7 +79,7 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 119 | 125 | 95.2% | `ZipArchive` on libzip |
-| ext/zlib | 93 | 161 | 57.8% | system zlib; no incremental deflate/inflate contexts |
+| ext/zlib | 93 | 161 | 57.8% | system zlib |
 | other ext/ | 3 | 3,953 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
 | **total** | **14,303** | **22,219** | **64.4%** | |

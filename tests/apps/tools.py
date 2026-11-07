@@ -220,7 +220,8 @@ def unorder(text):
     blocks = []
     for a, b in zip(starts, starts[1:] + [end]):
         block = "".join(lines[a:b]).rstrip("\n") + "\n"
-        blocks.append(re.sub(r"^(\s*)\d+\)", r"\1#)", block))
+        # The number and its padding ("   9) ", "  10) ") depend on the position.
+        blocks.append(re.sub(r"^\s*\d+\)", "#)", block))
     return "".join(lines[: starts[0]]) + "\n".join(sorted(blocks)) + "\n" + "".join(lines[end:])
 
 
@@ -340,6 +341,16 @@ def describe_diff(ref, cand):
     return "".join(p if p.endswith("\n") else p + "\n" for p in parts)
 
 
+def engine_binary(engine):
+    """The engine's executable, not a wrapper script around it. CI's `php` is
+    a bash shim (.github/actions/setup-php) that adds PWD and SHLVL to the
+    environment and, under -n, -d extension=... flags, and it runs php under
+    its own name, so PHP_BINARY names the shim: /proc/self/exe does not."""
+    code = "echo @readlink('/proc/self/exe') ?: PHP_BINARY;"
+    real = subprocess.run([engine, "-r", code], capture_output=True, text=True).stdout
+    return real if real and os.path.isfile(real) else shutil.which(engine) or engine
+
+
 def binary_paths(php, candidate):
     """The absolute paths under which each engine can appear in output. Never
     a bare name such as `php`: it would replace every "php" in the text."""
@@ -347,7 +358,7 @@ def binary_paths(php, candidate):
     for engine in (php, candidate):
         which = shutil.which(engine)
         real = subprocess.run([engine, "-n", "-r", "echo PHP_BINARY;"], capture_output=True, text=True).stdout
-        for b in (engine, which, which and os.path.realpath(which), real):
+        for b in (engine, which, which and os.path.realpath(which), real, engine_binary(engine)):
             if b and os.path.isabs(b):
                 out.add(b)
     return sorted(out, key=len, reverse=True)
@@ -356,6 +367,11 @@ def binary_paths(php, candidate):
 def cmd_diff(tools, candidate, only, quiet, big):
     php = os.environ.get("RHP_PHP", "php")
     binaries = binary_paths(php, candidate)
+    php = engine_binary(php)
+    # A tool that restarts or spawns `php` from PATH gets the same binary,
+    # not CI's shim (which adds -d extension=... next to -n). One PATH for
+    # both engines: PHPStan's dump-parameters prints it.
+    os.environ["PATH"] = os.path.dirname(php) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
     files = fixture_files()
     tier = "big" if big else "commands"
     summary = []

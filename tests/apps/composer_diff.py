@@ -52,7 +52,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.dont_write_bytecode = True  # no __pycache__ in the tree
 sys.path.insert(0, str(HERE))
-from tools import spawn  # noqa: E402
+from tools import engine_binary, spawn  # noqa: E402
 
 TIMEOUT = 900
 
@@ -215,12 +215,6 @@ def loaded_extensions(engine):
     out = subprocess.run([engine, "-r", "echo implode(',', get_loaded_extensions());"],
                          capture_output=True, text=True).stdout
     return {e.lower().replace(' ', '-') for e in out.split(",") if e}
-
-
-def engine_binary(engine):
-    """The engine's executable (PHP_BINARY): not a wrapper script around it."""
-    real = subprocess.run([engine, "-r", "echo PHP_BINARY;"], capture_output=True, text=True).stdout
-    return real if real and os.path.isfile(real) else shutil.which(engine) or engine
 
 
 def link_binary(engine, bindir):

@@ -89,6 +89,11 @@ class Unorder(unittest.TestCase):
         self.assertTrue(a.rstrip().endswith("memory used"))
         self.assertNotEqual(tools.unorder(CS_A), tools.unorder(CS_A.replace("+b", "+c")))
 
+    def test_number_padding(self):
+        a = "   9) src/A.php\n  10) src/B.php\nFound 2 of 2 files\n"
+        b = "   9) src/B.php\n  10) src/A.php\nFound 2 of 2 files\n"
+        self.assertEqual(tools.unorder(a), tools.unorder(b))
+
     def test_rector_blocks(self):
         swapped = RECTOR_A.replace("src/B.php:3", "TMP").replace("src/A.php:7", "src/B.php:3").replace("TMP", "src/A.php:7")
         swapped = swapped.replace("FooRector", "TMP").replace("BarRector", "FooRector").replace("TMP", "BarRector")

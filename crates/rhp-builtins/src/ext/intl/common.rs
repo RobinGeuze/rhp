@@ -33,10 +33,15 @@ pub(super) struct ClassSpec {
 /// The generated functions whose php body does not reset the global intl
 /// error before zend_parse_parameters (most do, through
 /// `INTL_METHOD_INIT_VARS`): measured with php, by the error left after a
-/// call that zpp refuses. Every other one is generated with
-/// `#[\\RhpBeforeZpp]`, so the VM calls [`super::before_zpp`] before it
-/// checks the arguments.
+/// call that zpp refuses. Every other one gets ProtoFlags::BEFORE_ZPP, so
+/// the VM calls [`super::before_zpp`] before it checks the arguments.
 const KEEPS_ERROR: &[&str] = &[
+    "Locale::acceptFromHttp",
+    "Locale::addLikelySubtags",
+    "Locale::getDefault",
+    "Locale::isRightToLeft",
+    "Locale::minimizeSubtags",
+    "Locale::setDefault",
     "IntlBreakIterator::getIterator",
     "IntlDateFormatter::formatObject",
     "IntlTimeZone::getIDForWindowsID",
@@ -75,22 +80,23 @@ const KEEPS_ERROR: &[&str] = &[
     "resourcebundle_get",
 ];
 
-/// The prelude markers for a generated function: `#[\\RhpBeforeZpp]`
-/// (see [`KEEPS_ERROR`]), and `#[\\RhpZppCallable]` when it takes a
-/// callable, which php's zpp checks with its deprecations (IntlChar's
-/// enumerations).
-fn markers(name: &str, ps: &[Param]) -> String {
-    let mut m = String::new();
+/// [`super::prelude_flags`] for a stub function or method of intl
+/// (`name` is `Class::method` or the function's name): BEFORE_ZPP unless
+/// php keeps the error, ZPP_CALLABLE when it takes a callable, which
+/// php's zpp checks with its deprecations (IntlChar's enumerations).
+pub(super) fn flags(name: &str, ps: &[Param]) -> rhp_bytecode::ProtoFlags {
+    use rhp_bytecode::ProtoFlags;
+    let mut f = ProtoFlags::default();
     if !KEEPS_ERROR.contains(&name) {
-        m.push_str("#[\\RhpBeforeZpp] ");
+        f.insert(ProtoFlags::BEFORE_ZPP);
     }
     if ps.iter().any(|p| {
         p.ty.split('|')
             .any(|t| t.trim_start_matches('?') == "callable")
     }) {
-        m.push_str("#[\\RhpZppCallable] ");
+        f.insert(ProtoFlags::ZPP_CALLABLE);
     }
-    m
+    f
 }
 
 /// The PHP declaration of a class.
@@ -148,8 +154,7 @@ pub(super) fn class_php(spec: &ClassSpec) -> String {
         let body = body(spec.helper, &format!("'{}'", m.name), this, m.params, m.ret);
         writeln!(
             o,
-            "    {}{mods}function {}({}){} {body}",
-            markers(&format!("{}::{}", c.name, m.name), m.params),
+            "    {mods}function {}({}){} {body}",
             m.name,
             params(m.params, m.name),
             ret(m.ret, m.name)
@@ -181,8 +186,7 @@ pub(super) fn functions_php(helper: &str, names: &[(&str, &str)]) -> String {
         }
         writeln!(
             o,
-            "{}function {}({}){} {body}",
-            markers(f.name, f.params),
+            "function {}({}){} {body}",
             f.name,
             params(f.params, f.name),
             ret(f.ret, f.name)

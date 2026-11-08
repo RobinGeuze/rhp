@@ -321,6 +321,11 @@ impl<'c> ProtoBuilder<'c> {
         proto.returns_ref = self.returns_ref;
         if self.cx.is_prelude {
             proto.flags.insert(ProtoFlags::INTERNAL);
+            let class = self.class_name.as_ref().map(|c| c.as_bytes());
+            proto.flags.insert((self.cx.builtins.prelude_flags)(
+                class,
+                proto.name.as_bytes(),
+            ));
         }
         if self.uses_this {
             proto.flags.insert(ProtoFlags::USES_THIS);

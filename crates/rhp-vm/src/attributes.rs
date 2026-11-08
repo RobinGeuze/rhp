@@ -98,7 +98,7 @@ impl Vm {
     }
 
     /// The checks ZEND_DO_FCALL makes before entering a `#[\Deprecated]` or
-    /// `#[\NoDiscard]` function, and a `#[\RhpBeforeZpp]` prelude function's
+    /// `#[\NoDiscard]` function, and a `BEFORE_ZPP` prelude function's
     /// code ahead of its argument checks: run by `bind_frame` for a proto
     /// with any of the flags.
     #[cold]

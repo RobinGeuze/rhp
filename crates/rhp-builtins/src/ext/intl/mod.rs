@@ -165,8 +165,32 @@ fn class_const_decls(class: &str) -> String {
     out
 }
 
+/// The compiler's flags for prelude function `class::name` (or `name`):
+/// those of an intl stub function or method, see [`common::flags`].
+pub(crate) fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
+    use rhp_bytecode::signatures as sigs;
+    let none = rhp_bytecode::ProtoFlags::default();
+    let (Ok(name), class) = (std::str::from_utf8(name), class.map(std::str::from_utf8)) else {
+        return none;
+    };
+    match class {
+        None => match sigs::function(name.as_bytes()) {
+            Some(f) if f.ext == "intl" => common::flags(f.name, f.params),
+            _ => none,
+        },
+        Some(Ok(c)) => match sigs::class(c.as_bytes()) {
+            Some(cl) if cl.ext == "intl" => match sigs::method(c.as_bytes(), name.as_bytes()) {
+                Some(m) => common::flags(&format!("{}::{}", m.class, m.name), m.params),
+                None => none,
+            },
+            _ => none,
+        },
+        Some(Err(_)) => none,
+    }
+}
+
 /// `intl_error_reset(NULL)` ahead of zend_parse_parameters, for the
-/// prelude functions marked `#[\RhpBeforeZpp]`.
+/// prelude functions with ProtoFlags::BEFORE_ZPP.
 pub(crate) fn before_zpp() {
     error::error_reset();
 }

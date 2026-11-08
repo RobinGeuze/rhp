@@ -510,16 +510,17 @@ set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
 once per call and, only when one is set, raises the deprecation and the
 unused-result warning before the frame is entered
 (`rhp-vm/src/attributes.rs`, zend_execute.c's zend_deprecated_function /
-zend_nodiscard_function). The same test covers `BEFORE_ZPP`, which the
-prelude's own `#[\RhpBeforeZpp]` marker sets (and which Reflection does
-not list): php's body of such a function runs code before
-zend_parse_parameters (intl's constructors reset the global intl error
-first), so `bind_frame` calls `rhp_builtins::before_zpp` before it binds
-and checks the arguments. `#[\RhpZppCallable]` (`ZPP_CALLABLE`) makes a
-prelude function's `callable` parameter check raise the callable's
-deprecations, as php's Z_PARAM_FUNC does; other prelude functions check
-it silently and leave them to the builtin they hand it to. A native intl
-function whose zpp fails gets the reset from `before_failed_zpp`. "Unused" is php's zend_do_free rule: the compiler
+zend_nodiscard_function). The same test covers `BEFORE_ZPP`: php's body of such a prelude function
+runs code before zend_parse_parameters (intl's entry points reset the
+global intl error first), so `bind_frame` calls `rhp_builtins::before_zpp`
+before it binds and checks the arguments. `ZPP_CALLABLE` makes a prelude
+function's `callable` parameter check raise the callable's deprecations,
+as php's Z_PARAM_FUNC does; other prelude functions check it silently and
+leave them to the builtin they hand it to. The compiler sets both on
+prelude protos from `Builtins::prelude_flags` (rhp-builtins answers from
+the stub signatures), so the prelude's text carries no markers. A native
+intl function whose zpp fails gets the reset from `before_failed_zpp`.
+"Unused" is php's zend_do_free rule: the compiler
 records in `FunctionProto::discard_calls` the pcs of calls compiled last in
 a freed expression (an expression statement, a `for` list entry), and the
 VM looks the caller's pc up there. The message suffix comes from building the

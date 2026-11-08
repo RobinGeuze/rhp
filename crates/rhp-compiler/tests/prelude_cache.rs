@@ -87,6 +87,7 @@ fn prelude_is_compiled_per_source() {
         constant: |_| None,
         cwd: || None,
         assertions: || 1,
+        prelude_flags: |_, _| rhp_bytecode::ProtoFlags::default(),
     };
     static B: Builtins = Builtins {
         prelude: || "<?php\nclass B {}\nclass C {}\n",
@@ -94,6 +95,7 @@ fn prelude_is_compiled_per_source() {
         constant: |_| None,
         cwd: || None,
         assertions: || 1,
+        prelude_flags: |_, _| rhp_bytecode::ProtoFlags::default(),
     };
     let compile = |b: &Builtins| {
         let src = b"<?php\nclass D {}\n";
@@ -132,6 +134,7 @@ fn prelude_is_compiled_per_builtins() {
         constant: no_constant,
         cwd: || None,
         assertions: || 1,
+        prelude_flags: |_, _| rhp_bytecode::ProtoFlags::default(),
     };
     static B: Builtins = Builtins {
         prelude,
@@ -142,6 +145,7 @@ fn prelude_is_compiled_per_builtins() {
         },
         cwd: || None,
         assertions: || 1,
+        prelude_flags: |_, _| rhp_bytecode::ProtoFlags::default(),
     };
     static C: Builtins = Builtins {
         prelude,
@@ -152,6 +156,7 @@ fn prelude_is_compiled_per_builtins() {
         constant: no_constant,
         cwd: || None,
         assertions: || 1,
+        prelude_flags: |_, _| rhp_bytecode::ProtoFlags::default(),
     };
     let compile = |b: &Builtins| {
         let src = b"<?php\n";

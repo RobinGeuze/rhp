@@ -96,10 +96,17 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::intl::constant_deprecation(name))
 }
 
+/// The compiler's `Builtins::prelude_flags`: what php's body of prelude
+/// function `class::name` (or `name`) does that its PHP declaration can't
+/// say. Only intl's functions have any.
+pub fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
+    ext::intl::prelude_flags(class, name)
+}
+
 /// What php's body of a prelude function does before
-/// zend_parse_parameters: called by the VM for a proto marked
-/// `#[\RhpBeforeZpp]`. Only intl marks functions (it resets its global
-/// error first).
+/// zend_parse_parameters: called by the VM for a proto with
+/// `ProtoFlags::BEFORE_ZPP`. Only intl has such functions (it resets its
+/// global error first).
 pub fn before_zpp(_host: &mut dyn Host) -> Result<(), Thrown> {
     ext::intl::before_zpp();
     Ok(())

@@ -36,6 +36,7 @@ struct Key {
     src: &'static str,
     native_function: fn(&str) -> bool,
     constant: fn(&[u8]) -> Option<Value>,
+    prelude_flags: fn(Option<&[u8]>, &[u8]) -> rhp_bytecode::ProtoFlags,
 }
 
 impl Key {
@@ -44,6 +45,7 @@ impl Key {
             src: (builtins.prelude)(),
             native_function: builtins.native_function,
             constant: builtins.constant,
+            prelude_flags: builtins.prelude_flags,
         }
     }
 
@@ -54,6 +56,7 @@ impl Key {
         std::ptr::eq(self.src, other.src)
             && std::ptr::fn_addr_eq(self.native_function, other.native_function)
             && std::ptr::fn_addr_eq(self.constant, other.constant)
+            && std::ptr::fn_addr_eq(self.prelude_flags, other.prelude_flags)
     }
 }
 

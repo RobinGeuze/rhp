@@ -93,6 +93,7 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::dom::constant_deprecation(name))
         .or_else(|| ext::filter::constant_deprecation(name))
         .or_else(|| ext::standard::assert::constant_deprecation(name))
+        .or_else(|| ext::intl::constant_deprecation(name))
 }
 
 /// The value php's compiler substitutes for the global constant `name`

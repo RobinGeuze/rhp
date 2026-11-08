@@ -165,6 +165,14 @@ fn class_const_decls(class: &str) -> String {
     out
 }
 
+/// The E_DEPRECATED a fetch of common.stub.php's one `#[\Deprecated]`
+/// global constant raises.
+pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {
+    (name == b"U_MULTIPLE_DECIMAL_SEPERATORS").then(|| {
+        "Constant U_MULTIPLE_DECIMAL_SEPERATORS is deprecated since 8.3, use U_MULTIPLE_DECIMAL_SEPARATORS instead".into()
+    })
+}
+
 /// The E_DEPRECATED a fetch of a `#[\Deprecated]` intl class constant
 /// raises (NumberFormatter::TYPE_CURRENCY).
 pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {

@@ -7685,6 +7685,8 @@ ext/intl/tests/dateformat_timezone_arg_variations4.phpt
 ext/intl/tests/datepatterngenerator_clone.phpt
 ext/intl/tests/datepatterngenerator_error.phpt
 ext/intl/tests/datepatterngenerator_get_best_pattern_icu72-1.phpt
+ext/intl/tests/deprecated_U_MULTIPLE_DECIMAL_SEPERATORS.phpt
+ext/intl/tests/deprecated_number_formater_type_currency.phpt
 ext/intl/tests/formatter/currencies.phpt
 ext/intl/tests/formatter/rounding_modes.phpt
 ext/intl/tests/formatter_clone.phpt

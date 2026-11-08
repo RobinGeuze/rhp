@@ -533,6 +533,12 @@ fn bytes(v: Vec<u8>) -> Result<Value, Thrown> {
     Ok(Value::str(v))
 }
 
+/// zend_string_alloc(len) of a caller-chosen size: past php's hard memory
+/// limit php stops there, so the caller must not allocate (or fill) it.
+fn emalloc_check(len: usize) -> bool {
+    rhp_values::mem::alloc_check(rhp_values::mem::zstr_size(len))
+}
+
 fn random(n: usize) -> Vec<u8> {
     let mut k = vec![0u8; n];
     unsafe { sys::randombytes_buf(k.as_mut_ptr().cast(), n) };
@@ -783,6 +789,9 @@ fn fn_pad(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Err(exc("input is too large"));
     }
     let xpadded_len = unpadded.len() + xpadlen;
+    if !emalloc_check(xpadded_len) {
+        return Ok(Value::Null);
+    }
     let mut padded = vec![0u8; xpadded_len + 1];
     padded[..unpadded.len()].copy_from_slice(&unpadded);
     let r = unsafe {
@@ -1866,6 +1875,9 @@ fn stream(
     }
     need(f, 2, &nonce, &format!("{pre}_NONCEBYTES"))?;
     need(f, 3, &key, &format!("{pre}_KEYBYTES"))?;
+    if !emalloc_check(len as usize) {
+        return Ok(Value::Null);
+    }
     let mut out = vec![0u8; len as usize];
     ok(unsafe { gen(out.as_mut_ptr(), len as u64, p(&nonce), p(&key)) })?;
     bytes(out)

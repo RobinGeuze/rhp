@@ -73,7 +73,12 @@ pub fn config_define(name: &[u8], value: &[u8]) {
 /// `cfg_get_entry`: a configuration hash entry.
 pub(crate) fn cfg_get(name: &[u8]) -> Option<rhp_values::Value> {
     let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name));
-    CONFIG.with(|c| c.borrow().get(&key).cloned())
+    CONFIG.with(|c| c.borrow().get(&key).cloned()).or_else(|| {
+        // sapi_cli_ini_defaults puts display_errors=1 in the hash before
+        // any ini file.
+        (name == b"display_errors" && crate::main::sapi::sapi_name() == "cli")
+            .then(|| rhp_values::Value::str("1"))
+    })
 }
 
 /// zend_parse_ini_file into the configuration hash (php_init_config): its

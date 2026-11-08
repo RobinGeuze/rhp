@@ -168,17 +168,26 @@ fn class_const_decls(class: &str) -> String {
 /// The E_DEPRECATED a fetch of a `#[\Deprecated]` intl class constant
 /// raises (NumberFormatter::TYPE_CURRENCY).
 pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
-    let c = class_const_table()
+    // Every internal class constant fetch asks: scan only the deprecated
+    // ones, collected once.
+    static DEPRECATED: std::sync::OnceLock<Vec<(&'static str, &'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    let list = DEPRECATED.get_or_init(|| {
+        class_const_table()
+            .iter()
+            .filter_map(|c| {
+                let since = c
+                    .attr
+                    .strip_prefix("#[\\Deprecated(since: '")?
+                    .strip_suffix("')]")?;
+                Some((c.class, c.name, since))
+            })
+            .collect()
+    });
+    let (c, n, since) = list
         .iter()
-        .find(|c| c.class.as_bytes().eq_ignore_ascii_case(class) && c.name.as_bytes() == name)?;
-    let since = c
-        .attr
-        .strip_prefix("#[\\Deprecated(since: '")?
-        .strip_suffix("')]")?;
-    Some(format!(
-        "Constant {}::{} is deprecated since {since}",
-        c.class, c.name
-    ))
+        .find(|(c, n, _)| c.as_bytes().eq_ignore_ascii_case(class) && n.as_bytes() == name)?;
+    Some(format!("Constant {c}::{n} is deprecated since {since}"))
 }
 
 pub fn constants() -> Vec<(&'static str, Value)> {

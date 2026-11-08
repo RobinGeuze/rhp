@@ -900,7 +900,7 @@ impl Vm {
         if self.is_internal_frame(caller) {
             return None;
         }
-        let (name, min, max) = match frame.defining_class {
+        let (cname, fname, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
@@ -914,7 +914,6 @@ impl Vm {
                     return None;
                 }
                 let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
-                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
                 // IntlCalendar::set() deprecates more than 2 arguments
                 // before zpp counts them; its body checks the maximum.
                 let max = if cname.eq_ignore_ascii_case(b"IntlCalendar")
@@ -924,7 +923,7 @@ impl Vm {
                 } else {
                     st.max_args()
                 };
-                (name, st.min_args(), max)
+                (Some(cname), st.name, st.min_args(), max)
             }
             Some(_) => return None,
             None => {
@@ -932,8 +931,17 @@ impl Vm {
                     return None;
                 }
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
-                (f.name.to_string(), f.min_args(), f.max_args())
+                (None, f.name, f.min_args(), f.max_args())
             }
+        };
+        let fits = passed >= min && max.is_none_or(|m| passed <= m);
+        if fits && passed <= proto.params.len() {
+            return None;
+        }
+        // The message name, built only on the way to an error.
+        let name = match (cname, fname) {
+            (Some(c), n) => format!("{}::{n}", String::from_utf8_lossy(c)),
+            (None, n) => n.to_string(),
         };
         if let Some(e) = zpp_count_error(&name, min, max, passed) {
             return Some(e);
@@ -3101,7 +3109,7 @@ pub(crate) fn is_engine_helper_name(name: &[u8]) -> bool {
 /// A magic or ArrayAccess method of a built-in class whose php stub has no
 /// such method: the prelude's stand-in for php's property, dimension,
 /// `get_method` and `get_constructor` handlers (SimpleXML, DOM, XMLReader,
-/// SPL's forwarding, the opaque handle classes).
+/// SPL's forwarding, PDORow and the opaque handle classes).
 pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
     const ACCESSORS: &[&[u8]] = &[
         // php's get_constructor refusing `new` (CurlHandle, XMLParser…).

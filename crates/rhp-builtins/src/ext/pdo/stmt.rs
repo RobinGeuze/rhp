@@ -751,10 +751,11 @@ fn do_fetch_row(
             if flags & FETCH_CLASSTYPE != 0 {
                 let name = fetch_value(cx, stmt, idx, None)?;
                 idx += 1;
-                cls = match &name {
-                    Value::Str(s) => lookup_class(cx, s.as_bytes())?,
-                    _ => None,
-                };
+                // A string names the class; anything else keeps the
+                // default class (stdClass when there is none either).
+                if let Value::Str(s) = &name {
+                    cls = lookup_class(cx, s.as_bytes())?;
+                }
                 if cls.is_none() {
                     cls = Some(b"stdClass".to_vec());
                 }
@@ -771,22 +772,31 @@ fn do_fetch_row(
             ce = cls.unwrap_or_default();
             ctor_args = fetch.ctor_args.clone();
             if flags & FETCH_SERIALIZE != 0 {
-                raise_impl_error(
-                    cx,
-                    dbh,
-                    Some(stmt),
-                    "HY000",
-                    Some("cannot unserialize class"),
-                )?;
-                return Ok(None);
-            }
-            let obj = cx.host.reflect_new_instance(&ce, Vec::new(), false)?;
-            if flags & FETCH_PROPS_LATE != 0 && has_ctor(cx.host, &ce) {
-                call_ctor(cx, &obj, &ce, ctor_args.as_ref())?;
-            }
-            Target::Object {
-                obj,
-                scope: ce.clone(),
+                // ce->unserialize: zend_user_unserialize of a Serializable
+                // class, run once the group key is read (below).
+                if !cx.host.reflect_is_a(&ce, b"Serializable") {
+                    raise_impl_error(
+                        cx,
+                        dbh,
+                        Some(stmt),
+                        "HY000",
+                        Some("cannot unserialize class"),
+                    )?;
+                    return Ok(None);
+                }
+                Target::Object {
+                    obj: Value::Null,
+                    scope: ce.clone(),
+                }
+            } else {
+                let obj = cx.host.reflect_new_instance(&ce, Vec::new(), false)?;
+                if flags & FETCH_PROPS_LATE != 0 && has_ctor(cx.host, &ce) {
+                    call_ctor(cx, &obj, &ce, ctor_args.as_ref())?;
+                }
+                Target::Object {
+                    obj,
+                    scope: ce.clone(),
+                }
             }
         }
         FETCH_INTO => {
@@ -825,6 +835,22 @@ fn do_fetch_row(
     if let Some(gk) = group_key {
         let k = fetch_value(cx, stmt, idx, None)?;
         *gk = Value::str(crate::zend::zpp::zval_get_string(cx.host, &k)?);
+        idx += 1;
+    }
+
+    if how == FETCH_CLASS && flags & FETCH_SERIALIZE != 0 {
+        let data = match fetch_value(cx, stmt, idx, None)? {
+            s @ Value::Str(_) => s,
+            _ => Value::str(""),
+        };
+        let obj = cx.host.reflect_new_instance(&ce, Vec::new(), false)?;
+        let mut m = PhpArray::new();
+        m.push(obj.clone());
+        m.push(Value::str("unserialize"));
+        cx.host.call_callable(&Value::Array(m), &[data])?;
+        if let Target::Object { obj: o, .. } = &mut target {
+            *o = obj;
+        }
         idx += 1;
     }
 
@@ -1130,16 +1156,39 @@ fn get_obj(host: &dyn Host, this: &Value) -> Result<Rc<Stmt>, Thrown> {
 
 /// `__pdo_stmt($method, $this, ...$args)`: PDOStatement's methods.
 pub(super) fn fn_pdo_stmt(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let method = String::from_utf8_lossy(&conv::to_string_bytes(&deref(&args[0]))).into_owned();
+    // The prelude passes a literal: borrow it, and the message name, which
+    // a call per fetched row would otherwise allocate.
+    let Value::Str(m) = &args[0] else {
+        return Err(Thrown::type_error("__pdo_stmt(): method name"));
+    };
+    let method = std::str::from_utf8(m.as_bytes()).unwrap_or("");
     let this = deref(&args[1]);
     let a = &args[2..];
-    let mut cx = Cx::new(host, format!("PDOStatement::{method}"));
+    let fname: std::borrow::Cow<'static, str> = match STMT_FNAMES
+        .iter()
+        .find(|n| &n["PDOStatement::".len()..] == method)
+    {
+        Some(n) => (*n).into(),
+        None => format!("PDOStatement::{method}").into(),
+    };
+    let mut cx = Cx::new(host, fname);
     let r = match stmt_of(&*cx.host, &this) {
-        Some(s) => with_current(&s, &this, || stmt_method(&mut cx, &method, &this, a)),
-        None => stmt_method(&mut cx, &method, &this, a),
+        Some(s) => with_current(&s, &this, || stmt_method(&mut cx, method, &this, a)),
+        None => stmt_method(&mut cx, method, &this, a),
     };
     cx.finish(r)
 }
+
+/// The names of the PDOStatement methods called once per row.
+const STMT_FNAMES: &[&str] = &[
+    "PDOStatement::fetch",
+    "PDOStatement::fetchColumn",
+    "PDOStatement::fetchObject",
+    "PDOStatement::execute",
+    "PDOStatement::bindValue",
+    "PDOStatement::bindParam",
+    "PDOStatement::fetchAll",
+];
 
 fn arg(a: &[Value], i: usize) -> Value {
     a.get(i).map(deref).unwrap_or(Value::Null)
@@ -1387,7 +1436,7 @@ fn stmt_method(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<V
         "debugDumpParams" => debug_dump_params(cx, &stmt),
         "getIterator" => {
             let h = object_handlers::object_of(this).expect("object");
-            Ok(Value::Object(stmt_iter_get(cx.host, &h, false)?))
+            Ok(Value::Object(get_iterator(cx.host, &h)?))
         }
         _ => Err(Thrown::error(
             "Error",
@@ -1887,34 +1936,50 @@ impl StmtIter {
     }
 }
 
-impl IteratorFuncs for StmtIter {
+/// The iterator's functions; `_keep` holds the object php's
+/// `zend_create_internal_iterator_zval` wraps (getIterator()).
+struct IterFuncs {
+    it: Rc<StmtIter>,
+    _keep: Option<ObjectHandle>,
+}
+
+impl IteratorFuncs for IterFuncs {
     fn valid(&self, _: &mut dyn Host) -> Result<bool, Thrown> {
-        Ok(self.fetch_ahead.borrow().is_some())
+        Ok(self.it.fetch_ahead.borrow().is_some())
     }
     fn current(&self, _: &mut dyn Host) -> Result<Option<Value>, Thrown> {
-        Ok(self.fetch_ahead.borrow().clone())
+        Ok(self.it.fetch_ahead.borrow().clone())
     }
     fn key(&self, _: &mut dyn Host) -> Result<Option<Value>, Thrown> {
-        Ok(Some(if self.key.get() == -1 {
+        Ok(Some(if self.it.key.get() == -1 {
             Value::Null
         } else {
-            Value::Int(self.key.get())
+            Value::Int(self.it.key.get())
         }))
     }
     fn move_forward(&self, host: &mut dyn Host) -> Result<(), Thrown> {
-        self.advance(host)
+        self.it.advance(host)
     }
     fn rewind(&self, _: &mut dyn Host) -> Result<(), Thrown> {
         Ok(())
     }
 }
 
-/// pdo_stmt_iter_get
+/// pdo_stmt_iter_get: the iterator object (php's `zend_iterator_init`
+/// takes a handle before the first row is fetched).
 fn stmt_iter_get(
     host: &mut dyn Host,
     h: &ObjectHandle,
     by_ref: bool,
 ) -> Result<ObjectHandle, Thrown> {
+    stmt_iter_new(host, h, by_ref).map(|(h, _)| h)
+}
+
+fn stmt_iter_new(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    by_ref: bool,
+) -> Result<(ObjectHandle, Rc<StmtIter>), Thrown> {
     if by_ref {
         return Err(Thrown::error(
             "Error",
@@ -1923,15 +1988,31 @@ fn stmt_iter_get(
     }
     let obj = Value::Object(h.clone());
     let stmt = get_obj(&*host, &obj)?;
-    let it = StmtIter {
+    let it = Rc::new(StmtIter {
         stmt,
         obj,
         key: Cell::new(-1),
         fetch_ahead: RefCell::new(None),
+    });
+    let funcs = IterFuncs {
+        it: it.clone(),
+        _keep: None,
     };
+    let ih = crate::zend::internal_iterator::create(host, Box::new(funcs))?;
     it.advance(host)?;
     if it.fetch_ahead.borrow().is_some() {
         it.key.set(0);
     }
-    crate::zend::internal_iterator::create(host, Box::new(it))
+    Ok((ih, it))
+}
+
+/// PDOStatement::getIterator: `zend_create_internal_iterator_zval`, an
+/// InternalIterator around the statement's iterator.
+fn get_iterator(host: &mut dyn Host, h: &ObjectHandle) -> Result<ObjectHandle, Thrown> {
+    let (inner, it) = stmt_iter_new(host, h, false)?;
+    let funcs = IterFuncs {
+        it,
+        _keep: Some(inner),
+    };
+    crate::zend::internal_iterator::create(host, Box::new(funcs))
 }

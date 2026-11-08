@@ -39,7 +39,7 @@ pub fn main(args: &[String]) -> ExitCode {
 fn files(args: &[String]) -> Result<Vec<(&'static str, String)>, String> {
     let root = repo_root();
     let known_txt = read(&root.join(KNOWN))?;
-    let known = list(&known_txt);
+    let known = passing_files(&list(&known_txt));
     let ignored_txt = match std::fs::read_to_string(root.join(IGNORED)) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -59,6 +59,18 @@ fn files(args: &[String]) -> Result<Vec<(&'static str, String)>, String> {
     let exts = implemented_exts();
     out.push((README, rewrite(&readme, &totals, &known, &ignored, &exts)?));
     Ok(out)
+}
+
+/// The .phpt files the known-passing tests run, each once: a test run
+/// through a `--REDIRECTTEST--` (`ext/pdo_sqlite/tests/common.phpt>ext/pdo/
+/// tests/pdo_001.phpt`) counts for the test it runs, in that test's area.
+fn passing_files<'a>(known: &[&'a str]) -> Vec<&'a str> {
+    let mut seen = HashSet::new();
+    known
+        .iter()
+        .map(|t| crate::phpt::target(t))
+        .filter(|t| seen.insert(*t))
+        .collect()
 }
 
 /// The first word of every line that is not blank or a `#` comment.
@@ -329,6 +341,19 @@ mod tests {
         assert_eq!(area("tests/lang/x.phpt"), "tests");
         assert_eq!(area("ext/intl/uchar/tests/x.phpt"), "ext/intl");
         assert_eq!(area("sapi/cli/tests/x.phpt"), "sapi/cli");
+    }
+
+    #[test]
+    fn redirected_tests_count_once_for_their_target() {
+        let known = [
+            "ext/pdo/tests/pdo_037.phpt",
+            "ext/pdo_sqlite/tests/common.phpt>ext/pdo/tests/pdo_001.phpt",
+            "ext/pdo_sqlite/tests/common.phpt>ext/pdo/tests/pdo_037.phpt",
+        ];
+        assert_eq!(
+            passing_files(&known),
+            ["ext/pdo/tests/pdo_037.phpt", "ext/pdo/tests/pdo_001.phpt"]
+        );
     }
 
     #[test]

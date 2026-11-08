@@ -2253,6 +2253,12 @@ impl Vm {
                             self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
+                        // Native dimension handlers (PDORow).
+                        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+                            let r = (d.has)(self, h, &k, false)?;
+                            self.reg_set(top, dst, Value::Bool(r));
+                            continue;
+                        }
                     }
                     // zend_std_has_dimension: an object without ArrayAccess
                     // throws (like empty() and `??` already do).
@@ -3329,11 +3335,25 @@ impl Vm {
         self.stack[top].pc = pc;
     }
 
+    /// The class's native `ce->get_iterator`, unless a user class overrode
+    /// `getIterator()` (zend_implement_aggregate then switches to
+    /// zend_user_it_get_new_iterator).
+    fn native_get_iterator(
+        &self,
+        h: &ObjectHandle,
+    ) -> Option<rhp_builtins::zend::object_handlers::GetIteratorFn> {
+        let f = self.handlers_of(h).and_then(|t| t.get_iterator)?;
+        match self.lookup_method(h.borrow().class, b"getiterator") {
+            Some(m) if !self.is_internal_class(m.defining_class) => None,
+            _ => Some(f),
+        }
+    }
+
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object
     /// that is not an IteratorAggregate; a result that is not Traversable
     /// (or the aggregate itself) throws.
     fn unwrap_aggregate(&mut self, h: ObjectHandle) -> Result<ObjectHandle, Thrown> {
-        if let Some(f) = self.handlers_of(&h).and_then(|t| t.get_iterator) {
+        if let Some(f) = self.native_get_iterator(&h) {
             // ce->get_iterator: an InternalIterator.
             return f(self, &h, false);
         }
@@ -3382,9 +3402,7 @@ impl Vm {
                 // the protocol in FeFetch; a plain object iterates its
                 // accessible properties (snapshotted to an array).
                 // A get_iterator iterator object already holds the handle.
-                let internal = self
-                    .handlers_of(&h)
-                    .is_some_and(|t| t.get_iterator.is_some());
+                let internal = self.native_get_iterator(&h).is_some();
                 let obj = self.unwrap_aggregate(h)?;
                 let oid = obj.borrow().id;
                 let ocls = obj.borrow().class;
@@ -3590,7 +3608,7 @@ impl Vm {
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
             // ce->get_iterator by reference: `pos_reg` holds [iterator,
             // fetched-once flag], as for a generator.
-            if let Some(f) = self.handlers_of(&h).and_then(|t| t.get_iterator) {
+            if let Some(f) = self.native_get_iterator(&h) {
                 let it = f(self, &h, true)?;
                 builtins::zend::internal_iterator::step(
                     self,

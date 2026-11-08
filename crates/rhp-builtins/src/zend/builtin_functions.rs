@@ -408,10 +408,20 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
                 || enum_has_builtin_method(host, cid, &method)
         })
         .unwrap_or(false);
-    let found = found || {
-        let obj = deref(&args[0]);
-        matches!(obj, Value::Object(_)) && spl_inner_has_method(host, &obj, &method, 0)
-    };
+    let found = found
+        || {
+            let obj = deref(&args[0]);
+            matches!(obj, Value::Object(_))
+                && (spl_inner_has_method(host, &obj, &method, 0)
+                // An object's get_method handler (PDO's driver methods),
+                // unless a __call trampoline answers first.
+                || (crate::zend::object_handlers::handlers_of(host, &obj)
+                    .is_some_and(|t| crate::zend::object_handlers::driver_method(t, &method).is_some())
+                    && !class_id_of(host, &obj)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|cid| host.class_has_method(cid, b"__call"))))
+        };
     Ok(Value::Bool(found))
 }
 
@@ -600,6 +610,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "date",
     "openssl",
     "pcre",
+    "sqlite3",
     "zlib",
     "bcmath",
     "bz2",

@@ -610,6 +610,15 @@ fn print_module(o: &mut Info, e: &str) {
         for (k, v) in rows {
             o.row(&[&k, &v]);
         }
+    } else if e == "sqlite3" {
+        o.row(&["SQLite3 support", "enabled"]);
+        o.row(&["SQLite Library", &crate::ext::pdo_sqlite::sys::libversion()]);
+        o.table_end();
+        print_ini(
+            o,
+            &["sqlite3.defensive", "sqlite3.extension_dir"],
+            &["sqlite3.defensive"],
+        );
     } else if e == "fileinfo" {
         o.row(&["fileinfo support", "enabled"]);
         o.row(&["libmagic", &crate::ext::fileinfo::libmagic_version()]);

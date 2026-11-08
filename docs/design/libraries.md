@@ -108,7 +108,7 @@ Today rhp-builtins links:
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
-| libsqlite3 (pdo_sqlite) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libsqlite3 (pdo_sqlite, sqlite3) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
 | libgd (ext/gd), with its codecs | dynamic (dlopen on first use), Homebrew gd | dynamic (dlopen on first use), libgd-dev |
 | libedit (readline) | dynamic, the SDK's /usr/lib/libedit.3.dylib | dynamic, libedit-dev |
 
@@ -257,9 +257,11 @@ holds on both reference machines because both link the same libgd; goldens
 still compare only pixels of lossless formats and image sizes, since the
 mac's and CI's codec releases differ. ext/gd's constants are gd.stub.php's
 `@cvalue`s, evaluated against the linked gd.h in `ext/gd/shim.c`.
-The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION` and phpinfo's
-"SQLite Library" are `sqlite3_libversion()`, so php's pdo_sqlite must load
-the libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API).
+The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION`,
+`SQLite3::version()` and phpinfo's "SQLite Library" are
+`sqlite3_libversion()`, so php's pdo_sqlite and sqlite3 must load the
+libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API both
+use).
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so

@@ -107,6 +107,87 @@ fn section_header(line: &[u8]) -> Option<String> {
 /// and [`CgiRequest`].
 const UNSUPPORTED_SECTIONS: &[&str] = &["HEADERS", "PHPDBG", "REDIRECTTEST"];
 
+/// Joins a `--REDIRECTTEST--` test and a test it redirects to in a test
+/// name: `ext/pdo_sqlite/tests/common.phpt>ext/pdo/tests/pdo_001.phpt`.
+const REDIRECT_SEP: char = '>';
+
+/// The phpt file a test name runs: the redirected-to test of a redirect.
+pub(crate) fn target(name: &str) -> &str {
+    name.rsplit_once(REDIRECT_SEP).map_or(name, |(_, t)| t)
+}
+
+/// A `--REDIRECTTEST--` (run-tests.php): the environment it sets and the
+/// directory of tests it runs with it.
+#[derive(Clone, Debug)]
+struct Redirect {
+    env: Vec<(String, String)>,
+    tests: String,
+}
+
+/// Every `--REDIRECTTEST--` in `tests` whose `--EXTENSIONS--` rhp loads,
+/// evaluated by php as run-tests.php does (`__DIR__` is the php-src root);
+/// its redirected tests are appended to `tests` as
+/// `<redirect>`[`REDIRECT_SEP`]`<test>`.
+fn expand_redirects(
+    php_src: &Path,
+    rhp_modules: &BTreeSet<String>,
+    tests: &mut Vec<String>,
+) -> BTreeMap<String, Redirect> {
+    let mut out = BTreeMap::new();
+    let mut added = Vec::new();
+    for rel in tests.iter() {
+        let Ok(data) = fs::read(php_src.join(rel)) else {
+            continue;
+        };
+        let phpt = Phpt::parse(&data);
+        let Some(code) = phpt.section("REDIRECTTEST") else {
+            continue;
+        };
+        let exts = phpt.section("EXTENSIONS").unwrap_or_default();
+        if !String::from_utf8_lossy(exts)
+            .split_whitespace()
+            .all(|e| rhp_modules.contains(&e.to_ascii_lowercase()))
+        {
+            continue;
+        }
+        let root = php_src.to_string_lossy().into_owned();
+        let code = String::from_utf8_lossy(code).replace("__DIR__", &format!("'{root}'"));
+        let program = format!(
+            "$c = (function () {{ {code}\n }})();\n\
+             foreach ($c['ENV'] ?? [] as $k => $v) echo \"ENV\\t$k\\t$v\\n\";\n\
+             echo \"TESTS\\t{{$c['TESTS']}}\\n\";"
+        );
+        let mut cmd = Command::new(php_bin());
+        cmd.args(["-n", "-r", &program]);
+        let o = run_proc(cmd, None, Duration::from_secs(20));
+        let mut r = Redirect {
+            env: Vec::new(),
+            tests: String::new(),
+        };
+        for line in String::from_utf8_lossy(&o.out).lines() {
+            let mut f = line.splitn(3, '\t');
+            match (f.next(), f.next(), f.next()) {
+                (Some("ENV"), Some(k), Some(v)) => r.env.push((k.into(), v.into())),
+                (Some("TESTS"), Some(t), None) => {
+                    let t = t.strip_prefix(root.as_str()).unwrap_or(t);
+                    r.tests = t.trim_matches('/').to_string();
+                }
+                _ => {}
+            }
+        }
+        if r.tests.is_empty() {
+            continue;
+        }
+        let mut found = Vec::new();
+        find_phpt(php_src, Path::new(&r.tests), &mut found);
+        added.extend(found.into_iter().map(|t| format!("{rel}{REDIRECT_SEP}{t}")));
+        out.insert(rel.clone(), r);
+    }
+    tests.extend(added);
+    tests.sort();
+    out
+}
+
 /// run-tests.php's `$ini_overwrites` (php 8.5), verbatim.
 const PHP_DEFAULT_INI: &[&str] = &[
     "output_handler=",
@@ -1397,6 +1478,8 @@ struct Ctx {
     base_env: Vec<(String, String)>,
     php_ini: Vec<String>,
     php_modules: BTreeSet<String>,
+    /// The `--REDIRECTTEST--`s of the run, by test.
+    redirects: BTreeMap<String, Redirect>,
     timeout: Duration,
     mutate: usize,
     /// Mutate every test, not only those rhp matches. Mutants of a test rhp
@@ -1647,7 +1730,25 @@ fn skipped(test: &str, reason: impl Into<String>) -> TestResult {
 
 /// Run one test (and its mutants, if it passes). Mutant divergences are
 /// appended to `mutants`.
-fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
+fn run_test(ctx: &Ctx, root: &Path, name: &str, sinks: &Sinks) -> TestResult {
+    let rel = target(name);
+    let redirect = name
+        .rsplit_once(REDIRECT_SEP)
+        .and_then(|(r, _)| ctx.redirects.get(r));
+    let mut r = run_test_file(ctx, root, rel, redirect, sinks);
+    r.test = name.to_string();
+    r
+}
+
+/// [`run_test`] of the phpt file `rel`, with the environment of the
+/// `--REDIRECTTEST--` that runs it, if any.
+fn run_test_file(
+    ctx: &Ctx,
+    root: &Path,
+    rel: &str,
+    redirect: Option<&Redirect>,
+    sinks: &Sinks,
+) -> TestResult {
     let path = root.join(rel);
     let Ok(data) = fs::read(&path) else {
         return skipped(rel, "unreadable");
@@ -1655,6 +1756,9 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
     let phpt = Phpt::parse(&data);
     let dir = path.parent().unwrap_or(root).to_path_buf();
     if let Some(s) = UNSUPPORTED_SECTIONS.iter().find(|s| phpt.has(s)) {
+        if *s == "REDIRECTTEST" && ctx.redirects.contains_key(rel) {
+            return skipped(rel, "redirect");
+        }
         return skipped(rel, format!("section:{s}"));
     }
     let is_cgi = phpt.is_cgi();
@@ -1712,6 +1816,17 @@ fn run_test(ctx: &Ctx, root: &Path, rel: &str, sinks: &Sinks) -> TestResult {
                 .collect()
         })
         .unwrap_or_default();
+    // run-tests: a redirected test runs with the redirect's ENV and
+    // REDIR_TEST_DIR, the directory of the tests it redirects to.
+    if let Some(r) = redirect {
+        env.extend(r.env.iter().cloned());
+        let tests = root.join(&r.tests);
+        let tests = tests.canonicalize().unwrap_or(tests);
+        env.push((
+            "REDIR_TEST_DIR".into(),
+            format!("{}/", tests.to_string_lossy()),
+        ));
+    }
     // ext/curl's server.inc and php_cli_server.inc start
     // `TEST_PHP_EXECUTABLE -S` as the HTTP peer of the client under test:
     // php's CLI server for both engines (rhp has no -S).
@@ -2247,7 +2362,7 @@ pub(crate) fn find_phpt(root: &Path, rel: &Path, out: &mut Vec<String>) {
 /// `php_cli_server.inc` (without it, both engines fail the include and the
 /// test "matches" for nothing).
 fn worker_trees(tests: &[String]) -> BTreeSet<String> {
-    let mut roots: BTreeSet<String> = tests.iter().map(|t| tree_root(t)).collect();
+    let mut roots: BTreeSet<String> = tests.iter().map(|t| tree_root(target(t))).collect();
     if tests
         .iter()
         .any(|t| CLI_SERVER_PEERS.iter().any(|d| t.starts_with(d)))
@@ -2272,6 +2387,7 @@ fn tree_root(rel: &str) -> String {
 fn helper_roots(php_src: &Path, tests: &[String]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for rel in tests {
+        let rel = target(rel);
         let Ok(text) = fs::read(php_src.join(rel)) else {
             continue;
         };
@@ -2588,6 +2704,22 @@ fn php_modules(ini: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
+/// The extensions rhp loads (`get_loaded_extensions()`), lowercased.
+fn rhp_modules(rhp: &Path) -> BTreeSet<String> {
+    let mut cmd = Command::new(rhp);
+    cmd.args([
+        "-n",
+        "-r",
+        "echo implode(\"\\n\", get_loaded_extensions()), \"\\n\";",
+    ]);
+    let out = run_proc(cmd, None, Duration::from_secs(20));
+    String::from_utf8_lossy(&out.out)
+        .lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('['))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // reporting
 // ---------------------------------------------------------------------------
@@ -2704,7 +2836,7 @@ pub(crate) fn find_php_cgi(explicit: Option<&Path>) -> Option<PathBuf> {
 
 /// Whether the file at `root/rel` is a CGI test (for `--cgi-only`).
 fn is_cgi_test(root: &Path, rel: &str) -> bool {
-    fs::read(root.join(rel)).is_ok_and(|d| Phpt::parse(&d).is_cgi())
+    fs::read(root.join(target(rel))).is_ok_and(|d| Phpt::parse(&d).is_cgi())
 }
 
 /// PHP's `escapeshellarg()` (POSIX).
@@ -2827,7 +2959,7 @@ fn conflict_keys(php_src: &Path, tests: &[String]) -> HashMap<String, Vec<String
     let mut dirs: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut out = HashMap::new();
     for rel in tests {
-        let path = php_src.join(rel);
+        let path = php_src.join(target(rel));
         let section = fs::read(&path)
             .ok()
             .and_then(|d| Phpt::parse(&d).section("CONFLICTS").map(parse_conflicts));
@@ -3175,6 +3307,7 @@ pub fn main(args: &[String]) -> ExitCode {
     let mut tests = Vec::new();
     find_phpt(&o.php_src, Path::new(""), &mut tests);
     tests.sort();
+    let redirects = expand_redirects(&o.php_src, &rhp_modules(&rhp_bin), &mut tests);
     let mut missing_known = Vec::new();
     if let Some(k) = &known {
         let have: BTreeSet<&String> = tests.iter().collect();
@@ -3292,6 +3425,7 @@ pub fn main(args: &[String]) -> ExitCode {
         php_sub_env,
         rhp_sub_env,
         php_modules: php_modules(&php_ini),
+        redirects,
         php_ini: php_ini.clone(),
         base_env,
         rhp_bin,

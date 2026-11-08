@@ -69,8 +69,8 @@ passing, so the percentages are of all php-src tests.
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
 | ext/pcre | 167 | 174 | 96.0% | PCRE2, linked statically |
-| ext/pdo | 6 | 132 | 4.5% | PDO core; the driver tests need `PDOTEST_DSN`, which the runner doesn't set yet |
-| ext/pdo_sqlite | 67 | 89 | 75.3% | `Pdo\Sqlite` on libsqlite3, linked statically |
+| ext/pdo | 128 | 132 | 97.0% | PDO core; the driver tests run against pdo_sqlite through its `--REDIRECTTEST--` |
+| ext/pdo_sqlite | 82 | 89 | 92.1% | `Pdo\Sqlite` on libsqlite3, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
@@ -80,17 +80,18 @@ passing, so the percentages are of all php-src tests.
 | ext/simplexml | 156 | 165 | 94.5% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
 | ext/spl | 640 | 796 | 80.4% | |
+| ext/sqlite3 | 93 | 101 | 92.1% | `SQLite3` on the libsqlite3 pdo_sqlite links |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
 | ext/xmlreader | 58 | 63 | 92.1% | on libxml2 |
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 3,063 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 3 | 2,962 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **15,944** | **22,219** | **71.8%** | |
+| **total** | **16,174** | **22,219** | **72.8%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sqlite3, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support

@@ -66,6 +66,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/simplexml", "SimpleXML"),
     ("ext/sockets", "sockets"),
     ("ext/spl", "SPL"),
+    ("ext/sqlite3", "sqlite3"),
     ("ext/standard", "standard"),
     ("ext/tokenizer", "tokenizer"),
     ("ext/xml", "xml"),

@@ -980,12 +980,17 @@ impl Vm {
             if Some(cls) == self.incomplete_class {
                 return Err(self.incomplete_error(&h, "modify a property"));
             }
-            if self.is_directory_class(cls) {
-                // Directory: readonly properties, no dynamic properties.
+            // Directory: readonly properties (which its own scope, as
+            // ReflectionProperty or PDO's FETCH_CLASS uses, may still
+            // initialize), no dynamic properties.
+            if self.is_directory_class(cls)
+                && !(scope == Some(cls) && self.class(cls).prop_visible.contains_key(&pname))
+            {
+                let declared = self.class(cls).prop_visible.contains_key(&pname);
                 let p = String::from_utf8_lossy(pname.as_bytes());
                 return Err(Thrown::error(
                     "Error",
-                    if self.class(cls).prop_visible.contains_key(&pname) {
+                    if declared {
                         format!("Cannot modify readonly property Directory::${p}")
                     } else {
                         format!("Cannot create dynamic property Directory::${p}")

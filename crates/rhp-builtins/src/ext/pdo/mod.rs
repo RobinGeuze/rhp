@@ -52,8 +52,17 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
 /// pdo_dbh_object_handlers
 pub(crate) static DBH_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_gc: Some(dbh_get_gc),
+    get_method: DRIVER_METHODS,
     ..ObjectHandlers::OPAQUE
 };
+
+/// dbh_method_get's driver methods (pdo_sqlite's get_driver_methods, the
+/// one driver): each runs its hidden prelude method.
+const DRIVER_METHODS: &[(&str, &str)] = &[
+    ("sqliteCreateFunction", "__sqliteCreateFunction"),
+    ("sqliteCreateAggregate", "__sqliteCreateAggregate"),
+    ("sqliteCreateCollation", "__sqliteCreateCollation"),
+];
 
 /// dbh_get_gc
 fn dbh_get_gc(h: &ObjectHandle, out: &mut Vec<Value>) {
@@ -183,7 +192,7 @@ impl Drop for Dbh {
 /// method rethrows when it returns.
 pub(crate) struct Cx<'a> {
     pub(crate) host: &'a mut dyn Host,
-    pub(crate) fname: String,
+    pub(crate) fname: std::borrow::Cow<'static, str>,
     pub(crate) pending: Option<Thrown>,
     /// zend_replace_error_handling(EH_THROW, pdo_exception_ce): a warning
     /// becomes a PDOException.
@@ -191,7 +200,10 @@ pub(crate) struct Cx<'a> {
 }
 
 impl<'a> Cx<'a> {
-    pub(crate) fn new(host: &'a mut dyn Host, fname: impl Into<String>) -> Cx<'a> {
+    pub(crate) fn new(
+        host: &'a mut dyn Host,
+        fname: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Cx<'a> {
         Cx {
             host,
             fname: fname.into(),

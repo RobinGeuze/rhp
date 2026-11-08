@@ -50,6 +50,21 @@ reps2=[("php_libxml_pretend_ctx_error_ex(","rhp_html5_report(")]
 for a,b in reps2: part=part.replace(a,b)
 out.append(part)
 out.append(sl(hd,1232,1326))
+# lexbor's selector engine adapted to libxml2 (ext/dom/lexbor/selectors-adapted)
+sh=open(P+'/lexbor/selectors-adapted/selectors.h').read()
+out.append(sh)
+sc=open(P+'/lexbor/selectors-adapted/selectors.c').read()
+for inc in ['#include <Zend/zend.h>\n','#include <Zend/zend_operators.h>\n','#include <Zend/zend_API.h>\n','#include <php.h>\n','#include "selectors.h"\n','#include "../../namespace_compat.h"\n','#include "../../domexception.h"\n','#include "../../php_dom.h"\n']:
+    if inc not in sc:
+        sys.exit('gen.py: php-src changed near: '+inc)
+    sc=sc.replace(inc,'')
+blank='''			if (!EG(exception)) {
+				php_dom_throw_error_with_message(NOT_SUPPORTED_ERR, ":blank selector is not implemented because CSSWG has not yet decided its semantics (https://github.com/w3c/csswg-drafts/issues/1967)", true);
+			}'''
+if blank not in sc:
+    sys.exit('gen.py: php-src changed near the :blank selector')
+sc=sc.replace(blank,'''			rhp_css_blank = 1;''')
+out.append(sc)
 out.append(open(os.path.join(here,'tail.c')).read())
 s='\n'.join(out)
 s=s.replace('zend_result','int').replace('zend_long','long'); s=re.sub(r'\bSUCCESS\b','0',s); s=re.sub(r'\bFAILURE\b','(-1)',s)

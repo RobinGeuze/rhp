@@ -28,6 +28,7 @@
 #include <lexbor/html/encoding.h>
 #include <lexbor/encoding/encoding.h>
 #include <lexbor/core/swar.h>
+#include <lexbor/css/parser.h>
 
 #define RHP_ASSERT(x) ((void) 0)
 #define DOM_FALLBACK_ENCODING_ID LXB_ENCODING_UTF_8
@@ -64,6 +65,61 @@ extern xmlNsPtr rhp_dom_mapper_get_ns(void *private_data, const char *prefix, co
 extern void rhp_dom_ns_set_token(xmlNsPtr ns, int token);
 extern void rhp_dom_template_add(void *private_data, xmlNodePtr template_node, xmlNodePtr fragment);
 extern void rhp_dom_html5_error(void *rust, const char *msg, size_t len, size_t line, size_t column);
+
+extern bool rhp_dom_ns_is_fast(const xmlNode *node, int token);
+extern bool rhp_dom_ns_is_html_and_document_is_html(const xmlNode *node);
+
+/* namespace_compat.h's checks, by token number (see RHP_TOKEN_*). */
+#define php_dom_ns_is_fast(node, token) rhp_dom_ns_is_fast((node), (token))
+#define php_dom_ns_is_html_and_document_is_html(node) rhp_dom_ns_is_html_and_document_is_html(node)
+#define php_dom_ns_is_html_magic_token RHP_TOKEN_HTML
+#define php_dom_ns_is_mathml_magic_token RHP_TOKEN_MATHML
+#define php_dom_ns_is_svg_magic_token RHP_TOKEN_SVG
+#define php_dom_ns_is_xlink_magic_token RHP_TOKEN_XLINK
+#define php_dom_ns_is_xml_magic_token RHP_TOKEN_XML
+#define php_dom_ns_is_xmlns_magic_token RHP_TOKEN_XMLNS
+
+static inline char zend_tolower_ascii(char c)
+{
+	return (c >= 'A' && c <= 'Z') ? (char) (c + ('a' - 'A')) : c;
+}
+
+/* php_libxml_attr_value */
+static xmlChar *php_libxml_attr_value(const xmlAttr *attr, bool *free)
+{
+	*free = false;
+	if (attr->children == NULL) {
+		return BAD_CAST "";
+	}
+	if (attr->children->type == XML_TEXT_NODE && attr->children->next == NULL) {
+		if (attr->children->content == NULL) {
+			return BAD_CAST "";
+		} else {
+			return attr->children->content;
+		}
+	}
+	xmlChar *value = xmlNodeGetContent((const xmlNode *) attr);
+	if (UNEXPECTED(value == NULL)) {
+		return BAD_CAST "";
+	}
+	*free = true;
+	return value;
+}
+
+/* dom_compare_value */
+static bool dom_compare_value(const xmlAttr *attr, const xmlChar *value)
+{
+	bool should_free;
+	xmlChar *attr_value = php_libxml_attr_value(attr, &should_free);
+	bool result = xmlStrEqual(attr_value, value);
+	if (should_free) {
+		xmlFree(attr_value);
+	}
+	return result;
+}
+
+/* The :blank selector's NotSupportedError, raised by the caller. */
+static _Thread_local int rhp_css_blank;
 
 static _Thread_local void *rhp_html5_rust;
 

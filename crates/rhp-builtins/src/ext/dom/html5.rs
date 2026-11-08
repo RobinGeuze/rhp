@@ -45,6 +45,33 @@ extern "C" {
     ) -> c_int;
     fn rhp_html5_quirks(h: *mut Html5) -> c_int;
     fn rhp_html5_free(h: *mut Html5);
+    fn rhp_html5_parse_fragment(
+        private_data: *mut c_void,
+        context: *mut XmlNode,
+        input: *const c_char,
+        len: usize,
+        quirks: c_int,
+        out: *mut *mut XmlNode,
+    ) -> c_int;
+    fn rhp_dom_xml_parse_fragment(
+        context: *mut XmlNode,
+        decls: *const c_char,
+        decls_len: usize,
+        input: *const c_char,
+        len: usize,
+        out: *mut *mut XmlDoc,
+    ) -> c_int;
+    fn rhp_dom_css(
+        root: *const XmlNode,
+        sel: *const c_char,
+        len: usize,
+        mode: c_int,
+        quirks: c_int,
+        sink: unsafe extern "C" fn(*mut c_void, *const XmlNode),
+        ctx: *mut c_void,
+        out: *mut *const XmlNode,
+        err: *mut *mut c_char,
+    ) -> c_int;
     fn rhp_html5_encode_output(
         encoding: *const c_char,
         utf8: *const c_char,
@@ -71,6 +98,19 @@ unsafe extern "C" fn rhp_dom_ns_set_token(ns: *mut XmlNs, t: c_int) {
     if let Some(t) = token(t) {
         unsafe { (*ns)._private = t as *const nscompat::Token as *mut c_void };
     }
+}
+
+#[no_mangle]
+unsafe extern "C" fn rhp_dom_ns_is_fast(node: *const XmlNode, t: c_int) -> bool {
+    match token(t) {
+        Some(t) => nscompat::ns_is_fast(node, t),
+        None => false,
+    }
+}
+
+#[no_mangle]
+unsafe extern "C" fn rhp_dom_ns_is_html_and_document_is_html(node: *const XmlNode) -> bool {
+    nscompat::ns_is_html_and_document_is_html(node)
 }
 
 #[no_mangle]
@@ -251,4 +291,119 @@ pub fn encode_output(encoding: &[u8], utf8: &[u8]) -> Vec<u8> {
         )
     };
     out
+}
+
+/// dom_html_fragment_parsing_algorithm: the fragment, or the glue's
+/// status (-1: lexbor failed).
+pub fn parse_html_fragment(
+    private: *mut DomPrivate,
+    context: *mut XmlNode,
+    input: &[u8],
+    quirks: crate::ext::libxml::node::QuirksMode,
+) -> Result<*mut XmlNode, c_int> {
+    rhp_csrc::lexbor::setup();
+    use crate::ext::libxml::node::QuirksMode;
+    let q = match quirks {
+        QuirksMode::NoQuirks => 0,
+        QuirksMode::LimitedQuirks => 1,
+        QuirksMode::Quirks => 2,
+    };
+    let mut out: *mut XmlNode = ptr::null_mut();
+    let st = unsafe {
+        rhp_html5_parse_fragment(
+            private.cast(),
+            context,
+            input.as_ptr().cast(),
+            input.len(),
+            q,
+            &mut out,
+        )
+    };
+    if st == 0 {
+        Ok(out)
+    } else {
+        Err(st)
+    }
+}
+
+/// dom_xml_fragment_parsing_algorithm's parse: the parsed document
+/// (Ok(None): not well-formed).
+pub fn parse_xml_fragment(
+    context: *mut XmlNode,
+    decls: &[u8],
+    input: &[u8],
+) -> Result<Option<*mut XmlDoc>, ()> {
+    let mut out: *mut XmlDoc = ptr::null_mut();
+    let r = unsafe {
+        rhp_dom_xml_parse_fragment(
+            context,
+            decls.as_ptr().cast(),
+            decls.len(),
+            input.as_ptr().cast(),
+            input.len(),
+            &mut out,
+        )
+    };
+    match r {
+        1 => Ok(Some(out)),
+        0 => Ok(None),
+        _ => Err(()),
+    }
+}
+
+/// How a selector query failed.
+pub enum CssError {
+    /// The selector did not parse (lexbor's first message, if any).
+    Syntax(Option<Vec<u8>>),
+    Unsupported,
+    /// The :blank pseudo-class.
+    Blank,
+}
+
+unsafe extern "C" fn css_sink(ctx: *mut c_void, node: *const XmlNode) {
+    let v = unsafe { &mut *(ctx as *mut Vec<*mut XmlNode>) };
+    v.push(node as *mut XmlNode);
+}
+
+/// A selector query (parentnode/css_selectors.c): mode 0 querySelector,
+/// 1 querySelectorAll, 2 matches, 3 closest. The nodes found.
+pub fn css(
+    root: *mut XmlNode,
+    sel: &[u8],
+    mode: c_int,
+    quirks: bool,
+) -> Result<Vec<*mut XmlNode>, CssError> {
+    rhp_csrc::lexbor::setup();
+    let mut nodes: Vec<*mut XmlNode> = Vec::new();
+    let mut out: *const XmlNode = ptr::null();
+    let mut err: *mut c_char = ptr::null_mut();
+    let r = unsafe {
+        rhp_dom_css(
+            root,
+            sel.as_ptr().cast(),
+            sel.len(),
+            mode,
+            quirks as c_int,
+            css_sink,
+            &mut nodes as *mut Vec<*mut XmlNode> as *mut c_void,
+            &mut out,
+            &mut err,
+        )
+    };
+    let msg = (!err.is_null()).then(|| unsafe {
+        let m = crate::ext::libxml::sys::cstr(err).to_vec();
+        libc::free(err.cast());
+        m
+    });
+    match r {
+        0 => {
+            if mode != 1 && !out.is_null() {
+                nodes.push(out as *mut XmlNode);
+            }
+            Ok(nodes)
+        }
+        1 => Err(CssError::Syntax(msg)),
+        3 => Err(CssError::Blank),
+        _ => Err(CssError::Unsupported),
+    }
 }

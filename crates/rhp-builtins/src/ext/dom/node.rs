@@ -1153,11 +1153,37 @@ pub fn clone_object(cx: &mut Cx, src: &Value, dst: &Value) -> Result<(), Thrown>
     if node.is_null() {
         return Ok(());
     }
+    let _ = cx;
+    if super::modern::is_modern(&intern) {
+        let t = unsafe { (*node).type_ };
+        let is_doc = t == sys::XML_DOCUMENT_NODE || t == sys::XML_HTML_DOCUMENT_NODE;
+        let private = if is_doc {
+            super::nscompat::DomPrivate::create()
+        } else {
+            unsafe { (*intern.document()).private_data }
+        };
+        let m = unsafe { &mut (*(private as *mut super::nscompat::DomPrivate)).ns_mapper };
+        let cloned = super::modern::clone_node_modern(Some(m), node, unsafe { (*node).doc }, true);
+        if !cloned.is_null() {
+            update_refcount_after_clone(&intern, node, &clone, cloned);
+        }
+        if is_doc {
+            unsafe {
+                let d = clone.document();
+                if d.is_null() || !(*d).private_data.is_null() {
+                    super::nscompat::destroy(private);
+                } else {
+                    (*d).private_data = private;
+                    (*d).quirks_mode = (*intern.document()).quirks_mode;
+                }
+            }
+        }
+        return Ok(());
+    }
     let cloned = super::util::clone_node(node, unsafe { (*node).doc }, true);
     if !cloned.is_null() {
         update_refcount_after_clone(&intern, node, &clone, cloned);
     }
-    let _ = cx;
     Ok(())
 }
 

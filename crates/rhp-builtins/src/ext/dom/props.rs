@@ -373,7 +373,7 @@ static M_ELEMENT: &[Prop] = &[
         "substitutedNodeValue",
         ME,
         m_substituted,
-        text_content_write,
+        m_substituted_write,
         Ty::Str,
     ),
 ];
@@ -2089,7 +2089,7 @@ fn fragment_serialize(
             return some(Value::str(out));
         }
     }
-    match super::xml_serializer::fragment_to_str(node, private) {
+    match super::xml_serializer::fragment_to_str(node, private)? {
         Some(s) => some(Value::str(s)),
         None => {
             super::throw_msg(
@@ -2127,23 +2127,30 @@ fn m_outer_html(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown>
     }
 }
 
-fn m_inner_html_write(_: &mut Cx, _: &Rc<DomObject>, _: Value) -> Result<(), Thrown> {
-    Err(Thrown::error(
-        "Error",
-        "Setting innerHTML is not supported yet",
-    ))
+fn m_inner_html_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    super::modern::inner_html_write(cx, d, &conv::to_string_bytes(&v))
 }
 
-fn m_outer_html_write(_: &mut Cx, _: &Rc<DomObject>, _: Value) -> Result<(), Thrown> {
-    Err(Thrown::error(
-        "Error",
-        "Setting outerHTML is not supported yet",
-    ))
+fn m_outer_html_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    super::modern::outer_html_write(cx, d, &conv::to_string_bytes(&v))
 }
 
 fn m_substituted(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
-    some(get_content(n, false))
+    match unsafe { sys::take_string(sys::xmlNodeGetContent(n)) } {
+        Some(s) => some(Value::str(s)),
+        None => {
+            super::throw(cx, INVALID_STATE_ERR, true)?;
+            Ok(None)
+        }
+    }
+}
+
+fn m_substituted_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    let n = node_of(cx, d)?;
+    lxn::invalidate_node_list_cache(d.document());
+    remove_all_children(n);
+    set_content_len(cx, n, &conv::to_string_bytes(&v))
 }
 
 fn m_doctype_entities(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {

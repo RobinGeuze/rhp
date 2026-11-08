@@ -14,8 +14,8 @@
 //! The modern `Dom\` API (prelude_modern.php) shares these handlers,
 //! branching where php's `php_dom_follow_spec_intern` does; its own parts
 //! are in [`modern`], [`collections`], [`nscompat`] (the namespace mapper),
-//! the serializers and [`html5`] (lexbor's HTML5 parser). CSS selectors and
-//! the innerHTML/outerHTML setters are not ported yet.
+//! the serializers and [`html5`] (lexbor's HTML5 parser and selector
+//! engine, through the C glue in `html5c/`).
 
 mod chardata;
 mod collections;
@@ -693,15 +693,6 @@ fn method(name: &[u8]) -> Option<Method> {
     })
 }
 
-/// Not ported yet: CSS selectors (lexbor's selector engine adapted to
-/// libxml2 in php-src ext/dom/lexbor/selectors-adapted).
-fn not_supported(cx: &mut Cx, _: &Value, _: &[Value]) -> Result<Value, Thrown> {
-    Err(Thrown::error(
-        "Error",
-        format!("{}() is not supported by rhp yet", cx.fname),
-    ))
-}
-
 /// The `Dom\` methods: their own ([`modern`], [`collections`]) or the
 /// handler php shares with the legacy class.
 fn modern_method(name: &[u8]) -> Option<Method> {
@@ -763,14 +754,14 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"Document::schemaValidateSource" => document::schema_validate_source,
         b"DocumentFragment::appendXml" => c::fragment_append_xml,
         b"Document::querySelector"
-        | b"Document::querySelectorAll"
         | b"DocumentFragment::querySelector"
+        | b"Element::querySelector" => m::query_selector,
+        b"Document::querySelectorAll"
         | b"DocumentFragment::querySelectorAll"
-        | b"Element::querySelector"
-        | b"Element::querySelectorAll"
-        | b"Element::closest"
-        | b"Element::matches"
-        | b"Element::insertAdjacentHTML" => not_supported,
+        | b"Element::querySelectorAll" => m::query_selector_all,
+        b"Element::closest" => m::closest,
+        b"Element::matches" => m::matches,
+        b"Element::insertAdjacentHTML" => m::insert_adjacent_html,
         b"DtdNamedNodeMap::count" | b"NamedNodeMap::count" => l::map_count,
         b"DtdNamedNodeMap::getNamedItem" | b"NamedNodeMap::getNamedItem" => l::map_get_named_item,
         b"DtdNamedNodeMap::getNamedItemNS" | b"NamedNodeMap::getNamedItemNS" => {
@@ -1047,7 +1038,14 @@ fn clone_node_obj(
         quiet: false,
         lazy_fname: false,
     };
-    node::clone_object(&mut cx, &sv, &dv)
+    node::clone_object(&mut cx, &sv, &dv)?;
+    // dom_modern_element_clone_obj: the clone gets its own cached
+    // $children and $classList.
+    let mut d = dst.borrow_mut();
+    for name in ["children", "classList"] {
+        d.remove_prop(&rhp_values::PhpStr::from_bytes(name.as_bytes()));
+    }
+    Ok(())
 }
 
 /// dom_object_namespace_node_clone_obj

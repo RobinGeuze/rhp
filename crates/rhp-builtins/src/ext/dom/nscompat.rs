@@ -278,6 +278,23 @@ pub fn retrieve_templated_content(p: &DomPrivate, template: *const XmlNode) -> *
         .unwrap_or(ptr::null_mut())
 }
 
+/// php_dom_ensure_templated_content
+pub fn ensure_templated_content(p: &mut DomPrivate, template: *mut XmlNode) -> *mut XmlNode {
+    let r = retrieve_templated_content(p, template);
+    if !r.is_null() {
+        return r;
+    }
+    unsafe {
+        let r = sys::xmlNewDocFragment((*template).doc);
+        if !r.is_null() {
+            (*r).parent = template;
+            add_element_ns_hook(p, template);
+            add_templated_content(p, template, r);
+        }
+        r
+    }
+}
+
 /// php_dom_remove_templated_content
 pub fn remove_templated_content(p: &mut DomPrivate, template: *const XmlNode) {
     let n = p

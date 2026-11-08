@@ -274,7 +274,7 @@ fn dump(
     options: c_int,
     format: bool,
     encoding: *const u8,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, Thrown> {
     let p = private(d).map(|p| &*p);
     super::xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
@@ -296,7 +296,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
             let r = dump(&intern, node, 0, format, (*docp).encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
-            r
+            r?
         } else {
             let mut converted = super::xml_serializer::XML_SAVE_AS_XML;
             if options & XML_SAVE_NO_DECL != 0 {
@@ -308,7 +308,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
             let r = dump(&intern, docn, converted, format, (*docp).encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
-            r
+            r?
         }
     };
     match res {
@@ -415,7 +415,7 @@ pub fn save_xml_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
         sys::rhp_xml_set_save_no_empty_tags(old);
         r
     };
-    let Some(data) = data else {
+    let Some(data) = data? else {
         return Ok(Value::Bool(false));
     };
     Ok(match write_file(cx, file, &data)? {
@@ -2184,4 +2184,294 @@ fn enum_value(cx: &mut Cx, v: &Value) -> Vec<u8> {
         .object_prop(v, b"value")
         .map(|v| conv::to_string_bytes(&v))
         .unwrap_or_default()
+}
+
+// ---- fragment parsing (inner_outer_html_mixin.c) ----
+
+/// dom_parse_fragment: the parsed children of `context` as a fragment, or
+/// null with an exception thrown.
+pub fn parse_fragment(
+    cx: &mut Cx,
+    d: &DomObject,
+    context: *mut XmlNode,
+    input: &[u8],
+) -> Result<*mut XmlNode, Thrown> {
+    unsafe {
+        if (*(*context).doc).type_ == sys::XML_DOCUMENT_NODE {
+            return xml_fragment(cx, d, context, input);
+        }
+        let quirks = (*d.document()).quirks_mode;
+        let p = (*d.document()).private_data as *mut DomPrivate;
+        match super::html5::parse_html_fragment(p, context, input, quirks) {
+            Ok(f) => Ok(f),
+            Err(_) => Err(dom_err(cx, INVALID_STATE_ERR)),
+        }
+    }
+}
+
+/// dom_xml_fragment_parsing_algorithm
+fn xml_fragment(
+    cx: &mut Cx,
+    d: &DomObject,
+    context: *mut XmlNode,
+    input: &[u8],
+) -> Result<*mut XmlNode, Thrown> {
+    let m = mapper(d);
+    let mut decls = Vec::new();
+    for ns in nscompat::in_scope_ns(m, context, true) {
+        unsafe {
+            decls.extend_from_slice(b" xmlns:");
+            decls.extend_from_slice(b((*ns).prefix));
+            decls.extend_from_slice(b"=\"");
+            decls.extend_from_slice(b((*ns).href));
+            decls.push(b'"');
+        }
+    }
+    if let Some(dflt) = locate_namespace(context, None) {
+        decls.extend_from_slice(b" xmlns=\"");
+        decls.extend_from_slice(&dflt);
+        decls.push(b'"');
+    }
+    let doc = match super::html5::parse_xml_fragment(context, &decls, input) {
+        Err(()) => return Err(dom_err(cx, INVALID_STATE_ERR)),
+        Ok(None) => {
+            return Err(dom_err_msg(
+                cx,
+                SYNTAX_ERR,
+                "XML fragment is not well-formed",
+            ))
+        }
+        Ok(Some(doc)) => doc,
+    };
+    unsafe {
+        if doc.is_null() {
+            return Ok(ptr::null_mut());
+        }
+        (*doc).dict = ptr::null_mut();
+        let document_element = (*doc).children;
+        if document_element.is_null() || !(*document_element).next.is_null() {
+            sys::xmlFreeDoc(doc);
+            return Err(dom_err_msg(
+                cx,
+                SYNTAX_ERR,
+                "XML fragment is not well-formed",
+            ));
+        }
+        let ctxdoc = (*context).doc;
+        let fragment = sys::xmlNewDocFragment(ctxdoc);
+        if !fragment.is_null() {
+            let child = (*document_element).children;
+            sys::xmlSetTreeDoc(document_element, ctxdoc);
+            sys::xmlAddChildList(fragment, child);
+            nscompat::mark_namespaces_as_attributes_too(m, doc);
+            (*document_element).children = ptr::null_mut();
+            (*document_element).last = ptr::null_mut();
+        }
+        sys::xmlFreeDoc(doc);
+        Ok(fragment)
+    }
+}
+
+/// dom_element_inner_html_write
+pub fn inner_html_write(cx: &mut Cx, d: &Rc<DomObject>, input: &[u8]) -> Result<(), Thrown> {
+    let mut context = d.node();
+    if context.is_null() {
+        return Err(dom_err(cx, INVALID_STATE_ERR));
+    }
+    let fragment = parse_fragment(cx, d, context, input)?;
+    if fragment.is_null() {
+        return Ok(());
+    }
+    unsafe {
+        if nscompat::ns_is_fast(context, &nscompat::HTML) && b((*context).name) == b"template" {
+            let p = private(d).expect("modern private data");
+            context = nscompat::ensure_templated_content(p, context);
+            if context.is_null() {
+                sys::xmlFreeNode(fragment);
+                return Ok(());
+            }
+        }
+    }
+    lxn::invalidate_node_list_cache(d.document());
+    remove_all_children(context);
+    super::element::pre_insert(cx, d.document(), fragment, context, ptr::null_mut())?;
+    Ok(())
+}
+
+/// dom_element_outer_html_write
+pub fn outer_html_write(cx: &mut Cx, d: &Rc<DomObject>, input: &[u8]) -> Result<(), Thrown> {
+    let this = d.node();
+    if this.is_null() {
+        return Err(dom_err(cx, INVALID_STATE_ERR));
+    }
+    unsafe {
+        let mut parent = (*this).parent;
+        if parent.is_null() {
+            return Ok(());
+        }
+        if matches!(
+            (*parent).type_,
+            sys::XML_DOCUMENT_NODE | sys::XML_HTML_DOCUMENT_NODE
+        ) {
+            return Err(dom_err(cx, super::INVALID_MODIFICATION_ERR));
+        }
+        let mut created_parent = false;
+        if (*parent).type_ == sys::XML_DOCUMENT_FRAG_NODE {
+            let html_ns = mapper(d).ensure_html_ns();
+            parent =
+                sys::xmlNewDocNode((*parent).doc, html_ns, c"body".as_ptr().cast(), ptr::null());
+            created_parent = true;
+            if parent.is_null() {
+                return Err(dom_err(cx, INVALID_STATE_ERR));
+            }
+        }
+        let fragment = match parse_fragment(cx, d, parent, input) {
+            Ok(f) if !f.is_null() => f,
+            other => {
+                if created_parent {
+                    sys::xmlFreeNode(parent);
+                }
+                return other.map(|_| ());
+            }
+        };
+        lxn::invalidate_node_list_cache(d.document());
+        let ok = super::element::pre_insert(cx, d.document(), fragment, (*this).parent, this);
+        match ok {
+            Ok(true) => {
+                sys::xmlUnlinkNode(this);
+                if created_parent {
+                    sys::xmlFreeNode(parent);
+                }
+                Ok(())
+            }
+            other => {
+                sys::xmlFreeNode(fragment);
+                if created_parent {
+                    sys::xmlFreeNode(parent);
+                }
+                other.map(|_| ())
+            }
+        }
+    }
+}
+
+/// Dom\Element::insertAdjacentHTML
+pub fn insert_adjacent_html(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let where_ = enum_value(cx, &arg(args, 0));
+    let string = bytes(args, 1);
+    let (intern, thisp) = get_obj(cx, this)?;
+    unsafe {
+        let before_or_after = matches!(where_.as_slice(), b"beforebegin" | b"afterend");
+        let mut context = if before_or_after {
+            let c = (*thisp).parent;
+            if c.is_null()
+                || matches!(
+                    (*c).type_,
+                    sys::XML_DOCUMENT_NODE | sys::XML_HTML_DOCUMENT_NODE
+                )
+            {
+                return Err(dom_err(cx, super::NO_MODIFICATION_ALLOWED_ERR));
+            }
+            c
+        } else {
+            thisp
+        };
+        let mut created = false;
+        if (*context).type_ != sys::XML_ELEMENT_NODE
+            || (nscompat::ns_is_html_and_document_is_html(context) && b((*context).name) == b"html")
+        {
+            let html_ns = mapper(&intern).ensure_html_ns();
+            context =
+                sys::xmlNewDocNode((*thisp).doc, html_ns, c"body".as_ptr().cast(), ptr::null());
+            created = true;
+            if context.is_null() {
+                return Err(dom_err(cx, INVALID_STATE_ERR));
+            }
+        }
+        let r = (|| -> Result<(), Thrown> {
+            let fragment = parse_fragment(cx, &intern, context, &string)?;
+            if fragment.is_null() {
+                return Ok(());
+            }
+            lxn::invalidate_node_list_cache(intern.document());
+            let doc = intern.document();
+            match where_.as_slice() {
+                b"beforebegin" => {
+                    super::element::pre_insert(cx, doc, fragment, (*thisp).parent, thisp)?
+                }
+                b"afterend" => {
+                    super::element::pre_insert(cx, doc, fragment, (*thisp).parent, (*thisp).next)?
+                }
+                b"afterbegin" => {
+                    super::element::pre_insert(cx, doc, fragment, thisp, (*thisp).children)?
+                }
+                _ => super::element::pre_insert(cx, doc, fragment, thisp, ptr::null_mut())?,
+            };
+            Ok(())
+        })();
+        if created {
+            sys::xmlFreeNode(context);
+        }
+        r?;
+    }
+    Ok(Value::Null)
+}
+
+// ---- CSS selectors (parentnode/css_selectors.c) ----
+
+fn css(
+    cx: &mut Cx,
+    this: &Value,
+    args: &[Value],
+    mode: c_int,
+) -> Result<(Rc<DomObject>, Vec<*mut XmlNode>), Thrown> {
+    let sel = bytes(args, 0);
+    let (intern, thisp) = get_obj(cx, this)?;
+    let quirks = unsafe { intern.document().as_ref() }
+        .is_some_and(|d| d.quirks_mode != lxn::QuirksMode::NoQuirks);
+    match super::html5::css(thisp, &sel, mode, quirks) {
+        Ok(nodes) => Ok((intern, nodes)),
+        Err(super::html5::CssError::Syntax(msg)) => {
+            let m = msg.map_or_else(|| "Invalid selector".to_string(), |m| String::from_utf8_lossy(&m).into_owned());
+            Err(dom_err_msg(cx, SYNTAX_ERR, &m))
+        }
+        Err(super::html5::CssError::Blank) => Err(dom_err_msg(
+            cx,
+            NOT_SUPPORTED_ERR,
+            ":blank selector is not implemented because CSSWG has not yet decided its semantics (https://github.com/w3c/csswg-drafts/issues/1967)",
+        )),
+        Err(super::html5::CssError::Unsupported) => Err(value_error(cx, 1, "selectors", "contains an unsupported selector")),
+    }
+}
+
+pub fn query_selector(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let (intern, nodes) = css(cx, this, args, 0)?;
+    create_nullable(
+        cx,
+        nodes.first().copied().unwrap_or(ptr::null_mut()),
+        Some(&intern),
+    )
+}
+
+pub fn query_selector_all(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let (intern, nodes) = css(cx, this, args, 1)?;
+    let mut values = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        values.push(create_object(cx, n, Some(&intern))?);
+    }
+    super::lists::nodeset_list(cx, b"Dom\\NodeList", values)
+}
+
+pub fn matches(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let (_, nodes) = css(cx, this, args, 2)?;
+    Ok(Value::Bool(!nodes.is_empty()))
+}
+
+pub fn closest(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let (intern, nodes) = css(cx, this, args, 3)?;
+    create_nullable(
+        cx,
+        nodes.first().copied().unwrap_or(ptr::null_mut()),
+        Some(&intern),
+    )
 }

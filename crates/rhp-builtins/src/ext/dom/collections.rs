@@ -105,12 +105,12 @@ fn read_list(
     offset: Option<&Value>,
     ty: DimType,
 ) -> Result<Option<Value>, Thrown> {
-    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
-        return Err(not_array(host, h));
-    }
     let Some(offset) = offset else {
         return Err(appended(host, h));
     };
+    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
+        return Err(not_array(host, h));
+    }
     let Some(d) = state(h) else { return Ok(None) };
     let named = matches!(class(host, h).as_str(), "Dom\\HTMLCollection");
     let v = match index_of(offset) {
@@ -155,12 +155,12 @@ fn read_map(
     offset: Option<&Value>,
     ty: DimType,
 ) -> Result<Option<Value>, Thrown> {
-    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
-        return Err(not_array(host, h));
-    }
     let Some(offset) = offset else {
         return Err(appended(host, h));
     };
+    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
+        return Err(not_array(host, h));
+    }
     let Some(d) = state(h) else { return Ok(None) };
     let v = match index_of(offset) {
         Index::Illegal => return Err(illegal(host, h, offset, false)),
@@ -611,12 +611,12 @@ fn read_tl(
     offset: Option<&Value>,
     ty: DimType,
 ) -> Result<Option<Value>, Thrown> {
-    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
-        return Err(not_array(host, h));
-    }
     let Some(offset) = offset else {
         return Err(Thrown::error("Error", "Cannot append to Dom\\TokenList"));
     };
+    if matches!(ty, DimType::W | DimType::Rw | DimType::Unset) {
+        return Err(not_array(host, h));
+    }
     let Some(i) = tl_offset(offset) else {
         return Err(illegal(host, h, offset, false));
     };

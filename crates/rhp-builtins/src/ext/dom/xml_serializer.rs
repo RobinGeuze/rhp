@@ -409,6 +409,21 @@ struct Ctx<'a> {
     private: Option<&'a DomPrivate>,
 }
 
+thread_local! {
+    /// Set when the serializer stopped at the stack limit.
+    static OVERFLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The serializer's Error when it stopped at the stack limit.
+fn take_overflow() -> Option<crate::Thrown> {
+    OVERFLOWED.with(|o| o.replace(false)).then(|| {
+        crate::Thrown::error(
+            "Error",
+            "Maximum call stack size reached. Infinite recursion?",
+        )
+    })
+}
+
 /// dom_xml_serialize_element_node
 fn element(
     ctx: &Ctx,
@@ -581,6 +596,10 @@ fn algorithm(
     wf: bool,
 ) -> R {
     let out = ctx.out;
+    if crate::zend::call_stack::overflowed() {
+        OVERFLOWED.with(|o| o.set(true));
+        return Err(());
+    }
     unsafe {
         match (*node).type_ {
             sys::XML_ELEMENT_NODE => element(ctx, namespace, map, node, index, indent, wf),
@@ -727,7 +746,7 @@ pub fn dump_to_str(
     encoding: *const u8,
     require_well_formed: bool,
     private: Option<&DomPrivate>,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, crate::Thrown> {
     let mut buf: Vec<u8> = Vec::new();
     let bp = &mut buf as *mut Vec<u8> as *mut c_void;
     let mut status: c_int = -1;
@@ -752,12 +771,18 @@ pub fn dump_to_str(
             status |= sys::xmlSaveClose(ctxt);
         }
     }
-    (status >= 0).then_some(buf)
+    if let Some(t) = take_overflow() {
+        return Err(t);
+    }
+    Ok((status >= 0).then_some(buf))
 }
 
 /// dom_element_html_fragment_serialize's XML half: the children of `node`
 /// with the require-well-formed flag, each on its own prefix map.
-pub fn fragment_to_str(node: *mut XmlNode, private: Option<&DomPrivate>) -> Option<Vec<u8>> {
+pub fn fragment_to_str(
+    node: *mut XmlNode,
+    private: Option<&DomPrivate>,
+) -> Result<Option<Vec<u8>>, crate::Thrown> {
     let mut buf: Vec<u8> = Vec::new();
     let bp = &mut buf as *mut Vec<u8> as *mut c_void;
     let mut status: c_int = -1;
@@ -785,5 +810,8 @@ pub fn fragment_to_str(node: *mut XmlNode, private: Option<&DomPrivate>) -> Opti
             status |= sys::xmlSaveClose(ctxt);
         }
     }
-    (status >= 0).then_some(buf)
+    if let Some(t) = take_overflow() {
+        return Err(t);
+    }
+    Ok((status >= 0).then_some(buf))
 }

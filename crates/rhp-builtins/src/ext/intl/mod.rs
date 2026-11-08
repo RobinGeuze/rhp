@@ -169,23 +169,37 @@ fn class_const_decls(class: &str) -> String {
 /// those of an intl stub function or method, see [`common::flags`].
 pub(crate) fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
     use rhp_bytecode::signatures as sigs;
+    // Every prelude function and method asks: rule out the others with an
+    // exact-name search of intl's own (as the prelude declares them).
+    /// intl's class names and function names, sorted.
+    type Names = (Vec<&'static [u8]>, Vec<&'static [u8]>);
+    static NAMES: OnceLock<Names> = OnceLock::new();
+    let (classes, funcs) = NAMES.get_or_init(|| {
+        let mut c: Vec<&[u8]> = sigs::classes()
+            .iter()
+            .filter(|c| c.ext == "intl")
+            .map(|c| c.name.as_bytes())
+            .collect();
+        let mut f: Vec<&[u8]> = sigs::functions()
+            .iter()
+            .filter(|f| f.ext == "intl")
+            .map(|f| f.name.as_bytes())
+            .collect();
+        c.sort_unstable();
+        f.sort_unstable();
+        (c, f)
+    });
     let none = rhp_bytecode::ProtoFlags::default();
-    let (Ok(name), class) = (std::str::from_utf8(name), class.map(std::str::from_utf8)) else {
-        return none;
-    };
     match class {
-        None => match sigs::function(name.as_bytes()) {
-            Some(f) if f.ext == "intl" => common::flags(f.name, f.params),
-            _ => none,
+        None if funcs.binary_search(&name).is_ok() => match sigs::function(name) {
+            Some(f) => common::flags(f.name, f.params),
+            None => none,
         },
-        Some(Ok(c)) => match sigs::class(c.as_bytes()) {
-            Some(cl) if cl.ext == "intl" => match sigs::method(c.as_bytes(), name.as_bytes()) {
-                Some(m) => common::flags(&format!("{}::{}", m.class, m.name), m.params),
-                None => none,
-            },
-            _ => none,
+        Some(c) if classes.binary_search(&c).is_ok() => match sigs::method(c, name) {
+            Some(m) => common::flags(&format!("{}::{}", m.class, m.name), m.params),
+            None => none,
         },
-        Some(Err(_)) => none,
+        _ => none,
     }
 }
 

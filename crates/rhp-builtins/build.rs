@@ -82,6 +82,19 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_gmp_shim");
 
+    // ext/gd's struct access, constants and error callback against gd.h,
+    // and the formats php's configure finds in the library.
+    let gd = linked.iter().find(|l| l.name == "LIBGD").expect("LIBGD");
+    let formats = gd_formats(&gd.include, &gd.libdir);
+    println!("cargo:rerun-if-changed=src/ext/gd/shim.c");
+    cc::Build::new()
+        .file("src/ext/gd/shim.c")
+        .include(&gd.include)
+        .define("RHP_GD_FORMATS", formats.to_string().as_str())
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_gd_shim");
+
     // ICU is C++; its .pc files leave the C++ runtime to the linker driver.
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") | Ok("ios") => println!("cargo:rustc-link-lib=dylib=c++"),
@@ -105,4 +118,77 @@ fn icu_checks(include: &std::path::Path) {
             uconfig.display()
         );
     }
+}
+
+/// php's configure (PHP_GD_CHECK_FORMAT in ext/gd/config.m4): build and
+/// run `gdImageCreateFrom<Fmt>(NULL)` against the library with an error
+/// method that exits 1. libgd built without a format still defines its
+/// functions, as stubs that raise an error. Bits: 1 PNG, 2 AVIF, 4 WebP,
+/// 8 JPEG, 16 XPM (HAVE_GD_*). A cross build cannot run them and takes
+/// `RHP_GD_FORMATS` instead.
+fn gd_formats(include: &std::path::Path, libdir: &std::path::Path) -> u32 {
+    println!("cargo:rerun-if-env-changed=RHP_GD_FORMATS");
+    if let Ok(v) = std::env::var("RHP_GD_FORMATS") {
+        return v
+            .parse()
+            .unwrap_or_else(|_| panic!("RHP_GD_FORMATS={v:?}: expected a number"));
+    }
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    if var("TARGET") != var("HOST") {
+        panic!("cross build: set RHP_GD_FORMATS to the libgd formats (see build.rs)");
+    }
+    let out = std::path::PathBuf::from(var("OUT_DIR")).join("gd-formats");
+    std::fs::create_dir_all(&out).expect("OUT_DIR");
+    let compiler = cc::Build::new().get_compiler();
+    let mut bits = 0;
+    for (bit, fmt) in [
+        (1, "Png"),
+        (2, "Avif"),
+        (4, "Webp"),
+        (8, "Jpeg"),
+        (16, "Xpm"),
+    ] {
+        let arg = if fmt == "Xpm" {
+            "char* f = \"test.xpm\""
+        } else {
+            "FILE* f = NULL"
+        };
+        let src = out.join(format!("{fmt}.c"));
+        let exe = out.join(fmt);
+        std::fs::write(
+            &src,
+            format!(
+                "#include <stdio.h>\n#include <unistd.h>\n#include <gd.h>\n\
+                 void exit1(int priority, const char *format, va_list args) {{\n\
+                 (void)priority; (void)format; (void)args; _exit(1);\n}}\n\
+                 int main(void)\n{{\n{arg};\ngdSetErrorMethod(exit1);\n\
+                 gdImagePtr p = gdImageCreateFrom{fmt}(f);\n(void)p;\nreturn 0;\n}}\n"
+            ),
+        )
+        .expect("write the gd probe");
+        let built = compiler
+            .to_command()
+            .arg("-I")
+            .arg(include)
+            .arg(&src)
+            .arg("-o")
+            .arg(&exe)
+            .arg("-L")
+            .arg(libdir)
+            .arg(format!("-Wl,-rpath,{}", libdir.display()))
+            .arg("-lgd")
+            .status()
+            .expect("run the C compiler");
+        if !built.success() {
+            panic!("the libgd format probe {} does not build", src.display());
+        }
+        let ran = std::process::Command::new(&exe)
+            .current_dir(&out)
+            .status()
+            .expect("run the gd probe");
+        if ran.success() {
+            bits |= bit;
+        }
+    }
+    bits
 }

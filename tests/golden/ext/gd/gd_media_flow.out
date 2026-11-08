@@ -1,0 +1,21 @@
+bool(true)
+bool(true)
+bool(true)
+IMG_GIF yes
+IMG_JPEG yes
+IMG_PNG yes
+IMG_WEBP yes
+IMG_AVIF yes
+IMG_BMP yes
+bool(true)
+bool(true)
+string(9) "image/png"
+bool(true)
+20x15 image/png alpha=127
+bool(true)
+10x8 image/png alpha=127
+bool(true)
+4x3 image/png alpha=127
+int(30)
+int(40)
+bool(true)

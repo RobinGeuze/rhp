@@ -31,7 +31,7 @@ runs:
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
         # libsqlite3 (libsqlite3.a) is linked statically too.
         # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
-        # static archive.
+        # static archive. libgd too: its codecs have no complete static set.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -46,6 +46,7 @@ runs:
           libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
           libpsl-dev librtmp-dev libssh-dev libssh2-1-dev \
           libzip-dev \
+          libgd-dev \
           libgmp-dev \
           libsqlite3-dev
         php="${PHP_BIN:-$(command -v php || true)}"
@@ -99,6 +100,16 @@ runs:
           echo "libzip: the distro has $zip_have; $php links ${zip_want:-no libzip}"
           if [ -n "$zip_want" ] && [ "$zip_want" != "$zip_have" ]; then
             echo "::error::$php links libzip $zip_want, but the distro's libzip-dev is $zip_have; rhp links the distro's libzip"
+            exit 1
+          fi
+          # libgd has no source build here either: ext/gd must load the
+          # distro's.
+          # shellcheck disable=SC2016
+          gd_want="$("$php" -n -r 'echo defined("GD_VERSION") ? GD_VERSION : "";')"
+          gd_have="$(pkg-config --modversion gdlib)"
+          echo "libgd: the distro has $gd_have; $php links ${gd_want:-no gd}"
+          if [ -n "$gd_want" ] && [ "$gd_want" != "$gd_have" ]; then
+            echo "::error::$php links libgd $gd_want, but the distro's libgd-dev is $gd_have; rhp links the distro's"
             exit 1
           fi
           # libsqlite3 has no source build here either: pdo_sqlite must load

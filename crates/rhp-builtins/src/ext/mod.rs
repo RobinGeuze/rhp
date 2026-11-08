@@ -12,6 +12,7 @@ pub mod date;
 pub mod dom;
 pub mod fileinfo;
 pub mod filter;
+pub mod gd;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
@@ -49,6 +50,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         curl::CLASSES,
         dom::CLASSES,
         fileinfo::CLASSES,
+        gd::CLASSES,
         gmp::CLASSES,
         openssl::CLASSES,
         random::CLASSES,
@@ -112,6 +114,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "gd",
+            cli_only: false,
+            functions: gd::register,
+            constants: gd::constants,
+            prelude_php: gd::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: gd::reset_state,
             object_freed: None,
         },
         ModuleDef {

@@ -1,0 +1,41 @@
+bool(true)
+string(3) "PNG"
+string(22) "width="20" height="10""
+int(20)
+int(10)
+string(6) "ff00ff"
+string(5) "a141e"
+bool(true)
+int(46)
+string(6) "GIF87a"
+bool(true)
+bool(true)
+png 20x10 truecolor
+bool(true)
+bool(true)
+gif 20x10 palette
+bool(true)
+bool(true)
+bmp 20x10 truecolor
+bool(true)
+bool(true)
+wbmp 20x10 palette
+bool(true)
+bool(true)
+jpeg 20x10 truecolor
+bool(true)
+bool(true)
+webp 20x10 truecolor
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+imagepng(): Argument #2 ($file) must not contain null bytes
+imagepng(): Argument #2 ($file) must be a file name or a stream resource, float given
+imagepng(): Argument #3 ($quality) must be between -1 and 9
+
+Warning: imagecreatefromstring(): Data is not in a recognized format in F on line 52
+bool(false)
+
+Warning: imagecreatefrompng(): "F" is not a valid PNG file in F on line 53
+bool(false)

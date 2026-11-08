@@ -19,7 +19,7 @@ RUN apt-get update -q && apt-get install -y --no-install-recommends \
 RUN apt-get install -y --no-install-recommends \
       php8.5-cli php8.5-cgi php8.5-dev php8.5-common \
       php8.5-bcmath php8.5-bz2 php8.5-curl php8.5-xml php8.5-gmp php8.5-intl \
-      php8.5-mbstring php8.5-zip php8.5-sqlite3 \
+      php8.5-mbstring php8.5-zip php8.5-sqlite3 php8.5-gd \
  && php -v && php-cgi8.5 -v
 
 # native-deps: the libraries rhp links (keep in sync with that action).
@@ -27,7 +27,7 @@ RUN apt-get install -y --no-install-recommends \
       libpcre2-dev libxml2-dev libicu-dev libssl-dev libjitterentropy3-dev \
       zlib1g-dev libzstd-dev libcurl4-openssl-dev \
       libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
-      libpsl-dev librtmp-dev libssh-dev libssh2-1-dev libzip-dev libgmp-dev \
+      libpsl-dev librtmp-dev libssh-dev libssh2-1-dev libzip-dev libgd-dev libgmp-dev \
       libsqlite3-dev
 
 # The releases php links that the distro has no -dev package of (PCRE2, libxml2).

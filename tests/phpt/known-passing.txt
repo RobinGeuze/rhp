@@ -12799,6 +12799,7 @@ ext/standard/tests/http/request_parse_body/urlencoded.phpt
 ext/standard/tests/image/bug13213.phpt
 ext/standard/tests/image/bug67250.phpt
 ext/standard/tests/image/bug70052.phpt
+ext/standard/tests/image/bug70096.phpt
 ext/standard/tests/image/bug71848.phpt
 ext/standard/tests/image/bug72278.phpt
 ext/standard/tests/image/bug75708.phpt

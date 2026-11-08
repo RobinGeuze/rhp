@@ -31,8 +31,9 @@ impl Sapi for Body {
         true
     }
 
-    fn send_headers(&mut self, r: &rhp_builtins::main::sapi::Response) {
+    fn send_headers(&mut self, r: &rhp_builtins::main::sapi::Response) -> bool {
         *self.1.borrow_mut() = r.code;
+        true
     }
 }
 

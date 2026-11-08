@@ -42,3 +42,10 @@ echo "\n";
 foreach (new H as $k => $x) echo "$k=$x ";
 echo "\n";
 print_r(get_object_vars($g));
+
+// Reflection's <iterateable> follows the inherited iterator too.
+class P { private $x { get => 1; } }
+class Q extends P {}
+foreach (['F', 'G', 'H', 'P', 'Q'] as $c) {
+    echo $c, ': ', str_contains((string) new ReflectionClass($c), '<iterateable>') ? 'iterateable' : '-', "\n";
+}

@@ -620,6 +620,19 @@ impl Vm {
                             Ok(Callee::Closure(cd))
                         } else if let Some(c) = self.closure_std_method(cd, m.as_bytes()) {
                             Ok(c)
+                        } else if let Some(pm) = self
+                            .closure_class()
+                            .and_then(|c| self.lookup_method(c, &m.as_bytes().to_ascii_lowercase()))
+                            .filter(|pm| pm.visibility == Visibility::Private)
+                        {
+                            // zend_std_get_method finds Closure's private
+                            // constructor.
+                            Err([
+                                &b"cannot access private method Closure::"[..],
+                                pm.proto.name.as_bytes(),
+                                b"()",
+                            ]
+                            .concat())
                         } else {
                             Err([
                                 &b"class Closure does not have a method \""[..],

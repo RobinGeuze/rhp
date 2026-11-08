@@ -1386,6 +1386,20 @@ impl Vm {
                 r
             }
             b"__invoke" => self.call_callable_value(closure, args),
+            // zend_bad_method_call on Closure's private constructor.
+            b"__construct" => {
+                let from = match self.stack.last().and_then(|f| f.defining_class) {
+                    Some(c) => format!(
+                        "scope {}",
+                        String::from_utf8_lossy(self.class(c).name.as_bytes())
+                    ),
+                    None => "global scope".to_string(),
+                };
+                Err(Thrown::error(
+                    "Error",
+                    format!("Call to private method Closure::__construct() from {from}"),
+                ))
+            }
             _ => Err(Thrown::error(
                 "Error",
                 format!(

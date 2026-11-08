@@ -240,6 +240,12 @@ impl Vm {
             // frame (its scope and `$this`), deprecations included.
             let callable = needs_callable_check(&ty.kinds, &cur);
             let checked = if callable {
+                // zend_is_callable_check_class autoloads the named class; a
+                // throwing autoloader's exception is what the caller sees
+                // (zend_argument_error_variadic adds none on top).
+                if let Err(t) = self.autoload_callable_class(&cur) {
+                    return Err((i, t));
+                }
                 // A prelude function checks it as php's zpp does, in the
                 // scope of the innermost user frame (its caller).
                 let (scope, called, this) = if proto.is_internal() {
@@ -395,6 +401,9 @@ impl Vm {
             .count();
         for (n, (k, v)) in items.into_iter().enumerate() {
             let cur = deref(&v);
+            if needs_callable_check(&ty.kinds, &cur) {
+                self.autoload_callable_class(&cur)?;
+            }
             match self.check_one(&cur, ty, strict, ctx) {
                 Ok(None) => {}
                 Ok(Some(coerced)) => {
@@ -645,7 +654,12 @@ impl Vm {
         // zend_is_callable runs in the returning frame: its scope and
         // `$this` (an instance method named without an object is callable),
         // deprecations included.
+        let mut autoload_thrown = None;
         let r = if needs_callable_check(&checked.kinds, &v) {
+            // zend_is_callable_check_class autoloads the named class.
+            if let Err(t) = self.autoload_callable_class(&v) {
+                autoload_thrown = Some(t);
+            }
             let this = self.current_this(top);
             let saved = self
                 .fcc_scope
@@ -663,6 +677,9 @@ impl Vm {
         } else {
             self.check_one(&v, checked, strict, ctx)
         };
+        if let (Some(t), Ok(_)) = (&autoload_thrown, &r) {
+            return Err(t.clone());
+        }
         match r {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => {
@@ -672,7 +689,7 @@ impl Vm {
             Err(()) => {
                 let fname = self.func_display_name(proto, ctx);
                 let called = self.stack[top].called_class;
-                Err(Thrown::error(
+                let e = Thrown::error(
                     "TypeError",
                     format!(
                         "{}(): Return value must be of type {}, {} returned",
@@ -680,7 +697,13 @@ impl Vm {
                         self.type_string_resolved(ty, ctx, called),
                         rhp_builtins::zval_value_name(self, &deref(&v)),
                     ),
-                ))
+                );
+                // zend_type_error with the autoloader's exception pending
+                // chains it as the TypeError's previous.
+                Err(match autoload_thrown {
+                    Some(t) => self.chain_thrown(e, t),
+                    None => e,
+                })
             }
         }
     }

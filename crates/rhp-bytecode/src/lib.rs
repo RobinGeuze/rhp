@@ -1267,6 +1267,10 @@ pub struct ParamInfo {
     /// The default is a constant reference (`= PHP_EOL`, `= self::X`): its
     /// name, for `getDefaultValueConstantName()`.
     pub default_const: Option<PhpStr>,
+    /// A default php keeps as a constant AST (not folded at compile time),
+    /// as zend_ast_export prints it: `ReflectionParameter::__toString()`
+    /// shows this text instead of the value.
+    pub default_text: Option<PhpStr>,
 }
 
 /// A compiled `#[Name(args)]` attribute (Reflection metadata only).

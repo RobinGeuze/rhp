@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<psalm errorLevel="1" cacheDirectory="var/psalm-big-parser" findUnusedBaselineEntry="false" findUnusedCode="false" xmlns="https://getpsalm.org/schema/config">
+    <projectFiles>
+        <directory name="vendor/nikic/php-parser/lib" />
+    </projectFiles>
+</psalm>

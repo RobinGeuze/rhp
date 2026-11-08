@@ -9,6 +9,7 @@ state = [
     "storage/framework/cache",
     "storage/framework/sessions",
     "storage/logs",
+    "storage/app/private",
     "bootstrap/cache",
 ]
 
@@ -31,6 +32,12 @@ tokens = [
     # session files; a 419 stores a token no response shows
     '"_token":"([A-Za-z0-9]+)"',
 ]
+
+# `debug`: APP_DEBUG=true (the environment wins over .env), so the throwing
+# route prints Laravel's exception page.
+[[pass]]
+name = "debug"
+env = { APP_DEBUG = "true" }
 
 [[request]]
 id = "home"
@@ -86,3 +93,90 @@ method = "POST"
 path = "/submit"
 status = 200
 body = "_token={cookie-plain:XSRF-TOKEN}&list[]=a&list[]=b"
+
+[[request]]
+id = "components"
+path = "/components"
+status = 200
+
+[[request]]
+id = "js"
+path = "/js"
+status = 200
+
+[[request]]
+id = "api-chars"
+path = "/api/chars"
+status = 200
+
+[[request]]
+id = "queue"
+path = "/queue"
+status = 200
+
+[[request]]
+id = "period"
+path = "/period"
+status = 200
+
+# Rule::enum: GET the form (the session remembers it as the previous URL),
+# POST a bad value (302 back, errors and old input flashed), GET it again,
+# then POST a good value.
+[[request]]
+id = "enum-form"
+flow = "enum"
+path = "/enum"
+status = 200
+
+[[request]]
+id = "enum-bad"
+flow = "enum"
+method = "POST"
+path = "/enum"
+body = "suit=clubs&note=too+long"
+status = 302
+
+[[request]]
+id = "enum-errors"
+flow = "enum"
+path = "/enum"
+status = 200
+
+[[request]]
+id = "enum-ok"
+flow = "enum"
+method = "POST"
+path = "/enum"
+body = "suit=hearts"
+status = 200
+
+[[request]]
+id = "upload"
+method = "POST"
+path = "/upload"
+content_type = "multipart/form-data; boundary=XyZ"
+body = "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nmy é doc\r\n--XyZ\r\nContent-Disposition: form-data; name=\"tags[]\"\r\n\r\na\r\n--XyZ\r\nContent-Disposition: form-data; name=\"tags[]\"\r\n\r\nb\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a b.txt\"\r\nContent-Type: text/plain\r\n\r\nhello upload\nline2\r\n--XyZ--\r\n"
+status = 200
+
+[[request]]
+id = "upload-mime"
+method = "POST"
+path = "/upload-mime"
+content_type = "multipart/form-data; boundary=XyZ"
+body = "--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"p.txt\"\r\nContent-Type: image/png\r\n\r\n<?php echo 1;\n\r\n--XyZ--\r\n"
+status = 200
+
+[[request]]
+id = "number"
+path = "/number"
+status = 200
+
+[[request]]
+id = "storage"
+path = "/storage"
+status = 200
+
+[[request]]
+id = "boom"
+path = "/boom"
+status = 500

@@ -24,6 +24,104 @@ ini = []
 # crosses a boundary would see php's and rhp's differ.
 tokens = ['"nonce":"([0-9a-f]{10})"']
 
+# Values WordPress derives from the clock or from random numbers.
+# The user-settings cookie holds the time it was set.
+[[mask]]
+name = "wp-settings-time"
+pattern = 'wp-settings-time-(\d+)=\d+'
+replace = "wp-settings-time-$1=<TIME>"
+in = ["headers", "body"]
+
+# Auth cookies: `user|expiry|session token|hmac`.
+[[mask]]
+name = "auth-cookie"
+pattern = '(wordpress_(?:sec_|logged_in_)?[0-9a-f]{32}=[^%;]+%7C)\d+%7C[A-Za-z0-9]+%7C[0-9a-f]{64}'
+replace = "$1<EXPIRY>%7C<SESSION>%7C<HMAC>"
+in = ["headers"]
+
+# wpdb's placeholder escape: `{<sha256 of a random salt>}` around `%`.
+[[mask]]
+name = "wpdb-placeholder"
+pattern = '\{[0-9a-f]{64}\}'
+replace = "{PH}"
+in = ["body"]
+
+# The clock in wp-admin: user settings, the post lock, the time and format
+# previews (options-general.php), Site Health's times, the comment list's
+# page timestamp, cron's "overdue by" note.
+[[mask]]
+name = "user-settings-time"
+pattern = '(var userSettings = \{[^}]*"time":")\d+'
+replace = "$1<TIME>"
+
+[[mask]]
+name = "post-lock"
+pattern = '("activePostLock":")\d+'
+replace = "$1<TIME>"
+
+[[mask]]
+name = "time-previews"
+pattern = '((?:Universal|Local) time is <code>|<span class="date-time-text format-i18n">|<span class="example">)[^<]+'
+replace = "$1<NOW>"
+
+[[mask]]
+name = "site-health-time"
+pattern = '((?m)^(?:current|utc-time|server-time): |<th scope="row">Current (?:UTC |Server )?time</th><td>)[^<\n]+'
+replace = "$1<NOW>"
+
+[[mask]]
+name = "pagegen-timestamp"
+pattern = '(name="pagegen_timestamp" value=")[^"]+'
+replace = "$1<NOW>"
+
+[[mask]]
+name = "cron-overdue"
+pattern = '(overdue by )\d+ \w+'
+replace = "$1<N>"
+
+# Random values: the embed secret and share-tab ids, antispambot()'s mix of
+# entities in mailto links, the suggested password on profile.php, the
+# comment moderation hash (it hashes the comment's time).
+[[mask]]
+name = "embed-secret"
+pattern = 'secret=(&quot;|\\"|\\\\&quot;)?[A-Za-z0-9]{10}'
+replace = "secret=$1<SECRET>"
+
+[[mask]]
+name = "embed-share-id"
+pattern = 'wp-embed-share-(tab|description)-(wordpress|html)-(\d+)-\d+'
+replace = "wp-embed-share-$1-$2-$3-<RAND>"
+
+[[mask]]
+name = "antispambot"
+pattern = '(<a href="mailto:)[^"]*(">)[^<]*(</a>)'
+replace = "$1<EMAIL>$2<EMAIL>$3"
+
+[[mask]]
+name = "data-pw"
+pattern = 'data-pw="[^"]*"'
+replace = 'data-pw="<PW>"'
+
+[[mask]]
+name = "moderation-hash"
+pattern = 'moderation-hash=[0-9a-f]+'
+replace = "moderation-hash=<HASH>"
+in = ["headers"]
+
+# In the database dump: Unix times (cron, transients, edit locks, session
+# expiry) and the session tokens a login stores.
+[[mask]]
+name = "db-epoch"
+pattern = '(?<![0-9])1[789]\d{8}(?![0-9])'
+replace = "<EPOCH>"
+in = ["files"]
+
+[[mask]]
+name = "db-session-token"
+pattern = 's:64:"[0-9a-f]{64}"'
+replace = 's:64:"<SESSION>"'
+in = ["files"]
+
 [[request]]
 id = "home"
 path = "/"
@@ -69,3 +167,313 @@ status = 200
 id = "not-found"
 path = "/nope/"
 status = 404
+
+# The wide corpus: archives, search, feeds, embeds, the REST API, sitemaps,
+# login, xmlrpc, comments, admin-ajax and wp-admin screens (logged in with
+# the X-Rhp-User mu-plugin that setup.php installs).
+
+[[request]]
+id = "search"
+path = "/?s=hello"
+status = 200
+
+[[request]]
+id = "category"
+path = "/category/uncategorized/"
+status = 200
+
+[[request]]
+id = "date-archive"
+path = "/2026/01/"
+status = 200
+
+[[request]]
+id = "author"
+path = "/author/admin/"
+status = 200
+
+[[request]]
+id = "comments-feed"
+path = "/comments/feed/"
+status = 200
+
+[[request]]
+id = "atom"
+path = "/feed/atom/"
+status = 200
+
+[[request]]
+id = "post-feed"
+path = "/hello-world/feed/"
+status = 200
+
+[[request]]
+id = "embed"
+path = "/hello-world/embed/"
+status = 200
+
+[[request]]
+id = "rest-pages"
+path = "/wp-json/wp/v2/pages"
+status = 200
+
+[[request]]
+id = "rest-users"
+path = "/wp-json/wp/v2/users"
+status = 200
+
+[[request]]
+id = "rest-cats"
+path = "/wp-json/wp/v2/categories"
+status = 200
+
+[[request]]
+id = "rest-types"
+path = "/wp-json/wp/v2/types"
+status = 200
+
+[[request]]
+id = "rest-post-embed"
+path = "/wp-json/wp/v2/posts/1?_embed=1"
+status = 200
+
+[[request]]
+id = "rest-comments"
+path = "/wp-json/wp/v2/comments"
+status = 200
+
+[[request]]
+id = "rest-404"
+path = "/wp-json/wp/v2/posts/999"
+status = 404
+
+[[request]]
+id = "rest-oembed"
+path = "/wp-json/oembed/1.0/embed?url=http%3A%2F%2Flocalhost%2Fhello-world%2F"
+status = 200
+
+[[request]]
+id = "rest-plain"
+path = "/?rest_route=/wp/v2/search&search=world"
+status = 200
+
+[[request]]
+id = "robots"
+path = "/robots.txt"
+status = 200
+
+[[request]]
+id = "sitemap"
+path = "/wp-sitemap.xml"
+status = 200
+
+[[request]]
+id = "sitemap-posts"
+path = "/wp-sitemap-posts-post-1.xml"
+status = 200
+
+[[request]]
+id = "sitemap-xsl"
+path = "/wp-sitemap.xsl"
+status = 200
+
+[[request]]
+id = "lostpassword"
+path = "/wp-login.php?action=lostpassword"
+status = 200
+
+[[request]]
+id = "register-closed"
+path = "/wp-login.php?action=register"
+status = 302
+
+[[request]]
+id = "admin-redirect"
+path = "/wp-admin/"
+status = 302
+
+[[request]]
+id = "admin-dashboard"
+# The directory index, as a web server serves it (`/wp-admin/` itself goes
+# to the front controller, which redirects: admin-redirect).
+path = "/wp-admin/index.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-edit"
+path = "/wp-admin/edit.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-edit-page"
+path = "/wp-admin/edit.php?post_type=page"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-post-edit"
+path = "/wp-admin/post.php?post=1&action=edit"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-options"
+path = "/wp-admin/options-general.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-permalink"
+path = "/wp-admin/options-permalink.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-plugins"
+path = "/wp-admin/plugins.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-themes"
+path = "/wp-admin/themes.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-users"
+path = "/wp-admin/users.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-profile"
+path = "/wp-admin/profile.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-comments"
+path = "/wp-admin/edit-comments.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-upload"
+path = "/wp-admin/upload.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-tags"
+path = "/wp-admin/edit-tags.php?taxonomy=category"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-tools"
+path = "/wp-admin/tools.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-site-editor"
+path = "/wp-admin/site-editor.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-health"
+path = "/wp-admin/site-health.php?tab=debug"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-about"
+path = "/wp-admin/about.php"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-sqlite"
+path = "/wp-admin/options-general.php?page=sqlite-integration"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "admin-load-styles"
+path = "/wp-admin/load-styles.php?c=0&dir=ltr&load%5Bchunk_0%5D=dashicons,admin-bar,common,forms"
+status = 200
+
+[[request]]
+id = "admin-load-scripts"
+path = "/wp-admin/load-scripts.php?c=0&load%5Bchunk_0%5D=jquery-core,jquery-migrate,utils"
+status = 200
+
+[[request]]
+id = "home-logged-in"
+path = "/"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "rest-me"
+path = "/wp-json/wp/v2/users/me?context=edit"
+status = 200
+headers = ["X-Rhp-User: 1"]
+
+[[request]]
+id = "login-bad"
+method = "POST"
+path = "/wp-login.php"
+headers = ["Cookie: wordpress_test_cookie=WP%20Cookie%20check"]
+content_type = "application/x-www-form-urlencoded"
+body = "log=admin&pwd=wrong&wp-submit=Log+In&testcookie=1"
+status = 200
+
+[[request]]
+id = "login-ok"
+method = "POST"
+path = "/wp-login.php"
+headers = ["Cookie: wordpress_test_cookie=WP%20Cookie%20check"]
+content_type = "application/x-www-form-urlencoded"
+body = "log=admin&pwd=rhp-fixture-password&wp-submit=Log+In&testcookie=1&redirect_to=%2Fwp-admin%2F"
+status = 302
+
+[[request]]
+id = "xmlrpc-methods"
+method = "POST"
+path = "/xmlrpc.php"
+content_type = "text/xml"
+body = "<?xml version=\"1.0\"?><methodCall><methodName>system.listMethods</methodName><params></params></methodCall>"
+status = 200
+
+[[request]]
+id = "xmlrpc-getposts"
+method = "POST"
+path = "/xmlrpc.php"
+content_type = "text/xml"
+body = "<?xml version=\"1.0\"?><methodCall><methodName>wp.getPosts</methodName><params><param><value><int>1</int></value></param><param><value><string>admin</string></value></param><param><value><string>rhp-fixture-password</string></value></param></params></methodCall>"
+status = 200
+
+[[request]]
+id = "comment-post"
+method = "POST"
+path = "/wp-comments-post.php"
+content_type = "application/x-www-form-urlencoded"
+body = "comment=Hello+there&author=Ann&email=ann%40example.com&url=&comment_post_ID=1&comment_parent=0"
+status = 302
+# Not in the warm-up run, or the database would already hold this comment
+# and both engines would answer 409 (duplicate comment).
+warmup = false
+
+[[request]]
+id = "ajax-heartbeat"
+method = "POST"
+path = "/wp-admin/admin-ajax.php"
+headers = ["X-Rhp-User: 1"]
+content_type = "application/x-www-form-urlencoded"
+body = "action=heartbeat&interval=60&_nonce=x&screen_id=dashboard"
+status = 200

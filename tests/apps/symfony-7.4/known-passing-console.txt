@@ -1,0 +1,35 @@
+# Console commands of symfony-7.4 that answer under rhp exactly as under php
+# (`python3 tests/apps/apps.py console`). Regenerate with --write-known.
+about
+assets-install-public
+cache-clear
+cache-pool-clear-cache.app
+cache-pool-list
+cache-warmup
+completion-bash
+config-dump-reference-framework
+config-dump-reference-twig
+debug-autowiring
+debug-config-framework
+debug-config-twig
+debug-container
+debug-container-json-router
+debug-container-parameters
+debug-container-router
+debug-container-tags
+debug-dotenv
+debug-event-dispatcher
+debug-router
+debug-router-hello
+debug-translation-en
+debug-twig
+help-cache-clear
+lint-container
+lint-twig-templates
+lint-yaml-config
+list
+list-json
+list-xml
+router-match-hellox
+secrets-list
+version

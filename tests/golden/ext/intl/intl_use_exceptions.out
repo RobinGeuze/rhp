@@ -1,0 +1,135 @@
+== error_level=0 use_exceptions=0
+bool(false)
+10 grapheme_substr(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND
+bool(false)
+10 normalizer_is_normalized(): Error converting string to UTF-16.: U_INVALID_CHAR_FOUND
+NULL
+1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+bool(false)
+1 grapheme_extract(): start not contained in string: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+16 numfmt_create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+NULL
+16 NumberFormatter::create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+NULL
+1 collator_create(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+NULL
+1 Locale::getRegion(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+bool(false)
+1 Locale::composeLocale(): parameter array element is not a string: U_ILLEGAL_ARGUMENT_ERROR
+bool(false)
+1 NumberFormatter::getSymbol(): invalid symbol value: U_ILLEGAL_ARGUMENT_ERROR
+== error_level=0 use_exceptions=1
+IntlException: grapheme_substr(): Error converting input string to UTF-16 (0)
+10 grapheme_substr(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND
+IntlException: normalizer_is_normalized(): Error converting string to UTF-16. (0)
+10 normalizer_is_normalized(): Error converting string to UTF-16.: U_INVALID_CHAR_FOUND
+IntlException: normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long. (0)
+1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: grapheme_extract(): start not contained in string (0)
+1 grapheme_extract(): start not contained in string: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: numfmt_create(): number formatter creation failed (0)
+16 numfmt_create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+IntlException: NumberFormatter::create(): number formatter creation failed (0)
+16 NumberFormatter::create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+IntlException: collator_create(): Locale string too long, should be no longer than 156 characters (0)
+1 collator_create(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: Locale::getRegion(): Locale string too long, should be no longer than 156 characters (0)
+1 Locale::getRegion(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: Locale::composeLocale(): parameter array element is not a string (0)
+1 Locale::composeLocale(): parameter array element is not a string: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: NumberFormatter::getSymbol(): invalid symbol value (0)
+1 NumberFormatter::getSymbol(): invalid symbol value: U_ILLEGAL_ARGUMENT_ERROR
+== error_level=2 use_exceptions=0
+
+Deprecated: ini_set(): Using a value different than 0 for intl.error_level is deprecated, as the intl.error_level INI setting is deprecated. Instead the intl.use_exceptions INI setting should be enabled to throw exceptions on errors or intl_get_error_code()/intl_get_error_message() should be used to manually deal with errors in F on line 19
+
+Warning: grapheme_substr(): Error converting input string to UTF-16 in F on line 6
+bool(false)
+10 grapheme_substr(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND
+
+Warning: normalizer_is_normalized(): Error converting string to UTF-16. in F on line 7
+bool(false)
+10 normalizer_is_normalized(): Error converting string to UTF-16.: U_INVALID_CHAR_FOUND
+
+Warning: normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long. in F on line 8
+NULL
+1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: grapheme_extract(): start not contained in string in F on line 9
+bool(false)
+1 grapheme_extract(): start not contained in string: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: numfmt_create(): number formatter creation failed in F on line 10
+NULL
+16 numfmt_create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+
+Warning: NumberFormatter::create(): number formatter creation failed in F on line 11
+NULL
+16 NumberFormatter::create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+
+Warning: collator_create(): Locale string too long, should be no longer than 156 characters in F on line 12
+NULL
+1 collator_create(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: Locale::getRegion(): Locale string too long, should be no longer than 156 characters in F on line 13
+NULL
+1 Locale::getRegion(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: Locale::composeLocale(): parameter array element is not a string in F on line 14
+bool(false)
+1 Locale::composeLocale(): parameter array element is not a string: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: NumberFormatter::getSymbol(): invalid symbol value in F on line 15
+bool(false)
+1 NumberFormatter::getSymbol(): invalid symbol value: U_ILLEGAL_ARGUMENT_ERROR
+== error_level=2 use_exceptions=1
+
+Deprecated: ini_set(): Using a value different than 0 for intl.error_level is deprecated, as the intl.error_level INI setting is deprecated. Instead the intl.use_exceptions INI setting should be enabled to throw exceptions on errors or intl_get_error_code()/intl_get_error_message() should be used to manually deal with errors in F on line 19
+
+Warning: grapheme_substr(): Error converting input string to UTF-16 in F on line 6
+IntlException: grapheme_substr(): Error converting input string to UTF-16 (0)
+10 grapheme_substr(): Error converting input string to UTF-16: U_INVALID_CHAR_FOUND
+
+Warning: normalizer_is_normalized(): Error converting string to UTF-16. in F on line 7
+IntlException: normalizer_is_normalized(): Error converting string to UTF-16. (0)
+10 normalizer_is_normalized(): Error converting string to UTF-16.: U_INVALID_CHAR_FOUND
+
+Warning: normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long. in F on line 8
+IntlException: normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long. (0)
+1 normalizer_get_raw_decomposition(): Input string must be exactly one UTF-8 encoded code point long.: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: grapheme_extract(): start not contained in string in F on line 9
+IntlException: grapheme_extract(): start not contained in string (0)
+1 grapheme_extract(): start not contained in string: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: numfmt_create(): number formatter creation failed in F on line 10
+IntlException: numfmt_create(): number formatter creation failed (0)
+16 numfmt_create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+
+Warning: NumberFormatter::create(): number formatter creation failed in F on line 11
+IntlException: NumberFormatter::create(): number formatter creation failed (0)
+16 NumberFormatter::create(): number formatter creation failed: U_UNSUPPORTED_ERROR
+
+Warning: collator_create(): Locale string too long, should be no longer than 156 characters in F on line 12
+IntlException: collator_create(): Locale string too long, should be no longer than 156 characters (0)
+1 collator_create(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: Locale::getRegion(): Locale string too long, should be no longer than 156 characters in F on line 13
+IntlException: Locale::getRegion(): Locale string too long, should be no longer than 156 characters (0)
+1 Locale::getRegion(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: Locale::composeLocale(): parameter array element is not a string in F on line 14
+IntlException: Locale::composeLocale(): parameter array element is not a string (0)
+1 Locale::composeLocale(): parameter array element is not a string: U_ILLEGAL_ARGUMENT_ERROR
+
+Warning: NumberFormatter::getSymbol(): invalid symbol value in F on line 15
+IntlException: NumberFormatter::getSymbol(): invalid symbol value (0)
+1 NumberFormatter::getSymbol(): invalid symbol value: U_ILLEGAL_ARGUMENT_ERROR
+IntlException: NumberFormatter::__construct(): number formatter creation failed
+NumberFormatter::__construct(): number formatter creation failed: U_UNSUPPORTED_ERROR
+IntlException: Collator::__construct(): Locale string too long, should be no longer than 156 characters
+Collator::__construct(): Locale string too long, should be no longer than 156 characters: U_ILLEGAL_ARGUMENT_ERROR
+string(9) "Exception"
+string(1) "0"
+string(1) "2"

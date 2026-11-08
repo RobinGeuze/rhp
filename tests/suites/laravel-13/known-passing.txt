@@ -1,0 +1,2 @@
+# Tests of this suite that pass under php and rhp (tests/suites/README.md).
+# One `Class::test` per line, sorted; regenerate with `suites.py compare --write-known`.

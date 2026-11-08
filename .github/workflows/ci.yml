@@ -355,7 +355,8 @@ jobs:
   # under php, then the compile-only ratchet: `rhp-difftest lint
   # --check-known` fails only on a file rhp newly refuses; listed files that
   # now compile are a notice, never a failure.
-  # Last, the request diff ratchet (`rhp-difftest app --check-known`).
+  # Then the request diff ratchet (`rhp-difftest app --check-known`) and
+  # the console battery ratchet (`apps.py console`).
   apps-lint:
     name: app ${{ matrix.app }}
     needs: [apps-matrix, build]
@@ -395,3 +396,62 @@ jobs:
       # request in known-passing-requests.txt stops answering like php-cgi.
       - name: Known requests still answer like php-cgi
         run: python3 tests/apps/apps.py diff ${{ matrix.app }}
+      # The console battery (console.toml) under php -n and rhp -n: fails
+      # only when a command in known-passing-console.txt stops matching php.
+      - name: Known console commands still match php
+        run: python3 tests/apps/apps.py console ${{ matrix.app }}
+
+  # The suite runner's own tests (TeamCity reader, comparison, manifest).
+  # The suites themselves run nightly (suites-nightly.yml).
+  suites-selftest:
+    name: suites runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m unittest discover -s tests/suites -p 'test_*.py' -v
+
+  # The dev tools (tests/apps/tools.py): PHPUnit, PHPStan, Psalm,
+  # PHP-CS-Fixer and Rector on the fixture project under php and rhp, every
+  # command printing what php prints. The big tier runs nightly
+  # (tools-nightly.yml).
+  dev-tools:
+    name: dev tools
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: actions/cache@v6
+        with:
+          path: tests/apps/tools/project/vendor
+          key: tools-vendor-${{ hashFiles('tests/apps/tools/project/composer.lock') }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+      - run: tar -xf release.tar
+      - name: The harness's own tests (masks, parallel-order compare)
+        run: python3 tests/apps/harness_test.py
+      - run: python3 tests/apps/tools.py setup
+      - run: python3 tests/apps/tools.py diff
+
+  # Composer (tests/apps/composer_diff.py) under php and rhp: its commands,
+  # the stream and ZipArchive transports, and installs of the Symfony and
+  # Laravel fixtures (plugins, auto-scripts). Needs packagist.org.
+  composer:
+    name: composer
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+      - run: tar -xf release.tar
+      - run: python3 tests/apps/composer_diff.py --work "$RUNNER_TEMP/composer-diff"

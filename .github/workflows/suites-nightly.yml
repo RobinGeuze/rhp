@@ -1,0 +1,96 @@
+name: suites nightly
+
+# The frameworks' own PHPUnit suites (tests/suites/suites.toml): each suite
+# runs under php, then under rhp, and `suites.py compare --check-known` fails
+# the job when a test on the suite's known-passing.txt passes under php but
+# not under rhp. The summary lists newly passing tests (the `passing.txt` in
+# the artifact is the list to commit) and why rhp fails the rest.
+
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      php_runs:
+        description: php runs per suite (more than one also reports tests unstable under php)
+        default: '1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      suites: ${{ steps.m.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: echo "suites=$(python3 tests/suites/suites.py matrix)" >> "$GITHUB_OUTPUT"
+
+  suite:
+    name: suite ${{ matrix.suite }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli
+      # The clone and vendor/, keyed on what pins them. Saved right after
+      # setup, before the tests write into the work dir.
+      - uses: actions/cache/restore@v6
+        id: work
+        with:
+          path: tests/suites/work/${{ matrix.suite }}
+          key: suites-work-${{ matrix.suite }}-${{ hashFiles('tests/suites/suites.toml', format('tests/suites/{0}/composer.*', matrix.suite)) }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/rhp-apps
+          key: suites-downloads-${{ hashFiles('tests/suites/suites.toml') }}
+      - name: Set up the suite
+        run: python3 tests/suites/suites.py setup ${{ matrix.suite }}
+      - uses: actions/cache/save@v6
+        if: steps.work.outputs.cache-hit != 'true'
+        with:
+          path: tests/suites/work/${{ matrix.suite }}
+          key: ${{ steps.work.outputs.cache-primary-key }}
+      - name: Run under php
+        env:
+          RUNS: ${{ inputs.php_runs || '1' }}
+        run: |
+          for i in $(seq 1 "$RUNS"); do
+            label=php; [ "$i" -gt 1 ] && label="php$i"
+            python3 tests/suites/suites.py run ${{ matrix.suite }} --engine php --label "$label" --out out
+          done
+      - name: Run under rhp
+        run: python3 tests/suites/suites.py run ${{ matrix.suite }} --engine rhp --out out
+      - name: Known-passing tests still pass
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          refs=()
+          for d in out/"$SUITE"/php*; do refs+=(--ref "$d"); done
+          python3 tests/suites/suites.py compare "$SUITE" "${refs[@]}" --cand out/"$SUITE"/rhp \
+            --check-known --write-known out/"$SUITE"/passing.txt --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: suite-${{ matrix.suite }}
+          path: |
+            out/
+            !out/**/home/
+            !out/**/tmp/
+          retention-days: 30

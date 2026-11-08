@@ -493,7 +493,7 @@ impl Vm {
     }
 
     /// The arguments frame `f` was called with, as a trace shows them.
-    fn frame_args_of(&self, f: &Frame) -> PhpArray {
+    pub(crate) fn frame_args_of(&self, f: &Frame) -> PhpArray {
         let mut args = PhpArray::new();
         let shown = |k: usize, v: Value| {
             if crate::attributes::param_is_sensitive(&f.proto, k) {

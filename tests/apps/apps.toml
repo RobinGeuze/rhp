@@ -19,6 +19,9 @@
 #   known_refused     the lint ratchet list
 #   known_requests    the request-diff ratchet (`rhp-difftest app`; corpus in
 #                     requests.toml next to it)
+#   console_list      the console battery (`apps.py console`; default
+#                     console.toml, format in console.py)
+#   known_console     its ratchet (default known-passing-console.txt)
 #   smoke             "METHOD PATH STATUS" requests checked under php -S
 #   router            false: php -S runs without a router script (it runs the
 #                     .php file a path names, else index.php); default true,
@@ -42,6 +45,8 @@ setup = ["php bin/console cache:warmup"]
 lint = ["vendor", "src", "config", "public"]
 known_refused = "known-refused.txt"
 known_requests = "known-passing-requests.txt"
+console_list = "console.toml"
+known_console = "known-passing-console.txt"
 smoke = [
     "GET / 200",
     "GET /hello/rhp 200",
@@ -63,6 +68,8 @@ setup = ["php bin/console cache:warmup"]
 lint = ["vendor", "src", "config", "public"]
 known_refused = "known-refused.txt"
 known_requests = "known-passing-requests.txt"
+console_list = "console.toml"
+known_console = "known-passing-console.txt"
 smoke = [
     "GET / 200",
     "GET /hello/rhp 200",
@@ -84,6 +91,8 @@ setup = ["php artisan package:discover"]
 lint = ["vendor", "app", "bootstrap", "config", "routes", "public"]
 known_refused = "known-refused.txt"
 known_requests = "known-passing-requests.txt"
+console_list = "console.toml"
+known_console = "known-passing-console.txt"
 smoke = [
     "GET / 200",
     "GET /hello/rhp 200",
@@ -107,6 +116,8 @@ setup = ["php setup.php"]
 lint = ["wordpress", "wp-config.php", "setup.php"]
 known_refused = "known-refused.txt"
 known_requests = "known-passing-requests.txt"
+console_list = "console.toml"
+known_console = "known-passing-console.txt"
 smoke = [
     "GET / 200",
     "GET /hello-world/ 200",

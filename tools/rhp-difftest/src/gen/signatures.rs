@@ -39,6 +39,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/curl", "curl"),
     ("ext/date", "date"),
     ("ext/dom", "dom"),
+    ("ext/fileinfo", "fileinfo"),
     ("ext/filter", "filter"),
     ("ext/gmp", "gmp"),
     ("ext/hash", "hash"),

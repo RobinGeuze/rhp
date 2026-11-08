@@ -1,0 +1,45 @@
+name: dev tools nightly
+
+# The big tier of tests/apps/tools.py: PHPStan, Psalm, Rector and
+# PHP-CS-Fixer on vendor code (symfony/console, nikic/php-parser), sequential
+# and parallel, and PHPUnit's synthetic suite with process isolation. Each
+# command takes minutes under rhp, too long for every PR. Fails when a
+# command does not print what php prints.
+
+on:
+  schedule:
+    - cron: '47 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tools-big:
+    name: dev tools (big tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli
+      - uses: actions/cache@v6
+        with:
+          path: tests/apps/tools/project/vendor
+          key: tools-vendor-${{ hashFiles('tests/apps/tools/project/composer.lock') }}
+      - run: python3 tests/apps/tools.py setup
+      - run: python3 tests/apps/tools.py diff --big
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tools-big-outputs
+          path: tests/apps/tools/work/*-out/
+          retention-days: 14

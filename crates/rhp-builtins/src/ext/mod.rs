@@ -10,6 +10,7 @@ pub mod ctype;
 pub mod curl;
 pub mod date;
 pub mod dom;
+pub mod fileinfo;
 pub mod filter;
 pub mod gmp;
 pub mod hash;
@@ -47,6 +48,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
     [
         curl::CLASSES,
         dom::CLASSES,
+        fileinfo::CLASSES,
         gmp::CLASSES,
         openssl::CLASSES,
         random::CLASSES,
@@ -58,6 +60,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
+        intl::CLASSES,
         pdo::CLASSES,
         date::CLASSES,
     ]
@@ -217,7 +220,7 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             cli_only: false,
             functions: intl::register,
             constants: intl::constants,
-            prelude_php: intl::PRELUDE_PHP,
+            prelude_php: intl::prelude(),
             wrappers: no_wrappers,
             reset: intl::error_reset,
             object_freed: None,
@@ -380,6 +383,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: json::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "fileinfo",
+            cli_only: false,
+            functions: fileinfo::register,
+            constants: fileinfo::constants,
+            prelude_php: fileinfo::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {

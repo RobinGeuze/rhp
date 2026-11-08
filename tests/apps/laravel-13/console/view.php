@@ -1,0 +1,11 @@
+<?php require __DIR__.'/boot.php';
+use Illuminate\Support\Facades\{Blade, View};
+@mkdir(resource_path('views/components'), 0777, true);
+file_put_contents(resource_path('views/components/card.blade.php'), "@props(['title' => 'Default', 'type' => 'info'])\n<div {{ \$attributes->merge(['class' => 'card card-'.\$type])->class(['active' => \$type === 'warn']) }}>\n<h2>{{ \$title }}</h2>\n@isset(\$header)<header>{{ \$header }}</header>@endisset\n{{ \$slot }}\n</div>\n");
+file_put_contents(resource_path('views/layout.blade.php'), "<html><title>@yield('title', 'X')</title>@stack('scripts')<body>@section('sidebar')Main sidebar @show <main>@yield('content')</main></body></html>\n");
+file_put_contents(resource_path('views/page.blade.php'), "@extends('layout')\n@section('title', 'Page & co')\n@section('sidebar') @parent <p>extra</p> @endsection\n@push('scripts')<script>1</script>@endpush\n@section('content')\n@foreach(\$items as \$i) {{ \$loop->iteration }}/{{ \$loop->count }}:{{ \$i }}@if(\$loop->last).@else,@endif @endforeach\n@forelse([] as \$x) x @empty empty @endforelse\n@php \$n = count(\$items) * 2; @endphp {{ \$n }}\n@json(['a' => '<b>', 'c' => 1.5])\n<p @class(['p-4', 'font-bold' => true, 'x' => false])></p>\n<x-card title=\"Hi\" type=\"warn\" class=\"mt-4\" data-id=\"7\"><x-slot:header class=\"h\">Head</x-slot:header>Body {{ '<i>' }} {!! '<i>raw</i>' !!}</x-card>\n@verbatim {{ notcompiled }} @endverbatim\n@switch(\$n) @case(6) six @break @default other @endswitch\n@unless(false) unless @endunless {{ __('auth.failed') }} {{ trans_choice('{0} none|{1} one|[2,*] many', 3) }}\n@error('email') <span>{{ \$message }}</span> @enderror\n@checked(true) @selected(false) @disabled(true)\n@endsection\n");
+section('page', fn() => view('page', ['items' => ['a', 'b', 'c']])->withErrors(['email' => 'Bad email'])->render());
+section('blade-string', fn() => Blade::render('Hello {{ $name }} @if($n > 1) many @endif {{ number_format($n, 2) }}', ['name' => '<World>', 'n' => 1234.5]));
+section('compiled', fn() => Blade::compileString("@foreach(\$a as \$b) {{ \$b }} @endforeach <x-card :title=\"\$t\" />"));
+section('welcome', fn() => strlen(view('welcome')->render()));
+section('anon-component', fn() => Blade::render('<x-card>slot</x-card>'));

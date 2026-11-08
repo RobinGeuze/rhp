@@ -4,7 +4,7 @@
 use rhp_values::Value;
 
 use super::sys::{self, UChar, UErrorCode, UNormalizer2};
-use super::{error_reset, error_set, error_set_code, error_set_msg, utf16_to_utf8, utf8_to_utf16};
+use super::{error_reset, error_set_code, utf16_to_utf8, utf8_to_utf16};
 use crate::zend::zpp::{int_arg_or, str_arg, value_error};
 use crate::{Host, Thrown};
 
@@ -106,7 +106,7 @@ fn normalize(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thro
     let uinput = match utf8_to_utf16(&input) {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting input string to UTF-16");
+            super::error::set(host, f, st, "Error converting input string to UTF-16")?;
             return Ok(Value::Bool(false));
         }
     };
@@ -123,7 +123,7 @@ fn normalize(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thro
         && status != sys::U_BUFFER_OVERFLOW_ERROR
         && status != sys::U_STRING_NOT_TERMINATED_WARNING
     {
-        error_set_msg(f, "Error normalizing string");
+        super::error::set_custom_msg(host, f, "Error normalizing string")?;
         return Ok(Value::Bool(false));
     }
     if needed as i64 > cap as i64 {
@@ -136,14 +136,14 @@ fn normalize(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, Thro
         status = sys::U_ZERO_ERROR;
         needed = normalize_into(form, &uinput, &mut buf[..cap], &mut status);
         if sys::failure(status) {
-            error_set_msg(f, "Error normalizing string");
+            super::error::set_custom_msg(host, f, "Error normalizing string")?;
             return Ok(Value::Bool(false));
         }
     }
     match utf16_to_utf8(&buf[..needed as usize]) {
         Ok(s) => Ok(Value::str(s)),
         Err(st) => {
-            error_set(f, st, "error converting normalized text UTF-8");
+            super::error::set(host, f, st, "error converting normalized text UTF-8")?;
             Ok(Value::Bool(false))
         }
     }
@@ -158,7 +158,7 @@ fn is_normalized(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, 
     let uinput = match utf8_to_utf16(&input) {
         Ok(u) => u,
         Err(st) => {
-            error_set(f, st, "Error converting string to UTF-16.");
+            super::error::set(host, f, st, "Error converting string to UTF-16.")?;
             return Ok(Value::Bool(false));
         }
     };
@@ -170,10 +170,11 @@ fn is_normalized(host: &mut dyn Host, args: &[Value], f: &str) -> Result<Value, 
             sys::unorm2_isNormalized(norm, uinput.as_ptr(), uinput.len() as i32, &mut status)
         } != 0;
     if sys::failure(status) {
-        error_set_msg(
+        super::error::set_custom_msg(
+            host,
             f,
             "Error testing if string is the given normalization form.",
-        );
+        )?;
         return Ok(Value::Bool(false));
     }
     Ok(Value::Bool(normalized))
@@ -188,10 +189,11 @@ fn get_raw_decomposition(host: &mut dyn Host, args: &[Value], f: &str) -> Result
     // empty input reads its terminating NUL, one byte past the end.
     if input.is_empty() || super::grapheme::u8_fwd_1(&input, 0) != input.len() {
         error_set_code(sys::U_ILLEGAL_ARGUMENT_ERROR);
-        error_set_msg(
+        super::error::set_custom_msg(
+            host,
             f,
             "Input string must be exactly one UTF-8 encoded code point long.",
-        );
+        )?;
         return Ok(Value::Null);
     }
     // An ill-formed sequence decodes to U_SENTINEL (-1).
@@ -200,7 +202,7 @@ fn get_raw_decomposition(host: &mut dyn Host, args: &[Value], f: &str) -> Result
         .and_then(|t| t.chars().next())
     else {
         error_set_code(sys::U_ILLEGAL_ARGUMENT_ERROR);
-        error_set_msg(f, "Code point out of range");
+        super::error::set_custom_msg(host, f, "Code point out of range")?;
         return Ok(Value::Null);
     };
     let mut buf: [UChar; 32] = [0; 32];

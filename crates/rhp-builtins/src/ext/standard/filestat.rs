@@ -548,32 +548,31 @@ fn fn_touch(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             return Ok(Value::Bool(false));
         }
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    // mtime: given or now; atime: given or the (effective) mtime — php's rule.
+    // No times given: utimes(NULL), the kernel's now (php's newtime = NULL).
+    // mtime given: atime defaults to it (atime alone is rejected above).
     let given = |i: usize| {
         args.get(i)
             .map(deref)
             .filter(|v| !matches!(v, Value::Null))
             .map(|v| conv::to_int(&v))
     };
-    let mtime = given(1).unwrap_or(now);
-    let atime = given(2).unwrap_or(mtime);
+    let times = given(1).map(|mtime| {
+        let atime = given(2).unwrap_or(mtime);
+        [
+            libc::timeval {
+                tv_sec: atime as libc::time_t,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: mtime as libc::time_t,
+                tv_usec: 0,
+            },
+        ]
+    });
     let ok = match crate::zend::virtual_cwd::c_path(&path) {
         Some(c) => {
-            let times = [
-                libc::timeval {
-                    tv_sec: atime as libc::time_t,
-                    tv_usec: 0,
-                },
-                libc::timeval {
-                    tv_sec: mtime as libc::time_t,
-                    tv_usec: 0,
-                },
-            ];
-            unsafe { libc::utimes(c.as_ptr(), times.as_ptr()) == 0 }
+            let tp = times.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+            unsafe { libc::utimes(c.as_ptr(), tp) == 0 }
         }
         None => false,
     };

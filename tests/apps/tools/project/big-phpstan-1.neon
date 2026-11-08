@@ -1,0 +1,6 @@
+includes:
+    - big-phpstan.neon
+parameters:
+    tmpDir: var/phpstan-big-1
+    parallel:
+        maximumNumberOfProcesses: 1

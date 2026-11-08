@@ -72,7 +72,7 @@ Kinds:
 | `ext/gmp` | `RAND` | request | `gmp::reset_state` |
 | `ext/iconv/sys.rs` | `ERRNO` | request | `iconv::reset_state` |
 | `ext/iconv/sys.rs` | `THREAD_LOCALE` (a C.UTF-8 `locale_t`) | thread | — |
-| `ext/intl/mod.rs` | `ERR` (`intl_get_error_*`) | request | `intl::error_reset` |
+| `ext/intl/error.rs` | `ERR` (`intl_get_error_*`), `CTOR` (a constructor running) | request | `intl::error_reset` |
 | `ext/intl/grapheme.rs` | `GLOBAL` (break iterator, cloned per call) | thread | — |
 | `ext/libxml/mod.rs` | `STATE` (errors, stream context, entity loader) | request | `libxml::reset_state` |
 | `ext/libxml/mod.rs` | `INSTALLED` (php's handlers set on this thread) | thread | — |

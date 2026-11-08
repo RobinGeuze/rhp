@@ -1,15 +1,18 @@
 # Framework fixture apps
 
-Real, pinned framework applications that rhp is measured against: today a
-compile-only ratchet (`rhp-difftest lint`) and the request diff
-(`rhp-difftest app`: `rhp --cgi` against php-cgi).
+Real, pinned framework applications that rhp is measured against: a
+compile-only ratchet (`rhp-difftest lint`), the request diff
+(`rhp-difftest app`: `rhp --cgi` against php-cgi) and the console battery
+(`apps.py console`: `bin/console`, `artisan` and wp-cli under php and rhp).
 The pinned dev tools (PHPUnit, PHPStan, Psalm, PHP-CS-Fixer, Rector) are
 measured on their own fixture project by `tools.py`; see "Dev tools" below.
+The frameworks' own PHPUnit suites run nightly from `tests/suites/`
+(see its README).
 
 | app           | framework                                   | notes                                   |
 |---------------|---------------------------------------------|-----------------------------------------|
-| `symfony-7.4` | `symfony/skeleton` 7.4 + `symfony/twig-bundle`, all `symfony/*` at `7.4.*` | `APP_ENV=prod`, attribute routes in `src/Controller/HelloController.php` |
-| `symfony-8.1` | `symfony/skeleton` 8.1 + `symfony/twig-bundle`, all `symfony/*` at `8.1.*` | the `symfony-7.4` fixture (same `.env`, controller, templates and corpus) on Symfony 8 |
+| `symfony-7.4` | `symfony/skeleton` 7.4 + `symfony/twig-bundle` and `symfony/mime`, all `symfony/*` at `7.4.*` | `APP_ENV=prod`, attribute routes in `src/Controller/{Hello,Wide}Controller.php` |
+| `symfony-8.1` | `symfony/skeleton` 8.1 + `symfony/twig-bundle` and `symfony/mime`, all `symfony/*` at `8.1.*` | the `symfony-7.4` fixture (same `.env`, controller, templates and corpus) on Symfony 8 |
 | `laravel-13`  | `laravel/laravel` 13, every `symfony/*` component pinned to `7.4.*` | `APP_ENV=production`, `APP_DEBUG=false`, file session/cache, sync queue, no database |
 | `wordpress-7.1` | WordPress 7.1.4 (downloaded, not committed) + SQLite Database Integration 3.1.3 | SQLite database seeded by `setup.php`, pretty permalinks, cron and updates off; console: wp-cli 2.12.0 |
 
@@ -112,7 +115,23 @@ timestamps, the default widgets), so the corpus uses `warmup = "corpus"`
 like Symfony's: one php-cgi pass, then both engines start from that
 database, and a request that only reads leaves it as it was (the self-check
 shows 0 files written). WordPress's nonces change
-every 12 hours, so the one on the login page is a `token`.
+every 12 hours, so the one on the login page is a `token`. The comment POST
+has `warmup = false`: posted in the warm-up too, it would be a duplicate.
+
+`setup.php` also installs `mu-plugins/rhp-auth.php` (test only) into
+`wordpress/wp-content/mu-plugins/`: a request with an `X-Rhp-User: <id>`
+header is logged in as that user, through a pluggable
+`wp_validate_auth_cookie()` that skips the session token. That makes the
+wp-admin screens in the corpus deterministic; the real login (`login-ok`,
+302 plus auth cookies) is in the corpus too. Its masks cover what WordPress
+derives from the clock or random numbers: the `wp-settings-time` cookie, the
+auth cookies' expiry, session token and HMAC, wpdb's `{<64 hex>}`
+placeholder escape, wp-admin's clock (user settings, post lock, time-format
+previews, Site Health's times, cron's "overdue by"), the embed secret and
+share ids, `antispambot()`'s entity mix, `data-pw` and the comment
+moderation hash; in the database dump, Unix times and session tokens. The
+database is compared as `sqlite3 .dump` text (see `sqlite-dump` below), so
+the harness needs the `sqlite3` command when a request writes to it.
 
 The plugin needs `pdo_sqlite`. CI's setup-php installs `pdo` and
 `pdo_sqlite` with its default extensions and its `-n` shims load them, as
@@ -147,7 +166,8 @@ Each app's `requests.toml` is its request corpus: `[[request]]` entries with
 an `id`, `method`, `path` (plus query), `headers` (`"Name: value"` strings),
 `body`, `content_type`, an optional `flow` and the expected `status`.
 Requests in one flow share a cookie jar; other requests start with an empty
-one. The `status` is checked against the reference only (any status below
+one. `pass_status = { debug = 500 }` overrides `status` in one pass, and
+`warmup = false` leaves a request out of the warm-up run (below). The `status` is checked against the reference only (any status below
 500 when it is left out): if php-cgi doesn't answer as the corpus says, the
 run stops with exit code 2, because a broken php-cgi setup would otherwise
 make every request `DIFF`, or `SAME` when both engines print the same error
@@ -157,7 +177,8 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
 ### How a run works
 
-1. The harness snapshots the app's writable `state` dirs, and produces the
+1. The harness snapshots the app's writable `state` (dirs, or single files
+   such as Symfony's `config/reference.php`), and produces the
    pristine state (see warm-up below).
 2. It runs the whole corpus through the reference
    `php-cgi -n -d opcache.enable=0`, then through the candidate
@@ -168,7 +189,7 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
    `SCRIPT_NAME`, `REQUEST_URI`, `QUERY_STRING`, `REQUEST_METHOD`,
    `HTTP_HOST`, `SERVER_*`, `REMOTE_ADDR`, `CONTENT_TYPE`/`LENGTH`,
    `HTTP_COOKIE`, `HTTP_*` from `headers`, `REDIRECT_STATUS=1` and
-   `DOCUMENT_ROOT`). The body goes on stdin. Each engine keeps its own cookie
+   `DOCUMENT_ROOT`), plus the pass's `env`. The body goes on stdin. Each engine keeps its own cookie
    jar: php's cookies are never replayed to rhp.
 3. Responses are parsed into a status, an ordered list of headers, the body
    and stderr. Named rules then normalize them, and the report lists the
@@ -176,13 +197,14 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
    | rule | what it does |
    |------|--------------|
-   | `date-header` | Rewrites `Date`, `Last-Modified` and `Expires` values to `<HTTPDATE>` |
-   | `cookie-expires` | Rewrites the `expires=` attribute of a `Set-Cookie` to `<DATE>`. `Max-Age` is kept |
+   | `date-header` | Rewrites every `Date` value (xmlrpc.php writes its own, `+0000`), and `Last-Modified` and `Expires` values that are HTTP dates, to `<HTTPDATE>` |
+   | `cookie-expires` | Rewrites the `expires=` attribute of a `Set-Cookie` to `<DATE>` and a positive `Max-Age=` to `<SECS>` (both count from the second the response was made). `Max-Age=0`, a deletion, is kept |
    | `php-version` | Rewrites php's version in `X-Powered-By` to the candidate's |
    | `laravel-cookie` | Decrypts encrypted cookies with the `APP_KEY` from `.env` (AES-256-CBC, with the MAC checked) and shows them as `decrypted(<prefix>\|<value>)` |
    | `token-rename` | Renames each capture of the corpus `tokens` patterns, and each decrypted cookie value, to `<TOKn>`. Numbering follows the order of first appearance in the run, so equal tokens stay equal across headers, bodies, steps and written files |
    | `log-timestamp` | Masks ISO 8601 and `Y-m-d H:i:s` timestamps in stderr and in written files |
-   | `mask:<name>` | Applies a corpus `[[mask]]` (`name`, `pattern`, `replace`, `in = ["body", "headers", "stderr", "files"]`) |
+   | `sqlite-dump` | Shows a written SQLite database (any file starting with `SQLite format 3`) as `sqlite3 -readonly <file> .dump` prints it, then applies the other file rules to that text. The bytes differ between any two runs (page layout, free list, change counter) |
+   | `mask:<name>` | Applies a corpus `[[mask]]` (`name`, `pattern`, `replace`, `in = ["body", "headers", "stderr", "files"]`, and `pass = [...]` to limit it to some passes) |
 
 4. The files each engine created, changed or deleted under the state dirs,
    such as compiled Blade views, the Twig cache and session files, are
@@ -190,9 +212,8 @@ can use `{cookie:NAME}`, which is the jar's URL-decoded value, and
 
 When the run ends, the state dirs are put back as they were found.
 `--check-known known-passing-requests.txt` fails only when a listed id is not
-`SAME`. Ids that are newly `SAME` are printed as hints. Both lists start
-empty, because rhp can't serve the apps yet. `--write-known` regenerates a
-list. Run it twice to check determinism.
+`SAME`. Ids that are newly `SAME` are printed as hints. `--write-known`
+regenerates a list. Run it twice to check determinism.
 
 ### Warm-up: the Symfony prod cache
 
@@ -207,9 +228,98 @@ engines, and is the same thing a deploy does: warm once, serve many.
 The snapshot then drops `var/cache/prod/twig` (`warmup_drop`), so each engine
 compiles the Twig templates itself and the compiled output is diffed under
 `@files`. With the container warm, rhp only has to *serve* the app; whether it
-can also *compile* the container is a separate check for later, run from an
-empty cache. Laravel uses `warmup = "none"`: its views compile lazily, so
-each engine compiles them.
+can also *compile* the container is the `cold` pass (below). Laravel uses
+`warmup = "none"`: its views compile lazily, so each engine compiles them.
+
+### Passes
+
+The corpus runs once per pass. The `default` pass is the one described
+above; each `[[pass]]` table adds another run of the corpus, under other
+conditions, from the app state as the run found it:
+
+```toml
+[[pass]]
+name = "debug"                 # [a-z0-9-]+
+env = { APP_DEBUG = "1" }      # added to every request's environment, warm-up included
+# warmup = "none"              # overrides the corpus `warmup`
+# clear = ["var/cache"]        # state dirs emptied right before the pristine snapshot
+# only = ["boom"]              # just these requests (and the rest of their flows)
+```
+
+Outside the default pass, report and known-list ids are `<pass>/<id>`
+(`debug/w-error`, `cold/@files`), and `--out` writes to `<out>/<app>/<pass>/`.
+`--pass <name>` (repeatable) runs only the named passes; `--check-known`
+then skips the other passes' ids, and `--write-known` refuses it (the list
+would lose them).
+
+- `debug` (Symfony: `APP_DEBUG=1`; Laravel: `APP_DEBUG=true`, which beats
+  `.env` as both frameworks let the real environment win): the exception
+  pages. Symfony's needs masks for the var-dumper ids (`sf-dump-<mt_rand>`),
+  the log panel's times and object handles (`#58`); the masks name the pass.
+- `cold` (Symfony): `warmup = "none"` and `clear = ["var/cache"]`, so each
+  engine compiles the container, routes and Twig cache itself from an empty
+  cache, and `@files` compares everything it wrote (with
+  `container.build_id`/`build_time` masked). Resource metadata such as
+  `ReflectionClassResource` hashes in `*.meta` files show up there.
+
+## The console battery (`apps.py console`)
+
+```sh
+cargo build --release -p rhp-cli
+python3 tests/apps/apps.py console                    # every app, --check-known
+python3 tests/apps/apps.py console laravel-13 -- --only inspire,w-queue
+python3 tests/apps/apps.py console wordpress-7.1 -- --candidate "$(command -v php)"  # self-check
+python3 tests/apps/apps.py console symfony-7.4 --write-known
+```
+
+Each app's `console.toml` (the manifest's `console_list`) lists console
+commands: `bin/console` for Symfony (33: `about`, `debug:*`, `lint:*`,
+`cache:*`, `list` in every format, ...), `artisan` for Laravel (56 commands,
+10 `tinker --execute` snippets and 10 workload scripts in
+`laravel-13/console/`, each booting the console kernel and printing
+support, view, security, validation, mail, HTTP, queue, database and
+storage results) and wp-cli for WordPress (73: post, user, option, term,
+comment, menu, widget, rewrite, cron, role, export, search-replace, media,
+i18n, db, `eval` one-liners and the `eval-file` probes in
+`wordpress-7.1/console/`). `console.py` runs them; its docstring has the
+file format.
+
+How a run works:
+
+1. `target/apps-console/<app>/run/` gets a copy of the app. The `shared`
+   paths (`vendor/`, WordPress core, `wp-cli.phar`) are copied once and
+   never reset or compared, so they must stay read-only; the rest is copied
+   fresh. A copy rather than symlinks: PHP resolves included paths, so a
+   symlinked `vendor/` would autoload the app's classes from tests/apps.
+2. `clear` paths are removed and the `prepare` commands run with `php -n`
+   (Symfony: `cache:warmup` from an empty `var/`; WordPress: two boots that
+   schedule its cron events). The result is the pristine state.
+3. Each command runs from the pristine state, first as `php -n`, then as
+   `rhp -n` (plus the list's `ini` settings), in `run/`, with `env -i`
+   plus `PATH`, `HOME` and `TMPDIR` (emptied before each run), `TZ=UTC`,
+   `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, and stdin
+   closed. After each run the files it changed are put back.
+4. A command is `SAME` when the exit code, stdout, stderr and every file it
+   created, changed or deleted are identical after the masks, with their
+   permission bits. SQLite databases are compared by their SQL dump, other
+   binary files by size and md5.
+
+Masks only hide what php itself varies from run to run (the self-check
+against php reports every command `SAME`, three runs in a row), plus the
+engines' paths:
+
+| app | masks |
+|-----|-------|
+| all | the engine binary's path (`<PHP_BINARY>`) |
+| Symfony | the container's build time and build id (`cache:clear`), the time `about` prints |
+| Laravel | migration file times, `generated::` route names, durations and their dot padding, datetimes and Unix times within 3 days of now, session file names and CSRF tokens, `Inspiring` quotes (`inspire`, `make:component`, `make:view`), the key `key:generate --show` prints |
+| WordPress | datetimes and Unix times within 3 days of now, the export's channel date, Site Health's server time, password hashes, wpdb's random `%` placeholder |
+
+Each app's `known-passing-console.txt` lists the commands that are `SAME`
+under rhp; CI's `apps-lint` job fails only when a listed one is not.
+Commands that newly match are printed as hints; regenerate the list with
+`--write-known` (run it twice). Outputs and diffs of the last run are in
+`target/apps-console/<app>/out/`.
 
 ## Adding a framework version
 
@@ -226,9 +336,12 @@ each engine compiles them.
    php; then `cargo build --release -p rhp-difftest` and
    `python3 tests/apps/apps.py lint <name> --write-known` to create its
    `known-refused.txt`.
-5. Copy `requests.toml` and an empty `known-passing-requests.txt` from the
+5. Copy `requests.toml`, `console.toml` (and `console/`) and empty
+   `known-passing-requests.txt` and `known-passing-console.txt` from the
    existing app of that framework. `python3 tests/apps/apps.py diff <name> --
-   --candidate "$(command -v php-cgi)"` must report every request `SAME`.
+   --candidate "$(command -v php-cgi)"` must report every request `SAME`,
+   and `python3 tests/apps/apps.py console <name> -- --candidate "$(command
+   -v php)"` every command.
 6. Commit the app files, the lockfile, the lists and the manifest entry. The CI
    matrix picks the new entry up automatically.
 
@@ -242,6 +355,7 @@ cargo build --release -p rhp-cli
 python3 tests/apps/tools.py setup                  # composer install in tools/project
 python3 tests/apps/tools.py diff                   # every tool; or name some: diff phpstan psalm
 python3 tests/apps/tools.py diff rector --only 5,6 # selected command numbers
+python3 tests/apps/tools.py diff --big psalm       # the big tier (minutes per command)
 python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # self-check
 ```
 
@@ -254,34 +368,120 @@ python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # sel
   `.php-cs-fixer.dist.php`, `rector.php`, plus `phpstan-parallel.neon`,
   `.php-cs-fixer.parallel.php` and `rector-parallel.php` for runs with 2
   parallel workers). All caches are configured into `var/`.
+- `tools/project/big/MockTest.php` (with `phpunit-big.xml`) is a synthetic
+  PHPUnit suite of 331 tests: mocks and stubs (generated code, `eval`),
+  `#[RunInSeparateProcess]`, `#[Depends]`, a 300-case data provider,
+  `#[TestWith]`, failure diffs of arrays, objects, strings, JSON, XML and
+  files, warnings, notices, deprecations, risky and incomplete tests, `Error`
+  and `TypeError`.
+- The `big-*` configurations are the big tier: PHPStan (level 6 in parallel
+  and in one process, level max) and Psalm (error level 1, 1 and 4 threads)
+  on `vendor/symfony/console` and `vendor/nikic/php-parser/lib`, Rector (the
+  PHP 8.4 set and five prepared sets) and PHP-CS-Fixer (`@Symfony`,
+  `@Symfony:risky`, `@PER-CS`, `@PHP8x4Migration` on four directories of
+  symfony/console), each sequential and with 4 workers, plus the synthetic
+  suite with `--process-isolation`. They analyse code that `vendor/` already
+  holds. Each command takes seconds under php and minutes under rhp, so they
+  run only with `--big`, and CI runs them nightly (`tools-nightly.yml`).
 - The tools are installed together: `composer.json` and `composer.lock` are
   committed, and the lock pins each version. `vendor/` and `tools/work/` are
   never committed.
 - `tools.toml` lists the commands per tool: `--version`, `list`/`help`, the
   main analyse/test/fix commands with common flags, each output format and a
-  parallel run where the tool has one.
+  parallel run where the tool has one; `big` lists the big tier. A command
+  with `known = "reason"` differs for a known cause: it prints `KNOWN`
+  and does not fail the run, or `FIXED` once it matches (drop the mark
+  then). Today: Psalm's big-tier runs with 4 threads, whose output varies
+  between php runs too.
 - Each command runs on a fresh copy of the fixture in `tools/work/<tool>/`
-  (a clone of `vendor/` stays there), first under php, then under rhp, with
-  a fixed environment: `HOME` and `TMPDIR` inside the run directory, `TZ=UTC`,
-  `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, no CI variables,
-  stdin closed. A command is `SAME` when the exit code, stdout and stderr are
-  byte-identical after normalisation and the files it left in the project
-  (outside `vendor/` and `var/`) are identical too. Outputs and diffs are kept
-  in `tools/work/<tool>-out/`.
+  (`<tool>-big/` for the big tier; a clone of `vendor/` stays there), first
+  under php, then under rhp, with a fixed environment: `HOME` inside the
+  run directory, a short `TMPDIR` (`/tmp/rhp-tools-<uid>/<hash>-<run>`: Psalm's and
+  Rector's workers put unix sockets there, and macOS allows 104 bytes per
+  socket path), `TZ=UTC`, `LANG=LC_ALL=C`, `COLUMNS=120`,
+  `NO_COLOR=1`, `TERM=dumb`, no CI variables, stdin closed, and
+  `PHPRC=tools/php.ini` for both engines. A command is `SAME` when the exit
+  code, stdout and stderr are byte-identical after normalisation and the
+  files it left in the project (outside `vendor/` and `var/`) are identical
+  too. Outputs and diffs are kept in `tools/work/<tool>-out/`.
+- php runs as the executable `/proc/self/exe` names (its directory first
+  on PATH), not through CI's `php` shim, which runs php under the shim's
+  name and adds `-d extension=...` flags whenever a tool restarts itself
+  with `-n`.
+- The big tier's parallel configurations give each worker chunk 900 s and
+  each command 3600 s: rhp is several times slower than php, more so on a
+  loaded machine.
+- `tools/php.ini` is a distribution-like php.ini (php-src's
+  `php.ini-development` values), so neither engine falls back to its own
+  build's file or to none. It sets `max_execution_time = 30`, which the CLI
+  must override with 0, and `log_errors = On`, so every warning is also
+  logged to stderr.
+- Each line shows the CPU time (user + sys of the whole process tree,
+  workers included) and the peak RSS under php and under rhp, and each
+  tool's summary the CPU totals and their ratio, so speed is tracked too.
 
 Normalisation only masks what php itself varies from run to run (the
 self-check against php must report every command `SAME`), plus the engine's
-path:
+path and one ceiling:
 
 | rule | what it masks |
 |------|---------------|
-| `binary` | The engine binary's path (`PHP_BINARY`), which differs by construction |
+| `binary` | The engine binary's absolute path (`PHP_BINARY`), which differs by construction; never the bare name `php` |
+| `phpstan-worker` | `(the forked worker)` / `(the spawned worker)` in PHPStan's peak-memory line: PHPStan forks only with its native `phpstan_turbo` extension, which rhp cannot load |
 | `phpunit-time` | PHPUnit's `Time: 00:00.047, Memory: 18.00 MB` line |
 | `phpunit-event-time`, `phpunit-event-memory` | The timestamps and memory figures in `--log-events-text` |
 | `report-time`, `xml-time`, `xml-memory`, `json-time`, `json-memory` | Durations and memory figures in JUnit, TeamCity, XML and JSON reports |
 | `teamcity-flow` | TeamCity's `flowId`, the process id |
 | `progress-steps` | The intermediate steps of a Symfony progress bar (it redraws at most every 0.1 s); the first and last step are kept |
 | `elapsed`, `memory` | Any other `<number> s/ms/seconds` and `<number> MB/MiB/...`, as in "in 0.088 seconds, 18.00 MB memory used" |
+
+Commands marked `unordered` in `tools.toml` are parallel runs: PHP-CS-Fixer
+and Rector print one block per file in the order the workers finish, which
+php does not keep from one run to the next. Their output is put in a fixed
+order before normalisation: JSON lists of per-file objects are sorted by
+file name (and re-printed), and text blocks (`   1) src/Item.php`, up to the
+next block or the closing `[OK]`/`Found ... of ... files` line) are sorted
+and their numbers replaced with `#`. Everything else in the output is
+compared as is. (PHPStan and Psalm sort their own output.)
+
+## Composer (`composer_diff.py`)
+
+```sh
+cargo build --release -p rhp-cli
+python3 tests/apps/composer_diff.py                          # every suite
+python3 tests/apps/composer_diff.py --suite basic,stream     # some suites
+python3 tests/apps/composer_diff.py --suite basic install show   # some commands
+```
+
+Each suite runs its commands through `php composer`, then `rhp composer`, in
+the same directory with the same (emptied) `COMPOSER_HOME` and cache, and
+compares exit code and output; then the files it lists as the two runs left
+them (`composer.lock`, `vendor/`, ...). Needs network access.
+
+| suite | what it runs |
+|-------|--------------|
+| `basic` | A project requiring monolog/monolog and psr/container: 29 commands from `about` to `install`, `require`, `update`, `audit`, `archive` and `init` |
+| `stream` | The same project with `curl_multi_*` disabled, so Composer downloads over https through the stream layer and openssl: `install --no-cache`, `create-project` |
+| `ziparchive` | The same with no `unzip`/`7z` on PATH, so Composer extracts with ZipArchive (as on a minimal CI image) |
+| `symfony-7.4` | The fixture app's `composer.json` and lock: `install` runs Symfony Flex (a plugin) and the auto-scripts (`cache:clear`) under the engine; `dump-autoload -o`, `run-script auto-scripts` |
+| `laravel-13` | The same for Laravel: `install`, `dump-autoload -o`, `run-script post-autoload-dump` (`artisan package:discover`), comparing `bootstrap/cache/{packages,services}.php` too |
+
+- Both engines run as the same path, `WORK/bin/php`, a hard link to (or
+  copy of) the engine: a symlink would not do, as both resolve `PHP_BINARY`
+  through `realpath()`. So `PHP_BINARY` is the same, and so is the text
+  Symfony Console wraps into its error blocks.
+- Masks: timings, memory figures and dates; the OpenSSL and zlib versions
+  (`diagnose`'s `OpenSSL version:` line, `lib-openssl` and `lib-zlib` in
+  `show --platform`): each engine reports the headers it was built with,
+  a fact of the build, not of the engine; the path of `WORK/bin/php` (a
+  distribution php may still report its installed path); the secrets a recipe writes
+  (`APP_SECRET`, `APP_KEY`) and Flex's session id.
+- `show --platform` is compared on the extensions both engines load (an
+  `ext-*` entry, and the `lib-*` entries its extension reports), with the
+  column padding collapsed: Homebrew's php has 60-odd extensions, rhp fewer.
+- `KNOWN` in the script lists differences with a known cause in rhp; they
+  print `KNOWN` and do not fail the run. One that matches prints `FIXED`:
+  remove it then.
 
 ## Findings recorded when the fixtures were created
 

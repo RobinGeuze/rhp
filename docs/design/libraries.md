@@ -85,9 +85,10 @@ Today rhp-builtins links:
 | OpenSSL (libcrypto, libssl) | static, Homebrew openssl@4 | static, libssl-dev |
 | zlib (via libz-sys; also crc32, adler32) | dynamic, /usr/lib/libz | dynamic, zlib1g |
 | iconv | dynamic, the SDK's /usr/lib/libiconv.2.dylib | glibc's (libc) |
-| bzip2 (bzip2 `=0.5.2`, feature `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
+| bzip2 (bzip2 `=0.6.1`, default features off, features `bzip2-sys` and `static`) | static, bzip2-sys's bundled C libbz2 1.0.8 | static, bzip2-sys's bundled C libbz2 1.0.8 |
 | php-src crypt C (via rhp-csrc) | static, compiled from php-8.5.12 | the same |
 | libavifinfo (via rhp-csrc) | static, compiled from php-8.5.12's ext/standard/libavifinfo | the same |
+| libmagic 5.46 with php's patches and magic database (via rhp-csrc) | static, compiled from php-8.5.12's ext/fileinfo | the same |
 | timelib 2022.17 with php's embedded tz database 2026.5 (via rhp-csrc) | static, compiled from php-8.5.12's ext/date/lib | the same |
 | argon2 (via rhp-csrc) | static, compiled from release 20190702 | the same |
 | libcurl | static, Homebrew curl (keg-only), with its Homebrew dependencies (nghttp2, nghttp3, ngtcp2, libssh2, libpsl, zstd, brotli) static; OpenSSL is the row above | static, libcurl4-openssl-dev; its dependencies dynamic (see above), OpenSSL the row above |
@@ -248,8 +249,9 @@ archives, except LGPL C (see [Licences](#licences)):
   `crates/rhp-csrc/tools/sync-php-src-c.sh <php-src-dir>` from a checkout at
   the commit `tests/phpt/php-src.ref` pins. Today: ext/standard's
   crypt_freesec, crypt_blowfish, crypt_sha256 and crypt_sha512, timelib
-  (ext/date/lib) and libavifinfo (ext/standard/libavifinfo, plain C99 built
-  without the shim). All php-src C shares one stand-in for the Zend and PHP
+  (ext/date/lib), libavifinfo (ext/standard/libavifinfo, plain C99 built
+  without the shim) and ext/fileinfo's libmagic with its compiled magic
+  database (data_file.c, about 10 MB of the binary). All php-src C shares one stand-in for the Zend and PHP
   headers, `shim/zend_shim.h`, and builds with php's flags (`php_src()` in
   `build.rs`). timelib needs no Zend: it builds with its own flags from
   ext/date/config0.m4 (`-fwrapv`), and `glue/timelib_config.h` stands in for
@@ -299,6 +301,28 @@ tools/rhp-difftest use rhp-builtins' default features, so every rhp binary
 the workspace builds contains libmbfl. phpinfo reports
 libmbfl's version from `MBFL_VERSION_*`, read through the glue, as php's
 does.
+
+**php's printf.** php.h replaces the C library's `snprintf`,
+`vsnprintf` and `spprintf` with php's own (main/snprintf.c,
+main/spprintf.c), which print `%e` exponents without padding, `%g` as
+zend_gcvt and keep the `0` flag next to a precision. The shim does the same
+for all vendored php-src C: `shim/php_printf.c` ports the format converter,
+and takes the digits of `%e`, `%f` and `%g` from rhp-values' ports of
+php_conv_fp and zend_gcvt.
+
+**libmagic's php glue.** php's libmagic opens and reads files through php
+streams, matches regexes through ext/pcre (its cache, `pcre.*` ini limits
+and `preg_last_error()`) and warns with php_error_docref. The shim declares
+those APIs; `glue/fileinfo.c` defines them on a table of hooks
+(`rhp_csrc::fileinfo::Hooks`) that rhp-builtins' ext/fileinfo installs,
+which reach the running VM through the C-callback bridge
+(`ext/libxml/ffi.rs`). So a magic file, `finfo_file()` and
+`mime_content_type()` read through every stream wrapper, user wrappers
+included. `glue/fileinfo_config.h` stands in for the php_config.h macros
+libmagic reads. libmagic's type tables are built once per process
+(`std::sync::Once`) before any thread uses them; the only other globals
+(`last_cont_level` while parsing a magic file, is_simh.c's byte order) are
+racy in php's ZTS builds too.
 
 **Memory.** The shim's `emalloc`, `erealloc` and `ecalloc` go through Rust's
 global allocator, so C allocations count against `memory_limit` as php's
@@ -564,7 +588,7 @@ Tables php-src owns are generated, committed, and checked by
 | Generator | Source | Output | Checked |
 |---|---|---|---|
 | `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/ext/standard/html_tables.rs` | CI job `generated` (php-src checkout) |
-| `intl-consts` | php-src `ext/intl` stubs: global constants' names, types, `@cvalue` and `#if` guards (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h` | CI job `generated` (php-src checkout) |
+| `intl-consts` | php-src `ext/intl` stubs: global constants' and the implemented classes' (Collator, NumberFormatter, Locale) constants: names, types, `@cvalue`, `#if` guards and attributes (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h`, `class_consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `main/ini_table.rs`, `const_modules.rs`, `func_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |

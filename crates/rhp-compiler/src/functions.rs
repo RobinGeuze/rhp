@@ -755,7 +755,7 @@ impl ProtoBuilder<'_> {
                     ));
                 }
                 folded = None;
-                dmeta = (None, None);
+                dmeta = (None, None, None);
             }
             let default = folded.map(|d| match d {
                 Ok(v) => rhp_bytecode::ParamDefault::Const(self.intern_const(v)),
@@ -800,6 +800,7 @@ impl ProtoBuilder<'_> {
                 promoted,
                 default_thunk: dmeta.0,
                 default_const: dmeta.1,
+                default_text: dmeta.2,
             });
             types.push(php_type);
         }

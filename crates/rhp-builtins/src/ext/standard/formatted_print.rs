@@ -235,20 +235,7 @@ fn append_2n(
 /// `php_conv_fp` for `F`, `e` and `E` on a finite number: the digits with
 /// `precision` places, without the sign.
 fn conv_fp(format: u8, num: f64, precision: usize) -> Vec<u8> {
-    let abs = num.abs();
-    match format {
-        b'F' => format!("{abs:.precision$}").into_bytes(),
-        _ => {
-            let r = format!("{abs:.precision$e}");
-            let (m, e) = r.split_once('e').unwrap_or((&r, "0"));
-            let exp: i64 = e.parse().unwrap_or(0);
-            let mut out = m.as_bytes().to_vec();
-            out.push(format);
-            out.push(if exp < 0 { b'-' } else { b'+' });
-            out.extend_from_slice(exp.unsigned_abs().to_string().as_bytes());
-            out
-        }
-    }
+    rhp_values::fmt::conv_fp(format, num, precision, false, b'.').0
 }
 
 /// `php_sprintf_appenddouble`.

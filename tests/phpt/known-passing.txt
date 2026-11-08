@@ -8374,7 +8374,6 @@ ext/libxml/tests/bug54138.phpt
 ext/libxml/tests/bug61367-read_2.phpt
 ext/libxml/tests/bug61367-write.phpt
 ext/libxml/tests/bug63389.phpt
-ext/libxml/tests/bug79191.phpt
 ext/libxml/tests/image/imagetype_svg.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt

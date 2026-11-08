@@ -6233,8 +6233,6 @@ ext/date/tests/timezone_offset_get_error.phpt
 ext/date/tests/timezone_open_basic1.phpt
 ext/date/tests/timezone_open_warning.phpt
 ext/date/tests/timezone_transitions_get_basic1.phpt
-ext/date/tests/timezone_version_get.phpt
-ext/date/tests/timezone_version_get_basic1.phpt
 ext/date/tests/timezones-list.phpt
 ext/date/tests/timezones.phpt
 ext/date/tests/unserialize-test.phpt
@@ -7983,7 +7981,6 @@ ext/libxml/tests/bug54138.phpt
 ext/libxml/tests/bug61367-read_2.phpt
 ext/libxml/tests/bug61367-write.phpt
 ext/libxml/tests/bug63389.phpt
-ext/libxml/tests/bug79191.phpt
 ext/libxml/tests/image/imagetype_svg.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt

@@ -1,0 +1,21 @@
+string(1) "a"
+string(1) "a"
+string(1) "b"
+string(1) "a"
+BASE/./a => BASE/a (dir)
+BASE/./a/inc.php => BASE/a/inc.php
+BASE/./b => BASE/b (dir)
+BASE/./b/inc.php => BASE/b/inc.php
+BASE/a => BASE/a (dir)
+BASE/a/../a => BASE/a (dir)
+BASE/a/../a/inc.php => BASE/a/inc.php
+BASE/cur => BASE/a (dir)
+BASE/cur/inc.php => BASE/a/inc.php
+string(1) "a"
+string(1) "b"
+array(2) {
+  [0]=>
+  string(14) "BASE/a/inc.php"
+  [1]=>
+  string(14) "BASE/b/inc.php"
+}

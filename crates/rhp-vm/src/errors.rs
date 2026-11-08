@@ -1331,11 +1331,7 @@ impl Vm {
                 }
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
-                        if arm
-                            .classes
-                            .iter()
-                            .any(|cn| self.class_matches(cls, cn.as_bytes()))
-                        {
+                        if arm.classes.iter().any(|cn| self.class_matches(cls, cn)) {
                             let obj = self.thrown_to_object(&thrown)?;
                             // php assigns the catch variable like `$e = ...`:
                             // through a reference it holds (a global's cell).
@@ -1557,8 +1553,8 @@ impl Vm {
         }
     }
 
-    fn class_matches(&self, cls: ClassId, catch_name: &[u8]) -> bool {
-        match self.resolve_class_by_name(catch_name) {
+    fn class_matches(&self, cls: ClassId, catch_name: &rhp_values::PhpStr) -> bool {
+        match self.resolve_class_by_str(catch_name) {
             Ok(target) => self.class(cls).ancestors.contains(&target),
             Err(_) => false,
         }

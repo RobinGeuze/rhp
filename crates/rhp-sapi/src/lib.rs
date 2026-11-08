@@ -418,10 +418,11 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
                     }
                 }
             };
-            // php reports the resolved real path in __FILE__ / __DIR__.
-            let file = std::fs::canonicalize(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.clone());
+            // php reports the resolved real path in __FILE__ / __DIR__
+            // (tsrm_realpath, through the realpath cache).
+            let file = rhp_builtins::zend::virtual_cwd::realpath(path.as_bytes())
+                .map(|p| String::from_utf8_lossy(&p).into_owned())
+                .unwrap_or_else(|| path.clone());
             (file, source, path.clone())
         }
         Script::Source { path, bytes } => (path.clone(), bytes.clone(), path.clone()),

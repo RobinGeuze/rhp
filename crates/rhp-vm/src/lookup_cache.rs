@@ -145,6 +145,45 @@ impl ClassNameCache {
     }
 }
 
+/// The class-name cache for names the VM holds only as bytes (catch of an
+/// engine error, string callables, reflection and the other functions
+/// that take a class name): keyed by a hash that ignores ASCII case, so
+/// no lowercase copy is made.
+#[derive(Default)]
+pub(crate) struct ClassBytesCache(Table);
+
+/// A hash of `name` that is the same for every ASCII case of it (and
+/// never 0): eight bytes at a time, each with bit 0x20 set.
+#[inline]
+pub(crate) fn fold_hash(name: &[u8]) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    const FOLD: u64 = 0x2020_2020_2020_2020;
+    let mut h = name.len() as u64 ^ 0x9E37_79B9_7F4A_7C15;
+    let (chunks, rest) = name.as_chunks::<8>();
+    for c in chunks {
+        let w = u64::from_le_bytes(*c) | FOLD;
+        h = (h.rotate_left(5) ^ w).wrapping_mul(K);
+    }
+    if !rest.is_empty() {
+        let mut b = [0u8; 8];
+        b[..rest.len()].copy_from_slice(rest);
+        let w = u64::from_le_bytes(b) | (FOLD >> (8 * (8 - rest.len())));
+        h = (h.rotate_left(5) ^ w).wrapping_mul(K);
+    }
+    h | 1
+}
+
+impl ClassBytesCache {
+    #[inline(always)]
+    pub(crate) fn get(&self, hash: u64) -> Option<ClassId> {
+        self.0.get(hash, 0, CLASS_SLOTS)
+    }
+
+    pub(crate) fn put(&self, hash: u64, id: ClassId) {
+        self.0.put(hash, 0, id, CLASS_SLOTS);
+    }
+}
+
 impl Vm {
     /// Empty the caches whose entries name a class id other than their own
     /// class: after a class was removed, its id is used again.
@@ -152,5 +191,28 @@ impl Vm {
         for c in &mut self.classes {
             c.cache.flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_hash;
+
+    #[test]
+    fn fold_hash_ignores_ascii_case_only() {
+        for n in [
+            &b"A"[..],
+            b"Abcdefgh",
+            b"Abcdefghi",
+            b"Foo\\Bar\\BazQuxQuux",
+        ] {
+            assert_eq!(fold_hash(n), fold_hash(&n.to_ascii_lowercase()));
+            assert_eq!(fold_hash(n), fold_hash(&n.to_ascii_uppercase()));
+            assert_ne!(fold_hash(n) & 1, 0);
+        }
+        assert_ne!(fold_hash(b"abc"), fold_hash(b"abd"));
+        // the length is part of it: a short tail isn't padded into a match
+        assert_ne!(fold_hash(b"abc"), fold_hash(b"abc\0"));
+        assert_ne!(fold_hash(b""), fold_hash(b"\0"));
     }
 }

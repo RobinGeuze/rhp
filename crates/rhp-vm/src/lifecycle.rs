@@ -103,6 +103,7 @@ impl Vm {
             classes: Vec::new(),
             class_ids: Default::default(),
             class_names: Default::default(),
+            class_bytes: Default::default(),
             globals: Default::default(),
             jit_globals: HashMap::new(),
             unset_typed_props: HashMap::new(),

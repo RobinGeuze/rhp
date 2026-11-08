@@ -2326,12 +2326,29 @@ impl Vm {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        with_lc(n, |k| self.class_ids.get(k).copied()).ok_or_else(|| {
-            Thrown::error(
+        // Through the VM's cache of names held as bytes; a hit is checked
+        // against the class's name (a removed class's id may be reused).
+        let hash = crate::lookup_cache::fold_hash(n);
+        let named = |id: ClassId| {
+            self.classes
+                .get(id as usize)
+                .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(n))
+        };
+        if let Some(id) = self.class_bytes.get(hash).filter(|&id| named(id)) {
+            return Ok(id);
+        }
+        match with_lc(n, |k| self.class_ids.get(k).copied()) {
+            Some(id) => {
+                if named(id) {
+                    self.class_bytes.put(hash, id);
+                }
+                Ok(id)
+            }
+            None => Err(Thrown::error(
                 "Error",
                 format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
-            )
-        })
+            )),
+        }
     }
 
     /// [`Vm::resolve_class_by_name`] for a name a proto holds, through the

@@ -158,6 +158,7 @@ pub struct Vm {
     class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
     /// What class names in protos resolved to (`lookup_cache`).
     class_names: lookup_cache::ClassNameCache,
+    class_bytes: lookup_cache::ClassBytesCache,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.

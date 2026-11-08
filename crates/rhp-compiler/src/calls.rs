@@ -1516,16 +1516,14 @@ impl ProtoBuilder<'_> {
 
     /// A callee part held in a plain variable (`$f(...)`, `$o->$m(...)`) is
     /// read before the arguments run (INIT_DYNAMIC_CALL / INIT_METHOD_CALL):
-    /// copy it to a temp when an argument could assign it (`$f($f = 'b')`).
+    /// copy it to a temp when an argument assigns it (`$f($f = 'b')`).
     fn snapshot_callee(
         &mut self,
         list: &crate::parse::cst::ArgumentList,
         expr: &Expression,
         r: Reg,
     ) -> Reg {
-        if !matches!(expr, Expression::Variable(Variable::Direct(_)))
-            || !list.arguments.iter().any(arg_may_write)
-        {
+        if !args_assign_var(list, expr) {
             return r;
         }
         let t = self.alloc_temp();
@@ -1595,9 +1593,9 @@ impl ProtoBuilder<'_> {
                     // `$o->$m($m = …)`: the name is read first.
                     let name = if matches!(
                         selector,
-                        crate::parse::cst::ClassLikeMemberSelector::Variable(Variable::Direct(_))
-                    ) && args.arguments.iter().any(arg_may_write)
-                    {
+                        crate::parse::cst::ClassLikeMemberSelector::Variable(Variable::Direct(d))
+                            if args_assign_name(args, d.name)
+                    ) {
                         let t = self.alloc_temp();
                         self.emit(Instr::Mov { dst: t, src: name });
                         t
@@ -2005,6 +2003,35 @@ fn later_arg_may_write(list: &[Argument], i: usize) -> bool {
 /// [`later_arg_may_write`] for an argument list.
 fn later_arg_may_write_list(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
     list.arguments.iter().skip(i + 1).any(arg_may_write)
+}
+
+/// Whether an argument assigns (at its top level) the plain variable
+/// `expr` holds; never `$this`.
+fn args_assign_var(list: &crate::parse::cst::ArgumentList, expr: &Expression) -> bool {
+    match expr {
+        Expression::Variable(Variable::Direct(d)) => args_assign_name(list, d.name),
+        _ => false,
+    }
+}
+
+/// Whether an argument assigns (at its top level) the variable `$name`,
+/// or unpacks more than a plain value.
+fn args_assign_name(list: &crate::parse::cst::ArgumentList, name: &[u8]) -> bool {
+    if name == b"$this" {
+        return false;
+    }
+    list.arguments.iter().any(|a| {
+        // An unpacked expression may assign anywhere in it.
+        if matches!(a, Argument::Positional(p) if p.ellipsis.is_some()) && arg_may_write(a) {
+            return true;
+        }
+        let mut e = arg_value(a);
+        while let Expression::Parenthesized(p) = e {
+            e = p.expression;
+        }
+        matches!(e, Expression::Assignment(x)
+            if matches!(x.lhs, Expression::Variable(Variable::Direct(d)) if d.name == name))
+    })
 }
 
 /// The expression an argument passes.

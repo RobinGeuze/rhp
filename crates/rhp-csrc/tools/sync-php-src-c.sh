@@ -68,6 +68,9 @@ ext/standard/libavifinfo/LICENSE
 ext/standard/libavifinfo/PATENTS
 ext/standard/libavifinfo/avifinfo.c
 ext/standard/libavifinfo/avifinfo.h
+ext/lexbor/LICENSE
+ext/lexbor/NOTICE
+ext/lexbor/config.m4
 '
 
 # rhp-mbfl-sys: every C file and header of libmbfl (found below, so files a
@@ -113,6 +116,15 @@ have=$(git --no-optional-locks -C "$src" rev-parse HEAD) || die "$src: not a git
 	die "$src is at $have; tests/phpt/php-src.ref pins $want (git -C $src checkout $want)"
 tag=$(git --no-optional-locks -C "$src" describe --tags --exact-match HEAD 2>/dev/null) ||
 	die "$src: HEAD $have has no tag"
+
+# lexbor, which ext/lexbor bundles for ext/dom's HTML5 parser and CSS
+# selectors: every file of the modules ext/dom uses (not url, punycode and
+# unicode, which only ext/uri needs).
+FILES="$FILES
+$(cd "$src" && find ext/lexbor/lexbor/core ext/lexbor/lexbor/css ext/lexbor/lexbor/dom \
+	ext/lexbor/lexbor/encoding ext/lexbor/lexbor/html ext/lexbor/lexbor/ns ext/lexbor/lexbor/tag \
+	ext/lexbor/lexbor/selectors ext/lexbor/lexbor/ports/posix -type f | LC_ALL=C sort)
+"
 
 MBFL_FILES="$MBFL_FILES
 $(cd "$src" && find ext/mbstring/libmbfl -type f \( -name '*.c' -o -name '*.h' \) | LC_ALL=C sort)

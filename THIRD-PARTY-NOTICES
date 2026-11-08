@@ -59,6 +59,7 @@ software is linked into rhp or distributed with it.
 32. Apache printf   Apache Group licence 1.0-style (php's main/snprintf.c)
 33. libgd           GD licence (permissive, credit required)
 34. libedit         BSD-3-Clause
+35. lexbor          Apache-2.0
 
 
 ------------------------------------------------------------------------------
@@ -2954,3 +2955,33 @@ declares the functions it calls.
   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
   OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
   SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+35. lexbor
+------------------------------------------------------------------------------
+
+Lexbor (https://github.com/lexbor/lexbor), the copy php-src bundles in
+ext/lexbor with php's patches: ext/dom's HTML5 parser, character encodings
+and CSS selector parser. Compiled by crates/rhp-csrc from
+vendor/php-src/ext/lexbor (the core, css, dom, encoding, html, ns, tag and
+selectors modules), linked statically.
+
+   Lexbor.
+
+   Copyright 2018-2020 Alexander Borisov
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+The full Apache License 2.0 text is in vendor/php-src/ext/lexbor/LICENSE
+(crates/rhp-csrc).

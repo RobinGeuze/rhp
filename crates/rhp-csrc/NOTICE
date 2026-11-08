@@ -70,6 +70,13 @@ ext/standard/libavifinfo/
   Open Media Patent License 1.0 (PATENTS). Copyright (c) 2021, Alliance for
   Open Media. The AVIF parser php's getimagesize() uses.
 
+ext/lexbor/lexbor/
+  Apache-2.0 (ext/lexbor/LICENSE, ext/lexbor/NOTICE). Lexbor: Copyright
+  2018-2020 Alexander Borisov, with php's patches (ext/lexbor/patches in
+  php-src). ext/dom's HTML5 parser, encodings and CSS selector parser; the
+  url, punycode and unicode modules (ext/uri's) are not vendored.
+  ext/lexbor/config.m4 (PHP License) lists the sources build.rs compiles.
+
 
 vendor/argon2
 -------------

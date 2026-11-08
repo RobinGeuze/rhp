@@ -18,6 +18,8 @@ pub mod avifinfo;
 pub mod crypt;
 #[cfg(feature = "fileinfo")]
 pub mod fileinfo;
+#[cfg(feature = "lexbor")]
+pub mod lexbor;
 #[cfg(feature = "timelib")]
 pub mod timelib;
 

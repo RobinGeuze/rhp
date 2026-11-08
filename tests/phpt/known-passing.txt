@@ -10197,6 +10197,7 @@ ext/reflection/tests/gh20895.phpt
 ext/reflection/tests/gh22441.phpt
 ext/reflection/tests/gh22681/ReflectionClassConstant_doc_comment.phpt
 ext/reflection/tests/gh22681/ReflectionClass_doc_comment.phpt
+ext/reflection/tests/gh22681/ReflectionClass_name.phpt
 ext/reflection/tests/gh22681/ReflectionConstant_name.phpt
 ext/reflection/tests/gh22681/ReflectionEnum_backed_value.phpt
 ext/reflection/tests/gh22681/ReflectionEnum_case_doc_comment.phpt

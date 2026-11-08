@@ -1,0 +1,54 @@
+bool(true)
+bool(true)
+enum(Suit::H)
+bool(false)
+bool(true)
+int(1)
+string(38) "Constant [ public Suit H ] { Object }
+"
+bool(true)
+bool(true)
+Trying to clone an uncloneable object of class Exception
+bool(false)
+int(1)
+bool(false)
+got v
+int(1)
+int(2)
+array(9) {
+  [0]=>
+  string(6) "rewind"
+  [1]=>
+  string(5) "valid"
+  [2]=>
+  string(7) "current"
+  [3]=>
+  string(3) "key"
+  [4]=>
+  string(4) "next"
+  [5]=>
+  string(4) "send"
+  [6]=>
+  string(5) "throw"
+  [7]=>
+  string(9) "getReturn"
+  [8]=>
+  string(11) "__debugInfo"
+}
+bool(false)
+bool(false)
+NULL
+array(4) {
+  [0]=>
+  string(7) "getName"
+  [1]=>
+  string(9) "isBuiltin"
+  [2]=>
+  string(10) "allowsNull"
+  [3]=>
+  string(10) "__toString"
+}
+array(0) {
+}
+string(1) "h"
+Enum case U::A is not a backed case

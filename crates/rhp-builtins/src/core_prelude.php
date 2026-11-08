@@ -8,8 +8,11 @@ interface Throwable extends Stringable {
     public function getPrevious(): ?Throwable;
     public function getTraceAsString(): string;
 }
-interface UnitEnum {}
-interface BackedEnum extends UnitEnum {}
+interface UnitEnum { public static function cases(): array; }
+interface BackedEnum extends UnitEnum {
+    public static function from(int|string $value): static;
+    public static function tryFrom(int|string $value): ?static;
+}
 interface Traversable {}
 interface Iterator extends Traversable {
     public function current(): mixed;
@@ -36,7 +39,19 @@ interface ArrayAccess {
     public function offsetUnset(mixed $offset): void;
 }
 interface Countable { public function count(): int; }
-final class Generator implements Iterator {}
+// A method call on a generator runs natively in the VM; these bodies run
+// for a callable or ReflectionMethod::invoke.
+final class Generator implements Iterator {
+    public function rewind(): void { __generator($this, 'rewind'); }
+    public function valid(): bool { return __generator($this, 'valid'); }
+    public function current(): mixed { return __generator($this, 'current'); }
+    public function key(): mixed { return __generator($this, 'key'); }
+    public function next(): void { __generator($this, 'next'); }
+    public function send(mixed $value): mixed { return __generator($this, 'send', $value); }
+    public function throw(Throwable $exception): mixed { return __generator($this, 'throw', $exception); }
+    public function getReturn(): mixed { return __generator($this, 'getReturn'); }
+    public function __debugInfo(): array { return __generator($this, '__debugInfo'); }
+}
 class ClosedGeneratorException extends Exception {}
 // Zend/zend_fibers.c: the engine switches stacks behind __fiber (op codes:
 // rhp_builtins::zend::fibers::FiberOp).
@@ -94,11 +109,17 @@ class Exception implements Throwable {
     protected int $line = 0;
     private array $trace = [];
     private ?Throwable $previous = null;
+    private function __clone(): void { throw new Exception('Cannot clone object using __clone()'); }
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Exception::__construct", 1, "message", "string", $message); }
         if ($n >= 2) { $c = __zpp_arg("Exception::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
         if ($n >= 3) { $p = __zpp_arg("Exception::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+    }
+    // CHECK_EXC_TYPE: a message or code of another type is unset.
+    public function __wakeup(): void {
+        if (isset($this->message) && !is_string($this->message)) { unset($this->message); }
+        if (isset($this->code) && !is_int($this->code)) { unset($this->code); }
     }
     final public function getMessage() { return $this->message; }
     final public function getCode() { return $this->code; }
@@ -117,14 +138,20 @@ class Error implements Throwable {
     private string $string = "";
     protected $code = 0;
     protected string $file = "";
-    protected int $line = 0;
+    protected int $line;
     private array $trace = [];
     private ?Throwable $previous = null;
+    private function __clone(): void { throw new Exception('Cannot clone object using __clone()'); }
     public function __construct($message = "", $code = 0, $previous = null) {
         $n = func_num_args();
         if ($n >= 1) { $this->message = __zpp_arg("Error::__construct", 1, "message", "string", $message); }
         if ($n >= 2) { $c = __zpp_arg("Error::__construct", 2, "code", "int", $code); if ($c) { $this->code = $c; } }
         if ($n >= 3) { $p = __zpp_arg("Error::__construct", 3, "previous", "?Throwable", $previous); if ($p !== null) { $this->previous = $p; } }
+    }
+    // CHECK_EXC_TYPE: a message or code of another type is unset.
+    public function __wakeup(): void {
+        if (isset($this->message) && !is_string($this->message)) { unset($this->message); }
+        if (isset($this->code) && !is_int($this->code)) { unset($this->code); }
     }
     final public function getMessage() { return $this->message; }
     final public function getCode() { return $this->code; }
@@ -136,7 +163,7 @@ class Error implements Throwable {
     public function __toString() { return $this->string = __throwable_string($this); }
 }
 class ErrorException extends Exception {
-    protected $severity = 1;
+    protected int $severity = 1; // E_ERROR
     public function __construct($message = "", $code = 0, $severity = 1, $filename = null, $line = null, $previous = null) {
         $n = func_num_args();
         $f = "ErrorException::__construct";

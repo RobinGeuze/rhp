@@ -1465,6 +1465,13 @@ impl Vm {
         for iname in ifaces_for_methods {
             let iid = self.class_ids[&lc(iname.as_bytes())];
             for (k, m) in &self.classes[iid as usize].methods {
+                // An enum's cases()/from()/tryFrom() are the engine's
+                // (zend_enum_register_funcs), not UnitEnum's abstract ones.
+                if proto.kind == ClassKind::Enum
+                    && matches!(k.as_slice(), b"cases" | b"from" | b"tryfrom")
+                {
+                    continue;
+                }
                 if !methods.contains_key(k) {
                     methods.insert(k.clone(), m.clone());
                 }

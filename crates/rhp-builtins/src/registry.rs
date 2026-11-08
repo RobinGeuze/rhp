@@ -40,6 +40,7 @@ fn core() -> ModuleDef {
             zend::internal_iterator::register(m);
             zend::weakrefs::register_functions(m);
             zend::fibers::register(m);
+            zend::generators::register(m);
             zend::zpp::register(m);
         },
         constants: || {

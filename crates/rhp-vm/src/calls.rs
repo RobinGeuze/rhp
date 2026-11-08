@@ -2989,10 +2989,13 @@ pub(crate) fn is_engine_helper_name(name: &[u8]) -> bool {
 }
 
 /// A magic or ArrayAccess method of a built-in class whose php stub has no
-/// such method: the prelude's stand-in for php's property, dimension and
-/// `get_method` handlers (SimpleXML, DOM, XMLReader, SPL's forwarding).
+/// such method: the prelude's stand-in for php's property, dimension,
+/// `get_method` and `get_constructor` handlers (SimpleXML, DOM, XMLReader,
+/// SPL's forwarding, the opaque handle classes).
 pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
     const ACCESSORS: &[&[u8]] = &[
+        // php's get_constructor refusing `new` (CurlHandle, XMLParser…).
+        b"__construct",
         b"__get",
         b"__set",
         b"__isset",

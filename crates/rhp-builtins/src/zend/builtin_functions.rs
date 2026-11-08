@@ -395,6 +395,7 @@ fn fn_method_exists(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown
     let found = class_id_of(host, &args[0])?
         .map(|cid| {
             (host.class_has_method(cid, &method)
+                && !host.class_method_hidden(cid, &method)
                 && !(by_name && host.class_method_private_inherited(cid, &method)))
                 // zend_closure_get_method: Closure's __invoke; the
                 // instance methods the engine implements.

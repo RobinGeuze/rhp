@@ -116,9 +116,9 @@ class Reflection {
     }
     public static function __type($t) {
         if ($t === null) { return null; }
-        if ($t['kind'] === 'named') { return new ReflectionNamedType($t); }
-        if ($t['kind'] === 'union') { return new ReflectionUnionType($t); }
-        return new ReflectionIntersectionType($t);
+        if ($t['kind'] === 'named') { return ReflectionNamedType::__of($t); }
+        if ($t['kind'] === 'union') { return ReflectionUnionType::__of($t); }
+        return ReflectionIntersectionType::__of($t);
     }
     // zend_type_to_string, which __toString() of a parameter, return,
     // property or constant prints: a lone `iterable` is Traversable|array.
@@ -134,39 +134,45 @@ class Reflection {
 interface Reflector extends Stringable {}
 
 abstract class ReflectionType implements Stringable {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     protected $__t;
-    public function __construct($t) { $this->__t = $t; }
+    // No constructor in php: Reflection makes them.
+    public static function __of($t) { $o = new static; $o->__t = $t; return $o; }
     public function allowsNull(): bool { return $this->__t['nullable']; }
-    public function __toString(): string { return ''; }
+    public function __toString(): string {
+        $t = $this->__t;
+        if ($t['kind'] === 'named') {
+            $n = $t['name'];
+            return ($t['nullable'] && $n !== 'null' && $n !== 'mixed' ? '?' : '') . $n;
+        }
+        $p = [];
+        if ($t['kind'] === 'union') {
+            foreach ($t['types'] as $x) {
+                $s = (string) Reflection::__type($x);
+                $p[] = $x['kind'] === 'intersection' ? '(' . $s . ')' : $s;
+            }
+            return implode('|', $p);
+        }
+        foreach ($t['types'] as $x) { $p[] = $x['name']; }
+        return implode('&', $p);
+    }
 }
 
 class ReflectionNamedType extends ReflectionType {
     public function getName(): string { return $this->__t['name']; }
     public function isBuiltin(): bool { return $this->__t['builtin']; }
-    public function __toString(): string {
-        $n = $this->__t['name'];
-        return ($this->__t['nullable'] && $n !== 'null' && $n !== 'mixed' ? '?' : '') . $n;
-    }
 }
 
 class ReflectionUnionType extends ReflectionType {
     public function getTypes(): array { $o = []; foreach ($this->__t['types'] as $t) { $o[] = Reflection::__type($t); } return $o; }
-    public function __toString(): string {
-        $p = [];
-        foreach ($this->__t['types'] as $t) {
-            $s = (string) Reflection::__type($t);
-            $p[] = $t['kind'] === 'intersection' ? '(' . $s . ')' : $s;
-        }
-        return implode('|', $p);
-    }
 }
 
 class ReflectionIntersectionType extends ReflectionType {
     public function getTypes(): array { $o = []; foreach ($this->__t['types'] as $t) { $o[] = Reflection::__type($t); } return $o; }
-    public function __toString(): string { $p = []; foreach ($this->__t['types'] as $t) { $p[] = $t['name']; } return implode('&', $p); }
 }
 
 class ReflectionAttribute implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     const IS_INSTANCEOF = 2;
     public string $name;
     private $__d; private $__all;
@@ -225,6 +231,7 @@ class ReflectionAttribute implements Reflector {
 }
 
 abstract class ReflectionFunctionAbstract implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     public string $name;
     protected $__i;
     protected $__l;
@@ -467,6 +474,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
 }
 
 class ReflectionParameter implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     public string $name;
     private $__l; private $__f; private $__p;
     private static $__mk = null;
@@ -594,6 +602,7 @@ class ReflectionParameter implements Reflector {
 }
 
 class ReflectionClass implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     const IS_IMPLICIT_ABSTRACT = 16;
     const IS_EXPLICIT_ABSTRACT = 64;
     const IS_FINAL = 32;
@@ -930,11 +939,12 @@ class ReflectionEnum extends ReflectionClass {
     public function isBacked(): bool { return $this->__c['backing'] !== null; }
     public function getBackingType(): ?ReflectionNamedType {
         $b = $this->__c['backing'];
-        return $b === null ? null : new ReflectionNamedType(['kind' => 'named', 'name' => $b, 'nullable' => false, 'builtin' => true]);
+        return $b === null ? null : ReflectionNamedType::__of(['kind' => 'named', 'name' => $b, 'nullable' => false, 'builtin' => true]);
     }
 }
 
 class ReflectionProperty implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     const IS_STATIC = 16;
     const IS_READONLY = 128;
     const IS_PUBLIC = 1;
@@ -1108,6 +1118,7 @@ enum PropertyHookType: string {
 }
 
 class ReflectionClassConstant implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     const IS_PUBLIC = 1;
     const IS_PROTECTED = 2;
     const IS_PRIVATE = 4;
@@ -1174,6 +1185,10 @@ class ReflectionEnumUnitCase extends ReflectionClassConstant {
 }
 
 class ReflectionEnumBackedCase extends ReflectionEnumUnitCase {
+    public function __construct(object|string $class, string $constant) {
+        parent::__construct($class, $constant);
+        if (!($this->__i['value'] instanceof BackedEnum)) { throw new ReflectionException('Enum case ' . $this->class . '::' . $this->name . ' is not a backed case'); }
+    }
     public function getBackingValue(): int|string { return $this->__i['value']->value; }
 }
 
@@ -1197,6 +1212,7 @@ class ReflectionConstant implements Reflector {
 }
 
 final class ReflectionReference {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     private $__id;
     private function __construct($id) { $this->__id = $id; }
     public static function fromArrayElement(array $array, int|string $key): ?ReflectionReference {
@@ -1239,6 +1255,7 @@ final class ReflectionFiber {
 }
 
 class ReflectionExtension implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
     public string $name;
     public function __construct(string $name) {
         if (!extension_loaded($name)) { throw new ReflectionException('Extension "' . $name . '" does not exist'); }
@@ -1248,7 +1265,7 @@ class ReflectionExtension implements Reflector {
     public function getName(): string { return $this->name; }
     public function getVersion(): ?string { $v = phpversion($this->name); return $v === false ? null : $v; }
     // The zend_module_dep lists of php-src's modules (rhp's reported ones).
-    private const __DEPS = [
+    private static function __deps(): array { return [
         'mbstring' => ['pcre' => 'Required'], 'SPL' => ['json' => 'Required'], 'session' => ['spl' => 'Optional'],
         'standard' => ['uri' => 'Required', 'session' => 'Optional'], 'libxml' => ['standard' => 'Required'],
         'PDO' => ['spl' => 'Required'], 'pdo_sqlite' => ['pdo' => 'Required'],
@@ -1257,7 +1274,7 @@ class ReflectionExtension implements Reflector {
         'dom' => ['libxml' => 'Required', 'lexbor' => 'Required', 'domxml' => 'Conflicts'],
         'xml' => ['libxml' => 'Required'], 'xmlreader' => ['dom' => 'Required', 'libxml' => 'Required'],
         'xmlwriter' => ['libxml' => 'Required'], 'zip' => ['pcre' => 'Required'],
-    ];
+    ]; }
     public function info(): void { __reflect_ext('info', $this->name); }
     public function getClasses(): array {
         $o = [];
@@ -1272,7 +1289,7 @@ class ReflectionExtension implements Reflector {
         return $o;
     }
     public function getINIEntries(): array { return __reflect_ext('ini', $this->name); }
-    public function getDependencies(): array { return self::__DEPS[$this->name] ?? []; }
+    public function getDependencies(): array { return self::__deps()[$this->name] ?? []; }
     public function isPersistent(): bool { return true; }
     public function isTemporary(): bool { return false; }
     public function __toString(): string { return 'Extension [ <persistent> extension #0 ' . $this->name . " ] {\n}\n"; }

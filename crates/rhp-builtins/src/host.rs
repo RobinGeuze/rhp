@@ -504,6 +504,13 @@ pub trait Host {
     /// on a class name does not count).
     fn class_method_private_inherited(&self, class_id: u32, method: &[u8]) -> bool;
 
+    /// Whether a class's method `method` is a prelude stand-in php's class
+    /// does not have (a handler's `__get`, `__call`, `offsetGet`…), which
+    /// `method_exists()` and Reflection do not see.
+    fn class_method_hidden(&self, _class_id: u32, _method: &[u8]) -> bool {
+        false
+    }
+
     /// Whether a class id declares a property — instance or static
     /// (case-sensitive, flattened over the inheritance chain).
     fn class_has_property(&self, class_id: u32, prop: &[u8]) -> bool;
@@ -637,6 +644,18 @@ pub trait Host {
     ) -> Result<Value, Thrown> {
         let _ = (op, this, args);
         Err(Thrown::error("Error", "Fibers are not available"))
+    }
+
+    /// A `Generator` method run on `this` (Zend/zend_generators.c; the
+    /// engine owns generators).
+    fn generator_method(
+        &mut self,
+        this: &rhp_values::ObjectHandle,
+        name: &[u8],
+        args: &[Value],
+    ) -> Result<Value, Thrown> {
+        let _ = (this, name, args);
+        Err(Thrown::error("Error", "Generators are not available"))
     }
 
     /// The class name of an object value, if any (for `instanceof`-style checks

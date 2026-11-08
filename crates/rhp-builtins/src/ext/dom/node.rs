@@ -459,6 +459,7 @@ pub fn update_document_after_clone(original: &DomObject, clone: &DomObject) {
             *p = props;
         }
         (*dst).class_type = (*src).class_type;
+        (*dst).modern_handlers = (*src).modern_handlers;
     }
 }
 

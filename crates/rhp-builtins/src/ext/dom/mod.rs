@@ -1300,6 +1300,19 @@ pub fn constants() -> Vec<(&'static str, Value)> {
     ]
 }
 
+/// php_new_dom_dump_node_to_str: the serializer behind a modern
+/// document's libxml handlers (SimpleXML's asXML uses it too).
+pub fn modern_dump_to_str(
+    document: *mut crate::ext::libxml::node::RefObj,
+    node: *mut crate::ext::libxml::sys::XmlNode,
+    options: std::ffi::c_int,
+    format: bool,
+    encoding: *const u8,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    let p = nscompat::of(document).map(|p| &*p);
+    xml_serializer::dump_to_str(node, options, format, encoding, false, p)
+}
+
 pub const PRELUDE_PHP: &str = concat!(
     "namespace {\n",
     include_str!("prelude.php"),

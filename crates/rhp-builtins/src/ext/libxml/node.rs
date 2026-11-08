@@ -89,6 +89,10 @@ pub struct RefObj {
     pub class_type: ClassType,
     pub private_data: *mut PrivateHeader,
     pub quirks_mode: QuirksMode,
+    /// `handlers` is php_new_dom_default_document_handlers (set with the
+    /// modern class by dom_set_xml_class; Dom\import_simplexml keeps
+    /// libxml's).
+    pub modern_handlers: bool,
 }
 
 /// `php_libxml_node_ptr`: `node->_private` points here.
@@ -466,6 +470,7 @@ pub fn increment_doc_ref(object: &NodeObject, docp: *mut XmlDoc) -> u32 {
             class_type: ClassType::Unset,
             private_data: ptr::null_mut(),
             quirks_mode: QuirksMode::NoQuirks,
+            modern_handlers: false,
         })));
         1
     } else {

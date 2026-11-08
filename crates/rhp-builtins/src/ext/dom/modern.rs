@@ -92,6 +92,7 @@ fn new_document_object(
     unsafe {
         let r = d.document();
         (*r).class_type = ClassType::Modern;
+        (*r).modern_handlers = true;
         (*r).private_data = private;
     }
     Ok(v)
@@ -254,7 +255,10 @@ fn xml_load(cx: &mut Cx, args: &[Value], file: bool) -> Result<Value, Thrown> {
     }
     let v = instantiate(cx, b"Dom\\XMLDocument", doc.cast(), ptr::null_mut())?;
     let d = intern_of(&v).expect("a DOM document");
-    unsafe { (*d.document()).class_type = ClassType::Modern };
+    unsafe {
+        (*d.document()).class_type = ClassType::Modern;
+        (*d.document()).modern_handlers = true;
+    }
     nscompat::convert_to_modern(d.document(), doc);
     Ok(v)
 }
@@ -268,13 +272,26 @@ pub fn xml_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<Va
 }
 
 /// php_new_dom_dump_node_to_str and friends with the document's settings.
+/// A document Dom\import_simplexml made modern keeps libxml's handlers.
 fn dump(
+    cx: &mut Cx,
     d: &DomObject,
     node: *mut XmlNode,
     options: c_int,
     format: bool,
     encoding: *const u8,
 ) -> Result<Option<Vec<u8>>, Thrown> {
+    let document = d.document();
+    if !document.is_null() && unsafe { !(*document).modern_handlers } {
+        let docp = unsafe { (*node).doc };
+        return cx.with_libxml(|| {
+            if node == docp.cast() {
+                lxn::dump_doc_to_str(docp, options, encoding)
+            } else {
+                lxn::dump_node_to_str(docp, node, format, encoding)
+            }
+        });
+    }
     let p = private(d).map(|p| &*p);
     super::xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
@@ -294,7 +311,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
                 return throw(cx, WRONG_DOCUMENT_ERR, intern.strict());
             }
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
-            let r = dump(&intern, node, 0, format, (*docp).encoding);
+            let r = dump(cx, &intern, node, 0, format, (*docp).encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
             r?
         } else {
@@ -306,7 +323,7 @@ pub fn save_xml(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
                 converted |= super::xml_serializer::XML_SAVE_FORMAT;
             }
             let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
-            let r = dump(&intern, docn, converted, format, (*docp).encoding);
+            let r = dump(cx, &intern, docn, converted, format, (*docp).encoding);
             sys::rhp_xml_set_save_no_empty_tags(old);
             r?
         }
@@ -406,6 +423,7 @@ pub fn save_xml_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
     let data = unsafe {
         let old = sys::rhp_xml_set_save_no_empty_tags(no_empty);
         let r = dump(
+            cx,
             &intern,
             docn,
             super::xml_serializer::XML_SAVE_AS_XML,
@@ -1017,6 +1035,12 @@ pub fn doc_import_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Valu
     let (intern, docn) = get_obj(cx, this)?;
     let docp: *mut XmlDoc = docn.cast();
     let nodev = arg(args, 0);
+    if matches!(nodev, Value::Null) {
+        // The stub says ?Node, but ZPP's "O" refuses null.
+        return Err(Thrown::type_error(
+            "Dom\\Document::importNode(): Argument #1 ($node) must be of type Dom\\Node, null given",
+        ));
+    }
     let (_, nodep) = get_obj(cx, &nodev)?;
     let recursive = boolean(args, 1);
     unsafe {

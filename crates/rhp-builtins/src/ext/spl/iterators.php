@@ -210,7 +210,7 @@ abstract class SplHeap implements Iterator, Countable {
     public function __debugInfo(): array {
         $h = [];
         for ($i = 0; $i < $this->__n; $i++) { $h[] = $this->__h[$i]; }
-        return ["\0SplHeap\0flags" => 0, "\0SplHeap\0isCorrupted" => $this->__corrupt, "\0SplHeap\0heap" => $h];
+        return __spl_user_props($this) + ["\0SplHeap\0flags" => 0, "\0SplHeap\0isCorrupted" => $this->__corrupt, "\0SplHeap\0heap" => $h];
     }
     // spl_heap_serialize_internal / spl_heap_unserialize_internal_state
     public function __serialize(): array {
@@ -302,7 +302,7 @@ class SplPriorityQueue implements Iterator, Countable {
     public function __debugInfo(): array {
         $h = [];
         for ($i = 0; $i < $this->__n; $i++) { $h[] = $this->__h[$i]; }
-        return ["\0SplPriorityQueue\0flags" => $this->__flags, "\0SplPriorityQueue\0isCorrupted" => $this->__corrupt, "\0SplPriorityQueue\0heap" => $h];
+        return __spl_user_props($this) + ["\0SplPriorityQueue\0flags" => $this->__flags, "\0SplPriorityQueue\0isCorrupted" => $this->__corrupt, "\0SplPriorityQueue\0heap" => $h];
     }
     public function __serialize(): array {
         $this->__check();
@@ -907,6 +907,6 @@ class MultipleIterator implements Iterator {
     public function __debugInfo() {
         $st = [];
         foreach ($this->__its as $h => $it) { $st[] = ['obj' => $it, 'inf' => $this->__infos[$h]]; }
-        return ["\0SplObjectStorage\0storage" => $st];
+        return __spl_user_props($this) + ["\0SplObjectStorage\0storage" => $st];
     }
 }

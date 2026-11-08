@@ -64,6 +64,7 @@ import datetime
 import difflib
 import fnmatch
 import hashlib
+import math
 import os
 import re
 import shlex
@@ -80,9 +81,12 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 TIMEOUT = 300
 # A time "of the run" is within SLACK seconds of the command's start and end,
-# or a whole number of minutes (a TTL, a schedule) up to HORIZON after it.
+# or after it: by up to SHORT seconds (a short TTL; tagged without its value,
+# which a window of a few seconds can't pin down), or by whole days, hours or
+# minutes up to HORIZON (a TTL, a schedule).
 SLACK = 2
 HORIZON = 400 * 86400
+SHORT = 300
 
 
 # --- the console list -------------------------------------------------------
@@ -114,37 +118,48 @@ def load(app):
 
 def run_offset(t, window):
     """The offset of time t from the run `window` (start, end): 0 when t is
-    within it, else a whole number of minutes ahead that puts it there (an
-    expiry, a schedule); None when t is no time of the run. Only ahead: a run
-    that spans a minute boundary would also take fixed past dates on the
-    minute (post dates) for times of the run."""
+    within it; "short" when it is up to SHORT seconds after it; else the
+    roundest offset ahead that puts it there (an expiry, a schedule); None
+    when t is no time of the run. Only ahead: a run that spans a minute
+    boundary would also take fixed past dates on the minute (post dates) for
+    times of the run. The roundest offset, not the nearest to the window's
+    middle, so that a long run and a short one give the same TTL the same
+    tag."""
     start, end = window[0] - SLACK, window[1] + SLACK
     if start <= t <= end:
         return 0
-    d = round((t - (start + end) / 2) / 60) * 60
-    if 0 < d <= HORIZON and start <= t - d <= end:
-        return d
+    if end < t <= end + SHORT:
+        return "short"
+    lo, hi = t - end, t - start
+    for unit in (86400, 3600, 60):
+        d = math.ceil(lo / unit) * unit
+        if 0 < d <= hi and d <= HORIZON:
+            return d
     return None
 
 
-def now_tag(tag, t, window, orig):
+def now_tag(tag, t, window, orig, keep):
+    if orig in keep:
+        return orig
     d = run_offset(t, window)
     if d is None:
         return orig
+    if d == "short":
+        return f"<{tag}+short>"
     return f"<{tag}>" if d == 0 else f"<{tag}{d:+d}s>"
 
 
-def now_epoch(window):
-    return lambda m: now_tag("NOW", int(m.group(0)), window, m.group(0))
+def now_epoch(window, keep):
+    return lambda m: now_tag("NOW", int(m.group(0)), window, m.group(0), keep)
 
 
-def now_datetime(window):
+def now_datetime(window, keep):
     def sub(m):
         try:
             t = datetime.datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return m.group(0)
-        return now_tag("NOWDT", t.replace(tzinfo=datetime.timezone.utc).timestamp(), window, m.group(0))
+        return now_tag("NOWDT", t.replace(tzinfo=datetime.timezone.utc).timestamp(), window, m.group(0), keep)
 
     return sub
 
@@ -362,8 +377,9 @@ def file_text(path, st):
         return f"<binary, {len(data)} bytes, md5 {hashlib.md5(data).hexdigest()}>"
 
 
-def masked(text, where, cid, masks, binaries, window=None):
-    """`window`: the command's (start, end) Unix times, for the builtin masks."""
+def masked(text, where, cid, masks, binaries, window=None, keep=frozenset()):
+    """`window`: the command's (start, end) Unix times, for the builtin masks.
+    `keep`: times the builtin masks leave alone (see setup_times)."""
     if where != "paths":
         for b in binaries:
             text = text.replace(b, "<PHP_BINARY>")
@@ -371,10 +387,22 @@ def masked(text, where, cid, masks, binaries, window=None):
         if where in m["in"] and ("commands" not in m or cid in m["commands"]):
             if "timed" in m:
                 if window is not None:
-                    text = m["re"].sub(m["timed"](window), text)
+                    text = m["re"].sub(m["timed"](window, keep), text)
             else:
                 text = m["re"].sub(m["sub"], text)
     return text
+
+
+def setup_times(work, rel, masks):
+    """The times in the pristine copy of a changed file. They were written by
+    setup, not by the command, so they are the same under php and rhp and are
+    not masked: by chance one run's window could make one of them look like a
+    TTL of that run and the other run's not."""
+    st = work.pindex.get(rel)
+    if st is None or not stat.S_ISREG(st.st_mode):
+        return frozenset()
+    text = file_text(work.pristine / rel, st)
+    return frozenset(x.group(0) for m in masks if "timed" in m for x in m["re"].finditer(text))
 
 
 def run_one(work, engine, cmd, binaries):
@@ -398,7 +426,8 @@ def run_one(work, engine, cmd, binaries):
         if any(fnmatch.fnmatch(str(rel), g) for g in spec.get("ignore", [])):
             continue
         name = masked(str(rel), "paths", cid, masks, binaries, window)
-        text = masked(file_text(work.run_dir / rel, st), "files", cid, masks, binaries, window)
+        keep = setup_times(work, rel, masks)
+        text = masked(file_text(work.run_dir / rel, st), "files", cid, masks, binaries, window, keep)
         if st is not None and not stat.S_ISLNK(st.st_mode):
             # Permissions too (mkdir, chmod, tempnam modes).
             text = f"<mode {stat.S_IMODE(st.st_mode):04o}>\n{text}"

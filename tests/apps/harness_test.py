@@ -157,10 +157,10 @@ class Platform(unittest.TestCase):
 class ConsoleTimeMasks(unittest.TestCase):
     W = (1_800_000_000.4, 1_800_000_003.9)  # the command ran for 3.5 seconds
 
-    def mask(self, text, window=W):
+    def mask(self, text, window=W, keep=frozenset()):
         spec = [{"name": n, "re": console.BUILTINS[n][0], "timed": console.BUILTINS[n][1], "in": ["stdout"]}
                 for n in ("now-epoch", "now-datetime")]
-        return console.masked(text, "stdout", "c", spec, [], window)
+        return console.masked(text, "stdout", "c", spec, [], window, keep)
 
     def test_during_the_run(self):
         self.assertEqual(self.mask("t=1800000002 at 2027-01-15 08:00:03"), "t=<NOW> at <NOWDT>")
@@ -172,11 +172,25 @@ class ConsoleTimeMasks(unittest.TestCase):
         self.assertEqual(self.mask("1800003601 1800007200"), "<NOW+3600s> <NOW+7200s>")
         self.assertEqual(self.mask("2027-01-15 09:00:02"), "<NOWDT+3600s>")
 
+    def test_short_ttl(self):
+        # Cache::remember('r', 10, ...) or WordPress's 5 s error cache: a window
+        # of seconds can't tell +5 from +10, so both runs get the same tag.
+        self.assertEqual(self.mask("1800000012 1800000300"), "<NOW+short> <NOW+short>")
+        self.assertEqual(self.mask("1800000013", (1_800_000_001.2, 1_800_000_004.8)), "<NOW+short>")
+
+    def test_long_run_keeps_the_round_offset(self):
+        # A 2-minute run: now+1h is still +3600, not the minute nearest the middle.
+        self.assertEqual(self.mask("1800003630", (1_800_000_000.0, 1_800_000_120.0)), "<NOW+3600s>")
+
+    def test_setup_times_kept(self):
+        self.assertEqual(self.mask("1800000002 1800003601", keep={"1800003601"}), "<NOW> 1800003601")
+
     def test_other_times_kept(self):
-        # Not of the run (away but not by whole minutes), before it, and
+        # Not of the run (away, past the short-TTL range, but not by whole
+        # minutes), before it, and
         # beyond the horizon.
-        self.assertEqual(self.mask("1800000030 1800086430 1799913601 1799000000 1899999960"),
-                         "1800000030 1800086430 1799913601 1799000000 1899999960")
+        self.assertEqual(self.mask("1800000333 1800086430 1799913601 1799000000 1899999960"),
+                         "1800000333 1800086430 1799913601 1799000000 1899999960")
         self.assertEqual(self.mask("2026-01-01 00:00:00"), "2026-01-01 00:00:00")
 
     def test_without_a_window_nothing_is_masked(self):

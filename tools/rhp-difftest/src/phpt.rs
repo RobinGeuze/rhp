@@ -1949,9 +1949,17 @@ fn run_test_file(
             spec_matches(&phpt, php) == Some(true) && spec_matches(&phpt, rhp) == Some(true)
         }
         (true, Some((ph, pb)), Some((rh, rb))) => {
-            normalise(ph) == normalise(rh)
-                && spec_matches(&phpt, pb) == Some(true)
-                && spec_matches(&phpt, rb) == Some(true)
+            // A plain EXPECT counts here too: the bodies are then both exactly
+            // what the test wants, and only the headers' dates differed.
+            let body_ok = |b: &[u8]| match spec_matches(&phpt, b) {
+                Some(ok) => ok,
+                None => phpt
+                    .section("EXPECT")
+                    .is_some_and(|w| normalise(w) == normalise(b)),
+            };
+            mask_http_dates(&normalise(ph)) == mask_http_dates(&normalise(rh))
+                && body_ok(pb)
+                && body_ok(rb)
         }
         _ => false,
     };
@@ -2071,6 +2079,32 @@ fn is_word(b: u8) -> bool {
 }
 
 /// run-tests.php's `is_flaky_output()`: words of a transient failure.
+/// Headers with HTTP dates ("Sun, 08 Nov 2026 17:01:02 GMT") replaced by a
+/// placeholder: a cookie's expires= or an Expires: header is "now + n", and
+/// php's run and rhp's can fall in different seconds.
+fn mask_http_dates(head: &[u8]) -> Vec<u8> {
+    const SHAPE: &[u8] = b"Aaa, 00 Aaa 0000 00:00:00 GMT";
+    let fits = |w: &[u8]| {
+        w.iter().zip(SHAPE).all(|(&b, &s)| match s {
+            b'A' | b'a' => b.is_ascii_alphabetic(),
+            b'0' => b.is_ascii_digit(),
+            _ => b == s,
+        })
+    };
+    let mut out = Vec::with_capacity(head.len());
+    let mut i = 0;
+    while i < head.len() {
+        if head.len() - i >= SHAPE.len() && fits(&head[i..i + SHAPE.len()]) {
+            out.extend_from_slice(b"<HTTP-DATE>");
+            i += SHAPE.len();
+        } else {
+            out.push(head[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn is_flaky_output(out: &[u8]) -> bool {
     let out = out.to_ascii_lowercase();
     [

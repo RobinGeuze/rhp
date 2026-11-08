@@ -57,3 +57,8 @@ xmlrpc-getposts
 comment-post
 ajax-heartbeat
 @files
+admin-post-edit
+admin-options
+admin-upload
+admin-site-editor
+admin-health

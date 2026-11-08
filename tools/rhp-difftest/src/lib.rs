@@ -20,6 +20,7 @@
 //! strings) are built on top of these in the `rhp-difftest` binary and in
 //! the crate's integration tests.
 
+pub mod api;
 pub mod app;
 pub mod gen;
 pub mod golden;

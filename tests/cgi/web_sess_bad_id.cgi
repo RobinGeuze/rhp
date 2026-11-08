@@ -1,0 +1,1 @@
+env HTTP_COOKIE=PHPSESSID=bad$chars!

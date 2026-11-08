@@ -856,8 +856,12 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
         // OnSetExceptionStringParamMaxLen.
         b"zend.exception_string_param_max_len" if !(0..=1_000_000).contains(&c_atol(v)) => Err(()),
         b"arg_separator.output" if v.is_empty() => Err(()),
-        // OnUpdateDefaultCharset.
-        b"default_charset" if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) => Err(()),
+        // OnUpdateDefaultCharset, OnUpdateDefaultMimeTye (bug #81518).
+        b"default_charset" | b"default_mimetype"
+            if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) =>
+        {
+            Err(())
+        }
         b"date.timezone" if !tz_valid(v) => Err(()),
         _ => Ok(()),
     }

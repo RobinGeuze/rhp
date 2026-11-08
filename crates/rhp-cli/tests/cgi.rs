@@ -19,9 +19,19 @@
 //! - `nocgi`: command-line mode (no CGI variables at all); `arg A` adds an
 //!   argument after the options.
 //! - `cwd DIR`: the directory both binaries start in.
+//! - `closeafter N`: the client goes away after reading N bytes of the
+//!   response (stdout is closed); the rest of stdout is not compared.
+//! - `ttfb`: the response must start arriving while the script still runs:
+//!   stdin gets a line only once the first stdout bytes came, so a script
+//!   that waits for it on `php://stdin` hangs if the engine holds output
+//!   back (the run then fails after 10 seconds).
+//! - `log`: `CGI_LOG` names a fresh file; what the script wrote there is
+//!   compared too (what a script does after its client went away).
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use rhp_difftest::{php_cgi, replace_bytes, spawn, Ran};
 
@@ -33,6 +43,9 @@ struct Spec {
     stdin: Vec<u8>,
     nocgi: bool,
     cwd: Option<String>,
+    close_after: Option<usize>,
+    ttfb: bool,
+    log: bool,
 }
 
 fn unescape(s: &str) -> Vec<u8> {
@@ -66,6 +79,9 @@ fn spec(php: &Path) -> Spec {
                 }
                 "nocgi" => s.nocgi = true,
                 "cwd" => s.cwd = Some(rest.to_string()),
+                "closeafter" => s.close_after = Some(rest.parse().expect("closeafter count")),
+                "ttfb" => s.ttfb = true,
+                "log" => s.log = true,
                 "" => {}
                 other => panic!("{}: unknown directive {other}", php.display()),
             }
@@ -109,7 +125,123 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Ran {
     for (k, v) in &s.env {
         cmd.env(k, v);
     }
-    spawn(&mut cmd, Some(&s.stdin)).unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()))
+    let log = s.log.then(|| {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("rhp-cgi-log-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        cmd.env("CGI_LOG", &p);
+        p
+    });
+    let spawned = if let Some(n) = s.close_after {
+        spawn_close_after(&mut cmd, &s.stdin, n)
+    } else if s.ttfb {
+        spawn_ttfb(&mut cmd)
+    } else {
+        spawn(&mut cmd, Some(&s.stdin))
+    };
+    let mut ran = spawned.unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
+    // `-T`'s timing.
+    let tag = b"Elapsed time: ";
+    if let Some(at) = ran.stderr.windows(tag.len()).position(|w| w == tag) {
+        let from = at + tag.len();
+        let to = ran.stderr[from..]
+            .iter()
+            .position(|&b| b == b' ')
+            .map_or(ran.stderr.len(), |n| from + n);
+        ran.stderr.splice(from..to, b"N".iter().copied());
+    }
+    if let Some(p) = log {
+        ran.stdout.extend_from_slice(b"\n--- CGI_LOG\n");
+        ran.stdout
+            .extend_from_slice(&std::fs::read(&p).unwrap_or_else(|_| b"(none)".to_vec()));
+        let _ = std::fs::remove_file(&p);
+    }
+    ran
+}
+
+/// stderr, read on a thread of its own so the child never blocks on it.
+fn drain(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = r.read_to_end(&mut v);
+        v
+    })
+}
+
+/// `closeafter`: read `n` bytes of stdout, then close it.
+fn spawn_close_after(cmd: &mut Command, stdin: &[u8], n: usize) -> std::io::Result<Ran> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut pipe = child.stdin.take().unwrap();
+    let body = stdin.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = pipe.write_all(&body);
+    });
+    let err = drain(child.stderr.take().unwrap());
+    let mut out = child.stdout.take().unwrap();
+    let mut got = vec![0u8; n];
+    let mut have = 0;
+    while have < n {
+        match out.read(&mut got[have..])? {
+            0 => break,
+            k => have += k,
+        }
+    }
+    got.truncate(have);
+    drop(out);
+    let status = child.wait()?;
+    let _ = writer.join();
+    Ok(Ran {
+        stdout: got,
+        stderr: err.join().unwrap_or_default(),
+        status: status.code(),
+    })
+}
+
+/// `ttfb`: stdin gets its line only after the first stdout bytes.
+fn spawn_ttfb(cmd: &mut Command) -> std::io::Result<Ran> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut pipe = child.stdin.take().unwrap();
+    let err = drain(child.stderr.take().unwrap());
+    let mut out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut all = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match out.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => {
+                    all.extend_from_slice(&buf[..k]);
+                    let _ = tx.send(());
+                }
+            }
+        }
+        all
+    });
+    let early = rx.recv_timeout(Duration::from_secs(10)).is_ok();
+    if early {
+        let _ = pipe.write_all(b"go\n");
+    } else {
+        let _ = child.kill();
+    }
+    drop(pipe);
+    let status = child.wait()?;
+    let mut stdout = reader.join().unwrap_or_default();
+    if !early {
+        stdout.splice(0..0, b"(no output while the script ran) ".iter().copied());
+    }
+    Ok(Ran {
+        stdout,
+        stderr: err.join().unwrap_or_default(),
+        status: status.code(),
+    })
 }
 
 /// The `X.Y.Z` version php-cgi reports for `-n -v` (`PHP 8.5.12 (cgi-fcgi) …`).
@@ -280,6 +412,56 @@ fn uploads_are_deleted_after_the_request() {
         left.sort();
         assert_eq!(left, ["kept.txt"], "{}", bin.display());
         std::fs::remove_file(tmp.join("kept.txt")).unwrap();
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// A form body of 16 KiB or more goes to a temporary file in
+/// `upload_tmp_dir` while the request runs (php's `php://temp` request
+/// body), deleted when it ends; a smaller one stays in memory.
+#[test]
+fn post_bodies_spill_to_a_temporary_file() {
+    let base = std::env::temp_dir().join(format!("rhp-cgi-spill-{}", std::process::id()));
+    let tmp = base.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let script = base.join("spill.php");
+    std::fs::write(
+        &script,
+        "<?php\necho strlen($_POST['a']), ' ', count(glob(__DIR__ . '/tmp/php*')), \"\\n\";\n",
+    )
+    .unwrap();
+    let mut engines: Vec<(PathBuf, Vec<&str>)> =
+        vec![(PathBuf::from(env!("CARGO_BIN_EXE_rhp")), vec!["--cgi"])];
+    if let Some(php) = php_cgi() {
+        engines.push((php, vec![]));
+    }
+    for (len, files) in [(16383, 0), (16384, 1), (40000, 1)] {
+        let body = format!("a={}", "x".repeat(len - 2));
+        let s = Spec {
+            env: vec![
+                ("REDIRECT_STATUS".into(), "1".into()),
+                ("REQUEST_METHOD".into(), "POST".into()),
+                (
+                    "SCRIPT_FILENAME".into(),
+                    script.to_string_lossy().into_owned(),
+                ),
+                (
+                    "CONTENT_TYPE".into(),
+                    "application/x-www-form-urlencoded".into(),
+                ),
+                ("CONTENT_LENGTH".into(), body.len().to_string()),
+            ],
+            ini: vec![format!("upload_tmp_dir={}", tmp.display())],
+            stdin: body.into_bytes(),
+            ..Spec::default()
+        };
+        for (bin, pre) in &engines {
+            let r = run(bin, pre, &s);
+            let out = String::from_utf8_lossy(&r.stdout).into_owned();
+            let want = format!("{} {files}\n", len - 2);
+            assert!(out.ends_with(&want), "{} {len}: {out}", bin.display());
+            assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+        }
     }
     std::fs::remove_dir_all(&base).unwrap();
 }

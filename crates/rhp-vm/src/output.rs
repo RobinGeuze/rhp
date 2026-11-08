@@ -185,16 +185,20 @@ impl Vm {
     /// The bottom of php_output_op: hand bytes to the SAPI.
     fn output_sapi_write(&mut self, bytes: &[u8]) {
         self.emit_stdout(bytes);
+        if self.output.flags & O_DISABLED != 0 {
+            // The client went away (php bailed out of the write).
+            return;
+        }
         if self.output.flags & O_IMPLICITFLUSH != 0 {
             self.sapi_flush();
         }
         self.output.flags |= O_SENT;
     }
 
-    /// sapi_flush: push buffered response bytes to the client (the
-    /// installed SAPI's `flush`).
-    fn sapi_flush(&mut self) {
-        self.sapi.sapi.flush();
+    /// php_output_set_status(PHP_OUTPUT_DISABLED): nothing more reaches
+    /// the SAPI.
+    pub(crate) fn output_set_disabled(&mut self) {
+        self.output.flags = (self.output.flags & !0xf) | O_DISABLED;
     }
 
     /// php_request_startup's output setup: the `output_handler` /

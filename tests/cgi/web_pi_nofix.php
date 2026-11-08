@@ -1,0 +1,1 @@
+<?php foreach (['SCRIPT_FILENAME','SCRIPT_NAME','PATH_INFO','PATH_TRANSLATED','PHP_SELF','REQUEST_URI','ORIG_PATH_INFO','ORIG_SCRIPT_NAME','ORIG_SCRIPT_FILENAME','ORIG_PATH_TRANSLATED','DOCUMENT_ROOT'] as $k) echo $k, '=', var_export($_SERVER[$k] ?? null, true), "\n"; echo __FILE__, "\n", getcwd(), "\n";

@@ -51,7 +51,7 @@ fn modules_are_php_modules() {
     // Modules rhp has but does not report as loaded, until they are
     // complete enough that code testing `extension_loaded()` should use
     // them.
-    const UNREPORTED_MODULES: &[&str] = &["readline", "sockets"];
+    const UNREPORTED_MODULES: &[&str] = &["sockets"];
     let names: Vec<&str> = modules().iter().map(|md| md.name).collect();
     let mut seen = std::collections::HashSet::new();
     for n in &names {

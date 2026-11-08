@@ -1,0 +1,15 @@
+env HTTP_HOST=example.com
+env REQUEST_URI=/app/index.php/foo/bar?x=1&y[]=2
+env SCRIPT_NAME=/app/index.php
+env PATH_INFO=/foo/bar
+env QUERY_STRING=x=1&y[]=2&a.b=3&c+d=4
+env HTTP_X_FORWARDED_FOR=1.2.3.4
+env HTTP_ACCEPT=text/html
+env SERVER_NAME=example.com
+env SERVER_PORT=80
+env SERVER_PROTOCOL=HTTP/1.1
+env REMOTE_ADDR=127.0.0.1
+env DOCUMENT_ROOT={DIR}
+env GATEWAY_INTERFACE=CGI/1.1
+env HTTPS=on
+env HTTP_CONTENT_TYPE=foo

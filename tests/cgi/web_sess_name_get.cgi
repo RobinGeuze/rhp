@@ -1,0 +1,1 @@
+env QUERY_STRING=PHPSESSID=fromquery123

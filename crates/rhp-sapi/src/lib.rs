@@ -171,19 +171,62 @@ impl Sapi for CliSapi {
         0
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
-        let mut so = std::io::stdout().lock();
-        let _ = so.write_all(data);
-        let _ = so.flush();
+    /// `sapi_cli_ub_write`: write(2) on descriptor 1 until done, retrying
+    /// on EINTR, and on EAGAIN once the descriptor is writable.
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        // What went through Rust's stdout (the STDOUT stream) goes first.
+        let _ = std::io::stdout().flush();
+        write_fd(1, data)
     }
 
-    fn flush(&mut self) {
-        let _ = std::io::stdout().flush();
+    fn aborted_exit_status(&self) -> Option<i32> {
+        Some(255)
     }
 
     fn exits_on_hard_limit(&self) -> bool {
         true
     }
+}
+
+/// php-cli's and php-cgi's `PHP_WRITE_STDOUT` writes: all of `data` to
+/// `fd`, retrying on EINTR, and on EAGAIN once `fd` is writable
+/// (`sapi_cli_select`, waiting up to `default_socket_timeout`). False: the
+/// write failed (the client went away).
+pub(crate) fn write_fd(fd: i32, mut data: &[u8]) -> bool {
+    while !data.is_empty() {
+        // SAFETY: writes from a live slice.
+        let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
+        if n > 0 {
+            data = &data[n as usize..];
+            continue;
+        }
+        let err = std::io::Error::last_os_error().raw_os_error();
+        if n < 0 && err == Some(libc::EINTR) {
+            continue;
+        }
+        if n < 0 && err == Some(libc::EAGAIN) && wait_writable(fd) {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+/// `sapi_cli_select`: wait until `fd` is writable, for at most
+/// `default_socket_timeout` seconds.
+fn wait_writable(fd: i32) -> bool {
+    let secs = rhp_builtins::ini_value(b"default_socket_timeout")
+        .flatten()
+        .map(|v| rhp_builtins::c_atol(&v))
+        .unwrap_or(60);
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let ms = secs.saturating_mul(1000).clamp(0, i32::MAX as i64) as i32;
+    // SAFETY: one live pollfd.
+    unsafe { libc::poll(&mut p, 1, ms) != -1 }
 }
 
 /// rhp-builtins as the compiler sees it.
@@ -605,14 +648,9 @@ impl Sapi for PreloadSapi {
         false
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
+    fn ub_write(&mut self, data: &[u8]) -> bool {
         let mut so = std::io::stdout().lock();
-        let _ = so.write_all(data);
-        let _ = so.flush();
-    }
-
-    fn flush(&mut self) {
-        let _ = std::io::stdout().flush();
+        so.write_all(data).and_then(|_| so.flush()).is_ok()
     }
 
     fn exits_on_hard_limit(&self) -> bool {

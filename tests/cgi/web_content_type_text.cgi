@@ -1,0 +1,1 @@
+ini default_charset=ISO-8859-1

@@ -32,6 +32,7 @@ runs:
         # libsqlite3 (libsqlite3.a) is linked statically too.
         # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
         # static archive. libgd too: its codecs have no complete static set.
+        # libedit (readline) is linked dynamically, as php does.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -48,7 +49,8 @@ runs:
           libzip-dev \
           libgd-dev \
           libgmp-dev \
-          libsqlite3-dev
+          libsqlite3-dev \
+          libedit-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>

@@ -1,0 +1,1 @@
+<?php ini_set('session.serialize_handler', 'php_serialize'); session_id('serid'); ini_set('session.save_path', sys_get_temp_dir()); session_start(); $_SESSION['o'] = new ArrayObject([1]); $_SESSION['f']=1.5; echo session_encode(), "\n"; session_decode('a:1:{s:1:"z";i:1;}'); var_dump($_SESSION); session_destroy();

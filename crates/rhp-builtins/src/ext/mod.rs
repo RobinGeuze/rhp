@@ -431,10 +431,10 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             name: "readline",
             cli_only: false,
             functions: readline::register,
-            constants: no_constants,
+            constants: readline::constants,
             prelude_php: "",
             wrappers: no_wrappers,
-            reset: no_state,
+            reset: readline::reset_state,
             object_freed: None,
         },
         ModuleDef {

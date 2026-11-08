@@ -15,11 +15,15 @@ use rhp_builtins::main::sapi::{cgi_request_headers, RequestInfo, Response, Sapi}
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, REQUIRED};
 use crate::{run_request, Outcome, Request, Script};
 
-/// php-cgi's response writer: body bytes buffered like stdio's `stdout`
-/// and flushed at `flush()` / request end.
+/// php-cgi's response writer: every write goes straight to stdout
+/// (`sapi_cgi_ub_write`), so the client sees output as it is produced.
 #[derive(Default)]
 pub struct CgiSapi {
-    buf: Vec<u8>,
+    /// A header write failed: the next body write or flush reports it.
+    failed: bool,
+    /// Serving a CGI request (not run from a shell): php-cgi then leaves
+    /// out its `additional_functions` (`dl`).
+    cgi_request: bool,
 }
 
 impl CgiSapi {
@@ -28,11 +32,19 @@ impl CgiSapi {
         Self::default()
     }
 
-    fn put(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-        if self.buf.len() >= 1 << 16 {
-            self.flush();
+    /// A CGI SAPI serving a request from a web server (`dl` absent).
+    pub fn for_request() -> Self {
+        CgiSapi {
+            cgi_request: true,
+            ..Self::default()
         }
+    }
+
+    fn put(&mut self, data: &[u8]) -> bool {
+        if !self.failed && !crate::write_fd(1, data) {
+            self.failed = true;
+        }
+        !self.failed
     }
 }
 
@@ -63,15 +75,18 @@ impl Sapi for CgiSapi {
         CGI_INI_DEFAULTS.to_vec()
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
-        self.put(data);
+    fn additional_functions(&self) -> bool {
+        !self.cgi_request
     }
 
-    fn flush(&mut self) {
-        let mut so = std::io::stdout().lock();
-        let _ = so.write_all(&self.buf);
-        let _ = so.flush();
-        self.buf.clear();
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        self.put(data)
+    }
+
+    /// `sapi_cgi_flush`: fflush(stdout), which holds nothing of the body.
+    fn flush(&mut self) -> bool {
+        let _ = std::io::stdout().flush();
+        !self.failed
     }
 
     /// `sapi_cgi_send_headers`.
@@ -142,14 +157,6 @@ impl Sapi for CgiSapi {
         }
         out.extend_from_slice(b"\r\n");
         self.put(&out);
-    }
-}
-
-impl Drop for CgiSapi {
-    fn drop(&mut self) {
-        if !self.buf.is_empty() {
-            self.flush();
-        }
     }
 }
 
@@ -452,11 +459,16 @@ struct Opts {
     script_file: Option<String>,
     /// Index of the first non-option argument.
     optind: usize,
+    /// `-b`: FastCGI bind path.
+    bindpath: Option<String>,
+    /// `-T [warmup,]count`: (warmup runs, timed runs).
+    benchmark: Option<(i64, i64)>,
 }
 
-/// php-cgi's option passes: `-d` (skipped for a `-…` query string), the
-/// usage check (`-h`, invalid options; same skip), then in command-line
-/// mode `-C` / `-q` / `-f`. `Err((stdout text, exit code))` to stop.
+/// php-cgi's option passes: `-d` / `-b` (skipped for a `-…` query
+/// string), the usage check (`-h`, invalid options, `-T`; same skip), then
+/// in command-line mode `-C` / `-q` / `-f`. `Err((stdout text, exit code))`
+/// to stop.
 fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String, i32)> {
     let mut o = Opts::default();
     if !skip {
@@ -465,6 +477,7 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
             match g.next(false) {
                 Opt::End => break,
                 Opt::Char(b'd', Some(kv)) => o.ini.push(crate::ini_define(&kv)),
+                Opt::Char(b'b', Some(path)) => o.bindpath = Some(path),
                 _ => {}
             }
         }
@@ -474,6 +487,13 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
                 Opt::End => break,
                 Opt::Invalid => return Err((usage(), 1)),
                 Opt::Char(b'h' | b'?', _) => return Err((usage(), 0)),
+                Opt::Char(b'T', Some(v)) => {
+                    let atoi = |s: &str| rhp_builtins::c_atoi(s.as_bytes()) as i64;
+                    o.benchmark = Some(match v.split_once(',') {
+                        Some((w, n)) => (atoi(w), atoi(n)),
+                        None => (0, atoi(&v)),
+                    });
+                }
                 _ => {}
             }
         }
@@ -576,6 +596,11 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         }
     };
     let ini = opts.ini.clone();
+    if opts.bindpath.is_some() {
+        // php-cgi would listen there as a FastCGI server.
+        eprintln!("rhp --cgi: FastCGI server mode (-b) is not supported");
+        return 1;
+    }
 
     // cgi.force_redirect: only behind a server that sets REDIRECT_STATUS.
     if cgi && opt_bool(&ini, "cgi.force_redirect", true) {
@@ -666,34 +691,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             .take(content_length as u64)
             .read_to_end(&mut body);
     }
-    let mut server = env.0.clone();
-    server.push((
-        b"PHP_SELF".to_vec(),
-        php_self(&env, info.request_uri.as_deref(), fix_pathinfo),
-    ));
-    let request_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-    let request = RequestInfo {
-        server,
-        headers: cgi_request_headers(&env.0),
-        env: env.0.clone(),
-        method: from_env("REQUEST_METHOD"),
-        query_string,
-        cookie: env.get("HTTP_COOKIE"),
-        content_type: info
-            .from_env
-            .then(|| env.get("CONTENT_TYPE").unwrap_or_default()),
-        body,
-        content_length: Some(content_length),
-        authorization: from_env("HTTP_AUTHORIZATION"),
-        request_time,
-        argv,
-        no_headers,
-        response_code: info.response_code,
-        proto_num: 1000,
-    };
+    let server_self = php_self(&env, info.request_uri.as_deref(), fix_pathinfo);
     // php_execute_script: chdir to the script's directory (unless -C).
     let cwd = match std::path::Path::new(&script).parent() {
         Some(dir) if !opts.no_chdir && !dir.as_os_str().is_empty() => {
@@ -702,17 +700,81 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         }
         _ => None,
     };
-    let req = Request {
-        script: Script::File(script),
-        ini,
-        args: Vec::new(),
-        info: Some(request),
-        php_binary: None,
-        cwd,
-        ini_files: None,
-    };
-    match run_request(Box::new(CgiSapi::new()), req) {
-        Outcome::Exit(code) => code,
-        Outcome::CannotRead { .. } => 255,
+    // -T: the request runs warmup + count times in this process (at least
+    // once), and the time the counted runs took goes to stderr.
+    let (mut warmup, mut repeats) = opts.benchmark.unwrap_or((0, 1));
+    let mut start = std::time::Instant::now();
+    let mut exit_status = 0;
+    loop {
+        let mut server = env.0.clone();
+        server.push((b"PHP_SELF".to_vec(), server_self.clone()));
+        let request_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let request = RequestInfo {
+            server,
+            headers: cgi_request_headers(&env.0),
+            env: env.0.clone(),
+            method: from_env("REQUEST_METHOD"),
+            query_string: query_string.clone(),
+            cookie: env.get("HTTP_COOKIE"),
+            content_type: info
+                .from_env
+                .then(|| env.get("CONTENT_TYPE").unwrap_or_default()),
+            // A later run finds stdin already read.
+            body: std::mem::take(&mut body),
+            content_length: Some(content_length),
+            authorization: from_env("HTTP_AUTHORIZATION"),
+            request_time,
+            argv: argv.clone(),
+            no_headers,
+            response_code: info.response_code,
+            proto_num: 1000,
+        };
+        let req = Request {
+            script: Script::File(script.clone()),
+            ini: ini.clone(),
+            args: Vec::new(),
+            info: Some(request),
+            php_binary: None,
+            cwd: cwd.clone(),
+            ini_files: None,
+        };
+        let sapi = if cgi {
+            CgiSapi::for_request()
+        } else {
+            CgiSapi::new()
+        };
+        let code = match run_request(Box::new(sapi), req) {
+            Outcome::Exit(code) => code,
+            Outcome::CannotRead { .. } => 255,
+        };
+        if exit_status == 0 {
+            exit_status = code;
+        }
+        if opts.benchmark.is_none() {
+            break;
+        }
+        if warmup > 0 {
+            warmup -= 1;
+            if warmup == 0 {
+                start = std::time::Instant::now();
+            }
+            continue;
+        }
+        repeats -= 1;
+        if repeats <= 0 {
+            break;
+        }
     }
+    if opts.benchmark.is_some() {
+        let d = start.elapsed();
+        eprint!(
+            "\nElapsed time: {}.{:06} sec\n",
+            d.as_secs(),
+            d.subsec_micros()
+        );
+    }
+    exit_status
 }

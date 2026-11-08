@@ -645,14 +645,17 @@ lookups by name have the caches below.)
 
 **Lookup caches** (`rhp-vm/src/lookup_cache.rs`) stand in for php's
 run-time cache slots (CACHE_ADDR / CACHE_PTR) without writing the shared
-protos. Each linked `ClassEntry` has a small direct-mapped table for
+protos. Each linked `ClassEntry` has a small table for
 property lookups, keyed by the name's hash (`PhpStr` keeps it) and the
 calling scope, one for static properties and one for method lookups by
 name; the VM has one for class names. An entry holds only an index (the
 property slot, the static or method table entry, the class id) and a
 hit is confirmed against the name the class's own table stores, so
 nothing in it can outlive what it names and memory_get_usage() does not
-see it (the tables are allocated uncounted).
+see it (the tables are allocated uncounted). The tables are two-way (a
+key whose slot is taken goes to the neighbouring slot), so a property
+read from inside and outside its class in one loop can't evict itself on
+every pass when the two keys share a slot.
 Property entries name a scope class, so they are flushed when a class
 whose linking failed is removed and its id is reused; class-name entries
 check the class's name on every hit. `resolve_prop_at` and

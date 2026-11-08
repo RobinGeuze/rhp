@@ -4,7 +4,7 @@
 //!
 //! php keeps one slot per opline in the op_array. rhp's protos are shared
 //! and never written (docs/design/bytecode.md §3.6), so the slots live in
-//! the VM's own data instead: a small direct-mapped table in each linked
+//! the VM's own data instead: a small two-way table in each linked
 //! class for its property, static property and method lookups, and one in the VM for class
 //! names. An entry is keyed by the name's hash (a `PhpStr` caches it) and
 //! holds only indices into the class's own tables, so a hit is checked
@@ -43,14 +43,20 @@ fn slot(hash: u64, scope: u32, n: usize) -> usize {
     (x >> 40) as usize & (n - 1)
 }
 
-/// A lazily allocated direct-mapped table.
+/// A lazily allocated two-way table: a key's slot and its neighbour.
 #[derive(Default)]
 struct Table(OnceCell<Box<[Cell<Entry>]>>);
 
 impl Table {
     #[inline(always)]
     fn get(&self, hash: u64, scope: u32, n: usize) -> Option<u32> {
-        let e = self.0.get()?[slot(hash, scope, n)].get();
+        let t = self.0.get()?;
+        let i = slot(hash, scope, n);
+        let e = t[i].get();
+        if e.hash == hash && e.scope == scope {
+            return Some(e.at);
+        }
+        let e = t[i ^ 1].get();
         (e.hash == hash && e.scope == scope).then_some(e.at)
     }
 
@@ -62,7 +68,16 @@ impl Table {
             self.0
                 .get_or_init(|| (0..n).map(|_| Cell::new(Entry::default())).collect())
         });
-        t[slot(hash, scope, n)].set(Entry { hash, scope, at });
+        // Two ways: a key whose slot is taken goes to its neighbour, so two
+        // keys a loop uses together (a property read from the class's
+        // scope and from outside) don't evict each other on every pass.
+        let i = slot(hash, scope, n);
+        let i = if t[i].get().hash != 0 && t[i ^ 1].get().hash == 0 {
+            i ^ 1
+        } else {
+            i
+        };
+        t[i].set(Entry { hash, scope, at });
     }
 }
 

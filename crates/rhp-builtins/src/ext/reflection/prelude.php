@@ -650,10 +650,11 @@ class ReflectionClass implements Reflector {
         $s .= $c['internal'] ? '<internal' . ($this->getExtensionName() !== false ? ':' . $this->getExtensionName() : '') : '<user';
         $s .= '> ';
         // ce->get_iterator: a Traversable class, or one with hooked
-        // properties (zend_hooked_object_get_iterator).
+        // properties (zend_hooked_object_get_iterator); ones inherited from
+        // an interface do not set it (the interface's own do).
         $iter = $kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable');
         if (!$iter) {
-            foreach ($this->getProperties() as $rp) { if (!$rp->__dynamic() && $rp->hasHooks()) { $iter = true; break; } }
+            foreach ($this->getProperties() as $rp) { if (!$rp->__dynamic() && $rp->hasHooks() && ($rp->class === $this->name || !interface_exists($rp->class, false))) { $iter = true; break; } }
         }
         if ($iter) { $s .= '<iterateable> '; }
         if ($kind === 'interface' || $kind === 'trait' || $kind === 'enum') {

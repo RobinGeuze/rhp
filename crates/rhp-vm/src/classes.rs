@@ -1543,10 +1543,17 @@ impl Vm {
          -> Result<(), String> {
             // Redeclaring an inherited public/protected property keeps its
             // root declaration as the prototype.
+            let mut fresh_slot = false;
             if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                // A virtual property has no slot: the redeclaration gets its
+                // own, after the inherited ones (do_inherit_property).
+                fresh_slot = inh.virt && !pe.virt;
                 inherit_prop(classes, &proto.name, inh, &mut pe)?;
             }
             let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+            if fresh_slot {
+                props.shift_remove(&key);
+            }
             prop_visible.insert(pe.name.clone(), key.clone());
             if pe.visibility == Visibility::Private {
                 own_private.insert(pe.name.clone(), key.clone());

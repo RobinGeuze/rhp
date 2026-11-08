@@ -962,6 +962,15 @@ impl Vm {
                 out.push((n, decl, st));
             }
         }
+        // Interface properties come last (do_interface_implementation
+        // appends the ones the class does not declare).
+        for &i in &e.interfaces {
+            for (n, decl, st) in self.prop_order(i) {
+                if !out.iter().any(|(x, _, _)| *x == n) {
+                    out.push((n, decl, st));
+                }
+            }
+        }
         out
     }
 

@@ -161,6 +161,10 @@ echo App\\Hello::hi(), "\\n";
 BUILD_LIBS = [
     (re.compile(r"^(OpenSSL version: ).*$", re.M), r"\1<VERSION>"),
     (re.compile(r"^(lib-(openssl|zlib)\s+).*$", re.M), r"\1<VERSION>"),
+    # Debian's php reads the system zoneinfo and reports its version as 0;
+    # rhp and upstream php report the bundled timezonedb's.
+    (re.compile(r"^(lib-date-zoneinfo\s+)\S+", re.M), r"\1<VERSION>"),
+    (re.compile(r'("name": "lib-date-zoneinfo",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
     (re.compile(r'("name": "lib-(openssl|zlib)",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
 ]
 

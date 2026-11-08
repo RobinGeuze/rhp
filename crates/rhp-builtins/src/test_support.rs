@@ -335,7 +335,13 @@ impl Host for TestHost<'_> {
     fn class_alias(&mut self, _class_id: u32, _alias: &[u8]) -> Result<bool, Thrown> {
         Ok(false)
     }
-    fn register_autoloader(&mut self, _callback: Value, _prepend: bool) {}
+    fn register_autoloader(&mut self, _callback: &Value, _prepend: bool) -> Result<(), Thrown> {
+        Ok(())
+    }
+
+    fn unregister_autoloader(&mut self, _callback: &Value) -> Result<bool, Thrown> {
+        Ok(false)
+    }
     fn autoload_functions(&self) -> Vec<Value> {
         Vec::new()
     }

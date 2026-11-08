@@ -625,6 +625,9 @@ pub struct Vm {
   chain. Phase-7 objects let `class_of(&thrown)` return a real `ClassId`, so the
   unwinder's class-name matching (today string-based over the builtin hierarchy,
   `bytecode.md` §3.4) upgrades to id-based `instanceof` without an ISA change.
+  A closure value (`Value::Closure`) is an object of the built-in `Closure`
+  class here and in `::class`, `class_implements()` and the like
+  (`Vm::value_class`).
 - **`===`** is `Rc::ptr_eq` on the two `ObjectHandle`s (equivalently equal `id`).
 - **`==`** compares same class + equal property values (recursively, via the
   existing `ops::loose_eq`, extended with an `Object` arm that walks the two

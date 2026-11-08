@@ -343,6 +343,7 @@ impl<'c> ProtoBuilder<'c> {
                 | Instr::CallV { .. }
                 | Instr::CallDyn { .. }
                 | Instr::CallDynV { .. }
+                | Instr::InitDynCall { .. }
                 | Instr::New { .. }
                 | Instr::NewObj { .. }
                 | Instr::NewCall { .. }

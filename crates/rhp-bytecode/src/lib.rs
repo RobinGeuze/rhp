@@ -517,6 +517,11 @@ pub enum Instr {
         callee: Reg,
         args: Reg,
     },
+    /// INIT_DYNAMIC_CALL's checks, before the arguments run: throw the
+    /// Error a call of `callee` would (undefined function, not callable).
+    InitDynCall {
+        callee: Reg,
+    },
     /// Build a closure value: read `ncaptures` capture values from
     /// `regs[base..base+ncaptures]` and pair them with closure proto `fnidx`.
     MakeClosure {

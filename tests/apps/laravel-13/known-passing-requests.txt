@@ -1,2 +1,11 @@
 # laravel-13 requests rhp answers like php-cgi (rhp-difftest app --write-known).
 # CI fails if one stops matching: fix the regression, or remove the line.
+home
+hello-world
+api-json
+not-found
+submit-no-token
+csrf-get
+csrf-post-header
+csrf-post-field
+@files

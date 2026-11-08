@@ -8,18 +8,14 @@ interface SplSubject {
 
 class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
     private $__o = []; private $__v = []; private $__k = []; private $__p = 0; private $__pos = -1; private $__rw = false;
-    public function attach(object $object, mixed $info = null): void {
-        __spl_deprecated('Method SplObjectStorage::attach() is deprecated since 8.5, use method SplObjectStorage::offsetSet() instead');
-        $this->offsetSet($object, $info);
-    }
-    public function detach(object $object): void {
-        __spl_deprecated('Method SplObjectStorage::detach() is deprecated since 8.5, use method SplObjectStorage::offsetUnset() instead');
-        $this->offsetUnset($object);
-    }
-    public function contains(object $object): bool {
-        __spl_deprecated('Method SplObjectStorage::contains() is deprecated since 8.5, use method SplObjectStorage::offsetExists() instead');
-        return $this->offsetExists($object);
-    }
+    // php's own storage operations: an overriding offsetSet() and friends
+    // are not called (offsetSet is attach's alias in php).
+    #[\Deprecated(since: '8.5', message: "use method SplObjectStorage::offsetSet() instead")]
+    public function attach(object $object, mixed $info = null): void { self::offsetSet($object, $info); }
+    #[\Deprecated(since: '8.5', message: "use method SplObjectStorage::offsetUnset() instead")]
+    public function detach(object $object): void { self::offsetUnset($object); }
+    #[\Deprecated(since: '8.5', message: "use method SplObjectStorage::offsetExists() instead")]
+    public function contains(object $object): bool { return self::offsetExists($object); }
     public function addAll(SplObjectStorage $storage): int {
         foreach ($storage->__o as $h => $o) { $this->__o[$h] = $o; $this->__v[$h] = $storage->__v[$h]; }
         return count($this->__o);

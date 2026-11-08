@@ -109,6 +109,12 @@ fn spl_array_get_properties_for(
 
 /// `spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool`
 fn fn_spl_autoload_register(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    if args.get(1).is_some_and(|v| !conv::to_bool(&deref(v))) {
+        host.emit_diagnostic(
+            crate::E_NOTICE,
+            b"spl_autoload_register(): Argument #2 ($do_throw) has been ignored, spl_autoload_register() will always throw",
+        )?;
+    }
     match args.first().map(deref) {
         // The default SPL autoloader is not supported; registering it is a no-op.
         None | Some(Value::Null) => Ok(Value::Bool(true)),
@@ -123,16 +129,16 @@ fn fn_spl_autoload_register(host: &mut dyn Host, args: &[Value]) -> Result<Value
                 .get(2)
                 .map(|v| conv::to_bool(&deref(v)))
                 .unwrap_or(false);
-            host.register_autoloader(cb, prepend);
+            host.register_autoloader(&args[0], prepend)?;
             Ok(Value::Bool(true))
         }
     }
 }
 
-/// `spl_autoload_unregister(callable $callback): bool` — not yet supported
-/// (callable identity comparison); reports success without removing.
-fn fn_spl_autoload_unregister(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Bool(true))
+/// `spl_autoload_unregister(callable $callback): bool`: removes the
+/// registered callable equal to `$callback` (autoload_func_info_equals).
+fn fn_spl_autoload_unregister(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Bool(host.unregister_autoloader(&args[0])?))
 }
 
 /// `spl_autoload_functions(): array`
@@ -285,6 +291,8 @@ fn relation(
     let autoload = bool_param(host, args, 1, func, "autoload", true)?;
     let id = match &v {
         Value::Object(h) => Some(h.borrow().class),
+        // A closure is an object of class Closure.
+        Value::Closure(_) => host.resolve_class(b"Closure"),
         Value::Str(s) => {
             if autoload {
                 host.resolve_class_autoload(s.as_bytes())?

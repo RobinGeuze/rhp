@@ -1,0 +1,31 @@
+ValueError: PDO::__construct(): Argument #3 ($password) Error mode must be one of the PDO::ERRMODE_* constants
+ValueError: PDO::__construct(): Argument #3 ($password) Case folding mode must be one of the PDO::CASE_* constants
+ValueError: PDO::setAttribute(): Argument #2 ($value) Error mode must be one of the PDO::ERRMODE_* constants
+ValueError: PDO::query(): Argument #3 must be empty when class provided in argument #2 ($class) does not have a constructor
+ValueError: PDOStatement::setFetchMode(): Argument #3 must be empty when class provided in argument #2 ($class) does not have a constructor
+ValueError: PDOStatement::fetchAll(): Argument #3 must be empty when class provided in argument #2 ($class) does not have a constructor
+
+Deprecated: Looking up the DSN from a URI is deprecated due to possible security concerns with DSNs coming from remote URIs in D/arg_errors.php on line 19
+
+Warning: PDO::__construct(file://D/no-such-dsn-file): Failed to open stream: No such file or directory in D/arg_errors.php on line 19
+PDOException: PDO::__construct(): Argument #1 ($dsn) must be a valid data source URI
+
+Deprecated: Looking up the DSN from a URI is deprecated due to possible security concerns with DSNs coming from remote URIs in D/arg_errors.php on line 20
+ValueError: Path must not be empty
+
+Warning: The float 1.0E+300 is not representable as an int, cast occurred in D/arg_errors.php on line 26
+
+Warning: The float 1.0E+300 is not representable as an int, cast occurred in D/arg_errors.php on line 26
+[0,"integer"] int(0)
+
+Warning: The float NAN is not representable as an int, cast occurred in D/arg_errors.php on line 26
+
+Warning: The float NAN is not representable as an int, cast occurred in D/arg_errors.php on line 26
+[0,"integer"] int(0)
+
+Warning: Object of class ArrayObject could not be converted to int in D/arg_errors.php on line 26
+
+Warning: Object of class ArrayObject could not be converted to int in D/arg_errors.php on line 26
+[1,"integer"] int(1)
+[12,"integer"] int(12)
+[2,"integer"] int(2)

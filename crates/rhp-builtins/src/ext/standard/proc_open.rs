@@ -761,8 +761,20 @@ fn fn_proc_open(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                         set_cloexec_raw(fd.as_raw_fd());
                         (fd, None, DescKind::Std)
                     }
-                    // php: "Cannot represent a stream of type X as a File Descriptor"
-                    Err(_) => return Ok(Value::Bool(false)),
+                    // php_stream_cast's REPORT_ERRORS warning (the stream
+                    // types rhp can name)
+                    Err(label) => {
+                        if matches!(label, "MEMORY" | "TEMP") {
+                            crate::warn(
+                                host,
+                                "proc_open",
+                                &format!(
+                                    "Cannot represent a stream of type {label} as a File Descriptor"
+                                ),
+                            )?;
+                        }
+                        return Ok(Value::Bool(false));
+                    }
                 }
             }
             Value::Array(ht) => {

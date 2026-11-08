@@ -1,0 +1,64 @@
+string(7) "Closure"
+string(7) "Closure"
+string(7) "Closure"
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+array(0) {
+}
+array(0) {
+}
+array(0) {
+}
+array(5) {
+  [0]=>
+  string(4) "bind"
+  [1]=>
+  string(6) "bindTo"
+  [2]=>
+  string(4) "call"
+  [3]=>
+  string(12) "fromCallable"
+  [4]=>
+  string(10) "getCurrent"
+}
+array(5) {
+  [0]=>
+  string(4) "bind"
+  [1]=>
+  string(6) "bindTo"
+  [2]=>
+  string(4) "call"
+  [3]=>
+  string(12) "fromCallable"
+  [4]=>
+  string(10) "getCurrent"
+}
+bool(true)
+string(13) "Closure::call"
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+int(7)
+int(6)
+int(9)
+int(14)
+int(6)
+int(12)
+int(6)
+array(1) {
+  [0]=>
+  int(6)
+}
+int(3)
+call_user_func(): Argument #1 ($callback) must be a valid callback, class Closure does not have a method "nope"
+Call to undefined method Closure::nope()
+int(6)
+int(7)
+warning: Cannot bind closure to scope of internal class stdClass, this will be an error in PHP 9
+int(6)

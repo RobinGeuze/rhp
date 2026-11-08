@@ -1,0 +1,10 @@
+evald
+int(5)
+Error: Object of class stdClass could not be converted to string
+NULL
+int(7)
+Exception: ts
+bool(false)
+bool(false)
+bool(false)
+NULL

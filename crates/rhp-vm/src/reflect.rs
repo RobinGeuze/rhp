@@ -248,8 +248,9 @@ impl Vm {
                         // A method's first-class callable: the method's
                         // class is its scope, the class it was named on
                         // the called scope (zend_create_fake_closure).
+                        // Its `$this` is the object it was made on.
                         if let (
-                            Value::Closure(_),
+                            Value::Closure(cd),
                             FnSubject::Method { class, m },
                             Value::Array(a),
                         ) = (&loc, &sub, &mut info)
@@ -257,11 +258,38 @@ impl Vm {
                             let name = |c: ClassId| s(self.classes[c as usize].name.as_bytes());
                             a.insert(ArrayKey::from_bytes(b"scope"), name(m.defining_class));
                             a.insert(ArrayKey::from_bytes(b"calledScope"), name(*class));
+                            let this = match (&cd.bound_this, cd.wrapped.as_deref().map(deref)) {
+                                (Some(h), _) => Some(Value::Object(h.clone())),
+                                (None, Some(Value::Array(w))) => match w.get(&ArrayKey::Int(0)) {
+                                    Some(v) => match deref(v) {
+                                        o @ Value::Object(_) => Some(o),
+                                        _ => None,
+                                    },
+                                    None => None,
+                                },
+                                _ => None,
+                            };
+                            if let (Some(o), false) = (this, m.is_static) {
+                                a.insert(ArrayKey::from_bytes(b"this"), o);
+                            }
                         }
                         Ok(info)
                     }
                     None => Ok(Value::Null),
                 }
+            }
+            // getStaticVariables(): a closure's bound variables, then the
+            // function's static variables.
+            b"statics" => {
+                let st = match self.fn_subject(&arg(args, 0))? {
+                    Some(FnSubject::Func(f)) => self.function_statics(&f.proto, f.unit, None),
+                    Some(FnSubject::Method { m, .. }) => {
+                        self.function_statics(&m.proto, m.unit, Some(m.defining_class))
+                    }
+                    Some(FnSubject::Closure { cd, .. }) => self.closure_statics(&cd),
+                    _ => PhpArray::new(),
+                };
+                Ok(Value::Array(st))
             }
             b"attr_args" => self.attr_args(args),
             b"attr_show" => self.attr_show(args),

@@ -1,0 +1,285 @@
+"{]": NULL
+int(2)
+bool(false)
+int(2)
+"[}": NULL
+int(2)
+bool(false)
+int(2)
+"{\"a\":1]": NULL
+int(2)
+bool(false)
+int(2)
+"[1,2}": NULL
+int(2)
+bool(false)
+int(2)
+"[1\u0000]": NULL
+int(3)
+bool(false)
+int(3)
+"\u0000": NULL
+int(3)
+bool(false)
+int(3)
+"1\u0000": NULL
+int(3)
+bool(false)
+int(3)
+"{\"a\"\u0000:1}": NULL
+int(3)
+bool(false)
+int(3)
+"[[1}]": NULL
+int(2)
+bool(false)
+int(2)
+"{\"a\":[}}": NULL
+int(2)
+bool(false)
+int(2)
+"[\"a\u0001\"]": NULL
+int(3)
+bool(false)
+int(3)
+"[1 2]": NULL
+int(4)
+bool(false)
+int(4)
+"{1:2}": NULL
+int(4)
+bool(false)
+int(4)
+"": NULL
+int(4)
+bool(false)
+int(4)
+State mismatch (invalid or malformed JSON) 2
+int(4)
+Inf and NaN cannot be JSON encoded 7
+int(4)
+string(1) "0"
+int(7)
+json_decode(): Argument #3 ($depth) must be greater than 0
+json_decode(): Argument #3 ($depth) must be greater than 0
+json_decode(): Argument #3 ($depth) must be less than 2147483647
+22616263: NULL
+int(3)
+NULL
+int(3)
+NULL
+int(3)
+bool(false)
+int(3)
+bool(false)
+int(3)
+5b22615c: NULL
+int(4)
+NULL
+int(4)
+NULL
+int(4)
+bool(false)
+int(4)
+bool(false)
+int(4)
+ff: NULL
+int(5)
+NULL
+int(5)
+NULL
+int(5)
+bool(false)
+int(5)
+bool(false)
+int(5)
+5bff5d: NULL
+int(5)
+NULL
+int(5)
+NULL
+int(5)
+bool(false)
+int(5)
+bool(false)
+int(5)
+5b317dff: NULL
+int(2)
+NULL
+int(2)
+NULL
+int(2)
+bool(false)
+int(2)
+bool(false)
+int(2)
+2261ff6222: NULL
+int(5)
+string(2) "ab"
+int(0)
+string(5) "a�b"
+int(0)
+bool(false)
+int(5)
+bool(true)
+int(0)
+c3a9: NULL
+int(4)
+NULL
+int(4)
+NULL
+int(4)
+bool(false)
+int(4)
+bool(false)
+int(4)
+5b22c3a9225d: array(1) {
+  [0]=>
+  string(2) "é"
+}
+int(0)
+array(1) {
+  [0]=>
+  string(2) "é"
+}
+int(0)
+array(1) {
+  [0]=>
+  string(2) "é"
+}
+int(0)
+bool(true)
+int(0)
+bool(true)
+int(0)
+22e0808022: NULL
+int(5)
+string(0) ""
+int(0)
+string(9) "���"
+int(0)
+bool(false)
+int(5)
+bool(true)
+int(0)
+22eda08022: NULL
+int(5)
+string(0) ""
+int(0)
+string(9) "���"
+int(0)
+bool(false)
+int(5)
+bool(true)
+int(0)
+5b312c015d: NULL
+int(3)
+NULL
+int(3)
+NULL
+int(3)
+bool(false)
+int(3)
+bool(false)
+int(3)
+7b2261ff223a317d: NULL
+int(5)
+array(1) {
+  ["a"]=>
+  int(1)
+}
+int(0)
+array(1) {
+  ["a�"]=>
+  int(1)
+}
+int(0)
+bool(false)
+int(5)
+bool(true)
+int(0)
+2261c322: NULL
+int(5)
+string(1) "a"
+int(0)
+string(4) "a�"
+int(0)
+bool(false)
+int(5)
+bool(true)
+int(0)
+6e756c: NULL
+int(4)
+NULL
+int(4)
+NULL
+int(4)
+bool(false)
+int(4)
+bool(false)
+int(4)
+6e756cff: NULL
+int(4)
+NULL
+int(4)
+NULL
+int(4)
+bool(false)
+int(4)
+bool(false)
+int(4)
+31ff: NULL
+int(5)
+NULL
+int(5)
+NULL
+int(5)
+bool(false)
+int(5)
+bool(false)
+int(5)
+5b22efbfbd225d: array(1) {
+  [0]=>
+  string(3) "�"
+}
+int(0)
+array(1) {
+  [0]=>
+  string(3) "�"
+}
+int(0)
+array(1) {
+  [0]=>
+  string(3) "�"
+}
+int(0)
+bool(true)
+int(0)
+bool(true)
+int(0)
+5b5d 1: 1 1
+5b5d 2: 0 0
+5b5d 3: 0 0
+5b315d 1: 1 1
+5b315d 2: 0 0
+5b315d 3: 0 0
+5b5b5d5d 1: 1 1
+5b5b5d5d 2: 1 1
+5b5b5d5d 3: 0 0
+5b7b7d5d 1: 1 1
+5b7b7d5d 2: 1 1
+5b7b7d5d 3: 0 0
+5b5b7d 1: 1 1
+5b5b7d 2: 1 1
+5b5b7d 3: 2 2
+5b5bff 1: 1 1
+5b5bff 2: 1 1
+5b5bff 3: 5 5
+7b22ff223a317d 1: 1 1
+7b22ff223a317d 2: 5 5
+7b22ff223a317d 3: 5 5
+5b315d2022616263: 3 3
+7b226122202262: 3 3
+5b312022ff225d: 5 5
+5b3120225c7564383030225d: 10 10
+5b3120226f6b225d: 4 4

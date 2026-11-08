@@ -437,6 +437,8 @@ impl Vm {
         if !has(b'S') {
             server = PhpArray::new();
         }
+        let filtered_server = builtins::main::sapi::filtered_server_vars(&server);
+        builtins::main::sapi::apply_default_filter_server(self, &mut server);
         set(self, b"_SERVER", Value::Array(server));
         let mut env = PhpArray::new();
         for (k, v) in std::env::vars().filter(|_| has(b'E')) {
@@ -445,6 +447,9 @@ impl Vm {
                 Value::str(v.into_bytes()),
             );
         }
+        // ext/filter's copies of the input (php_sapi_filter).
+        let empty = PhpArray::new();
+        builtins::main::sapi::set_filter_input(&empty, &empty, &empty, filtered_server, &env);
         self.jit_globals.insert(b"_ENV".to_vec(), Value::Array(env));
         // ($_SESSION exists once ext/session creates it.)
         self.jit_globals

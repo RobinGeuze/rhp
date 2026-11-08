@@ -16,8 +16,8 @@ fn reports_parse_errors() {
 
 #[test]
 fn unsupported_refusals_carry_the_line_but_not_the_file() {
-    // Spread arguments to an anonymous class are refused (deferred).
-    let r = lint_source("/abs/dir/a.php", b"<?php\n\n$x = new class(...[1]) {};\n").unwrap_err();
+    // A catch type that is not a class name is refused.
+    let r = lint_source("/abs/dir/a.php", b"<?php\n\ntry {} catch (int $e) {}\n").unwrap_err();
     match &r {
         Refusal::Unsupported { line, .. } => assert_eq!(*line, Some(3)),
         other => panic!("expected an unsupported refusal, got {other:?}"),

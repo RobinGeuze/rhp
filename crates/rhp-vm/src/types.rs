@@ -230,8 +230,7 @@ impl Vm {
             };
             // zend_check_type_slow's zend_is_callable runs in the callee's
             // frame (its scope and `$this`), deprecations included.
-            let callable = ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
-                && matches!(deref(&cur), Value::Str(_) | Value::Array(_));
+            let callable = needs_callable_check(&ty.kinds, &cur);
             let checked = if callable {
                 let this = proto.this_cv.and_then(|cv| match &frame.regs[cv as usize] {
                     Value::Object(h) => Some(h.clone()),
@@ -626,7 +625,28 @@ impl Vm {
         } else {
             ty
         };
-        match self.check_one(&v, checked, strict, ctx) {
+        // zend_is_callable runs in the returning frame: its scope and
+        // `$this` (an instance method named without an object is callable),
+        // deprecations included.
+        let r = if needs_callable_check(&checked.kinds, &v) {
+            let this = self.current_this(top);
+            let saved = self
+                .fcc_scope
+                .replace(Some((ctx, self.stack[top].called_class)));
+            let saved_this = self.fcc_this.replace(this);
+            let mut deps = Vec::new();
+            let _ = self.resolve_callable_ex(&v, proto.is_internal(), &mut deps);
+            let r = self.check_one(&v, checked, strict, ctx);
+            self.fcc_scope.set(saved);
+            *self.fcc_this.borrow_mut() = saved_this;
+            for d in deps {
+                self.diag(rhp_builtins::E_DEPRECATED, &d)?;
+            }
+            r
+        } else {
+            self.check_one(&v, checked, strict, ctx)
+        };
+        match r {
             Ok(None) => Ok(v),
             Ok(Some(coerced)) => {
                 self.coercion_diag(&v, &coerced)?;
@@ -1083,4 +1103,16 @@ fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, V
         K::Bool => Some(("bool", Value::Bool(false))),
         _ => None,
     }
+}
+
+/// Whether zend_check_type_slow reaches zend_is_callable for `v`: a string
+/// or array the type takes as such (`callable|string`) is not looked up.
+fn needs_callable_check(kinds: &[rhp_bytecode::TypeKind], v: &Value) -> bool {
+    use rhp_bytecode::TypeKind as K;
+    kinds.contains(&K::Callable)
+        && match deref(v) {
+            Value::Str(_) => !kinds.contains(&K::String),
+            Value::Array(_) => !kinds.iter().any(|k| matches!(k, K::Array | K::Iterable)),
+            _ => false,
+        }
 }

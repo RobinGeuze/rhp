@@ -1,0 +1,26 @@
+"1.0 || 2.0 || 3.0" "1.0|2.0|3.0" -1 -1
+"v1.0 beta" "v1.0beta" -1 -1
+"A 1" "a1" -1 0
+"x10 y" "x10y" -1 -1
+"x10y" "x10 y" 1 1
+"12 " "12" 1 1
+"12a" "12b" -1 -1
+"007 b" "7a" -1 -1
+"1 2" "12" -1 -1
+"a 0.5" "a 0.50" -1 -1
+"" "a" -1 -1
+"0" "00" 0 0
+Array
+(
+    [0] => psr/log-implementation 1.0 || 2.0 || 3.0
+    [1] => psr/log-implementation 1.0|2.0|3.0
+    [2] => psr/log-implementation 3.0.0|2.0.0|1.0.0
+    [3] => psr/log 1.0
+)
+Array
+(
+    [0] => psr/log-implementation 1.0 || 2.0 || 3.0
+    [1] => psr/log-implementation 1.0|2.0|3.0
+    [2] => psr/log-implementation 3.0.0|2.0.0|1.0.0
+    [3] => psr/log 1.0
+)

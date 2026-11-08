@@ -99,6 +99,7 @@ let outcome = run_request(
 |---|---|---|
 | `name` | `sapi_module.name` → `php_sapi_name()`, `PHP_SAPI` | required |
 | `ini_defaults` | `sapi_module.ini_defaults` (below `-d` and `ini_set`) | none |
+| `ini_entries` | `sapi_module.ini_entries`: set after php.ini, before `-d` (php-cli's `HARDCODED_INI`: html_errors, implicit_flush, output_buffering, max_execution_time, max_input_time) | none |
 | `stores_headers` | `header_handler`: false keeps `headers_list()` empty (php-cli) | `true` |
 | `initial_response_code` | status before any `header()`: 0 for cli, 200 for web | `200` |
 | `ub_write` | unbuffered body writer, called with what leaves the bottom of the output-buffer stack | required |

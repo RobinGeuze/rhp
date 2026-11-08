@@ -23,6 +23,8 @@ pub mod opcache;
 pub mod openssl;
 pub mod pcntl;
 pub mod pcre;
+pub mod pdo;
+pub mod pdo_sqlite;
 pub mod phar;
 pub mod posix;
 pub mod random;
@@ -56,6 +58,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         xmlreader::CLASSES,
         xmlwriter::CLASSES,
         zip::CLASSES,
+        pdo::CLASSES,
         date::CLASSES,
     ]
     .into_iter()
@@ -270,6 +273,26 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             object_freed: None,
         },
         ModuleDef {
+            name: "PDO",
+            cli_only: false,
+            functions: pdo::register,
+            constants: no_constants,
+            prelude_php: pdo::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "pdo_sqlite",
+            cli_only: false,
+            functions: pdo_sqlite::register,
+            constants: no_constants,
+            prelude_php: pdo_sqlite::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
             name: "libxml",
             cli_only: false,
             functions: libxml::register,
@@ -364,9 +387,9 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             cli_only: false,
             functions: filter::register,
             constants: filter::constants,
-            prelude_php: "",
+            prelude_php: filter::PRELUDE_PHP,
             wrappers: no_wrappers,
-            reset: no_state,
+            reset: filter::reset_state,
             object_freed: None,
         },
         ModuleDef {

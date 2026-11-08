@@ -441,13 +441,15 @@ ref iterates its live property table through an iterator kept on the object
 (`ObjectData::prop_iter_*`, moved by `remove_prop`; positions count
 every declared slot, empty ones too).
 `pos_reg + 1` holds a placeholder object for the handle php's
-zend_object_iterator takes (Traversable and hooked objects).
+zend_object_iterator takes (Traversable and hooked objects), or, by
+reference over an array, the reference FE_RESET_RW keeps: the loop goes on
+over it when the variable is rebound (`foreach ($v as &$v)`).
 `keycv` = `Reg::MAX` means "no key target".
 ```
 FeReset    { arr_reg, pos_reg, src, end }            start; empty/non-iterable (warns) -> Jmp end
 FeFetch    { arr_reg, pos_reg, keycv, valcv, end }    bind next key?/value, or Jmp end
-FeResetRef { arr_cv, pos_reg, end }                   by-ref: separate + iterator on the array in arr_cv
-FeFetchRef { arr_cv, pos_reg, keycv, valcv, end }     promote the next element to Ref, bind valcv to it
+FeResetRef { arr_cv, pos_reg, end }                   by-ref: make arr_cv a Ref (held in pos_reg+1), separate, add an iterator
+FeFetchRef { arr_cv, pos_reg, keycv, valcv, end }     promote the next element of the held array to Ref, bind valcv to it
 FeFree     { arr, pos_reg, by_ref, clear_arr, end }   ZEND_FE_FREE: drop iterator, handle, temporary
 ```
 FeFree is emitted at the loop end and before `break N`/`continue N`, `return`
@@ -520,6 +522,11 @@ CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = 
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
 CallByName  { dst, name: NIdx, base, argc, cache} resolve name at runtime (Err if undefined), then as CallUser/Builtin
 CallDyn     { dst, callee, base, argc }           callee is a runtime callable (Closure/"fn" string/[obj,method]); resolve+dispatch
+InitDynCall { callee }                            INIT_DYNAMIC_CALL's checks before the arguments run (throws what the call would)
+-- InitDynCall is emitted only when an argument is more than a literal or
+   a plain variable (otherwise running the arguments first can't be seen);
+   a call by name to an undefined function still runs its arguments first
+   (php's INIT_FCALL_BY_NAME throws before them)
 Ret         { src }                               return deref(src); run pending finallys (§3.5); pop frame
 RetNull     {}                                    return Null
 -- argument temporaries move into the callee as they are bound (and a builtin
@@ -554,7 +561,12 @@ array (int keys positional, string keys named) and uses the `_V` path
 PACKED_ARGS`): the VM places the names with the callee's `proto.params`
 (`place_named_args`) or a builtin's stub arginfo (`place_builtin_named_args`).
 The compiler only resolves by-reference parameters by name, for a callee it
-knows. The fixed-arity register-window path is the fast path.
+knows. For a callee only the run time knows, a positional argument before
+the unpack that is an element / property (SEND_FUNC_ARG), or a variable a
+later argument may change (SEND_VAR_EX), asks the callee (`*ArgIsRef`) as it
+is sent and goes into the array as a reference or a value; any other
+variable goes in as a reference that a by-value parameter dereferences.
+The fixed-arity register-window path is the fast path.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

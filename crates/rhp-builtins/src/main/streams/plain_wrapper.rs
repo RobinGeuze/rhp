@@ -1160,3 +1160,17 @@ pub fn fd_access_mode(fd: RawFd) -> Option<bool> {
 
 #[cfg(test)]
 mod tests;
+
+/// `php_stream_fopen_tmpfile`: a new `php…` file in sys_get_temp_dir(),
+/// opened "r+b". The caller unlinks it (its `uri`) when the stream closes.
+pub fn fopen_tmpfile() -> Option<crate::main::streams::LocalFile> {
+    use crate::ext::standard::file::{open_temp, temp_dir};
+    let path = open_temp(&temp_dir(), b"php")?;
+    let f = crate::main::streams::LocalFile::open(&path, b"r+b");
+    if f.is_none() {
+        if let Ok(c) = std::ffi::CString::new(path) {
+            unsafe { libc::unlink(c.as_ptr()) };
+        }
+    }
+    f
+}

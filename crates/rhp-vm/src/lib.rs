@@ -11,6 +11,7 @@
 //! the shutdown sequence; `host` and `streams` serve the builtins.
 
 mod attributes;
+mod autoload;
 mod callables;
 mod calls;
 mod classes;
@@ -203,7 +204,7 @@ pub struct Vm {
     /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
     internal_classes: usize,
     // Registered `spl_autoload_register` callables, in call order.
-    autoloaders: Vec<Value>,
+    autoloaders: Vec<autoload::Autoloader>,
     /// Lowercased class names whose autoload is in progress (php's
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
@@ -501,8 +502,8 @@ type FeLive = (Reg, Reg, bool, u32);
 impl Drop for Frame {
     fn drop(&mut self) {
         if let Some(live) = self.fe_live.take() {
-            for (_, arr, by_ref, id) in *live {
-                dispatch::release_fe_iter(&mut self.regs, arr, by_ref, id);
+            for (pos, arr, by_ref, id) in *live {
+                dispatch::release_fe_iter(&mut self.regs, pos, arr, by_ref, id);
             }
         }
         // php frees a frame's variables, then its `$this`: the handles come

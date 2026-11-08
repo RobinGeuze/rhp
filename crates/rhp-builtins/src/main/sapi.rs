@@ -27,6 +27,10 @@ use rhp_values::{Thrown, Value};
 use crate::sapi::{sapi_def, SapiDef};
 use crate::Host;
 
+pub use crate::ext::filter::{
+    apply_default_filter, apply_default_filter_server, filtered_server_vars,
+    set_request_input as set_filter_input,
+};
 pub use crate::main::php_variables::{post_form_vars, treat_data, url_decode, TreatData};
 
 /// What a server embedding the engine provides for one request (php's
@@ -39,6 +43,12 @@ pub trait Sapi {
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`): applied over the
     /// built-in defaults, below `-d` settings and `ini_set`.
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
+    /// The SAPI's own ini settings (`sapi_module.ini_entries`, php-cli's
+    /// `HARDCODED_INI`): applied after php.ini, before `-d` settings.
+    fn ini_entries(&self) -> Vec<(&'static str, &'static str)> {
         Vec::new()
     }
 

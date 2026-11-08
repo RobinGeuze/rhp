@@ -182,6 +182,12 @@ PHP-CS-Fixer, Rector; a nightly big tier) and Composer
 (`tests/apps/composer_diff.py`) run command by command under php and rhp,
 each in its own CI job; `tests/apps/harness_test.py` tests their masks.
 
+**Benchmarks** (`tests/bench/`): micro benchmarks of the VM's hot paths
+(calls, loops, properties, methods, includes). `python3
+tests/bench/bench.py OLD/rhp NEW/rhp` runs them interleaved and prints CPU
+time and, on macOS, instructions retired; every engine must print the
+same. They are no test: run them before and after a change to a hot path.
+
 ## Regenerating expectations
 
 - A golden: `rhp-difftest golden --write --filter NAME` with the reference

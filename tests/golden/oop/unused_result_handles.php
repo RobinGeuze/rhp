@@ -12,3 +12,5 @@ same(); echo spl_object_id(new stdClass), spl_object_id($a = new stdClass), "\n"
 $f = function () { return [new stdClass, new stdClass]; }; $f(); echo spl_object_id(new stdClass), spl_object_id($a = new stdClass), "\n"; unset($a);
 $x = g(); echo spl_object_id($x), spl_object_id(new stdClass), "\n";
 for ($i = 0, g(); $i < 1; $i++, g()) { echo spl_object_id(new stdClass); } echo "\n";
+function mkc() { $l = new stdClass; return function () use ($l) {}; }
+unset($x); mkc(); echo spl_object_id(new stdClass), spl_object_id($a = new stdClass), "\n"; unset($a);

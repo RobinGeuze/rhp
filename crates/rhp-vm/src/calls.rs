@@ -1933,8 +1933,10 @@ impl Vm {
             Some(caller) => {
                 // Reg::MAX means "discard" (constructor / __clone return value).
                 if frame.ret_dst != Reg::MAX {
-                    if matches!(value, Value::Object(_) | Value::Array(_))
-                        && self.frame_at_discarded_call(caller)
+                    if matches!(
+                        value,
+                        Value::Object(_) | Value::Array(_) | Value::Closure(_)
+                    ) && self.frame_at_discarded_call(caller)
                     {
                         // ZEND_RETURN frees an unused result before the
                         // callee's variables and `$this` (the handles come
@@ -1945,7 +1947,7 @@ impl Vm {
                         // The returned temporary still holds it.
                         let n = (frame.proto.num_cvs as usize).min(frame.regs.len());
                         for slot in &mut frame.regs[n..] {
-                            if let Value::Object(_) | Value::Array(_) = slot {
+                            if let Value::Object(_) | Value::Array(_) | Value::Closure(_) = slot {
                                 *slot = Value::Null;
                             }
                         }

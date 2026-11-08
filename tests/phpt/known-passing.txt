@@ -6722,6 +6722,7 @@ ext/dom/tests/modern/common/getElementsByClassName_cache_invalidation.phpt
 ext/dom/tests/modern/common/gh21077.phpt
 ext/dom/tests/modern/common/gh21097.phpt
 ext/dom/tests/modern/common/innerHTML_cache_invalidation.phpt
+ext/dom/tests/modern/common/namespace_sxe_interaction.phpt
 ext/dom/tests/modern/common/serialize_entity_reference_in_attribute.phpt
 ext/dom/tests/modern/common/template_cloning.phpt
 ext/dom/tests/modern/common/template_manual.phpt
@@ -7016,6 +7017,7 @@ ext/dom/tests/modern/token_list/dimensions_error.phpt
 ext/dom/tests/modern/token_list/entities.phpt
 ext/dom/tests/modern/token_list/equality.phpt
 ext/dom/tests/modern/token_list/foreach_by_ref.phpt
+ext/dom/tests/modern/token_list/getIterator.phpt
 ext/dom/tests/modern/token_list/gh18744.phpt
 ext/dom/tests/modern/token_list/item.phpt
 ext/dom/tests/modern/token_list/iteration_01.phpt

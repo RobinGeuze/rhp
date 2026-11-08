@@ -68,6 +68,14 @@ How it compares, mirroring `run-tests.php`:
   peer of the client code under test (ext/curl, and ext/standard's `http`,
   `streams` and `url` tests): both engines get `TEST_PHP_EXECUTABLE=php`
   there.
+- `--REDIRECTTEST--` (ext/pdo_sqlite/tests/common.phpt): php evaluates the
+  section as run-tests does, and each test of the directory it names runs
+  with its `ENV` (`PDOTEST_DSN`) and `REDIR_TEST_DIR`, under the name
+  `<redirect>><test>`
+  (`ext/pdo_sqlite/tests/common.phpt>ext/pdo/tests/pdo_001.phpt`); only
+  redirects whose `--EXTENSIONS--` rhp loads run. The redirect itself is
+  skipped as `redirect`. The README's table counts such a test once, for
+  the test it runs.
 - Each worker also copies the trees a test includes helpers from through a
   relative `../…/tests/` path (`sapi/cli/tests/php_cli_server.inc`,
   `ext/ftp/tests/server.inc`), also when only that test is selected, so a

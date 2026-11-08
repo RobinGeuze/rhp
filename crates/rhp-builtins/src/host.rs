@@ -806,8 +806,6 @@ pub trait Host {
     /// The file of the innermost user-code frame (php's
     /// `zend_get_executed_filename`), for `Phar::running` / `Phar::mapPhar`.
     fn executing_file(&self) -> Option<Vec<u8>>;
-    /// Global variable `name` from the global symbol table (an
-    /// auto-global is armed first), None when unset.
     /// php -a: evaluate one statement's `code` in the global scope as the
     /// file `name` (zend_eval_stringl under zend_try): errors are reported,
     /// an uncaught throwable as a warning, `exit` only sets the status.
@@ -818,6 +816,8 @@ pub trait Host {
     }
     /// Set `EG(exit_status)`.
     fn set_exit_status(&mut self, _status: i32) {}
+    /// Global variable `name` from the global symbol table (an
+    /// auto-global is armed first), None when unset.
     fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
         None
     }

@@ -486,13 +486,13 @@ impl Vm {
         self.main_script_path = Some(path.into());
     }
 
-    /// Skip auto_prepend_file (`-r` code).
     /// php -a: after the (empty) main script, the readline shell reads and
     /// runs statements until its input ends.
     pub fn set_interactive(&mut self) {
         self.interactive = true;
     }
 
+    /// Skip auto_prepend_file (`-r` code).
     pub fn disable_auto_prepend(&mut self) {
         self.auto_prepend = false;
     }

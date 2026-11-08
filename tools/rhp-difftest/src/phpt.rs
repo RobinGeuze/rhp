@@ -2877,7 +2877,23 @@ fn sub_envs(
     };
     let php = which(&php_bin()).to_string_lossy().into_owned();
     let mut php_env: SubEnv = pair("TEST_PHP_EXECUTABLE", &php).into();
-    let mut rhp_env: SubEnv = pair("TEST_PHP_EXECUTABLE", &rhp_bin.to_string_lossy()).into();
+    // rhp is "php" in a directory of its own, next to its php-cgi, where
+    // sapi/cgi's include.inc looks for it (`dirname($php) . "/php-cgi"`).
+    let bin_dir = work.join("rhp-bin");
+    let rhp_php = bin_dir.join("php");
+    let _ = fs::create_dir_all(&bin_dir);
+    let _ = fs::remove_file(&rhp_php);
+    let rhp_abs = rhp_bin
+        .canonicalize()
+        .unwrap_or_else(|_| rhp_bin.to_path_buf());
+    std::os::unix::fs::symlink(&rhp_abs, &rhp_php)
+        .map_err(|e| format!("linking {}: {e}", rhp_php.display()))?;
+    // The link's own absolute path (not the binary it points to).
+    let rhp_php = bin_dir
+        .canonicalize()
+        .unwrap_or_else(|_| bin_dir.clone())
+        .join("php");
+    let mut rhp_env: SubEnv = pair("TEST_PHP_EXECUTABLE", &rhp_php.to_string_lossy()).into();
     if let Some(c) = cgi {
         use std::os::unix::fs::PermissionsExt;
         php_env.extend(pair(
@@ -2891,6 +2907,10 @@ fn sub_envs(
             .and_then(|()| fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)))
             .map_err(|e| format!("writing {}: {e}", shim.display()))?;
         let shim = shim.canonicalize().unwrap_or(shim);
+        let cgi_link = bin_dir.join("php-cgi");
+        let _ = fs::remove_file(&cgi_link);
+        std::os::unix::fs::symlink(&shim, &cgi_link)
+            .map_err(|e| format!("linking {}: {e}", cgi_link.display()))?;
         rhp_env.extend(pair("TEST_PHP_CGI_EXECUTABLE", &shim.to_string_lossy()));
     }
     Ok((php_env, rhp_env))

@@ -55,9 +55,11 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   `php-cgi`) and hands the command line to `cli::main` or `cgi::main`.
   Both parse it with a port of php's `php_getopt`, so bad options get
   php's messages (`-v` and `-i` run after module startup, so its
-  warnings come first); the php-cli modes rhp lacks (`-l`, `-m`, `-s`,
-  `-w`, `-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`,
-  `--repeat`) are refused after php's own checks. `-a` runs
+  warnings come first). `-l` compiles each file as php_lint_script does
+  (`run_lint`), `-s`/`-w` print `highlight_file()`/`php_strip_whitespace()`
+  and `-m` the sorted module list; the php-cli modes rhp lacks
+  (`-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`, `--repeat`) are
+  refused after php's own checks. `-a` runs
   readline_cli.c's interactive shell (rhp-builtins
   `ext/readline/cli.rs`): `Script::Shell` sets `Vm::set_interactive`, so
   after request startup the shell reads lines with libedit's

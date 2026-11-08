@@ -1,9 +1,10 @@
 //! The php-cli front end (sapi/cli/php_cli.c): its option table, usage
 //! text and the passes `main` and `do_cli` make over the command line, so
-//! `rhp` reads options, and reports bad ones, as php does. The modes rhp
-//! does not have (`-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`,
-//! `--rf` and friends, `--ini`, `--repeat`) are refused once php would run
-//! them, after its own checks. `-a` runs readline_cli.c's shell.
+//! `rhp` reads options, and reports bad ones, as php does. `-l` lints,
+//! `-s` and `-w` highlight and strip a file, `-m` lists the modules, `-a`
+//! runs readline_cli.c's shell. The modes rhp does not have
+//! (`-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`, `--repeat`) are
+//! refused once php would run them, after its own checks.
 
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, OPTIONAL, REQUIRED};
 use crate::Script;
@@ -157,7 +158,12 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                 let code = "phpinfo(INFO_ALL & ~INFO_CREDITS);".to_string();
                 return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
             }
-            Opt::Char(c @ b'm', _) => return refuse(c),
+            // print_modules / print_extensions: the module names sorted
+            // with strcasecmp, then the Zend extensions.
+            Opt::Char(b'm', _) => {
+                let code = "$m = get_loaded_extensions(); usort($m, 'strcasecmp'); echo \"[PHP Modules]\\n\"; foreach ($m as $n) echo $n, \"\\n\"; echo \"\\n[Zend Modules]\\n\"; foreach (get_loaded_extensions(true) as $n) echo $n, \"\\n\"; echo \"\\n\";".to_string();
+                return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
+            }
             _ => {}
         }
     }
@@ -290,7 +296,10 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         print!("{e}");
         return 1;
     }
-    if !matches!(mode, Mode::Standard | Mode::Direct) {
+    if !matches!(
+        mode,
+        Mode::Standard | Mode::Direct | Mode::Lint | Mode::Highlight | Mode::Strip
+    ) {
         return refuse(mode_opt);
     }
     if num_repeats > 1 {
@@ -310,6 +319,47 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
     {
         script_file = Some(args[optind].clone());
         optind += 1;
+    }
+    match mode {
+        // PHP_CLI_MODE_LINT: each file in turn, as its own request, until
+        // the operands end or reach `--`; a failure leaves status 255.
+        Mode::Lint => {
+            let mut files = vec![script_file];
+            while optind < args.len() && args[optind] != "--" {
+                files.push(Some(args[optind].clone()));
+                optind += 1;
+            }
+            let mut status = 0;
+            for file in files {
+                match crate::run_lint(file, ini.clone(), ini_files.clone()) {
+                    0 => {}
+                    s => status = s,
+                }
+            }
+            return status;
+        }
+        // zend_highlight / zend_strip: highlight_file() and
+        // php_strip_whitespace() print the same.
+        Mode::Highlight | Mode::Strip => {
+            let path = match &script_file {
+                Some(f) => {
+                    if std::fs::File::open(f).is_err() {
+                        eprintln!("Could not open input file: {f}");
+                        return 1;
+                    }
+                    f.clone()
+                }
+                None => "php://stdin".to_string(),
+            };
+            let lit = path.replace('\\', "\\\\").replace('\'', "\\'");
+            let code = if mode == Mode::Highlight {
+                format!("highlight_file('{lit}');")
+            } else {
+                format!("echo php_strip_whitespace('{lit}');")
+            };
+            return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
+        }
+        _ => {}
     }
     let script = match (script_file, exec_direct) {
         // The shell runs instead of the script.

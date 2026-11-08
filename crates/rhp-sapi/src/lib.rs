@@ -998,6 +998,86 @@ pub(crate) fn php_binary() -> Option<Vec<u8>> {
     })
 }
 
+/// php-cli's `-l` for one file (`None`: standard input): php_lint_script
+/// compiles it as an include, in a request of its own, and prints the
+/// verdict. Returns the exit status: 255 when it does not compile.
+pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: IniFiles) -> i32 {
+    let (name, source) = match &path {
+        Some(p) => match std::fs::read(p) {
+            Ok(b) => (p.clone(), b),
+            Err(_) => {
+                eprintln!("Could not open input file: {p}");
+                return 1;
+            }
+        },
+        None => {
+            let mut src = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src);
+            ("Standard input code".to_string(), src)
+        }
+    };
+    let sapi: Box<dyn Sapi> = Box::new(CliSapi);
+    let entries = sapi.ini_entries();
+    let mut vm = Vm::new(sapi);
+    load_ini_files(&mut vm, &ini_files);
+    for (k, v) in entries {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    for (k, v) in &ini {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    vm.start_request();
+    if vm.startup_failed() {
+        vm.finish_request();
+        return 1;
+    }
+    let ok = match compile_file(&name, &source, Mode::Include) {
+        Ok(prog) => {
+            vm.emit_compile_diags(&prog);
+            true
+        }
+        Err(IncludeError::Parse {
+            class,
+            message,
+            line,
+            diags,
+        }) => {
+            vm.emit_parse_diags(name.as_bytes(), &diags);
+            vm.report_parse_error(class, &message, &name, line);
+            false
+        }
+        Err(IncludeError::Compile {
+            message,
+            line,
+            diags,
+        }) => {
+            vm.compile_failed(&message, name.as_bytes(), line, &diags, false);
+            false
+        }
+        Err(IncludeError::HardLimit { line }) => {
+            let t = vm.compile_hard_limit(Some((name.as_bytes(), line)));
+            fatal(&mut vm, t);
+            false
+        }
+        Err(IncludeError::Thrown(t)) => {
+            fatal(&mut vm, t);
+            false
+        }
+    };
+    let verdict = if ok {
+        format!("No syntax errors detected in {name}\n")
+    } else {
+        format!("Errors parsing {name}\n")
+    };
+    vm.write_output(verdict.as_bytes());
+    vm.finish_request();
+    if ok {
+        0
+    } else {
+        255
+    }
+}
+
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
 pub fn run_cli(
     script: Script,

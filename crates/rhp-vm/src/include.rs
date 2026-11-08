@@ -66,7 +66,7 @@ impl Vm {
     /// The diagnostics php's compiler raised for a file just loaded: once
     /// per compile, or on every load from opcache with
     /// `opcache.record_warnings`.
-    pub(crate) fn emit_compile_diags(&mut self, prog: &Program) {
+    pub fn emit_compile_diags(&mut self, prog: &Program) {
         if prog.compile_diags.is_empty()
             || (prog.compile_diags_reported.replace(true)
                 && !ini_bool(&self.ini_get(b"opcache.record_warnings").unwrap_or_default()))

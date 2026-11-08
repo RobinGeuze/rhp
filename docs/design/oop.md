@@ -495,6 +495,11 @@ never a second source of semantics.
   When an error handler throws from a callable's deprecation, a builtin's
   zpp keeps just that exception; only `call_user_func[_array]` compiled as
   a user call (`CallFlags::USER_CALL`) chains a "(null)" TypeError to it.
+  A `callable` parameter, variadic or return type autoloads the class a
+  `"C::m"` or `[C, m]` value names first (`autoload_callable_class`, as
+  zend_is_callable_check_class does), like `is_callable()` and zpp. An
+  autoloader's exception replaces an argument's TypeError and becomes a
+  return TypeError's previous.
 - **`InstanceOf`**: deref `val`; non-object → `Bool(false)`. Never autoloads.
   `Bool(resolve_class
   (class).map(|c| classes[val.class].ancestors.contains(&c)).unwrap_or(false))`.

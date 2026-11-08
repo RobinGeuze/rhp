@@ -675,7 +675,10 @@ zend_object_handlers.c.
   are merged like a parent's, and Reflection lists them after the parent's
   (do_interface_implementation). A property redeclared over an inherited
   virtual one takes a new slot at the end, like php's (the virtual one had
-  none). `verify_hooked_props` is
+  none); get_object_vars and foreach over a hooked object still walk the
+  parent's order (`hooked_order`, zho_build_properties_ex), and a class
+  whose parent has hooks keeps the hooked iterator (`iterates_hooked`,
+  php's inherited `get_iterator`). `verify_hooked_props` is
   zend_verify_hooked_property, `verify_hook_types` the set-hook value type
   checks (a small subtype test, `type_is_subtype`, until a shared one
   exists), `verify_abstract_class` php's "contains N abstract methods" for

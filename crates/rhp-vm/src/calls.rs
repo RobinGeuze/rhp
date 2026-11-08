@@ -905,18 +905,32 @@ impl Vm {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
                 // parse them quietly (DatePeriod's three signatures).
+                // IntlGregorianCalendar's counts its arguments itself.
                 if (cname.eq_ignore_ascii_case(b"WeakReference")
-                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
+                    || cname.eq_ignore_ascii_case(b"DatePeriod")
+                    || cname.eq_ignore_ascii_case(b"IntlGregorianCalendar"))
                     && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
                 {
                     return None;
                 }
                 let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
                 let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
-                (name, st.min_args(), st.max_args())
+                // IntlCalendar::set() deprecates more than 2 arguments
+                // before zpp counts them; its body checks the maximum.
+                let max = if cname.eq_ignore_ascii_case(b"IntlCalendar")
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"set")
+                {
+                    None
+                } else {
+                    st.max_args()
+                };
+                (name, st.min_args(), max)
             }
             Some(_) => return None,
             None => {
+                if proto.name.as_bytes() == b"intlgregcal_create_instance" {
+                    return None;
+                }
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
                 (f.name.to_string(), f.min_args(), f.max_args())
             }

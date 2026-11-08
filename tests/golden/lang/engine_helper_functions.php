@@ -14,6 +14,9 @@ $helpers = [
     '__throwable_string', '__token_list', '__unserialize_destroy', '__unserialize_init', '__unserialize_value', '__xml_fn', '__xmlwriter',
     '__xmlwriter_fn', '__xmlwriter_to', '__xr', '__xr_prop', '__zip',
     '__zip_prop', '__zpp_arg',
+    '__breakiter', '__cpbiter', '__datefmt', '__datepatgen', '__intlcal', '__intlchar', '__intlgregcal',
+    '__intliter', '__intltz', '__listfmt', '__msgfmt', '__partsiter', '__rbbiter', '__resbundle', '__spoof',
+    '__translit', '__uconv',
 ];
 
 function attempt(callable|string $f): string

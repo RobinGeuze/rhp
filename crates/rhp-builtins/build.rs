@@ -36,11 +36,24 @@ fn main() {
 
     let icu = include("ICU_UC");
     icu_checks(&icu);
-    println!("cargo:rerun-if-changed=src/ext/intl/shim.c");
-    println!("cargo:rerun-if-changed=src/ext/intl/consts.h");
-    println!("cargo:rerun-if-changed=src/ext/intl/class_consts.h");
+    // C++: some of php's constants are ICU class members, and the
+    // MessageFormat, Calendar and TimeZone parts have no C API.
+    for f in [
+        "shim.cpp",
+        "icu.cpp",
+        "breakiter.cpp",
+        "consts.h",
+        "class_consts.h",
+    ] {
+        println!("cargo:rerun-if-changed=src/ext/intl/{f}");
+    }
     cc::Build::new()
-        .file("src/ext/intl/shim.c")
+        .cpp(true)
+        .std("c++17")
+        .cpp_link_stdlib(None)
+        .file("src/ext/intl/shim.cpp")
+        .file("src/ext/intl/icu.cpp")
+        .file("src/ext/intl/breakiter.cpp")
         .include(&icu)
         .warnings(true)
         .extra_warnings(true)

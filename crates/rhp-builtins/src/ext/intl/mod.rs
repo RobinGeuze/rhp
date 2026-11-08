@@ -26,17 +26,32 @@ use rhp_values::Value;
 
 use crate::{Host, Thrown};
 
+mod breakiterator;
+mod calendar;
 mod collator;
+mod common;
+mod converter;
+mod cpp;
+mod dateformat;
+mod dates;
 mod error;
 mod formatter;
 mod grapheme;
 mod idn;
+mod iterator;
+mod listformatter;
 mod locale;
+mod msgformat;
 mod normalizer;
+mod resourcebundle;
+mod spoofchecker;
 mod sys;
+mod timezone;
+mod transliterator;
+mod uchar;
 
 pub(crate) use error::ERROR_LEVEL_DEPRECATION;
-pub(crate) use error::{error_reset, error_set, error_set_code, error_set_msg, u_error_name};
+pub(crate) use error::{error_reset, error_set_code, u_error_name};
 
 use sys::{UChar, UErrorCode};
 
@@ -48,6 +63,7 @@ use sys::{UChar, UErrorCode};
 pub(crate) enum ConstValue {
     Int(i64),
     Str(&'static str),
+    Float(f64),
 }
 
 /// The shim's table, read once.
@@ -103,6 +119,7 @@ fn class_const_table() -> &'static [ClassConst] {
                 let value = match (*p).kind {
                     0 => Some(ConstValue::Int((*p).value)),
                     1 => Some(ConstValue::Str(s((*p).str))),
+                    3 => Some(ConstValue::Float((*p).dvalue)),
                     _ => None,
                 };
                 out.push(ClassConst {
@@ -140,6 +157,7 @@ fn class_const_decls(class: &str) -> String {
         let v = match c.value {
             Some(ConstValue::Int(i)) => format!("{i}"),
             Some(ConstValue::Str(s)) => format!("'{s}'"),
+            Some(ConstValue::Float(f)) => format!("{f:?}"),
             None => "null".to_string(),
         };
         out.push_str(&format!("    public const {} = {v};\n", c.name));
@@ -170,6 +188,7 @@ pub fn constants() -> Vec<(&'static str, Value)> {
             let v = match v {
                 ConstValue::Int(i) => Value::Int(i),
                 ConstValue::Str(s) => Value::str(s),
+                ConstValue::Float(f) => Value::Float(f),
             };
             (n, v)
         })
@@ -426,6 +445,11 @@ pub(crate) fn locale_too_long(
     Ok(false)
 }
 
+/// Whether a locale of `len` bytes is too long (`INTL_CHECK_LOCALE_LEN`).
+pub(crate) fn locale_too_long_len(len: usize) -> bool {
+    len > sys::ULOC_FULLNAME_CAPACITY - 1
+}
+
 /// The UTF-16 units a fixed-size ICU getter writes, read with php's
 /// grow-once pattern: `f(buf, cap, status)` returns the length.
 pub(crate) fn icu_uchars(
@@ -519,6 +543,23 @@ pub fn register(m: &mut crate::Registry) {
             ("__collator", collator::fn_method, 2, None),
             ("__numfmt", formatter::fn_method, 2, None),
             ("__locale", locale::fn_method, 1, None),
+            ("__resbundle", resourcebundle::fn_helper, 3, None),
+            ("__translit", transliterator::fn_helper, 3, None),
+            ("__intlchar", uchar::fn_helper, 3, None),
+            ("__listfmt", listformatter::fn_helper, 3, None),
+            ("__uconv", converter::fn_helper, 3, None),
+            ("__spoof", spoofchecker::fn_helper, 3, None),
+            ("__msgfmt", msgformat::fn_helper, 3, None),
+            ("__datefmt", dateformat::fn_helper, 3, None),
+            ("__datepatgen", dateformat::fn_dtpg_helper, 3, None),
+            ("__intltz", timezone::fn_helper, 3, None),
+            ("__intlcal", calendar::fn_helper, 3, None),
+            ("__intlgregcal", calendar::fn_greg_helper, 3, None),
+            ("__intliter", iterator::fn_helper, 3, None),
+            ("__partsiter", iterator::fn_parts_helper, 3, None),
+            ("__breakiter", breakiterator::fn_helper, 3, None),
+            ("__rbbiter", breakiterator::fn_rbbi_helper, 3, None),
+            ("__cpbiter", breakiterator::fn_cpbi_helper, 3, None),
         ],
     );
 }
@@ -535,7 +576,124 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
         handlers: &formatter::HANDLERS,
         create_object: true,
     },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlListFormatter",
+        handlers: &listformatter::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "MessageFormatter",
+        handlers: &msgformat::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlDateFormatter",
+        handlers: &dateformat::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlDatePatternGenerator",
+        handlers: &dateformat::DTPG_HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "ResourceBundle",
+        handlers: &resourcebundle::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlTimeZone",
+        handlers: &timezone::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlCalendar",
+        handlers: &calendar::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlIterator",
+        handlers: &iterator::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlBreakIterator",
+        handlers: &breakiterator::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "UConverter",
+        handlers: &converter::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "Transliterator",
+        handlers: &transliterator::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "Spoofchecker",
+        handlers: &spoofchecker::HANDLERS,
+        create_object: true,
+    },
 ];
+
+/// The generated classes before IntlException, in php_intl.c's MINIT
+/// order, with their procedural aliases.
+const CLASSES_BEFORE: &[(&common::ClassSpec, &[(&str, &str)])] = &[
+    (&msgformat::SPEC, msgformat::ALIASES),
+    (&dateformat::SPEC, dateformat::ALIASES),
+    (&dateformat::DTPG_SPEC, &[]),
+    (&resourcebundle::SPEC, resourcebundle::ALIASES),
+    (&transliterator::SPEC, transliterator::ALIASES),
+    (&timezone::SPEC, timezone::ALIASES),
+    (&calendar::SPEC, calendar::ALIASES),
+    (&calendar::GREG_SPEC, calendar::GREG_ALIASES),
+    (&spoofchecker::SPEC, &[]),
+];
+
+/// The generated classes after IntlException.
+const CLASSES_AFTER: &[(&common::ClassSpec, &[(&str, &str)])] = &[
+    (&iterator::SPEC, &[]),
+    (&breakiterator::SPEC, &[]),
+    (&breakiterator::RBBI_SPEC, &[]),
+    (&breakiterator::CPBI_SPEC, &[]),
+    (&iterator::PARTS_SPEC, &[]),
+    (&converter::SPEC, &[]),
+    (&uchar::SPEC, &[]),
+];
+
+unsafe extern "C" {
+    fn rhp_intl_info_version(which: i32) -> *const std::ffi::c_char;
+}
+sys::icu! {
+    pub fn ucal_getTZDataVersion(status: *mut UErrorCode) -> *const std::ffi::c_char;
+}
+
+/// `PHP_MINFO_FUNCTION(intl)`'s rows (its ini entries follow).
+pub(crate) fn info_rows() -> Vec<(&'static str, String)> {
+    let v = |which| {
+        // SAFETY: a static string or NULL.
+        let p = unsafe { rhp_intl_info_version(which) };
+        (!p.is_null()).then(|| String::from_utf8_lossy(&c_bytes(p)).into_owned())
+    };
+    let mut rows = vec![("Internationalization support", "enabled".to_string())];
+    rows.push(("ICU version", v(0).unwrap_or_default()));
+    if let Some(d) = v(1) {
+        rows.push(("ICU Data version", d));
+    }
+    let mut status = sys::U_ZERO_ERROR;
+    // SAFETY: ICU's static version string.
+    let tz = unsafe { ucal_getTZDataVersion(&mut status) };
+    if status == sys::U_ZERO_ERROR {
+        rows.push((
+            "ICU TZData version",
+            String::from_utf8_lossy(&c_bytes(tz)).into_owned(),
+        ));
+    }
+    rows.push(("ICU Unicode version", v(2).unwrap_or_default()));
+    rows
+}
 
 /// The intl classes, in php_intl.c's MINIT order: their constants from
 /// the linked ICU, their methods calling the procedural functions' code
@@ -549,6 +707,21 @@ pub fn prelude() -> &'static str {
                 &format!("    // %CONSTANTS {class}%\n"),
                 &class_const_decls(class),
             );
+        }
+        for (marker, list) in [
+            (
+                "// %CLASSES AFTER NumberFormatter%\n",
+                &[(&listformatter::SPEC, &[][..])][..],
+            ),
+            ("// %CLASSES BEFORE IntlException%\n", CLASSES_BEFORE),
+            ("// %CLASSES AFTER IntlException%", CLASSES_AFTER),
+        ] {
+            let mut gen = String::new();
+            for (spec, aliases) in list {
+                gen.push_str(&common::class_php(spec));
+                gen.push_str(&common::functions_php(spec.helper, aliases));
+            }
+            p = p.replace(marker, &gen);
         }
         p
     })

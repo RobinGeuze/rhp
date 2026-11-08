@@ -614,6 +614,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "gmp",
     "hash",
     "iconv",
+    "intl",
     "session",
     "standard",
     "libxml",

@@ -39,6 +39,8 @@ class NumberFormatter
     public function getErrorMessage(): string { return __numfmt('getErrorMessage', $this); }
 }
 
+// %CLASSES AFTER NumberFormatter%
+
 
 class Normalizer {
     const FORM_D = 4;
@@ -82,6 +84,10 @@ class Locale
     public static function minimizeSubtags(string $locale): string|false { return __locale('minimizeSubtags', $locale); }
 }
 
+// %CLASSES BEFORE IntlException%
+
 class IntlException extends Exception
 {
 }
+
+// %CLASSES AFTER IntlException%

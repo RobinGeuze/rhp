@@ -619,6 +619,20 @@ fn print_module(o: &mut Info, e: &str) {
         }
         o.table_end();
         print_ini(o, &["gd.jpeg_ignore_warning"], &["gd.jpeg_ignore_warning"]);
+    } else if e == "intl" {
+        for (k, v) in crate::ext::intl::info_rows() {
+            o.row(&[k, &v]);
+        }
+        o.table_end();
+        print_ini(
+            o,
+            &[
+                "intl.default_locale",
+                "intl.error_level",
+                "intl.use_exceptions",
+            ],
+            &["intl.use_exceptions"],
+        );
     } else if e == "zip" {
         for (k, v) in crate::ext::zip::info_rows() {
             o.row(&[&k, &v]);

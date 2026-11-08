@@ -153,6 +153,7 @@ pub(crate) fn compile_method(
                 start_line: cx.line_of(pstart),
                 offset: pstart,
                 end_line: cx.line_of(pend),
+                default_text: None,
             },
             promoted: true,
             hooks,

@@ -454,7 +454,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
     public function invoke($object = null, mixed ...$args): mixed {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
         $object = __zpp_arg('ReflectionMethod::invoke', 1, 'object', '?object', $object);
-        if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
+        if ($this->__i['static']) { return __reflect_invoke($this->__i['reflClass'] ?? null, $this->class, $this->name, $args); }
         if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
         if ($this->__l instanceof Closure) {
             if (!($object instanceof Closure)) { throw new ReflectionException('Given object is not an instance of the class this method was declared in'); }
@@ -466,7 +466,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
         $object = __zpp_arg('ReflectionMethod::invokeArgs', 1, 'object', '?object', $object);
         $args = __zpp_arg('ReflectionMethod::invokeArgs', 2, 'args', 'array', $args);
-        if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
+        if ($this->__i['static']) { return __reflect_invoke($this->__i['reflClass'] ?? null, $this->class, $this->name, $args); }
         if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
         if ($this->__l instanceof Closure) {
             if (!($object instanceof Closure)) { throw new ReflectionException('Given object is not an instance of the class this method was declared in'); }
@@ -1011,7 +1011,7 @@ class ReflectionProperty implements Reflector {
         if ($m & 512) { $s .= 'virtual '; }
         if ($this->__i['type'] !== null) { $s .= Reflection::__tstr($this->__i['type']) . ' '; }
         $s .= '$' . $this->name;
-        if ($this->__i['hasDefault'] && !($m & 512)) { $s .= ' = ' . Reflection::__fmt($this->__i['default']); }
+        if ($this->__i['hasDefault'] && !($m & 512)) { $s .= ' = ' . ($this->__i['defaultAst'] ?? Reflection::__fmt($this->__i['pending'] ? $this->getDefaultValue() : $this->__i['default'])); }
         $hooks = $this->__i['hooks'] ?? [];
         if ($hooks !== []) {
             $s .= ' {';
@@ -1112,6 +1112,7 @@ class ReflectionProperty implements Reflector {
             __reflect('deprecated', 'ReflectionProperty::getDefaultValue() for a property without a default value is deprecated, use ReflectionProperty::hasDefaultValue() to check if the default value exists');
             return null;
         }
+        if ($this->__i['pending']) { return __reflect('prop_default', $this->class, $this->name); }
         return $this->__i['default'];
     }
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionProperty'); }

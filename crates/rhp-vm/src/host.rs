@@ -2778,8 +2778,18 @@ impl Host for Vm {
             vm.wrap_by_ref_args(&m.proto, &name, argv)
         };
         if m.is_static {
+            // ReflectionMethod passes the class it reflects (php's
+            // intern->ce) for a static method: the called scope.
+            let scope = match deref(obj) {
+                Value::Str(n) => self
+                    .resolve_class_by_name(n.as_bytes())
+                    .ok()
+                    .filter(|&c| c == cls || self.class(c).ancestors.contains(&cls))
+                    .unwrap_or(cls),
+                _ => cls,
+            };
             let args = place(self)?;
-            return self.call_sync(&m, None, cls, args);
+            return self.call_sync(&m, None, scope, args);
         }
         match deref(obj) {
             Value::Object(h) => {

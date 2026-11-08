@@ -2616,7 +2616,11 @@ impl Vm {
     }
 
     /// Run a deferred-initializer thunk in `class_id`'s scope.
-    fn run_init_thunk(&mut self, thunk: &UnitFn, class_id: ClassId) -> Result<Value, Thrown> {
+    pub(crate) fn run_init_thunk(
+        &mut self,
+        thunk: &UnitFn,
+        class_id: ClassId,
+    ) -> Result<Value, Thrown> {
         self.run_proto_sync(
             thunk.clone(),
             None,

@@ -533,6 +533,12 @@ zend_compile_const_expr leaves them, constants never substituted, as
 zend_compile_params turns substitution off). `ReflectionParameter::
 __toString()` prints that text (`new \ArrayObject()`, `\N\I::X`) and a
 folded default as its value (format_default_value).
+A property default keeps the same text in `DeclMeta::default_text` when
+php keeps it as a constant AST (builtin constants are substituted there,
+as zend_compile_prop_decl does): `ReflectionProperty::__toString()` prints
+it while the class's constants are not yet updated (always, for a static),
+and `getDefaultValue()` runs a pending initializer alone
+(`__reflect('prop_default')`).
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
@@ -582,7 +588,12 @@ the unpack that is an element / property (SEND_FUNC_ARG), or a variable a
 later argument may change (SEND_VAR_EX), asks the callee (`*ArgIsRef`) as it
 is sent and goes into the array as a reference or a value; any other
 variable goes in as a reference that a by-value parameter dereferences.
-The fixed-arity register-window path is the fast path.
+The fixed-arity register-window path is the fast path. There too, a
+variable sent to a callee only the run time knows, and assigned or
+incremented by a later argument (`$o->m($p, $p = new X)`), asks the callee
+as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
+before the assignment. An anonymous class's constructor arguments are sent
+like a named class's.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

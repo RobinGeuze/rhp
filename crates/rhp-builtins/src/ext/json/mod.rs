@@ -827,6 +827,7 @@ impl Parser<'_, '_> {
         // key -> index in `pairs`, for the duplicate check (php's hash
         // update); built once the object outgrows a linear scan
         let mut index: std::collections::HashMap<Vec<u8>, usize> = std::collections::HashMap::new();
+        let mut obj: Option<Value> = None;
         self.skip_ws();
         if self.peek() == Some(b']') {
             // object_end: `]` closes the wrong container
@@ -850,6 +851,11 @@ impl Parser<'_, '_> {
                     return Err(JSON_ERROR_INVALID_PROPERTY_NAME);
                 }
                 let val = self.parse_value(depth + 1)?;
+                // php_json_parser's `member` rule creates the object once
+                // its first value is parsed (the object handle's order).
+                if obj.is_none() && !self.assoc {
+                    obj = Some(self.host.make_object(Vec::new()));
+                }
                 // Duplicate keys: last wins (overwrite in place, keep position).
                 if pairs.len() < 16 {
                     if let Some(slot) = pairs.iter_mut().find(|(k, _)| *k == key) {
@@ -892,8 +898,19 @@ impl Parser<'_, '_> {
             }
             Ok(Value::Array(arr))
         } else {
-            // Decode to an object (stdClass via the host; array fallback otherwise).
-            Ok(self.host.make_object(pairs))
+            // Decode to an object (stdClass via the host; array fallback
+            // otherwise); an empty one is created here (`members: %empty`).
+            match obj {
+                Some(Value::Object(h)) => {
+                    let mut b = h.borrow_mut();
+                    for (k, v) in pairs {
+                        b.props_mut().insert(rhp_values::PhpStr::from_bytes(k), v);
+                    }
+                    drop(b);
+                    Ok(Value::Object(h))
+                }
+                _ => Ok(self.host.make_object(pairs)),
+            }
         }
     }
 

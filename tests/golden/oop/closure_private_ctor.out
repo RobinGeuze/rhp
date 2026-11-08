@@ -1,0 +1,8 @@
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, cannot access private method Closure::__construct()
+bool(false)
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, cannot access private method Closure::__construct()
+bool(false)
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, class Closure does not have a method "nope"
+bool(false)
+Error: Call to private method Closure::__construct() from global scope
+Error: Call to private method Closure::__construct() from scope K

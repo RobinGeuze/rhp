@@ -1101,23 +1101,36 @@ pub(crate) fn interleave_groups<T>(classes: &mut Vec<T>, groups: Vec<T>, pos: &[
 /// The type name and zero value a null argument coerces to for a scalar
 /// parameter of an internal function, or `None` when the type accepts null
 /// or is not a single scalar (unions print in php's own order).
-fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(&'static str, Value)> {
+fn prelude_null_coercion(ty: &rhp_bytecode::TypeHint) -> Option<(String, Value)> {
     use rhp_bytecode::TypeKind as K;
     if ty.nullable || ty.intersection {
         return None;
     }
     // Z_PARAM_NUMBER
     if let [K::Int, K::Float] | [K::Float, K::Int] = ty.kinds[..] {
-        return Some(("int|float", Value::Int(0)));
+        return Some(("int|float".into(), Value::Int(0)));
+    }
+    // Z_PARAM_OBJ_OR_STR / Z_PARAM_OBJ_OF_CLASS_OR_STR
+    match &ty.kinds[..] {
+        [K::Object, K::String] | [K::String, K::Object] => {
+            return Some(("object|string".into(), Value::str("")));
+        }
+        [K::Named(c), K::String] | [K::String, K::Named(c)] => {
+            return Some((
+                format!("{}|string", String::from_utf8_lossy(c.as_bytes())),
+                Value::str(""),
+            ));
+        }
+        _ => {}
     }
     if ty.kinds.len() != 1 {
         return None;
     }
     match ty.kinds[0] {
-        K::Int => Some(("int", Value::Int(0))),
-        K::Float => Some(("float", Value::Float(0.0))),
-        K::String => Some(("string", Value::str(""))),
-        K::Bool => Some(("bool", Value::Bool(false))),
+        K::Int => Some(("int".into(), Value::Int(0))),
+        K::Float => Some(("float".into(), Value::Float(0.0))),
+        K::String => Some(("string".into(), Value::str(""))),
+        K::Bool => Some(("bool".into(), Value::Bool(false))),
         _ => None,
     }
 }

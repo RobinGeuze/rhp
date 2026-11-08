@@ -3070,6 +3070,19 @@ fn fn_unserialize_value(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 /// `__unserialize_init()` / `__unserialize_destroy()`: PHP_VAR_UNSERIALIZE_INIT
 /// / _DESTROY around an SPL `unserialize()` method, so its values share one
 /// var_hash (and the delayed calls run at the end, when outermost).
+/// `__serialize_init()` / `__serialize_destroy()`: PHP_VAR_SERIALIZE_INIT
+/// and _DESTROY around an SPL class's `serialize()`, so the serialize()
+/// calls between them share one var_hash.
+fn fn_serialize_init(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ser_init();
+    Ok(Value::Null)
+}
+
+fn fn_serialize_destroy(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    ser_destroy();
+    Ok(Value::Null)
+}
+
 fn fn_unserialize_init(_host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     unser_init();
     Ok(Value::Null)
@@ -3251,6 +3264,8 @@ pub fn register(m: &mut crate::Registry) {
             ("__object_properties_load", fn_object_properties_load),
             ("__spl_obj_store", fn_spl_obj_store),
             ("__unserialize_init", fn_unserialize_init),
+            ("__serialize_init", fn_serialize_init),
+            ("__serialize_destroy", fn_serialize_destroy),
             ("__unserialize_destroy", fn_unserialize_destroy),
             ("var_dump", fn_var_dump),
             ("debug_zval_dump", fn_debug_zval_dump),

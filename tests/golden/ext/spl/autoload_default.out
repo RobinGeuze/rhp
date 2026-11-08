@@ -1,0 +1,11 @@
+string(9) ".inc,.php"
+array(1) {
+  [0]=>
+  string(12) "spl_autoload"
+}
+string(7) "AutoFoo"
+string(10) "Ns\AutoBar"
+bool(false)
+string(4) ".php"
+bool(false)
+spl_object_id(): Argument #1 ($object) must be of type object, null given

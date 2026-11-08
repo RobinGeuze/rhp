@@ -133,6 +133,9 @@ pub type GetIteratorFn = fn(&mut dyn Host, &ObjectHandle, bool) -> Result<Object
 /// (PDOStatement's read-only `queryString`); an error stops it.
 pub type PropCheckFn = fn(&mut dyn Host, &ObjectHandle, &[u8]) -> Result<(), Thrown>;
 
+/// See [`ObjectHandlers::has_property`].
+pub type PropHasFn = fn(&mut dyn Host, &ObjectHandle, &[u8]) -> Result<Option<bool>, Thrown>;
+
 /// `get_gc`: push the values the object's native state holds (what php's
 /// handler returns besides the properties), for the cycle collector. A
 /// value must be one the payload really holds a reference to; leaving
@@ -177,6 +180,10 @@ pub struct ObjectHandlers {
     pub write_property: Option<PropCheckFn>,
     /// Checks before a property unset (`unset_property`).
     pub unset_property: Option<PropCheckFn>,
+    /// php's `has_property` for a prelude-hooked property under `isset()`
+    /// / `empty()` / `??`: `Some(false)` says unset without running the
+    /// get hook.
+    pub has_property: Option<PropHasFn>,
 }
 
 impl ObjectHandlers {
@@ -194,6 +201,7 @@ impl ObjectHandlers {
         get_gc: None,
         write_property: None,
         unset_property: None,
+        has_property: None,
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {

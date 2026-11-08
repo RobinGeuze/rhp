@@ -128,10 +128,14 @@ Notes:
   that object is freed, so a reused handle never finds stale entries.
 - Handlers not routed yet: property access (`read_property`,
   `has_property`…; writes and unsets only get the checks above), dimension access for classes other than WeakMap,
-  `get_constructor` (`Directory`), `get_gc`. DOM's, SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
+  `get_constructor` (`Directory`), `get_gc`. DOM's, SimpleXML's, XMLReader's and ZipArchive's properties (and
   SimpleXML's dimensions) go through their prelude classes'
   `__get`/`__set`/`__isset`/`__unset` and ArrayAccess methods, which call
-  the ported handlers. Two things make those stand-ins behave like php's
+  the ported handlers. DatePeriod declares its `@virtual` properties as
+  property hooks that call them (get: the read handler, set: the read-only
+  error), and its `unset_property` check refuses an unset; Reflection
+  shows those properties as php's (virtual, no hooks) and traces leave the
+  hook frames out. Two things make those stand-ins behave like php's
   handlers:
   - `host.magic_fetch()` says which fetch the running accessor serves:
     `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
@@ -142,7 +146,11 @@ Notes:
     accessor's own frame sees the mode; whatever it calls sees `Read`.
   - Their frames never show in a trace: a built-in class's accessor whose
     php stub has no such method is engine plumbing, and a frame it calls
-    gets the call site of the user frame below it. A stand-in
+    gets the call site of the user frame below it. The same accessors, and
+    a `__construct` standing in for php's `get_constructor` refusal
+    (CurlHandle, XMLParser…), are left out of Reflection's method lists,
+    `getConstructor()`, `get_class_methods()` and `method_exists()`
+    (`Vm::hidden_method`). A stand-in
     `__call`/`__callStatic` (XMLReader's `open`/`XML`, which php's
     `get_method` runs statically or on an instance) shows as the stub
     method it runs, or not at all for a name the stub lacks.
@@ -152,11 +160,11 @@ Notes:
   - A user subclass that defines `__get`/`__set`/`__isset` (or
     `offsetGet`…) replaces the stand-in, so it shadows every virtual
     property, read-only checks included.
-  - `property_exists()`, `method_exists(…, '__get')` and Reflection's
-    property and method lists differ from php: they see no virtual
-    properties; SimpleXML implements `ArrayAccess`;
-    `ReflectionMethod('XMLReader', 'open')` and `method_exists()` find no
-    `open`/`XML`.
+  - `property_exists()` and Reflection's property lists differ from php:
+    they see no virtual properties of DOM, XMLReader and ZipArchive;
+    SimpleXML implements `ArrayAccess`; `ReflectionMethod('XMLReader',
+    'open')` and `method_exists()` find no `open`/`XML`
+    (tests/api/known-differences.txt lists every such row).
   - `$sxe[null] = v` acts as `$sxe[] = v`: `offsetSet` cannot tell them
     apart.
   - `$sxe->new .= 'x'` and `$sxe->new++` on a missing element write the

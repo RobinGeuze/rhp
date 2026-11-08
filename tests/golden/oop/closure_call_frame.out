@@ -1,0 +1,10 @@
+[internal] A->closure 0
+closure_call_frame.php Closure->call 1
+Unknown named parameter $b
+closure_call_frame.php Closure->call [0,"b"]
+array(2) {
+  [0]=>
+  string(12) "A->{closure}"
+  [1]=>
+  string(13) "Closure->call"
+}

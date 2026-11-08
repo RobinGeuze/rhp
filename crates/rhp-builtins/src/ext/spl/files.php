@@ -10,7 +10,9 @@ class SplFileInfo implements Stringable {
         $s = strrpos($p, '/');
         $this->__dir = $s === false ? '' : substr($p, 0, $s);
     }
-    public function getPath(): string { return $this->__dir; }
+    // spl_filesystem_object_get_path / _get_pathname: a directory
+    // iterator's are its current entry's.
+    public function getPath(): string { return $this instanceof DirectoryIterator ? $this->__entryPath() : $this->__dir; }
     public function getFilename(): string {
         $p = $this->getPathname(); $d = $this->getPath(); $dl = strlen($d);
         if ($dl > 0 && $dl < strlen($p)) { return substr($p, $dl + 1); }
@@ -21,9 +23,13 @@ class SplFileInfo implements Stringable {
         return $q === false ? '' : substr($b, $q + 1);
     }
     public function getBasename(string $suffix = ''): string { return basename($this->getFilename(), $suffix); }
-    public function getPathname(): string { return $this->__path; }
+    public function getPathname(): string { return $this instanceof DirectoryIterator ? $this->__entryPathname() : $this->__path; }
+    // spl_filesystem_object_get_debug_info: a file object adds its mode
+    // and CSV control.
     public function __debugInfo(): array {
-        return __spl_user_props($this) + ["\0SplFileInfo\0pathName" => $this->getPathname(), "\0SplFileInfo\0fileName" => $this->getFilename()];
+        $r = __spl_user_props($this) + ["\0SplFileInfo\0pathName" => $this->getPathname(), "\0SplFileInfo\0fileName" => $this->getFilename()];
+        if ($this instanceof SplFileObject) { $r += $this->__fileDebug(); }
+        return $r;
     }
     public function getPerms(): int|false { return $this->__stat('getPerms', 'fileperms'); }
     public function getInode(): int|false { return $this->__stat('getInode', 'fileinode'); }
@@ -79,6 +85,8 @@ class SplFileInfo implements Stringable {
         $this->__infoClass = $class;
     }
     public function __toString(): string { return $this->getPathname(); }
+    #[\Deprecated(since: '8.2')]
+    final public function _bad_state_ex(): void { throw new Error('The parent constructor was not called: the object is in an invalid state'); }
 }
 
 class DirectoryIterator extends SplFileInfo implements SeekableIterator {
@@ -105,8 +113,10 @@ class DirectoryIterator extends SplFileInfo implements SeekableIterator {
             while (isset($this->__entries[$this->__pos]) && ($this->__entries[$this->__pos] === '.' || $this->__entries[$this->__pos] === '..')) { $this->__pos++; }
         }
     }
-    public function getFilename(): string { return $this->__entries[$this->__pos] ?? ''; }
-    public function getPathname(): string {
+    public function getFilename(): string { return $this->__entryFilename(); }
+    protected function __entryFilename(): string { return $this->__entries[$this->__pos] ?? ''; }
+    protected function __entryPath(): string { return $this->__dir; }
+    protected function __entryPathname(): string {
         $e = $this->__entries[$this->__pos] ?? '';
         if ($e === '') { return ''; }
         return $this->__dir === '' ? $e : $this->__dir . '/' . $e;
@@ -134,6 +144,7 @@ class FilesystemIterator extends DirectoryIterator {
     public function __construct(string $directory, int $flags = FilesystemIterator::KEY_AS_PATHNAME | FilesystemIterator::CURRENT_AS_FILEINFO | FilesystemIterator::SKIP_DOTS) {
         $this->__open('FilesystemIterator', $directory, $flags);
     }
+    public function rewind(): void { $this->__pos = 0; $this->__skip(); }
     public function key(): mixed { return ($this->__flags & self::KEY_AS_FILENAME) ? $this->getFilename() : $this->getPathname(); }
     public function current(): mixed {
         if ($this->__flags & self::CURRENT_AS_PATHNAME) { return $this->getPathname(); }
@@ -146,7 +157,6 @@ class FilesystemIterator extends DirectoryIterator {
         $mask = self::KEY_MODE_MASK | self::CURRENT_MODE_MASK | self::OTHER_MODE_MASK;
         $this->__flags = ($this->__flags & ~$mask) | ($flags & $mask);
     }
-    public function __toString(): string { return $this->getPathname(); }
 }
 
 class RecursiveDirectoryIterator extends FilesystemIterator implements RecursiveIterator {
@@ -171,7 +181,6 @@ class RecursiveDirectoryIterator extends FilesystemIterator implements Recursive
     public function getSubPathname(): string {
         return ($this->__subPath === '' ? '' : $this->__subPath . '/') . $this->getFilename();
     }
-    public function key(): mixed { return ($this->__flags & self::KEY_AS_FILENAME) ? $this->getFilename() : $this->getPathname(); }
 }
 
 class GlobIterator extends FilesystemIterator implements Countable {
@@ -184,9 +193,9 @@ class GlobIterator extends FilesystemIterator implements Countable {
         $s = strrpos($pattern, '/');
         $this->__dir = $s === false ? '' : substr($pattern, 0, $s);
     }
-    public function getFilename(): string { $e = $this->__entries[$this->__pos] ?? ''; return $e === '' ? '' : basename($e); }
-    public function getPathname(): string { return $this->__entries[$this->__pos] ?? ''; }
-    public function getPath(): string { $e = $this->__entries[$this->__pos] ?? ''; $s = strrpos($e, '/'); return $s === false ? $this->__dir : substr($e, 0, $s); }
+    protected function __entryFilename(): string { $e = $this->__entries[$this->__pos] ?? ''; return $e === '' ? '' : basename($e); }
+    protected function __entryPathname(): string { return $this->__entries[$this->__pos] ?? ''; }
+    protected function __entryPath(): string { $e = $this->__entries[$this->__pos] ?? ''; $s = strrpos($e, '/'); return $s === false ? $this->__dir : substr($e, 0, $s); }
     public function count(): int { return count($this->__entries); }
 }
 
@@ -322,8 +331,8 @@ class SplFileObject extends SplFileInfo implements RecursiveIterator, SeekableIt
         $this->__d = $separator; $this->__e = $enclosure;
     }
     public function getCsvControl(): array { return [$this->__d, $this->__e, $this->__esc]; }
-    public function __debugInfo(): array {
-        return parent::__debugInfo() + ["\0SplFileObject\0openMode" => $this->__mode, "\0SplFileObject\0delimiter" => $this->__d, "\0SplFileObject\0enclosure" => $this->__e];
+    protected function __fileDebug(): array {
+        return ["\0SplFileObject\0openMode" => $this->__mode, "\0SplFileObject\0delimiter" => $this->__d, "\0SplFileObject\0enclosure" => $this->__e];
     }
     public function flock(int $operation, &$wouldBlock = null): bool { return flock($this->__fp, $operation, $wouldBlock); }
     public function fflush(): bool { return fflush($this->__fp); }

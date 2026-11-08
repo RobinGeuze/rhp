@@ -712,6 +712,7 @@ impl ProtoBuilder<'_> {
             }
             _ => self.compile_expr(fc.function)?,
         };
+        let callee = self.snapshot_callee(&fc.argument_list, fc.function, callee);
         // INIT_DYNAMIC_CALL resolves the callee before the arguments run;
         // only an argument that can be seen running needs that done apart.
         if args_run_code(&fc.argument_list) {
@@ -1513,6 +1514,23 @@ impl ProtoBuilder<'_> {
         t
     }
 
+    /// A callee part held in a plain variable (`$f(...)`, `$o->$m(...)`) is
+    /// read before the arguments run (INIT_DYNAMIC_CALL / INIT_METHOD_CALL):
+    /// copy it to a temp when an argument assigns it (`$f($f = 'b')`).
+    fn snapshot_callee(
+        &mut self,
+        list: &crate::parse::cst::ArgumentList,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        if !args_assign_var(list, expr) {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
+    }
+
     /// The by-ref mask for a method/constructor name (empty if none).
     pub(crate) fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
         self.cx.method_ref_mask(name_lc)
@@ -1533,6 +1551,7 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         self.check_method_name(selector)?;
         let obj = self.compile_expr(object)?;
+        let obj = self.snapshot_callee(args, object, obj);
         // `$o?->m(...)`: a null object makes the whole chain null, without
         // evaluating the arguments.
         if null_safe {
@@ -1571,6 +1590,18 @@ impl ProtoBuilder<'_> {
                     Ok(dst)
                 }
                 Sel::Dyn(name) => {
+                    // `$o->$m($m = …)`: the name is read first.
+                    let name = if matches!(
+                        selector,
+                        crate::parse::cst::ClassLikeMemberSelector::Variable(Variable::Direct(d))
+                            if args_assign_name(args, d.name)
+                    ) {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::Mov { dst: t, src: name });
+                        t
+                    } else {
+                        name
+                    };
                     if has_spread(args) || has_named(args) {
                         let args = self.build_args_array(
                             Some(args),
@@ -1972,6 +2003,35 @@ fn later_arg_may_write(list: &[Argument], i: usize) -> bool {
 /// [`later_arg_may_write`] for an argument list.
 fn later_arg_may_write_list(list: &crate::parse::cst::ArgumentList, i: usize) -> bool {
     list.arguments.iter().skip(i + 1).any(arg_may_write)
+}
+
+/// Whether an argument assigns (at its top level) the plain variable
+/// `expr` holds; never `$this`.
+fn args_assign_var(list: &crate::parse::cst::ArgumentList, expr: &Expression) -> bool {
+    match expr {
+        Expression::Variable(Variable::Direct(d)) => args_assign_name(list, d.name),
+        _ => false,
+    }
+}
+
+/// Whether an argument assigns (at its top level) the variable `$name`,
+/// or unpacks more than a plain value.
+fn args_assign_name(list: &crate::parse::cst::ArgumentList, name: &[u8]) -> bool {
+    if name == b"$this" {
+        return false;
+    }
+    list.arguments.iter().any(|a| {
+        // An unpacked expression may assign anywhere in it.
+        if matches!(a, Argument::Positional(p) if p.ellipsis.is_some()) && arg_may_write(a) {
+            return true;
+        }
+        let mut e = arg_value(a);
+        while let Expression::Parenthesized(p) = e {
+            e = p.expression;
+        }
+        matches!(e, Expression::Assignment(x)
+            if matches!(x.lhs, Expression::Variable(Variable::Direct(d)) if d.name == name))
+    })
 }
 
 /// The expression an argument passes.

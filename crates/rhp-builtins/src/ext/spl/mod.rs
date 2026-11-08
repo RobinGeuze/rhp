@@ -17,7 +17,29 @@ static SPL_ARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {
     ..ObjectHandlers::STD
 };
 
+/// `SplFixedArray`'s spl_fixedarray_object_get_properties_for.
+static SPL_FIXEDARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(spl_fixedarray_get_properties_for),
+    ..ObjectHandlers::STD
+};
+
+/// `SplObjectStorage`'s spl_object_storage_compare_objects.
+static SPL_OBJECT_STORAGE_HANDLERS: ObjectHandlers = ObjectHandlers {
+    compare: Some(spl_object_storage_compare_objects),
+    ..ObjectHandlers::STD
+};
+
 pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "SplObjectStorage",
+        handlers: &SPL_OBJECT_STORAGE_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "SplFixedArray",
+        handlers: &SPL_FIXEDARRAY_HANDLERS,
+        create_object: true,
+    },
     ClassHandlers {
         class: "ArrayObject",
         handlers: &SPL_ARRAY_HANDLERS,
@@ -65,12 +87,10 @@ fn spl_array_storage(h: &ObjectHandle) -> Option<Value> {
 }
 
 /// spl_array_get_properties_for: `(array)`, `var_export` and `json_encode`
-/// see an array storage. The debug view (spl_array_get_debug_info, php's
-/// `ArrayObject::__debugInfo()`) is the properties plus the storage as the
-/// base class's private `storage`, unless a subclass has its own
-/// `__debugInfo()`.
+/// see an array storage. The debug view is `ArrayObject::__debugInfo()`
+/// (`__spl_array_debug_info`).
 fn spl_array_get_properties_for(
-    host: &mut dyn Host,
+    _host: &mut dyn Host,
     h: &ObjectHandle,
     purpose: PropPurpose,
 ) -> Result<Option<PhpArray>, Thrown> {
@@ -81,30 +101,131 @@ fn spl_array_get_properties_for(
                 _ => None,
             })
         }
-        PropPurpose::Debug => {
-            let class = h.borrow().class;
-            if host.class_has_method(class, b"__debuginfo") {
-                return Ok(None);
-            }
-            let b = h.borrow();
-            let mut a = PhpArray::new();
-            for (k, v) in b.props().iter() {
-                if !host.is_internal_slot(b.class, k) {
-                    a.insert(ArrayKey::Str(host.mangled_prop_name(b.class, k)), v.clone());
-                }
-            }
-            for base in ["ArrayObject", "ArrayIterator"] {
-                let key = PhpStr::from(format!("\0{base}\0__s").as_str());
-                if let Some(st) = b.props().get(&key) {
-                    let name = PhpStr::from(format!("\0{base}\0storage").as_str());
-                    a.insert(ArrayKey::Str(name), deref(st));
-                    break;
-                }
-            }
-            Ok(Some(a))
-        }
+        // ArrayObject::__debugInfo() (`__spl_array_debug_info`).
+        PropPurpose::Debug => Ok(None),
         PropPurpose::Serialize | PropPurpose::GetObjectVars => Ok(None),
     }
+}
+
+/// spl_object_storage_compare_objects: two plain SplObjectStorage objects
+/// compare their storage as zend_hash_compare (unordered): the counts, then
+/// each object's info against the other's; a subclass is uncomparable.
+fn spl_object_storage_compare_objects(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+) -> Result<Option<i32>, Thrown> {
+    // ZEND_COMPARE_OBJECTS_FALLBACK
+    if !crate::zend::object_handlers::has_handlers(host, a, &SPL_OBJECT_STORAGE_HANDLERS)
+        || !crate::zend::object_handlers::has_handlers(host, b, &SPL_OBJECT_STORAGE_HANDLERS)
+    {
+        return Ok(None);
+    }
+    let (Value::Object(x), Value::Object(y)) = (a, b) else {
+        return Ok(None);
+    };
+    let plain = |h: &ObjectHandle| {
+        host.class_name(h.borrow().class)
+            .is_some_and(|n| n == b"SplObjectStorage")
+    };
+    if !plain(x) || !plain(y) {
+        return Ok(Some(1));
+    }
+    let info = |h: &ObjectHandle| match h
+        .borrow()
+        .props()
+        .get(&PhpStr::from("\0SplObjectStorage\0__v"))
+        .map(deref)
+    {
+        Some(Value::Array(a)) => a,
+        _ => PhpArray::new(),
+    };
+    let (s1, s2) = (info(x), info(y));
+    if s1.len() != s2.len() {
+        return Ok(Some(if s1.len() > s2.len() { 1 } else { -1 }));
+    }
+    for (k, v) in s1.iter() {
+        let Some(w) = s2.get(&k) else {
+            return Ok(Some(1));
+        };
+        match crate::host::host_compare(host, v, w)? {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Less => return Ok(Some(-1)),
+            std::cmp::Ordering::Greater => return Ok(Some(1)),
+        }
+    }
+    Ok(Some(0))
+}
+
+/// spl_fixedarray_object_get_properties_for: the elements (not for
+/// get_object_vars()), then the properties.
+fn spl_fixedarray_get_properties_for(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    purpose: PropPurpose,
+) -> Result<Option<PhpArray>, Thrown> {
+    if purpose == PropPurpose::Serialize {
+        return Ok(None);
+    }
+    let elements = {
+        let key = PhpStr::from("\0SplFixedArray\0__d");
+        match h.borrow().props().get(&key).map(deref) {
+            Some(Value::Array(a)) => a,
+            _ => PhpArray::new(),
+        }
+    };
+    let props = host.object_props_mangled(h);
+    if elements.is_empty() && props.is_empty() {
+        return Ok(None);
+    }
+    let mut a = PhpArray::new();
+    if purpose != PropPurpose::GetObjectVars {
+        for (_, v) in elements.iter() {
+            a.push(v.clone());
+        }
+    }
+    for (k, v) in props.iter() {
+        a.insert(k.clone(), v.clone());
+    }
+    Ok(Some(a))
+}
+
+/// `__spl_array_debug_info($object)`: spl_array_get_debug_info, the body
+/// of ArrayObject's and ArrayIterator's `__debugInfo()`: the properties,
+/// plus the storage as the base class's private `storage` unless the
+/// object is its own storage.
+fn fn_spl_array_debug_info(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Object(h) = deref(&args[0]) else {
+        return Ok(Value::Array(PhpArray::new()));
+    };
+    let b = h.borrow();
+    let mut a = PhpArray::new();
+    for (k, v) in b.props().iter() {
+        if !host.is_internal_slot(b.class, k) {
+            a.insert(ArrayKey::Str(host.mangled_prop_name(b.class, k)), v.clone());
+        }
+    }
+    for base in ["ArrayObject", "ArrayIterator"] {
+        let key = |n: &str| PhpStr::from(format!("\0{base}\0{n}").as_str());
+        let Some(st) = b.props().get(&key("__s")) else {
+            continue;
+        };
+        let st = match b.props().get(&key("__o")).map(deref) {
+            Some(Value::Object(o)) if std::rc::Rc::ptr_eq(&o, &h) => break,
+            Some(o @ Value::Object(_)) => o,
+            _ => deref(st),
+        };
+        let cname = host.class_name(b.class).unwrap_or_default();
+        let base = if host.reflect_is_a(&cname, b"ArrayIterator") {
+            "ArrayIterator"
+        } else {
+            "ArrayObject"
+        };
+        let name = PhpStr::from(format!("\0{base}\0storage").as_str());
+        a.insert(ArrayKey::Str(name), st);
+        break;
+    }
+    Ok(Value::Array(a))
 }
 
 /// `spl_autoload_register(?callable $callback = null, bool $throw = true, bool $prepend = false): bool`
@@ -115,9 +236,16 @@ fn fn_spl_autoload_register(host: &mut dyn Host, args: &[Value]) -> Result<Value
             b"spl_autoload_register(): Argument #2 ($do_throw) has been ignored, spl_autoload_register() will always throw",
         )?;
     }
+    let prepend = args
+        .get(2)
+        .map(|v| conv::to_bool(&deref(v)))
+        .unwrap_or(false);
     match args.first().map(deref) {
-        // The default SPL autoloader is not supported; registering it is a no-op.
-        None | Some(Value::Null) => Ok(Value::Bool(true)),
+        // No callback: the default autoloader, spl_autoload().
+        None | Some(Value::Null) => {
+            host.register_autoloader(&Value::str(b"spl_autoload".to_vec()), prepend)?;
+            Ok(Value::Bool(true))
+        }
         Some(cb) => {
             if !host.is_callable_value(&cb) {
                 return Err(Thrown::error(
@@ -125,10 +253,6 @@ fn fn_spl_autoload_register(host: &mut dyn Host, args: &[Value]) -> Result<Value
                     "spl_autoload_register(): Argument #1 ($callback) must be a valid callback",
                 ));
             }
-            let prepend = args
-                .get(2)
-                .map(|v| conv::to_bool(&deref(v)))
-                .unwrap_or(false);
             host.register_autoloader(&args[0], prepend)?;
             Ok(Value::Bool(true))
         }
@@ -158,12 +282,14 @@ fn fn_spl_autoload_call(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 /// `spl_object_id(object $obj): int` — the object's per-run handle id.
-fn fn_spl_object_id(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match rhp_values::object_id(&deref(&args[0])) {
+fn fn_spl_object_id(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    match rhp_values::object_id(&v) {
         Some(id) => Ok(Value::Int(id as i64)),
-        None => Err(Thrown::type_error(
-            "spl_object_id(): Argument #1 ($object) must be of type object",
-        )),
+        None => Err(Thrown::type_error(format!(
+            "spl_object_id(): Argument #1 ($object) must be of type object, {} given",
+            zval_value_name(host, &v)
+        ))),
     }
 }
 
@@ -192,14 +318,16 @@ fn fn_spl_user_props(host: &mut dyn Host, args: &[Value]) -> Result<Value, Throw
 
 /// `spl_object_hash(object $obj): string`: the handle as 16 hex digits,
 /// then 16 zeros (php_spl_object_hash).
-fn fn_spl_object_hash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    match rhp_values::object_id(&deref(&args[0])) {
+fn fn_spl_object_hash(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = deref(&args[0]);
+    match rhp_values::object_id(&v) {
         Some(id) => Ok(Value::str(
             format!("{id:016x}0000000000000000").into_bytes(),
         )),
-        None => Err(Thrown::type_error(
-            "spl_object_hash(): Argument #1 ($object) must be of type object",
-        )),
+        None => Err(Thrown::type_error(format!(
+            "spl_object_hash(): Argument #1 ($object) must be of type object, {} given",
+            zval_value_name(host, &v)
+        ))),
     }
 }
 
@@ -224,6 +352,12 @@ pub fn register(m: &mut crate::Registry) {
         &[
             ("__spl_deprecated", fn_spl_deprecated, 1, Some(1)),
             ("__spl_user_props", fn_spl_user_props, 1, Some(1)),
+            (
+                "__spl_array_debug_info",
+                fn_spl_array_debug_info,
+                1,
+                Some(1),
+            ),
             ("__spl_realpath", fn_spl_realpath, 1, Some(1)),
         ],
     );

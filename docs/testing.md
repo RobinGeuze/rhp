@@ -26,6 +26,7 @@ tests/                         data only
   cgi/NAME.php|.cgi            CGI fixtures
   curl_http/NAME.php|.out      curl fixtures
   phpt/                        known-passing.txt, ignored.txt, php-src.ref
+  api/                         known-differences.txt (internal-class surface)
   apps/                        pinned Symfony / Laravel apps
   suites/                      frameworks' own PHPUnit suites, per-suite lists
   asan/                        ASan stress scripts, phpts.txt
@@ -63,6 +64,7 @@ own). A fixture's `.inc` files sit next to it.
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
 | phpt ratchet | `tests/phpt/known-passing.txt` | php on the machine, per php-src `.phpt` | no (CI job) |
+| API surface | `tests/api/known-differences.txt` | php's internal classes, methods, properties and constants (Reflection) | skips |
 | apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job; the debug/cold passes and network commands nightly) |
 | suites | `tests/suites/` | php runs the frameworks' PHPUnit suites; per-test known-passing lists | no (nightly job) |
 | ASan | `tests/asan/` | stress scripts print `ok`; `phpts.txt`, a subset of the ratchet, still matches | no (CI job) |
@@ -152,6 +154,17 @@ test in `tests/phpt/known-passing.txt` must keep matching. See
 passing because of rhp's own behaviour, not ones that pass only because the
 local php lacks an extension CI's php has (or the reverse). Tests whose
 output rhp can never print are on `tests/phpt/ignored.txt` and never run.
+
+**The API surface check** (`rhp-difftest api`, run by
+`tools/rhp-difftest/tests/api.rs`) dumps every internal class of the
+extensions both engines load through Reflection, under php and rhp: the
+class's kind, modifiers, parent and interfaces, and the methods, properties
+and constants it declares. A difference not on
+`tests/api/known-differences.txt` fails it; a listed row that no longer
+differs is printed, to take off the list. Signatures are checked by
+`tests/signatures.rs`. A prelude class matches php's stub: its engine
+helpers are `__`-prefixed, and its stand-ins for php's handlers are hidden
+(docs/design/object-handlers.md).
 
 **Bytecode snapshots:** there are none, and there should be none until rhp
 has a real optimizer. php-src's opcode-dump tests are on the phpt ignore

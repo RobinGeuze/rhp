@@ -1,0 +1,5 @@
+int(5)
+Cannot assign string to property T::$i of type int
+Cannot assign string to reference held by property T::$i of type int
+float(3)
+float(3)

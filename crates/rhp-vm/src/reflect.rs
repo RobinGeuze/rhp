@@ -494,8 +494,11 @@ impl Vm {
                 self.update_class_constants(cid)?;
                 let name = arg_bytes(args, 1);
                 let v = arg(args, 2);
-                // zend_update_static_property_ex: the property's type (or
-                // a typed reference's), coercive as from internal code.
+                // setStaticPropertyValue checks a typed reference first;
+                // ReflectionProperty::setValue (zend_update_static_property_ex,
+                // 4th argument true) the property's own type, then the
+                // reference's. Coercive as from internal code.
+                let prop_first = matches!(arg(args, 3), Value::Bool(true));
                 let Some(sp) = self.classes[cid as usize].static_props.get(&name) else {
                     return Ok(Value::Bool(false));
                 };
@@ -503,6 +506,12 @@ impl Vm {
                 let held = cell.borrow().clone();
                 match held {
                     Value::Ref(r) => {
+                        let v = match &ty {
+                            Some(ty) if prop_first => {
+                                self.verify_type_for_prop(ty, decl, cid, &name, v, false)?
+                            }
+                            _ => v,
+                        };
                         self.assign_to_ref(&r, v, false)?;
                     }
                     _ => {

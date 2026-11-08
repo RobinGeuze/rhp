@@ -1047,7 +1047,7 @@ class ReflectionProperty implements Reflector {
             } elseif ($objectOrValue !== null && !is_object($objectOrValue)) {
                 __reflect('deprecated', 'Calling ReflectionProperty::setValue() with a 1st argument which is not null or an object is deprecated');
             }
-            __reflect('set_static', $this->class, $this->name, $value);
+            __reflect('set_static', $this->class, $this->name, $value, true);
             return;
         }
         if (func_num_args() < 2) { throw new ArgumentCountError('ReflectionProperty::setValue() expects exactly 2 arguments, ' . func_num_args() . ' given'); }

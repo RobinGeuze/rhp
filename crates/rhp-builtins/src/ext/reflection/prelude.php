@@ -828,6 +828,9 @@ class ReflectionClass implements Reflector {
         $ctor = __reflect('fn', [$this->name, '__construct']);
         if ($ctor === null) {
             if (count($args) > 0) { throw new ReflectionException('Class ' . $this->name . ' does not have a constructor, so you cannot pass any constructor arguments'); }
+            // An internal class's get_constructor handler may refuse it
+            // (PDORow, CurlHandle): `new` runs that hidden stand-in.
+            if ($this->__c['internal']) { $cls = $this->name; return new $cls(); }
             return __reflect_new_instance_noctor($this->name);
         }
         if ($ctor['vis'] !== 1) { throw new ReflectionException('Access to non-public constructor of class ' . $this->name); }
@@ -844,6 +847,9 @@ class ReflectionClass implements Reflector {
         $ctor = __reflect('fn', [$this->name, '__construct']);
         if ($ctor === null) {
             if (count($args) > 0) { throw new ReflectionException('Class ' . $this->name . ' does not have a constructor, so you cannot pass any constructor arguments'); }
+            // An internal class's get_constructor handler may refuse it
+            // (PDORow, CurlHandle): `new` runs that hidden stand-in.
+            if ($this->__c['internal']) { $cls = $this->name; return new $cls(); }
             return __reflect_new_instance_noctor($this->name);
         }
         if ($ctor['vis'] !== 1) { throw new ReflectionException('Access to non-public constructor of class ' . $this->name); }

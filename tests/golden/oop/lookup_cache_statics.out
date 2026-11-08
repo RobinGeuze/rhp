@@ -1,0 +1,19 @@
+A::pub A::pub A::priv A::prot B::prot 20
+Error: Cannot access private property A::$priv | Error: Cannot access protected property A::$prot | Error: Cannot access private property A::$priv
+Error: Typed static property A::$typed must not be accessed before initialization | Error: Access to undeclared static property A::$nope | trait diag: Accessing static trait property T::$t is deprecated, it should only be accessed on a class using the trait
+trait
+set unset unset 1
+2 A::pub+
+A::pub+ A::pub+ A::priv A::prot B::prot 20
+Error: Cannot access private property A::$priv | Error: Cannot access protected property A::$prot | Error: Cannot access private property A::$priv
+Error: Typed static property A::$typed must not be accessed before initialization | Error: Access to undeclared static property A::$nope | trait diag: Accessing static trait property T::$t is deprecated, it should only be accessed on a class using the trait
+trait
+set unset unset 2
+4 A::pub++
+A::pub++ A::pub++ A::priv A::prot B::prot 20
+Error: Cannot access private property A::$priv | Error: Cannot access protected property A::$prot | Error: Cannot access private property A::$priv
+5 | Error: Access to undeclared static property A::$nope | trait diag: Accessing static trait property T::$t is deprecated, it should only be accessed on a class using the trait
+trait
+set unset set 3
+8 A::pub+++
+ref 5

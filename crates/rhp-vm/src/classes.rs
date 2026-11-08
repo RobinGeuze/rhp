@@ -2407,6 +2407,40 @@ impl Vm {
         )
     }
 
+    /// The cell of static property `name` (a proto's) of `cls`, through the
+    /// class's lookup cache, when frame `top` may access it and there is
+    /// nothing left to do first: the class's initializers ran and it is no
+    /// trait (what [`Vm::check_static_prop_access`] and
+    /// [`Vm::static_prop_cell`] then do with nothing to report). `None`:
+    /// take that path.
+    #[inline]
+    pub(crate) fn static_prop_plain(
+        &self,
+        top: usize,
+        cls: ClassId,
+        name: &PhpStr,
+    ) -> Option<&Rc<RefCell<Value>>> {
+        let ce = &self.classes[cls as usize];
+        if !ce.updated || ce.kind == ClassKind::Trait {
+            return None;
+        }
+        let sp = match ce.cache.static_prop(name) {
+            Some(i) => match ce.static_props.get_index(i) {
+                Some((k, sp)) if k[..] == *name.as_bytes() => sp,
+                _ => return None,
+            },
+            None => {
+                let (i, _, sp) = ce.static_props.get_full(name.as_bytes())?;
+                ce.cache.put_static_prop(name, i);
+                sp
+            }
+        };
+        if sp.init.is_some() || !self.static_prop_accessible(self.stack[top].defining_class, sp) {
+            return None;
+        }
+        Some(&sp.cell)
+    }
+
     pub(crate) fn static_prop_cell(
         &mut self,
         class_id: ClassId,

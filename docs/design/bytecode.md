@@ -620,11 +620,12 @@ lookups by name have the caches below.)
 run-time cache slots (CACHE_ADDR / CACHE_PTR) without writing the shared
 protos. Each linked `ClassEntry` has a small direct-mapped table for
 property lookups, keyed by the name's hash (`PhpStr` keeps it) and the
-calling scope, and one for method lookups by name; the VM has one for
-class names. An entry holds only an index (the property slot, the method
-table entry, the class id) and a hit is confirmed against the name the
-class's own table stores, so nothing in it can outlive what it names and
-memory_get_usage() does not see it (the tables are allocated uncounted).
+calling scope, one for static properties and one for method lookups by
+name; the VM has one for class names. An entry holds only an index (the
+property slot, the static or method table entry, the class id) and a
+hit is confirmed against the name the class's own table stores, so
+nothing in it can outlive what it names and memory_get_usage() does not
+see it (the tables are allocated uncounted).
 Property entries name a scope class, so they are flushed when a class
 whose linking failed is removed and its id is reused; class-name entries
 check the class's name on every hit. `resolve_prop_at` and
@@ -640,7 +641,10 @@ a typed property only when the new value keeps the old one's kind (null,
 int, float, string: any type that admitted the one admits the other,
 with no coercion). Anything else takes the full path. A class constant
 fetch of an evaluated, accessible, undeprecated user constant other than
-an enum case is read directly too (`class_const_plain`).
+an enum case is read directly too (`class_const_plain`), and so is a
+static property of an initialized class other than a trait that the
+scope may access (`static_prop_plain`: FETCH_STATIC_PROP_R/IS and the
+cursor root of `self::$a[...] = v`).
 
 `tests/bench/bench.py` measures CPU time and (on macOS) instructions
 retired on the micro benchmarks there; compare engines with it before and

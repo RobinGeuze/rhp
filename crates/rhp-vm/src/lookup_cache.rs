@@ -5,7 +5,7 @@
 //! php keeps one slot per opline in the op_array. rhp's protos are shared
 //! and never written (docs/design/bytecode.md §3.6), so the slots live in
 //! the VM's own data instead: a small direct-mapped table in each linked
-//! class for its property and method lookups, and one in the VM for class
+//! class for its property, static property and method lookups, and one in the VM for class
 //! names. An entry is keyed by the name's hash (a `PhpStr` caches it) and
 //! holds only indices into the class's own tables, so a hit is checked
 //! against the name the table stores and nothing outlives what it points
@@ -72,6 +72,7 @@ impl Table {
 pub struct ClassCache {
     props: Table,
     methods: Table,
+    statics: Table,
 }
 
 impl Clone for ClassCache {
@@ -109,6 +110,18 @@ impl ClassCache {
 
     pub(crate) fn put_method(&self, name: &PhpStr, at: usize) {
         self.methods.put(name.hash_value(), 0, at as u32, SLOTS);
+    }
+
+    /// The static-property table index `name` resolved to, if cached.
+    #[inline(always)]
+    pub(crate) fn static_prop(&self, name: &PhpStr) -> Option<usize> {
+        self.statics
+            .get(name.hash_value(), 0, SLOTS)
+            .map(|at| at as usize)
+    }
+
+    pub(crate) fn put_static_prop(&self, name: &PhpStr, at: usize) {
+        self.statics.put(name.hash_value(), 0, at as u32, SLOTS);
     }
 
     /// Forget the property entries (they name scope classes).

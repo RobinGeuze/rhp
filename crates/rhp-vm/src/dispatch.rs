@@ -1462,9 +1462,15 @@ impl Vm {
                 }
                 Instr::LvalStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes();
-                    self.check_static_prop_access(top, cls, pname)?;
-                    let cell = self.static_prop_cell(cls, pname)?;
+                    let key = &proto.names[name as usize];
+                    let pname = key.as_bytes();
+                    let cell = match self.static_prop_plain(top, cls, key) {
+                        Some(c) => c.clone(),
+                        None => {
+                            self.check_static_prop_access(top, cls, pname)?;
+                            self.static_prop_cell(cls, pname)?
+                        }
+                    };
                     self.note_cursor_static(&cell, cls, pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
@@ -2143,7 +2149,16 @@ impl Vm {
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes();
+                    let key = &proto.names[name as usize];
+                    if let Some(c) = self.static_prop_plain(top, cls, key) {
+                        let v = match deref(&c.borrow()) {
+                            Value::Undef => Value::Null,
+                            v => v,
+                        };
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
+                    let pname = key.as_bytes();
                     let accessible = match self.class(cls).static_props.get(pname) {
                         Some(sp) => self.static_prop_accessible(self.stack[top].defining_class, sp),
                         None => false,
@@ -2365,7 +2380,17 @@ impl Vm {
                     dst, class, name, ..
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes();
+                    let key = &proto.names[name as usize];
+                    if let Some(c) = self.static_prop_plain(top, cls, key) {
+                        let c = c.borrow();
+                        if !c.is_undef() {
+                            let v = c.clone();
+                            drop(c);
+                            self.reg_set(top, dst, v);
+                            continue;
+                        }
+                    }
+                    let pname = key.as_bytes();
                     self.check_static_prop_access(top, cls, pname)?;
                     let cell = self.static_prop_cell(cls, pname)?;
                     if cell.borrow().is_undef() {

@@ -44,7 +44,7 @@ runs:
         php-version: ${{ inputs.php-version }}
         extensions: >-
           bcmath, bz2, calendar, ctype, curl, dom, exif, fileinfo, gettext, gmp, iconv,
-          intl, mbstring, pcntl, phar, posix, shmop, simplexml, sockets, sodium,
+          intl, mbstring, pcntl, phar, posix, readline, shmop, simplexml, sockets, sodium,
           sysvmsg, sysvsem, sysvshm, tokenizer, xml, xmlreader, xmlwriter, zip, pdo, pdo_sqlite${{ inputs.extra-extensions != '' && format(', {0}', inputs.extra-extensions) || '' }}
         coverage: none
 

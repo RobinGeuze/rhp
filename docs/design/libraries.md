@@ -56,6 +56,9 @@ rather than linking dynamically quietly.
   glibc's iconv.
 - Libraries with no static archive of php's version: libzip (Homebrew's
   libzip and Debian/Ubuntu's libzip-dev ship only the shared library).
+- libedit (ext/readline) on Linux: php's readline extension loads the
+  distro's libedit.so; libedit-dev's archive would also need libtinfo's.
+  On macOS it is the SDK's /usr/lib/libedit, as listed above.
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -96,6 +99,7 @@ Today rhp-builtins links:
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
 | libsqlite3 (pdo_sqlite) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libedit (readline) | dynamic, the SDK's /usr/lib/libedit.3.dylib | dynamic, libedit-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -111,6 +115,11 @@ check (php reads `_libiconv_version` or `gnu_get_libc_version()` at run
 time), and on Linux it is part of libc. `ext/iconv/sys.rs` links it, and its
 `links_the_library_php_links` test checks with `dladdr` that `iconv_open`
 comes from that library.
+
+libedit has no row in `native.rs` either: php reports no version of it
+(`READLINE_LIB` is "libedit", `rl_library_version` "EditLine wrapper").
+`ext/readline/sys.rs` links it, and its `links_the_library_php_links` test
+checks with `dladdr` where `readline` comes from.
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's

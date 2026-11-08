@@ -23,7 +23,7 @@ extdir="$(php-config --extension-dir)"
 builtin="$(php -n -m | tr 'A-Z' 'a-z')"
 exts=""
 for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
-         mbstring openssl pcntl phar posix session shmop simplexml sockets sodium \
+         mbstring openssl pcntl phar posix readline session shmop simplexml sockets sodium \
          sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip pdo pdo_sqlite \
          "$@"; do
   case " $exts " in *" $e "*) continue ;; esac

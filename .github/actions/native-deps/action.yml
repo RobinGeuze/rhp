@@ -31,7 +31,7 @@ runs:
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
         # libsqlite3 (libsqlite3.a) is linked statically too.
         # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
-        # static archive.
+        # static archive. libedit (readline) is linked dynamically, as php does.
         sudo apt-get update -q
         sudo apt-get install -y --no-install-recommends \
           pkg-config \
@@ -47,7 +47,8 @@ runs:
           libpsl-dev librtmp-dev libssh-dev libssh2-1-dev \
           libzip-dev \
           libgmp-dev \
-          libsqlite3-dev
+          libsqlite3-dev \
+          libedit-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
         # compare <name> <pkg-config module> <php code printing the version php loads>

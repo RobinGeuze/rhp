@@ -598,6 +598,10 @@ fn print_module(o: &mut Info, e: &str) {
         for (k, v) in crate::ext::bz2::info_rows() {
             o.row(&[k, &v]);
         }
+    } else if e == "readline" {
+        o.row(&["Readline Support", "enabled"]);
+        let v = crate::ext::readline::library_version();
+        o.row(&["Readline library", &String::from_utf8_lossy(&v)]);
     } else if let Some(rows) = static_minfo(e) {
         for (k, v) in rows {
             o.row(&[k, &v]);
@@ -634,6 +638,7 @@ fn print_module(o: &mut Info, e: &str) {
     let ini: &[&str] = match e {
         "bcmath" => &["bcmath.scale"],
         "filter" => &["filter.default", "filter.default_flags"],
+        "readline" => &["cli.pager", "cli.prompt"],
         _ => &[],
     };
     if !ini.is_empty() {

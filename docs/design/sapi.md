@@ -56,8 +56,9 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   php's messages (`-v` and `-i` run after module startup, so its
   warnings come first); the php-cli modes rhp lacks (`-l`, `-m`, `-s`,
   `-w`, `-B`/`-R`/`-F`/`-E`, `-S`, `--rf` and friends, `--ini`,
-  `--repeat`) are refused after php's own checks, and `-a` gets the error
-  of a php without readline.
+  `--repeat`) are refused after php's own checks, and `-a` (the
+  interactive shell, readline_cli.c, not ported) gets the error of a php
+  without readline.
 
 ## The embedding API
 

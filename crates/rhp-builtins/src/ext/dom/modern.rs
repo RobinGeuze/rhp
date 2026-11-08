@@ -486,7 +486,10 @@ fn report_errors(cx: &mut Cx, options: i64) -> bool {
         return false;
     }
     crate::ext::libxml::use_internal()
-        || crate::zend::builtin_functions::error_reporting_level(cx.host) & crate::E_WARNING != 0
+        || (crate::zend::builtin_functions::error_reporting_level(cx.host)
+            | cx.host.user_error_handler_mask())
+            & crate::E_WARNING
+            != 0
 }
 
 /// After a parse: the errors as php_libxml_pretend_ctx_error_ex reports
@@ -1389,12 +1392,21 @@ pub fn clone_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
 
 pub fn normalize(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
     let (_, n) = get_obj(cx, this)?;
-    normalize_modern(n);
+    if !normalize_modern(n) {
+        return Err(Thrown::error(
+            "Error",
+            "Maximum call stack size reached. Infinite recursion?",
+        ));
+    }
     Ok(Value::Null)
 }
 
-/// php_dom_normalize_modern
-fn normalize_modern(this: *mut XmlNode) {
+/// php_dom_normalize_modern; false when it stopped at the stack limit
+/// (dom_normalize_check_stack_limit).
+fn normalize_modern(this: *mut XmlNode) -> bool {
+    if crate::zend::call_stack::overflowed() {
+        return false;
+    }
     unsafe {
         let mut node = (*this).children;
         while !node.is_null() {
@@ -1422,12 +1434,13 @@ fn normalize_modern(this: *mut XmlNode) {
                     }
                     nextp = next;
                 }
-            } else if (*node).type_ == sys::XML_ELEMENT_NODE {
-                normalize_modern(node);
+            } else if (*node).type_ == sys::XML_ELEMENT_NODE && !normalize_modern(node) {
+                return false;
             }
             node = (*node).next;
         }
     }
+    true
 }
 
 /// php_dom_pre_insert_is_parent_invalid

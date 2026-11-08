@@ -217,6 +217,11 @@ pub trait Host {
     fn set_error_handler(&mut self, handler: Value, mask: i64) -> Value;
     /// `restore_error_handler`: pop back to the previous error handler.
     fn restore_error_handler(&mut self);
+    /// `EG(user_error_handler_error_reporting)`: the error types the
+    /// current `set_error_handler` callback handles (0 without one).
+    fn user_error_handler_mask(&self) -> i64 {
+        0
+    }
 
     /// Whether the code calling the running builtin declared `strict_types=1`
     /// (zpp then coerces no scalars).

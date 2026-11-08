@@ -119,6 +119,13 @@ impl Host for Vm {
         self.error_handlers.pop();
     }
 
+    fn user_error_handler_mask(&self) -> i64 {
+        match self.error_handlers.last() {
+            Some((Value::Null | Value::Bool(false), _)) | None => 0,
+            Some((_, mask)) => *mask,
+        }
+    }
+
     fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
         let strict = self.caller_strict_types();
         self.assign_to_ref(r, v, strict).map(|_| ())

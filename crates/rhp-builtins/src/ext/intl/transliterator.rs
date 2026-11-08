@@ -141,7 +141,7 @@ fn create(
         error::set_custom_msg(
             host,
             f,
-            &format!("unable to open ICU transliterator with id \"{id}\""),
+            format!("unable to open ICU transliterator with id \"{id}\""),
         )?;
         return Ok(None);
     }
@@ -281,7 +281,7 @@ fn method(host: &mut dyn Host, call: &Call) -> Result<Value, Thrown> {
     let to = common::state_of::<TransObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(to.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(to.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(to.err.borrow().message())),
         _ => {}
     }
     to.err.borrow_mut().reset();
@@ -348,15 +348,17 @@ fn transliterate(host: &mut dyn Host, call: &Call) -> Result<Value, Thrown> {
                     None => {
                         if !host.has_pending_throw() {
                             let msg = error::error_message();
-                            let id = String::from_utf8_lossy(&super::c_string(&id).into_bytes())
-                                .into_owned();
-                            host.emit_diagnostic(
-                                crate::E_WARNING,
-                                format!(
-                                    "{f}(): Could not create transliterator with ID \"{id}\" ({msg})"
-                                )
-                                .as_bytes(),
-                            )?;
+                            let id = super::c_string(&id).into_bytes();
+                            let m = [
+                                f.as_bytes(),
+                                b"(): Could not create transliterator with ID \"",
+                                &id,
+                                b"\" (",
+                                &msg,
+                                b")",
+                            ]
+                            .concat();
+                            host.emit_diagnostic(crate::E_WARNING, &m)?;
                         }
                         return Ok(Value::Bool(false));
                     }

@@ -314,7 +314,7 @@ fn value_src(host: &mut dyn Host, f: &str, tag: &str, args: &[Value]) -> Result<
             host,
             f,
             sys::U_ZERO_ERROR,
-            &format!("unable to get locale {tag}"),
+            format!("unable to get locale {tag}"),
         )?;
     }
     Ok(Value::Null)
@@ -373,7 +373,7 @@ fn display_src(host: &mut dyn Host, f: &str, tag: &str, args: &[Value]) -> Resul
                 }
                 break;
             }
-            error::set(host, f, status, &format!("unable to get locale {tag}"))?;
+            error::set(host, f, status, format!("unable to get locale {tag}"))?;
             return Ok(Value::Bool(false));
         }
         if buflen <= cap {
@@ -387,7 +387,7 @@ fn display_src(host: &mut dyn Host, f: &str, tag: &str, args: &[Value]) -> Resul
                 host,
                 f,
                 st,
-                &format!("error converting display name for {tag} to UTF-8"),
+                format!("error converting display name for {tag} to UTF-8"),
             )?;
             Ok(Value::Bool(false))
         }

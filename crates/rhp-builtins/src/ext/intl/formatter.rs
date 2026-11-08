@@ -344,7 +344,7 @@ fn dispatch(
     let f = fname;
     match name {
         "getErrorCode" => return Ok(Value::Int(nf.code() as i64)),
-        "getErrorMessage" => return Ok(Value::str(nf.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(nf.err.borrow().message())),
         "getSymbol" | "setSymbol" => {
             let sym = call.long(host, args, 0, "symbol", 0)?;
             // SAFETY: a plain getter.

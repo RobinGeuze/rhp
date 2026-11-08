@@ -213,7 +213,7 @@ fn fn_intl_get_error_code(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(error::error_message().into_bytes()))
+    Ok(Value::str(error::error_message()))
 }
 
 fn fn_intl_is_failure(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -447,7 +447,7 @@ pub(crate) fn locale_too_long(
             host,
             fname,
             sys::U_ILLEGAL_ARGUMENT_ERROR,
-            &format!("Locale string too long, should be no longer than {max} characters"),
+            format!("Locale string too long, should be no longer than {max} characters"),
         )?;
         return Ok(true);
     }

@@ -7804,6 +7804,7 @@ ext/intl/tests/msgfmt_format_datetime_icu72-1.phpt
 ext/intl/tests/msgfmt_format_error1.phpt
 ext/intl/tests/msgfmt_format_error2.phpt
 ext/intl/tests/msgfmt_format_error3.phpt
+ext/intl/tests/msgfmt_format_error4.phpt
 ext/intl/tests/msgfmt_format_error5.phpt
 ext/intl/tests/msgfmt_format_error6.phpt
 ext/intl/tests/msgfmt_format_intlcalendar_variant4.phpt

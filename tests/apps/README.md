@@ -389,9 +389,10 @@ python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # sel
 - `tools.toml` lists the commands per tool: `--version`, `list`/`help`, the
   main analyse/test/fix commands with common flags, each output format and a
   parallel run where the tool has one; `big` lists the big tier. A command
-  with `known = "reason"` differs for a known cause in rhp: it prints `KNOWN`
+  with `known = "reason"` differs for a known cause: it prints `KNOWN`
   and does not fail the run, or `FIXED` once it matches (drop the mark
-  then). Today: Psalm on symfony/console, which uses `finfo`.
+  then). Today: Psalm's big-tier runs with 4 threads, whose output varies
+  between php runs too.
 - Each command runs on a fresh copy of the fixture in `tools/work/<tool>/`
   (`<tool>-big/` for the big tier; a clone of `vendor/` stays there), first
   under php, then under rhp, with a fixed environment: `HOME` inside the

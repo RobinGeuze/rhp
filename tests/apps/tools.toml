@@ -135,10 +135,12 @@ commands = [
     "--clear-cache",
 ]
 big = [
-    { args = "-c big-psalm-console.xml --no-progress --threads=1", known = "no ext/fileinfo: finfo is undefined" },
-    { args = "-c big-psalm-console.xml --no-progress --threads=4", known = "no ext/fileinfo: finfo is undefined" },
+    "-c big-psalm-console.xml --no-progress --threads=1",
+    # php's own output changes from run to run with 4 threads: the issue
+    # order, and an issue reported in some runs only.
+    { args = "-c big-psalm-console.xml --no-progress --threads=4", known = "nondeterministic under php too" },
     "-c big-psalm-parser.xml --no-progress --threads=1",
-    "-c big-psalm-parser.xml --no-progress --threads=4",
+    { args = "-c big-psalm-parser.xml --no-progress --threads=4", known = "nondeterministic under php too" },
 ]
 
 [[tool]]

@@ -4126,6 +4126,7 @@ Zend/tests/return_types/void_disallowed2.phpt
 Zend/tests/return_types/void_disallowed3.phpt
 Zend/tests/return_types/void_parameter.phpt
 Zend/tests/rope_with_exception.phpt
+Zend/tests/runtime_compile_time_binary_operands.phpt
 Zend/tests/self_and.phpt
 Zend/tests/self_class_const_outside_class.phpt
 Zend/tests/self_in_eval.phpt

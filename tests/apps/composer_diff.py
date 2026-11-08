@@ -131,8 +131,6 @@ KNOWN = {
     ("basic", "composer install"): SOCKETS,
     ("stream", "composer install --no-cache"): SOCKETS,
     ("ziparchive", "composer install --no-cache"): SOCKETS,
-    ("basic", "composer show --platform"): "no lib-* entries from ReflectionExtension::info(), which prints nothing",
-    ("laravel-13", None): "league/flysystem-local requires ext-fileinfo, which rhp lacks",
 }
 
 COMPOSER_JSON = {

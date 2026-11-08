@@ -98,3 +98,4 @@ cold/w-patch-form
 cold/w-head
 cold/w-method-override
 cold/w-trailing-slash
+cold/@files

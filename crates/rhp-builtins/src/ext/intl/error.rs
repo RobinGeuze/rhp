@@ -190,3 +190,52 @@ pub(crate) const ERROR_LEVEL_DEPRECATION: &str = "Using a value different than 0
      as the intl.error_level INI setting is deprecated. Instead the intl.use_exceptions INI setting \
      should be enabled to throw exceptions on errors or intl_get_error_code()/intl_get_error_message() \
      should be used to manually deal with errors";
+
+/// `intl_errors_set(err, code, msg)`.
+pub(crate) fn errors_set(
+    host: &mut dyn Host,
+    err: &RefCell<IntlError>,
+    fname: &str,
+    code: UErrorCode,
+    msg: &str,
+) -> Result<(), Thrown> {
+    errors_set_code(err, code);
+    errors_set_custom_msg(host, err, fname, msg)
+}
+
+/// `intl_parse_error_to_string`.
+pub(crate) fn parse_error_to_string(pe: &sys::UParseError) -> String {
+    let ctx = |c: &[u16]| {
+        let end = c.iter().position(|&u| u == 0).unwrap_or(c.len());
+        String::from_utf8_lossy(&super::utf16_to_utf8(&c[..end]).unwrap_or_default()).into_owned()
+    };
+    let mut ret = String::from("parse error ");
+    let mut any = false;
+    if pe.line > 0 {
+        ret.push_str(&format!("on line {}", pe.line));
+        any = true;
+    }
+    if pe.offset >= 0 {
+        ret.push_str(if any { ", " } else { "at " });
+        ret.push_str(&format!("offset {}", pe.offset));
+        any = true;
+    }
+    if pe.pre_context[0] != 0 {
+        if any {
+            ret.push_str(", ");
+        }
+        ret.push_str(&format!("after \"{}\"", ctx(&pe.pre_context)));
+        any = true;
+    }
+    if pe.post_context[0] != 0 {
+        if any {
+            ret.push_str(", ");
+        }
+        ret.push_str(&format!("before or at \"{}\"", ctx(&pe.post_context)));
+        any = true;
+    }
+    if !any {
+        return "no parse error".into();
+    }
+    ret
+}

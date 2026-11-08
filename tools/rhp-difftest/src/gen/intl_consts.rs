@@ -27,6 +27,29 @@ const CLASS_STUBS: &[(&str, &str)] = &[
     ("ext/intl/collator/collator.stub.php", "Collator"),
     ("ext/intl/formatter/formatter.stub.php", "NumberFormatter"),
     ("ext/intl/locale/locale.stub.php", "Locale"),
+    (
+        "ext/intl/dateformat/dateformat.stub.php",
+        "IntlDateFormatter",
+    ),
+    (
+        "ext/intl/transliterator/transliterator.stub.php",
+        "Transliterator",
+    ),
+    ("ext/intl/timezone/timezone.stub.php", "IntlTimeZone"),
+    ("ext/intl/calendar/calendar.stub.php", "IntlCalendar"),
+    (
+        "ext/intl/spoofchecker/spoofchecker.stub.php",
+        "Spoofchecker",
+    ),
+    (
+        "ext/intl/breakiterator/breakiterator.stub.php",
+        "IntlBreakIterator",
+    ),
+    (
+        "ext/intl/breakiterator/breakiterator_iterators.stub.php",
+        "IntlPartsIterator",
+    ),
+    ("ext/intl/uchar/uchar.stub.php", "IntlChar"),
 ];
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -200,6 +223,7 @@ fn class_constants(text: &str, class: &str) -> Result<String, String> {
                 ("null", None) => ("NULL", "0".to_string()),
                 ("int", Some(v)) => ("INT", v),
                 ("string", Some(v)) => ("STR", v),
+                ("float", Some(v)) => ("FLOAT", v),
                 (other, _) => {
                     return Err(format!(
                         "const {name}: unsupported type {other} or no @cvalue"

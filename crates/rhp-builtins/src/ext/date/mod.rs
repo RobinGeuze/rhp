@@ -9,7 +9,7 @@
 
 mod classes;
 mod format;
-mod objects;
+pub(crate) mod objects;
 
 use std::any::Any;
 use std::cell::RefCell;

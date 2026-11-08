@@ -82,6 +82,10 @@ class Locale
     public static function minimizeSubtags(string $locale): string|false { return __locale('minimizeSubtags', $locale); }
 }
 
+// %CLASSES BEFORE IntlException%
+
 class IntlException extends Exception
 {
 }
+
+// %CLASSES AFTER IntlException%

@@ -35,7 +35,11 @@ opaque!(
     UIDNA,
     UNumberFormat,
     UEnumeration,
-    UFieldPosition
+    UFieldPosition,
+    UTransliterator,
+    USpoofChecker,
+    USpoofCheckResult,
+    USet
 );
 
 pub type UErrorCode = i32;
@@ -50,6 +54,9 @@ pub const U_INVALID_CHAR_FOUND: UErrorCode = 10;
 pub const U_BUFFER_OVERFLOW_ERROR: UErrorCode = 15;
 pub const U_UNSUPPORTED_ERROR: UErrorCode = 16;
 pub const U_STRING_NOT_TERMINATED_WARNING: UErrorCode = -124;
+pub const U_INTERNAL_PROGRAM_ERROR: UErrorCode = 5;
+pub const U_MEMORY_ALLOCATION_ERROR: UErrorCode = 7;
+pub const U_PATTERN_SYNTAX_ERROR: UErrorCode = 65799;
 
 /// `U_FAILURE(code)`.
 pub fn failure(code: UErrorCode) -> bool {
@@ -303,6 +310,63 @@ icu! {
     ) -> i32;
 }
 
+icu! {
+    pub fn uenum_unext(e: *mut UEnumeration, len: *mut i32, status: *mut UErrorCode) -> *const UChar;
+    pub fn uenum_count(e: *mut UEnumeration, status: *mut UErrorCode) -> i32;
+
+    pub fn utrans_openU(
+        id: *const UChar, id_len: i32, dir: i32, rules: *const UChar, rules_len: i32,
+        perr: *mut UParseError, status: *mut UErrorCode,
+    ) -> *mut UTransliterator;
+    pub fn utrans_openInverse(t: *const UTransliterator, status: *mut UErrorCode) -> *mut UTransliterator;
+    pub fn utrans_clone(t: *const UTransliterator, status: *mut UErrorCode) -> *mut UTransliterator;
+    pub fn utrans_close(t: *mut UTransliterator);
+    pub fn utrans_getUnicodeID(t: *const UTransliterator, len: *mut i32) -> *const UChar;
+    pub fn utrans_openIDs(status: *mut UErrorCode) -> *mut UEnumeration;
+    pub fn utrans_transUChars(
+        t: *const UTransliterator, text: *mut UChar, text_len: *mut i32, cap: i32,
+        start: i32, limit: *mut i32, status: *mut UErrorCode,
+    );
+
+    pub fn uspoof_open(status: *mut UErrorCode) -> *mut USpoofChecker;
+    pub fn uspoof_clone(c: *const USpoofChecker, status: *mut UErrorCode) -> *mut USpoofChecker;
+    pub fn uspoof_close(c: *mut USpoofChecker);
+    pub fn uspoof_openCheckResult(status: *mut UErrorCode) -> *mut USpoofCheckResult;
+    pub fn uspoof_closeCheckResult(r: *mut USpoofCheckResult);
+    pub fn uspoof_setRestrictionLevel(c: *mut USpoofChecker, level: i32);
+    pub fn uspoof_check2UTF8(
+        c: *const USpoofChecker, text: *const c_char, len: i32, r: *mut USpoofCheckResult,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uspoof_getCheckResultChecks(r: *const USpoofCheckResult, status: *mut UErrorCode) -> i32;
+    pub fn uspoof_areConfusableUTF8(
+        c: *const USpoofChecker, a: *const c_char, a_len: i32, b: *const c_char, b_len: i32,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uspoof_setAllowedLocales(c: *mut USpoofChecker, locales: *const c_char, status: *mut UErrorCode);
+    pub fn uspoof_setChecks(c: *mut USpoofChecker, checks: i32, status: *mut UErrorCode);
+    pub fn uspoof_setAllowedChars(c: *mut USpoofChecker, set: *const USet, status: *mut UErrorCode);
+
+    pub fn uset_openEmpty() -> *mut USet;
+    pub fn uset_close(s: *mut USet);
+    pub fn uset_applyPattern(
+        s: *mut USet, pattern: *const UChar, len: i32, options: u32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn uset_compact(s: *mut USet);
+
+    pub fn umsg_open(
+        pattern: *const UChar, len: i32, locale: *const c_char, perr: *mut UParseError,
+        status: *mut UErrorCode,
+    ) -> *mut std::ffi::c_void;
+    pub fn umsg_close(f: *mut std::ffi::c_void);
+    pub fn umsg_clone(f: *const std::ffi::c_void, status: *mut UErrorCode) -> *mut std::ffi::c_void;
+    pub fn umsg_getLocale(f: *const std::ffi::c_void) -> *const c_char;
+    pub fn umsg_applyPattern(
+        f: *mut std::ffi::c_void, pattern: *const UChar, len: i32, perr: *mut UParseError,
+        status: *mut UErrorCode,
+    );
+}
+
 /// A row of the shim's constant table: an int, or a string when `str` is
 /// non-null.
 #[repr(C)]
@@ -313,7 +377,7 @@ pub struct IntlConst {
 }
 
 /// A row of the shim's class-constant table; `kind` 0 int, 1 string, 2
-/// null.
+/// null, 3 float.
 #[repr(C)]
 pub struct IntlClassConst {
     pub class: *const c_char,
@@ -322,6 +386,7 @@ pub struct IntlClassConst {
     pub value: c_longlong,
     pub str: *const c_char,
     pub attr: *const c_char,
+    pub dvalue: f64,
 }
 
 unsafe extern "C" {

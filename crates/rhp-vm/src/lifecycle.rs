@@ -996,6 +996,15 @@ impl Vm {
     }
 
     pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
+        // The hard timeout's message names where the script is; the engine
+        // does not move while it runs.
+        builtins::zend::timeout::set_locator(self as *const Vm as *const (), locate);
+        let r = self.run_main_located(prog);
+        builtins::zend::timeout::clear_locator();
+        r
+    }
+
+    fn run_main_located(&mut self, prog: &Program) -> Result<i32, Thrown> {
         let status = match self.run(prog) {
             Ok(c) => c,
             Err(t) => {
@@ -1019,6 +1028,24 @@ impl Vm {
         }
         Ok(status)
     }
+}
+
+/// The hard timeout's [`builtins::zend::timeout::Locator`]: the innermost
+/// user frame's file and line (zend_get_executed_filename/lineno).
+///
+/// # Safety
+/// `ctx` is the running `Vm`; called from the signal handler, it only reads.
+unsafe fn locate(ctx: *const (), buf: &mut [u8]) -> Option<(usize, u32)> {
+    // SAFETY: run_main installed its own engine, alive until it returns.
+    let vm = unsafe { &*(ctx as *const Vm) };
+    let f = vm.stack.iter().rev().find(|f| !f.proto.is_internal())?;
+    let file = f.proto.debug.file.as_bytes();
+    if file.is_empty() || file.starts_with(b"[") {
+        return None;
+    }
+    let n = file.len().min(buf.len());
+    buf[..n].copy_from_slice(&file[..n]);
+    Some((n, crate::errors::frame_line(f)))
 }
 
 /// php's auto-globals (`$_SERVER`, …, `$GLOBALS`): bound by name in every

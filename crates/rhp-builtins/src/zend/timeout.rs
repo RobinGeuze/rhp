@@ -11,7 +11,7 @@
 //! blocking builtin ends early only if the signal interrupts its system
 //! call (sleep under ITIMER_REAL), as in php.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 /// `EG(timed_out)`.
 static TIMED_OUT: AtomicBool = AtomicBool::new(false);
@@ -68,22 +68,64 @@ fn arm(seconds: i64, reset_signals: bool) {
     }
 }
 
+/// Where the engine is executing, for the hard timeout's message: copies
+/// the innermost user frame's file name into the buffer and returns its
+/// length and the line. It runs in the signal handler, so it may only
+/// read (no allocation, no locks).
+pub type Locator = unsafe fn(ctx: *const (), file: &mut [u8]) -> Option<(usize, u32)>;
+
+/// The running engine's [`Locator`] and its argument (`EG(current_execute_data)`).
+static LOCATE_CTX: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static LOCATE_FN: AtomicUsize = AtomicUsize::new(0);
+
+/// Install the running engine's locator (`ctx` must stay valid until
+/// [`clear_locator`]).
+pub fn set_locator(ctx: *const (), f: Locator) {
+    LOCATE_FN.store(f as usize, Ordering::Relaxed);
+    LOCATE_CTX.store(ctx as *mut (), Ordering::Release);
+}
+
+/// The engine stopped executing: the hard timeout names no file.
+pub fn clear_locator() {
+    LOCATE_CTX.store(std::ptr::null_mut(), Ordering::Release);
+}
+
+/// zend_get_executed_filename/lineno for the handler: the file (into
+/// `buf`) and line, or "Unknown" and 0 when nothing executes.
+fn executed_location(buf: &mut [u8]) -> (usize, u32) {
+    let ctx = LOCATE_CTX.load(Ordering::Acquire);
+    let f = LOCATE_FN.load(Ordering::Relaxed);
+    if !ctx.is_null() && f != 0 {
+        // SAFETY: set_locator stored a Locator and a context it keeps alive.
+        let f: Locator = unsafe { std::mem::transmute::<usize, Locator>(f) };
+        if let Some(r) = unsafe { f(ctx, buf) } {
+            return r;
+        }
+    }
+    buf[..7].copy_from_slice(b"Unknown");
+    (7, 0)
+}
+
 /// zend_timeout_handler.
 extern "C" fn handler(_sig: libc::c_int) {
     if TIMED_OUT.load(Ordering::Relaxed) {
         // The VM never got to the first timeout: die (hard timeout).
         let secs = SECONDS.load(Ordering::Relaxed);
         let hard = HARD.load(Ordering::Relaxed);
-        // Formatted into a stack buffer: no allocation in a signal handler.
-        let mut buf = [0u8; 192];
+        // Formatted into stack buffers: no allocation in a signal handler.
+        let mut file = [0u8; 1024];
+        let (n, line) = executed_location(&mut file);
+        // php's log_buffer is 2048 bytes.
+        let mut buf = [0u8; 2048];
         let mut w = &mut buf[..];
-        let _ = std::io::Write::write_fmt(
-            &mut w,
-            format_args!(
-                "\nFatal error: Maximum execution time of {secs}+{hard} seconds exceeded (terminated) in [no active file] on line 0\n"
-            ),
+        use std::io::Write;
+        let _ = write!(
+            w,
+            "\nFatal error: Maximum execution time of {secs}+{hard} seconds exceeded (terminated) in "
         );
-        let len = 192 - w.len();
+        let _ = w.write_all(&file[..n]);
+        let _ = writeln!(w, " on line {line}");
+        let len = 2048 - w.len();
         // SAFETY: write(2) and _exit are async-signal-safe.
         unsafe {
             libc::write(2, buf.as_ptr().cast(), len);

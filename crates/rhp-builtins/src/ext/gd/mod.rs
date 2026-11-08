@@ -135,8 +135,24 @@ fn have(bit: i32) -> bool {
 /// php's RSHUTDOWN: libgd's FreeType cache goes with the request.
 pub fn reset_state() {
     if sys::loaded() {
+        let _g = ft_lock();
         unsafe { sys::gdFontCacheShutdown() };
     }
+}
+
+/// libgd's FreeType font cache is one per process: a request on another
+/// thread must not shut it down while this one renders text with it.
+static FT_CACHE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// How deep this thread is in FreeType calls: an error handler that
+    /// renders text again already holds [`FT_CACHE`].
+    static FT_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Hold [`FT_CACHE`] unless this thread already does.
+fn ft_lock() -> Option<std::sync::MutexGuard<'static, ()>> {
+    (FT_DEPTH.with(|d| d.get()) == 0).then(|| FT_CACHE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Run libgd call `f` with the host reachable from its error callback.
@@ -2468,6 +2484,8 @@ fn ttftext(host: &mut dyn Host, args: &[Value], f: &str, draw: bool) -> Result<V
     let font = cut(&font);
     let text = cut(&text);
     let mut brect = [0 as c_int; 8];
+    let _g = ft_lock();
+    FT_DEPTH.with(|d| d.set(d.get() + 1));
     let err = gd(host, f, || unsafe {
         sys::rhp_gd_string_ft(
             im,
@@ -2483,7 +2501,9 @@ fn ttftext(host: &mut dyn Host, args: &[Value], f: &str, draw: bool) -> Result<V
             linespace.is_some() as c_int,
             linespace.unwrap_or(0.0),
         )
-    })?;
+    });
+    FT_DEPTH.with(|d| d.set(d.get() - 1));
+    let err = err?;
     if !err.is_null() {
         let msg = c_bytes(err);
         crate::warn(host, f, &msg)?;

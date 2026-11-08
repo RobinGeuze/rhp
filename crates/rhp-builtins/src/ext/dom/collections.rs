@@ -791,6 +791,9 @@ struct TokenIter {
     _obj: Value,
     pos: std::cell::Cell<usize>,
     tag: u64,
+    /// getIterator()'s zend_object_iterator, which php registers as an
+    /// object too (it takes an object id while the iterator lives).
+    _iterator: Option<Value>,
 }
 
 impl TokenIter {
@@ -855,6 +858,15 @@ pub fn tl_get_iterator(
     h: &ObjectHandle,
     by_ref: bool,
 ) -> Result<ObjectHandle, Thrown> {
+    tl_new_iterator(host, h, by_ref, None)
+}
+
+fn tl_new_iterator(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    by_ref: bool,
+    iterator: Option<Value>,
+) -> Result<ObjectHandle, Thrown> {
     if by_ref {
         return Err(Thrown::error(
             "Error",
@@ -875,6 +887,7 @@ pub fn tl_get_iterator(
             _obj: v,
             pos: std::cell::Cell::new(pos),
             tag,
+            _iterator: iterator,
         }),
     )
 }
@@ -884,5 +897,13 @@ pub fn tl_get_iterator_m(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value
     let Value::Object(h) = this else {
         return Ok(Value::Null);
     };
-    Ok(Value::Object(tl_get_iterator(cx.host, h, false)?))
+    // zend_create_internal_iterator_zval: the class's iterator, then the
+    // InternalIterator wrapping it.
+    let inner = tl_get_iterator(cx.host, h, false)?;
+    Ok(Value::Object(tl_new_iterator(
+        cx.host,
+        h,
+        false,
+        Some(Value::Object(inner)),
+    )?))
 }

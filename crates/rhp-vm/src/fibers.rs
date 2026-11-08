@@ -805,7 +805,7 @@ pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
             // internal frame with ZEND_CALL_RELEASE_THIS).
             for n in &ctx.native_calls {
                 if let Some((_, this)) = &n.method_of {
-                    out.push(Value::Object(this.clone()));
+                    out.push(this.clone());
                 }
             }
         }

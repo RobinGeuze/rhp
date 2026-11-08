@@ -113,8 +113,8 @@ pub(crate) struct NativeCall {
     /// them; a trace shows them), borrowed like `args`.
     pub(crate) named: *const [(PhpStr, Value)],
     /// A method of an internal class run without a frame (the `Generator`
-    /// methods): its class and object.
-    pub(crate) method_of: Option<(&'static str, ObjectHandle)>,
+    /// methods, `Closure::call`): its class and object.
+    pub(crate) method_of: Option<(&'static str, Value)>,
 }
 
 impl Vm {
@@ -1329,7 +1329,7 @@ impl Vm {
         // __invoke() takes the closure's own parameters; the variadic
         // `$args` of call() collects unknown names for the closure.
         let invoke = mname.eq_ignore_ascii_case(b"__invoke");
-        let (mut argv, named) = if named.is_empty() || invoke {
+        let (argv, named) = if named.is_empty() || invoke {
             (argv, named)
         } else {
             self.place_method_named_args("Closure", mname, argv, named)?
@@ -1337,12 +1337,14 @@ impl Vm {
         Ok(match mname.to_ascii_lowercase().as_slice() {
             b"__invoke" if !named.is_empty() => self.call_named(o, argv, named, None)?,
             b"call" if !named.is_empty() && !argv.is_empty() => {
-                let new_this = argv.remove(0);
-                let bound = self.closure_call_target(o, &new_this)?;
+                let bound = self.closure_call_target(o, &argv[0])?;
                 if matches!(bound, Value::Null) {
                     Value::Null
                 } else {
-                    let r = self.call_named(&bound, argv, named, None);
+                    let rest = argv[1..].to_vec();
+                    let r = self.in_closure_call(o, &argv, &named, |vm| {
+                        vm.call_named(&bound, rest, named.clone(), None)
+                    });
                     self.closure_call_done(o, &bound);
                     r?
                 }
@@ -1351,11 +1353,38 @@ impl Vm {
         })
     }
 
+    /// Run `f` with `Closure->call(...)` on the trace: php runs the closure
+    /// from Closure::call's internal frame.
+    fn in_closure_call(
+        &mut self,
+        closure: &Value,
+        args: &[Value],
+        named: &[(PhpStr, Value)],
+        f: impl FnOnce(&mut Self) -> Result<Value, Thrown>,
+    ) -> Result<Value, Thrown> {
+        self.native_calls.push(NativeCall {
+            name: "call",
+            args: args as *const [Value],
+            shown_str: 0,
+            caller: self.stack.len() - 1,
+            frameless_icall: false,
+            named: named as *const [(PhpStr, Value)],
+            method_of: Some(("Closure", closure.clone())),
+        });
+        let r = match f(self) {
+            // An engine error is created with the call still on the trace.
+            Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
+            r => r,
+        };
+        self.native_calls.pop();
+        r
+    }
+
     pub(crate) fn closure_method(
         &mut self,
         closure: &Value,
         mname: &[u8],
-        mut args: Vec<Value>,
+        args: Vec<Value>,
     ) -> Result<Value, Thrown> {
         let lc = mname.to_ascii_lowercase();
         if let Some(e) = native_method_count_error("Closure", &lc, args.len()) {
@@ -1376,12 +1405,14 @@ impl Vm {
             }
             b"call" => {
                 // Temporarily binds `$this` AND the scope to the new object.
-                let new_this = args.remove(0);
-                let bound = self.closure_call_target(closure, &new_this)?;
+                let bound = self.closure_call_target(closure, &args[0])?;
                 if matches!(bound, Value::Null) {
                     return Ok(Value::Null);
                 }
-                let r = self.call_callable_value(&bound, args);
+                let rest = args[1..].to_vec();
+                let r = self.in_closure_call(closure, &args, &[], |vm| {
+                    vm.call_callable_value(&bound, rest)
+                });
                 self.closure_call_done(closure, &bound);
                 r
             }

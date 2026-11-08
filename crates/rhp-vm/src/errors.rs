@@ -643,7 +643,7 @@ impl Vm {
                     if let Some((class, this)) = &n.method_of {
                         e.insert(k(b"class"), Value::str(*class));
                         if provide_object {
-                            e.insert(k(b"object"), Value::Object(this.clone()));
+                            e.insert(k(b"object"), this.clone());
                         }
                         e.insert(k(b"type"), Value::str("->"));
                     }

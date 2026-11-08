@@ -224,6 +224,13 @@ impl Vm {
             (64, "Fatal error")
         };
         self.display_error(ty, label, message.as_bytes(), file.as_bytes(), line as i64);
+        // php_error_cb records it (error_get_last(), the cli-server's log).
+        self.last_error = Some((
+            ty,
+            message.as_bytes().to_vec(),
+            file.as_bytes().to_vec(),
+            line as i64,
+        ));
     }
 
     pub(crate) fn do_include(
@@ -722,6 +729,9 @@ impl Vm {
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
+        if std::mem::take(&mut self.primary_next) {
+            return self.run_as_primary(main, unit);
+        }
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }
@@ -780,6 +790,18 @@ impl Vm {
             self.include_statics.retain(|k, _| k.0 < base);
         }
         ret
+    }
+
+    /// A loaded file run as the request's next primary script: its `{main}`
+    /// replaces the finished one at the bottom of the stack, in the global
+    /// scope.
+    fn run_as_primary(&mut self, main: Rc<FunctionProto>, unit: UnitId) -> Result<Value, Thrown> {
+        let mut frame = Frame::new(main, unit, 0);
+        self.bind_superglobals(&mut frame);
+        self.bind_global_scope(&mut frame);
+        self.stack.clear();
+        self.stack.push(frame);
+        self.run_loop()
     }
 
     /// An include/eval frame that is finishing shares its caller's variables

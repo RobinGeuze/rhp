@@ -9,6 +9,7 @@ use crate::NativeFn;
 
 pub mod cgi;
 pub mod cli;
+pub mod cli_server;
 
 /// A SAPI module's contribution: php's `sapi_module.additional_functions`
 /// and the SAPI's own extension module.
@@ -30,7 +31,7 @@ pub(crate) struct SapiDef {
 
 /// Every SAPI rhp has functions for; a SAPI's position is its bit in
 /// `Builtin::sapis`.
-pub(crate) static SAPIS: [&SapiDef; 2] = [&cli::SAPI, &cgi::SAPI];
+pub(crate) static SAPIS: [&SapiDef; 3] = [&cli::SAPI, &cgi::SAPI, &cli_server::SAPI];
 
 /// The SAPI named `name` and its bit, if rhp has one.
 pub(crate) fn sapi_def(name: &str) -> Option<(u8, &'static SapiDef)> {

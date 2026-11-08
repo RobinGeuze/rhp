@@ -1,7 +1,7 @@
 //! The php-cli front end (sapi/cli/php_cli.c): its option table, usage
 //! text and the passes `main` and `do_cli` make over the command line, so
 //! `rhp` reads options, and reports bad ones, as php does. The modes rhp
-//! does not have (`-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`, `-S`,
+//! does not have (`-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`,
 //! `--rf` and friends, `--ini`, `--repeat`) are refused once php would run
 //! them, after its own checks. `-a` is an error, as in a php without
 //! readline.
@@ -10,7 +10,7 @@ use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, OPTIONAL, REQUIRED};
 use crate::Script;
 
 /// php-cli's `OPTIONS`.
-const OPTIONS: &[OptDef] = &[
+pub(crate) const OPTIONS: &[OptDef] = &[
     opt(b'a', NO_ARG, "interactive"),
     opt(b'B', REQUIRED, "process-begin"),
     opt(b'C', NO_ARG, "no-chdir"),
@@ -137,7 +137,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         }
     }
     if server {
-        return refuse(b'S');
+        return crate::cli_server::main(args, ini, ini_files, crate::php_binary());
     }
 
     // do_cli()'s first pass: -i, -v and -m, whichever comes first.

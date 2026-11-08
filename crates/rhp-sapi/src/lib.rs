@@ -29,6 +29,7 @@ use rhp_vm::Vm;
 mod capture;
 pub mod cgi;
 pub mod cli;
+mod cli_server;
 mod getopt;
 
 pub use capture::{CaptureSapi, Captured};
@@ -500,6 +501,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             // line 0: php raised it outside any file
             let at = if line == 0 { "[no active file]" } else { &file };
             vm.report_parse_error(class, &message, at, line);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(255);
         }
@@ -509,17 +511,20 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             diags,
         }) => {
             vm.compile_failed(&message, file.as_bytes(), line, &diags, false);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(255);
         }
         Err(IncludeError::HardLimit { line }) => {
             let t = vm.compile_hard_limit(Some((file.as_bytes(), line)));
             let code = fatal(&mut vm, t);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(code);
         }
         Err(IncludeError::Thrown(t)) => {
             let code = fatal(&mut vm, t);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(code);
         }
@@ -969,6 +974,18 @@ fn ini_constant(name: &str) -> Option<String> {
     m.get(name).map(|v| String::from_utf8_lossy(v).into_owned())
 }
 
+/// PHP_BINARY: this engine's own executable (composer re-invokes it for
+/// `@php` scripts).
+pub(crate) fn php_binary() -> Option<Vec<u8>> {
+    std::env::current_exe().ok().map(|exe| {
+        std::fs::canonicalize(&exe)
+            .unwrap_or(exe)
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes()
+    })
+}
+
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
 pub fn run_cli(
     script: Script,
@@ -976,15 +993,7 @@ pub fn run_cli(
     args: Vec<Vec<u8>>,
     ini_files: IniFiles,
 ) -> i32 {
-    // PHP_BINARY is this engine's own executable (composer re-invokes it for
-    // `@php` scripts).
-    let php_binary = std::env::current_exe().ok().map(|exe| {
-        std::fs::canonicalize(&exe)
-            .unwrap_or(exe)
-            .to_string_lossy()
-            .into_owned()
-            .into_bytes()
-    });
+    let php_binary = php_binary();
     let req = Request {
         script,
         ini,

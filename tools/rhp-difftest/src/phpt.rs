@@ -242,10 +242,10 @@ const BASE_ENV: &[(&str, &str)] = &[
     ("LC_ALL", "C"),
 ];
 
-/// Tests that start php's CLI server (`-S`), which rhp doesn't have, are
-/// skipped, except under [`CLI_SERVER_PEERS`]. Other tests that spawn "the
-/// php under test" (`TEST_PHP_EXECUTABLE`, `PHP_BINARY`,
-/// `TEST_PHP_CGI_EXECUTABLE`) run: each engine spawns itself.
+/// Tests that start php's CLI server (`-S`). Under [`CLI_SERVER_PEERS`]
+/// both engines get php's server; elsewhere, as with every test that spawns
+/// "the php under test" (`TEST_PHP_EXECUTABLE`, `PHP_BINARY`,
+/// `TEST_PHP_CGI_EXECUTABLE`), each engine spawns itself.
 const CLI_SERVER_MARKERS: &[&str] = &["php_cli_server", "'-S'", "\"-S\"", " -S "];
 
 /// Test directories whose tests start php's CLI server only as the HTTP
@@ -1791,10 +1791,8 @@ fn run_test_file(
         };
         hay(Some(&file)) || hay(phpt.section("SKIPIF")) || hay(phpt.section("CLEAN"))
     };
-    let server_peer = CLI_SERVER_MARKERS.iter().any(|m| mentions(m));
-    if server_peer && !CLI_SERVER_PEERS.iter().any(|d| rel.starts_with(d)) {
-        return skipped(rel, "subprocess:cli-server");
-    }
+    let server_peer = CLI_SERVER_MARKERS.iter().any(|m| mentions(m))
+        && CLI_SERVER_PEERS.iter().any(|d| rel.starts_with(d));
     let ini = match ctx.ini.test_ini(&phpt, &dir, is_cgi) {
         Ok(ini) => ini,
         Err(reason) => return skipped(rel, reason),
@@ -1829,7 +1827,8 @@ fn run_test_file(
     }
     // ext/curl's server.inc and php_cli_server.inc start
     // `TEST_PHP_EXECUTABLE -S` as the HTTP peer of the client under test:
-    // php's CLI server for both engines (rhp has no -S).
+    // there php's CLI server serves both engines, so the client code is
+    // what is compared. Elsewhere (sapi/cli) each engine starts its own.
     if server_peer || rel.starts_with("ext/curl/tests/") {
         let php = which(&php_bin()).to_string_lossy().into_owned();
         env.push(("TEST_PHP_EXECUTABLE_ESCAPED".into(), escapeshellarg(&php)));

@@ -2,10 +2,11 @@
 
 rhp runs PHP the way php's SAPI layer does: the engine never talks to a
 terminal, a socket or a web server directly. Something outside it — the
-`rhp` command, a CGI front end, later a web server that embeds rhp — hands
+`rhp` command, a CGI front end, the built-in web server, later a web server
+that embeds rhp — hands
 it one request and receives the response through a small trait. This
 document describes that boundary, the request lifecycle behind it and the
-threading model, and where it is headed (`rhp -S`, embedding in a server,
+threading model, and where it is headed (embedding in a server,
 FastCGI).
 
 php-src counterparts: `main/SAPI.c` (request info, headers),
@@ -16,10 +17,10 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
 ## Layers
 
 ```
- server / front end        rhp-cli (argv)   rhp --cgi        future: -S, embed, FastCGI
-          │                      │               │                     │
-          ▼                      ▼               ▼                     ▼
- rhp-sapi            cli::main()        cgi::main()            run_request()
+ server / front end   rhp-cli (argv)   rhp -S        rhp --cgi     future: embed, FastCGI
+          │                 │             │              │                  │
+          ▼                 ▼             ▼              ▼                  ▼
+ rhp-sapi            cli::main()   cli_server::main  cgi::main()      run_request()
                          └──────────────┬───────┴──────────────────┘
                                         ▼
                      run_request(Box<dyn Sapi>, Request) -> Outcome
@@ -46,8 +47,8 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   eval and preload) plus the shipped SAPIs: `CliSapi` (php-cli, with
   `cli::main` porting `php_cli.c`'s option table and passes),
   `cgi::CgiSapi` (php-cgi, with `cgi::main` porting `cgi_main.c`'s argv
-  and environment handling) and
-  `CaptureSapi`, which keeps a request's output in memory for tests and
+  and environment handling), the built-in web server (`cli_server`,
+  below) and `CaptureSapi`, which keeps a request's output in memory for tests and
   tools (`CaptureSapi::cli()` behaves as php-cli, `CaptureSapi::web(name)`
   as a web server).
 - **`rhp-cli`** only picks the SAPI (`rhp --cgi …`, or the binary named
@@ -55,7 +56,7 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   Both parse it with a port of php's `php_getopt`, so bad options get
   php's messages (`-v` and `-i` run after module startup, so its
   warnings come first); the php-cli modes rhp lacks (`-l`, `-m`, `-s`,
-  `-w`, `-B`/`-R`/`-F`/`-E`, `-S`, `--rf` and friends, `--ini`,
+  `-w`, `-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`,
   `--repeat`) are refused after php's own checks, and `-a` (the
   interactive shell, readline_cli.c, not ported) gets the error of a php
   without readline.
@@ -106,7 +107,9 @@ let outcome = run_request(
 | `ub_write` | unbuffered body writer, called with what leaves the bottom of the output-buffer stack. Returns false when the client went away: the engine then runs `php_handle_aborted_connection` (`connection_status()` aborted, output off, and unless `ignore_user_abort` the script ends as if by `exit`; shutdown functions still run) | required |
 | `flush` | `flush()`, `implicit_flush`, request end; false is a client abort, as for `ub_write` | `true` |
 | `aborted_exit_status` | the exit status a failed write sets (`EG(exit_status)`: php-cli's 255) | `None` |
-| `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included) | no-op |
+| `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included). Returns false when the write failed (`SAPI_HEADER_SEND_FAILED`): the headers then count as unsent and output is turned off | no-op, `true` |
+| `flush_sends_headers` | a flush sends the headers first when nothing has (php's cli-server) | `false` |
+| `script_done` | the primary script returned (php_execute_script), before the shutdown functions: its return value, the response and `error_get_last()`. The SAPI may name a file to run next as another primary script in the same request (the cli-server's router declining a `.php` request) | `None` |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
 | `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer | `flush`, then stdout |
@@ -210,6 +213,50 @@ other stream wrappers are compiled on every include.
   (`opcache_get_status()['jit']` reports what the settings select),
   switching to `opcache.preload_user` (only its warning), the inheritance
   cache and `opcache.enable_file_override`.
+
+## The built-in web server (`rhp -S`)
+
+`rhp_sapi::cli_server` ports sapi/cli/php_cli_server.c. `cli::main` hands
+it the command line once php-cli's first pass saw `-S` (as php's `main()`
+switches to `cli_server_sapi_module`; php-cli's HARDCODED_INI does not
+apply, so `html_errors`, `implicit_flush` and `max_execution_time` have
+php's core defaults). It works as php's does:
+
+- One thread polls the listening socket and its clients (`poll(2)` in fd
+  order, as php's `select` loop); `PHP_CLI_SERVER_WORKERS=N` forks N
+  workers that all accept, and the log lines then carry the pid.
+- Requests are read with php's own parser, sapi/cli/php_http_parser.c,
+  compiled from source by rhp-csrc (`cli_server` feature), with
+  mime_type_map.h for static files. The path is decoded and normalised
+  (`normalize_vpath`) and mapped to a file under the document root,
+  walking up for `PATH_INFO` and trying `index.php` / `index.html`
+  (`translate_vpath`).
+- A `.php` file, or any request when there is a router, runs as one PHP
+  request (`run_request`) through `ServerSapi`, which writes the status
+  line, `Host`, `Date`, `Connection: close` and the header list straight
+  to the socket. The router runs without a chdir; when it returns `false`
+  (`Sapi::script_done`), a static file is served after the request ends
+  with its headers dropped, and a `.php` file runs next in the same
+  request (same globals and functions, its directory as cwd).
+- Static files and the error pages (400, 404, 405, 500, 501, php's HTML)
+  go out through a per-client chunk queue on writable events, the file
+  read 128 KiB at a time.
+- The log on stderr: `[asctime] addr Accepted`, `addr [status]: METHOD
+  URI` (with ` - message in file on line N` after a fatal error),
+  `addr Closing`, the startup line `PHP 8.5.x Development Server
+  (http://host:port) started`, and `error_log` lines; `-q` drops the
+  per-request lines, `cli_server.color=1` colours them on a terminal.
+- The `cli-server` SAPI module has `apache_request_headers` /
+  `getallheaders` (the headers in the case they were sent),
+  `apache_response_headers`, `cli_set_process_title` /
+  `cli_get_process_title`, and the `cli_server` module with
+  `cli_server.color`. pcntl is loaded, as in php's cli binary.
+
+The php-src tests that start a server (`php_cli_server.inc`) run with
+each engine starting itself, except under ext/curl and ext/standard's
+http, streams and url tests, where php's server answers both engines so
+the client code is what is compared. `tests/cli/cli_server` covers the
+router paths, the log and the error pages.
 
 ## Request lifecycle
 
@@ -417,11 +464,6 @@ Limits of the model:
 
 ## Where this goes
 
-- **`rhp -S` (built-in web server).** An HTTP/1.1 listener in `rhp-cli` (or
-  a small `rhp-server` crate) that maps a request to a `RequestInfo`
-  (router script, document root, `PATH_INFO` as `php -S` sets it) and runs
-  it on a worker thread through a `Sapi` that writes to the socket. Its
-  harness diffs against `php -S`.
 - **Embedding in a server (FrankenPHP-like).** The production target:
   Caddy (through a C ABI shim over `run_request`) or a Rust server (hyper /
   axum, calling `run_request` directly from a worker pool). The pieces

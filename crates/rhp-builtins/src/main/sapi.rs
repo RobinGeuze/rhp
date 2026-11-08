@@ -77,6 +77,12 @@ pub trait Sapi {
         true
     }
 
+    /// Whether a flush sends the headers first when nothing has
+    /// (`sapi_cli_server_flush` does).
+    fn flush_sends_headers(&self) -> bool {
+        false
+    }
+
     /// The exit status a failed body write sets before the abort
     /// (`EG(exit_status)`: php-cli's 255); `None` leaves it.
     fn aborted_exit_status(&self) -> Option<i32> {
@@ -86,7 +92,11 @@ pub trait Sapi {
     /// `send_headers`: called once, right before the first body byte (or at
     /// request end when there is no body) unless the request has
     /// `no_headers`. The status line and header list are the final ones.
-    fn send_headers(&mut self, _response: &Response) {}
+    /// False (`SAPI_HEADER_SEND_FAILED`): the headers count as not sent,
+    /// and the output that was to follow them is turned off.
+    fn send_headers(&mut self, _response: &Response) -> bool {
+        true
+    }
 
     /// `log_message`: one `error_log` / `log_errors` line (no trailing
     /// newline; the SAPI adds its own, like php's CLI and CGI do).
@@ -128,6 +138,27 @@ pub trait Sapi {
     fn exits_on_hard_limit(&self) -> bool {
         false
     }
+
+    /// The primary script finished: php_execute_script returned, before
+    /// the shutdown functions. [`ScriptDone`] has its return value, the
+    /// response so far and the request's last error. The SAPI may name a
+    /// file to run next, in the same request, as another primary script
+    /// (php's cli-server runs the requested script once its router
+    /// returned false).
+    fn script_done(&mut self, _done: ScriptDone<'_>) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// What [`Sapi::script_done`] is told.
+pub struct ScriptDone<'a> {
+    /// The script's return value; `None` when it did not return (`exit`,
+    /// an uncaught throwable, a compile error).
+    pub ret: Option<&'a Value>,
+    /// The response (status, headers) as the script left it.
+    pub response: &'a mut Response,
+    /// `error_get_last()`: type, message, file, line.
+    pub last_error: Option<(i64, &'a [u8], &'a [u8], i64)>,
 }
 
 /// php's `SG(sapi_headers)` + `SG(headers_sent)` + the output start

@@ -354,6 +354,9 @@ impl Vm {
 
     /// `sapi_flush`: the SAPI's `flush`; a failure is a client abort.
     pub(crate) fn sapi_flush(&mut self) {
+        if self.sapi.sapi.flush_sends_headers() && !self.sapi.response.sent {
+            self.sapi_send_headers();
+        }
         if !self.sapi.sapi.flush() {
             self.handle_aborted_connection();
         }
@@ -398,7 +401,12 @@ impl Vm {
             }
         }
         self.sapi.response.sent = true;
-        self.sapi.sapi.send_headers(&self.sapi.response);
+        if !self.sapi.sapi.send_headers(&self.sapi.response) {
+            // SAPI_HEADER_SEND_FAILED: not sent; php_output_header then
+            // turns output off.
+            self.sapi.response.sent = false;
+            self.sapi.response.output_disabled = true;
+        }
         self.sapi.response.status_line = None;
     }
 

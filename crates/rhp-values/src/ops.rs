@@ -857,6 +857,15 @@ fn callables_equal(a: &Value, b: &Value) -> bool {
             target && callables_equal(&xs[1], &ys[1])
         }
         (Value::Closure(p), Value::Closure(q)) => std::rc::Rc::ptr_eq(p, q),
+        // `$invokable(...)`: the object's __invoke.
+        (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
+        (Value::Object(o), Value::Array(arr)) | (Value::Array(arr), Value::Object(o))
+            if arr.len() == 2 =>
+        {
+            let v: Vec<Value> = arr.values().map(deref).collect();
+            matches!(&v[0], Value::Object(p) if std::rc::Rc::ptr_eq(p, o))
+                && matches!(&v[1], Value::Str(m) if m.as_bytes().eq_ignore_ascii_case(b"__invoke"))
+        }
         _ => false,
     }
 }

@@ -433,6 +433,7 @@ fn ntop(family: c_int, addr: *const libc::c_void) -> Option<String> {
 }
 
 fn sun_path(su: &libc::sockaddr_un) -> Vec<u8> {
+    #[allow(clippy::unnecessary_cast)] // c_char is i8 on macOS, u8 on Linux arm
     let raw: Vec<u8> = su.sun_path.iter().map(|&c| c as u8).collect();
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
     raw[..end].to_vec()

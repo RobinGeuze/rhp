@@ -894,7 +894,7 @@ impl Vm {
         if self.is_internal_frame(caller) {
             return None;
         }
-        let (name, min, max) = match frame.defining_class {
+        let (cname, fname, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
@@ -906,14 +906,22 @@ impl Vm {
                     return None;
                 }
                 let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
-                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
-                (name, st.min_args(), st.max_args())
+                (Some(cname), st.name, st.min_args(), st.max_args())
             }
             Some(_) => return None,
             None => {
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
-                (f.name.to_string(), f.min_args(), f.max_args())
+                (None, f.name, f.min_args(), f.max_args())
             }
+        };
+        let fits = passed >= min && max.is_none_or(|m| passed <= m);
+        if fits && passed <= proto.params.len() {
+            return None;
+        }
+        // The message name, built only on the way to an error.
+        let name = match (cname, fname) {
+            (Some(c), n) => format!("{}::{n}", String::from_utf8_lossy(c)),
+            (None, n) => n.to_string(),
         };
         if let Some(e) = zpp_count_error(&name, min, max, passed) {
             return Some(e);

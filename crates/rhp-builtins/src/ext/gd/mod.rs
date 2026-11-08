@@ -440,6 +440,21 @@ unsafe extern "C" fn out_putbuf(ctx: *mut sys::GdIoCtx, buf: *const c_void, l: c
     })
 }
 
+/// php_stream_open_wrapper(path, mode, REPORT_ERRORS|IGNORE_PATH, NULL).
+fn open_stream(
+    host: &mut dyn Host,
+    f: &str,
+    path: &[u8],
+    mode: &[u8],
+    ctx: &Value,
+    use_path: bool,
+) -> Result<Option<Value>, Thrown> {
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
+    crate::ext::standard::file::open_stream(host, f, path, mode, ctx, use_path)
+}
+
 /// create_output_context: argument `n` (1-based) names a stream resource
 /// or a file to write, else (null or absent) PHP's output. `None`: php
 /// returns false (an open failed, a warning was raised).
@@ -469,14 +484,7 @@ fn output_context(
                     "{f}(): Argument #{n} (${p}) must not contain null bytes"
                 )));
             }
-            let res = crate::ext::standard::file::open_stream(
-                host,
-                f,
-                s.as_bytes(),
-                b"wb",
-                &Value::Null,
-                false,
-            )?;
+            let res = open_stream(host, f, s.as_bytes(), b"wb", &Value::Null, false)?;
             Ok(res.map(|res| Out::new(Sink::Stream { res, close: true })))
         }
         other => Err(Thrown::type_error(format!(
@@ -754,9 +762,7 @@ fn read_n(host: &mut dyn Host, res: &Value, want: usize) -> (Vec<u8>, bool) {
 fn fn_imageloadfont(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "imageloadfont";
     let file = zpp::path_param(host, args, 0, f, "filename")?;
-    let Some(res) =
-        crate::ext::standard::file::open_stream(host, f, &file, b"rb", &Value::Null, false)?
-    else {
+    let Some(res) = open_stream(host, f, &file, b"rb", &Value::Null, false)? else {
         return Ok(Value::Bool(false));
     };
     let fail = |host: &mut dyn Host, msg: &str| -> Result<Value, Thrown> {
@@ -1105,9 +1111,7 @@ fn create_from(
         }
         part = (x as c_int, y as c_int, w as c_int, h as c_int);
     }
-    let Some(res) =
-        crate::ext::standard::file::open_stream(host, f, &file, b"rb", &Value::Null, false)?
-    else {
+    let Some(res) = open_stream(host, f, &file, b"rb", &Value::Null, false)? else {
         return Ok(Value::Bool(false));
     };
     // A plain file is read through a FILE* in php; other streams through a
@@ -1466,9 +1470,7 @@ fn fn_imagexbm(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fg = lng_or_null(host, args, 2, f, "foreground_color")?;
     let mut out = match &file {
         Some(path) => {
-            let Some(res) =
-                crate::ext::standard::file::open_stream(host, f, path, b"wb", &Value::Null, false)?
-            else {
+            let Some(res) = open_stream(host, f, path, b"wb", &Value::Null, false)? else {
                 return Ok(Value::Bool(false));
             };
             Out::new(Sink::Stream { res, close: true })

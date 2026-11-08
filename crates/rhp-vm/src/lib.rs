@@ -72,7 +72,7 @@ pub struct Vm {
     /// Typed references and their type sources (see `refsrc`).
     typed_refs: refsrc::TypedRefs,
     /// Active magic-accessor guards: (object id, accessor, property name).
-    prop_guards: std::collections::HashSet<(u32, &'static [u8], PhpStr)>,
+    prop_guards: rustc_hash::FxHashSet<(u32, &'static [u8], PhpStr)>,
     /// The fetch the next magic accessor or ArrayAccess call serves (php's
     /// `BP_VAR_W` below a write, `check_empty` for `empty()`); the next
     /// synchronous call takes it.
@@ -91,7 +91,7 @@ pub struct Vm {
     /// shares that unit, since their bases are equal.
     units: Vec<UnitBase>,
     functions: Vec<UnitFn>,
-    fn_names: HashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
+    fn_names: rustc_hash::FxHashMap<Vec<u8>, usize>, // lowercase name -> index into `functions`
     /// Bumped by every function declaration (see [`Vm::add_fn_name`]).
     fn_gen: u32,
     /// Call sites by name already resolved, keyed by (proto address, pc):
@@ -116,7 +116,7 @@ pub struct Vm {
     /// `class_alias()` entries of the class table: (lowercased alias, class,
     /// `decl_classes.len()` when added), for `get_declared_classes()`.
     class_aliases: Vec<(Vec<u8>, ClassId, usize)>,
-    constants: HashMap<Vec<u8>, Value>,
+    constants: rustc_hash::FxHashMap<Vec<u8>, Value>,
     /// User-defined constant names in definition order (`get_defined_constants`).
     user_const_order: Vec<Vec<u8>>,
     /// Attributed global constants' attributes, by constant name.
@@ -158,7 +158,7 @@ pub struct Vm {
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.
-    globals: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
+    globals: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>,
     // Auto-globals php creates on first use (auto_globals_jit): their initial
     // value, moved into `globals` when a script first references the name.
     jit_globals: HashMap<Vec<u8>, Value>,
@@ -171,10 +171,10 @@ pub struct Vm {
     ref_globals: std::collections::HashSet<Vec<u8>>,
     // `static $x`: persistent cells keyed by (function proto pointer, unit,
     // class, var name).
-    statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
+    statics: rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>>,
     // The statics of the running include and eval `{main}` frames, keyed by
     // stack index; each frame's are dropped when it returns.
-    include_statics: HashMap<StaticKey, Rc<RefCell<Value>>>,
+    include_statics: rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>>,
     // Non-constant class const / static-prop / property-default initializers,
     // evaluated after all classes link (so cross-class/enum refs resolve).
     // Generator runtime state, keyed by the Generator object's id.
@@ -200,7 +200,7 @@ pub struct Vm {
     fcc_this: std::cell::RefCell<Option<ObjectHandle>>,
     // Resolved real paths already included (for the `_once` variants), in
     // inclusion order (`get_included_files`).
-    included_files: indexmap::IndexSet<Vec<u8>>,
+    included_files: indexmap::IndexSet<Vec<u8>, rustc_hash::FxBuildHasher>,
     /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
     internal_classes: usize,
     // Registered `spl_autoload_register` callables, in call order.
@@ -208,7 +208,7 @@ pub struct Vm {
     /// Lowercased class names whose autoload is in progress (php's
     /// `EG(in_autoload)`): a nested lookup of the same name does not re-enter
     /// the autoloaders.
-    in_autoload: std::collections::HashSet<Vec<u8>>,
+    in_autoload: rustc_hash::FxHashSet<Vec<u8>>,
     /// Stack depth at each running autoload: php's zend_lookup_class clears
     /// the constant-expression file/line override for the loader.
     autoload_depths: Vec<usize>,
@@ -477,7 +477,7 @@ struct Frame {
     /// traces, and the frame whose variable scope it runs in.
     include: Option<(&'static str, usize)>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
-    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>>,
+    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>,
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
@@ -579,7 +579,7 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include: None,
-            dyn_vars: indexmap::IndexMap::new(),
+            dyn_vars: indexmap::IndexMap::default(),
             global_scope: false,
             closure: None,
             fe_live: None,

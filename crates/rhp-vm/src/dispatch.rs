@@ -2,7 +2,6 @@
 //! operator helpers it calls.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
@@ -62,7 +61,10 @@ impl Vm {
     /// `{main}` keeps them in [`Vm::include_statics`], dropped when it
     /// returns (see [`Vm::run_included`]).
     #[inline]
-    fn static_table(&mut self, top: usize) -> &mut HashMap<StaticKey, Rc<RefCell<Value>>> {
+    fn static_table(
+        &mut self,
+        top: usize,
+    ) -> &mut rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>> {
         if self.stack[top].include_kind().is_some() {
             &mut self.include_statics
         } else {

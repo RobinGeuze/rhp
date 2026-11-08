@@ -44,7 +44,7 @@ pub struct ClassEntry {
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
     /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
-    pub props: IndexMap<PhpStr, PropEntry>,
+    pub props: IndexMap<PhpStr, PropEntry, FxBuildHasher>,
     /// The objects' slot layout: `props`' keys, slot `i` for entry `i`
     /// (a virtual property's slot stays empty).
     pub layout: Rc<rhp_values::PropLayout>,
@@ -56,9 +56,9 @@ pub struct ClassEntry {
     /// calling scope, so its methods see their own private slot.
     pub own_private: FxHashMap<PhpStr, PhpStr>,
     /// Flattened class constants (case-sensitive), in php's member order.
-    pub constants: IndexMap<Vec<u8>, ClassConst>,
+    pub constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
-    pub static_props: IndexMap<Vec<u8>, StaticProp>,
+    pub static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher>,
     /// Enum case singletons in declaration order (empty for non-enums).
     pub enum_cases: Vec<ObjectHandle>,
     /// Backing type of a backed enum (`None` for pure enums / non-enums).
@@ -618,7 +618,7 @@ fn verify_hooked_props(
     classes: &[ClassEntry],
     class_name: &PhpStr,
     id: ClassId,
-    props: &mut IndexMap<PhpStr, PropEntry>,
+    props: &mut IndexMap<PhpStr, PropEntry, FxBuildHasher>,
 ) -> Result<(), String> {
     let _ = classes;
     let cn = String::from_utf8_lossy(class_name.as_bytes()).into_owned();
@@ -953,7 +953,8 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
     };
     let mut out = Vec::with_capacity(capacity.max(classes.len()));
     for e in classes {
-        let mut static_props = IndexMap::with_capacity(e.static_props.len());
+        let mut static_props =
+            IndexMap::with_capacity_and_hasher(e.static_props.len(), FxBuildHasher);
         for (k, sp) in &e.static_props {
             let sp = StaticProp {
                 cell: fresh(&sp.cell),
@@ -1477,7 +1478,7 @@ impl Vm {
         // keeps its inherited slot (same plain key, same position); a property
         // whose inherited declaration is a parent *private* gets a fresh slot
         // appended, leaving the parent's private slot in place (php shadowing).
-        let mut props: IndexMap<PhpStr, PropEntry> = parent
+        let mut props: IndexMap<PhpStr, PropEntry, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].props.clone())
             .unwrap_or_default();
         let mut prop_visible: FxHashMap<PhpStr, PhpStr> = parent
@@ -1485,21 +1486,22 @@ impl Vm {
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
         let classes = &self.classes;
-        let mut declare =
-            |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| -> Result<(), String> {
-                // Redeclaring an inherited public/protected property keeps its
-                // root declaration as the prototype.
-                if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
-                    inherit_prop(classes, &proto.name, inh, &mut pe)?;
-                }
-                let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
-                prop_visible.insert(pe.name.clone(), key.clone());
-                if pe.visibility == Visibility::Private {
-                    own_private.insert(pe.name.clone(), key.clone());
-                }
-                props.insert(key, pe);
-                Ok(())
-            };
+        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry, FxBuildHasher>,
+                           mut pe: PropEntry|
+         -> Result<(), String> {
+            // Redeclaring an inherited public/protected property keeps its
+            // root declaration as the prototype.
+            if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                inherit_prop(classes, &proto.name, inh, &mut pe)?;
+            }
+            let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+            prop_visible.insert(pe.name.clone(), key.clone());
+            if pe.visibility == Visibility::Private {
+                own_private.insert(pe.name.clone(), key.clone());
+            }
+            props.insert(key, pe);
+            Ok(())
+        };
         let mut link_err: Option<String> = parent
             .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
         // zend_enum_register_props: `name` (and a backed enum's `value`) are
@@ -1677,12 +1679,12 @@ impl Vm {
         let hooked = props.values().any(|pe| pe.hooks.is_some());
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
-        let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
+        let mut static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].static_props.clone())
             .unwrap_or_default();
         // A redeclared inherited public/protected static keeps the root
         // declaration as its prototype.
-        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp>, name: &[u8]| {
+        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp, FxBuildHasher>, name: &[u8]| {
             props
                 .get(name)
                 .filter(|inh| inh.visibility != Visibility::Private)
@@ -1751,7 +1753,7 @@ impl Vm {
         self.check_const_inheritance(proto, parent)?;
         self.check_const_types(proto, parent)?;
         // A parent's private constants are not inherited (do_inherit_constant).
-        let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
+        let mut constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher> = parent
             .map(|p| {
                 self.classes[p as usize]
                     .constants

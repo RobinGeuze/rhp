@@ -103,6 +103,10 @@ class PDO
     public function quote(string $string, int $type = PDO::PARAM_STR) { return __pdo('quote', $this, $string, $type); }
     public function rollBack() { return __pdo('rollBack', $this); }
     public function setAttribute(int $attribute, mixed $value) { return __pdo('setAttribute', $this, $attribute, $value); }
+    // pdo_sqlite's driver methods, reached through the get_method handler.
+    public function __sqliteCreateFunction(...$args) { return __pdo_sqlite('sqliteCreateFunction', $this, ...$args); }
+    public function __sqliteCreateAggregate(...$args) { return __pdo_sqlite('sqliteCreateAggregate', $this, ...$args); }
+    public function __sqliteCreateCollation(...$args) { return __pdo_sqlite('sqliteCreateCollation', $this, ...$args); }
 }
 
 class PDOStatement implements IteratorAggregate

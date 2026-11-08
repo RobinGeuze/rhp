@@ -17,7 +17,7 @@ use rhp_values::{conv, Value};
 use crate::ext::pdo::dbh::construct_check;
 use crate::ext::pdo::{self, deref, Cx};
 use crate::main::streams::ops::{OpsStream, StreamOps};
-use crate::{Host, StatInfo, Thrown};
+use crate::{Host, StatInfo, Thrown, E_WARNING};
 use sqlite_driver::{c_string, handle_of, Collation, Func};
 
 pub const PRELUDE_PHP: &str = include_str!("prelude.php");
@@ -38,14 +38,95 @@ fn arg(a: &[Value], i: usize) -> Value {
     a.get(i).map(deref).unwrap_or(Value::Null)
 }
 
+/// A callback kept for later calls, resolved now in the caller's scope as
+/// php's `zend_fcall_info_cache` is (`[$this, 'privateMethod']` keeps
+/// working when sqlite calls it). Only an array's method depends on the
+/// scope; other callables stay as they are.
+pub(crate) fn keep_callback(host: &dyn Host, cb: Value) -> Value {
+    match cb {
+        Value::Array(_) => host.wrap_callable(cb),
+        cb => cb,
+    }
+}
+
 /// `__pdo_sqlite($method, $this, ...$args)`: Pdo\Sqlite's own methods.
 fn fn_pdo_sqlite(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let method = String::from_utf8_lossy(&conv::to_string_bytes(&deref(&args[0]))).into_owned();
     let this = deref(&args[1]);
     let a = &args[2..];
+    if let Some(m) = method.strip_prefix("sqlite") {
+        let mut cx = Cx::new(host, format!("PDO::{method}"));
+        let r = driver_method(&mut cx, m, &this, a);
+        return cx.finish(r);
+    }
     let mut cx = Cx::new(host, format!("Pdo\\Sqlite::{method}"));
     let r = method_call(&mut cx, &method, &this, a);
     cx.finish(r)
+}
+
+/// PDO_SQLite_Ext's methods (`PDO::sqliteCreateFunction()` …), which
+/// pdo_hash_methods marks deprecated: the deprecation, the method's own
+/// parameter parsing, then Pdo\Sqlite's implementation. `m` is the name
+/// after `sqlite`.
+fn driver_method(cx: &mut Cx, m: &str, this: &Value, a: &[Value]) -> Result<Value, Thrown> {
+    use crate::zend::zpp;
+    let fname = cx.fname.clone();
+    // A connection of another driver (or none) has no such method.
+    let connected = crate::ext::pdo::dbh_of(&*cx.host, this).and_then(|d| handle_of(&d));
+    if connected.is_none() {
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Call to undefined method {}::sqlite{m}()",
+                crate::ext::pdo::class_of(&*cx.host, this)
+            ),
+        ));
+    }
+    let new = match m {
+        "CreateFunction" => "createFunction",
+        "CreateAggregate" => "createAggregate",
+        _ => "createCollation",
+    };
+    cx.host.emit_diagnostic(
+        crate::E_DEPRECATED,
+        format!("Method {fname}() is deprecated since 8.5, use Pdo\\Sqlite::{new}() instead")
+            .as_bytes(),
+    )?;
+    let (min, max) = match m {
+        "CreateFunction" => (2, 4),
+        "CreateAggregate" => (3, 4),
+        _ => (2, 2),
+    };
+    if a.len() < min || a.len() > max {
+        let (which, n) = match (a.len() < min, min == max) {
+            (_, true) => ("exactly", min),
+            (true, false) => ("at least", min),
+            (false, false) => ("at most", max),
+        };
+        return Err(Thrown::error(
+            "ArgumentCountError",
+            format!(
+                "{fname}() expects {which} {n} argument{}, {} given",
+                if n == 1 { "" } else { "s" },
+                a.len()
+            ),
+        ));
+    }
+    let mut args = a.to_vec();
+    args[0] = Value::Str(rhp_values::PhpStr::from_vec(zpp::str_param(
+        cx.host, a, 0, &fname, "name",
+    )?));
+    let ints: &[(usize, &str)] = match m {
+        "CreateFunction" => &[(2, "numArgs"), (3, "flags")],
+        "CreateAggregate" => &[(3, "numArgs")],
+        _ => &[],
+    };
+    for &(i, p) in ints {
+        if i < a.len() {
+            args[i] = Value::Int(zpp::int_param(&*cx.host, a, i, &fname, p, 0)?);
+        }
+    }
+    method_call(cx, new, this, &args)
 }
 
 fn method_call(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<Value, Thrown> {
@@ -69,7 +150,7 @@ fn method_call(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<V
             let f = Box::new(Func {
                 name,
                 argc,
-                func: Some(arg(a, 1)),
+                func: Some(keep_callback(&*cx.host, arg(a, 1))),
                 step: None,
                 fini: None,
             });
@@ -114,8 +195,8 @@ fn method_call(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<V
                 name,
                 argc,
                 func: None,
-                step: Some(arg(a, 1)),
-                fini: Some(arg(a, 2)),
+                step: Some(keep_callback(&*cx.host, arg(a, 1))),
+                fini: Some(keep_callback(&*cx.host, arg(a, 2))),
             });
             let rc = unsafe {
                 sys::sqlite3_create_function(
@@ -142,7 +223,7 @@ fn method_call(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<V
             let h = handle_of(&dbh).ok_or_else(|| Thrown::type_error("not a sqlite connection"))?;
             let c = Box::new(Collation {
                 name: c_string(&conv::to_string_bytes(&arg(a, 0))),
-                callback: arg(a, 1),
+                callback: keep_callback(&*cx.host, arg(a, 1)),
             });
             let rc = unsafe {
                 sys::sqlite3_create_collation(
@@ -173,7 +254,7 @@ fn method_call(cx: &mut Cx, method: &str, this: &Value, a: &[Value]) -> Result<V
             let h = handle_of(&dbh).ok_or_else(|| Thrown::type_error("not a sqlite connection"))?;
             *h.authorizer.borrow_mut() = match cb {
                 Value::Null => None,
-                v => Some(v),
+                v => Some(keep_callback(&*cx.host, v)),
             };
             Ok(Value::Null)
         }
@@ -329,7 +410,21 @@ impl StreamOps for BlobStream {
     }
 
     fn write(&mut self, data: &[u8]) -> isize {
-        if self.readonly || self.position + data.len() > self.size {
+        use crate::main::streams::plain_wrapper::push_diag;
+        if self.readonly {
+            push_diag(
+                E_WARNING,
+                true,
+                "Can't write to blob stream: is open as read only",
+            );
+            return -1;
+        }
+        if self.position + data.len() > self.size {
+            push_diag(
+                E_WARNING,
+                true,
+                "It is not possible to increase the size of a BLOB",
+            );
             return -1;
         }
         let rc = unsafe {

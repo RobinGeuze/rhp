@@ -238,7 +238,9 @@ fn normalize_vpath(vpath: &[u8]) -> Vec<u8> {
 
 /// `stat(2)` on a path: (is a directory, is a regular file, size).
 fn stat(path: &[u8]) -> Option<(bool, bool, u64)> {
-    let c = CString::new(path).ok()?;
+    // php passes a C string: a NUL from the url ends the path (the
+    // dispatch then refuses the request with a 400).
+    let c = CString::new(until_nul(path)).ok()?;
     // SAFETY: c is a valid C string; sb is written by stat.
     unsafe {
         let mut sb: libc::stat = std::mem::zeroed();

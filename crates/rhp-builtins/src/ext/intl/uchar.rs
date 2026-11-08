@@ -120,6 +120,8 @@ extern "C" fn enum_types_cb(ctx: *const c_void, start: UChar32, limit: UChar32, 
     }
 }
 
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 extern "C" fn enum_names_cb(
     ctx: *mut c_void,
     code: UChar32,

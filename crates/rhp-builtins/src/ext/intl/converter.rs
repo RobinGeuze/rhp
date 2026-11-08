@@ -285,6 +285,8 @@ fn append_to_unicode(
 }
 
 /// `php_converter_append_fromUnicode_target`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 fn append_from_unicode(
     host: &mut dyn Host,
     ctx: &Ctx,
@@ -333,6 +335,8 @@ fn append_from_unicode(
 }
 
 /// `php_converter_to_u_callback`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 extern "C" fn to_u_callback(
     context: *const c_void,
     args: *mut ToUArgs,
@@ -657,6 +661,8 @@ fn do_convert(
 }
 
 /// `ucnv_getSubstChars`: up to 127 bytes.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 fn subst_chars(cnv: *mut c_void, status: &mut UErrorCode) -> Vec<u8> {
     let mut buf = [0 as c_char; 127];
     let mut len: i8 = 127;

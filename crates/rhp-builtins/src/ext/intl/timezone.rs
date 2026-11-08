@@ -626,6 +626,8 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             if error::check_global(host, status, &f, "error obtaining region")? {
                 return Ok(Value::Bool(false));
             }
+            // c_char is i8 or u8 depending on the target.
+            #[allow(clippy::unnecessary_cast)]
             let s: Vec<u8> = buf[..n.clamp(0, 3) as usize]
                 .iter()
                 .map(|&c| c as u8)

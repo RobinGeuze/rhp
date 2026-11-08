@@ -492,6 +492,8 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 }
 
 /// `resourcebundle_locales`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 fn locales(host: &mut dyn Host, call: &Call) -> Result<Value, Thrown> {
     let f = &call.fname;
     error::error_reset();

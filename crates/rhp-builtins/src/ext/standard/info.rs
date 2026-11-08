@@ -189,6 +189,29 @@ impl Info {
             }
         }
     }
+    /// A row of DISPLAY_INI_ENTRIES (display_ini_entries): in HTML its
+    /// cells have no trailing space, unlike php_info_print_table_row's.
+    pub(crate) fn ini_row(&mut self, cols: &[&str]) {
+        if !self.1 {
+            return self.row(cols);
+        }
+        self.print("<tr>");
+        for (i, c) in cols.iter().enumerate() {
+            self.print(if i == 0 {
+                "<td class=\"e\">"
+            } else {
+                "<td class=\"v\">"
+            });
+            if c.is_empty() || (i > 0 && *c == "no value") {
+                self.print("<i>no value</i>");
+            } else {
+                let e = html_esc(c);
+                self.print(&e);
+            }
+            self.print("</td>");
+        }
+        self.print("</tr>\n");
+    }
     /// php_info_print_table_colspan_header.
     pub(crate) fn colspan_header(&mut self, n: usize, header: &str) {
         if self.1 {
@@ -713,7 +736,7 @@ fn print_ini(o: &mut Info, names: &[&str], bools: &[&str]) {
         };
         let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
         let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -754,7 +777,7 @@ fn print_pcre(o: &mut Info) {
                 String::from_utf8_lossy(&v).into_owned()
             }
         };
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -772,7 +795,7 @@ fn print_openssl(o: &mut Info) {
         };
         let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
         let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -796,7 +819,7 @@ fn print_date(o: &mut Info) {
         };
         let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
         let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -840,7 +863,7 @@ fn print_session(o: &mut Info) {
         };
         let local = crate::main::ini::ini_value(name.as_bytes()).flatten();
         let master = crate::main::ini::ini_default_value(name.as_bytes()).flatten();
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -858,7 +881,7 @@ fn print_curl(o: &mut Info) {
     };
     let local = crate::main::ini::ini_value(b"curl.cainfo").flatten();
     let master = crate::main::ini::ini_default_value(b"curl.cainfo").flatten();
-    o.row(&["curl.cainfo", &show(local), &show(master)]);
+    o.ini_row(&["curl.cainfo", &show(local), &show(master)]);
 }
 
 /// PHP_MINFO_FUNCTION(miconv), then its ini entries.
@@ -879,7 +902,7 @@ fn print_iconv(o: &mut Info) {
         };
         let local = show(crate::main::ini::ini_value(name.as_bytes()));
         let master = show(crate::main::ini::ini_default_value(name.as_bytes()));
-        o.row(&[name, &local, &master]);
+        o.ini_row(&[name, &local, &master]);
     }
 }
 
@@ -927,7 +950,7 @@ fn print_mbstring(o: &mut Info) {
             Some(v) if !v.is_empty() => String::from_utf8_lossy(&v).into_owned(),
             _ => "no value".to_string(),
         };
-        o.row(&[name, &show(local), &show(master)]);
+        o.ini_row(&[name, &show(local), &show(master)]);
     }
 }
 
@@ -935,7 +958,7 @@ fn print_core_ini(o: &mut Info) {
     o.table_start();
     o.header(&["Directive", "Local Value", "Master Value"]);
     for (k, v) in CORE_INI {
-        o.row(&[k, v, v]);
+        o.ini_row(&[k, v, v]);
     }
 }
 

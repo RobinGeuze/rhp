@@ -541,6 +541,8 @@ pub fn register(m: &mut crate::Registry) {
             ("__spoof", spoofchecker::fn_helper, 3, None),
             ("__msgfmt", msgformat::fn_helper, 3, None),
             ("__intltz", timezone::fn_helper, 3, None),
+            ("__intlcal", calendar::fn_helper, 3, None),
+            ("__intlgregcal", calendar::fn_greg_helper, 3, None),
             ("__intliter", iterator::fn_helper, 3, None),
         ],
     );
@@ -569,6 +571,11 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
         create_object: true,
     },
     crate::zend::object_handlers::ClassHandlers {
+        class: "IntlCalendar",
+        handlers: &calendar::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
         class: "IntlIterator",
         handlers: &iterator::HANDLERS,
         create_object: true,
@@ -591,6 +598,8 @@ const CLASSES_BEFORE: &[(&common::ClassSpec, &[(&str, &str)])] = &[
     (&msgformat::SPEC, msgformat::ALIASES),
     (&transliterator::SPEC, transliterator::ALIASES),
     (&timezone::SPEC, timezone::ALIASES),
+    (&calendar::SPEC, calendar::ALIASES),
+    (&calendar::GREG_SPEC, calendar::GREG_ALIASES),
     (&spoofchecker::SPEC, &[]),
 ];
 

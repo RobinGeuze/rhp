@@ -899,8 +899,10 @@ impl Vm {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
                 // parse them quietly (DatePeriod's three signatures).
+                // IntlGregorianCalendar's counts its arguments itself.
                 if (cname.eq_ignore_ascii_case(b"WeakReference")
-                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
+                    || cname.eq_ignore_ascii_case(b"DatePeriod")
+                    || cname.eq_ignore_ascii_case(b"IntlGregorianCalendar"))
                     && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
                 {
                     return None;
@@ -911,6 +913,9 @@ impl Vm {
             }
             Some(_) => return None,
             None => {
+                if proto.name.as_bytes() == b"intlgregcal_create_instance" {
+                    return None;
+                }
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
                 (f.name.to_string(), f.min_args(), f.max_args())
             }

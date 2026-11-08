@@ -120,6 +120,7 @@ static_assert(U_MEMORY_ALLOCATION_ERROR == 7, "U_MEMORY_ALLOCATION_ERROR");
 static_assert(U_PATTERN_SYNTAX_ERROR == 65799, "U_PATTERN_SYNTAX_ERROR");
 static_assert(ULOC_FULLNAME_CAPACITY == 157, "ULOC_FULLNAME_CAPACITY");
 static_assert(ULOC_ACCEPT_FAILED == 0, "ULOC_ACCEPT_FAILED");
+static_assert(ULOC_ACTUAL_LOCALE == 0 && ULOC_VALID_LOCALE == 1, "ULOC_*_LOCALE");
 static_assert(sizeof(UParseError) == 72, "UParseError");
 static_assert(offsetof(UParseError, preContext) == 8, "UParseError.preContext");
 static_assert(sizeof(UBool) == 1, "UBool");

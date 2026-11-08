@@ -153,6 +153,73 @@ unsafe extern "C" {
     ) -> *mut UEnumeration;
 }
 
+unsafe extern "C" {
+    pub fn rhp_cal_create(
+        tz: *mut c_void,
+        locale: *const c_char,
+        status: *mut UErrorCode,
+    ) -> *mut c_void;
+    pub fn rhp_gcal_create(
+        tz: *mut c_void,
+        locale: *const c_char,
+        status: *mut UErrorCode,
+    ) -> *mut c_void;
+    pub fn rhp_gcal_create_fields(n: i32, a: *const i32, status: *mut UErrorCode) -> *mut c_void;
+    pub fn rhp_cal_is_gregorian(c: *const c_void) -> i32;
+    pub fn rhp_cal_delete(c: *mut c_void);
+    pub fn rhp_cal_clone(c: *const c_void) -> *mut c_void;
+    pub fn rhp_cal_adopt_tz(c: *mut c_void, tz: *mut c_void);
+    pub fn rhp_cal_get_tz(c: *const c_void) -> *const c_void;
+    pub fn rhp_cal_field_op(c: *mut c_void, op: i32, field: i32, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_get_time(c: *mut c_void, status: *mut UErrorCode) -> f64;
+    pub fn rhp_cal_set_time(c: *mut c_void, t: f64, status: *mut UErrorCode);
+    pub fn rhp_cal_add(c: *mut c_void, field: i32, amount: i32, status: *mut UErrorCode);
+    pub fn rhp_cal_roll(c: *mut c_void, field: i32, amount: i32, status: *mut UErrorCode);
+    pub fn rhp_cal_set(c: *mut c_void, n: i32, a: *const i32);
+    pub fn rhp_cal_cmp(c: *mut c_void, o: *const c_void, op: i32, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_is_equivalent(c: *const c_void, o: *const c_void) -> i32;
+    pub fn rhp_cal_clear(c: *mut c_void, field: i32);
+    pub fn rhp_cal_field_difference(
+        c: *mut c_void,
+        when: f64,
+        field: i32,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn rhp_cal_day_of_week_type(c: *mut c_void, dow: i32, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_weekend_transition(c: *mut c_void, dow: i32, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_first_day_of_week(c: *mut c_void, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_set_first_day_of_week(c: *mut c_void, dow: i32);
+    pub fn rhp_cal_get_locale(
+        c: *mut c_void,
+        ty: i32,
+        buf: *mut c_char,
+        cap: i32,
+        status: *mut UErrorCode,
+    );
+    pub fn rhp_cal_minimal_days(c: *mut c_void) -> i32;
+    pub fn rhp_cal_set_minimal_days(c: *mut c_void, n: i32);
+    pub fn rhp_cal_type(c: *const c_void) -> *const c_char;
+    pub fn rhp_cal_in_daylight(c: *mut c_void, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_is_lenient(c: *mut c_void) -> i32;
+    pub fn rhp_cal_set_lenient(c: *mut c_void, l: i32);
+    pub fn rhp_cal_is_set(c: *mut c_void, field: i32) -> i32;
+    pub fn rhp_cal_is_weekend(c: *mut c_void) -> i32;
+    pub fn rhp_cal_is_weekend_at(c: *mut c_void, date: f64, status: *mut UErrorCode) -> i32;
+    pub fn rhp_cal_wall_time(c: *mut c_void, which: i32) -> i32;
+    pub fn rhp_cal_set_wall_time(c: *mut c_void, which: i32, option: i32);
+    pub fn rhp_cal_keyword_values(
+        key: *const c_char,
+        locale: *const c_char,
+        common: i32,
+        status: *mut UErrorCode,
+    ) -> *mut UEnumeration;
+    pub fn rhp_cal_available_count() -> i32;
+    pub fn rhp_cal_available_locale(i: i32) -> *const c_char;
+    pub fn rhp_gcal_set_change(c: *mut c_void, date: f64, status: *mut UErrorCode);
+    pub fn rhp_gcal_get_change(c: *const c_void) -> f64;
+    pub fn rhp_gcal_is_leap(c: *const c_void, y: i32) -> i32;
+}
+
 /// The UTF-16 a shim function returned (malloc'd, `len` units), freed.
 pub fn take_ustr(p: *mut UChar, len: i32) -> Option<Vec<UChar>> {
     if p.is_null() {

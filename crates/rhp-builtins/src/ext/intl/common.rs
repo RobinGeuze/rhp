@@ -81,7 +81,7 @@ pub(super) fn class_php(spec: &ClassSpec) -> String {
             o,
             "    {mods}function {}({}){} {body}",
             m.name,
-            params(m.params),
+            params(m.params, m.name),
             ret(m.ret, m.name)
         )
         .unwrap();
@@ -97,12 +97,23 @@ pub(super) fn functions_php(helper: &str, names: &[(&str, &str)]) -> String {
     for (name, _) in names {
         let f = sigs::function(name.as_bytes())
             .unwrap_or_else(|| panic!("no stub signature for function {name}"));
-        let body = body(helper, &format!("'fn:{name}'"), "null", f.params, f.ret);
+        let mut body = body(helper, &format!("'fn:{name}'"), "null", f.params, f.ret);
+        if let Some((since, message)) = sigs::deprecation(f) {
+            let mut msg = format!("Function {}() is deprecated", f.name);
+            if !since.is_empty() {
+                write!(msg, " since {since}").unwrap();
+            }
+            if !message.is_empty() {
+                write!(msg, ", {message}").unwrap();
+            }
+            let msg = msg.replace('\\', "\\\\").replace('\'', "\\'");
+            body = format!("{{ __stdext_deprecated('{msg}'); {}", &body[2..]);
+        }
         writeln!(
             o,
             "function {}({}){} {body}",
             f.name,
-            params(f.params),
+            params(f.params, f.name),
             ret(f.ret, f.name)
         )
         .unwrap();
@@ -118,7 +129,11 @@ fn ret(ty: &str, name: &str) -> String {
     }
 }
 
-fn params(ps: &[Param]) -> String {
+/// The functions whose php bodies count their arguments themselves
+/// ("Too many arguments"): they take any number.
+const COUNT_OWN_ARGS: &[&str] = &["intlgregcal_create_instance", "__construct"];
+
+fn params(ps: &[Param], name: &str) -> String {
     let mut out = Vec::new();
     for p in ps {
         let mut s = String::new();
@@ -142,6 +157,9 @@ fn params(ps: &[Param]) -> String {
         }
         out.push(s);
     }
+    if COUNT_OWN_ARGS.contains(&name) && ps.len() == 6 {
+        out.push("...$__more".into());
+    }
     out.join(", ")
 }
 
@@ -163,6 +181,10 @@ fn placeholder(ty: &str) -> &'static str {
 
 fn body(helper: &str, name: &str, this: &str, ps: &[Param], ret: &str) -> String {
     let mut args = vec![name.to_string(), "func_num_args()".into(), this.into()];
+    let more = ps.len() == 6
+        && COUNT_OWN_ARGS
+            .iter()
+            .any(|n| name.trim_matches('\'') == *n || name.trim_matches('\'') == format!("fn:{n}"));
     for p in ps {
         args.push(if p.variadic() {
             format!("...${}", p.name)
@@ -171,6 +193,9 @@ fn body(helper: &str, name: &str, this: &str, ps: &[Param], ret: &str) -> String
         } else {
             format!("${}", p.name)
         });
+    }
+    if more {
+        args.push("...$__more".into());
     }
     let call = format!("{helper}({})", args.join(", "));
     if ret == "void" || ret.is_empty() {

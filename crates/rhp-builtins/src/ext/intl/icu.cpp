@@ -468,4 +468,152 @@ UEnumeration *rhp_tz_enum_ids(int32_t type, const char *region, const int32_t *o
 	return to_uenum(se);
 }
 
+/* --- Calendar (calendar/) ------------------------------------------- */
+
+#define CAL(c) ((Calendar *) (c))
+
+void *rhp_cal_create(void *tz, const char *locale, UErrorCode *status) {
+	return Calendar::createInstance((TimeZone *) tz, Locale::createFromName(locale), *status);
+}
+void *rhp_gcal_create(void *tz, const char *locale, UErrorCode *status) {
+	GregorianCalendar *g = new GregorianCalendar((TimeZone *) tz, Locale::createFromName(locale), *status);
+	if (U_FAILURE(*status)) {
+		delete g;
+		return NULL;
+	}
+	return g;
+}
+/* `GregorianCalendar(y, m, d[, h, i[, s]])` with `n` fields. */
+void *rhp_gcal_create_fields(int32_t n, const int32_t *a, UErrorCode *status) {
+	GregorianCalendar *g;
+	if (n == 3) {
+		g = new GregorianCalendar(a[0], a[1], a[2], *status);
+	} else if (n == 5) {
+		g = new GregorianCalendar(a[0], a[1], a[2], a[3], a[4], *status);
+	} else {
+		g = new GregorianCalendar(a[0], a[1], a[2], a[3], a[4], a[5], *status);
+	}
+	return g;
+}
+int32_t rhp_cal_is_gregorian(const void *c) {
+	return ((const Calendar *) c)->getDynamicClassID() == GregorianCalendar::getStaticClassID();
+}
+void rhp_cal_delete(void *c) { delete CAL(c); }
+void *rhp_cal_clone(const void *c) { return ((const Calendar *) c)->clone(); }
+void rhp_cal_adopt_tz(void *c, void *tz) { CAL(c)->adoptTimeZone((TimeZone *) tz); }
+const void *rhp_cal_get_tz(const void *c) { return &((const Calendar *) c)->getTimeZone(); }
+
+/* 0 get, 1 actual max, 2 actual min, 3 greatest min, 4 least max, 5 max, 6 min */
+int32_t rhp_cal_field_op(void *c, int32_t op, int32_t field, UErrorCode *status) {
+	UCalendarDateFields f = (UCalendarDateFields) field;
+	switch (op) {
+	case 0: return CAL(c)->get(f, *status);
+	case 1: return CAL(c)->getActualMaximum(f, *status);
+	case 2: return CAL(c)->getActualMinimum(f, *status);
+	case 3: return CAL(c)->getGreatestMinimum(f);
+	case 4: return CAL(c)->getLeastMaximum(f);
+	case 5: return CAL(c)->getMaximum(f);
+	default: return CAL(c)->getMinimum(f);
+	}
+}
+double rhp_cal_get_time(void *c, UErrorCode *status) { return CAL(c)->getTime(*status); }
+void rhp_cal_set_time(void *c, double t, UErrorCode *status) { CAL(c)->setTime((UDate) t, *status); }
+void rhp_cal_add(void *c, int32_t field, int32_t amount, UErrorCode *status) {
+	CAL(c)->add((UCalendarDateFields) field, amount, *status);
+}
+void rhp_cal_roll(void *c, int32_t field, int32_t amount, UErrorCode *status) {
+	CAL(c)->roll((UCalendarDateFields) field, amount, *status);
+}
+/* `set` with `n` values: (field, value), or 3, 5 or 6 date fields. */
+void rhp_cal_set(void *c, int32_t n, const int32_t *a) {
+	if (n == 2) {
+		CAL(c)->set((UCalendarDateFields) a[0], a[1]);
+	} else if (n == 3) {
+		CAL(c)->set(a[0], a[1], a[2]);
+	} else if (n == 5) {
+		CAL(c)->set(a[0], a[1], a[2], a[3], a[4]);
+	} else {
+		CAL(c)->set(a[0], a[1], a[2], a[3], a[4], a[5]);
+	}
+}
+/* 0 after, 1 before, 2 equals */
+int32_t rhp_cal_cmp(void *c, const void *o, int32_t op, UErrorCode *status) {
+	const Calendar &w = *(const Calendar *) o;
+	switch (op) {
+	case 0: return CAL(c)->after(w, *status);
+	case 1: return CAL(c)->before(w, *status);
+	default: return CAL(c)->equals(w, *status);
+	}
+}
+int32_t rhp_cal_is_equivalent(const void *c, const void *o) {
+	return ((const Calendar *) c)->isEquivalentTo(*(const Calendar *) o);
+}
+void rhp_cal_clear(void *c, int32_t field) {
+	if (field < 0) {
+		CAL(c)->clear();
+	} else {
+		CAL(c)->clear((UCalendarDateFields) field);
+	}
+}
+int32_t rhp_cal_field_difference(void *c, double when, int32_t field, UErrorCode *status) {
+	return CAL(c)->fieldDifference((UDate) when, (UCalendarDateFields) field, *status);
+}
+int32_t rhp_cal_day_of_week_type(void *c, int32_t dow, UErrorCode *status) {
+	return CAL(c)->getDayOfWeekType((UCalendarDaysOfWeek) dow, *status);
+}
+int32_t rhp_cal_weekend_transition(void *c, int32_t dow, UErrorCode *status) {
+	return CAL(c)->getWeekendTransition((UCalendarDaysOfWeek) dow, *status);
+}
+int32_t rhp_cal_first_day_of_week(void *c, UErrorCode *status) { return CAL(c)->getFirstDayOfWeek(*status); }
+void rhp_cal_set_first_day_of_week(void *c, int32_t dow) { CAL(c)->setFirstDayOfWeek((UCalendarDaysOfWeek) dow); }
+/* The locale's name into `buf` (`cap` bytes, NUL-terminated). */
+void rhp_cal_get_locale(void *c, int32_t type, char *buf, int32_t cap, UErrorCode *status) {
+	Locale l = CAL(c)->getLocale((ULocDataLocaleType) type, *status);
+	strncpy(buf, l.getName(), cap - 1);
+	buf[cap - 1] = 0;
+}
+int32_t rhp_cal_minimal_days(void *c) { return CAL(c)->getMinimalDaysInFirstWeek(); }
+void rhp_cal_set_minimal_days(void *c, int32_t n) { CAL(c)->setMinimalDaysInFirstWeek((uint8_t) n); }
+const char *rhp_cal_type(const void *c) { return ((const Calendar *) c)->getType(); }
+int32_t rhp_cal_in_daylight(void *c, UErrorCode *status) { return CAL(c)->inDaylightTime(*status); }
+int32_t rhp_cal_is_lenient(void *c) { return CAL(c)->isLenient(); }
+void rhp_cal_set_lenient(void *c, int32_t l) { CAL(c)->setLenient((UBool) l); }
+int32_t rhp_cal_is_set(void *c, int32_t field) { return CAL(c)->isSet((UCalendarDateFields) field); }
+int32_t rhp_cal_is_weekend(void *c) { return CAL(c)->isWeekend(); }
+int32_t rhp_cal_is_weekend_at(void *c, double date, UErrorCode *status) { return CAL(c)->isWeekend((UDate) date, *status); }
+/* 0 repeated, 1 skipped */
+int32_t rhp_cal_wall_time(void *c, int32_t which) {
+	return which == 0 ? CAL(c)->getRepeatedWallTimeOption() : CAL(c)->getSkippedWallTimeOption();
+}
+void rhp_cal_set_wall_time(void *c, int32_t which, int32_t option) {
+	if (which == 0) {
+		CAL(c)->setRepeatedWallTimeOption((UCalendarWallTimeOption) option);
+	} else {
+		CAL(c)->setSkippedWallTimeOption((UCalendarWallTimeOption) option);
+	}
+}
+UEnumeration *rhp_cal_keyword_values(const char *key, const char *locale, int32_t common, UErrorCode *status) {
+	StringEnumeration *se = Calendar::getKeywordValuesForLocale(key, Locale::createFromName(locale), (UBool) common, *status);
+	if (se == NULL) {
+		return NULL;
+	}
+	UErrorCode st = U_ZERO_ERROR;
+	return uenum_openFromStringEnumeration(se, &st);
+}
+int32_t rhp_cal_available_count(void) {
+	int32_t count = 0;
+	Calendar::getAvailableLocales(count);
+	return count;
+}
+const char *rhp_cal_available_locale(int32_t i) {
+	int32_t count = 0;
+	const Locale *l = Calendar::getAvailableLocales(count);
+	return l[i].getName();
+}
+void rhp_gcal_set_change(void *c, double date, UErrorCode *status) {
+	((GregorianCalendar *) c)->setGregorianChange((UDate) date, *status);
+}
+double rhp_gcal_get_change(const void *c) { return ((const GregorianCalendar *) c)->getGregorianChange(); }
+int32_t rhp_gcal_is_leap(const void *c, int32_t y) { return ((const GregorianCalendar *) c)->isLeapYear(y); }
+
 } /* extern "C" */

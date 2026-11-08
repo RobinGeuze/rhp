@@ -423,9 +423,9 @@ pub(super) fn to_datetimezone(
     };
     match host.reflect_new_instance(b"DateTimeZone", vec![Value::str(s)], true) {
         Ok(v) => Ok(Some(v)),
-        Err(_) => Err(Thrown::error(
-            "IntlException",
-            "DateTimeZone constructor threw exception",
+        Err(e) => Err(host.chain_thrown(
+            Thrown::error("IntlException", "DateTimeZone constructor threw exception"),
+            e,
         )),
     }
 }

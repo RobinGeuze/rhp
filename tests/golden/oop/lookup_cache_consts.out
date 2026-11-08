@@ -1,0 +1,14 @@
+A B A B A+interface A+interface
+interface interface trait private protected
+Error: Cannot access private constant A::P | Error: Cannot access protected constant A::Q | Error: Cannot access trait constant T::TK directly
+diag: Constant A::OLD is deprecated
+old x X ok
+Y-m-d\TH:i:sP 1
+A B Error: Undefined constant E::K 
+A B A B A+interface A+interface
+interface interface trait private protected
+Error: Cannot access private constant A::P | Error: Cannot access protected constant A::Q | Error: Cannot access trait constant T::TK directly
+diag: Constant A::OLD is deprecated
+old x X ok
+Y-m-d\TH:i:sP 1
+A B Error: Undefined constant E::K 

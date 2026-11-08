@@ -921,6 +921,16 @@ pub(crate) fn with_lc<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
     }
 }
 
+impl Vm {
+    /// The function table index of `name` (any case, a leading `\\`
+    /// dropped), without a copy for a name of up to 64 bytes.
+    #[inline]
+    pub(crate) fn fn_index(&self, name: &[u8]) -> Option<usize> {
+        let n = name.strip_prefix(b"\\").unwrap_or(name);
+        with_lc(n, |k| self.fn_names.get(k).copied())
+    }
+}
+
 fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
     UnitFn {
         proto: proto.clone(),
@@ -1053,10 +1063,12 @@ impl Vm {
                 }
             }
             self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
+            self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
             return Ok(());
         }
         self.install_classes(protos, 0)?;
         self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
+        self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
@@ -2471,7 +2483,11 @@ impl Vm {
         let obj = Rc::new(RefCell::new(ObjectData::new(class_id, id, properties)));
         // Throwables record their creation site (file/line/trace) at creation,
         // before any constructor runs (zend_default_exception_new).
-        if self.class_implements(class_id, b"Throwable") {
+        let throwable = match self.throwable_class {
+            Some(t) => self.classes[class_id as usize].ancestors.contains(&t),
+            None => self.class_implements(class_id, b"Throwable"),
+        };
+        if throwable {
             self.init_throwable(&obj);
         }
         self.track_destructible(&obj);

@@ -375,6 +375,8 @@ pub struct Vm {
     // `__PHP_Incomplete_Class`, once linked: its objects take
     // incomplete_class.c's property and method handlers.
     incomplete_class: Option<ClassId>,
+    // `Throwable`, once the prelude is linked (new objects check it).
+    throwable_class: Option<ClassId>,
     // Set when a reference to an object may have been dropped (a frame
     // returned, a variable holding an object was overwritten or unset).
     dtor_check: bool,

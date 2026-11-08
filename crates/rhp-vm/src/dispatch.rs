@@ -1462,10 +1462,10 @@ impl Vm {
                 }
                 Instr::LvalStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    self.check_static_prop_access(top, cls, &pname)?;
-                    let cell = self.static_prop_cell(cls, &pname)?;
-                    self.note_cursor_static(&cell, cls, &pname);
+                    let pname = proto.names[name as usize].as_bytes();
+                    self.check_static_prop_access(top, cls, pname)?;
+                    let cell = self.static_prop_cell(cls, pname)?;
+                    self.note_cursor_static(&cell, cls, pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -2182,15 +2182,15 @@ impl Vm {
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    let accessible = match self.class(cls).static_props.get(&pname[..]) {
+                    let pname = proto.names[name as usize].as_bytes();
+                    let accessible = match self.class(cls).static_props.get(pname) {
                         Some(sp) => self.static_prop_accessible(self.stack[top].defining_class, sp),
                         None => false,
                     };
                     // The cell via static_prop_cell: runs the class's
                     // deferred (non-literal) initializers first.
                     let v = if accessible {
-                        match deref(&self.static_prop_cell(cls, &pname)?.borrow()) {
+                        match deref(&self.static_prop_cell(cls, pname)?.borrow()) {
                             Value::Undef => Value::Null,
                             v => v,
                         }
@@ -2404,11 +2404,11 @@ impl Vm {
                     dst, class, name, ..
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    self.check_static_prop_access(top, cls, &pname)?;
-                    let cell = self.static_prop_cell(cls, &pname)?;
+                    let pname = proto.names[name as usize].as_bytes();
+                    self.check_static_prop_access(top, cls, pname)?;
+                    let cell = self.static_prop_cell(cls, pname)?;
                     if cell.borrow().is_undef() {
-                        return Err(self.uninit_static_err(cls, &pname));
+                        return Err(self.uninit_static_err(cls, pname));
                     }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
@@ -4222,6 +4222,32 @@ impl Vm {
         Ok(self.class(cls).name.clone())
     }
 
+    /// The common class constant fetch: an evaluated, accessible,
+    /// undeprecated constant of a user class or interface, other than an
+    /// enum case (what [`Vm::fetch_class_const`] then does with nothing
+    /// to check). `None`: take the full path.
+    #[inline]
+    fn class_const_plain(&self, top: usize, cls: ClassId, name: &[u8]) -> Option<Value> {
+        let ce = self.class(cls);
+        if ce.kind == rhp_values::ClassKind::Trait || (ce.enum_backing.is_some() && !ce.updated) {
+            return None;
+        }
+        let c = ce.constants.get(name)?;
+        if c.init.is_some()
+            || c.deprecated.is_some()
+            || self.is_internal_class(c.declaring_class)
+            || matches!(c.value, Value::Object(_))
+            || !self.check_access(
+                self.stack[top].defining_class,
+                c.declaring_class,
+                c.visibility,
+            )
+        {
+            return None;
+        }
+        Some(c.value.clone())
+    }
+
     fn fetch_class_const(
         &mut self,
         top: usize,
@@ -4231,6 +4257,12 @@ impl Vm {
         name: Value,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
+        if let Value::Str(n) = &name {
+            if let Some(v) = self.class_const_plain(top, cls, n.as_bytes()) {
+                self.reg_set(top, dst, v);
+                return Ok(());
+            }
+        }
         let name_b = match name {
             Value::Str(s) => s.as_bytes().to_vec(),
             // zend_invalid_class_constant_type_error.
@@ -4706,14 +4738,7 @@ impl Vm {
             _ => None,
         };
         if let Some(s) = name {
-            let n = s.as_bytes();
-            let n = n.strip_prefix(b"\\").unwrap_or(n);
-            let found = if n.iter().any(u8::is_ascii_uppercase) {
-                self.fn_names.contains_key(&n.to_ascii_lowercase())
-            } else {
-                self.fn_names.contains_key(n)
-            };
-            if found {
+            if self.fn_index(s.as_bytes()).is_some() {
                 return Ok(());
             }
         }
@@ -4751,9 +4776,7 @@ impl Vm {
             // A user function's first-class callable: a direct
             // call (by-reference parameters and return).
             if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
-                let n = n.as_bytes();
-                let n = n.strip_prefix(b"\\").unwrap_or(n);
-                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                if let Some(i) = self.fn_index(n.as_bytes()) {
                     let callee = self.functions[i].clone();
                     if !callee.proto.is_internal() {
                         self.enter_user_call(top, callee, dst, base, argc)?;
@@ -4768,7 +4791,7 @@ impl Vm {
             let n = s.as_bytes();
             let n = n.strip_prefix(b"\\").unwrap_or(n);
             if !n.contains(&b':') {
-                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                if let Some(i) = self.fn_index(s.as_bytes()) {
                     let callee = self.functions[i].clone();
                     if !callee.proto.is_internal() {
                         self.enter_user_call(top, callee, dst, base, argc)?;

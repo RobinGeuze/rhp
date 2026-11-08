@@ -404,7 +404,7 @@ impl Vm {
         let ce_org = fcc.calling.take();
         if ce_org.is_none() {
             let name = callable.strip_prefix(b"\\").unwrap_or(callable);
-            if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+            if let Some(idx) = self.fn_index(callable) {
                 return Ok(Callee::Function(self.functions[idx].clone()));
             }
             if crate::calls::user_visible_builtin(name) {
@@ -755,7 +755,7 @@ impl Vm {
                     };
                 }
                 let name = b.strip_prefix(b"\\").unwrap_or(b);
-                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                if let Some(idx) = self.fn_index(b) {
                     return Ok(Callee::Function(self.functions[idx].clone()));
                 }
                 if crate::calls::user_visible_builtin(name) {

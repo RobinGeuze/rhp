@@ -46,7 +46,15 @@ impl Vm {
             }
             K::Iterable => matches!(v, Value::Array(_)) || self.value_instanceof(v, b"Traversable"),
             K::Null => matches!(v, Value::Null),
-            K::Named(n) => self.value_instanceof(v, n.as_bytes()),
+            // (Through the class-name cache: the name is the proto's.)
+            K::Named(n) => match v {
+                Value::Object(h) => self.resolve_class_by_str(n).is_ok_and(|cid| {
+                    self.classes[h.borrow().class as usize]
+                        .ancestors
+                        .contains(&cid)
+                }),
+                _ => self.value_instanceof(v, n.as_bytes()),
+            },
             K::SelfType | K::StaticType => match (v, ctx) {
                 (Value::Object(h), Some(c)) => self.classes[h.borrow().class as usize]
                     .ancestors

@@ -1317,6 +1317,9 @@ pub struct DeclMeta {
     pub end_line: u32,
     /// Byte offset of the declaration (orders members declared on one line).
     pub offset: u32,
+    /// A property default php keeps as a constant AST, as zend_ast_export
+    /// prints it (`ReflectionProperty::__toString()`).
+    pub default_text: Option<PhpStr>,
 }
 
 /// A declared parameter / return type: a (possibly nullable) union or

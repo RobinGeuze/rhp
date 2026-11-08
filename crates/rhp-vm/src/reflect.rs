@@ -240,6 +240,13 @@ impl Vm {
                 let name = arg_bytes(args, 1);
                 Ok(self.prop_info(cid, &name))
             }
+            // ReflectionProperty::getDefaultValue of a default not yet
+            // evaluated: php's zval_update_constant_ex on a copy.
+            b"prop_default" => {
+                let cid = self.refl_class(args)?;
+                let name = arg_bytes(args, 1);
+                self.prop_default(cid, &name)
+            }
             b"fn" => {
                 let loc = arg(args, 0);
                 match self.fn_subject(&loc)? {
@@ -1058,6 +1065,29 @@ impl Vm {
         None
     }
 
+    /// A property's default value, evaluating a pending initializer
+    /// (`public E $e = E::A;`) in the declaring class's scope without
+    /// storing it.
+    fn prop_default(&mut self, cid: ClassId, name: &[u8]) -> Result<Value, Thrown> {
+        let e = &self.classes[cid as usize];
+        let pname = PhpStr::from_bytes(name);
+        let (thunk, decl) = if let Some(key) = self.decl_prop_key(cid, &pname) {
+            let pe = &e.props[&key];
+            match &pe.init {
+                Some(t) => (t.clone(), pe.declaring_class),
+                None => return Ok(pe.default.clone()),
+            }
+        } else if let Some(sp) = e.static_props.get(name) {
+            match &sp.init {
+                Some(t) => (t.clone(), sp.declaring_class),
+                None => return Ok(deref(&sp.default.borrow())),
+            }
+        } else {
+            return Ok(Value::Null);
+        };
+        self.run_init_thunk(&thunk, decl)
+    }
+
     fn prop_info(&self, cid: ClassId, name: &[u8]) -> Value {
         let e = &self.classes[cid as usize];
         let pname = PhpStr::from_bytes(name);
@@ -1187,6 +1217,17 @@ impl Vm {
         let has_default = !promoted && (ty.is_none() || has_default_decl) && !is_static
             || (is_static && (ty.is_none() || has_default_decl));
         put(&mut a, "hasDefault", Value::Bool(has_default));
+        let pending = if is_static {
+            e.static_props.get(name).is_some_and(|sp| sp.init.is_some())
+        } else {
+            self.decl_prop_key(cid, &pname)
+                .is_some_and(|k| e.props[&k].init.is_some())
+        };
+        put(&mut a, "pending", Value::Bool(has_default && pending));
+        // php updates a static's value, not its default table entry.
+        if let (true, Some(t)) = (has_default && (pending || is_static), &meta.default_text) {
+            put(&mut a, "defaultAst", Value::Str(t.clone()));
+        }
         put(
             &mut a,
             "default",

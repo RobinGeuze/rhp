@@ -293,12 +293,12 @@ impl ProtoBuilder<'_> {
                 return Ok(dst);
             }
         }
-        let mut regs = Vec::new();
+        let mut v = Vec::new();
         if let Some(list) = &ac.argument_list {
             for arg in list.arguments.iter() {
                 match arg {
                     PartialArgument::Positional(p) if p.ellipsis.is_none() => {
-                        regs.push(self.compile_expr(p.value)?)
+                        v.push(crate::parse::cst::Argument::Positional(p.clone()))
                     }
                     PartialArgument::VariadicPlaceholder(_) => {
                         return Err(compile_error(
@@ -315,14 +315,12 @@ impl ProtoBuilder<'_> {
                 }
             }
         }
-        let argc = regs.len() as u16;
-        let base = self.alloc_temps(argc);
-        for (i, r) in regs.into_iter().enumerate() {
-            self.emit(Instr::Mov {
-                dst: base + i as Reg,
-                src: r,
-            });
-        }
+        // By-reference constructor parameters (SEND_VAR_EX / SEND_FUNC_ARG),
+        // as for a named class.
+        let mask = self.method_ref_mask(b"__construct");
+        let ctor = self.intern_name(b"__construct");
+        let (base, argc) =
+            self.compile_arg_window_of(&v, &mask, true, Some(ArgRefTarget::Static(class, ctor)))?;
         if let Some((dst, start)) = obj {
             self.new_ranges
                 .push((start, self.code.len() as rhp_bytecode::Pc, dst));

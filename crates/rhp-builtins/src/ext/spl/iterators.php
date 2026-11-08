@@ -425,12 +425,10 @@ class RecursiveIteratorIterator implements OuterIterator {
     public function key(): mixed { $it = $this->__its[$this->__level]; return self::__sxeDone($it) ? null : $it->key(); }
     public function current(): mixed {
         $l = $this->__level;
-        if (isset($this->__cc[$l])) { return $this->__cc[$l][0]; }
+        if (array_key_exists($l, $this->__cc)) { return $this->__cc[$l]; }
         $it = $this->__its[$l];
         if (self::__sxeDone($it)) { return null; }
-        $v = $it->current();
-        $this->__cc[$l] = [$v];
-        return $v;
+        return $this->__cc[$l] = $it->current();
     }
     private static function __sxeDone($it): bool { return ($it::class === 'SimpleXMLElement' || $it::class === 'SimpleXMLIterator') && !$it->valid(); }
     public function next(): void { $this->__forward(); }
@@ -490,17 +488,28 @@ class IteratorIterator implements OuterIterator {
     protected function __dfree(): void { $this->__has = false; $this->__cur = null; $this->__key = null; }
     // spl_dual_it_fetch(intern, 1)
     protected function __dfetch(): bool {
-        $this->__dfree();
-        if (!$this->__it->valid()) { return false; }
-        $this->__cur = $this->__it->current(); $this->__has = true;
-        $this->__key = $this->__it->key();
+        $it = $this->__it;
+        if (!$it->valid()) { $this->__has = false; $this->__cur = null; $this->__key = null; return false; }
+        $this->__cur = $it->current(); $this->__has = true;
+        $this->__key = $it->key();
         return true;
     }
     public function rewind(): void { $this->__dfree(); $this->__it->rewind(); $this->__dfetch(); }
     public function valid(): bool { return $this->__has; }
     public function current(): mixed { return $this->__cur; }
     public function key(): mixed { return $this->__key; }
-    public function next(): void { $this->__dfree(); $this->__it->next(); $this->__dfetch(); }
+    // The cached element is released before the inner iterator moves on.
+    public function next(): void {
+        $this->__cur = null;
+        $it = $this->__it;
+        $it->next();
+        if ($it->valid()) {
+            $this->__cur = $it->current(); $this->__has = true;
+            $this->__key = $it->key();
+        } else {
+            $this->__has = false; $this->__key = null;
+        }
+    }
     // SPL forwards unknown calls (getFilename/getPathname/isDir/…) to the inner
     // iterator, so callers can treat a filter iterator like its SplFileInfo items.
     public function __call($name, $args) { return call_user_func_array([$this->__it, $name], $args); }
@@ -511,14 +520,18 @@ abstract class FilterIterator extends IteratorIterator {
     abstract public function accept(): bool;
     // spl_filter_it_fetch
     protected function __fetch(): void {
-        while ($this->__dfetch()) {
+        $it = $this->__it;
+        while ($it->valid()) {
+            $this->__cur = $it->current(); $this->__has = true;
+            $this->__key = $it->key();
             if ($this->accept()) { return; }
-            $this->__it->next();
+            $this->__cur = null;
+            $it->next();
         }
-        $this->__dfree();
+        $this->__has = false; $this->__cur = null; $this->__key = null;
     }
     public function rewind(): void { $this->__dfree(); $this->__it->rewind(); $this->__fetch(); }
-    public function next(): void { $this->__dfree(); $this->__it->next(); $this->__fetch(); }
+    public function next(): void { $this->__cur = null; $this->__it->next(); $this->__fetch(); }
 }
 
 class CallbackFilterIterator extends FilterIterator {

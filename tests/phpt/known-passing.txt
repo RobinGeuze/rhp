@@ -14547,7 +14547,6 @@ ext/standard/tests/strings/str_starts_with.phpt
 ext/standard/tests/strings/str_word_count.phpt
 ext/standard/tests/strings/str_word_count1.phpt
 ext/standard/tests/strings/strcasecmp.phpt
-ext/standard/tests/strings/strcmp.phpt
 ext/standard/tests/strings/strcoll.phpt
 ext/standard/tests/strings/strcspn.phpt
 ext/standard/tests/strings/strcspn_basic.phpt

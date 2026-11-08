@@ -38,6 +38,7 @@ $RHP_PHP or `php`, rhp is $RHP or target/release/rhp. Needs network access
 (packagist.org). Each engine's outputs are kept in WORK/out/<suite>.
 """
 
+import difflib
 import filecmp
 import json
 import os
@@ -160,6 +161,10 @@ BUILD_LIBS = [
     (re.compile(r"^(OpenSSL version: ).*$", re.M), r"\1<VERSION>"),
     (re.compile(r"^(lib-openssl\s+).*$", re.M), r"\1<VERSION>"),
     (re.compile(r'("name": "lib-openssl",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
+    # Debian's php reads the system zoneinfo and reports its version as 0;
+    # rhp and upstream php report the bundled timezonedb's.
+    (re.compile(r"^(lib-date-zoneinfo\s+)\S+", re.M), r"\1<VERSION>"),
+    (re.compile(r'("name": "lib-date-zoneinfo",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
 ]
 
 # The library entries of `show --platform` and the extension that reports
@@ -369,6 +374,11 @@ def main(argv):
             v = verdict(sname, name, pc == rc and po == ro, counts)
             usage = f"cpu {pcpu:.1f}s/{rcpu:.1f}s rss {prss:.0f}/{rrss:.0f}MB"
             print(f"{v:<5}  php={pc} rhp={rc}  {usage:<34} {i:02} {name}", flush=True)
+            if v == "DIFF" and po != ro:
+                # The first lines that differ, so a CI log shows the cause.
+                diff = difflib.unified_diff(po.splitlines(), ro.splitlines(), "php", "rhp", lineterm="", n=1)
+                for line in list(diff)[:40]:
+                    print(f"      {line}", flush=True)
         if only:
             continue
         for rel in suite["compare"]:

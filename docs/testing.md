@@ -63,7 +63,7 @@ own). A fixture's `.inc` files sit next to it.
 | CGI fixture | `tests/cgi/NAME.php` (+ `NAME.cgi`) | php-cgi on the machine | skips |
 | curl fixture | `tests/curl_http/NAME.php` + `NAME.out` | committed output of `php -n` against the test's local server | yes |
 | phpt ratchet | `tests/phpt/known-passing.txt` | php on the machine, per php-src `.phpt` | no (CI job) |
-| apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job) |
+| apps | `tests/apps/` | lint list; php-cgi for the request diff | no (CI job; the debug/cold passes and network commands nightly) |
 | suites | `tests/suites/` | php runs the frameworks' PHPUnit suites; per-test known-passing lists | no (nightly job) |
 | ASan | `tests/asan/` | stress scripts print `ok`; `phpts.txt`, a subset of the ratchet, still matches | no (CI job) |
 
@@ -180,7 +180,8 @@ and rhp, per test, in the nightly `suites` workflow: a test on a suite's
 The dev tools (`tests/apps/tools.py`: PHPUnit, PHPStan, Psalm,
 PHP-CS-Fixer, Rector; a nightly big tier) and Composer
 (`tests/apps/composer_diff.py`) run command by command under php and rhp,
-each in its own CI job; `tests/apps/harness_test.py` tests their masks.
+each in its own CI job; `tests/apps/harness_test.py` tests their masks
+and the console battery's time masks.
 
 ## Regenerating expectations
 

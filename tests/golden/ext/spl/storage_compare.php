@@ -9,4 +9,4 @@ $b[$o] = 1; var_dump($a == $b);
 $b[$p] = 1; var_dump($a == $b, $a <=> $b);
 $c = new SplObjectStorage; $c[$p] = 1; $a2 = new SplObjectStorage; $a2[$o] = 1; var_dump($a2 == $c);
 $s = new S; $t = new S; var_dump($s == $t, $s == new SplObjectStorage, $a == new stdClass);
-$a->dyn = 1; $d = new SplObjectStorage; $d[$o] = 1; var_dump($a == $d);
+@$a->dyn = 1; $d = new SplObjectStorage; $d[$o] = 1; var_dump($a == $d);

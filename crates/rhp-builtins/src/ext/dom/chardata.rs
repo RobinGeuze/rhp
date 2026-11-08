@@ -222,6 +222,9 @@ pub fn text_split(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
     let cur = content_or_empty(node);
     let length = utf8_len(cur);
     if offset > INT_MAX || offset > length {
+        if super::modern::is_modern(&intern) {
+            throw(cx, INDEX_SIZE_ERR, true)?;
+        }
         return Ok(Value::Bool(false));
     }
     let nnode;

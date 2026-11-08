@@ -939,7 +939,41 @@ fn canonicalization(
 }
 
 pub fn c14n(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
-    canonicalization(cx, this, args, 0)
+    canonicalize(cx, this, args, 0)
+}
+
+/// dom_canonicalization's modern half: the tree must hang off a document,
+/// and gets the nsDef lists C14N reads for the duration.
+fn canonicalize(cx: &mut Cx, this: &Value, args: &[Value], mode: usize) -> Result<Value, Thrown> {
+    let (_, nodep) = get_obj(cx, this)?;
+    if !super::nscompat::follow_spec_node(nodep) {
+        return canonicalization(cx, this, args, mode);
+    }
+    unsafe {
+        let mut root = nodep;
+        while !(*root).parent.is_null() {
+            root = (*root).parent;
+        }
+        if !matches!(
+            (*root).type_,
+            sys::XML_DOCUMENT_NODE | sys::XML_HTML_DOCUMENT_NODE
+        ) {
+            throw_msg(
+                cx,
+                HIERARCHY_REQUEST_ERR,
+                "Canonicalization can only happen on nodes attached to a document.",
+                true,
+            )?;
+        }
+        let mut links = super::nscompat::Links::default();
+        let root_element = sys::xmlDocGetRootElement((*nodep).doc);
+        if !root_element.is_null() {
+            super::nscompat::relink_ns_decls(&mut links, root_element);
+        }
+        let r = canonicalization(cx, this, args, mode);
+        super::nscompat::unlink_ns_decls(links);
+        r
+    }
 }
 
 pub fn c14n_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -952,7 +986,7 @@ pub fn c14n_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thr
             "must not contain any null bytes",
         ));
     }
-    canonicalization(cx, this, args, 1)
+    canonicalize(cx, this, args, 1)
 }
 
 pub fn get_node_path(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {

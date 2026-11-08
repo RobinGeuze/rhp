@@ -652,13 +652,16 @@ pub fn map_get_named_item(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<V
 
 pub fn map_get_named_item_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let d = this_map(cx, this)?;
-    let uri = super::opt_bytes(args, 0);
-    named_item_value(
-        cx,
-        &d,
-        &super::bytes(args, 1),
-        Some(uri.as_deref().unwrap_or(b"")),
-    )
+    let uri = super::opt_bytes(args, 0).unwrap_or_default();
+    let modern = map_of(&d)
+        .and_then(|m| m.borrow().base.clone())
+        .is_some_and(|b| super::nscompat::follow_spec(b.document()));
+    let ns = if uri.is_empty() && modern {
+        None
+    } else {
+        Some(&uri[..])
+    };
+    named_item_value(cx, &d, &super::bytes(args, 1), ns)
 }
 
 const INT_MAX: i64 = i32::MAX as i64;

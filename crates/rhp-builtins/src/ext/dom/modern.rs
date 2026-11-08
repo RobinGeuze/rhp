@@ -1933,10 +1933,6 @@ fn set_attribute_node_common(
     }
 }
 
-pub fn el_set_attribute_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
-    set_attribute_node_common(cx, this, args, false)
-}
-
 pub fn el_set_attribute_node_ns(
     cx: &mut Cx,
     this: &Value,

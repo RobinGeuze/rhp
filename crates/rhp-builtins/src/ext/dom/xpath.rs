@@ -714,10 +714,9 @@ fn dispatch(
     };
     let obj = match &retval {
         Value::Object(_) => {
-            let is_node = cx
-                .host
-                .object_class_name(&retval)
-                .is_some_and(|c| cx.host.reflect_is_a(&c, b"DOMNode"));
+            let is_node = cx.host.object_class_name(&retval).is_some_and(|c| {
+                cx.host.reflect_is_a(&c, b"DOMNode") || cx.host.reflect_is_a(&c, b"Dom\\Node")
+            });
             if !is_node {
                 return Err(Thrown::type_error(
                     "Only objects that are instances of DOM nodes can be converted to an XPath expression",

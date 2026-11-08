@@ -44,7 +44,7 @@ namespace Dom {
         public ?\Dom\Node $nextSibling { get => __dom_prop(0, $this, 'nextSibling'); set(mixed $value) { __dom_prop(1, $this, 'nextSibling', $value); } }
         public ?string $nodeValue { get => __dom_prop(0, $this, 'nodeValue'); set(mixed $value) { __dom_prop(1, $this, 'nodeValue', $value); } }
         public ?string $textContent { get => __dom_prop(0, $this, 'textContent'); set(mixed $value) { __dom_prop(1, $this, 'textContent', $value); } }
-        final private function __construct() {}
+        final private function __construct() { throw new \Error('Cannot directly construct ' . static::class . ', use document methods instead'); }
         public function getRootNode(array $options = []): \Dom\Node { return __dom('Dom\Node::getRootNode', $this, $options); }
         public function hasChildNodes(): bool { return __dom('Dom\Node::hasChildNodes', $this); }
         public function normalize(): void { __dom('Dom\Node::normalize', $this); }
@@ -71,7 +71,7 @@ namespace Dom {
         public ?string $prefix;
         public ?string $namespaceURI;
         public \Dom\Element $element;
-        private function __construct() {}
+        private function __construct() { throw new \Error('Cannot directly construct ' . static::class . ', use document methods instead'); }
     }
     class DocumentFragment extends \Dom\Node implements \Dom\ParentNode {
         public \Dom\HTMLCollection $children { get => $this->children ??= __dom_prop(0, $this, 'children'); set(mixed $value) { __dom_prop(1, $this, 'children', $value); } }
@@ -314,15 +314,15 @@ namespace Dom {
     final class TokenList implements \IteratorAggregate, \Countable {
         public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
         public string $value { get => __dom_prop(0, $this, 'value'); set(mixed $value) { __dom_prop(1, $this, 'value', $value); } }
-        private function __construct() {}
+        private function __construct() { throw new \Error('Cannot directly construct ' . static::class . ', use document methods instead'); }
         public function item(int $index): ?string { return __dom('Dom\TokenList::item', $this, $index); }
         public function contains(string $token): bool { return __dom('Dom\TokenList::contains', $this, $token); }
-        public function add(string ...$tokens): void { __dom('Dom\TokenList::add', $this, ...$tokens); }
-        public function remove(string ...$tokens): void { __dom('Dom\TokenList::remove', $this, ...$tokens); }
+        public function add(...$tokens): void { __dom('Dom\TokenList::add', $this, ...$tokens); }
+        public function remove(...$tokens): void { __dom('Dom\TokenList::remove', $this, ...$tokens); }
         public function toggle(string $token, ?bool $force = null): bool { return __dom('Dom\TokenList::toggle', $this, $token, $force); }
         public function replace(string $token, string $newToken): bool { return __dom('Dom\TokenList::replace', $this, $token, $newToken); }
         public function supports(string $token): bool { return __dom('Dom\TokenList::supports', $this, $token); }
         public function count(): int { return __dom('Dom\TokenList::count', $this); }
-        public function getIterator(): \Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+        public function getIterator(): \Iterator { return __dom('Dom\TokenList::getIterator', $this); }
     }
 }

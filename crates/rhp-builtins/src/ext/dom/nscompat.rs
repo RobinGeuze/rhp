@@ -515,14 +515,10 @@ pub fn follow_spec(document: *mut RefObj) -> bool {
     unsafe { document.as_ref() }.is_some_and(|d| d.class_type == lxn::ClassType::Modern)
 }
 
-/// php_dom_follow_spec_node: by the node's document object.
+/// php_dom_follow_spec_node: by the node's own object.
 pub fn follow_spec_node(node: *const XmlNode) -> bool {
     unsafe {
-        let doc = (*node).doc;
-        if doc.is_null() {
-            return false;
-        }
-        let p = (*doc)._private as *mut lxn::NodePtr;
+        let p = (*node)._private as *mut lxn::NodePtr;
         if p.is_null() {
             return false;
         }
@@ -530,5 +526,172 @@ pub fn follow_spec_node(node: *const XmlNode) -> bool {
             return false;
         };
         follow_spec(obj.document.get())
+    }
+}
+
+/// What dom_relink_ns_decls did, for dom_unlink_ns_decls: per element,
+/// the declarations it added (and the xmlns attributes it took out of the
+/// attribute list), and the default namespaces it swapped, in order.
+#[derive(Default)]
+pub struct Links {
+    entries: Vec<(usize, LinkEntry)>,
+}
+
+enum LinkEntry {
+    Count(usize),
+    SavedNs(*mut XmlNs),
+}
+
+impl Links {
+    fn bump(&mut self, node: *mut XmlNode) {
+        let key = node as usize;
+        match self.entries.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, LinkEntry::Count(n))) => *n += 1,
+            _ => self.entries.push((key, LinkEntry::Count(1))),
+        }
+    }
+}
+
+/// dom_alloc_ns_decl
+unsafe fn alloc_ns_decl(links: &mut Links, node: *mut XmlNode) -> *mut XmlNs {
+    unsafe {
+        let ns = sys::rhp_xml_malloc(std::mem::size_of::<XmlNs>()) as *mut XmlNs;
+        if ns.is_null() {
+            return ns;
+        }
+        links.bump(node);
+        ptr::write_bytes(ns, 0, 1);
+        (*ns).type_ = sys::XML_LOCAL_NAMESPACE;
+        (*ns).next = (*node).nsDef;
+        (*node).nsDef = ns;
+        ns
+    }
+}
+
+/// dom_add_synthetic_ns_decl
+unsafe fn add_synthetic_ns_decl(links: &mut Links, node: *mut XmlNode, src: *mut XmlNs) {
+    unsafe {
+        let ns = alloc_ns_decl(links, node);
+        if ns.is_null() {
+            return;
+        }
+        (*ns).href = sys::xmlStrdup((*src).href);
+        (*ns).prefix = if (*src).prefix.is_null() {
+            ptr::null()
+        } else {
+            sys::xmlStrdup((*src).prefix)
+        };
+    }
+}
+
+unsafe fn relink_element(links: &mut Links, node: *mut XmlNode) {
+    unsafe {
+        if (*node).type_ != sys::XML_ELEMENT_NODE {
+            return;
+        }
+        let mut attr = (*node).properties;
+        while !attr.is_null() {
+            let next = (*attr).next;
+            if ns_is_fast(attr.cast(), &XMLNS) {
+                let ns = alloc_ns_decl(links, node);
+                if ns.is_null() {
+                    return;
+                }
+                let value = lxn::attr_value(attr);
+                let mut v = value.clone();
+                v.push(0);
+                (*ns).href = sys::xmlStrdup(v.as_ptr());
+                (*ns).prefix = if (*(*attr).ns).prefix.is_null() {
+                    ptr::null()
+                } else {
+                    sys::xmlStrdup((*attr).name)
+                };
+                (*ns)._private = attr.cast();
+                if !(*attr).prev.is_null() {
+                    (*(*attr).prev).next = (*attr).next;
+                } else {
+                    (*node).properties = (*attr).next;
+                }
+                if !(*attr).next.is_null() {
+                    (*(*attr).next).prev = (*attr).prev;
+                }
+            }
+            attr = next;
+        }
+        let ns = (*node).ns;
+        if !ns.is_null() && (*ns).prefix.is_null() {
+            links
+                .entries
+                .push(((node as usize) | 1, LinkEntry::SavedNs(ns)));
+            (*node).ns = sys::xmlSearchNs((*node).doc, node, ptr::null());
+        } else if !ns.is_null() {
+            add_synthetic_ns_decl(links, node, ns);
+        }
+        let mut attr = (*node).properties;
+        while !attr.is_null() {
+            if !(*attr).ns.is_null() && !ns_is_fast(attr.cast(), &XMLNS) {
+                let src = (*attr).ns;
+                let mut exists = false;
+                let mut e = (*node).nsDef;
+                while !e.is_null() {
+                    if super::util::str_eq((*e).prefix, (*src).prefix) {
+                        exists = true;
+                        break;
+                    }
+                    e = (*e).next;
+                }
+                if !exists {
+                    add_synthetic_ns_decl(links, node, src);
+                }
+            }
+            attr = (*attr).next;
+        }
+    }
+}
+
+/// dom_relink_ns_decls: give a modern tree the nsDef lists libxml2's C14N
+/// reads.
+pub fn relink_ns_decls(links: &mut Links, root: *mut XmlNode) {
+    unsafe {
+        relink_element(links, root);
+        let mut node = (*root).children;
+        while !node.is_null() {
+            relink_element(links, node);
+            node = next_in_tree_order(node, root);
+        }
+    }
+}
+
+/// dom_unlink_ns_decls
+pub fn unlink_ns_decls(links: Links) {
+    for (key, entry) in links.entries {
+        unsafe {
+            match entry {
+                LinkEntry::SavedNs(ns) => {
+                    let node = (key ^ 1) as *mut XmlNode;
+                    (*node).ns = ns;
+                }
+                LinkEntry::Count(n) => {
+                    let node = key as *mut XmlNode;
+                    for _ in 0..n {
+                        let ns = (*node).nsDef;
+                        (*node).nsDef = (*ns).next;
+                        let attr = (*ns)._private as *mut XmlAttr;
+                        if !attr.is_null() {
+                            if !(*attr).prev.is_null() {
+                                (*(*attr).prev).next = attr;
+                            } else {
+                                (*node).properties = attr;
+                            }
+                            if !(*attr).next.is_null() {
+                                (*(*attr).next).prev = attr;
+                            }
+                        }
+                        (*ns)._private = ptr::null_mut();
+                        sys::xmlFreeNs(ns);
+                    }
+                }
+            }
+        }
     }
 }

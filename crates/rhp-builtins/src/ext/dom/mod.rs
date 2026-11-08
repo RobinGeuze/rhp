@@ -69,8 +69,8 @@ pub(crate) enum Kind {
     XPath(RefCell<xpath::XPathState>),
     /// DOMImplementation.
     Plain,
-    /// Dom\TokenList: its element.
-    TokenList(RefCell<Option<Value>>),
+    /// Dom\TokenList.
+    TokenList(RefCell<collections::TokenListState>),
 }
 
 impl DomObject {
@@ -784,8 +784,10 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"Element::removeAttributeNode" => m::el_remove_attribute_node,
         b"Element::removeAttributeNS" => m::el_remove_attribute_ns,
         b"Element::setAttribute" => m::el_set_attribute,
-        b"Element::setAttributeNode" => m::el_set_attribute_node,
-        b"Element::setAttributeNodeNS" => m::el_set_attribute_node_ns,
+        // php aliases setAttributeNode to setAttributeNodeNS.
+        b"Element::setAttributeNode" | b"Element::setAttributeNodeNS" => {
+            m::el_set_attribute_node_ns
+        }
         b"Element::setAttributeNS" => m::el_set_attribute_ns,
         b"Element::setIdAttribute" => e::set_id_attribute,
         b"Element::setIdAttributeNode" => e::set_id_attribute_node,
@@ -829,6 +831,7 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"TokenList::add" => co::tl_add,
         b"TokenList::contains" => co::tl_contains,
         b"TokenList::count" => co::tl_count,
+        b"TokenList::getIterator" => co::tl_get_iterator_m,
         b"TokenList::item" => co::tl_item_m,
         b"TokenList::remove" => co::tl_remove,
         b"TokenList::replace" => co::tl_replace,
@@ -896,11 +899,6 @@ fn fn_dom_iter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let this = arg(args, 0);
     let cur = arg(args, 1);
     let index = int(args, 2);
-    if let Some(d) = intern_of(&this) {
-        if let Kind::TokenList(_) = d.kind {
-            return Ok(collections::tl_iterate(&d, index));
-        }
-    }
     let mut cx = Cx {
         host,
         fname: String::new(),
@@ -1133,6 +1131,7 @@ static MODERN_MAP_HANDLERS: ObjectHandlers = ObjectHandlers {
 
 static TOKEN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    get_iterator: Some(collections::tl_get_iterator),
     clone_obj: CloneObj::None,
     unset_property: Some(unset_property),
     dimension: Some(&collections::TOKEN_LIST_DIMENSION),
@@ -1220,6 +1219,10 @@ pub fn register(m: &mut crate::Registry) {
             ("Dom\\import_simplexml", fn_dom_import_simplexml_modern),
         ],
     );
+    // The registry is keyed by lowercase name.
+    if let Some(b) = m.remove("Dom\\import_simplexml") {
+        m.insert("dom\\import_simplexml", b);
+    }
     crate::register_helpers(
         m,
         &[

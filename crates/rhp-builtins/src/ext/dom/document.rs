@@ -1342,8 +1342,10 @@ fn class_arg(
 }
 
 pub fn register_node_class(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let modern = cx.fname.starts_with("Dom\\");
+    let base_class = if modern { "Dom\\Node" } else { "DOMNode" };
     let Some((basece, base_abstract)) =
-        class_arg(cx, &arg(args, 0), 1, "baseClass", Some("DOMNode"))?
+        class_arg(cx, &arg(args, 0), 1, "baseClass", Some(base_class))?
     else {
         return Ok(Value::Null);
     };
@@ -1370,7 +1372,11 @@ pub fn register_node_class(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<
         }
         let intern = get_intern(cx, this)?;
         set_doc_classmap(intern.document(), &basece, ce.map(|(c, _)| c));
-        return Ok(Value::Bool(true));
+        return Ok(if modern {
+            Value::Null
+        } else {
+            Value::Bool(true)
+        });
     }
     Err(Thrown::error(
         "Error",

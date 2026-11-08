@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare engines' CPU time on the benchmarks in this directory.
 
-    python3 tools/bench/bench.py [--runs N] [--filter SUBSTR] BIN...
+    python3 tests/bench/bench.py [--runs N] [--filter SUBSTR] BIN...
 
 Runs every `*.php` here (or those whose name contains SUBSTR) under each
 BIN with `-n`, interleaved, N times (default 5), and prints the minimum and

@@ -1557,8 +1557,7 @@ impl Vm {
                     self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
-                    if let Some(v) = self.with_cursor_prop_slot(top, |slot, _| Some(slot.clone())) {
-                        self.reg_set(top, dst, v);
+                    if self.cursor_one_prop() && self.fetch_lval_rw_prop(top, dst) {
                         continue;
                     }
                     if self.cursor_static.is_some() {
@@ -1575,31 +1574,8 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
-                    // `$o->p op= v` on a plain property holding a scalar.
-                    if self.deferred_undef_key.is_none()
-                        && !self.stack[top].regs[src as usize].is_undef()
-                    {
-                        let v = self.reg_get(top, src);
-                        let old = self.with_cursor_prop_slot(top, |slot, typed| {
-                            if !(is_scalar(slot) || matches!(slot, Value::Str(_)))
-                                || (typed && !crate::props::same_scalar_kind(slot, &v))
-                            {
-                                return None;
-                            }
-                            Some(std::mem::replace(slot, v.clone()))
-                        });
-                        if old.is_some() {
-                            self.cursor_steps.clear();
-                            self.cursor_release();
-                            if dst != src {
-                                self.reg_set(top, dst, v);
-                            }
-                            if let Some((a, b)) = self.compound_free.take() {
-                                self.free_tmp(top, proto.num_cvs, a);
-                                self.free_tmp(top, proto.num_cvs, b);
-                            }
-                            continue;
-                        }
+                    if self.cursor_one_prop() && self.assign_lval_prop(top, &proto, src, dst) {
+                        continue;
                     }
                     let operands = self.compound_free.take();
                     if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
@@ -1775,22 +1751,7 @@ impl Vm {
                     r?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
-                    // `$o->p++` on a plain int property.
-                    let d = delta as i64;
-                    // (An int stays an int: whatever type allowed it allows
-                    // the new one.)
-                    let done = self.with_cursor_prop_slot(top, |slot, _| match *slot {
-                        Value::Int(n) => {
-                            let m = n.checked_add(d)?;
-                            *slot = Value::Int(m);
-                            Some(if pre { m } else { n })
-                        }
-                        _ => None,
-                    });
-                    if let Some(r) = done {
-                        self.cursor_steps.clear();
-                        self.cursor_release();
-                        self.reg_set(top, dst, Value::Int(r));
+                    if self.cursor_one_prop() && self.inc_dec_lval_prop(top, dst, pre, delta) {
                         continue;
                     }
                     self.cursor_settle_offsets(top)?;
@@ -4220,6 +4181,81 @@ impl Vm {
             _ => self.stack[top].called_class.unwrap_or(scope),
         };
         Ok(self.class(cls).name.clone())
+    }
+
+    /// Whether the open lvalue cursor is one property step (`$o->p`), the
+    /// shape the cursor fast paths below take.
+    #[inline(always)]
+    fn cursor_one_prop(&self) -> bool {
+        matches!(&self.cursor_steps[..], [crate::lvalue::CursorStep::Prop(_)])
+    }
+
+    /// `FetchLvalRw` of `$o->p` through the lookup cache (see
+    /// [`Vm::with_cursor_prop_slot`]); the cursor stays open. False: take
+    /// the cursor path.
+    #[inline(never)]
+    fn fetch_lval_rw_prop(&mut self, top: usize, dst: Reg) -> bool {
+        match self.with_cursor_prop_slot(top, |slot, _| Some(slot.clone())) {
+            Some(v) => {
+                self.reg_set(top, dst, v);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `$o->p op= v` (`AssignLval`) on a plain property holding a scalar.
+    #[inline(never)]
+    fn assign_lval_prop(&mut self, top: usize, proto: &FunctionProto, src: Reg, dst: Reg) -> bool {
+        if self.deferred_undef_key.is_some() || self.stack[top].regs[src as usize].is_undef() {
+            return false;
+        }
+        let v = self.reg_get(top, src);
+        let old = self.with_cursor_prop_slot(top, |slot, typed| {
+            if !(is_scalar(slot) || matches!(slot, Value::Str(_)))
+                || (typed && !crate::props::same_scalar_kind(slot, &v))
+            {
+                return None;
+            }
+            Some(std::mem::replace(slot, v.clone()))
+        });
+        if old.is_none() {
+            return false;
+        }
+        self.cursor_steps.clear();
+        self.cursor_release();
+        if dst != src {
+            self.reg_set(top, dst, v);
+        }
+        if let Some((a, b)) = self.compound_free.take() {
+            self.free_tmp(top, proto.num_cvs, a);
+            self.free_tmp(top, proto.num_cvs, b);
+        }
+        true
+    }
+
+    /// `$o->p++` (`IncDecLval`) on a plain int property.
+    #[inline(never)]
+    fn inc_dec_lval_prop(&mut self, top: usize, dst: Reg, pre: bool, delta: i8) -> bool {
+        let d = delta as i64;
+        // (An int stays an int: whatever type allowed it allows the new one.)
+        let done = self.with_cursor_prop_slot(top, |slot, _| match *slot {
+            Value::Int(n) => {
+                let m = n.checked_add(d)?;
+                *slot = Value::Int(m);
+                Some(if pre { m } else { n })
+            }
+            _ => None,
+        });
+        match done {
+            Some(r) => {
+                self.cursor_steps.clear();
+                self.cursor_release();
+                self.reg_set(top, dst, Value::Int(r));
+                true
+            }
+            None => false,
+        }
     }
 
     /// The common class constant fetch: an evaluated, accessible,

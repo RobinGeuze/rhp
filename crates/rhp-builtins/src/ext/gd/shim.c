@@ -15,6 +15,19 @@
 #include <gdfontl.h>
 #include <gdfontg.h>
 
+/* libgd is opened on first use (sys.rs): its functions and data come
+ * from rhp_gd_sym, looked up once per call site. */
+extern void *rhp_gd_sym(const char *name);
+#define GD(name) (*({ \
+	static __typeof__(&name) gd_p_; \
+	__typeof__(&name) gd_f_ = __atomic_load_n(&gd_p_, __ATOMIC_ACQUIRE); \
+	if (!gd_f_) { \
+		gd_f_ = (__typeof__(&name)) rhp_gd_sym(#name); \
+		__atomic_store_n(&gd_p_, gd_f_, __ATOMIC_RELEASE); \
+	} \
+	gd_f_; \
+}))
+
 /* ---- errors ---- */
 
 /* Defined in Rust (ext/gd/mod.rs). */
@@ -22,7 +35,7 @@ extern void rhp_gd_error(int type, const char *msg, size_t len);
 
 /* php_gd_error_method: libgd's message formatted, then raised from the
  * running builtin. */
-static void error_method(int type, const char *format, va_list args)
+void rhp_gd_error_method(int type, const char *format, va_list args)
 {
 	char small[512];
 	va_list copy;
@@ -45,57 +58,15 @@ static void error_method(int type, const char *format, va_list args)
 	free(big);
 }
 
-/* php's configure (PHP_GD_CHECK_FORMAT) runs gdImageCreateFromFoo(NULL)
- * with an error method that fails: libgd built without a format still
- * defines its functions, as stubs that raise an error. Probed here once,
- * at startup, the same way. Bits: 1 PNG, 2 AVIF, 4 WebP, 8 JPEG, 16 XPM. */
-static int probe_failed;
-
-static void probe_error(int priority, const char *format, va_list args)
-{
-	(void) priority;
-	(void) format;
-	(void) args;
-	probe_failed = 1;
-}
-
-static int features;
-
-static int probe(gdImagePtr (*f)(FILE *))
-{
-	probe_failed = 0;
-	gdImagePtr p = f(NULL);
-	if (p) {
-		gdImageDestroy(p);
-	}
-	return !probe_failed;
-}
-
-void rhp_gd_init(void)
-{
-	gdSetErrorMethod(probe_error);
-	features = 0;
-	if (probe(gdImageCreateFromPng)) features |= 1;
-	if (probe(gdImageCreateFromAvif)) features |= 2;
-	if (probe(gdImageCreateFromWebp)) features |= 4;
-	if (probe(gdImageCreateFromJpeg)) features |= 8;
-	probe_failed = 0;
-	gdImagePtr x = gdImageCreateFromXpm("test.xpm");
-	if (x) {
-		gdImageDestroy(x);
-	}
-	if (!probe_failed) features |= 16;
-	gdSetErrorMethod(error_method);
-}
-
+/* php's HAVE_GD_* from configure: build.rs runs the same probe. */
 int rhp_gd_features(void)
 {
-	return features;
+	return RHP_GD_FORMATS;
 }
 
 gdImagePtr rhp_gd_from_xpm(const char *filename)
 {
-	return gdImageCreateFromXpm((char *) filename);
+	return GD(gdImageCreateFromXpm)((char *) filename);
 }
 
 int rhp_gd_level(int which)
@@ -131,11 +102,11 @@ unsigned int rhp_gd_res_y(gdImagePtr im) { return gdImageResolutionY(im); }
 int rhp_gd_color_at(gdImagePtr im, long x, long y, long *out)
 {
 	if (gdImageTrueColor(im)) {
-		if (im->tpixels && gdImageBoundsSafe(im, x, y)) {
+		if (im->tpixels && GD(gdImageBoundsSafe)(im, x, y)) {
 			*out = gdImageTrueColorPixel(im, x, y);
 			return 1;
 		}
-	} else if (im->pixels && gdImageBoundsSafe(im, x, y)) {
+	} else if (im->pixels && GD(gdImageBoundsSafe)(im, x, y)) {
 		*out = im->pixels[y][x];
 		return 1;
 	}
@@ -164,11 +135,11 @@ void rhp_gd_set_rgb(gdImagePtr im, int c, int r, int g, int b)
 gdFontPtr rhp_gd_builtin_font(int n)
 {
 	switch (n) {
-		case 1: return gdFontTiny;
-		case 2: return gdFontSmall;
-		case 3: return gdFontMediumBold;
-		case 4: return gdFontLarge;
-		default: return gdFontGiant;
+		case 1: return GD(gdFontTiny);
+		case 2: return GD(gdFontSmall);
+		case 3: return GD(gdFontMediumBold);
+		case 4: return GD(gdFontLarge);
+		default: return GD(gdFontGiant);
 	}
 }
 
@@ -184,9 +155,9 @@ char *rhp_gd_string_ft(gdImagePtr im, int *brect, int fg, const char *font,
 			strex.flags |= gdFTEX_LINESPACE;
 			strex.linespacing = linespacing;
 		}
-		return gdImageStringFTEx(im, brect, fg, (char *) font, ptsize, angle, x, y, (char *) str, &strex);
+		return GD(gdImageStringFTEx)(im, brect, fg, (char *) font, ptsize, angle, x, y, (char *) str, &strex);
 	}
-	return gdImageStringFT(im, brect, fg, (char *) font, ptsize, angle, x, y, (char *) str);
+	return GD(gdImageStringFT)(im, brect, fg, (char *) font, ptsize, angle, x, y, (char *) str);
 }
 
 /* ---- reading through a FILE* (imagecreatefromxbm) ---- */
@@ -197,7 +168,7 @@ gdImagePtr rhp_gd_from_xbm(const void *data, size_t len)
 	if (!fp) {
 		return NULL;
 	}
-	gdImagePtr im = gdImageCreateFromXbm(fp);
+	gdImagePtr im = GD(gdImageCreateFromXbm)(fp);
 	fclose(fp);
 	return im;
 }

@@ -16,7 +16,6 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void, CStr, CString};
 use std::ptr;
 use std::rc::Rc;
-use std::sync::Once;
 
 use rhp_values::{ArrayKey, PhpArray, Value};
 
@@ -121,12 +120,6 @@ fn image_or_false(host: &mut dyn Host, im: Im) -> Result<Value, Thrown> {
     }
 }
 
-/// MINIT's `gdSetErrorMethod`, once per process.
-fn init() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| unsafe { sys::rhp_gd_init() });
-}
-
 const HAVE_PNG: i32 = 1;
 const HAVE_AVIF: i32 = 2;
 const HAVE_WEBP: i32 = 4;
@@ -134,20 +127,20 @@ const HAVE_JPG: i32 = 8;
 const HAVE_XPM: i32 = 16;
 
 /// Whether the linked libgd supports a format (php's HAVE_GD_* from
-/// configure, probed the same way at startup: see shim.c).
+/// configure, probed the same way by build.rs).
 fn have(bit: i32) -> bool {
-    init();
     (unsafe { sys::rhp_gd_features() } & bit) != 0
 }
 
 /// php's RSHUTDOWN: libgd's FreeType cache goes with the request.
 pub fn reset_state() {
-    unsafe { sys::gdFontCacheShutdown() };
+    if sys::loaded() {
+        unsafe { sys::gdFontCacheShutdown() };
+    }
 }
 
 /// Run libgd call `f` with the host reachable from its error callback.
 fn gd<R>(host: &mut dyn Host, fname: &str, f: impl FnOnce() -> R) -> Result<R, Thrown> {
-    init();
     ffi::with_host(host, fname, f)
 }
 

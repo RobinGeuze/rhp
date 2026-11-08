@@ -69,7 +69,7 @@ Kinds:
 | `ext/curl/share.rs` | `PERSISTENT` (php's `CURL_G(persistent_curlsh)`) | thread, as in php | — |
 | `ext/date` | `TIMEZONE`, `TZCACHE`, `LAST_ERRORS` | request | `date::reset_state` |
 | `ext/date` | `CALLBACK_PANIC` | call | — |
-| `ext/gd/shim.c` | libgd's error method and the probed format support (C statics) | process, as in php | — (set once by `gd::init`) |
+| `ext/gd/shim.c`, `ext/gd/sys.rs` | the dlopen'd libgd, its symbol table and php's error method, set when it opens (C and Rust statics) | process, as in php | — (set once, on first use) |
 | libgd | its FreeType font cache (global, behind libgd's mutex) | process, emptied per request as in php | `gd::reset_state` (`gdFontCacheShutdown`) |
 | `ext/gmp` | `RAND` | request | `gmp::reset_state` |
 | `ext/iconv/sys.rs` | `ERRNO` | request | `iconv::reset_state` |

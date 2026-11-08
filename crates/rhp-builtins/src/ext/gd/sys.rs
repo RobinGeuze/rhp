@@ -3,7 +3,8 @@
 
 #![allow(non_snake_case)]
 
-use std::ffi::{c_char, c_double, c_float, c_int, c_long, c_uint, c_void};
+use std::ffi::{c_char, c_double, c_float, c_int, c_long, c_uint, c_void, CStr};
+use std::sync::OnceLock;
 
 /// `gdImage` (opaque: its fields go through shim.c).
 #[repr(C)]
@@ -63,7 +64,7 @@ pub type CtxReader = unsafe extern "C" fn(*mut GdIoCtx) -> Im;
 
 extern "C" {
     // shim.c
-    pub fn rhp_gd_init();
+    fn rhp_gd_error_method();
     pub fn rhp_gd_features() -> c_int;
     pub fn rhp_gd_from_xpm(filename: *const c_char) -> Im;
     #[cfg(test)]
@@ -106,8 +107,88 @@ extern "C" {
     pub fn rhp_gd_consts() -> *const Const;
     pub fn rhp_gd_version_string() -> *const c_char;
     pub fn rhp_gd_extra_version() -> *const c_char;
+}
 
-    // gd.h
+/// The libgd build.rs found, opened with dlopen when a script first uses
+/// it: its dependency closure (libavif's AV1 codecs, libtiff, fontconfig)
+/// would otherwise add a quarter to every process's startup. php's
+/// MINIT error method is set as soon as it is open.
+const LIBGD: &str = concat!(env!("RHP_LIBGD_DLOPEN"), "\0");
+
+static HANDLE: OnceLock<usize> = OnceLock::new();
+
+fn handle() -> *mut c_void {
+    *HANDLE.get_or_init(|| unsafe {
+        let h = libc::dlopen(LIBGD.as_ptr().cast(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        if h.is_null() {
+            let err = std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy();
+            eprintln!("rhp: cannot load libgd: {err}");
+            std::process::exit(1);
+        }
+        let set: unsafe extern "C" fn(*const c_void) =
+            std::mem::transmute(lookup(h, c"gdSetErrorMethod"));
+        set(rhp_gd_error_method as *const c_void);
+        h as usize
+    }) as *mut c_void
+}
+
+unsafe fn lookup(h: *mut c_void, name: &CStr) -> *mut c_void {
+    let p = unsafe { libc::dlsym(h, name.as_ptr()) };
+    if p.is_null() {
+        eprintln!("rhp: libgd has no {}", name.to_string_lossy());
+        std::process::exit(1);
+    }
+    p
+}
+
+/// Whether libgd has been opened (php's RSHUTDOWN only has a font cache
+/// to free then).
+pub fn loaded() -> bool {
+    HANDLE.get().is_some()
+}
+
+/// A libgd symbol, for shim.c.
+#[no_mangle]
+pub extern "C" fn rhp_gd_sym(name: *const c_char) -> *mut c_void {
+    unsafe { lookup(handle(), CStr::from_ptr(name)) }
+}
+
+/// Declares libgd functions: each is a wrapper with the C signature that
+/// calls through a table looked up once.
+macro_rules! libgd {
+    ($(pub fn $name:ident($($arg:ident: $ty:ty),* $(,)?) $(-> $ret:ty)?;)*) => {
+        struct Api {
+            $($name: unsafe extern "C" fn($($ty),*) $(-> $ret)?,)*
+        }
+
+        fn api() -> &'static Api {
+            static API: OnceLock<Api> = OnceLock::new();
+            API.get_or_init(|| {
+                let h = handle();
+                unsafe {
+                    Api {
+                        $($name: std::mem::transmute::<
+                            *mut c_void,
+                            unsafe extern "C" fn($($ty),*) $(-> $ret)?,
+                        >(lookup(h, CStr::from_bytes_with_nul(
+                            concat!(stringify!($name), "\0").as_bytes(),
+                        ).unwrap())),)*
+                    }
+                }
+            })
+        }
+
+        $(
+            #[allow(clippy::too_many_arguments, clippy::missing_safety_doc)]
+            pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
+                unsafe { (api().$name)($($arg),*) }
+            }
+        )*
+    };
+}
+
+// gd.h
+libgd! {
     pub fn gdVersionString() -> *const c_char;
     pub fn gdFontCacheShutdown();
     pub fn gdFree(p: *mut c_void);
@@ -342,7 +423,8 @@ mod tests {
     #[test]
     fn libgd_is_the_library_php_links() {
         let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-        let ok = unsafe { libc::dladdr(gdImageCreate as *const c_void, &mut info) };
+        let f = rhp_gd_sym(c"gdImageCreate".as_ptr());
+        let ok = unsafe { libc::dladdr(f, &mut info) };
         assert!(
             ok != 0 && !info.dli_fname.is_null(),
             "dladdr finds gdImageCreate"

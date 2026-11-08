@@ -1,0 +1,8 @@
+string(3) "a/x"
+string(3) "b/x"
+string(3) "b/x"
+string(3) "b/x"
+string(3) "a/x"
+bool(true)
+bool(true)
+scripts 5 keys 5 hits 3 misses 5

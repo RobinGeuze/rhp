@@ -698,7 +698,8 @@ impl Vm {
         if given == path || given.is_empty() {
             return None;
         }
-        if given.starts_with(b"/") {
+        // opcache.use_cwd=0: a relative name is a key as it is.
+        if given.starts_with(b"/") || !ini_flag(&self.ini(b"opcache.use_cwd")) {
             return Some(given.to_vec());
         }
         let mut k = given.to_vec();

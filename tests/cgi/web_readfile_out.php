@@ -1,0 +1,1 @@
+<?php header('Content-Type: application/octet-stream'); header('Content-Length: '.filesize(__FILE__)); readfile(__FILE__); $f=fopen(__FILE__,'r'); fpassthru($f); file_put_contents('php://output', "po\n"); fwrite(STDOUT, "stdout\n"); echo "end\n";

@@ -1,0 +1,1 @@
+<?php var_dump(filter_input(INPUT_GET, 'a', FILTER_VALIDATE_INT), filter_input(INPUT_COOKIE, 'c'), filter_input(INPUT_SERVER, 'REQUEST_METHOD'), filter_has_var(INPUT_GET, 'a'), filter_input_array(INPUT_GET), filter_input(INPUT_GET, 'arr', FILTER_DEFAULT, FILTER_REQUIRE_ARRAY), filter_var('x', FILTER_DEFAULT, FILTER_REQUIRE_SCALAR));

@@ -1,0 +1,1 @@
+<?php ini_set('session.save_path', sys_get_temp_dir()); ini_set('session.gc_probability', 1); ini_set('session.gc_divisor', 1); session_id('gcid'); session_start(); var_dump(session_gc() >= 0); session_destroy(); var_dump(session_status());

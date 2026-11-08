@@ -7,6 +7,8 @@
  * its Zend calls replaced by the rhp_dom_* callbacks (ext/dom/html5.rs),
  * then head.c's definitions before it and tail.c's API after it.
  */
+/* vasprintf/asprintf on glibc */
+#define _GNU_SOURCE
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>

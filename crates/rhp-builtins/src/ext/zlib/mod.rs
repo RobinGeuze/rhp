@@ -483,10 +483,10 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("ZLIB_RLE", Value::Int(3)),
         ("ZLIB_FIXED", Value::Int(4)),
         ("ZLIB_DEFAULT_STRATEGY", Value::Int(0)),
-        // The zlib headers the reference php was compiled against, not the
-        // libz this process happens to link.
-        ("ZLIB_VERSION", Value::str(crate::version::ZLIB_VERSION)),
-        ("ZLIB_VERNUM", Value::Int(crate::version::ZLIB_VERNUM)),
+        // php's compile-time zlib.h: the system zlib both link
+        // (crate::version::zlib_version).
+        ("ZLIB_VERSION", Value::str(crate::version::zlib_version())),
+        ("ZLIB_VERNUM", Value::Int(crate::version::zlib_vernum())),
         ("ZLIB_OK", Value::Int(0)),
         ("ZLIB_STREAM_END", Value::Int(1)),
         ("ZLIB_NEED_DICT", Value::Int(2)),

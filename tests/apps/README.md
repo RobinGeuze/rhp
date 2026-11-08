@@ -250,7 +250,9 @@ Outside the default pass, report and known-list ids are `<pass>/<id>`
 (`debug/w-error`, `cold/@files`), and `--out` writes to `<out>/<app>/<pass>/`.
 `--pass <name>` (repeatable) runs only the named passes; `--check-known`
 then skips the other passes' ids, and `--write-known` refuses it (the list
-would lose them).
+would lose them). PR CI runs `--pass default`; every pass runs nightly
+(`apps-nightly.yml`). Comparing a written SQLite database needs the `sqlite3`
+command (`sqlite3 .dump`); CI installs it when the runner lacks it.
 
 - `debug` (Symfony: `APP_DEBUG=1`; Laravel: `APP_DEBUG=true`, which beats
   `.env` as both frameworks let the real environment win): the exception
@@ -312,8 +314,23 @@ engines' paths:
 |-----|-------|
 | all | the engine binary's path (`<PHP_BINARY>`) |
 | Symfony | the container's build time and build id (`cache:clear`), the time `about` prints |
-| Laravel | migration file times, `generated::` route names, durations and their dot padding, datetimes and Unix times within 3 days of now, session file names and CSRF tokens, `Inspiring` quotes (`inspire`, `make:component`, `make:view`), the key `key:generate --show` prints |
-| WordPress | datetimes and Unix times within 3 days of now, the export's channel date, Site Health's server time, password hashes, wpdb's random `%` placeholder |
+| Laravel | migration file times, `generated::` route names, durations and their dot padding, datetimes and Unix times of the run, session file names and CSRF tokens, `Inspiring` quotes (`inspire`, `make:component`, `make:view`), the key `key:generate --show` prints |
+| WordPress | datetimes and Unix times of the run, the export's channel date, Site Health's server time, password hashes, wpdb's random `%` placeholder |
+
+A datetime or Unix time "of the run" (the `now-epoch` and `now-datetime`
+builtins) is one taken between the command's start and end (2 seconds of
+slack either side), masked `<NOW>`/`<NOWDT>`, or a whole number of minutes
+after that, up to 400 days (an expiry, a schedule), masked with its offset,
+`<NOW+3600s>`: an engine that computes another expiry does not match.
+Earlier times stay as they are (a run spanning a minute boundary would
+otherwise take fixed dates on the minute for times of the run).
+
+Commands marked `network = true` need the internet (wp-cli's `core
+verify-checksums` fetches the checksums with its own HTTP client, which
+`WP_HTTP_BLOCK_EXTERNAL` does not stop): they run only with `--network`,
+which the nightly passes; skipped, they stay on the known list. The site's
+own HTTP requests are blocked, so `core check-update` and `language core
+list` run offline and compare the same answer every time.
 
 Each app's `known-passing-console.txt` lists the commands that are `SAME`
 under rhp; CI's `apps-lint` job fails only when a listed one is not.

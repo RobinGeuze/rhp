@@ -616,7 +616,7 @@ fn print_module(o: &mut Info, e: &str) {
         o.row(&["ZLib Support", "enabled"]);
         o.row(&["Stream Wrapper", "compress.zlib://"]);
         o.row(&["Stream Filter", "zlib.inflate, zlib.deflate"]);
-        o.row(&["Compiled Version", version::ZLIB_VERSION]);
+        o.row(&["Compiled Version", version::zlib_version()]);
         o.row(&["Linked Version", &linked.to_string_lossy()]);
         o.table_end();
         print_ini(

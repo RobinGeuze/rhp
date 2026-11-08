@@ -130,9 +130,12 @@ args = "help"
 id = "helppost"
 args = "help post"
 
+# Fetches the checksums from api.wordpress.org (wp-cli's own HTTP client,
+# which WP_HTTP_BLOCK_EXTERNAL does not block): nightly only.
 [[command]]
 id = "coreverify"
 args = "core verify-checksums --version=7.1.4 --locale=en_US"
+network = true
 
 [[command]]
 id = "postcreate"
@@ -306,9 +309,11 @@ args = "db size"
 id = "dbtables"
 args = "db tables"
 
+# `wp db query` runs the mysql client, which the SQLite site has no use for:
+# the queries go through $wpdb (the SQLite drop-in) instead.
 [[command]]
 id = "dbquery"
-argv = ["db", "query", "SELECT 1"]
+argv = ["eval", "global $wpdb; var_dump($wpdb->get_var('SELECT 1 + 1'), $wpdb->get_col(\"SELECT option_name FROM $wpdb->options WHERE option_name LIKE 'blog%' ORDER BY option_name\"), $wpdb->get_row($wpdb->prepare(\"SELECT ID, post_type FROM $wpdb->posts WHERE ID = %d\", 1)), $wpdb->query(\"UPDATE $wpdb->options SET option_value = 'x' WHERE option_name = 'blogdescription'\"), $wpdb->last_error);"]
 
 [[command]]
 id = "config"

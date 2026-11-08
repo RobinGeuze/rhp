@@ -10,11 +10,9 @@ configget
 corechecks
 coreverify
 cronlist
-dbquery
 dbsize
 dbtables
 e-feed
-e-i18n
 e-kses
 e-render
 e-rest

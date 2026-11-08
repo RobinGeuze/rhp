@@ -218,6 +218,8 @@ struct MethodRow {
     class: String,
     name: String,
     flags: u32,
+    /// Position among the class's methods in the stub.
+    order: usize,
     ret: String,
     params: Vec<Param>,
 }
@@ -627,12 +629,15 @@ fn class(
     interfaces: Vec<String>,
     members: &Sequence<ClassLikeMember>,
 ) -> Result<(), String> {
+    let mut order = 0;
     for m in members.iter() {
         if let ClassLikeMember::Method(m) = m {
             if !f.live_at(m.function.span.start.offset) {
                 continue;
             }
-            let row = method(f, ns, &name, kind, m)?;
+            let mut row = method(f, ns, &name, kind, m)?;
+            row.order = order;
+            order += 1;
             let key = (name.to_ascii_lowercase(), row.name.to_ascii_lowercase());
             if out.methods.insert(key, row).is_some() {
                 return Err(format!(
@@ -697,6 +702,7 @@ fn method(f: &File, ns: &str, class: &str, kind: u8, m: &Method) -> Result<Metho
         class: class.to_string(),
         name,
         flags,
+        order: 0,
         ret: ret_type(&m.return_type_hint, ns),
         params,
     })
@@ -1348,15 +1354,16 @@ fn render(out: &Out) -> String {
     }
     s.push_str("];\n\n");
     s.push_str(
-        "/// Methods, sorted by lowercase class then method name: class, name, flags, return type, params.\n",
+        "/// Methods, sorted by lowercase class then method name: class, name, flags, declaration order, return type, params.\n",
     );
     s.push_str("#[rustfmt::skip]\npub static METHODS: &[Method] = &[\n");
     for mr in out.methods.values() {
         s.push_str(&format!(
-            "m({}, {}, {}, {}, {}),\n",
+            "m({}, {}, {}, {}, {}, {}),\n",
             lit(&mr.class),
             lit(&mr.name),
             mr.flags,
+            mr.order,
             lit(&mr.ret),
             render_params(&mr.params)
         ));

@@ -119,7 +119,13 @@ pub(super) fn class_php(spec: &ClassSpec) -> String {
     o.push_str("\n{\n");
     o.push_str(&super::class_const_decls(c.name));
     o.push_str(spec.props);
-    for m in sigs::methods().iter().filter(|m| m.class == c.name) {
+    // In the stub's order, as php lists them.
+    let mut methods: Vec<_> = sigs::methods()
+        .iter()
+        .filter(|m| m.class == c.name)
+        .collect();
+    methods.sort_by_key(|m| m.order);
+    for m in methods {
         let mut mods = String::new();
         if m.flags & sigs::ABSTRACT != 0 {
             mods.push_str("abstract ");

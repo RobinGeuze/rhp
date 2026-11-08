@@ -761,9 +761,11 @@ fn print_pcre(o: &mut Info) {
     if let Some(t) = crate::ext::pcre::jit_target() {
         o.row(&["PCRE JIT Target", &t]);
     }
+    o.table_end();
     o.table_start();
     o.header(&["Directive", "Local Value", "Master Value"]);
-    for name in ["pcre.backtrack_limit", "pcre.jit", "pcre.recursion_limit"] {
+    // php_pcre.c's PHP_INI_BEGIN order.
+    for name in ["pcre.backtrack_limit", "pcre.recursion_limit", "pcre.jit"] {
         let Some(local) = crate::main::ini::ini_value(name.as_bytes()) else {
             continue;
         };

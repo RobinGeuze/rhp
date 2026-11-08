@@ -10059,6 +10059,7 @@ ext/reflection/tests/ReflectionProperty_constructor_variation1.phpt
 ext/reflection/tests/ReflectionProperty_double_construct.phpt
 ext/reflection/tests/ReflectionProperty_error.phpt
 ext/reflection/tests/ReflectionProperty_getDeclaringClass_variation1.phpt
+ext/reflection/tests/ReflectionProperty_getDefaultValue.phpt
 ext/reflection/tests/ReflectionProperty_getDocComment_basic.phpt
 ext/reflection/tests/ReflectionProperty_getMangledName_basic.phpt
 ext/reflection/tests/ReflectionProperty_getMangledName_dynamic.phpt
@@ -10132,6 +10133,7 @@ ext/reflection/tests/bug52854.phpt
 ext/reflection/tests/bug53366.phpt
 ext/reflection/tests/bug53915.phpt
 ext/reflection/tests/bug60357.phpt
+ext/reflection/tests/bug60367.phpt
 ext/reflection/tests/bug61388.phpt
 ext/reflection/tests/bug62715.phpt
 ext/reflection/tests/bug63399.phpt
@@ -10226,6 +10228,7 @@ ext/reflection/tests/gh22905/ReflectionProperty_setRawValueWithoutLazyInitializa
 ext/reflection/tests/gh22905/ReflectionProperty_skipLazyInitialization.phpt
 ext/reflection/tests/gh22905/Reflection_getAttributes.phpt
 ext/reflection/tests/gh8080.phpt
+ext/reflection/tests/gh8444.phpt
 ext/reflection/tests/gh8982.phpt
 ext/reflection/tests/gh9409.phpt
 ext/reflection/tests/gh9447.phpt
@@ -10974,6 +10977,7 @@ ext/spl/tests/bug33136.phpt
 ext/spl/tests/bug34548.phpt
 ext/spl/tests/bug36287.phpt
 ext/spl/tests/bug36825.phpt
+ext/spl/tests/bug37457.phpt
 ext/spl/tests/bug38325.phpt
 ext/spl/tests/bug40091.phpt
 ext/spl/tests/bug40442.phpt
@@ -10982,6 +10986,7 @@ ext/spl/tests/bug41528.phpt
 ext/spl/tests/bug41692.phpt
 ext/spl/tests/bug42364.phpt
 ext/spl/tests/bug42654.phpt
+ext/spl/tests/bug42703.phpt
 ext/spl/tests/bug44144.phpt
 ext/spl/tests/bug45826.phpt
 ext/spl/tests/bug46031.phpt
@@ -11071,6 +11076,7 @@ ext/spl/tests/bug73686.phpt
 ext/spl/tests/bug73896.phpt
 ext/spl/tests/bug74372.phpt
 ext/spl/tests/bug74478.phpt
+ext/spl/tests/bug74519.phpt
 ext/spl/tests/bug75049.phpt
 ext/spl/tests/bug75155.phpt
 ext/spl/tests/bug75173.phpt

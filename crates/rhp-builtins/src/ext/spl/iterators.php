@@ -329,6 +329,9 @@ class RecursiveIteratorIterator implements OuterIterator {
     const LEAVES_ONLY = 0; const SELF_FIRST = 1; const CHILD_FIRST = 2; const CATCH_GET_CHILD = 16;
     private $__its = []; private $__st = []; private $__level = 0; private $__mode = 0; private $__flags = 0;
     private $__maxDepth = -1; private $__inIter = false;
+    // Each level's current element, as php's zend_user_iterator caches it
+    // until that level moves on.
+    private $__cc = [];
     public function __construct(Traversable $iterator, int $mode = self::LEAVES_ONLY, int $flags = 0) {
         if ($iterator instanceof IteratorAggregate) { $iterator = $iterator->getIterator(); }
         if (!($iterator instanceof RecursiveIterator)) {
@@ -342,7 +345,7 @@ class RecursiveIteratorIterator implements OuterIterator {
         while (true) {
             $it = $this->__its[$this->__level];
             $st = $this->__st[$this->__level];
-            if ($st === 4) { $it->next(); $st = 0; }
+            if ($st === 4) { unset($this->__cc[$this->__level]); $it->next(); $st = 0; }
             if ($st === 0) {
                 $level = $this->__level;
                 $valid = $it->valid();
@@ -382,6 +385,7 @@ class RecursiveIteratorIterator implements OuterIterator {
                 $this->__st[$this->__level] = $this->__mode === self::CHILD_FIRST ? 2 : 4;
                 $this->__level++;
                 $this->__its[$this->__level] = $child; $this->__st[$this->__level] = 0;
+                unset($this->__cc[$this->__level]);
                 $child->rewind();
                 $this->beginChildren();
                 continue;
@@ -389,7 +393,7 @@ class RecursiveIteratorIterator implements OuterIterator {
             // 5: this level is exhausted
             if ($this->__level > 0) {
                 $this->endChildren();
-                unset($this->__its[$this->__level], $this->__st[$this->__level]);
+                unset($this->__its[$this->__level], $this->__st[$this->__level], $this->__cc[$this->__level]);
                 $this->__level--;
             } else {
                 return;
@@ -403,6 +407,7 @@ class RecursiveIteratorIterator implements OuterIterator {
             $this->endChildren();
         }
         $this->__st[0] = 0;
+        $this->__cc = [];
         $this->__its[0]->rewind();
         if (!$this->__inIter) { $this->beginIteration(); }
         $this->__inIter = true;
@@ -418,7 +423,15 @@ class RecursiveIteratorIterator implements OuterIterator {
     // SimpleXML's internal iterator (a subclass overriding nothing) has no
     // current element past the end, where its current() and key() throw.
     public function key(): mixed { $it = $this->__its[$this->__level]; return self::__sxeDone($it) ? null : $it->key(); }
-    public function current(): mixed { $it = $this->__its[$this->__level]; return self::__sxeDone($it) ? null : $it->current(); }
+    public function current(): mixed {
+        $l = $this->__level;
+        if (isset($this->__cc[$l])) { return $this->__cc[$l][0]; }
+        $it = $this->__its[$l];
+        if (self::__sxeDone($it)) { return null; }
+        $v = $it->current();
+        $this->__cc[$l] = [$v];
+        return $v;
+    }
     private static function __sxeDone($it): bool { return ($it::class === 'SimpleXMLElement' || $it::class === 'SimpleXMLIterator') && !$it->valid(); }
     public function next(): void { $this->__forward(); }
     public function getDepth(): int { return $this->__level; }
@@ -446,9 +459,9 @@ class RecursiveIteratorIterator implements OuterIterator {
 
 class IteratorIterator implements OuterIterator {
     protected $__it;
-    // spl_dual_it's cached current element, for the subclasses that fetch
-    // it themselves (`__dual`); IteratorIterator itself reads through.
-    protected $__dual = false; protected $__has = false; protected $__cur = null; protected $__key = null;
+    // spl_dual_it's cached current element and key: fetched once per
+    // rewind / next, so current() returns the same value until then.
+    protected $__has = false; protected $__cur = null; protected $__key = null;
     public function __construct(Traversable $iterator, ?string $class = null) {
         // spl_dual_it_construct: $class picks whose getIterator() runs.
         if ($class !== null && !($iterator instanceof Iterator)) {
@@ -473,11 +486,21 @@ class IteratorIterator implements OuterIterator {
         $this->__it = ($iterator instanceof IteratorAggregate) ? $iterator->getIterator() : $iterator;
     }
     public function getInnerIterator(): ?Iterator { return $this->__it; }
-    public function rewind(): void { $this->__it->rewind(); }
-    public function valid(): bool { return $this->__dual ? $this->__has : $this->__it->valid(); }
-    public function current(): mixed { return $this->__dual ? $this->__cur : $this->__it->current(); }
-    public function key(): mixed { return $this->__dual ? $this->__key : $this->__it->key(); }
-    public function next(): void { $this->__it->next(); }
+    // spl_dual_it_free
+    protected function __dfree(): void { $this->__has = false; $this->__cur = null; $this->__key = null; }
+    // spl_dual_it_fetch(intern, 1)
+    protected function __dfetch(): bool {
+        $this->__dfree();
+        if (!$this->__it->valid()) { return false; }
+        $this->__cur = $this->__it->current(); $this->__has = true;
+        $this->__key = $this->__it->key();
+        return true;
+    }
+    public function rewind(): void { $this->__dfree(); $this->__it->rewind(); $this->__dfetch(); }
+    public function valid(): bool { return $this->__has; }
+    public function current(): mixed { return $this->__cur; }
+    public function key(): mixed { return $this->__key; }
+    public function next(): void { $this->__dfree(); $this->__it->next(); $this->__dfetch(); }
     // SPL forwards unknown calls (getFilename/getPathname/isDir/…) to the inner
     // iterator, so callers can treat a filter iterator like its SplFileInfo items.
     public function __call($name, $args) { return call_user_func_array([$this->__it, $name], $args); }
@@ -486,11 +509,16 @@ class IteratorIterator implements OuterIterator {
 abstract class FilterIterator extends IteratorIterator {
     public function __construct(Iterator $iterator) { parent::__construct($iterator); }
     abstract public function accept(): bool;
+    // spl_filter_it_fetch
     protected function __fetch(): void {
-        while ($this->__it->valid() && !$this->accept()) { $this->__it->next(); }
+        while ($this->__dfetch()) {
+            if ($this->accept()) { return; }
+            $this->__it->next();
+        }
+        $this->__dfree();
     }
-    public function rewind(): void { $this->__it->rewind(); $this->__fetch(); }
-    public function next(): void { $this->__it->next(); $this->__fetch(); }
+    public function rewind(): void { $this->__dfree(); $this->__it->rewind(); $this->__fetch(); }
+    public function next(): void { $this->__dfree(); $this->__it->next(); $this->__fetch(); }
 }
 
 class CallbackFilterIterator extends FilterIterator {
@@ -500,7 +528,8 @@ class CallbackFilterIterator extends FilterIterator {
         $this->__cb = $callback;
     }
     public function accept(): bool {
-        return (bool) call_user_func($this->__cb, $this->__it->current(), $this->__it->key(), $this->__it);
+        if (!$this->__has) { return false; }
+        return (bool) call_user_func($this->__cb, $this->__cur, $this->__key, $this->__it);
     }
 }
 
@@ -528,7 +557,7 @@ class ParentIterator extends RecursiveFilterIterator {
 }
 
 class AppendIterator extends IteratorIterator {
-    private $__a; protected $__dual = true;
+    private $__a;
     public function __construct() { $this->__a = new ArrayIterator(); $this->__it = null; }
     private function __innerValid(): bool { return $this->__it !== null && $this->__it->valid(); }
     private function __free(): void { $this->__has = false; $this->__cur = null; $this->__key = null; }
@@ -568,7 +597,15 @@ class AppendIterator extends IteratorIterator {
         if ($this->__nextIterator()) { $this->__afetch(); }
     }
     public function valid(): bool { return $this->__has; }
-    public function current(): mixed { return $this->__cur; }
+    // spl_dual_it_fetch: AppendIterator::current() fetches again.
+    public function current(): mixed {
+        $this->__free();
+        if ($this->__innerValid()) {
+            $this->__cur = $this->__it->current(); $this->__has = true;
+            $this->__key = $this->__it->key();
+        }
+        return $this->__cur;
+    }
     public function next(): void {
         if ($this->__innerValid()) { $this->__free(); $this->__it->next(); }
         $this->__afetch();
@@ -578,7 +615,7 @@ class AppendIterator extends IteratorIterator {
 }
 
 class LimitIterator extends IteratorIterator {
-    private $__off = 0; private $__cnt = -1; private $__pos = 0; protected $__dual = true;
+    private $__off = 0; private $__cnt = -1; private $__pos = 0;
     public function __construct(Iterator $iterator, int $offset = 0, int $limit = -1) {
         if ($offset < 0) { throw new ValueError('LimitIterator::__construct(): Argument #2 ($offset) must be greater than or equal to 0'); }
         if ($limit < -1) { throw new ValueError('LimitIterator::__construct(): Argument #3 ($limit) must be greater than or equal to -1'); }
@@ -638,8 +675,10 @@ class NoRewindIterator extends IteratorIterator {
 class InfiniteIterator extends IteratorIterator {
     public function __construct(Iterator $iterator) { parent::__construct($iterator); }
     public function next(): void {
+        $this->__dfree();
         $this->__it->next();
         if (!$this->__it->valid()) { $this->__it->rewind(); }
+        $this->__dfetch();
     }
 }
 
@@ -656,7 +695,6 @@ class RegexIterator extends FilterIterator {
     const MATCH = 0; const GET_MATCH = 1; const ALL_MATCHES = 2; const SPLIT = 3; const REPLACE = 4;
     public ?string $replacement = null;
     protected $__re; protected $__mode; protected $__rflags; protected $__pflags; protected $__usePflags;
-    protected $__dual = true;
     public function __construct(Iterator $iterator, string $pattern, int $mode = self::MATCH, int $flags = 0, int $pregFlags = 0) {
         parent::__construct($iterator);
         if ($mode < 0 || $mode > 4) {
@@ -736,7 +774,7 @@ class RecursiveRegexIterator extends RegexIterator implements RecursiveIterator 
 class CachingIterator extends IteratorIterator implements ArrayAccess, Countable, Stringable {
     const CALL_TOSTRING = 1; const CATCH_GET_CHILD = 16; const TOSTRING_USE_KEY = 2;
     const TOSTRING_USE_CURRENT = 4; const TOSTRING_USE_INNER = 8; const FULL_CACHE = 256;
-    protected $__cflags = 1; protected $__valid = false; protected $__dual = true;
+    protected $__cflags = 1; protected $__valid = false;
     protected $__str = null; protected $__cache = []; protected $__children = null;
     public function __construct(Iterator $iterator, int $flags = self::CALL_TOSTRING) {
         self::__checkFlags($flags, static::class === 'RecursiveCachingIterator' ? 'RecursiveCachingIterator::__construct' : 'CachingIterator::__construct', 2);
@@ -824,12 +862,13 @@ class RecursiveCachingIterator extends CachingIterator implements RecursiveItera
 
 class RecursiveArrayIterator extends ArrayIterator implements RecursiveIterator {
     const CHILD_ARRAYS_ONLY = 4;
+    // php reads the element itself, not through an overriding current().
     public function hasChildren(): bool {
-        $c = $this->current();
+        $c = parent::current();
         return is_array($c) || (is_object($c) && !($this->getFlags() & self::CHILD_ARRAYS_ONLY));
     }
     public function getChildren(): ?RecursiveArrayIterator {
-        $c = $this->current();
+        $c = parent::current();
         if ($c instanceof static) { return $c; }
         return new static($c, $this->getFlags());
     }

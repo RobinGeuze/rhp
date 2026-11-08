@@ -1,0 +1,30 @@
+Very\Long\Namespace\Path\Svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+VERY\LONG\NAMESPACE\PATH\SVC: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+very\long\namespace\path\svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+\Very\Long\Namespace\Path\Svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+Very\Long\Namespace\Path\Svc2: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc2
+Very\Long\Namespace\Path\Alias: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+very\long\namespace\path\ALIAS: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+Very\Long\Namespace\Path\Abcdefgh: true eight false Very\Long\Namespace\Path\Abcdefgh
+Very\Long\Namespace\Path\ABCDEFGHI: true nine false Very\Long\Namespace\Path\Abcdefghi
+Very\Long\Namespace\Path\Missing: false - false -
+Very\Long\Namespace\Path\Sv: false - false -
+Very\Long\Namespace\Path\Svc22: false - false -
+Very\Long\Namespace\Path\Svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+VERY\LONG\NAMESPACE\PATH\SVC: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+very\long\namespace\path\svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+\Very\Long\Namespace\Path\Svc: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+Very\Long\Namespace\Path\Svc2: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc2
+Very\Long\Namespace\Path\Alias: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+very\long\namespace\path\ALIAS: true Very\Long\Namespace\Path\Svc::hi true Very\Long\Namespace\Path\Svc
+Very\Long\Namespace\Path\Abcdefgh: true eight false Very\Long\Namespace\Path\Abcdefgh
+Very\Long\Namespace\Path\ABCDEFGHI: true nine false Very\Long\Namespace\Path\Abcdefghi
+Very\Long\Namespace\Path\Missing: false - false -
+Very\Long\Namespace\Path\Sv: false - false -
+Very\Long\Namespace\Path\Svc22: false - false -
+DivisionByZeroError
+Error: Call to undefined method Very\Long\Namespace\Path\Svc::nope()
+DivisionByZeroError
+Error: Call to undefined method Very\Long\Namespace\Path\Svc::nope()
+DivisionByZeroError
+Error: Call to undefined method Very\Long\Namespace\Path\Svc::nope()

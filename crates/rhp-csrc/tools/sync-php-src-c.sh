@@ -68,6 +68,9 @@ ext/standard/libavifinfo/LICENSE
 ext/standard/libavifinfo/PATENTS
 ext/standard/libavifinfo/avifinfo.c
 ext/standard/libavifinfo/avifinfo.h
+sapi/cli/mime_type_map.h
+sapi/cli/php_http_parser.c
+sapi/cli/php_http_parser.h
 '
 
 # rhp-mbfl-sys: every C file and header of libmbfl (found below, so files a

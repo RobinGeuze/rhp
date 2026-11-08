@@ -1038,6 +1038,7 @@ dependencies = [
  "rhp-builtins",
  "rhp-bytecode",
  "rhp-compiler",
+ "rhp-csrc",
  "rhp-values",
  "rhp-vm",
 ]

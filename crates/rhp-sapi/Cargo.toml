@@ -2,7 +2,7 @@
 name = "rhp-sapi"
 edition.workspace = true
 version.workspace = true
-# Our code: MIT OR Apache-2.0; code translated from php-src (sapi/cgi/cgi_main.c, main/getopt.c) keeps
+# Our code: MIT OR Apache-2.0; code translated from php-src (sapi/cgi/cgi_main.c, sapi/cli/php_cli_server.c, main/getopt.c) keeps
 # the PHP License 3.01 (THIRD-PARTY-NOTICES, section 4).
 license = "(MIT OR Apache-2.0) AND PHP-3.01"
 publish.workspace = true
@@ -12,5 +12,7 @@ libc = "0.2"
 rhp-builtins = { path = "../rhp-builtins" }
 rhp-bytecode = { path = "../rhp-bytecode" }
 rhp-compiler = { path = "../rhp-compiler" }
+# sapi/cli's HTTP parser and mime types, for rhp -S.
+rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["cli_server"] }
 rhp-values = { path = "../rhp-values" }
 rhp-vm = { path = "../rhp-vm" }

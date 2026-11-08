@@ -142,14 +142,15 @@ fn builtin_refusal_names_calling_line() {
     );
 }
 
-/// rhp has no readline, so `-a` is php's error for a build without it, and
-/// a later error replaces it.
+/// `-a` (the readline shell) conflicts with `-r`, either way round, as in
+/// php_cli.c; a later error replaces it.
 #[test]
-fn interactive_shell_needs_readline() {
+fn interactive_shell_conflicts() {
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_rhp"))
             .arg("-n")
             .args(args)
+            .stdin(std::process::Stdio::null())
             .output()
             .expect("run rhp");
         (
@@ -157,13 +158,9 @@ fn interactive_shell_needs_readline() {
             out.status.code(),
         )
     };
-    let needs = "Interactive shell (-a) requires the readline extension.\n";
-    for args in [
-        &["-a"][..],
-        &["-r", "echo 1;", "-a"],
-        &["-a", "-r", "echo 1;"],
-    ] {
-        assert_eq!(run(args), (needs.to_string(), Some(1)), "{args:?}");
+    let conflict = "Either execute direct code, process stdin or use a file.\n";
+    for args in [&["-r", "echo 1;", "-a"][..], &["-a", "-r", "echo 1;"]] {
+        assert_eq!(run(args), (conflict.to_string(), Some(1)), "{args:?}");
     }
     assert_eq!(
         run(&["-a", "-f", "x.php", "-f", "y.php"]),

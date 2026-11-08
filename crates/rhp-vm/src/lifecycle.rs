@@ -187,6 +187,9 @@ impl Vm {
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),
             finished_main: None,
+            main_ret: None,
+            primary_next: false,
+            interactive: false,
             in_shutdown_scope: false,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
@@ -482,6 +485,12 @@ impl Vm {
     /// Record the top-level script's filesystem path (for `Phar::mapPhar`).
     pub fn set_main_script_path(&mut self, path: impl Into<Vec<u8>>) {
         self.main_script_path = Some(path.into());
+    }
+
+    /// php -a: after the (empty) main script, the readline shell reads and
+    /// runs statements until its input ends.
+    pub fn set_interactive(&mut self) {
+        self.interactive = true;
     }
 
     /// Skip auto_prepend_file (`-r` code).
@@ -941,9 +950,12 @@ impl Vm {
         // when the script ends.
         match prepended
             .and_then(|_| self.run_loop())
-            .and_then(|_| self.oom_interrupt())
+            .and_then(|v| self.oom_interrupt().map(|_| v))
         {
-            Ok(()) => Ok(self.sapi.exit_status),
+            Ok(v) => {
+                self.main_ret = Some(v);
+                Ok(self.sapi.exit_status)
+            }
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
         }
@@ -1010,18 +1022,14 @@ impl Vm {
     fn run_main_located(&mut self, prog: &Program) -> Result<i32, Thrown> {
         let status = match self.run(prog) {
             Ok(c) => c,
-            Err(t) => {
-                self.enter_shutdown_scope();
-                if t.is_catchable() {
-                    // The unwound frames' locals were destroyed on the way out
-                    // (php runs their destructors before the exception reaches
-                    // the handler or the fatal report).
-                    self.dtor_pending_checks = usize::MAX / 2;
-                    let _ = self.collect_released();
-                }
-                self.top_level_throw(t)?.unwrap_or(0)
-            }
+            Err(t) => self.uncaught_in_main(t)?,
         };
+        let status = if self.interactive {
+            builtins::readline_shell_run(self)
+        } else {
+            status
+        };
+        let status = self.primary_script_done(status)?;
         let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;
         // php_request_shutdown sends the headers if no output did: a throw
         // from the header_register_callback callback is reported there.
@@ -1030,6 +1038,80 @@ impl Vm {
             return Ok(self.top_level_throw(t)?.unwrap_or(255));
         }
         Ok(status)
+    }
+}
+
+impl Vm {
+    /// A throwable that left the primary script: the exception handler or
+    /// the fatal report, on the shutdown stack.
+    fn uncaught_in_main(&mut self, t: Thrown) -> Result<i32, Thrown> {
+        self.enter_shutdown_scope();
+        if t.is_catchable() {
+            // The unwound frames' locals were destroyed on the way out
+            // (php runs their destructors before the exception reaches
+            // the handler or the fatal report).
+            self.dtor_pending_checks = usize::MAX / 2;
+            let _ = self.collect_released();
+        }
+        Ok(self.top_level_throw(t)?.unwrap_or(0))
+    }
+
+    /// php_execute_script returned: tell the SAPI ([`Sapi::script_done`]),
+    /// and run the script it names next, if any, in the same request.
+    ///
+    /// [`Sapi::script_done`]: builtins::main::sapi::Sapi::script_done
+    fn primary_script_done(&mut self, mut status: i32) -> Result<i32, Thrown> {
+        while let Some(next) = self.notify_script_done() {
+            status = match self.run_next_primary(next) {
+                Ok(()) => self.sapi.exit_status,
+                Err(Thrown::Exit(code)) => code,
+                Err(t) => self.uncaught_in_main(t)?,
+            };
+        }
+        Ok(status)
+    }
+
+    /// Call the SAPI's `script_done` with the primary script's return value
+    /// (`None` when it did not return: a compile error, `exit`, a throw).
+    pub fn notify_script_done(&mut self) -> Option<Vec<u8>> {
+        let ret = self.main_ret.take();
+        let last = self
+            .last_error
+            .as_ref()
+            .map(|(t, m, f, l)| (*t, &m[..], &f[..], *l));
+        let s = &mut self.sapi;
+        s.sapi.script_done(builtins::main::sapi::ScriptDone {
+            ret: ret.as_ref(),
+            response: &mut s.response,
+            last_error: last,
+        })
+    }
+
+    /// php_execute_script for another primary script of the request: in
+    /// its directory, in the global scope of the one before.
+    fn run_next_primary(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
+        if let Some(slash) = path.iter().rposition(|&b| b == b'/') {
+            let dir = if slash == 0 {
+                &path[..1]
+            } else {
+                &path[..slash]
+            };
+            builtins::zend::virtual_cwd::set_cwd(dir);
+        }
+        let Some(mut main) = self.finished_main.take() else {
+            return Ok(());
+        };
+        main.pc = main.proto.code.len();
+        self.stack.push(main);
+        let depth = self.stack.len();
+        self.primary_next = true;
+        let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+        self.primary_next = false;
+        self.stack.truncate(depth);
+        if let Some(main) = self.stack.pop() {
+            self.finished_main = Some(main);
+        }
+        r.map(|v| self.main_ret = Some(v))
     }
 }
 

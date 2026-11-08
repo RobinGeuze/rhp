@@ -19,14 +19,14 @@ The crates are in `crates/`, the test tooling in `tools/`.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv, and opens libgd on first use.
 - **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
-  magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
+  magic database, the built-in web server's HTTP parser, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
   symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
   statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
   streams. Also an opcache-style compiled-script cache (no optimizer or JIT) and a request's engine state.
 - **rhp-sapi**: the request layer: `run_request` runs one PHP request through a `Sapi` trait that
-  the embedding server implements. Contains the CLI SAPI and a php-cgi compatible CGI SAPI.
+  the embedding server implements. Contains the CLI SAPI, the built-in web server (`rhp -S`) and a php-cgi compatible CGI SAPI.
 - **rhp-cli**: the `rhp` binary: php's command line (a script, `-r`, `-d`, `-n`, `-f`, ...) on top
   of rhp-sapi. With `--cgi`, or when the binary is named `php-cgi`, it behaves as php-cgi.
 - **rhp-difftest** (`tools/`): differential tests against a real php and php-cgi: php-src's .phpt suite,
@@ -45,9 +45,9 @@ passing, so the percentages are of all php-src tests.
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
 | Zend/tests | 5,271 | 5,396 | 97.7% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 853 | 895 | 95.3% | php-src's tests of the language, functions, classes and output |
-| sapi/cli | 23 | 117 | 19.7% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
-| sapi/cgi | 7 | 24 | 29.2% | `rhp --cgi` against php-cgi |
+| tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
+| sapi/cli | 87 | 117 | 74.4% | tests that spawn the php binary run rhp, the `-S` server tests included |
+| sapi/cgi | 16 | 24 | 66.7% | `rhp --cgi` against php-cgi |
 | ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
@@ -65,7 +65,7 @@ passing, so the percentages are of all php-src tests.
 | ext/json | 94 | 94 | 100.0% | |
 | ext/libxml | 21 | 32 | 65.6% | on libxml2 |
 | ext/mbstring | 236 | 446 | 52.9% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 807 | 876 | 92.1% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/opcache | 815 | 876 | 93.0% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
 | ext/pcre | 167 | 174 | 96.0% | PCRE2, linked statically |
@@ -74,7 +74,7 @@ passing, so the percentages are of all php-src tests.
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
-| ext/readline | 14 | 28 | 50.0% | on libedit: the functions, history and the callback interface; no interactive shell (`php -a`) |
+| ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
 | ext/reflection | 480 | 540 | 88.9% | |
 | ext/session | 249 | 269 | 92.6% | |
 | ext/simplexml | 156 | 165 | 94.5% | on libxml2 |
@@ -89,7 +89,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 3 | 2,962 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,185** | **22,219** | **72.8%** | |
+| **total** | **16,269** | **22,219** | **73.2%** | |
 
 Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

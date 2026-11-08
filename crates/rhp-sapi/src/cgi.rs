@@ -90,7 +90,7 @@ impl Sapi for CgiSapi {
     }
 
     /// `sapi_cgi_send_headers`.
-    fn send_headers(&mut self, r: &Response) {
+    fn send_headers(&mut self, r: &Response) -> bool {
         let mut out = Vec::new();
         let mut ignore_status = false;
         let mut response_status = r.code;
@@ -157,6 +157,7 @@ impl Sapi for CgiSapi {
         }
         out.extend_from_slice(b"\r\n");
         self.put(&out);
+        true
     }
 }
 

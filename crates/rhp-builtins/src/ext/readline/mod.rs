@@ -1,6 +1,6 @@
 //! ext/readline (readline.c) on libedit, the library php links: the
 //! `readline_*` functions, `READLINE_LIB` and the module's phpinfo block.
-//! The interactive shell (readline_cli.c, `php -a`) is not ported.
+//! The interactive shell (readline_cli.c, `php -a`) is in [`cli`].
 //!
 //! libedit calls back into PHP (the completion function, the callback
 //! interface's line handler) from inside `readline()` and
@@ -17,6 +17,7 @@ use rhp_values::{PhpArray, Value};
 use crate::zend::zpp::{path_param, require_callback, str_param, zval_get_long, zval_get_string};
 use crate::{Host, Thrown};
 
+pub mod cli;
 mod sys;
 
 thread_local! {

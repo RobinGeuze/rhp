@@ -310,4 +310,7 @@ pub(crate) const INI_TABLE: &[(&str, &str, Option<&str>, u8)] = &[
     ("cgi-fcgi", "cgi.redirect_status_env", None, 4),
     ("cgi-fcgi", "cgi.rfc2616_headers", Some("0"), 7),
     ("cgi-fcgi", "fastcgi.logging", Some("1"), 4),
+    // The built-in web server's (sapi/cli/php_cli_server.c), present only
+    // under the cli-server SAPI.
+    ("cli_server", "cli_server.color", Some("0"), 7),
 ];

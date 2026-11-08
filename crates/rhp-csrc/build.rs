@@ -13,6 +13,7 @@ fn main() {
     let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
     let avifinfo = std::env::var_os("CARGO_FEATURE_AVIFINFO").is_some();
     let fileinfo = std::env::var_os("CARGO_FEATURE_FILEINFO").is_some();
+    let cli_server = std::env::var_os("CARGO_FEATURE_CLI_SERVER").is_some();
     println!("cargo:rerun-if-changed=build.rs");
 
     // The shim, for every crate that compiles php-src C (rhp-mbfl-sys reads
@@ -127,6 +128,25 @@ fn main() {
         b.file(dir.join("php_libmagic.c"))
             .file("glue/fileinfo.c")
             .compile("rhp_csrc_fileinfo");
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
+    if cli_server {
+        // sapi/cli's HTTP request parser and mime type table, for rhp -S:
+        // plain C with no php headers (glue/cli_server stands in for
+        // php_config.h).
+        let dir = Path::new("vendor/php-src/sapi/cli");
+        let mut b = cc::Build::new();
+        b.include(dir)
+            .include("glue/cli_server")
+            .opt_level(2)
+            .warnings(false)
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_cli_server.h"))
+            .file(dir.join("php_http_parser.c"))
+            .file("glue/cli_server.c")
+            .compile("rhp_csrc_cli_server");
         rerun(&["glue", "vendor/php-src"]);
     }
 

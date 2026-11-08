@@ -191,6 +191,13 @@ fn ini_table(cli: &str, cgi: &str) -> Result<String, String> {
     for r in &cgi_rows {
         line(&mut o, r);
     }
+    // The built-in web server's directive (sapi/cli/php_cli_server.c's
+    // PHP_INI_BEGIN): ini_get_all() only shows it under php -S.
+    o.push_str(
+        "    // The built-in web server's (sapi/cli/php_cli_server.c), present only\n    \
+         // under the cli-server SAPI.\n    \
+         (\"cli_server\", \"cli_server.color\", Some(\"0\"), 7),\n",
+    );
     o.push_str("];\n");
     Ok(o)
 }

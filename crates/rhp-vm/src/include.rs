@@ -66,7 +66,7 @@ impl Vm {
     /// The diagnostics php's compiler raised for a file just loaded: once
     /// per compile, or on every load from opcache with
     /// `opcache.record_warnings`.
-    pub(crate) fn emit_compile_diags(&mut self, prog: &Program) {
+    pub fn emit_compile_diags(&mut self, prog: &Program) {
         if prog.compile_diags.is_empty()
             || (prog.compile_diags_reported.replace(true)
                 && !ini_bool(&self.ini_get(b"opcache.record_warnings").unwrap_or_default()))
@@ -224,6 +224,13 @@ impl Vm {
             (64, "Fatal error")
         };
         self.display_error(ty, label, message.as_bytes(), file.as_bytes(), line as i64);
+        // php_error_cb records it (error_get_last(), the cli-server's log).
+        self.last_error = Some((
+            ty,
+            message.as_bytes().to_vec(),
+            file.as_bytes().to_vec(),
+            line as i64,
+        ));
     }
 
     pub(crate) fn do_include(
@@ -232,6 +239,10 @@ impl Vm {
         raw_path: Vec<u8>,
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
+        // Taken first: user code that runs while the file loads (a stream
+        // wrapper, an error handler for a compile warning, an autoloader)
+        // may include files of its own.
+        let primary = std::mem::take(&mut self.primary_next);
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
@@ -422,7 +433,11 @@ impl Vm {
             return Err(t);
         }
         let (main, unit) = self.install_file(&realpath, &prog)?;
-        let ret = self.run_included(main, unit, top, kind.name())?;
+        let ret = if primary {
+            self.run_as_primary(main, unit)?
+        } else {
+            self.run_included(main, unit, top, kind.name())?
+        };
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -796,6 +811,71 @@ impl Vm {
             self.include_statics.retain(|k, _| k.0 < base);
         }
         ret
+    }
+
+    /// php -a's `zend_eval_stringl(code, NULL, name)` under `zend_try`:
+    /// the code compiled as `name` and run in the global scope as a
+    /// top-level script. A compile error is displayed, an uncaught
+    /// throwable reported as a warning, and a fatal error or `exit` only
+    /// sets the exit status.
+    pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        let mut source = b"<?php ".to_vec();
+        source.extend_from_slice(code);
+        let Some(mut cb) = self.includer.take() else {
+            return;
+        };
+        let compiled = cb(name, &source);
+        self.includer = Some(cb);
+        let prog = match compiled {
+            Ok(p) => Rc::new(p),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            }) => {
+                self.emit_parse_diags(name.as_bytes(), &diags);
+                self.report_parse_error(class, &message, name, line);
+                return;
+            }
+            Err(e) => {
+                if let Thrown::Exit(code) = self.include_error(e, name, true) {
+                    self.sapi.exit_status = code;
+                }
+                return;
+            }
+        };
+        self.emit_compile_diags(&prog);
+        let r = self
+            .install_file(b"", &prog)
+            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        match r {
+            Ok(_) => {}
+            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(t) => {
+                // The global scope survives the unwound frames.
+                if !self.stack.is_empty() {
+                    self.stack.truncate(1);
+                    self.finished_main = self.stack.pop();
+                }
+                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
+            }
+        }
+        if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
+            self.sapi.exit_status = code;
+        }
+    }
+
+    /// A loaded file run as the request's next primary script: its `{main}`
+    /// replaces the finished one at the bottom of the stack, in the global
+    /// scope.
+    fn run_as_primary(&mut self, main: Rc<FunctionProto>, unit: UnitId) -> Result<Value, Thrown> {
+        let mut frame = Frame::new(main, unit, 0);
+        self.bind_superglobals(&mut frame);
+        self.bind_global_scope(&mut frame);
+        self.stack.clear();
+        self.stack.push(frame);
+        self.run_loop()
     }
 
     /// An include/eval frame that is finishing shares its caller's variables

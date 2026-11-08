@@ -1,0 +1,5 @@
+<pre><code style="color: #000000"><span style="color: #0000BB">&lt;?php
+$a </span><span style="color: #007700">= </span><span style="color: #0000BB">1</span><span style="color: #007700">; </span><span style="color: #FF8000">// c
+/* x */ </span><span style="color: #007700">echo </span><span style="color: #0000BB">$a</span><span style="color: #007700">;
+function </span><span style="color: #0000BB">f</span><span style="color: #007700">() { static </span><span style="color: #0000BB">$x </span><span style="color: #007700">= </span><span style="color: #0000BB">1</span><span style="color: #007700">; }
+</span></code></pre>

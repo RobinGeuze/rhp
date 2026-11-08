@@ -114,6 +114,8 @@ class Reflection {
         }
         return $o;
     }
+    // zend_reflection_class_factory: an enum gets a ReflectionEnum.
+    public static function __class($n) { return enum_exists($n, false) ? new ReflectionEnum($n) : new ReflectionClass($n); }
     public static function __type($t) {
         if ($t === null) { return null; }
         if ($t['kind'] === 'named') { return ReflectionNamedType::__of($t); }
@@ -244,8 +246,8 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     public function isVariadic(): bool { return $this->__i['variadic']; }
     public function isStatic(): bool { return $this->__i['static']; }
     public function getClosureThis(): ?object { return $this->__i['this'] ?? null; }
-    public function getClosureScopeClass(): ?ReflectionClass { $s = $this->__i['scope'] ?? null; return $s === null ? null : new ReflectionClass($s); }
-    public function getClosureCalledClass(): ?ReflectionClass { $s = $this->__i['calledScope'] ?? null; return $s === null ? null : new ReflectionClass($s); }
+    public function getClosureScopeClass(): ?ReflectionClass { $s = $this->__i['scope'] ?? null; return $s === null ? null : Reflection::__class($s); }
+    public function getClosureCalledClass(): ?ReflectionClass { $s = $this->__i['calledScope'] ?? null; return $s === null ? null : Reflection::__class($s); }
     public function getClosureUsedVariables(): array { return $this->__i['used'] ?? []; }
     public function getDocComment(): string|false { return $this->__i['doc']; }
     public function getStartLine(): int|false { return $this->__i['start']; }
@@ -471,7 +473,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         }
         return __reflect_invoke($object, $this->class, $this->name, $args);
     }
-    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+    public function getDeclaringClass(): ReflectionClass { return Reflection::__class($this->class); }
     public function getPrototype(): ReflectionMethod {
         $p = $this->__i['prototype'];
         if ($p === null) { throw new ReflectionException('Method ' . ($this->__i['reflClass'] ?? $this->class) . '::' . $this->name . ' does not have a prototype'); }
@@ -545,9 +547,9 @@ class ReflectionParameter implements Reflector {
         return Reflection::__fn($this->__l);
     }
     public function getDeclaringClass(): ?ReflectionClass {
-        if (isset($this->__f['class'])) { return new ReflectionClass($this->__f['class']); }
+        if (isset($this->__f['class'])) { return Reflection::__class($this->__f['class']); }
         $s = $this->__f['scope'] ?? null;
-        return $s === null ? null : new ReflectionClass($s);
+        return $s === null ? null : Reflection::__class($s);
     }
     public function getClass(): ?ReflectionClass {
         __reflect('deprecated', 'Method ReflectionParameter::getClass() is deprecated since 8.0, use ReflectionParameter::getType() instead');
@@ -565,7 +567,7 @@ class ReflectionParameter implements Reflector {
         $n = $t['name'];
         if ($n === 'self' || $n === 'static') { return $this->getDeclaringClass(); }
         if ($n === 'parent') { return $this->getDeclaringClass()->getParentClass() ?: null; }
-        return new ReflectionClass($n);
+        return Reflection::__class($n);
     }
     public function hasType(): bool { return $this->__p['type'] !== null; }
     public function getType(): ?ReflectionType { return Reflection::__type($this->__p['type']); }
@@ -808,10 +810,10 @@ class ReflectionClass implements Reflector {
     public function getReflectionConstant(string $name): ReflectionClassConstant|false {
         return $this->hasConstant($name) ? new ReflectionClassConstant($this->name, $name) : false;
     }
-    public function getInterfaces(): array { $o = []; foreach ($this->__c['interfaces'] as $i) { $o[$i] = new ReflectionClass($i); } return $o; }
+    public function getInterfaces(): array { $o = []; foreach ($this->__c['interfaces'] as $i) { $o[$i] = Reflection::__class($i); } return $o; }
     public function getInterfaceNames(): array { return $this->__c['interfaces']; }
     public function isInterface(): bool { return $this->__c['kind'] === 'interface'; }
-    public function getTraits(): array { $o = []; foreach ($this->__c['traits'] as $t) { $o[$t] = new ReflectionClass($t); } return $o; }
+    public function getTraits(): array { $o = []; foreach ($this->__c['traits'] as $t) { $o[$t] = Reflection::__class($t); } return $o; }
     public function getTraitNames(): array { return $this->__c['traits']; }
     public function getTraitAliases(): array { return $this->__c['trait_aliases']; }
     public function isTrait(): bool { return $this->__c['kind'] === 'trait'; }
@@ -885,7 +887,7 @@ class ReflectionClass implements Reflector {
         if (!($object instanceof $this->name)) { throw new TypeError('ReflectionClass::getLazyInitializer(): Argument #1 ($object) must be of type ' . $this->name . ', ' . get_debug_type($object) . ' given'); }
         return __reflect('lazy_initializer', $object);
     }
-    public function getParentClass(): ReflectionClass|false { return $this->__c['parent'] === false ? false : new ReflectionClass($this->__c['parent']); }
+    public function getParentClass(): ReflectionClass|false { return $this->__c['parent'] === false ? false : Reflection::__class($this->__c['parent']); }
     public function isSubclassOf(ReflectionClass|string $class): bool {
         if ($class instanceof ReflectionClass) { $class = $class->name; }
         $c = __reflect('class', $class, true);
@@ -1091,7 +1093,7 @@ class ReflectionProperty implements Reflector {
     public function isVirtual(): bool { return ($this->__i['modifiers'] & 512) !== 0; }
     public function isPromoted(): bool { return $this->__i['promoted']; }
     public function getModifiers(): int { return $this->__i['modifiers']; }
-    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+    public function getDeclaringClass(): ReflectionClass { return Reflection::__class($this->class); }
     public function getDocComment(): string|false { return $this->__i['doc']; }
     public function setAccessible(bool $accessible): void {}
     public function getType(): ?ReflectionType { return Reflection::__type($this->__i['type']); }
@@ -1174,7 +1176,7 @@ class ReflectionClassConstant implements Reflector {
     public function isProtected(): bool { return $this->__i['vis'] === 2; }
     public function isFinal(): bool { return $this->__i['final']; }
     public function getModifiers(): int { return $this->__i['modifiers']; }
-    public function getDeclaringClass(): ReflectionClass { return new ReflectionClass($this->class); }
+    public function getDeclaringClass(): ReflectionClass { return Reflection::__class($this->class); }
     public function getDocComment(): string|false { return $this->__i['doc']; }
     public function getAttributes(?string $name = null, int $flags = 0): array { return Reflection::__attrs($this->__i['attrs'], $name, $flags, 'ReflectionClassConstant'); }
     public function isEnumCase(): bool { return $this->__i['case']; }
@@ -1286,7 +1288,7 @@ class ReflectionExtension implements Reflector {
     public function info(): void { __reflect_ext('info', $this->name); }
     public function getClasses(): array {
         $o = [];
-        foreach (__reflect('ext_classes', $this->name) as $c) { $o[$c] = new ReflectionClass($c); }
+        foreach (__reflect('ext_classes', $this->name) as $c) { $o[$c] = Reflection::__class($c); }
         return $o;
     }
     public function getClassNames(): array { return __reflect('ext_classes', $this->name); }

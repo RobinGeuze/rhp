@@ -5719,6 +5719,7 @@ ext/date/tests/bug-gh11310-1.phpt
 ext/date/tests/bug-gh11310-2.phpt
 ext/date/tests/bug-gh11368.phpt
 ext/date/tests/bug-gh11416.phpt
+ext/date/tests/bug-gh11600.phpt
 ext/date/tests/bug-gh15582.phpt
 ext/date/tests/bug-gh16037.phpt
 ext/date/tests/bug-gh18076.phpt
@@ -6232,6 +6233,8 @@ ext/date/tests/timezone_offset_get_error.phpt
 ext/date/tests/timezone_open_basic1.phpt
 ext/date/tests/timezone_open_warning.phpt
 ext/date/tests/timezone_transitions_get_basic1.phpt
+ext/date/tests/timezone_version_get.phpt
+ext/date/tests/timezone_version_get_basic1.phpt
 ext/date/tests/timezones-list.phpt
 ext/date/tests/timezones.phpt
 ext/date/tests/unserialize-test.phpt
@@ -7980,6 +7983,7 @@ ext/libxml/tests/bug54138.phpt
 ext/libxml/tests/bug61367-read_2.phpt
 ext/libxml/tests/bug61367-write.phpt
 ext/libxml/tests/bug63389.phpt
+ext/libxml/tests/bug79191.phpt
 ext/libxml/tests/image/imagetype_svg.phpt
 ext/libxml/tests/libxml_disable_entity_loader_2.phpt
 ext/libxml/tests/libxml_entity_loading_disabled_by_default.phpt
@@ -10134,6 +10138,7 @@ ext/reflection/tests/bug60357.phpt
 ext/reflection/tests/bug61388.phpt
 ext/reflection/tests/bug62715.phpt
 ext/reflection/tests/bug63399.phpt
+ext/reflection/tests/bug64007.phpt
 ext/reflection/tests/bug64239.phpt
 ext/reflection/tests/bug64936.phpt
 ext/reflection/tests/bug66430.phpt
@@ -10908,6 +10913,7 @@ ext/spl/tests/SplHeap_isEmpty.phpt
 ext/spl/tests/SplHeap_serialize_error_handling.phpt
 ext/spl/tests/SplHeap_serialize_format.phpt
 ext/spl/tests/SplHeap_serialize_indexed_format.phpt
+ext/spl/tests/SplHeap_serialize_inheritance_safety.phpt
 ext/spl/tests/SplHeap_with_by_reference_compare.phpt
 ext/spl/tests/SplMaxHeap_serialize_complex.phpt
 ext/spl/tests/SplMinHeap_serialize_complex.phpt
@@ -11298,6 +11304,7 @@ ext/spl/tests/spl_fileinfo_getlinktarget_basic.phpt
 ext/spl/tests/spl_heap_count_basic.phpt
 ext/spl/tests/spl_heap_is_empty_basic.phpt
 ext/spl/tests/spl_heap_isempty.phpt
+ext/spl/tests/spl_heap_iteration_error.phpt
 ext/spl/tests/spl_iterator_apply_error.phpt
 ext/spl/tests/spl_iterator_apply_error_001.phpt
 ext/spl/tests/spl_iterator_caching_count_basic.phpt
@@ -15314,6 +15321,7 @@ sapi/cli/tests/012.phpt
 sapi/cli/tests/015.phpt
 sapi/cli/tests/019.phpt
 sapi/cli/tests/021.phpt
+sapi/cli/tests/025.phpt
 sapi/cli/tests/argv_mb.phpt
 sapi/cli/tests/bug44564.phpt
 sapi/cli/tests/bug61546.phpt

@@ -436,15 +436,21 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
     public function isDestructor(): bool { return strtolower($this->name) === '__destruct'; }
     public function getClosure(?object $object = null): Closure {
         if (!$this->__i['static'] && $object === null) {
-            throw new TypeError('ReflectionMethod::getClosure(): Argument #1 ($object) must be provided for non-static methods');
+            throw new ValueError('ReflectionMethod::getClosure(): Argument #1 ($object) cannot be null for non-static methods');
+        }
+        if (!$this->__i['static'] && !($object instanceof $this->class)) {
+            throw new ReflectionException('Given object is not an instance of the class this method was declared in');
         }
         return __reflect('closure', $this->__l, $object);
     }
     public function getModifiers(): int { return $this->__i['modifiers']; }
     // invoke() repeats invokeArgs() instead of calling it: a nested prelude
     // call would add a frame to the backtrace of what the method throws.
-    public function invoke(?object $object = null, mixed ...$args): mixed {
+    // reflection_method_invoke refuses an abstract method before it parses
+    // the arguments.
+    public function invoke($object = null, mixed ...$args): mixed {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
+        $object = __zpp_arg('ReflectionMethod::invoke', 1, 'object', '?object', $object);
         if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
         if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
         if ($this->__l instanceof Closure) {
@@ -453,8 +459,10 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
         }
         return __reflect_invoke($object, $this->class, $this->name, $args);
     }
-    public function invokeArgs(?object $object = null, array $args = []): mixed {
+    public function invokeArgs($object = null, $args = []): mixed {
         if ($this->__i['abstract']) { throw new ReflectionException('Trying to invoke abstract method ' . $this->class . '::' . $this->name . '()'); }
+        $object = __zpp_arg('ReflectionMethod::invokeArgs', 1, 'object', '?object', $object);
+        $args = __zpp_arg('ReflectionMethod::invokeArgs', 2, 'args', 'array', $args);
         if ($this->__i['static']) { return __reflect_invoke(null, $this->class, $this->name, $args); }
         if ($object === null) { throw new ReflectionException('Trying to invoke non static method ' . $this->class . '::' . $this->name . '() without an object'); }
         if ($this->__l instanceof Closure) {

@@ -471,7 +471,13 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     };
     let retval_utf8 = |host: &mut dyn Host, u: &[UChar]| -> Result<Value, Thrown> {
         match super::utf16_to_utf8(u) {
-            Ok(s) => Ok(Value::str(s)),
+            Ok(s) => {
+                // the conversion resets the code, then INTL_METHOD_CHECK_STATUS
+                // copies it to the global one (an empty result's warning goes)
+                dfo.err.borrow_mut().code = sys::U_ZERO_ERROR;
+                error::error_set_code(sys::U_ZERO_ERROR);
+                Ok(Value::str(s))
+            }
             Err(st) => {
                 check(host, st, "Error converting value to UTF-8")?;
                 Ok(Value::Bool(false))

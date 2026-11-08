@@ -81,7 +81,7 @@ class Reflection {
                 $c = __reflect('class', $d[0], true);
                 if ($c === null || !__reflect('is_a', $c['name'], $base)) { continue; }
             }
-            $out[] = new ReflectionAttribute($d, $descs);
+            $out[] = ReflectionAttribute::__of($d, $descs);
         }
         return $out;
     }
@@ -178,7 +178,8 @@ class ReflectionAttribute implements Reflector {
     const IS_INSTANCEOF = 2;
     public string $name;
     private $__d; private $__all;
-    private function __construct($d, $all = []) { $this->__d = $d; $this->__all = $all; $this->name = $d[0]; }
+    private function __construct() { throw new ReflectionException('Cannot directly instantiate ReflectionAttribute'); }
+    public static function __of($d, $all) { $o = __reflect_new_instance_noctor(static::class); $o->__d = $d; $o->__all = $all; $o->name = $d[0]; return $o; }
     public function getName(): string { return $this->__d[0]; }
     public function getTarget(): int { return $this->__d[1]; }
     public function isRepeated(): bool { return $this->__d[2]; }

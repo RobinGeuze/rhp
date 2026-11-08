@@ -597,6 +597,12 @@ impl Vm {
                     Some(FnSubject::Closure { cd, .. } | FnSubject::Trampoline { cd, .. }) => {
                         Value::Closure(cd)
                     }
+                    // A static method's closure has no `$this`; its scope and
+                    // called scope are the method's class (zend_create_fake_closure).
+                    Some(FnSubject::Method { m, .. }) if m.is_static => {
+                        let decl = m.defining_class;
+                        self.method_closure(&m, None, decl)
+                    }
                     Some(FnSubject::Method { class, m }) => {
                         let called = this.as_ref().map(|h| h.borrow().class).unwrap_or(class);
                         self.method_closure(&m, this, called)

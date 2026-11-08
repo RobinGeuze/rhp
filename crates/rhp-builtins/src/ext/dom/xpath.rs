@@ -207,6 +207,7 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
     let expr = bytes(args, 0);
     let context = arg(args, 1);
     let intern = this_xpath(this);
+    let modern = class_of(cx.host, this) == "Dom\\XPath";
     let register_node_ns = if args.len() >= 3 {
         super::boolean(args, 2)
     } else {
@@ -218,6 +219,9 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
     }
     let docp = unsafe { sys::rhp_xml_xpath_doc(ctxp) };
     if docp.is_null() {
+        if modern {
+            return Err(Thrown::error("Error", "Invalid XPath Document Pointer"));
+        }
         cx.warn("Invalid XPath Document Pointer")?;
         return Ok(Value::Bool(false));
     }
@@ -238,7 +242,16 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
         let old_ns = sys::rhp_xml_xpath_namespaces(ctxp, &mut old_nr);
         sys::rhp_xml_xpath_set_node(ctxp, nodep);
         let mut list: *mut *mut sys::XmlNs = ptr::null_mut();
-        if register_node_ns && !nodep.is_null() {
+        let mut modern_list: Vec<*mut sys::XmlNs> = Vec::new();
+        if register_node_ns && !nodep.is_null() && modern {
+            modern_list =
+                super::nscompat::in_scope_ns(super::modern::mapper(&intern), nodep, false);
+            sys::rhp_xml_xpath_set_namespaces(
+                ctxp,
+                modern_list.as_mut_ptr(),
+                modern_list.len() as c_int,
+            );
+        } else if register_node_ns && !nodep.is_null() {
             list = sys::xmlGetNsList((*nodep).doc, nodep);
             let mut count = 0;
             if !list.is_null() {
@@ -260,9 +273,10 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
         state(&intern).borrow_mut().evaluation_depth -= 1;
         sys::rhp_xml_xpath_set_node(ctxp, old_node);
         sys::rhp_xml_xpath_set_namespaces(ctxp, old_ns, old_nr);
-        if register_node_ns && !nodep.is_null() {
+        if !list.is_null() {
             sys::xml_free(list);
         }
+        drop(modern_list);
         match r {
             Ok(o) => o,
             Err(t) => {
@@ -273,6 +287,12 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
         }
     };
     if xpathobjp.is_null() {
+        if modern {
+            return Err(Thrown::error(
+                "Error",
+                "Could not evaluate XPath expression",
+            ));
+        }
         return Ok(Value::Bool(false));
     }
     let result = (|| -> Result<Value, Thrown> {
@@ -285,6 +305,14 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
                     for i in 0..(*set).nodeNr as usize {
                         let node = *(*set).nodeTab.add(i);
                         let child = if (*node).type_ == sys::XML_NAMESPACE_DECL {
+                            if modern {
+                                super::throw_msg(
+                                    cx,
+                                    super::NOT_SUPPORTED_ERR,
+                                    "The namespace axis is not well-defined in the living DOM specification. Use Dom\\Element::getInScopeNamespaces() or Dom\\Element::getDescendantNamespaces() instead.",
+                                    true,
+                                )?;
+                            }
                             namespace_result(cx, node, &intern)?
                         } else {
                             let parent = intern_for_doc(&intern, (*node).doc);
@@ -293,7 +321,12 @@ fn eval(cx: &mut Cx, this: &Value, args: &[Value], query: bool) -> Result<Value,
                         nodes.push(child);
                     }
                 }
-                return lists::nodeset_list(cx, nodes);
+                let class: &[u8] = if modern {
+                    b"Dom\\NodeList"
+                } else {
+                    b"DOMNodeList"
+                };
+                return lists::nodeset_list(cx, class, nodes);
             }
             Ok(match t {
                 sys::XPATH_BOOLEAN => Value::Bool((*xpathobjp).boolval != 0),

@@ -150,9 +150,29 @@ pub fn elements_by_tag_name_ns_raw(
     }
     let local_any = local == b"*";
     let ns_any = ns.is_none_or(|n| n == b"*");
+    let match_qname = ns.is_none() && super::nscompat::follow_spec_node(basep);
+    let local_lower = if match_qname {
+        local.to_ascii_lowercase()
+    } else {
+        Vec::new()
+    };
+    // dom_match_qualified_name_for_tag_name_equality
+    let name_matches = |n: *mut XmlNode| unsafe {
+        if !match_qname {
+            return b((*n).name) == local;
+        }
+        let l = if (*(*n).doc).type_ == sys::XML_HTML_DOCUMENT_NODE
+            && super::nscompat::ns_is_fast(n, &super::nscompat::HTML)
+        {
+            &local_lower[..]
+        } else {
+            local
+        };
+        super::modern::match_qualified_name(l, n)
+    };
     unsafe {
         while *cur <= index {
-            if (*nodep).type_ == sys::XML_ELEMENT_NODE && (local_any || b((*nodep).name) == local) {
+            if (*nodep).type_ == sys::XML_ELEMENT_NODE && (local_any || name_matches(nodep)) {
                 let nsp = (*nodep).ns;
                 let matches = ns_any
                     || (ns == Some(b"") && nsp.is_null())

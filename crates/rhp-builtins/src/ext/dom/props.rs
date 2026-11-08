@@ -23,6 +23,8 @@ enum Ty {
     Str,
     NStr,
     Bool,
+    /// `?Dom\HTMLElement` (Dom\Document::$body).
+    HtmlElement,
 }
 
 struct Prop {
@@ -249,10 +251,273 @@ static XPATH: &[Prop] = &[
     ),
 ];
 
+// ---- the Dom\ classes (php_dom.c's MINIT, modern half) ----
+
+const MN: &str = "Dom\\Node";
+static M_NODE: &[Prop] = &[
+    r("nodeType", MN, node_type),
+    r("nodeName", MN, node_name),
+    r("baseURI", MN, m_base_uri),
+    r("isConnected", MN, is_connected_read),
+    r("ownerDocument", MN, owner_document),
+    r("parentNode", MN, parent_node),
+    r("parentElement", MN, parent_element),
+    r("childNodes", MN, m_child_nodes),
+    r("firstChild", MN, first_child),
+    r("lastChild", MN, last_child),
+    r("previousSibling", MN, previous_sibling),
+    r("nextSibling", MN, next_sibling),
+    r("nodeValue", MN, node_value),
+    r("textContent", MN, text_content),
+];
+static M_NODE_VALUE_RW: &[Prop] = &[w("nodeValue", MN, node_value, node_value_write, Ty::NStr)];
+static M_TEXT_CONTENT_RW: &[Prop] = &[w(
+    "textContent",
+    MN,
+    text_content,
+    text_content_write,
+    Ty::NStr,
+)];
+
+const MDF: &str = "Dom\\DocumentFragment";
+static M_FRAGMENT: &[Prop] = &[
+    r("children", MDF, m_children),
+    r("firstElementChild", MDF, first_element_child),
+    r("lastElementChild", MDF, last_element_child),
+    r("childElementCount", MDF, child_element_count),
+];
+
+const MD: &str = "Dom\\Document";
+static M_DOCUMENT: &[Prop] = &[
+    r("implementation", MD, m_doc_implementation),
+    w("URL", MD, m_doc_uri, doc_uri_write, Ty::Str),
+    w("documentURI", MD, m_doc_uri, doc_uri_write, Ty::Str),
+    w(
+        "characterSet",
+        MD,
+        doc_encoding,
+        m_doc_encoding_write,
+        Ty::Str,
+    ),
+    w("charset", MD, doc_encoding, m_doc_encoding_write, Ty::Str),
+    w(
+        "inputEncoding",
+        MD,
+        doc_encoding,
+        m_doc_encoding_write,
+        Ty::Str,
+    ),
+    r("doctype", MD, doc_doctype),
+    r("documentElement", MD, doc_document_element),
+    r("children", MD, m_children),
+    r("firstElementChild", MD, first_element_child),
+    r("lastElementChild", MD, last_element_child),
+    r("childElementCount", MD, child_element_count),
+    w("body", MD, m_body, m_body_write, Ty::HtmlElement),
+    r("head", MD, m_head),
+    w("title", MD, m_title, m_title_write, Ty::Str),
+];
+
+const MX: &str = "Dom\\XMLDocument";
+static M_XML_DOCUMENT: &[Prop] = &[
+    r("xmlEncoding", MX, doc_encoding),
+    w(
+        "xmlStandalone",
+        MX,
+        doc_standalone,
+        doc_standalone_write,
+        Ty::Bool,
+    ),
+    w("xmlVersion", MX, doc_version, m_doc_version_write, Ty::Str),
+    w("formatOutput", MX, doc_format, doc_format_write, Ty::Bool),
+];
+
+const MCD: &str = "Dom\\CharacterData";
+static M_CHARDATA: &[Prop] = &[
+    w("data", MCD, chardata_data, chardata_data_write, Ty::Str),
+    r("length", MCD, chardata_length),
+    r("previousElementSibling", MCD, previous_element_sibling),
+    r("nextElementSibling", MCD, next_element_sibling),
+];
+
+const MA: &str = "Dom\\Attr";
+static M_ATTR: &[Prop] = &[
+    r("namespaceURI", MA, namespace_uri),
+    r("prefix", MA, m_prefix),
+    r("localName", MA, local_name),
+    r("name", MA, attr_name),
+    w("value", MA, attr_value, attr_value_write, Ty::Str),
+    r("ownerElement", MA, attr_owner_element),
+    r("specified", MA, attr_specified),
+];
+
+const ME: &str = "Dom\\Element";
+static M_ELEMENT: &[Prop] = &[
+    r("namespaceURI", ME, namespace_uri),
+    r("prefix", ME, m_prefix),
+    r("localName", ME, local_name),
+    r("tagName", ME, tag_name),
+    w("id", ME, id_read, id_write, Ty::Str),
+    w("className", ME, class_name, class_name_write, Ty::Str),
+    r("classList", ME, m_class_list),
+    r("attributes", ME, attributes),
+    r("children", ME, m_children),
+    r("firstElementChild", ME, first_element_child),
+    r("lastElementChild", ME, last_element_child),
+    r("childElementCount", ME, child_element_count),
+    r("previousElementSibling", ME, previous_element_sibling),
+    r("nextElementSibling", ME, next_element_sibling),
+    w("innerHTML", ME, m_inner_html, m_inner_html_write, Ty::Str),
+    w("outerHTML", ME, m_outer_html, m_outer_html_write, Ty::Str),
+    w(
+        "substitutedNodeValue",
+        ME,
+        m_substituted,
+        text_content_write,
+        Ty::Str,
+    ),
+];
+
+static M_TEXT: &[Prop] = &[r("wholeText", "Dom\\Text", whole_text)];
+
+const MDT: &str = "Dom\\DocumentType";
+static M_DOCTYPE: &[Prop] = &[
+    r("name", MDT, doctype_name),
+    r("entities", MDT, m_doctype_entities),
+    r("notations", MDT, m_doctype_notations),
+    r("publicId", MDT, doctype_public_id),
+    r("systemId", MDT, doctype_system_id),
+    r("internalSubset", MDT, doctype_internal_subset),
+];
+
+const MEN: &str = "Dom\\Entity";
+static M_ENTITY: &[Prop] = &[
+    r("publicId", MEN, entity_public_id),
+    r("systemId", MEN, entity_system_id),
+    r("notationName", MEN, entity_notation_name),
+];
+
+static M_ENTITY_REF_OVERRIDES: &[Prop] = &[
+    r("firstChild", MN, entityref_child),
+    r("lastChild", MN, entityref_child),
+    r("textContent", MN, entityref_text_content),
+    r("childNodes", MN, m_entityref_child_nodes),
+];
+
+const MPI: &str = "Dom\\ProcessingInstruction";
+static M_PROC_INST: &[Prop] = &[
+    r("target", MPI, pi_target),
+    w("data", MPI, pi_data, pi_data_write, Ty::Str),
+];
+
+static M_NODELIST: &[Prop] = &[r("length", "Dom\\NodeList", nodelist_length)];
+static M_HTMLCOLLECTION: &[Prop] = &[r("length", "Dom\\HTMLCollection", nodelist_length)];
+static M_NAMEDNODEMAP: &[Prop] = &[r("length", "Dom\\NamedNodeMap", map_length)];
+static M_DTDNAMEDNODEMAP: &[Prop] = &[r("length", "Dom\\DtdNamedNodeMap", map_length)];
+
+const MXP: &str = "Dom\\XPath";
+static M_XPATH: &[Prop] = &[
+    r("document", MXP, xpath_document),
+    w(
+        "registerNodeNamespaces",
+        MXP,
+        xpath_register_ns,
+        xpath_register_ns_write,
+        Ty::Bool,
+    ),
+];
+
+const MTL: &str = "Dom\\TokenList";
+static M_TOKENLIST: &[Prop] = &[
+    r("length", MTL, super::collections::tl_length),
+    w(
+        "value",
+        MTL,
+        super::collections::tl_value,
+        super::collections::tl_value_write,
+        Ty::Str,
+    ),
+];
+
+/// A table's own properties, then `merge`d ones it lacks, then the
+/// overwrites (DOM_OVERWRITE_PROP_HANDLER).
+fn merged(parts: &[&'static [Prop]], overwrites: &[&'static [Prop]]) -> Vec<&'static Prop> {
+    let mut out: Vec<&'static Prop> = Vec::new();
+    for part in parts {
+        for p in part.iter() {
+            if !out.iter().any(|q| q.name == p.name) {
+                out.push(p);
+            }
+        }
+    }
+    for o in overwrites {
+        for p in o.iter() {
+            if let Some(slot) = out.iter_mut().find(|q| q.name == p.name) {
+                *slot = p;
+            }
+        }
+    }
+    out
+}
+
+fn build_modern_table(base: &str) -> Option<Vec<&'static Prop>> {
+    let chardata = || merged(&[M_CHARDATA, M_NODE], &[M_NODE_VALUE_RW, M_TEXT_CONTENT_RW]);
+    let text = || {
+        let mut t: Vec<&'static Prop> = M_TEXT.iter().collect();
+        for p in chardata() {
+            if !t.iter().any(|q| q.name == p.name) {
+                t.push(p);
+            }
+        }
+        t
+    };
+    let document = || merged(&[M_DOCUMENT, M_NODE], &[]);
+    Some(match base {
+        "Dom\\Node" | "Dom\\Notation" => merged(&[M_NODE], &[]),
+        "Dom\\DocumentFragment" => merged(&[M_FRAGMENT, M_NODE], &[M_TEXT_CONTENT_RW]),
+        "Dom\\Document" | "Dom\\HTMLDocument" => document(),
+        "Dom\\XMLDocument" => {
+            let mut t: Vec<&'static Prop> = M_XML_DOCUMENT.iter().collect();
+            for p in document() {
+                if !t.iter().any(|q| q.name == p.name) {
+                    t.push(p);
+                }
+            }
+            t
+        }
+        "Dom\\CharacterData" | "Dom\\Comment" => chardata(),
+        "Dom\\Text" | "Dom\\CDATASection" => text(),
+        "Dom\\ProcessingInstruction" => {
+            let mut t: Vec<&'static Prop> = M_PROC_INST.iter().collect();
+            for p in chardata() {
+                if !t.iter().any(|q| q.name == p.name) {
+                    t.push(p);
+                }
+            }
+            t
+        }
+        "Dom\\Attr" => merged(&[M_ATTR, M_NODE], &[M_NODE_VALUE_RW, M_TEXT_CONTENT_RW]),
+        "Dom\\Element" | "Dom\\HTMLElement" => merged(&[M_ELEMENT, M_NODE], &[M_TEXT_CONTENT_RW]),
+        "Dom\\DocumentType" => merged(&[M_DOCTYPE, M_NODE], &[]),
+        "Dom\\Entity" => merged(&[M_ENTITY, M_NODE], &[]),
+        "Dom\\EntityReference" => merged(&[M_NODE], &[M_ENTITY_REF_OVERRIDES]),
+        "Dom\\NodeList" => merged(&[M_NODELIST], &[]),
+        "Dom\\HTMLCollection" => merged(&[M_HTMLCOLLECTION], &[]),
+        "Dom\\NamedNodeMap" => merged(&[M_NAMEDNODEMAP], &[]),
+        "Dom\\DtdNamedNodeMap" => merged(&[M_DTDNAMEDNODEMAP], &[]),
+        "Dom\\XPath" => merged(&[M_XPATH], &[]),
+        "Dom\\TokenList" => merged(&[M_TOKENLIST], &[]),
+        _ => return None,
+    })
+}
+
 /// A class's property table: its own properties, then the inherited ones
 /// it does not redefine (php's zend_hash_merge without overwrite), with
 /// DOMEntityReference's overrides in place.
 fn build_table(base: &str) -> Vec<&'static Prop> {
+    if let Some(t) = build_modern_table(base) {
+        return t;
+    }
     let parts: &[&[Prop]] = match base {
         "DOMNode" => &[NODE],
         "DOMNameSpaceNode" => &[NS_NODE],
@@ -310,6 +575,30 @@ const DOM_CLASSES: &[&str] = &[
     "DOMNamedNodeMap",
     "DOMXPath",
     "DOMImplementation",
+    "Dom\\Node",
+    "Dom\\DocumentFragment",
+    "Dom\\HTMLDocument",
+    "Dom\\XMLDocument",
+    "Dom\\Document",
+    "Dom\\Comment",
+    "Dom\\CDATASection",
+    "Dom\\Text",
+    "Dom\\ProcessingInstruction",
+    "Dom\\CharacterData",
+    "Dom\\Attr",
+    "Dom\\HTMLElement",
+    "Dom\\Element",
+    "Dom\\DocumentType",
+    "Dom\\Notation",
+    "Dom\\Entity",
+    "Dom\\EntityReference",
+    "Dom\\NodeList",
+    "Dom\\HTMLCollection",
+    "Dom\\NamedNodeMap",
+    "Dom\\DtdNamedNodeMap",
+    "Dom\\XPath",
+    "Dom\\TokenList",
+    "Dom\\Implementation",
 ];
 
 /// The DOM class an object's class derives from (dom_objects_set_class_ex
@@ -443,6 +732,7 @@ fn coerce(cx: &mut Cx, ty: Ty, v: Value, prop: &Prop) -> Result<Value, Thrown> {
         Ty::Str => "string",
         Ty::NStr => "?string",
         Ty::Bool => "bool",
+        Ty::HtmlElement => "?Dom\\HTMLElement",
     };
     let fail = |cx: &mut Cx, v: &Value| {
         Thrown::type_error(format!(
@@ -452,6 +742,20 @@ fn coerce(cx: &mut Cx, ty: Ty, v: Value, prop: &Prop) -> Result<Value, Thrown> {
             prop.name
         ))
     };
+    if let Ty::HtmlElement = ty {
+        return match &v {
+            Value::Null => Ok(Value::Null),
+            Value::Object(_)
+                if cx
+                    .host
+                    .object_class_name(&v)
+                    .is_some_and(|c| cx.host.reflect_is_a(&c, b"Dom\\HTMLElement")) =>
+            {
+                Ok(v)
+            }
+            _ => Err(fail(cx, &v)),
+        };
+    }
     match (&v, ty) {
         (Value::Null, Ty::NStr) => Ok(Value::Null),
         (Value::Null, _) | (Value::Array(_), _) | (Value::Resource(_), _) => Err(fail(cx, &v)),
@@ -530,7 +834,8 @@ fn node_name(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
     unsafe {
         some(match (*n).type_ {
-            sys::XML_ELEMENT_NODE | sys::XML_ATTRIBUTE_NODE => Value::str(qualified_name(n)),
+            sys::XML_ELEMENT_NODE => Value::str(element_name(d, n)),
+            sys::XML_ATTRIBUTE_NODE => Value::str(qualified_name(n)),
             sys::XML_NAMESPACE_DECL => {
                 let ns = (*n).ns;
                 if !ns.is_null() && !(*ns).prefix.is_null() {
@@ -559,6 +864,9 @@ fn node_name(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
 fn node_value(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
     unsafe {
+        if (*n).type_ == sys::XML_ELEMENT_NODE && super::modern::is_modern(d) {
+            return some(Value::Null);
+        }
         some(match (*n).type_ {
             sys::XML_ELEMENT_NODE
             | sys::XML_ATTRIBUTE_NODE
@@ -587,6 +895,12 @@ fn node_value_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thro
         let t = (*n).type_;
         if t == sys::XML_ATTRIBUTE_NODE {
             attr_value_will_change(d.document(), n.cast());
+            if super::modern::is_modern(d) {
+                remove_all_children(n);
+                sys::xmlAddChild(n, sys::xmlNewTextLen(s.as_ptr(), s.len() as i32));
+                lxn::invalidate_node_list_cache(d.document());
+                return Ok(());
+            }
         }
         if t == sys::XML_ATTRIBUTE_NODE || t == sys::XML_ELEMENT_NODE {
             remove_all_children(n);
@@ -701,12 +1015,12 @@ fn next_element_sibling(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>,
 fn attributes(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
     if unsafe { (*n).type_ } == sys::XML_ELEMENT_NODE {
-        some(lists::new_map(
-            cx,
-            d,
-            lists::Handler::Attributes,
-            b"DOMNamedNodeMap",
-        )?)
+        let class: &[u8] = if super::modern::is_modern(d) {
+            b"Dom\\NamedNodeMap"
+        } else {
+            b"DOMNamedNodeMap"
+        };
+        some(lists::new_map(cx, d, lists::Handler::Attributes, class)?)
     } else {
         some(Value::Null)
     }
@@ -847,6 +1161,20 @@ fn base_uri(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
 
 fn text_content(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
+    if super::modern::is_modern(d)
+        && !matches!(
+            unsafe { (*n).type_ },
+            sys::XML_DOCUMENT_FRAG_NODE
+                | sys::XML_ELEMENT_NODE
+                | sys::XML_ATTRIBUTE_NODE
+                | sys::XML_TEXT_NODE
+                | sys::XML_CDATA_SECTION_NODE
+                | sys::XML_COMMENT_NODE
+                | sys::XML_PI_NODE
+        )
+    {
+        return some(Value::Null);
+    }
     some(get_content(n, false))
 }
 
@@ -1088,6 +1416,9 @@ fn whole_text(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
 
 fn attr_name(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
+    if super::modern::is_modern(d) {
+        return some(Value::str(qualified_name(n)));
+    }
     some(xs(unsafe { (*n).name }))
 }
 
@@ -1105,6 +1436,13 @@ fn attr_value_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thro
     attr_value_will_change(d.document(), n.cast());
     let s = conv::to_string_bytes(&v);
     remove_all_children(n);
+    if super::modern::is_modern(d) {
+        unsafe {
+            let t = sys::xmlNewDocTextLen((*n).doc, nul(&s).as_ptr(), s.len() as i32);
+            sys::xmlAddChild(n, t);
+        }
+        return Ok(());
+    }
     set_content_len(cx, n, &s)
 }
 
@@ -1117,7 +1455,7 @@ fn attr_owner_element(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, T
 
 fn tag_name(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
     let n = node_of(cx, d)?;
-    some(Value::str(qualified_name(n)))
+    some(Value::str(element_name(d, n)))
 }
 
 fn reflected_attribute(cx: &mut Cx, d: &DomObject, name: &[u8]) -> Result<Option<Value>, Thrown> {
@@ -1408,4 +1746,424 @@ fn xpath_register_ns_write(_: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<()
         x.borrow_mut().register_node_ns = conv::to_bool(&v);
     }
     Ok(())
+}
+
+// ---- the Dom\ classes' own handlers ----
+
+/// dom_node_get_node_name_attribute_or_element, uppercased for an HTML
+/// element of an HTML document in the modern API.
+fn element_name(d: &DomObject, n: *mut XmlNode) -> Vec<u8> {
+    let mut name = qualified_name(n);
+    if super::modern::is_modern(d) && super::nscompat::ns_is_html_and_document_is_html(n) {
+        name.make_ascii_uppercase();
+    }
+    name
+}
+
+fn m_base_uri(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let n = node_of(cx, d)?;
+    unsafe {
+        if let Some(s) = sys::take_string(sys::xmlNodeGetBase((*n).doc, n)) {
+            return some(Value::str(s));
+        }
+        let doc = (*n).doc;
+        if !doc.is_null() && !(*doc).URL.is_null() {
+            return some(xs((*doc).URL));
+        }
+    }
+    some(Value::str("about:blank"))
+}
+
+fn m_child_nodes(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    node_of(cx, d)?;
+    some(lists::new_map(
+        cx,
+        d,
+        lists::Handler::ChildNodes,
+        b"Dom\\NodeList",
+    )?)
+}
+
+fn m_entityref_child_nodes(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let n = node_of(cx, d)?;
+    entity_reference_sync(n);
+    m_child_nodes(cx, d)
+}
+
+fn m_children(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    node_of(cx, d)?;
+    some(lists::new_map(
+        cx,
+        d,
+        lists::Handler::ChildElements,
+        b"Dom\\HTMLCollection",
+    )?)
+}
+
+fn m_prefix(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let n = node_of(cx, d)?;
+    unsafe {
+        let ns = (*n).ns;
+        some(if !ns.is_null() && !(*ns).prefix.is_null() {
+            xs((*ns).prefix)
+        } else {
+            Value::Null
+        })
+    }
+}
+
+fn m_doc_implementation(cx: &mut Cx, _: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    some(
+        cx.host
+            .instantiate(b"Dom\\Implementation", Vec::new())
+            .unwrap_or(Value::Null),
+    )
+}
+
+fn m_doc_uri(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let doc = doc_of(cx, d)?;
+    unsafe {
+        some(if (*doc).URL.is_null() {
+            Value::str("about:blank")
+        } else {
+            xs((*doc).URL)
+        })
+    }
+}
+
+/// dom_html_document_encoding_write (both modern document classes)
+fn m_doc_encoding_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    let doc = doc_of(cx, d)?;
+    rhp_csrc::lexbor::setup();
+    let s = conv::to_string_bytes(&v);
+    match super::html5::encoding_name(&s) {
+        Some(name) => {
+            let cn = c(&name);
+            unsafe {
+                sys::xml_free((*doc).encoding as *mut u8);
+                (*doc).encoding = sys::xmlStrdup(cn.as_ptr());
+            }
+            Ok(())
+        }
+        None => Err(Thrown::error("ValueError", "Invalid document encoding")),
+    }
+}
+
+fn m_doc_version_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    let s = conv::to_string_bytes(&v);
+    if s != b"1.0" && s != b"1.1" {
+        return Err(Thrown::error("ValueError", "Invalid XML version"));
+    }
+    doc_version_write(cx, d, v)
+}
+
+/// dom_html_document_element_read_raw
+fn html_child(doc: *mut XmlDoc, accept: fn(&[u8]) -> bool) -> *mut XmlNode {
+    unsafe {
+        let root = sys::xmlDocGetRootElement(doc);
+        if root.is_null()
+            || !(super::nscompat::ns_is_fast(root, &super::nscompat::HTML)
+                && b((*root).name) == b"html")
+        {
+            return std::ptr::null_mut();
+        }
+        let mut cur = (*root).children;
+        while !cur.is_null() {
+            if (*cur).type_ == sys::XML_ELEMENT_NODE
+                && super::nscompat::ns_is_fast(cur, &super::nscompat::HTML)
+                && accept(b((*cur).name))
+            {
+                return cur;
+            }
+            cur = (*cur).next;
+        }
+    }
+    std::ptr::null_mut()
+}
+
+fn accept_body(n: &[u8]) -> bool {
+    n == b"body" || n == b"frameset"
+}
+
+fn accept_head(n: &[u8]) -> bool {
+    n == b"head"
+}
+
+fn m_body(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let doc = doc_of(cx, d)?;
+    some(create_nullable(cx, html_child(doc, accept_body), Some(d))?)
+}
+
+fn m_head(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let doc = doc_of(cx, d)?;
+    some(create_nullable(cx, html_child(doc, accept_head), Some(d))?)
+}
+
+fn m_body_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    let doc = doc_of(cx, d)?;
+    let fail = |cx: &mut Cx, msg: &str| -> Result<(), Thrown> {
+        super::throw_msg(cx, super::HIERARCHY_REQUEST_ERR, msg, true)?;
+        Ok(())
+    };
+    let newnode = super::intern_of(&v).map_or(std::ptr::null_mut(), |o| o.node());
+    if !newnode.is_null() && accept_body(unsafe { b((*newnode).name) }) {
+        let current = html_child(doc, accept_body);
+        if current == newnode {
+            return Ok(());
+        }
+        unsafe {
+            if !current.is_null() {
+                super::modern::adopt(d, newnode, doc);
+                let old = sys::xmlReplaceNode(current, newnode);
+                if !old.is_null() && (*old)._private.is_null() {
+                    lxn::node_free_resource(old);
+                }
+                return Ok(());
+            }
+            let root = sys::xmlDocGetRootElement(doc);
+            if root.is_null() {
+                return fail(cx, "A body can only be set if there is a document element");
+            }
+            super::modern::adopt(d, newnode, doc);
+            sys::xmlAddChild(root, newnode);
+        }
+        return Ok(());
+    }
+    fail(cx, "The new body must either be a body or a frameset tag")
+}
+
+/// dom_get_child_text_content
+fn child_text_content(node: *const XmlNode) -> Vec<u8> {
+    let mut out = Vec::new();
+    unsafe {
+        let mut t = (*node).children;
+        while !t.is_null() {
+            if matches!((*t).type_, sys::XML_TEXT_NODE | sys::XML_CDATA_SECTION_NODE)
+                && !(*t).content.is_null()
+            {
+                out.extend_from_slice(b((*t).content));
+            }
+            t = (*t).next;
+        }
+    }
+    out
+}
+
+fn title_element(doc: *mut XmlDoc) -> *mut XmlNode {
+    unsafe {
+        let mut node = (*doc).children;
+        while !node.is_null() {
+            if (*node).type_ == sys::XML_ELEMENT_NODE
+                && super::nscompat::ns_is_fast(node, &super::nscompat::HTML)
+                && b((*node).name) == b"title"
+            {
+                return node;
+            }
+            node = next_in_tree_order(node, std::ptr::null());
+        }
+    }
+    std::ptr::null_mut()
+}
+
+fn svg_title_element(svg: *mut XmlNode) -> *mut XmlNode {
+    unsafe {
+        let mut cur = (*svg).children;
+        while !cur.is_null() {
+            if (*cur).type_ == sys::XML_ELEMENT_NODE
+                && super::nscompat::ns_is_fast(cur, &super::nscompat::SVG)
+                && b((*cur).name) == b"title"
+            {
+                return cur;
+            }
+            cur = (*cur).next;
+        }
+    }
+    std::ptr::null_mut()
+}
+
+/// dom_strip_and_collapse_ascii_whitespace
+fn strip_and_collapse(s: &[u8]) -> Vec<u8> {
+    let ws = super::modern::ASCII_WHITESPACE;
+    let parts: Vec<&[u8]> = s
+        .split(|c| ws.contains(c))
+        .filter(|p| !p.is_empty())
+        .collect();
+    parts.join(&b' ')
+}
+
+fn m_title(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let doc = doc_of(cx, d)?;
+    unsafe {
+        let root = sys::xmlDocGetRootElement(doc);
+        if root.is_null() {
+            return some(Value::str(""));
+        }
+        let mut value = Vec::new();
+        if super::nscompat::ns_is_fast(root, &super::nscompat::SVG) && b((*root).name) == b"svg" {
+            let t = svg_title_element(root);
+            if !t.is_null() {
+                value = child_text_content(t);
+            }
+        } else {
+            let t = title_element(doc);
+            if !t.is_null() {
+                value = child_text_content(t);
+            }
+        }
+        some(Value::str(strip_and_collapse(&value)))
+    }
+}
+
+fn m_title_write(cx: &mut Cx, d: &Rc<DomObject>, v: Value) -> Result<(), Thrown> {
+    let doc = doc_of(cx, d)?;
+    let s = conv::to_string_bytes(&v);
+    unsafe {
+        let root = sys::xmlDocGetRootElement(doc);
+        if root.is_null() {
+            return Ok(());
+        }
+        let replace_all = |el: *mut XmlNode| {
+            remove_all_children(el);
+            let cs = c(&s);
+            let text = sys::xmlNewDocText(doc, cs.as_ptr());
+            sys::xmlAddChild(el, text);
+        };
+        if super::nscompat::ns_is_fast(root, &super::nscompat::SVG) && b((*root).name) == b"svg" {
+            let mut element = svg_title_element(root);
+            if element.is_null() {
+                let mut ns = (*root).ns;
+                if !(*ns).prefix.is_null() {
+                    ns = super::modern::mapper(d).get_ns(b"", super::nscompat::SVG_NS_URI);
+                }
+                element = sys::xmlNewDocNode(doc, ns, c"title".as_ptr().cast(), std::ptr::null());
+                if element.is_null() {
+                    super::throw(cx, INVALID_STATE_ERR, true)?;
+                }
+                if (*root).children.is_null() {
+                    (*root).last = element;
+                } else {
+                    (*element).next = (*root).children;
+                    (*(*root).children).prev = element;
+                }
+                (*root).children = element;
+                (*element).parent = root;
+            }
+            replace_all(element);
+        } else if super::nscompat::ns_is_fast(root, &super::nscompat::HTML) {
+            let title = title_element(doc);
+            let head = html_child(doc, accept_head);
+            if title.is_null() && head.is_null() {
+                return Ok(());
+            }
+            let mut element = title;
+            if element.is_null() {
+                let ns = super::modern::mapper(d).ensure_html_ns();
+                element = sys::xmlNewDocNode(doc, ns, c"title".as_ptr().cast(), std::ptr::null());
+                if element.is_null() {
+                    super::throw(cx, INVALID_STATE_ERR, true)?;
+                }
+                sys::xmlAddChild(head, element);
+            }
+            replace_all(element);
+        }
+    }
+    Ok(())
+}
+
+fn m_class_list(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    node_of(cx, d)?;
+    some(super::collections::new_token_list(cx, d)?)
+}
+
+/// dom_element_html_fragment_serialize
+fn fragment_serialize(
+    cx: &mut Cx,
+    d: &DomObject,
+    node: *mut XmlNode,
+) -> Result<Option<Value>, Thrown> {
+    let private = super::modern::private(d).map(|p| &*p);
+    unsafe {
+        if (*(*node).doc).type_ == sys::XML_HTML_DOCUMENT_NODE {
+            let mut out = Vec::new();
+            super::html5_serializer::serialize(&mut out, private, node);
+            return some(Value::str(out));
+        }
+    }
+    match super::xml_serializer::fragment_to_str(node, private) {
+        Some(s) => some(Value::str(s)),
+        None => {
+            super::throw_msg(
+                cx,
+                super::SYNTAX_ERR,
+                "The resulting XML serialization is not well-formed",
+                true,
+            )?;
+            Ok(None)
+        }
+    }
+}
+
+fn m_inner_html(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let n = node_of(cx, d)?;
+    fragment_serialize(cx, d, n)
+}
+
+fn m_outer_html(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let this = node_of(cx, d)?;
+    unsafe {
+        let mut element: XmlNode = std::mem::zeroed();
+        element.type_ = sys::XML_DOCUMENT_FRAG_NODE;
+        element.children = this;
+        element.last = this;
+        element.doc = (*this).doc;
+        let old_parent = (*this).parent;
+        let old_next = (*this).next;
+        (*this).parent = &mut element;
+        (*this).next = std::ptr::null_mut();
+        let r = fragment_serialize(cx, d, &mut element);
+        (*this).parent = old_parent;
+        (*this).next = old_next;
+        r
+    }
+}
+
+fn m_inner_html_write(_: &mut Cx, _: &Rc<DomObject>, _: Value) -> Result<(), Thrown> {
+    Err(Thrown::error(
+        "Error",
+        "Setting innerHTML is not supported yet",
+    ))
+}
+
+fn m_outer_html_write(_: &mut Cx, _: &Rc<DomObject>, _: Value) -> Result<(), Thrown> {
+    Err(Thrown::error(
+        "Error",
+        "Setting outerHTML is not supported yet",
+    ))
+}
+
+fn m_substituted(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let n = node_of(cx, d)?;
+    some(get_content(n, false))
+}
+
+fn m_doctype_entities(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let dtd = dtd_of(cx, d)?;
+    let ht = unsafe { (*dtd).entities };
+    some(lists::new_map(
+        cx,
+        d,
+        lists::Handler::Entities(ht),
+        b"Dom\\DtdNamedNodeMap",
+    )?)
+}
+
+fn m_doctype_notations(cx: &mut Cx, d: &Rc<DomObject>) -> Result<Option<Value>, Thrown> {
+    let dtd = dtd_of(cx, d)?;
+    let ht = unsafe { (*dtd).notations };
+    some(lists::new_map(
+        cx,
+        d,
+        lists::Handler::Notations(ht),
+        b"Dom\\DtdNamedNodeMap",
+    )?)
 }

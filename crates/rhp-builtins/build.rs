@@ -34,6 +34,22 @@ fn main() {
         .flag_if_supported("-Wno-unused-parameter")
         .compile("rhp_libxml_shim");
 
+    // ext/dom's HTML5 glue: libxml2 and rhp-csrc's lexbor (headers and
+    // symbol prefix from its build script).
+    println!("cargo:rerun-if-changed=src/ext/dom/html5c/glue.c");
+    let lexbor = std::env::var("DEP_RHP_CSRC_LEXBOR_INCLUDE").expect("rhp-csrc's lexbor feature");
+    let prefix = std::env::var("DEP_RHP_CSRC_LEXBOR_PREFIX").expect("rhp-csrc's lexbor feature");
+    cc::Build::new()
+        .file("src/ext/dom/html5c/glue.c")
+        .include(include("LIBXML2"))
+        .include(lexbor)
+        .define("LEXBOR_STATIC", None)
+        .flag("-include")
+        .flag(&prefix)
+        .warnings(false)
+        .opt_level(2)
+        .compile("rhp_dom_html5");
+
     let icu = include("ICU_UC");
     icu_checks(&icu);
     // C++: some of php's constants are ICU class members, and the

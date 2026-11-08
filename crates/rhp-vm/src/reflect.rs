@@ -494,18 +494,28 @@ impl Vm {
                 self.update_class_constants(cid)?;
                 let name = arg_bytes(args, 1);
                 let v = arg(args, 2);
-                match self.classes[cid as usize].static_props.get(&name) {
-                    Some(sp) => {
-                        let cell = sp.cell.clone();
-                        let mut c = cell.borrow_mut();
-                        match &mut *c {
-                            Value::Ref(r) => *r.borrow_mut() = v,
-                            slot => *slot = v,
-                        }
-                        Ok(Value::Bool(true))
+                // zend_update_static_property_ex: the property's type (or
+                // a typed reference's), coercive as from internal code.
+                let Some(sp) = self.classes[cid as usize].static_props.get(&name) else {
+                    return Ok(Value::Bool(false));
+                };
+                let (cell, ty, decl) = (sp.cell.clone(), sp.ty.clone(), sp.declaring_class);
+                let held = cell.borrow().clone();
+                match held {
+                    Value::Ref(r) => {
+                        self.assign_to_ref(&r, v, false)?;
                     }
-                    None => Ok(Value::Bool(false)),
+                    _ => {
+                        let v = match &ty {
+                            Some(ty) => {
+                                self.verify_type_for_prop(ty, decl, cid, &name, v, false)?
+                            }
+                            None => v,
+                        };
+                        *cell.borrow_mut() = v;
+                    }
                 }
+                Ok(Value::Bool(true))
             }
             b"raw_get" | b"raw_set" => {
                 // (object, class, name[, value]): ReflectionProperty's raw

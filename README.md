@@ -17,7 +17,7 @@ The crates are in `crates/`, the test tooling in `tools/`.
 - **rhp-compiler**: parses PHP 8.5 with [mago-syntax](https://github.com/carthage-software/mago) and compiles
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
-  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, libgd, GMP and iconv.
+  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv, and opens libgd on first use.
 - **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
   magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
   symbol renamed `rhp_*`.

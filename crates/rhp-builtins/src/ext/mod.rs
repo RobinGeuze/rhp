@@ -35,6 +35,7 @@ pub mod session;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
+pub mod sqlite3;
 pub mod standard;
 pub mod tokenizer;
 pub mod xml;
@@ -62,6 +63,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         zip::CLASSES,
         intl::CLASSES,
         pdo::CLASSES,
+        sqlite3::CLASSES,
         date::CLASSES,
     ]
     .into_iter()
@@ -291,6 +293,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             functions: pdo_sqlite::register,
             constants: no_constants,
             prelude_php: pdo_sqlite::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "sqlite3",
+            cli_only: false,
+            functions: sqlite3::register,
+            constants: sqlite3::constants,
+            prelude_php: sqlite3::PRELUDE_PHP,
             wrappers: no_wrappers,
             reset: no_state,
             object_freed: None,

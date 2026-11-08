@@ -164,7 +164,8 @@ One directory per php-src extension, `ext/<name>/`:
 
 The library-backed extensions (bcmath, bz2, ctype, curl, dom, gmp, hash,
 iconv, intl, libxml, mbstring, openssl, pcntl, pdo, pdo_sqlite, phar, posix,
-reflection, simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zip, zlib)
+reflection, simplexml, sockets, sqlite3, tokenizer, xml, xmlreader, xmlwriter,
+zip, zlib)
 keep their php-src directory name; libraries.md describes their files.
 
 ### sapi/

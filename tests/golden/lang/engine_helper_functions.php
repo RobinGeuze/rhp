@@ -9,7 +9,7 @@ $helpers = [
     '__phar_running', '__phardata_load', '__phardata_save', '__random_engine',
     '__randomizer', '__reflect', '__reflect_ext',
     '__reflect_get_prop', '__reflect_invoke', '__reflect_new_instance_noctor',
-    '__reflect_set_prop', '__session_handler', '__spl_array_unserialize', '__spl_deprecated', '__spl_obj_store', '__spl_realpath', '__spl_user_props',
+    '__reflect_set_prop', '__session_handler', '__spl_array_unserialize', '__spl_deprecated', '__spl_obj_store', '__spl_realpath', '__spl_user_props', '__sqlite3',
     '__stdext_deprecated', '__stdext_warning', '__sxe', '__sxe_dim', '__sxe_prop',
     '__throwable_string', '__token_list', '__unserialize_destroy', '__unserialize_init', '__unserialize_value', '__xml_fn', '__xmlwriter',
     '__xmlwriter_fn', '__xmlwriter_to', '__xr', '__xr_prop', '__zip',

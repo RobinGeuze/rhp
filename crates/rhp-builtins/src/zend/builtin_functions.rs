@@ -604,6 +604,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "date",
     "openssl",
     "pcre",
+    "sqlite3",
     "zlib",
     "bcmath",
     "bz2",

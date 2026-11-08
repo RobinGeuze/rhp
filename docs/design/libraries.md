@@ -95,7 +95,7 @@ Today rhp-builtins links:
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
-| libsqlite3 (pdo_sqlite) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libsqlite3 (pdo_sqlite, sqlite3) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -217,9 +217,11 @@ checks with `dladdr` that `zip_open` loads from the directory the build
 found it in, and that `zip_libzip_version()` is the release of zipconf.h.
 The native-deps action fails when CI's php reports another
 `ZipArchive::LIBZIP_VERSION` than libzip-dev's; there is no source build.
-The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION` and phpinfo's
-"SQLite Library" are `sqlite3_libversion()`, so php's pdo_sqlite must load
-the libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API).
+The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION`,
+`SQLite3::version()` and phpinfo's "SQLite Library" are
+`sqlite3_libversion()`, so php's pdo_sqlite and sqlite3 must load the
+libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API both
+use).
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so

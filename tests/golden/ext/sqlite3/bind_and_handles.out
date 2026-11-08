@@ -1,0 +1,16 @@
+string(23) "insert into t values(1)"
+1 text
+2 integer
+1 integer
+object(SQLite3Result)#6 (0) {
+}
+int(4)
+__call sqliteCreateFunction
+bool(false)
+A
+int(1)
+B
+int(2)
+Class to downcast to not found or not base class or does not implement Traversable
+Class to downcast to not found or not base class or does not implement Traversable
+Class to downcast to not found or not base class or does not implement Traversable

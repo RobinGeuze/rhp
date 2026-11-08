@@ -832,6 +832,7 @@ fn fn_zpp_arg(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             })
         }),
         (Value::Resource(_), b"resource") => Some(v.clone()),
+        (Value::Object(_) | Value::Closure(_), b"object") => Some(v.clone()),
         (Value::Object(_), b"Throwable") => {
             let cls = host.object_class_name(&v).unwrap_or_default();
             host.reflect_is_a(&cls, b"Throwable").then(|| v.clone())

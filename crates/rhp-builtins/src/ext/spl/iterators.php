@@ -21,7 +21,7 @@ class SplObjectStorage implements Countable, SeekableIterator, Serializable, Arr
         return count($this->__o);
     }
     public function removeAll(SplObjectStorage $storage): int {
-        foreach ($storage->__o as $o) { $h = $this->getHash($o); unset($this->__o[$h], $this->__v[$h]); }
+        foreach ($storage->__o as $o) { $h = $this->__hash($o); unset($this->__o[$h], $this->__v[$h]); }
         return count($this->__o);
     }
     public function removeAllExcept(SplObjectStorage $storage): int {
@@ -56,17 +56,26 @@ class SplObjectStorage implements Countable, SeekableIterator, Serializable, Arr
         while ($offset > $this->__p) { $this->__fwd(); $this->__p++; }
         while ($offset < $this->__p) { if ($this->__pos > 0) { $this->__pos--; } elseif ($this->__pos === 0) { $this->__pos = -1; } $this->__p--; }
     }
-    public function offsetExists($object): bool { return is_object($object) && array_key_exists($this->getHash($object), $this->__o); }
-    public function offsetGet($object): mixed {
+    // spl_object_storage_get_hash: an overriding getHash() must return a string.
+    private function __hash(object $object): string {
         $h = $this->getHash($object);
+        if (!is_string($h)) { throw new TypeError(static::class . '::getHash(): Return value must be of type string, ' . (is_bool($h) ? ($h ? 'true' : 'false') : get_debug_type($h)) . ' returned'); }
+        return $h;
+    }
+    public function offsetExists($object): bool {
+        $object = __zpp_arg('SplObjectStorage::offsetExists', 1, 'object', 'object', $object);
+        return array_key_exists($this->__hash($object), $this->__o);
+    }
+    public function offsetGet($object): mixed {
+        $h = $this->__hash($object);
         if (!array_key_exists($h, $this->__o)) { throw new UnexpectedValueException('Object not found'); }
         return $this->__v[$h];
     }
     public function offsetSet(mixed $object, mixed $info = null): void {
         if (!is_object($object)) { throw new TypeError('SplObjectStorage::offsetSet(): Argument #1 ($object) must be of type object, ' . get_debug_type($object) . ' given'); }
-        $h = $this->getHash($object); $this->__o[$h] = $object; $this->__v[$h] = $info;
+        $h = $this->__hash($object); $this->__o[$h] = $object; $this->__v[$h] = $info;
     }
-    public function offsetUnset($object): void { $h = $this->getHash($object); unset($this->__o[$h], $this->__v[$h]); }
+    public function offsetUnset($object): void { $h = $this->__hash($object); unset($this->__o[$h], $this->__v[$h]); }
     public function getHash(object $object): string { return spl_object_hash($object); }
     public function __serialize(): array {
         $s = [];

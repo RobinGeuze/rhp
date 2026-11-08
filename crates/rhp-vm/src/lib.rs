@@ -30,6 +30,7 @@ mod inherit;
 mod lazy;
 mod lifecycle;
 mod link_checks;
+mod lookup_cache;
 mod lvalue;
 mod memory;
 mod opcache;
@@ -155,6 +156,8 @@ pub struct Vm {
     // OOP class table (see `classes` module).
     classes: Vec<classes::ClassEntry>,
     class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
+    /// What class names in protos resolved to (`lookup_cache`).
+    class_names: lookup_cache::ClassNameCache,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.

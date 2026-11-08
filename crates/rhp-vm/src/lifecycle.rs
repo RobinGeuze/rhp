@@ -101,6 +101,7 @@ impl Vm {
             cursor_global: None,
             classes: Vec::new(),
             class_ids: Default::default(),
+            class_names: Default::default(),
             globals: Default::default(),
             jit_globals: HashMap::new(),
             unset_typed_props: HashMap::new(),

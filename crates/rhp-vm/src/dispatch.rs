@@ -1557,6 +1557,10 @@ impl Vm {
                     self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
+                    if let Some(v) = self.with_cursor_prop_slot(top, |slot, _| Some(slot.clone())) {
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     if self.cursor_static.is_some() {
                         let steps = std::mem::take(&mut self.cursor_steps);
                         let r = self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null);
@@ -1571,6 +1575,32 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    // `$o->p op= v` on a plain property holding a scalar.
+                    if self.deferred_undef_key.is_none()
+                        && !self.stack[top].regs[src as usize].is_undef()
+                    {
+                        let v = self.reg_get(top, src);
+                        let old = self.with_cursor_prop_slot(top, |slot, typed| {
+                            if !(is_scalar(slot) || matches!(slot, Value::Str(_)))
+                                || (typed && !crate::props::same_scalar_kind(slot, &v))
+                            {
+                                return None;
+                            }
+                            Some(std::mem::replace(slot, v.clone()))
+                        });
+                        if old.is_some() {
+                            self.cursor_steps.clear();
+                            self.cursor_release();
+                            if dst != src {
+                                self.reg_set(top, dst, v);
+                            }
+                            if let Some((a, b)) = self.compound_free.take() {
+                                self.free_tmp(top, proto.num_cvs, a);
+                                self.free_tmp(top, proto.num_cvs, b);
+                            }
+                            continue;
+                        }
+                    }
                     let operands = self.compound_free.take();
                     if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
                         if let Some((a, b)) = operands {
@@ -1745,6 +1775,24 @@ impl Vm {
                     r?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
+                    // `$o->p++` on a plain int property.
+                    let d = delta as i64;
+                    // (An int stays an int: whatever type allowed it allows
+                    // the new one.)
+                    let done = self.with_cursor_prop_slot(top, |slot, _| match *slot {
+                        Value::Int(n) => {
+                            let m = n.checked_add(d)?;
+                            *slot = Value::Int(m);
+                            Some(if pre { m } else { n })
+                        }
+                        _ => None,
+                    });
+                    if let Some(r) = done {
+                        self.cursor_steps.clear();
+                        self.cursor_release();
+                        self.reg_set(top, dst, Value::Int(r));
+                        continue;
+                    }
                     self.cursor_settle_offsets(top)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
                     if self.cursor_static.is_some() {
@@ -2064,6 +2112,11 @@ impl Vm {
                     ..
                 } => self.exec_new(top, dst, class, base, argc)?,
                 Instr::FetchProp { dst, obj, name, .. } => {
+                    if let Some(v) = self.prop_fetch_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
@@ -2102,6 +2155,11 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropIs { dst, obj, name } => {
+                    if let Some(v) = self.prop_fetch_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch_is(top, o, pname)?;
@@ -2178,12 +2236,22 @@ impl Vm {
                         ));
                     };
                     let cls = h.borrow().class;
-                    self.invoke_method(top, h, cls, &mname, dst, base, argc)?;
+                    self.invoke_method(top, h, cls, &mname, None, dst, base, argc)?;
                 }
                 Instr::StoreProp { obj, name, src } => {
+                    let val = self.reg_r(top, src)?;
+                    let val =
+                        match self.prop_store_cached(top, obj, &proto.names[name as usize], val) {
+                            Ok(()) => {
+                                if self.release_pending() {
+                                    self.dtor_check = true; // the old value may be released
+                                }
+                                continue;
+                            }
+                            Err(val) => val,
+                        };
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let val = self.reg_r(top, src)?;
                     self.want_typed_result = true;
                     self.prop_store(top, o, pname, val)?;
                     // A typed property coerced the value: a temporary
@@ -2270,6 +2338,11 @@ impl Vm {
                     self.reg_set(top, dst, Value::Bool(!b));
                 }
                 Instr::IssetProp { dst, obj, name } => {
+                    if let Some(r) = self.prop_isset_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, Value::Bool(r));
+                        continue;
+                    }
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_isset(top, o, pname)?;
@@ -2389,7 +2462,8 @@ impl Vm {
                         ));
                     };
                     let cls = h.borrow().class;
-                    self.invoke_method(top, h, cls, mname, dst, base, argc)?;
+                    let key = Some(&proto.names[name as usize]);
+                    self.invoke_method(top, h, cls, mname, key, dst, base, argc)?;
                 }
                 Instr::MethodArgIsRef {
                     dst,
@@ -2400,7 +2474,7 @@ impl Vm {
                     let r = match self.reg_get(top, obj) {
                         Value::Object(h) => {
                             let cls = h.borrow().class;
-                            let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                            let m = self.lookup_method_str(cls, &proto.names[name as usize]);
                             // A method the scope cannot call goes to `__call`
                             // (zend_std_get_method's trampoline): by value.
                             let scope = self.stack[top].defining_class;
@@ -2467,7 +2541,7 @@ impl Vm {
                     idx,
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                    let m = self.lookup_method_str(cls, &proto.names[name as usize]);
                     let r = m.is_some_and(|m| param_is_ref(&m.proto, idx));
                     self.reg_set(top, dst, Value::Bool(r));
                 }
@@ -2479,9 +2553,10 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let mname = proto.names[name as usize].as_bytes();
+                    let key = &proto.names[name as usize];
+                    let mname = key.as_bytes();
                     let ctor = mname.eq_ignore_ascii_case(b"__construct");
-                    self.do_call_static(top, class, mname, dst, base, argc, ctor)?;
+                    self.do_call_static(top, class, mname, Some(key), dst, base, argc, ctor)?;
                 }
                 Instr::CallParentHook {
                     dst,
@@ -2518,7 +2593,7 @@ impl Vm {
                         }
                     }
                     let mname = dyn_method_name(&self.reg_r(top, name)?)?;
-                    self.do_call_static(top, class, &mname, dst, base, argc, false)?;
+                    self.do_call_static(top, class, &mname, None, dst, base, argc, false)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_r(top, val)?;
@@ -4710,7 +4785,7 @@ impl Vm {
                 .lookup_method(cls, b"__invoke")
                 .is_some_and(|m| !m.is_static && m.visibility == rhp_values::Visibility::Public)
             {
-                self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
+                self.invoke_method(top, h.clone(), cls, b"__invoke", None, dst, base, argc)?;
                 return Ok(());
             }
         }

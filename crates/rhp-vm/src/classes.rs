@@ -89,6 +89,9 @@ pub struct ClassEntry {
     /// Some static property has a type or a set visibility: static
     /// property writes take the checked path only for such classes.
     pub checked_statics: bool,
+    /// What property and method lookups on this class resolved to
+    /// (`lookup_cache`).
+    pub(crate) cache: crate::lookup_cache::ClassCache,
 }
 
 #[derive(Clone)]
@@ -317,6 +320,35 @@ pub(crate) fn resolve_prop(
 /// offset; `usize::MAX` otherwise), for the paths that then read or write it.
 #[inline]
 pub(crate) fn resolve_prop_at(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> (PropRes, usize) {
+    let entry = &classes[cls as usize];
+    if let Some(at) = entry.cache.prop(name, scope) {
+        if let Some((k, pe)) = entry.props.get_index(at) {
+            if pe.name == *name {
+                return (PropRes::Slot(k.clone()), at);
+            }
+        }
+    }
+    let r = resolve_prop_uncached(classes, cls, scope, name);
+    if let (PropRes::Slot(_), at) = &r {
+        if entry
+            .props
+            .get_index(*at)
+            .is_some_and(|(_, pe)| pe.name == *name)
+        {
+            entry.cache.put_prop(name, scope, *at);
+        }
+    }
+    r
+}
+
+/// [`resolve_prop_at`] without the cache.
+#[inline(never)]
+fn resolve_prop_uncached(
     classes: &[ClassEntry],
     cls: ClassId,
     scope: Option<ClassId>,
@@ -989,6 +1021,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             create_object: e.create_object,
             hooked: e.hooked,
             checked_statics: e.checked_statics,
+            cache: Default::default(),
         });
     }
     out
@@ -1967,6 +2000,7 @@ impl Vm {
             create_object,
             hooked,
             checked_statics,
+            cache: Default::default(),
         });
         let inherits_hooks = {
             let e = &self.classes[id as usize];
@@ -1987,6 +2021,8 @@ impl Vm {
         {
             self.classes.pop();
             self.class_ids.remove(&lc(proto.name.as_bytes()));
+            // The id is used again: entries naming it as a scope go.
+            self.flush_lookup_caches();
             self.class_order.pop();
             return Ok(false);
         }
@@ -2119,7 +2155,7 @@ impl Vm {
     pub(crate) fn resolve_class(&self, top: usize, class: ClassRef) -> Result<ClassId, Thrown> {
         match class {
             ClassRef::Name(nidx) => {
-                self.resolve_class_by_name(self.stack[top].proto.names[nidx as usize].as_bytes())
+                self.resolve_class_by_str(&self.stack[top].proto.names[nidx as usize])
             }
             // zend_fetch_class's messages.
             ClassRef::SelfClass => self.stack[top].defining_class.ok_or_else(|| {
@@ -2272,6 +2308,31 @@ impl Vm {
         })
     }
 
+    /// [`Vm::resolve_class_by_name`] for a name a proto holds, through the
+    /// VM's class-name cache (php's FETCH_CLASS run-time cache slot).
+    #[inline]
+    pub(crate) fn resolve_class_by_str(&self, name: &PhpStr) -> Result<ClassId, Thrown> {
+        if let Some(id) = self.class_names.get(name) {
+            // A removed class's id may belong to another class now.
+            if self
+                .classes
+                .get(id as usize)
+                .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(name.as_bytes()))
+            {
+                return Ok(id);
+            }
+        }
+        let id = self.resolve_class_by_name(name.as_bytes())?;
+        if self.classes[id as usize]
+            .name
+            .as_bytes()
+            .eq_ignore_ascii_case(name.as_bytes())
+        {
+            self.class_names.put(name, id);
+        }
+        Ok(id)
+    }
+
     pub(crate) fn class(&self, id: ClassId) -> &ClassEntry {
         &self.classes[id as usize]
     }
@@ -2421,6 +2482,27 @@ impl Vm {
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
         let methods = &self.classes[class_id as usize].methods;
         with_lc(name, |k| methods.get(k).cloned())
+    }
+
+    /// [`Vm::lookup_method`] for a name a proto holds (an `INIT_METHOD_CALL`
+    /// operand), through the class's lookup cache.
+    #[inline]
+    pub(crate) fn lookup_method_str(
+        &self,
+        class_id: ClassId,
+        name: &PhpStr,
+    ) -> Option<ResolvedMethod> {
+        let e = &self.classes[class_id as usize];
+        if let Some(i) = e.cache.method(name) {
+            if let Some((k, m)) = e.methods.get_index(i) {
+                if k.eq_ignore_ascii_case(name.as_bytes()) {
+                    return Some(m.clone());
+                }
+            }
+        }
+        let (i, _, m) = with_lc(name.as_bytes(), |k| e.methods.get_full(k))?;
+        e.cache.put_method(name, i);
+        Some(m.clone())
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.

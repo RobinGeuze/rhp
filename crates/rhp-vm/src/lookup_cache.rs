@@ -1,0 +1,143 @@
+//! Run-time caches for lookups by name: php's run-time cache slots
+//! (CACHE_ADDR / CACHE_PTR), which remember what a FETCH_OBJ_R,
+//! INIT_METHOD_CALL or FETCH_CLASS resolved to.
+//!
+//! php keeps one slot per opline in the op_array. rhp's protos are shared
+//! and never written (docs/design/bytecode.md §3.6), so the slots live in
+//! the VM's own data instead: a small direct-mapped table in each linked
+//! class for its property and method lookups, and one in the VM for class
+//! names. An entry is keyed by the name's hash (a `PhpStr` caches it) and
+//! holds only indices into the class's own tables, so a hit is checked
+//! against the name the table stores and nothing outlives what it points
+//! at. A miss falls back to the ordinary lookup, which fills the entry.
+//!
+//! Property entries also depend on the calling scope's class; when a class
+//! id is reused (a class whose linking failed is removed), the VM empties
+//! them all ([`Vm::flush_lookup_caches`]).
+
+use std::cell::{Cell, OnceCell};
+
+use rhp_values::{ClassId, PhpStr};
+
+use crate::Vm;
+
+/// Slots per class and kind; a power of two.
+const SLOTS: usize = 16;
+/// Slots of the VM's class-name cache; a power of two.
+const CLASS_SLOTS: usize = 256;
+
+#[derive(Clone, Copy, Default)]
+struct Entry {
+    /// The looked-up name's hash; 0 = empty (a `PhpStr` hash is never 0).
+    hash: u64,
+    /// The calling scope's class (`u32::MAX`: none), for properties.
+    scope: u32,
+    /// The index in the class's table (property slot, method entry, or
+    /// class id).
+    at: u32,
+}
+
+#[inline(always)]
+fn slot(hash: u64, scope: u32, n: usize) -> usize {
+    let x = (hash ^ scope as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (x >> 40) as usize & (n - 1)
+}
+
+/// A lazily allocated direct-mapped table.
+#[derive(Default)]
+struct Table(OnceCell<Box<[Cell<Entry>]>>);
+
+impl Table {
+    #[inline(always)]
+    fn get(&self, hash: u64, scope: u32, n: usize) -> Option<u32> {
+        let e = self.0.get()?[slot(hash, scope, n)].get();
+        (e.hash == hash && e.scope == scope).then_some(e.at)
+    }
+
+    #[cold]
+    fn put(&self, hash: u64, scope: u32, at: u32, n: usize) {
+        // Engine data php keeps in the op_array's run-time cache: not
+        // counted in memory_get_usage().
+        let t = rhp_values::mem::uncounted(|| {
+            self.0
+                .get_or_init(|| (0..n).map(|_| Cell::new(Entry::default())).collect())
+        });
+        t[slot(hash, scope, n)].set(Entry { hash, scope, at });
+    }
+}
+
+/// A linked class's property and method lookup cache. Cloning gives an
+/// empty one.
+#[derive(Default)]
+pub struct ClassCache {
+    props: Table,
+    methods: Table,
+}
+
+impl Clone for ClassCache {
+    fn clone(&self) -> Self {
+        ClassCache::default()
+    }
+}
+
+#[inline(always)]
+fn scope_key(scope: Option<ClassId>) -> u32 {
+    scope.unwrap_or(u32::MAX)
+}
+
+impl ClassCache {
+    /// The property slot `name` resolved to from `scope`, if cached.
+    #[inline(always)]
+    pub(crate) fn prop(&self, name: &PhpStr, scope: Option<ClassId>) -> Option<usize> {
+        self.props
+            .get(name.hash_value(), scope_key(scope), SLOTS)
+            .map(|at| at as usize)
+    }
+
+    pub(crate) fn put_prop(&self, name: &PhpStr, scope: Option<ClassId>, at: usize) {
+        self.props
+            .put(name.hash_value(), scope_key(scope), at as u32, SLOTS);
+    }
+
+    /// The method-table index `name` resolved to, if cached.
+    #[inline(always)]
+    pub(crate) fn method(&self, name: &PhpStr) -> Option<usize> {
+        self.methods
+            .get(name.hash_value(), 0, SLOTS)
+            .map(|at| at as usize)
+    }
+
+    pub(crate) fn put_method(&self, name: &PhpStr, at: usize) {
+        self.methods.put(name.hash_value(), 0, at as u32, SLOTS);
+    }
+
+    /// Forget the property entries (they name scope classes).
+    pub(crate) fn flush(&mut self) {
+        self.props = Table::default();
+    }
+}
+
+/// The VM's class-name cache (FETCH_CLASS by name).
+#[derive(Default)]
+pub(crate) struct ClassNameCache(Table);
+
+impl ClassNameCache {
+    #[inline(always)]
+    pub(crate) fn get(&self, name: &PhpStr) -> Option<ClassId> {
+        self.0.get(name.hash_value(), 0, CLASS_SLOTS)
+    }
+
+    pub(crate) fn put(&self, name: &PhpStr, id: ClassId) {
+        self.0.put(name.hash_value(), 0, id, CLASS_SLOTS);
+    }
+}
+
+impl Vm {
+    /// Empty the caches whose entries name a class id other than their own
+    /// class: after a class was removed, its id is used again.
+    pub(crate) fn flush_lookup_caches(&mut self) {
+        for c in &mut self.classes {
+            c.cache.flush();
+        }
+    }
+}

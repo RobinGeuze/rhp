@@ -149,7 +149,24 @@ impl Vm {
         name: &[u8],
         scope: Option<ClassId>,
     ) -> Result<Option<Found>, Thrown> {
-        match self.lookup_method(cls, name) {
+        self.get_method_by(cls, name, None, scope)
+    }
+
+    /// [`Vm::get_method`], looked up through the class's cache when the
+    /// name is a proto's (`key`).
+    #[inline]
+    pub(crate) fn get_method_by(
+        &self,
+        cls: ClassId,
+        name: &[u8],
+        key: Option<&rhp_values::PhpStr>,
+        scope: Option<ClassId>,
+    ) -> Result<Option<Found>, Thrown> {
+        let found = match key {
+            Some(k) => self.lookup_method_str(cls, k),
+            None => self.lookup_method(cls, name),
+        };
+        match found {
             // Public and not shadowing a private, or the calling scope's own.
             Some(m)
                 if !m.is_abstract

@@ -186,6 +186,17 @@ Like php (`is_cacheable_stream_path`), it caches `phar://` scripts as well
 as plain files, revalidating them by the phar entry's mtime; scripts from
 other stream wrappers are compiled on every include.
 
+- **Lookup by name first.** As php with `opcache.revalidate_path=0`
+  (`persistent_compile_file`), an include first looks the name it was
+  given up in the cache: an absolute path as written (with any `..` or
+  `./`), a relative one qualified by the working directory, include_path
+  and the including file's directory (`accel_make_persistent_key`). Each
+  name a script was reached by is kept as a key of it. A hit opens
+  nothing; within `revalidate_freq` it doesn't stat either, and outside
+  it the name is resolved again through the realpath cache and the
+  script discarded when it names another file now. A miss resolves the
+  path through the realpath cache (per thread, kept across requests like
+  php's), opens and fstats the file.
 - **Per thread.** A `Program` holds `Rc`s, so the cache is a
   `thread_local!`: every request served on a worker thread shares it, as
   php-fpm workers share their shared-memory segment. Once bytecode is

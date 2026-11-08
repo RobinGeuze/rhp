@@ -389,8 +389,9 @@ The original notes:
   rhp keeps no stat cache, so a php script that observes a *stale* cached
   stat (e.g. `filesize` after an external change without `clearstatcache`)
   sees fresh data under rhp. Known, deliberate gap. php's realpath cache is
-  kept (per request, `virtual_cwd::realpath_cache`): `realpath()` and the
-  path expansion of opens go through it, and `clearstatcache(true[, $path])`,
+  kept (per thread across requests, as php's ZTS build does,
+  `virtual_cwd::realpath_cache`): `realpath()`, include's path resolution
+  and the path expansion of opens go through it, and `clearstatcache(true[, $path])`,
   `unlink`, `rename` and `rmdir` clear it.
 
 ### 2.9 `touch` — RESOLVED

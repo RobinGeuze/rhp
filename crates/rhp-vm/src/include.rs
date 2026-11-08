@@ -235,9 +235,9 @@ impl Vm {
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
-        // before opening anything: a cached absolute path needs no open, and
-        // no realpath while its revalidate window lasts; a file that is gone
-        // may still be served.
+        // before opening anything ([`Vm::opcache_lookup_name`]): a cached
+        // script needs no open, and no realpath or stat while its revalidate
+        // window lasts; a file that is gone may still be served.
         // data: URLs (php's rfc2397 wrapper, a URL wrapper): only with
         // allow_url_fopen and allow_url_include.
         let mut reason_override = None;
@@ -315,8 +315,8 @@ impl Vm {
                     }
                 }
             }
-        } else if self.opcache_fast_hit(&raw_path) {
-            Some((raw_path.clone(), IncludeSource::Cached))
+        } else if let Some(real) = self.opcache_lookup_name(top, &raw_path) {
+            Some((real, IncludeSource::Cached))
         } else {
             self.resolve_include_file(top, &path_str).or_else(|| {
                 self.opcache_cached_name(&raw_path)
@@ -397,6 +397,7 @@ impl Vm {
             && (self.included_files.contains(&realpath)
                 || self.main_included_path().as_ref() == Some(&realpath))
         {
+            self.opcache_note_once(&raw_path, &realpath);
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
@@ -558,17 +559,13 @@ impl Vm {
 
     /// Resolve an include path to `(key, source)`: for a schemed URL
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
-    /// the first candidate that opens as a file, in php_resolve_path's
-    /// order: an absolute or `./` / `../` path as is (relative to the
-    /// request's working directory), else each include_path entry, then
-    /// the including file's directory; failing those, the plain open of
-    /// the name relative to the working directory.
+    /// the first candidate ([`Vm::include_candidates`]) that opens as a
+    /// file, resolved through the realpath cache.
     pub(crate) fn resolve_include_file(
         &self,
         top: usize,
         path: &str,
     ) -> Option<(Vec<u8>, IncludeSource)> {
-        use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
         // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
         let (scheme, _) = builtins::main::streams::split_scheme(path.as_bytes());
@@ -579,8 +576,34 @@ impl Vm {
             let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
             return Some((key, IncludeSource::Bytes(src)));
         }
+        for cand in self.include_candidates(top, path) {
+            use std::os::unix::ffi::OsStrExt;
+            // tsrm_realpath, through the realpath cache.
+            let Some(real) = builtins::zend::virtual_cwd::realpath(cand.as_os_str().as_bytes())
+            else {
+                continue;
+            };
+            let real_path = std::ffi::OsStr::from_bytes(&real);
+            let Ok(f) = std::fs::File::open(real_path) else {
+                continue;
+            };
+            if f.metadata().is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            return Some((real, IncludeSource::File(f)));
+        }
+        None
+    }
+
+    /// The paths an include of `path` (no scheme) tries, in
+    /// php_resolve_path's order: an absolute or `./` / `../` path as is
+    /// (relative to the request's working directory), else each
+    /// include_path entry, then the including file's directory, then the
+    /// name relative to the working directory.
+    fn include_candidates(&self, top: usize, path: &str) -> Vec<std::path::PathBuf> {
+        use std::path::Path;
         let p = Path::new(path);
-        let mut candidates: Vec<PathBuf> = Vec::new();
+        let mut candidates = Vec::new();
         let include_path = self.ini_get(b"include_path").unwrap_or_default();
         let dotted = path.starts_with("./") || path.starts_with("../");
         if p.is_absolute() || dotted || include_path.is_empty() {
@@ -600,24 +623,17 @@ impl Vm {
             }
             candidates.push(p.to_path_buf());
         }
-        for cand in candidates {
-            use std::os::unix::ffi::OsStrExt;
-            let cand = builtins::zend::virtual_cwd::os_path(cand.as_os_str().as_bytes());
-            let Ok(canon) = std::fs::canonicalize(&cand) else {
-                continue;
-            };
-            let Ok(f) = std::fs::File::open(&canon) else {
-                continue;
-            };
-            if f.metadata().is_ok_and(|m| m.is_dir()) {
-                continue;
-            }
-            return Some((
-                canon.to_string_lossy().into_owned().into_bytes(),
-                IncludeSource::File(f),
-            ));
-        }
-        None
+        candidates
+    }
+
+    /// php_resolve_path for a local path (zend_resolve_path without
+    /// opcache): the real path of the first candidate that exists.
+    pub(crate) fn resolve_include_path(&self, top: usize, path: &[u8]) -> Option<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = String::from_utf8_lossy(path);
+        self.include_candidates(top, &path)
+            .iter()
+            .find_map(|c| builtins::zend::virtual_cwd::realpath(c.as_os_str().as_bytes()))
     }
 
     /// [`Vm::install_included`] for a file: recorded while preloading, and

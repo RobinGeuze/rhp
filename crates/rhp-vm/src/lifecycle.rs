@@ -49,7 +49,7 @@ impl Vm {
         rhp_values::mem::end_request();
         let name = sapi.name().to_string();
         builtins::main::sapi::set_sapi(&name, &sapi.ini_defaults());
-        let mut constants = HashMap::new();
+        let mut constants = rustc_hash::FxHashMap::default();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);
         }
@@ -76,7 +76,7 @@ impl Vm {
             stack: Vec::new(),
             units: Vec::new(),
             functions: Vec::new(),
-            fn_names: HashMap::new(),
+            fn_names: Default::default(),
             fn_gen: 1,
             call_sites: Default::default(),
             closures: Vec::new(),
@@ -101,12 +101,13 @@ impl Vm {
             cursor_global: None,
             classes: Vec::new(),
             class_ids: Default::default(),
-            globals: indexmap::IndexMap::new(),
+            class_names: Default::default(),
+            globals: Default::default(),
             jit_globals: HashMap::new(),
             unset_typed_props: HashMap::new(),
             ref_globals: std::collections::HashSet::new(),
-            statics: HashMap::new(),
-            include_statics: HashMap::new(),
+            statics: Default::default(),
+            include_statics: Default::default(),
             generators: Default::default(),
             yield_out: None,
             gen_stack: Vec::new(),
@@ -115,7 +116,7 @@ impl Vm {
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
             fcc_this: std::cell::RefCell::new(None),
-            included_files: indexmap::IndexSet::new(),
+            included_files: Default::default(),
             internal_classes: 0,
             autoloaders: Vec::new(),
             autoload_depths: Vec::new(),
@@ -179,6 +180,7 @@ impl Vm {
             destructibles: Vec::new(),
             marked_destructed: Vec::new(),
             incomplete_class: None,
+            throwable_class: None,
             dtor_check: false,
             dtor_pending_checks: 0,
             ctor_frames: Vec::new(),

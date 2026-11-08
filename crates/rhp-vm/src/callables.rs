@@ -149,7 +149,24 @@ impl Vm {
         name: &[u8],
         scope: Option<ClassId>,
     ) -> Result<Option<Found>, Thrown> {
-        match self.lookup_method(cls, name) {
+        self.get_method_by(cls, name, None, scope)
+    }
+
+    /// [`Vm::get_method`], looked up through the class's cache when the
+    /// name is a proto's (`key`).
+    #[inline]
+    pub(crate) fn get_method_by(
+        &self,
+        cls: ClassId,
+        name: &[u8],
+        key: Option<&rhp_values::PhpStr>,
+        scope: Option<ClassId>,
+    ) -> Result<Option<Found>, Thrown> {
+        let found = match key {
+            Some(k) => self.lookup_method_str(cls, k),
+            None => self.lookup_method(cls, name),
+        };
+        match found {
             // Public and not shadowing a private, or the calling scope's own.
             Some(m)
                 if !m.is_abstract
@@ -387,7 +404,7 @@ impl Vm {
         let ce_org = fcc.calling.take();
         if ce_org.is_none() {
             let name = callable.strip_prefix(b"\\").unwrap_or(callable);
-            if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+            if let Some(idx) = self.fn_index(callable) {
                 return Ok(Callee::Function(self.functions[idx].clone()));
             }
             if crate::calls::user_visible_builtin(name) {
@@ -738,7 +755,7 @@ impl Vm {
                     };
                 }
                 let name = b.strip_prefix(b"\\").unwrap_or(b);
-                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                if let Some(idx) = self.fn_index(b) {
                     return Ok(Callee::Function(self.functions[idx].clone()));
                 }
                 if crate::calls::user_visible_builtin(name) {

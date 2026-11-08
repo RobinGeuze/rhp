@@ -14,6 +14,22 @@ use crate::calls::is_handler_accessor;
 use crate::classes::{Deny, PropRes};
 use crate::{classes, deref, Vm};
 
+/// Whether a typed property holding `old` accepts `new` as it is, with no
+/// check: both null, ints, floats or strings. A type that accepted one
+/// such value accepts any other (php has no literal int, float or string
+/// types, and coercion never changes an exact match); `true`/`false` do
+/// differ, so bools are left to the full check.
+#[inline(always)]
+pub(crate) fn same_scalar_kind(old: &Value, new: &Value) -> bool {
+    matches!(
+        (old, new),
+        (Value::Null, Value::Null)
+            | (Value::Int(_), Value::Int(_))
+            | (Value::Float(_), Value::Float(_))
+            | (Value::Str(_), Value::Str(_))
+    )
+}
+
 thread_local! {
     /// The object a clone() with properties is writing (its id), and the
     /// readonly properties it reinitialized (kept out of `Vm`: rarely set).
@@ -21,6 +37,153 @@ thread_local! {
 }
 
 impl Vm {
+    /// The object in register `r` of frame `top` and the slot of its
+    /// declared property `name` that the frame's scope reaches, when the
+    /// class's lookup cache knows it and nothing (hooks, a handler) stands
+    /// in between: `f` gets the slot. `None`: take the full path.
+    #[inline(always)]
+    fn with_cached_slot<R>(
+        &self,
+        top: usize,
+        r: Reg,
+        name: &PhpStr,
+        f: impl FnOnce(&ObjectHandle, usize, &classes::PropEntry) -> Option<R>,
+    ) -> Option<R> {
+        let frame = &self.stack[top];
+        let cell;
+        let h = match &frame.regs[r as usize] {
+            Value::Object(h) => h,
+            Value::Ref(rc) => {
+                cell = rc.borrow();
+                match &*cell {
+                    Value::Object(h) => h,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        let ce = &self.classes[h.borrow().class as usize];
+        if ce.hooked {
+            return None;
+        }
+        let at = ce.cache.prop(name, frame.defining_class)?;
+        let (_, pe) = ce.props.get_index(at)?;
+        if pe.name != *name {
+            return None;
+        }
+        f(h, at, pe)
+    }
+
+    /// `FETCH_OBJ_R` of a set declared property through the lookup cache
+    /// (see [`Vm::with_cached_slot`]).
+    #[inline(always)]
+    pub(crate) fn prop_fetch_cached(&self, top: usize, r: Reg, name: &PhpStr) -> Option<Value> {
+        self.with_cached_slot(top, r, name, |h, at, _| {
+            match h.borrow().props().slot(at)? {
+                Value::Undef => None,
+                v => Some(deref(v)),
+            }
+        })
+    }
+
+    /// `ISSET_ISEMPTY_PROP_OBJ` (isset) of a set declared property through
+    /// the lookup cache.
+    #[inline(always)]
+    pub(crate) fn prop_isset_cached(&self, top: usize, r: Reg, name: &PhpStr) -> Option<bool> {
+        self.with_cached_slot(top, r, name, |h, at, _| {
+            match h.borrow().props().slot(at)? {
+                Value::Undef => None,
+                Value::Ref(rc) => Some(!matches!(*rc.borrow(), Value::Null)),
+                v => Some(!matches!(v, Value::Null)),
+            }
+        })
+    }
+
+    /// `ASSIGN_OBJ` to a set, writable declared property through the
+    /// lookup cache: what [`Vm::prop_store_as`] does for it. A typed one
+    /// only takes a value of the kind it holds (see [`same_scalar_kind`]).
+    /// Gives `val` back when the full path must run.
+    #[inline(always)]
+    pub(crate) fn prop_store_cached(
+        &mut self,
+        top: usize,
+        r: Reg,
+        name: &PhpStr,
+        val: Value,
+    ) -> Result<(), Value> {
+        let mut val = Some(val);
+        let old = self.with_cached_slot(top, r, name, |h, at, pe| {
+            if pe.readonly
+                || pe.set_visibility.is_some()
+                || pe.hooks.is_some()
+                || !self.readonly_reinit.is_empty()
+            {
+                return None;
+            }
+            let mut od = h.borrow_mut();
+            if self.classes[od.class as usize]
+                .handlers
+                .is_some_and(|t| t.write_property.is_some())
+            {
+                return None;
+            }
+            let slot = od.props_mut().slot_mut(at)?;
+            if matches!(slot, Value::Undef | Value::Ref(_))
+                || (pe.ty.is_some() && !same_scalar_kind(slot, val.as_ref()?))
+            {
+                return None;
+            }
+            Some(std::mem::replace(slot, val.take()?))
+        });
+        match old {
+            Some(old) => {
+                rhp_values::gc::possible_root(&old);
+                drop(old);
+                Ok(())
+            }
+            None => Err(val.expect("value not taken")),
+        }
+    }
+
+    /// The slot an open lvalue cursor of one property step on a variable
+    /// (`$o->p` in `$o->p++`, `$o->p .= …`) reaches, when the lookup cache
+    /// resolves it to a set, writable, unhooked declared property that holds
+    /// no reference: `f` gets it and whether the property is typed. `None`:
+    /// take the cursor path.
+    #[inline(always)]
+    pub(crate) fn with_cursor_prop_slot<R>(
+        &self,
+        top: usize,
+        f: impl FnOnce(&mut Value, bool) -> Option<R>,
+    ) -> Option<R> {
+        if self.cursor_static.is_some() || !self.readonly_reinit.is_empty() {
+            return None;
+        }
+        let crate::lvalue::CursorRoot::Cv(cv) = self.cursor_root else {
+            return None;
+        };
+        let [crate::lvalue::CursorStep::Prop(name)] = &self.cursor_steps[..] else {
+            return None;
+        };
+        self.with_cached_slot(top, cv, name, |h, at, pe| {
+            if pe.readonly || pe.set_visibility.is_some() || pe.hooks.is_some() {
+                return None;
+            }
+            let mut od = h.borrow_mut();
+            if self.classes[od.class as usize]
+                .handlers
+                .is_some_and(|t| t.write_property.is_some())
+            {
+                return None;
+            }
+            let slot = od.props_mut().slot_mut(at)?;
+            if matches!(slot, Value::Undef | Value::Ref(_)) {
+                return None;
+            }
+            f(slot, pe.ty.is_some())
+        })
+    }
+
     /// Whether `v` is an instance of the named class/interface (or a Closure for
     /// the `Closure` type). Unresolvable target class → lenient `true` (the class
     /// may be autoloadable; we don't reject on a name we can't see).

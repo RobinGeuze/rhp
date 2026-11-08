@@ -1,0 +1,16 @@
+A secret | A secret | C secret
+hello from A / hello from A / __call(secret) / __call(hi)
+hello from B / hello from B / B public secret / __call(hi)
+C HELLO / C HELLO / C secret / -
+A secret | A secret | C secret
+hello from A / hello from A / __call(secret) / __call(hi)
+hello from B / hello from B / B public secret / __call(hi)
+C HELLO / C HELLO / C secret / -
+A B B
+A B yes
+A B B
+A B yes
+Class "Later" not found
+Later
+Later
+28.7

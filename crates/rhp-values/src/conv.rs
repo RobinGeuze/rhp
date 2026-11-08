@@ -77,6 +77,16 @@ pub fn to_string_bytes(v: &Value) -> Vec<u8> {
     }
 }
 
+/// [`to_string_bytes`], borrowing a string's bytes instead of copying them
+/// (a builtin's `string` argument after zpp).
+#[inline]
+pub fn str_bytes(v: &Value) -> std::borrow::Cow<'_, [u8]> {
+    match v {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        v => std::borrow::Cow::Owned(to_string_bytes(v)),
+    }
+}
+
 /// An int's decimal digits, written into `buf` (no heap buffer).
 #[inline]
 pub fn int_digits(n: i64, buf: &mut [u8; 20]) -> &[u8] {

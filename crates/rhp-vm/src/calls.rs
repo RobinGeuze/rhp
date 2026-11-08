@@ -292,12 +292,13 @@ impl Vm {
         h: ObjectHandle,
         cls: ClassId,
         mname: &[u8],
+        key: Option<&PhpStr>,
         dst: Reg,
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
         let gid = h.borrow().id;
-        if self.generators.contains_key(&gid) {
+        if !self.generators.is_empty() && self.generators.contains_key(&gid) {
             // (Its arguments are by value: an undefined variable warns.)
             self.bind_undef_args(top, base, argc, |_| false)?;
             let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
@@ -314,7 +315,7 @@ impl Vm {
             }
         }
         let scope = self.stack[top].defining_class;
-        match self.get_method(cls, mname, scope)? {
+        match self.get_method_by(cls, mname, key, scope)? {
             Some(Found::Method(m)) => {
                 self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
             }
@@ -347,9 +348,13 @@ impl Vm {
         class: ClassRef,
         cls: ClassId,
         mname: &[u8],
+        key: Option<&PhpStr>,
         ctor: bool,
     ) -> Option<(classes::ResolvedMethod, Option<ObjectHandle>, ClassId)> {
-        let m = self.lookup_method(cls, if ctor { b"__construct" } else { mname })?;
+        let m = match key {
+            Some(k) => self.lookup_method_str(cls, k)?,
+            None => self.lookup_method(cls, if ctor { b"__construct" } else { mname })?,
+        };
         let ok = !m.is_abstract
             && (m.visibility == rhp_values::Visibility::Public
                 || (!ctor && Some(m.defining_class) == self.stack[top].defining_class))
@@ -460,13 +465,14 @@ impl Vm {
         top: usize,
         class: ClassRef,
         mname: &[u8],
+        key: Option<&PhpStr>,
         dst: Reg,
         base: Reg,
         argc: u16,
         ctor: bool,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
-        if let Some((m, this, called)) = self.static_call_fast(top, class, cls, mname, ctor) {
+        if let Some((m, this, called)) = self.static_call_fast(top, class, cls, mname, key, ctor) {
             return self.enter_method(top, &m, this, called, dst, base, argc);
         }
         match self.static_call_target(top, class, cls, mname, ctor)? {

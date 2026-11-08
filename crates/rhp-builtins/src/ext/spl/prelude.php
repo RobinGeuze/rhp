@@ -1,6 +1,6 @@
 
 interface SeekableIterator extends Iterator { public function seek(int $offset): void; }
-class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
+class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $__s = []; private $__f = 0; private $__k = []; private $__p = 0;
@@ -61,6 +61,16 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
     }
     // object_properties_load: members keyed by mangled names.
     private function __loadMembers(array $m): void { __object_properties_load($this, $m); }
+    public function serialize(): string {
+        __serialize_init();
+        try {
+            $s = 'x:' . serialize($this->__f & 0x0100ffff);
+            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__s) . ';'; }
+            $s .= 'm:' . serialize(get_mangled_object_vars($this));
+        } finally { __serialize_destroy(); }
+        return $s;
+    }
+    public function __debugInfo(): array { return __spl_array_debug_info($this); }
     public function unserialize(string $data): void {
         [$f, $s, $m] = __spl_array_unserialize($data, 'ArrayIterator::unserialize');
         if ($f === null) { return; }
@@ -69,7 +79,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Countable {
         $this->__loadMembers($m);
     }
 }
-class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
+class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Countable {
     const STD_PROP_LIST = 1;
     const ARRAY_AS_PROPS = 2;
     private $__s = []; private $__f = 0; private $__i = 'ArrayIterator';
@@ -131,6 +141,16 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
     }
     // object_properties_load: members keyed by mangled names.
     private function __loadMembers(array $m): void { __object_properties_load($this, $m); }
+    public function serialize(): string {
+        __serialize_init();
+        try {
+            $s = 'x:' . serialize($this->__f & 0x0100ffff);
+            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__s) . ';'; }
+            $s .= 'm:' . serialize(get_mangled_object_vars($this));
+        } finally { __serialize_destroy(); }
+        return $s;
+    }
+    public function __debugInfo(): array { return __spl_array_debug_info($this); }
     public function unserialize(string $data): void {
         [$f, $s, $m] = __spl_array_unserialize($data, 'ArrayObject::unserialize');
         if ($f === null) { return; }
@@ -141,80 +161,205 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Countable {
 }
 
 
-class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess {
+// ext/spl/spl_dllist.c. The list is nodes keyed by id: `__v` the values,
+// `__nx` / `__pv` the links (a missing link is NULL). A node the traverse
+// pointer still holds after it left the list has no value and no links, as
+// php's element kept alive by its refcount.
+class SplDoublyLinkedList implements Iterator, Countable, ArrayAccess, Serializable {
     const IT_MODE_LIFO = 2; const IT_MODE_FIFO = 0; const IT_MODE_DELETE = 1; const IT_MODE_KEEP = 0;
-    protected $__d = [];
-    protected $__p = 0;
-    protected $__lifo = false;
-    public function push($v): void { $this->__d[] = $v; }
-    public function pop(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Can't pop from an empty datastructure"); } return array_pop($this->__d); }
-    public function shift(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Can't shift from an empty datastructure"); } return array_shift($this->__d); }
-    public function unshift($v): void { array_unshift($this->__d, $v); }
-    public function top(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Peek at an empty datastructure"); } return $this->__d[count($this->__d) - 1]; }
-    public function bottom(): mixed { if (count($this->__d) === 0) { throw new RuntimeException("Peek at an empty datastructure"); } return $this->__d[0]; }
-    public function add($index, $value): void { array_splice($this->__d, $index, 0, [$value]); }
-    public function isEmpty(): bool { return count($this->__d) === 0; }
-    public function count(): int { return count($this->__d); }
-    public function toArray(): array { return $this->__d; }
-    public function offsetExists($i): bool { return isset($this->__d[$i]); }
-    public function offsetGet($i): mixed { return $this->__d[$i]; }
-    public function offsetSet($i, $v): void { if ($i === null) { $this->__d[] = $v; } else { $this->__d[$i] = $v; } }
-    // The removed element is kept until the splice is done (a destructor may
-    // use the list).
-    public function offsetUnset($i): void { $gone = array_splice($this->__d, $i, 1); }
-    public function setIteratorMode($mode): void { $this->__lifo = (bool)($mode & 2); $this->__del = (bool)($mode & 1); }
-    protected $__del = false;
+    private $__v = []; private $__nx = []; private $__pv = [];
+    private $__h = null; private $__t = null; private $__n = 0; private $__id = 0;
+    private $__tp = null; private $__pos = 0;
+    // null until first used: spl_dllist_object_new_ex's SplStack/SplQueue bits.
+    private $__fl = null;
+    private function __flags(): int {
+        return $this->__fl ??= ($this instanceof SplStack ? 6 : ($this instanceof SplQueue ? 4 : 0));
+    }
+    private function __push($v): void {
+        $id = ++$this->__id;
+        $this->__v[$id] = $v;
+        if ($this->__t !== null) { $this->__pv[$id] = $this->__t; $this->__nx[$this->__t] = $id; } else { $this->__h = $id; }
+        $this->__t = $id; $this->__n++;
+    }
+    private function __drop($id): void { unset($this->__v[$id], $this->__nx[$id], $this->__pv[$id]); }
+    private function __pop() {
+        $t = $this->__t;
+        $p = $this->__pv[$t] ?? null;
+        if ($p !== null) { unset($this->__nx[$p]); } else { $this->__h = null; }
+        $this->__t = $p; $this->__n--;
+        $v = $this->__v[$t]; $this->__drop($t);
+        return $v;
+    }
+    private function __shift() {
+        $h = $this->__h;
+        $nx = $this->__nx[$h] ?? null;
+        if ($nx !== null) { unset($this->__pv[$nx]); } else { $this->__t = null; }
+        $this->__h = $nx; $this->__n--;
+        $v = $this->__v[$h]; $this->__drop($h);
+        return $v;
+    }
+    // spl_ptr_llist_offset
+    private function __offset(int $i) {
+        $back = ($this->__flags() & 2) !== 0;
+        $c = $back ? $this->__t : $this->__h;
+        for ($p = 0; $c !== null && $p < $i; $p++) { $c = $back ? ($this->__pv[$c] ?? null) : ($this->__nx[$c] ?? null); }
+        return $c;
+    }
+    private static function __index($fn, $i): int { return __zpp_arg("SplDoublyLinkedList::$fn", 1, 'index', 'int', $i); }
+    private static function __range($fn): never { throw new OutOfRangeException("SplDoublyLinkedList::$fn(): Argument #1 (\$index) is out of range"); }
+    public function add(int $index, mixed $value): void {
+        if ($index < 0 || $index > $this->__n) { self::__range('add'); }
+        if ($index === $this->__n) { $this->__push($value); return; }
+        $e = $this->__offset($index);
+        $id = ++$this->__id;
+        $this->__v[$id] = $value;
+        $p = $this->__pv[$e] ?? null;
+        $this->__nx[$id] = $e;
+        if ($p === null) { $this->__h = $id; } else { $this->__pv[$id] = $p; $this->__nx[$p] = $id; }
+        $this->__pv[$e] = $id;
+        $this->__n++;
+    }
+    public function pop(): mixed { if ($this->__n === 0) { throw new RuntimeException("Can't pop from an empty datastructure"); } return $this->__pop(); }
+    public function shift(): mixed { if ($this->__n === 0) { throw new RuntimeException("Can't shift from an empty datastructure"); } return $this->__shift(); }
+    public function push(mixed $value): void { $this->__push($value); }
+    public function unshift(mixed $value): void {
+        $id = ++$this->__id;
+        $this->__v[$id] = $value;
+        if ($this->__h !== null) { $this->__nx[$id] = $this->__h; $this->__pv[$this->__h] = $id; } else { $this->__t = $id; }
+        $this->__h = $id; $this->__n++;
+    }
+    public function top(): mixed { if ($this->__t === null) { throw new RuntimeException("Can't peek at an empty datastructure"); } return $this->__v[$this->__t]; }
+    public function bottom(): mixed { if ($this->__h === null) { throw new RuntimeException("Can't peek at an empty datastructure"); } return $this->__v[$this->__h]; }
+    private function __list(): array { $a = []; for ($c = $this->__h; $c !== null; $c = $this->__nx[$c] ?? null) { $a[] = $this->__v[$c]; } return $a; }
     public function __debugInfo(): array {
-        $f = ($this->__lifo ? 2 : 0) | ($this->__del ? 1 : 0) | ($this instanceof SplQueue || $this instanceof SplStack ? 4 : 0);
-        return __spl_user_props($this) + ["\0SplDoublyLinkedList\0flags" => $f, "\0SplDoublyLinkedList\0dllist" => $this->__d];
+        return __spl_user_props($this) + ["\0SplDoublyLinkedList\0flags" => $this->__flags(), "\0SplDoublyLinkedList\0dllist" => $this->__list()];
     }
-    public function rewind(): void { $this->__p = $this->__lifo ? count($this->__d) - 1 : 0; }
-    public function current(): mixed { return $this->__d[$this->__p] ?? null; }
-    public function key(): mixed { return $this->__p; }
-    public function next(): void { if ($this->__lifo) { $this->__p--; } else { $this->__p++; } }
-    public function valid(): bool { return $this->__p >= 0 && $this->__p < count($this->__d); }
-    public function __serialize(): array {
-        $f = ($this->__lifo ? 2 : 0) | ($this->__del ? 1 : 0) | ($this instanceof SplQueue || $this instanceof SplStack ? 4 : 0);
-        return [$f, $this->__d, get_mangled_object_vars($this)];
+    public function count(): int { return $this->__n; }
+    public function isEmpty(): bool { return $this->__n === 0; }
+    public function setIteratorMode(int $mode): int {
+        $f = $this->__flags();
+        if (($f & 4) && ($f & 2) !== ($mode & 2)) { throw new RuntimeException("Iterators' LIFO/FIFO modes for SplStack/SplQueue objects are frozen"); }
+        return $this->__fl = ($mode & 3) | ($f & 4);
     }
+    public function getIteratorMode(): int { return $this->__flags(); }
+    public function offsetExists($index): bool { $index = self::__index('offsetExists', $index); return $index >= 0 && $index < $this->__n; }
+    public function offsetGet($index): mixed {
+        $index = self::__index('offsetGet', $index);
+        if ($index < 0 || $index >= $this->__n) { self::__range('offsetGet'); }
+        return $this->__v[$this->__offset($index)];
+    }
+    public function offsetSet($index, mixed $value): void {
+        if ($index === null) { $this->__push($value); return; }
+        $index = __zpp_arg('SplDoublyLinkedList::offsetSet', 1, 'index', '?int', $index);
+        if ($index < 0 || $index >= $this->__n) { self::__range('offsetSet'); }
+        $e = $this->__offset($index);
+        // The old value is released after the new one is in place.
+        $old = $this->__v[$e]; $this->__v[$e] = $value; unset($old);
+    }
+    public function offsetUnset($index): void {
+        $index = self::__index('offsetUnset', $index);
+        if ($index < 0 || $index >= $this->__n) { self::__range('offsetUnset'); }
+        $e = $this->__offset($index);
+        $p = $this->__pv[$e] ?? null; $x = $this->__nx[$e] ?? null;
+        if ($p !== null) { if ($x !== null) { $this->__nx[$p] = $x; } else { unset($this->__nx[$p]); } }
+        if ($x !== null) { if ($p !== null) { $this->__pv[$x] = $p; } else { unset($this->__pv[$x]); } }
+        if ($e === $this->__h) { $this->__h = $x; }
+        if ($e === $this->__t) { $this->__t = $p; }
+        $this->__n--;
+        if ($this->__tp === $e) { $this->__tp = null; }
+        // The value is released while the element is unlinked (a destructor
+        // may use the list).
+        $old = $this->__v[$e]; $this->__drop($e); unset($old);
+    }
+    public function rewind(): void {
+        if ($this->__flags() & 2) { $this->__pos = $this->__n - 1; $this->__tp = $this->__t; }
+        else { $this->__pos = 0; $this->__tp = $this->__h; }
+    }
+    public function current(): mixed { return $this->__tp === null ? null : ($this->__v[$this->__tp] ?? null); }
+    public function key(): int { return $this->__pos; }
+    // spl_dllist_it_helper_move_forward
+    private function __forward(int $f): void {
+        $old = $this->__tp;
+        if ($old === null) { return; }
+        if ($f & 2) {
+            $this->__tp = $this->__pv[$old] ?? null; $this->__pos--;
+            if (($f & 1) && $this->__n > 0) { $this->__pop(); }
+        } else {
+            $this->__tp = $this->__nx[$old] ?? null;
+            if ($f & 1) { if ($this->__n > 0) { $this->__shift(); } } else { $this->__pos++; }
+        }
+    }
+    public function prev(): void { $this->__forward($this->__flags() ^ 2); }
+    public function next(): void { $this->__forward($this->__flags()); }
+    public function valid(): bool { return $this->__tp !== null; }
+    public function unserialize(string $data): void {
+        if ($data === '') { return; }
+        while ($this->__n > 0) { $this->__pop(); }
+        $n = strlen($data);
+        __unserialize_init();
+        try {
+            [$ok, $flags, $p] = __unserialize_value($data, 0, 'SplDoublyLinkedList::unserialize');
+            if ($ok && is_int($flags)) {
+                $this->__fl = $flags;
+                while (($data[$p] ?? '') === ':') {
+                    $p++;
+                    [$ok, $v, $p] = __unserialize_value($data, $p, 'SplDoublyLinkedList::unserialize');
+                    if (!$ok) { break; }
+                    $this->__push($v);
+                }
+                if ($ok && $p >= $n) { return; }
+            }
+        } finally { __unserialize_destroy(); }
+        throw new UnexpectedValueException("Error at offset $p of $n bytes");
+    }
+    public function serialize(): string {
+        __serialize_init();
+        try {
+            $s = serialize($this->__flags());
+            for ($c = $this->__h; $c !== null; $c = $this->__nx[$c] ?? null) { $s .= ':' . serialize($this->__v[$c]); }
+        } finally { __serialize_destroy(); }
+        return $s;
+    }
+    public function __serialize(): array { return [$this->__flags(), $this->__list(), get_mangled_object_vars($this)]; }
     public function __unserialize(array $data): void {
         if (!isset($data[0], $data[1], $data[2]) || !is_int($data[0]) || !is_array($data[1]) || !is_array($data[2])) {
             throw new UnexpectedValueException('Incomplete or ill-typed serialization data');
         }
-        $this->__lifo = (bool)($data[0] & 2); $this->__del = (bool)($data[0] & 1);
-        foreach ($data[1] as $v) { $this->__d[] = $v; }
+        $this->__fl = $data[0];
+        foreach ($data[1] as $v) { $this->__push($v); }
         __object_properties_load($this, $data[2]);
-    }
-    public function unserialize(string $data): void {
-        if ($data === '') { return; }
-        $this->__d = [];
-        __unserialize_init();
-        try { $this->__unserialize_old($data); } finally { __unserialize_destroy(); }
-    }
-    private function __unserialize_old(string $data): void {
-        $n = strlen($data);
-        [$ok, $flags, $p] = __unserialize_value($data, 0, 'SplDoublyLinkedList::unserialize');
-        if ($ok && is_int($flags)) {
-            $this->__lifo = (bool)($flags & 2); $this->__del = (bool)($flags & 1);
-            while (($data[$p] ?? '') === ':') {
-                $p++;
-                [$ok, $v, $p] = __unserialize_value($data, $p, 'SplDoublyLinkedList::unserialize');
-                if (!$ok) { break; }
-                $this->__d[] = $v;
-            }
-            if ($ok && $p >= $n) { return; }
-        }
-        throw new UnexpectedValueException("Error at offset $p of $n bytes");
     }
 }
 
 class SplQueue extends SplDoublyLinkedList {
-    public function enqueue($v): void { $this->push($v); }
+    public function enqueue(mixed $value): void { $this->push($value); }
     public function dequeue(): mixed { return $this->shift(); }
 }
 
-class SplStack extends SplDoublyLinkedList {
-    public function __construct() { $this->__lifo = true; }
+class SplStack extends SplDoublyLinkedList {}
+
+// php_spl.c: the default autoloader. The extension list lives in a
+// static (php's spl_autoload_extensions global, per request).
+function spl_autoload_extensions(?string $file_extensions = null): string {
+    static $exts = null;
+    if ($file_extensions !== null) { $exts = $file_extensions; }
+    return $exts ?? '.inc,.php';
+}
+function spl_autoload(string $class, ?string $file_extensions = null): void {
+    $exts = $file_extensions ?? spl_autoload_extensions();
+    $lc = strtolower(($class[0] ?? '') === '\\' ? substr($class, 1) : $class);
+    while ($exts !== '') {
+        $c = strpos($exts, ',');
+        $ext = $c === false ? $exts : substr($exts, 0, $c);
+        $exts = $c === false ? '' : substr($exts, $c + 1);
+        // php_stream_open_for_zend_ex(USE_PATH): silent when missing; a
+        // file already included is not run again.
+        $file = stream_resolve_include_path(str_replace('\\', '/', $lc . $ext));
+        if ($file !== false && !in_array($file, get_included_files(), true)) {
+            include $file;
+            if (class_exists($lc, false) || interface_exists($lc, false) || trait_exists($lc, false)) { return; }
+        }
+    }
 }
 
 function iterator_to_array($iterator, $preserve_keys = true) {
@@ -333,10 +478,14 @@ class SplFixedArray implements IteratorAggregate, ArrayAccess, Countable, JsonSe
     public function getIterator(): Iterator {
         for ($i = 0; $i < $this->__size; $i++) { yield $i => $this->__d[$i]; }
     }
-    public function __debugInfo(): array {
-        $r = $this->__d;
-        foreach (__spl_user_props($this) as $k => $v) { $r[$k] = $v; }
-        return $r;
+    // The properties an old serialization left become the elements.
+    public function __wakeup(): void {
+        if ($this->__size === 0) {
+            $d = [];
+            foreach (__spl_user_props($this) as $v) { $d[] = $v; }
+            foreach (array_keys(get_object_vars($this)) as $k) { unset($this->$k); }
+            $this->__d = $d; $this->__size = count($d);
+        }
     }
     public function __serialize(): array { return $this->__d; }
     public function __unserialize(array $data): void {

@@ -792,6 +792,7 @@ Zend/tests/bug78502.phpt
 Zend/tests/bug78531.phpt
 Zend/tests/bug78598.phpt
 Zend/tests/bug78644.phpt
+Zend/tests/bug78770.phpt
 Zend/tests/bug78810.phpt
 Zend/tests/bug78926.phpt
 Zend/tests/bug79022.phpt
@@ -7801,6 +7802,7 @@ ext/intl/tests/msgfmt_bug70484.phpt
 ext/intl/tests/msgfmt_clone.phpt
 ext/intl/tests/msgfmt_clone_bad_obj.phpt
 ext/intl/tests/msgfmt_errors.phpt
+ext/intl/tests/msgfmt_fail2.phpt
 ext/intl/tests/msgfmt_format.phpt
 ext/intl/tests/msgfmt_format_datetime_icu72-1.phpt
 ext/intl/tests/msgfmt_format_error1.phpt

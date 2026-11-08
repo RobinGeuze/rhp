@@ -632,7 +632,9 @@ impl Vm {
         // A named-argument call armed `pending_named` for this frame.
         let named = self.pending_named.take();
         if proto.flags.intersects(
-            rhp_bytecode::ProtoFlags::DEPRECATED.union(rhp_bytecode::ProtoFlags::NODISCARD),
+            rhp_bytecode::ProtoFlags::DEPRECATED
+                .union(rhp_bytecode::ProtoFlags::NODISCARD)
+                .union(rhp_bytecode::ProtoFlags::BEFORE_ZPP),
         ) {
             let first = match &args {
                 Args::Slice(s) => s.first().cloned(),
@@ -2683,6 +2685,11 @@ impl Vm {
                 }
             }
         };
+        if zpp_error.is_some() {
+            if let Some(f) = sig {
+                builtins::before_failed_zpp(f.ext, f.name);
+            }
+        }
         // A builtin called from engine-internal (prelude) code is not a php
         // frame, and php compiles a few calls to opcodes (no frame either).
         // One the engine calls with no frame running (a shutdown function)

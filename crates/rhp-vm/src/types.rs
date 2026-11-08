@@ -263,7 +263,9 @@ impl Vm {
                 let saved = self.fcc_scope.replace(Some((scope, called)));
                 let saved_this = self.fcc_this.replace(this);
                 let mut deps = Vec::new();
-                let _ = self.resolve_callable_ex(&cur, proto.is_internal(), &mut deps);
+                let quiet = proto.is_internal()
+                    && !proto.flags.contains(rhp_bytecode::ProtoFlags::ZPP_CALLABLE);
+                let _ = self.resolve_callable_ex(&cur, quiet, &mut deps);
                 let ctx = if proto.is_internal() { scope } else { ctx };
                 let r = self.check_one(&cur, ty, strict, ctx);
                 self.fcc_scope.set(saved);

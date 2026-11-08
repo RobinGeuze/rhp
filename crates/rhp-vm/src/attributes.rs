@@ -98,8 +98,9 @@ impl Vm {
     }
 
     /// The checks ZEND_DO_FCALL makes before entering a `#[\Deprecated]` or
-    /// `#[\NoDiscard]` function: run by `bind_frame` for a proto with either
-    /// flag.
+    /// `#[\NoDiscard]` function, and a `#[\RhpBeforeZpp]` prelude function's
+    /// code ahead of its argument checks: run by `bind_frame` for a proto
+    /// with any of the flags.
     #[cold]
     pub(crate) fn call_attr_checks(
         &mut self,
@@ -107,6 +108,9 @@ impl Vm {
         args_first: Option<&Value>,
     ) -> Result<(), Thrown> {
         let proto = frame.proto.clone();
+        if proto.flags.contains(ProtoFlags::BEFORE_ZPP) {
+            rhp_builtins::before_zpp(self)?;
+        }
         let deprecated = proto.flags.contains(ProtoFlags::DEPRECATED);
         let nodiscard = proto.flags.contains(ProtoFlags::NODISCARD) && self.caller_discards();
         if !deprecated && !nodiscard {

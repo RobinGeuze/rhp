@@ -247,10 +247,25 @@ pub(crate) fn apply_fn_flags(
     at: u32,
 ) {
     use rhp_bytecode::{ProtoFlags, TypeKind};
-    let attrs = &proto.meta.attributes;
-    if attrs.is_empty() {
+    if proto.meta.attributes.is_empty() {
         return;
     }
+    // The prelude's own markers: flags, not attributes Reflection lists.
+    if cx.is_prelude {
+        for (lc, flag) in [
+            (&b"rhpbeforezpp"[..], ProtoFlags::BEFORE_ZPP),
+            (&b"rhpzppcallable"[..], ProtoFlags::ZPP_CALLABLE),
+        ] {
+            if has(&proto.meta.attributes, lc) {
+                proto.flags.insert(flag);
+                proto
+                    .meta
+                    .attributes
+                    .retain(|a| !a.name.as_bytes().eq_ignore_ascii_case(lc));
+            }
+        }
+    }
+    let attrs = &proto.meta.attributes;
     if has(attrs, b"deprecated") {
         proto.flags.insert(ProtoFlags::DEPRECATED);
     }

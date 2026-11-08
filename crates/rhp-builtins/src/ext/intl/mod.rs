@@ -165,6 +165,32 @@ fn class_const_decls(class: &str) -> String {
     out
 }
 
+/// `intl_error_reset(NULL)` ahead of zend_parse_parameters, for the
+/// prelude functions marked `#[\RhpBeforeZpp]`.
+pub(crate) fn before_zpp() {
+    error::error_reset();
+}
+
+/// [`before_zpp`] for intl's native functions: all but these reset the
+/// global error first (measured with php, as common.rs's KEEPS_ERROR).
+pub(crate) fn before_failed_zpp(name: &str) {
+    const KEEPS_ERROR: &[&str] = &[
+        "intl_error_name",
+        "intl_get_error_code",
+        "intl_get_error_message",
+        "intl_is_failure",
+        "locale_accept_from_http",
+        "locale_add_likely_subtags",
+        "locale_get_default",
+        "locale_is_right_to_left",
+        "locale_minimize_subtags",
+        "locale_set_default",
+    ];
+    if !name.starts_with("grapheme_") && !KEEPS_ERROR.contains(&name) {
+        error::error_reset();
+    }
+}
+
 /// The E_DEPRECATED a fetch of common.stub.php's one `#[\Deprecated]`
 /// global constant raises.
 pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {

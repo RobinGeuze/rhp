@@ -30,6 +30,69 @@ pub(super) struct ClassSpec {
     pub(super) props: &'static str,
 }
 
+/// The generated functions whose php body does not reset the global intl
+/// error before zend_parse_parameters (most do, through
+/// `INTL_METHOD_INIT_VARS`): measured with php, by the error left after a
+/// call that zpp refuses. Every other one is generated with
+/// `#[\\RhpBeforeZpp]`, so the VM calls [`super::before_zpp`] before it
+/// checks the arguments.
+const KEEPS_ERROR: &[&str] = &[
+    "IntlBreakIterator::getIterator",
+    "IntlDateFormatter::formatObject",
+    "IntlTimeZone::getIDForWindowsID",
+    "IntlTimeZone::getWindowsID",
+    "MessageFormatter::formatMessage",
+    "MessageFormatter::getErrorCode",
+    "MessageFormatter::getErrorMessage",
+    "MessageFormatter::parseMessage",
+    "ResourceBundle::get",
+    "ResourceBundle::getIterator",
+    "UConverter::convert",
+    "UConverter::fromUCallback",
+    "UConverter::getAliases",
+    "UConverter::getAvailable",
+    "UConverter::getDestinationEncoding",
+    "UConverter::getDestinationType",
+    "UConverter::getErrorCode",
+    "UConverter::getErrorMessage",
+    "UConverter::getSourceEncoding",
+    "UConverter::getSourceType",
+    "UConverter::getStandards",
+    "UConverter::getSubstChars",
+    "UConverter::reasonText",
+    "UConverter::setDestinationEncoding",
+    "UConverter::setSourceEncoding",
+    "UConverter::setSubstChars",
+    "UConverter::toUCallback",
+    "UConverter::transcode",
+    "datefmt_format_object",
+    "intltz_get_id_for_windows_id",
+    "intltz_get_windows_id",
+    "msgfmt_format_message",
+    "msgfmt_get_error_code",
+    "msgfmt_get_error_message",
+    "msgfmt_parse_message",
+    "resourcebundle_get",
+];
+
+/// The prelude markers for a generated function: `#[\\RhpBeforeZpp]`
+/// (see [`KEEPS_ERROR`]), and `#[\\RhpZppCallable]` when it takes a
+/// callable, which php's zpp checks with its deprecations (IntlChar's
+/// enumerations).
+fn markers(name: &str, ps: &[Param]) -> String {
+    let mut m = String::new();
+    if !KEEPS_ERROR.contains(&name) {
+        m.push_str("#[\\RhpBeforeZpp] ");
+    }
+    if ps.iter().any(|p| {
+        p.ty.split('|')
+            .any(|t| t.trim_start_matches('?') == "callable")
+    }) {
+        m.push_str("#[\\RhpZppCallable] ");
+    }
+    m
+}
+
 /// The PHP declaration of a class.
 pub(super) fn class_php(spec: &ClassSpec) -> String {
     let c = sigs::class(spec.name.as_bytes())
@@ -79,7 +142,8 @@ pub(super) fn class_php(spec: &ClassSpec) -> String {
         let body = body(spec.helper, &format!("'{}'", m.name), this, m.params, m.ret);
         writeln!(
             o,
-            "    {mods}function {}({}){} {body}",
+            "    {}{mods}function {}({}){} {body}",
+            markers(&format!("{}::{}", c.name, m.name), m.params),
             m.name,
             params(m.params, m.name),
             ret(m.ret, m.name)
@@ -111,7 +175,8 @@ pub(super) fn functions_php(helper: &str, names: &[(&str, &str)]) -> String {
         }
         writeln!(
             o,
-            "function {}({}){} {body}",
+            "{}function {}({}){} {body}",
+            markers(f.name, f.params),
             f.name,
             params(f.params, f.name),
             ret(f.ret, f.name)

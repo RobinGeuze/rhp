@@ -1,0 +1,34 @@
+
+Warning: A::bump(): Argument #1 ($n) must be passed by reference, value given in D/invoke_by_ref_and_internal_ctors.php on line 10
+int(2)
+
+Warning: A::bump(): Argument #1 ($n) must be passed by reference, value given in D/invoke_by_ref_and_internal_ctors.php on line 11
+int(6)
+int(2)
+int(2)
+
+Warning: A::__construct(): Argument #1 ($s) must be passed by reference, value given in D/invoke_by_ref_and_internal_ctors.php on line 15
+A::__construct
+object(Directory)#5 (1) {
+  ["path"]=>
+  string(2) "/x"
+  ["handle"]=>
+  uninitialized(mixed)
+}
+Cannot modify readonly property Directory::$path
+Cannot modify readonly property Directory::$path
+Error: Cannot directly construct CurlHandle, use curl_init() instead
+#0 D/invoke_by_ref_and_internal_ctors.php(42): make('CurlHandle')
+#1 {main}
+Error: Cannot directly construct XMLParser, use xml_parser_create() or xml_parser_create_ns() instead
+#0 D/invoke_by_ref_and_internal_ctors.php(42): make('XMLParser')
+#1 {main}
+PDOException: You may not create a PDORow manually
+#0 D/invoke_by_ref_and_internal_ctors.php(42): make('PDORow')
+#1 {main}
+Error: Cannot directly construct Socket, use socket_create() instead
+#0 D/invoke_by_ref_and_internal_ctors.php(42): make('Socket')
+#1 {main}
+Error: Cannot directly construct DeflateContext, use deflate_init() instead
+#0 D/invoke_by_ref_and_internal_ctors.php(42): make('DeflateContext')
+#1 {main}

@@ -2750,7 +2750,14 @@ impl Host for Vm {
                     "Cannot use positional argument after named argument",
                 )
             })?;
-            vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)
+            let argv = vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+            // zend_call_function: a value for a by-reference parameter.
+            let name = format!(
+                "{}::{}",
+                String::from_utf8_lossy(vm.class(m.defining_class).name.as_bytes()),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            );
+            vm.wrap_by_ref_args(&m.proto, &name, argv)
         };
         if m.is_static {
             let args = place(self)?;

@@ -177,6 +177,11 @@ pub struct ObjectHandlers {
     pub write_property: Option<PropCheckFn>,
     /// Checks before a property unset (`unset_property`).
     pub unset_property: Option<PropCheckFn>,
+    /// The part of php's `get_method` handler that finds methods the class
+    /// does not declare (PDO's driver methods): `(name, helper)` pairs,
+    /// where calling `name` on an object runs the class's hidden
+    /// `__`-prefixed prelude method `helper`.
+    pub get_method: &'static [(&'static str, &'static str)],
 }
 
 impl ObjectHandlers {
@@ -194,6 +199,7 @@ impl ObjectHandlers {
         get_gc: None,
         write_property: None,
         unset_property: None,
+        get_method: &[],
     };
     /// `clone_obj = NULL`.
     pub const UNCLONEABLE: ObjectHandlers = ObjectHandlers {
@@ -439,6 +445,14 @@ pub fn payload_of<T: std::any::Any>(h: &ObjectHandle) -> Option<Rc<T>> {
 pub fn set_payload<T: std::any::Any>(h: &ObjectHandle, state: Rc<T>) {
     let old = h.borrow_mut().set_payload(state);
     drop(old);
+}
+
+/// The hidden helper method `get_method` maps `name` to, if any.
+pub fn driver_method(t: &ObjectHandlers, name: &[u8]) -> Option<&'static str> {
+    t.get_method
+        .iter()
+        .find(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        .map(|(_, h)| *h)
 }
 
 /// The class's own handlers for `v`'s object, through the host.

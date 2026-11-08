@@ -172,6 +172,16 @@ impl Vm {
         found: Option<ResolvedMethod>,
     ) -> Result<Option<Found>, Thrown> {
         let Some(mut fbc) = found else {
+            // The class's get_method handler (PDO's driver methods).
+            if let Some(helper) = self
+                .class(cls)
+                .handlers
+                .and_then(|t| rhp_builtins::zend::object_handlers::driver_method(t, name))
+            {
+                if let Some(m) = self.lookup_method(cls, helper.as_bytes()) {
+                    return Ok(Some(Found::Method(m)));
+                }
+            }
             return Ok(self.lookup_method(cls, b"__call").map(Found::Call));
         };
         if (fbc.visibility != Visibility::Public || fbc.changed)

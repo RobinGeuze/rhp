@@ -721,7 +721,10 @@ impl Vm {
                 }
                 (Value::Object(h), CursorStep::Key(_) | CursorStep::Append) => {
                     let cls = h.borrow().class;
-                    return if self.class_implements(cls, b"ArrayAccess") {
+                    // Native dimension handlers (PDORow) count too.
+                    return if self.class_implements(cls, b"ArrayAccess")
+                        || self.handlers_of(&h).is_some_and(|t| t.dimension.is_some())
+                    {
                         MagicSplit::Offset(i, h)
                     } else {
                         MagicSplit::Plain
@@ -2518,6 +2521,9 @@ impl Vm {
             }
             // zend_std_has_dimension without ArrayAccess.
             Value::Object(h) => {
+                if let Some(d) = self.handlers_of(&h).and_then(|t| t.dimension) {
+                    return (d.has)(self, &h, key, empty);
+                }
                 let cls = h.borrow().class;
                 Err(Thrown::error(
                     "Error",
@@ -2580,6 +2586,11 @@ impl Vm {
                         return Ok(Value::Null);
                     }
                     return self.aa_offset_get(h, key.clone());
+                }
+                // A class with native dimension handlers (PDORow).
+                if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+                    let t = if quiet { DimType::Is } else { DimType::R };
+                    return Ok((d.read)(self, h, Some(key), t)?.unwrap_or(Value::Null));
                 }
                 Err(Thrown::error(
                     "Error",

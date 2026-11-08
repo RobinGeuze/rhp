@@ -378,6 +378,22 @@ impl Vm {
     /// before any call.
     fn dispatched_method(&self, i: usize) -> Option<(&'static str, PhpArray)> {
         let f = &self.stack[i];
+        // A get_method helper (PDO's driver methods) shows as the method
+        // it stands for, with its arguments.
+        if let Some(t) = f.defining_class.and_then(|c| self.class(c).handlers) {
+            let pn = f.proto.name.as_bytes();
+            if let Some((n, _)) = t
+                .get_method
+                .iter()
+                .find(|(_, h)| h.as_bytes().eq_ignore_ascii_case(pn))
+            {
+                let mut shown = PhpArray::new();
+                for v in self.frame_args(i).values() {
+                    shown.push(deref(v));
+                }
+                return Some((n, shown));
+            }
+        }
         let lc = f.proto.name.as_bytes().to_ascii_lowercase();
         if lc != b"__call" && lc != b"__callstatic" {
             return None;

@@ -56,6 +56,29 @@ pub enum ClassType {
     Modern = 2,
 }
 
+/// `php_libxml_private_data_header`: what a document's API keeps with it
+/// (the modern DOM's namespace mapper and template contents). The owner's
+/// struct starts with this header.
+#[repr(C)]
+pub struct PrivateHeader {
+    pub dtor: unsafe fn(*mut PrivateHeader),
+    /// Called when an element whose namespace is tagged with
+    /// [`NS_TAG_HOOK`] is freed.
+    pub ns_hook: unsafe fn(*mut PrivateHeader, *mut XmlNode),
+}
+
+/// `LIBXML_NS_TAG_HOOK`: the tag on `ns->_private` that points at a
+/// [`PrivateHeader`].
+pub const NS_TAG_HOOK: usize = 1;
+
+/// `php_libxml_quirks_mode`
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QuirksMode {
+    NoQuirks,
+    LimitedQuirks,
+    Quirks,
+}
+
 /// `php_libxml_ref_obj`.
 pub struct RefObj {
     pub ptr: *mut XmlDoc,
@@ -64,6 +87,12 @@ pub struct RefObj {
     pub cache_tag: usize,
     pub refcount: u32,
     pub class_type: ClassType,
+    pub private_data: *mut PrivateHeader,
+    pub quirks_mode: QuirksMode,
+    /// `handlers` is php_new_dom_default_document_handlers (set with the
+    /// modern class by dom_set_xml_class; Dom\import_simplexml keeps
+    /// libxml's).
+    pub modern_handlers: bool,
 }
 
 /// `php_libxml_node_ptr`: `node->_private` points here.
@@ -252,6 +281,12 @@ unsafe fn node_free(node: *mut XmlNode) {
                 sys::xmlFreeDtd(dtd);
             }
             sys::XML_ELEMENT_NODE => {
+                let ns = (*node).ns;
+                if !ns.is_null() && ((*ns)._private as usize) & 1 == NS_TAG_HOOK {
+                    // An element of a "special" namespace (a template).
+                    let header = ((*ns)._private as usize & !1) as *mut PrivateHeader;
+                    ((*header).ns_hook)(header, node);
+                }
                 if !(*node).nsDef.is_null() && !(*node).doc.is_null() {
                     // Keep the declarations alive past their element: a
                     // node elsewhere may still use them.
@@ -433,6 +468,9 @@ pub fn increment_doc_ref(object: &NodeObject, docp: *mut XmlDoc) -> u32 {
             cache_tag: 1,
             refcount: 1,
             class_type: ClassType::Unset,
+            private_data: ptr::null_mut(),
+            quirks_mode: QuirksMode::NoQuirks,
+            modern_handlers: false,
         })));
         1
     } else {
@@ -451,6 +489,9 @@ pub unsafe fn decrement_doc_ref_directly(document: *mut RefObj) -> u32 {
         let rc = (*document).refcount;
         if rc == 0 {
             let d = Box::from_raw(document);
+            if !d.private_data.is_null() {
+                ((*d.private_data).dtor)(d.private_data);
+            }
             if !d.ptr.is_null() {
                 sys::xmlFreeDoc(d.ptr);
             }

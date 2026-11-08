@@ -939,7 +939,70 @@ fn is_parent_invalid(parent: *mut XmlNode) -> bool {
     )
 }
 
-/// dom_is_pre_insert_valid_without_step_1 (legacy documents)
+fn has_child_of_type(node: *mut XmlNode, t: i32) -> bool {
+    let mut c = unsafe { (*node).children };
+    while !c.is_null() {
+        if unsafe { (*c).type_ } == t {
+            return true;
+        }
+        c = unsafe { (*c).next };
+    }
+    false
+}
+
+fn has_sibling_following(node: *mut XmlNode, t: i32) -> bool {
+    let mut c = unsafe { (*node).next };
+    while !c.is_null() {
+        if unsafe { (*c).type_ } == t {
+            return true;
+        }
+        c = unsafe { (*c).next };
+    }
+    false
+}
+
+fn has_sibling_preceding(node: *mut XmlNode, t: i32) -> bool {
+    let mut c = unsafe { (*node).prev };
+    while !c.is_null() {
+        if unsafe { (*c).type_ } == t {
+            return true;
+        }
+        c = unsafe { (*c).prev };
+    }
+    false
+}
+
+fn hierarchy_error(cx: &mut Cx, msg: &str) -> Result<bool, Thrown> {
+    throw_msg(cx, HIERARCHY_REQUEST_ERR, msg, true)?;
+    Ok(false)
+}
+
+/// dom_fragment_common_hierarchy_check_part: Some(seen element) or an
+/// exception.
+fn fragment_common_check(cx: &mut Cx, node: *mut XmlNode) -> Result<Option<bool>, Thrown> {
+    let mut seen = false;
+    let mut it = unsafe { (*node).children };
+    while !it.is_null() {
+        match unsafe { (*it).type_ } {
+            sys::XML_ELEMENT_NODE => {
+                if seen {
+                    hierarchy_error(cx, "Cannot have more than one element child in a document")?;
+                    return Ok(None);
+                }
+                seen = true;
+            }
+            sys::XML_TEXT_NODE | sys::XML_CDATA_SECTION_NODE => {
+                hierarchy_error(cx, "Cannot insert text as a child of a document")?;
+                return Ok(None);
+            }
+            _ => {}
+        }
+        it = unsafe { (*it).next };
+    }
+    Ok(Some(seen))
+}
+
+/// dom_is_pre_insert_valid_without_step_1
 fn pre_insert_valid(
     cx: &mut Cx,
     document: *mut lxn::RefObj,
@@ -949,6 +1012,7 @@ fn pre_insert_valid(
     document_node: *mut XmlDoc,
 ) -> Result<bool, Thrown> {
     let strict = lxn::doc_props_read_only(document).stricterror;
+    let modern = super::nscompat::follow_spec(document);
     unsafe {
         if is_parent_invalid(parent) {
             throw(cx, HIERARCHY_REQUEST_ERR, strict)?;
@@ -962,12 +1026,181 @@ fn pre_insert_valid(
             throw(cx, NOT_FOUND_ERR, strict)?;
             return Ok(false);
         }
-        if !hierarchy_ok(parent, node) || (*node).type_ == sys::XML_ATTRIBUTE_NODE {
+        let parent_is_document = matches!(
+            (*parent).type_,
+            sys::XML_DOCUMENT_NODE | sys::XML_HTML_DOCUMENT_NODE
+        );
+        let t = (*node).type_;
+        if !hierarchy_ok(parent, node)
+            || t == sys::XML_ATTRIBUTE_NODE
+            || (modern
+                && (t == sys::XML_ENTITY_REF_NODE
+                    || t == sys::XML_ENTITY_NODE
+                    || t == sys::XML_NOTATION_NODE
+                    || t == sys::XML_DOCUMENT_NODE
+                    || t == sys::XML_HTML_DOCUMENT_NODE
+                    || t >= sys::XML_ELEMENT_DECL))
+        {
             throw(cx, HIERARCHY_REQUEST_ERR, strict)?;
             return Ok(false);
         }
+        if modern {
+            if parent_is_document && (t == sys::XML_TEXT_NODE || t == sys::XML_CDATA_SECTION_NODE) {
+                return hierarchy_error(cx, "Cannot insert text as a child of a document");
+            }
+            if !parent_is_document && t == sys::XML_DTD_NODE {
+                return hierarchy_error(
+                    cx,
+                    "Cannot insert a document type into anything other than a document",
+                );
+            }
+            if parent_is_document {
+                if t == sys::XML_DOCUMENT_FRAG_NODE {
+                    let Some(seen) = fragment_common_check(cx, node)? else {
+                        return Ok(false);
+                    };
+                    if seen {
+                        if has_child_of_type(parent, sys::XML_ELEMENT_NODE) {
+                            return hierarchy_error(
+                                cx,
+                                "Cannot have more than one element child in a document",
+                            );
+                        }
+                        if !child.is_null()
+                            && ((*child).type_ == sys::XML_DTD_NODE
+                                || has_sibling_following(child, sys::XML_DTD_NODE))
+                        {
+                            return hierarchy_error(
+                                cx,
+                                "Document types must be the first child in a document",
+                            );
+                        }
+                    }
+                } else if t == sys::XML_ELEMENT_NODE {
+                    if has_child_of_type(parent, sys::XML_ELEMENT_NODE) {
+                        return hierarchy_error(
+                            cx,
+                            "Cannot have more than one element child in a document",
+                        );
+                    }
+                    if !child.is_null()
+                        && ((*child).type_ == sys::XML_DTD_NODE
+                            || has_sibling_following(child, sys::XML_DTD_NODE))
+                    {
+                        return hierarchy_error(
+                            cx,
+                            "Document types must be the first child in a document",
+                        );
+                    }
+                } else if t == sys::XML_DTD_NODE {
+                    if has_child_of_type(parent, sys::XML_DTD_NODE) {
+                        return hierarchy_error(cx, "Cannot have more than one document type");
+                    }
+                    if (!child.is_null() && has_sibling_preceding(child, sys::XML_ELEMENT_NODE))
+                        || (child.is_null() && has_child_of_type(parent, sys::XML_ELEMENT_NODE))
+                    {
+                        return hierarchy_error(
+                            cx,
+                            "Document types must be the first child in a document",
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(true)
+}
+
+/// dom_replace_node_validity_checks
+pub fn replace_validity_checks(
+    cx: &mut Cx,
+    parent: *mut XmlNode,
+    node: *mut XmlNode,
+    child: *mut XmlNode,
+) -> Result<(), Thrown> {
+    let fail = |cx: &mut Cx, code: i64| -> Result<(), Thrown> {
+        throw(cx, code, true)?;
+        Err(Thrown::error("Error", "DOM error"))
+    };
+    let failm = |cx: &mut Cx, msg: &str| -> Result<(), Thrown> {
+        throw_msg(cx, HIERARCHY_REQUEST_ERR, msg, true)?;
+        Err(Thrown::error("Error", msg))
+    };
+    unsafe {
+        if is_parent_invalid(parent) || !hierarchy_ok(parent, node) {
+            return fail(cx, HIERARCHY_REQUEST_ERR);
+        }
+        if (*child).parent != parent {
+            return fail(cx, NOT_FOUND_ERR);
+        }
+        let t = (*node).type_;
+        if !matches!(
+            t,
+            sys::XML_DOCUMENT_FRAG_NODE
+                | sys::XML_DTD_NODE
+                | sys::XML_ELEMENT_NODE
+                | sys::XML_TEXT_NODE
+                | sys::XML_CDATA_SECTION_NODE
+                | sys::XML_COMMENT_NODE
+                | sys::XML_PI_NODE
+        ) {
+            return fail(cx, HIERARCHY_REQUEST_ERR);
+        }
+        let parent_is_document = matches!(
+            (*parent).type_,
+            sys::XML_DOCUMENT_NODE | sys::XML_HTML_DOCUMENT_NODE
+        );
+        if parent_is_document && (t == sys::XML_TEXT_NODE || t == sys::XML_CDATA_SECTION_NODE) {
+            return failm(cx, "Cannot insert text as a child of a document");
+        }
+        if !parent_is_document && t == sys::XML_DTD_NODE {
+            return failm(
+                cx,
+                "Cannot insert a document type into anything other than a document",
+            );
+        }
+        if parent_is_document {
+            if t == sys::XML_DOCUMENT_FRAG_NODE {
+                match fragment_common_check(cx, node)? {
+                    None => return Err(Thrown::error("Error", "DOM error")),
+                    Some(true) => {
+                        let mut it = (*parent).children;
+                        while !it.is_null() {
+                            if (*it).type_ == sys::XML_ELEMENT_NODE && it != child {
+                                return failm(
+                                    cx,
+                                    "Cannot have more than one element child in a document",
+                                );
+                            }
+                            it = (*it).next;
+                        }
+                        if has_sibling_following(child, sys::XML_DTD_NODE) {
+                            return failm(
+                                cx,
+                                "Document types must be the first child in a document",
+                            );
+                        }
+                    }
+                    Some(false) => {}
+                }
+            } else if t == sys::XML_ELEMENT_NODE {
+                if sys::xmlDocGetRootElement(parent.cast()) != child {
+                    return failm(cx, "Cannot have more than one element child in a document");
+                }
+                if has_sibling_following(child, sys::XML_DTD_NODE) {
+                    return failm(cx, "Document types must be the first child in a document");
+                }
+            } else if t == sys::XML_DTD_NODE {
+                let doc = parent as *mut XmlDoc;
+                if (*doc).intSubset.cast::<XmlNode>() != child
+                    || has_sibling_preceding(child, sys::XML_ELEMENT_NODE)
+                {
+                    return failm(cx, "Document types must be the first child in a document");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// dom_free_node_after_zval_single_node_creation
@@ -992,12 +1225,12 @@ enum Item {
 }
 
 /// dom_sanity_check_node_list_types
-fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
+fn check_node_list(cx: &mut Cx, nodes: &[Value], modern: bool) -> Result<Vec<Item>, Thrown> {
     let mut out = Vec::new();
     for (i, v) in nodes.iter().enumerate() {
         let v = super::deref(v);
         match &v {
-            Value::Object(_) if is_dom_node(cx, &v) => {
+            Value::Object(_) if is_dom_node(cx, &v, modern) => {
                 out.push(Item::Node(
                     super::intern_of(&v).map_or(ptr::null_mut(), |d| d.node()),
                 ));
@@ -1015,9 +1248,10 @@ fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
             }
             _ => {
                 return Err(Thrown::type_error(format!(
-                    "{}(): Argument #{} must be of type DOMNode|string, {} given",
+                    "{}(): Argument #{} must be of type {}|string, {} given",
                     cx.fname,
                     i + 1,
+                    if modern { "Dom\\Node" } else { "DOMNode" },
                     crate::zend::zpp::zval_type_name(cx.host, &v)
                 )));
             }
@@ -1027,10 +1261,11 @@ fn check_node_list(cx: &mut Cx, nodes: &[Value]) -> Result<Vec<Item>, Thrown> {
 }
 
 /// `instanceof DOMNode`
-fn is_dom_node(cx: &Cx, v: &Value) -> bool {
+fn is_dom_node(cx: &Cx, v: &Value, modern: bool) -> bool {
+    let base: &[u8] = if modern { b"Dom\\Node" } else { b"DOMNode" };
     cx.host
         .object_class_name(v)
-        .is_some_and(|c| cx.host.reflect_is_a(&c, b"DOMNode"))
+        .is_some_and(|c| cx.host.reflect_is_a(&c, base))
 }
 
 fn is_node_in_list(items: &[Item], n: *const XmlNode) -> bool {
@@ -1184,7 +1419,13 @@ fn insert_cleanup(node: *mut XmlNode) {
 }
 
 /// dom_insert_node_list_unchecked
-fn insert_unchecked(node: *mut XmlNode, parent: *mut XmlNode, mut insertion_point: *mut XmlNode) {
+fn insert_unchecked(
+    document: *mut lxn::RefObj,
+    node: *mut XmlNode,
+    parent: *mut XmlNode,
+    mut insertion_point: *mut XmlNode,
+) {
+    let modern = super::nscompat::follow_spec(document);
     unsafe {
         if (*node).type_ == sys::XML_DOCUMENT_FRAG_NODE {
             let newchild = (*node).children;
@@ -1192,7 +1433,9 @@ fn insert_unchecked(node: *mut XmlNode, parent: *mut XmlNode, mut insertion_poin
                 let last = (*node).last;
                 pre_insert_helper(insertion_point, parent, newchild, last);
                 fragment_assign_parent(parent, node);
-                reconcile_ns_list((*parent).doc, newchild, last);
+                if !modern {
+                    reconcile_ns_list((*parent).doc, newchild, last);
+                }
                 if !(*parent).doc.is_null() && (*newchild).type_ == sys::XML_DTD_NODE {
                     (*(*parent).doc).intSubset = newchild.cast();
                     (*newchild).parent = (*parent).doc.cast();
@@ -1214,7 +1457,7 @@ fn insert_unchecked(node: *mut XmlNode, parent: *mut XmlNode, mut insertion_poin
             if !(*parent).doc.is_null() && (*node).type_ == sys::XML_DTD_NODE {
                 (*(*parent).doc).intSubset = node.cast();
                 (*node).parent = (*parent).doc.cast();
-            } else {
+            } else if !modern {
                 reconcile_ns((*parent).doc, node);
             }
         }
@@ -1235,7 +1478,7 @@ pub fn pre_insert(
     let doc = unsafe { (*parent).doc };
     match pre_insert_valid(cx, document, parent, node, insertion_point, doc) {
         Ok(true) => {
-            insert_unchecked(node, parent, insertion_point);
+            insert_unchecked(document, node, parent, insertion_point);
             Ok(true)
         }
         other => {
@@ -1251,7 +1494,7 @@ fn context(cx: &mut Cx, this: &Value) -> Result<std::rc::Rc<DomObject>, Thrown> 
 
 pub fn append(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let intern = context(cx, this)?;
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     let parent = intern.node();
     lxn::invalidate_node_list_cache(intern.document());
     let node = zvals_to_single_node(cx, intern.document(), parent, &items)?;
@@ -1267,7 +1510,7 @@ pub fn prepend(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Throw
     if unsafe { (*parent).children }.is_null() {
         return append(cx, this, args);
     }
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     lxn::invalidate_node_list_cache(intern.document());
     let node = zvals_to_single_node(cx, intern.document(), parent, &items)?;
     if !node.is_null() {
@@ -1279,7 +1522,7 @@ pub fn prepend(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Throw
 
 pub fn after(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let intern = context(cx, this)?;
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     let thisp = intern.node();
     let parent = unsafe { (*thisp).parent };
     if parent.is_null() {
@@ -1297,7 +1540,7 @@ pub fn after(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown>
 
 pub fn before(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let intern = context(cx, this)?;
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     let thisp = intern.node();
     let parent = unsafe { (*thisp).parent };
     if parent.is_null() {
@@ -1348,7 +1591,7 @@ pub fn remove(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
 
 pub fn replace_with(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let intern = context(cx, this)?;
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     let child = intern.node();
     let parent = unsafe { (*child).parent };
     if parent.is_null() {
@@ -1374,7 +1617,7 @@ pub fn replace_with(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, 
                     sys::xmlUnlinkNode(child);
                 }
             }
-            insert_unchecked(node, parent, viable);
+            insert_unchecked(intern.document(), node, parent, viable);
         }
         other => {
             insert_cleanup(node);
@@ -1386,7 +1629,7 @@ pub fn replace_with(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, 
 
 pub fn replace_children(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let intern = context(cx, this)?;
-    let items = check_node_list(cx, args)?;
+    let items = check_node_list(cx, args, super::nscompat::follow_spec(intern.document()))?;
     let thisp = intern.node();
     lxn::invalidate_node_list_cache(intern.document());
     let node = zvals_to_single_node(cx, intern.document(), thisp, &items)?;

@@ -602,8 +602,12 @@ impl Vm {
             let Some(shown) = classes::slot_accessible(&self.classes, cls, scope, key) else {
                 continue;
             };
-            if pe.hooks.is_some() {
+            if pe.hooks.is_some() && !self.is_prelude_class(pe.declaring_class) {
                 add(shown, pe.name.clone(), pe.declaring_class as i64);
+            } else if pe.hooks.is_some() && pe.virt {
+                // A prelude class's hooks stand for an internal class's
+                // property handlers, which foreach does not see.
+                continue;
             } else {
                 add(shown, key.clone(), -1);
             }

@@ -7,9 +7,9 @@ publish.workspace = true
 # Our Rust, shim and glue: MIT OR Apache-2.0 (shim/ follows php-src's header
 # API: Zend-2.0, PHP-3.01). Vendored (see NOTICE): php-src (PHP-3.01),
 # libavifinfo and libmagic (BSD-2-Clause), php's printf (shim/php_printf.c: Apache-1.0 parts), crypt_freesec (BSD-3-Clause), crypt_blowfish
-# and crypt_sha256/512 (public domain), timelib and php_http_parser (MIT), argon2 (CC0-1.0 OR Apache-2.0; Thomas Pornin's code
+# and crypt_sha256/512 (public domain), timelib and php_http_parser (MIT), lexbor (Apache-2.0), argon2 (CC0-1.0 OR Apache-2.0; Thomas Pornin's code
 # in src/encoding.c is CC0-1.0 only).
-license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND BSD-2-Clause AND BSD-3-Clause AND LicenseRef-Public-Domain AND MIT AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0 AND Apache-1.0"
+license = "(MIT OR Apache-2.0) AND PHP-3.01 AND Zend-2.0 AND BSD-2-Clause AND BSD-3-Clause AND LicenseRef-Public-Domain AND MIT AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0 AND Apache-1.0 AND Apache-2.0"
 links = "rhp_csrc"
 build = "build.rs"
 
@@ -17,13 +17,16 @@ build = "build.rs"
 # One feature per vendored library. fileinfo: php's libmagic and its
 # compiled magic database (about 10 MB of the binary).
 # cli_server: sapi/cli's HTTP parser and mime type table (rhp -S).
-default = ["crypt", "argon2", "timelib", "avifinfo", "fileinfo", "cli_server"]
+default = ["crypt", "argon2", "timelib", "avifinfo", "fileinfo", "cli_server", "lexbor"]
 crypt = []
 argon2 = []
 timelib = []
 avifinfo = []
 fileinfo = []
 cli_server = []
+# lexbor, which ext/lexbor bundles: ext/dom's HTML5 parser, encodings and
+# CSS selector parser.
+lexbor = []
 
 [dependencies]
 # memory_limit accounting for the shim's allocator (src/lib.rs).

@@ -118,6 +118,9 @@ fn archives_define_only_prefixed_symbols() {
     if cfg!(feature = "fileinfo") {
         want.push("librhp_csrc_fileinfo.a");
     }
+    if cfg!(feature = "lexbor") {
+        want.push("librhp_csrc_lexbor.a");
+    }
     if cfg!(feature = "timelib") {
         want.push("librhp_csrc_timelib.a");
     }

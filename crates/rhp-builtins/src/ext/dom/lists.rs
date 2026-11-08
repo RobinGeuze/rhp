@@ -22,12 +22,22 @@ pub enum Handler {
     Nodeset,
     Entities(*mut sys::xmlHashTable),
     Notations(*mut sys::xmlHashTable),
+    /// Dom\HTMLCollection of an element's element children.
+    ChildElements,
+    /// getElementsByClassName (the classes are in the map).
+    ByClassName,
     Noop,
 }
 
 impl Handler {
     fn use_cache(self) -> bool {
-        matches!(self, Handler::ByTagName | Handler::ChildNodes)
+        matches!(
+            self,
+            Handler::ByTagName
+                | Handler::ChildNodes
+                | Handler::ChildElements
+                | Handler::ByClassName
+        )
     }
 
     /// Keyed by position rather than by name when iterated.
@@ -53,6 +63,8 @@ pub struct Map {
     pub cache_tag: usize,
     pub cached_obj: Option<Value>,
     pub cached_obj_index: i64,
+    /// getElementsByClassName's class set.
+    pub class_names: Vec<Vec<u8>>,
 }
 
 impl Map {
@@ -68,6 +80,7 @@ impl Map {
             cache_tag: 0,
             cached_obj: None,
             cached_obj_index: 0,
+            class_names: Vec::new(),
         }
     }
 
@@ -159,8 +172,8 @@ pub fn new_list_object(cx: &mut Cx, class: &[u8]) -> Result<Value, Thrown> {
 }
 
 /// A DOMNodeList of the nodes an XPath query found.
-pub fn nodeset_list(cx: &mut Cx, nodes: Vec<Value>) -> Result<Value, Thrown> {
-    let v = new_list_object(cx, b"DOMNodeList")?;
+pub fn nodeset_list(cx: &mut Cx, class: &[u8], nodes: Vec<Value>) -> Result<Value, Thrown> {
+    let v = new_list_object(cx, class)?;
     let d = super::intern_of(&v).expect("list state");
     if let Kind::Map(m) = &d.kind {
         let mut m = m.borrow_mut();
@@ -228,8 +241,55 @@ fn handler_length(m: &Map) -> i64 {
                 }
                 count
             }
+            Handler::ChildElements => {
+                let mut count = 0;
+                if !nodep.is_null() {
+                    let mut c = iter_start_first_child(nodep);
+                    while !c.is_null() {
+                        if (*c).type_ == sys::XML_ELEMENT_NODE {
+                            count += 1;
+                        }
+                        c = (*c).next;
+                    }
+                }
+                count
+            }
+            Handler::ByClassName => {
+                let mut count = 0;
+                if !nodep.is_null() {
+                    let mut n = first_child_of_container(nodep);
+                    while !n.is_null() {
+                        if matches_class_name(m, n) {
+                            count += 1;
+                        }
+                        n = next_in_tree_order(n, nodep);
+                    }
+                }
+                count
+            }
             Handler::Noop => 0,
         }
+    }
+}
+
+/// dom_matches_class_name
+fn matches_class_name(m: &Map, nodep: *mut XmlNode) -> bool {
+    unsafe {
+        if (*nodep).type_ != sys::XML_ELEMENT_NODE {
+            return false;
+        }
+        let attr = sys::xmlHasNsProp(nodep, c"class".as_ptr().cast(), std::ptr::null());
+        if attr.is_null() || (*attr).children.is_null() {
+            return false;
+        }
+        let value = lxn::attr_value(attr);
+        let quirks = m
+            .base
+            .as_ref()
+            .and_then(|b| b.document().as_ref())
+            .is_some_and(|d| d.quirks_mode == lxn::QuirksMode::Quirks);
+        let present = super::modern::ordered_set_parser(&value, quirks);
+        m.class_names.iter().all(|c| present.contains(c))
     }
 }
 
@@ -395,13 +455,60 @@ pub fn get_item(cx: &mut Cx, d: &DomObject, index: i64) -> Result<Value, Thrown>
                 }
                 Ok(v)
             }
+            Handler::ChildElements | Handler::ByClassName => {
+                let mut item: *mut XmlNode = std::ptr::null_mut();
+                if !nodep.is_null() && index >= 0 {
+                    let (sp, rel) = start_point(&mut cell.borrow_mut(), nodep, index);
+                    let m = cell.borrow();
+                    let ok = |n: *mut XmlNode| {
+                        if handler == Handler::ChildElements {
+                            (*n).type_ == sys::XML_ELEMENT_NODE
+                        } else {
+                            matches_class_name(&m, n)
+                        }
+                    };
+                    let step = |n: *mut XmlNode| {
+                        if handler == Handler::ChildElements {
+                            (*n).next
+                        } else {
+                            next_in_tree_order(n, nodep)
+                        }
+                    };
+                    item = if sp.is_null() {
+                        let mut n = if handler == Handler::ChildElements {
+                            (*nodep).children
+                        } else {
+                            first_child_of_container(nodep)
+                        };
+                        while !n.is_null() && !ok(n) {
+                            n = step(n);
+                        }
+                        n
+                    } else {
+                        sp
+                    };
+                    let mut i = rel;
+                    while i > 0 && !item.is_null() {
+                        item = step(item);
+                        while !item.is_null() && !ok(item) {
+                            item = step(item);
+                        }
+                        i -= 1;
+                    }
+                }
+                let v = ret(cx, item)?;
+                if !item.is_null() {
+                    cache_obj(&mut cell.borrow_mut(), item, index, &v);
+                }
+                Ok(v)
+            }
             Handler::Noop => Ok(Value::Null),
         }
     }
 }
 
 /// The handler's get_ns_named_item.
-fn get_named_item(d: &DomObject, named: &[u8], ns: Option<&[u8]>) -> *mut XmlNode {
+pub fn get_named_item(d: &DomObject, named: &[u8], ns: Option<&[u8]>) -> *mut XmlNode {
     let Some(cell) = map_of(d) else {
         return std::ptr::null_mut();
     };
@@ -443,7 +550,17 @@ fn get_named_item(d: &DomObject, named: &[u8], ns: Option<&[u8]>) -> *mut XmlNod
                             item
                         }
                     }
-                    None => sys::xmlHasProp(nodep, cn.as_ptr()).cast(),
+                    None => {
+                        let modern = m
+                            .base
+                            .as_ref()
+                            .is_some_and(|b| super::nscompat::follow_spec(b.document()));
+                        if modern {
+                            super::modern::get_attribute_node(nodep, named).cast()
+                        } else {
+                            sys::xmlHasProp(nodep, cn.as_ptr()).cast()
+                        }
+                    }
                 }
             }
             _ => std::ptr::null_mut(),
@@ -451,7 +568,7 @@ fn get_named_item(d: &DomObject, named: &[u8], ns: Option<&[u8]>) -> *mut XmlNod
     }
 }
 
-fn named_item_value(
+pub fn named_item_value(
     cx: &mut Cx,
     d: &DomObject,
     named: &[u8],
@@ -535,13 +652,16 @@ pub fn map_get_named_item(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<V
 
 pub fn map_get_named_item_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let d = this_map(cx, this)?;
-    let uri = super::opt_bytes(args, 0);
-    named_item_value(
-        cx,
-        &d,
-        &super::bytes(args, 1),
-        Some(uri.as_deref().unwrap_or(b"")),
-    )
+    let uri = super::opt_bytes(args, 0).unwrap_or_default();
+    let modern = map_of(&d)
+        .and_then(|m| m.borrow().base.clone())
+        .is_some_and(|b| super::nscompat::follow_spec(b.document()));
+    let ns = if uri.is_empty() && modern {
+        None
+    } else {
+        Some(&uri[..])
+    };
+    named_item_value(cx, &d, &super::bytes(args, 1), ns)
 }
 
 const INT_MAX: i64 = i32::MAX as i64;
@@ -611,7 +731,10 @@ pub fn iterate(cx: &mut Cx, this: &Value, cur: &Value, index: i64) -> Result<Val
         if ci.base.node.get().is_null() {
             return Ok(Value::Null);
         }
-        if matches!(handler, Handler::Attributes | Handler::ChildNodes) {
+        // php keeps the sibling walk for the legacy API only.
+        if !super::nscompat::follow_spec(ci.document())
+            && matches!(handler, Handler::Attributes | Handler::ChildNodes)
+        {
             let n = ci.node();
             let nn = if n.is_null() {
                 std::ptr::null_mut()
@@ -635,7 +758,16 @@ pub fn iterate(cx: &mut Cx, this: &Value, cur: &Value, index: i64) -> Result<Val
         Value::Int(index)
     } else {
         match super::intern_of(&next) {
-            Some(ni) if !ni.node().is_null() => super::xs(unsafe { (*ni.node()).name }),
+            Some(ni) if !ni.node().is_null() => {
+                let n = ni.node();
+                if unsafe { (*n).type_ } == sys::XML_ATTRIBUTE_NODE
+                    && super::nscompat::follow_spec(ni.document())
+                {
+                    Value::str(qualified_name(n))
+                } else {
+                    super::xs(unsafe { (*n).name })
+                }
+            }
             _ => Value::Null,
         }
     };
@@ -643,4 +775,28 @@ pub fn iterate(cx: &mut Cx, this: &Value, cur: &Value, index: i64) -> Result<Val
     pair.push(key);
     pair.push(next);
     Ok(Value::Array(pair))
+}
+
+/// The `index`th node of a by-class-name collection (no object made).
+pub fn nth_node(d: &DomObject, index: i64) -> *mut XmlNode {
+    let Some(cell) = map_of(d) else {
+        return std::ptr::null_mut();
+    };
+    let m = cell.borrow();
+    let nodep = m.base_node();
+    if nodep.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut n = first_child_of_container(nodep);
+    let mut i = 0;
+    while !n.is_null() {
+        if matches_class_name(&m, n) {
+            if i == index {
+                return n;
+            }
+            i += 1;
+        }
+        n = next_in_tree_order(n, nodep);
+    }
+    std::ptr::null_mut()
 }

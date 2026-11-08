@@ -78,6 +78,12 @@ sapi/cli/php_http_parser.c, sapi/cli/php_http_parser.h
 
 sapi/cli/mime_type_map.h
   States the PHP License 3.01: php's generated extension to mime type table.
+ext/lexbor/lexbor/
+  Apache-2.0 (ext/lexbor/LICENSE, ext/lexbor/NOTICE). Lexbor: Copyright
+  2018-2020 Alexander Borisov, with php's patches (ext/lexbor/patches in
+  php-src). ext/dom's HTML5 parser, encodings and CSS selector parser; the
+  url, punycode and unicode modules (ext/uri's) are not vendored.
+  ext/lexbor/config.m4 (PHP License) lists the sources build.rs compiles.
 
 
 vendor/argon2

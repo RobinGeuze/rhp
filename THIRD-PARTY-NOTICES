@@ -60,6 +60,7 @@ software is linked into rhp or distributed with it.
 33. libgd           GD licence (permissive, credit required)
 34. libedit         BSD-3-Clause
 35. http_parser     MIT (Ryan Dahl), with php's changes (PHP-3.01)
+36. lexbor          Apache-2.0
 
 
 ------------------------------------------------------------------------------
@@ -2987,3 +2988,33 @@ changes come under the PHP License 3.01. The parser's licence:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
   IN THE SOFTWARE.
+
+
+------------------------------------------------------------------------------
+36. lexbor
+------------------------------------------------------------------------------
+
+Lexbor (https://github.com/lexbor/lexbor), the copy php-src bundles in
+ext/lexbor with php's patches: ext/dom's HTML5 parser, character encodings
+and CSS selector parser. Compiled by crates/rhp-csrc from
+vendor/php-src/ext/lexbor (the core, css, dom, encoding, html, ns, tag and
+selectors modules), linked statically.
+
+   Lexbor.
+
+   Copyright 2018-2020 Alexander Borisov
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+The full Apache License 2.0 text is in vendor/php-src/ext/lexbor/LICENSE
+(crates/rhp-csrc).

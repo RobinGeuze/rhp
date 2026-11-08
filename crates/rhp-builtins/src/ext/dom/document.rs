@@ -405,7 +405,7 @@ fn transfer_document_ref_aux(node: *mut XmlNode, new_document: *mut lxn::RefObj)
 }
 
 /// php_dom_transfer_document_ref
-fn transfer_document_ref(node: *mut XmlNode, new_document: *mut lxn::RefObj) {
+pub(super) fn transfer_document_ref(node: *mut XmlNode, new_document: *mut lxn::RefObj) {
     if new_document.is_null() {
         return;
     }
@@ -606,25 +606,26 @@ impl<'a> ShowWarnings<'a> {
 
 /// Load mode for the document parser.
 #[derive(Clone, Copy, PartialEq)]
-enum Mode {
+pub(super) enum Mode {
     String,
     File,
 }
 
 /// What dom_document_parser produced.
-enum Parsed {
+pub(super) enum Parsed {
     Doc(*mut XmlDoc),
     Malformed,
     Failed,
 }
 
 /// dom_document_parser
-fn document_parser(
+pub(super) fn document_parser(
     cx: &mut Cx,
     props: &lxn::DocProps,
     mode: Mode,
     source: &[u8],
     mut options: i64,
+    encoding: *mut sys::xmlCharEncodingHandler,
 ) -> Result<Parsed, Thrown> {
     let recover = props.recover || options & XML_PARSE_RECOVER != 0;
     let ctxt = if mode == Mode::File {
@@ -655,6 +656,9 @@ fn document_parser(
     };
     if ctxt.is_null() {
         return Ok(Parsed::Failed);
+    }
+    if !encoding.is_null() {
+        unsafe { sys::xmlSwitchToEncoding(ctxt, encoding) };
     }
     unsafe {
         if mode != Mode::File {
@@ -766,7 +770,7 @@ fn parse_document(cx: &mut Cx, this: &Value, args: &[Value], mode: Mode) -> Resu
     let props = super::intern_of(this)
         .map(|d| lxn::doc_props_read_only(d.document()))
         .unwrap_or(lxn::DocProps::DEFAULT);
-    let newdoc = match document_parser(cx, &props, mode, source, options)? {
+    let newdoc = match document_parser(cx, &props, mode, source, options, ptr::null_mut())? {
         Parsed::Doc(d) => d,
         Parsed::Malformed | Parsed::Failed => ptr::null_mut(),
     };
@@ -1338,8 +1342,10 @@ fn class_arg(
 }
 
 pub fn register_node_class(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let modern = cx.fname.starts_with("Dom\\");
+    let base_class = if modern { "Dom\\Node" } else { "DOMNode" };
     let Some((basece, base_abstract)) =
-        class_arg(cx, &arg(args, 0), 1, "baseClass", Some("DOMNode"))?
+        class_arg(cx, &arg(args, 0), 1, "baseClass", Some(base_class))?
     else {
         return Ok(Value::Null);
     };
@@ -1366,7 +1372,11 @@ pub fn register_node_class(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<
         }
         let intern = get_intern(cx, this)?;
         set_doc_classmap(intern.document(), &basece, ce.map(|(c, _)| c));
-        return Ok(Value::Bool(true));
+        return Ok(if modern {
+            Value::Null
+        } else {
+            Value::Bool(true)
+        });
     }
     Err(Thrown::error(
         "Error",

@@ -1,0 +1,63 @@
+name: apps nightly
+
+# What PR CI leaves out of the fixture apps (tests/apps): the request
+# corpus's other passes (debug, cold) and the console commands that need the
+# internet (`network = true` in console.toml). Fails like PR CI: when a
+# request or command on the app's known list stops matching php.
+
+on:
+  schedule:
+    - cron: '53 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.m.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: echo "apps=$(python3 tests/apps/apps.py matrix)" >> "$GITHUB_OUTPUT"
+
+  app:
+    name: app ${{ matrix.app }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+          extra-extensions: ${{ matrix.php-extensions }}
+      - uses: ./.github/actions/native-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p rhp-cli -p rhp-difftest
+      - name: sqlite3 command
+        run: command -v sqlite3 || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends sqlite3; }
+      - uses: actions/cache@v6
+        if: hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) != ''
+        with:
+          path: tests/apps/${{ matrix.app }}/vendor
+          key: apps-vendor-${{ matrix.app }}-${{ hashFiles(format('tests/apps/{0}/composer.lock', matrix.app)) }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/rhp-apps
+          key: apps-downloads-${{ matrix.app }}-${{ hashFiles('tests/apps/apps.toml') }}
+      - run: python3 tests/apps/apps.py setup ${{ matrix.app }}
+      - name: Every pass of the request corpus
+        run: python3 tests/apps/apps.py diff ${{ matrix.app }}
+      - name: The console battery with the network commands
+        run: python3 tests/apps/apps.py console ${{ matrix.app }} -- --network

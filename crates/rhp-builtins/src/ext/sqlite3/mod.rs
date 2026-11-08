@@ -303,7 +303,7 @@ impl Drop for Stmt {
 struct ResultSet {
     db: RefCell<Option<Rc<Db>>>,
     stmt: RefCell<Option<Rc<Stmt>>>,
-    /// The SQLite3Stmt object of a prepared statement, kept alive.
+    /// The SQLite3Stmt object (query() makes a hidden one), kept alive.
     stmt_obj: RefCell<Option<Value>>,
     is_prepared: Cell<bool>,
     column_count: Cell<i32>,
@@ -907,7 +907,8 @@ fn new_result(
     cx: &mut Cx,
     d: &Rc<Db>,
     s: &Rc<Stmt>,
-    stmt_obj: Option<Value>,
+    stmt_obj: Value,
+    is_prepared: bool,
 ) -> Result<Value, Thrown> {
     let obj = cx
         .host
@@ -915,8 +916,8 @@ fn new_result(
     let r = payload::<ResultSet>(&obj).ok_or_else(|| not_initialised("SQLite3Result"))?;
     *r.db.borrow_mut() = Some(d.clone());
     *r.stmt.borrow_mut() = Some(s.clone());
-    r.is_prepared.set(stmt_obj.is_some());
-    *r.stmt_obj.borrow_mut() = stmt_obj;
+    r.is_prepared.set(is_prepared);
+    *r.stmt_obj.borrow_mut() = Some(stmt_obj);
     r.column_count.set(-1);
     Ok(obj)
 }
@@ -953,7 +954,11 @@ fn query(cx: &mut Cx, this: &Value, a: &[Value]) -> Result<Value, Thrown> {
     if cx.host.result_unused() {
         return exec_unused(cx, &d, &sql);
     }
-    let s = Rc::new(Stmt::default());
+    // php allocates a SQLite3Stmt object here too (object handles).
+    let stmt_obj = cx
+        .host
+        .reflect_new_instance(b"SQLite3Stmt", Vec::new(), false)?;
+    let s = payload::<Stmt>(&stmt_obj).ok_or_else(|| not_initialised("SQLite3Stmt"))?;
     *s.db.borrow_mut() = Some(d.clone());
     *s.db_obj.borrow_mut() = Some(this.clone());
     let mut st: *mut sqlite3_stmt = ptr::null_mut();
@@ -973,7 +978,7 @@ fn query(cx: &mut Cx, this: &Value, a: &[Value]) -> Result<Value, Thrown> {
     }
     s.stmt.set(st);
     s.initialised.set(true);
-    let result = new_result(cx, &d, &s, None)?;
+    let result = new_result(cx, &d, &s, stmt_obj, false)?;
     let rc = d.run(cx, || unsafe { sys::sqlite3_step(st) });
     match rc {
         sys::SQLITE_ROW | sys::SQLITE_DONE => {
@@ -1449,8 +1454,9 @@ fn bind(_cx: &mut Cx, by_ref: bool, this: &Value, a: &[Value]) -> Result<Value, 
         Value::Int(n) => p.number = n,
         v => p.name = Some(conv::to_string_bytes(&v)),
     }
-    if argc < 3 {
-        // PHP_SQLITE3_SET_TYPE
+    // PHP_SQLITE3_SET_TYPE; bindParam's zval is a reference, which
+    // takes the default (text).
+    if argc < 3 && !by_ref {
         p.typ = match deref(&p.value) {
             Value::Int(_) | Value::Bool(_) => sys::SQLITE_INTEGER,
             Value::Float(_) => sys::SQLITE_FLOAT,
@@ -1611,7 +1617,7 @@ fn execute(cx: &mut Cx, this: &Value) -> Result<Value, Thrown> {
     match rc {
         sys::SQLITE_ROW | sys::SQLITE_DONE => {
             unsafe { sys::sqlite3_reset(st) };
-            new_result(cx, &d, &s, Some(this.clone()))
+            new_result(cx, &d, &s, this.clone(), true)
         }
         _ => {
             if rc == sys::SQLITE_ERROR {

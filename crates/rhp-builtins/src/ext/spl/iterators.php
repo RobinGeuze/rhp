@@ -400,11 +400,17 @@ class IteratorIterator implements OuterIterator {
     public function __construct(Traversable $iterator, ?string $class = null) {
         // spl_dual_it_construct: $class picks whose getIterator() runs.
         if ($class !== null && !($iterator instanceof Iterator)) {
-            if (!(class_exists($class) || interface_exists($class)) || !($iterator instanceof $class) || !is_a($class, 'Traversable', true)) {
+            // An interface has no ce->get_iterator.
+            if (!class_exists($class) || !($iterator instanceof $class) || !is_a($class, 'Traversable', true)) {
                 throw new LogicException('Class to downcast to not found or not base class or does not implement Traversable');
             }
             if (is_a($class, 'IteratorAggregate', true)) {
-                $it = (new ReflectionMethod($class, 'getIterator'))->invoke($iterator);
+                $m = new ReflectionMethod($class, 'getIterator');
+                // Call it directly unless a subclass overrides it, so traces
+                // show no invoke() frame.
+                $it = $m->class === (new ReflectionMethod($iterator, 'getIterator'))->class
+                    ? $iterator->getIterator()
+                    : $m->invoke($iterator);
                 if (!($it instanceof Traversable)) {
                     throw new LogicException($class . '::getIterator() must return an object that implements Traversable');
                 }

@@ -172,7 +172,11 @@ impl Vm {
         found: Option<ResolvedMethod>,
     ) -> Result<Option<Found>, Thrown> {
         let Some(mut fbc) = found else {
-            // The class's get_method handler (PDO's driver methods).
+            // zend_std_get_method's __call trampoline wins; then the
+            // class's get_method handler (PDO's driver methods).
+            if let Some(c) = self.lookup_method(cls, b"__call") {
+                return Ok(Some(Found::Call(c)));
+            }
             if let Some(helper) = self
                 .class(cls)
                 .handlers
@@ -182,7 +186,7 @@ impl Vm {
                     return Ok(Some(Found::Method(m)));
                 }
             }
-            return Ok(self.lookup_method(cls, b"__call").map(Found::Call));
+            return Ok(None);
         };
         if (fbc.visibility != Visibility::Public || fbc.changed)
             && Some(fbc.defining_class) != scope

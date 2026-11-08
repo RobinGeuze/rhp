@@ -1286,7 +1286,7 @@ impl ProtoBuilder<'_> {
                         // A later argument assigns the variable: SEND_VAR_EX
                         // asks the callee now and copies a by-value one
                         // before that runs (`f($p, $p = new X)`).
-                        if let (Some(t), true) = (target, later_arg_assigns(list, i, d.name)) {
+                        if let (Some(t), true) = (target, later_arg_may_change(list, i, d.name)) {
                             let r = self.send_var_ex_now(cv, t, i as u16);
                             slots.push(Slot::Ref(r));
                             continue;
@@ -2091,6 +2091,41 @@ fn later_arg_assigns(list: &[Argument], i: usize, name: &[u8]) -> bool {
                     && is_var(u.operand)
             }
             _ => false,
+        })
+}
+
+/// [`later_arg_assigns`], or a later argument that mentions `name` inside
+/// an expression that can write it (`[$p] = ..`, `$q = $p = 1`, `g($p)`
+/// with a by-ref `g`).
+fn later_arg_may_change(list: &[Argument], i: usize, name: &[u8]) -> bool {
+    use crate::parse::cst::{Node, UnaryPostfixOperator as Post, UnaryPrefixOperator as Pre};
+    fn scan(node: Node, name: &[u8], mentions: &mut bool, writes: &mut bool) {
+        match node {
+            Node::DirectVariable(d) if d.name == name => *mentions = true,
+            Node::Assignment(_) | Node::Call(_) | Node::Instantiation(_) => *writes = true,
+            Node::UnaryPrefix(u)
+                if matches!(u.operator, Pre::PreIncrement(_) | Pre::PreDecrement(_)) =>
+            {
+                *writes = true
+            }
+            Node::UnaryPostfix(u)
+                if matches!(u.operator, Post::PostIncrement(_) | Post::PostDecrement(_)) =>
+            {
+                *writes = true
+            }
+            _ => {}
+        }
+        node.visit_children(|ch| scan(ch, name, mentions, writes));
+    }
+    later_arg_assigns(list, i, name)
+        || list.iter().skip(i + 1).any(|a| {
+            let e = arg_value(a);
+            if !arg_may_write(a) {
+                return false;
+            }
+            let (mut m, mut w) = (false, false);
+            scan(Node::Expression(e), name, &mut m, &mut w);
+            m && w
         })
 }
 

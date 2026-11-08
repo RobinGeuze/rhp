@@ -590,7 +590,8 @@ is sent and goes into the array as a reference or a value; any other
 variable goes in as a reference that a by-value parameter dereferences.
 The fixed-arity register-window path is the fast path. There too, a
 variable sent to a callee only the run time knows, and assigned or
-incremented by a later argument (`$o->m($p, $p = new X)`), asks the callee
+incremented by a later argument (`$o->m($p, $p = new X)`, or inside one
+that can write it: `[$p] = ..`, `g($p)`), asks the callee
 as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
 before the assignment. An anonymous class's constructor arguments are sent
 like a named class's.

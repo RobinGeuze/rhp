@@ -115,6 +115,12 @@ pub trait Sapi {
         let _ = so.flush();
     }
 
+    /// Whether the SAPI module's `additional_functions` (`dl`) are
+    /// registered: php-cgi leaves them out when it serves a CGI request.
+    fn additional_functions(&self) -> bool {
+        true
+    }
+
     /// Whether running past the hard memory limit
     /// (`memory_hard_limit_percent`) ends the process, as php does (message
     /// on stderr, exit 137). False: the request ends as a fatal error, so
@@ -321,6 +327,21 @@ thread_local! {
     static SAPI_DEF: Cell<Option<(u8, &'static SapiDef)>> = Cell::new(sapi_def("cli"));
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`), by directive.
     static SAPI_INI: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    /// [`Sapi::additional_functions`].
+    static ADDITIONAL: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Whether the running SAPI's `additional_functions` are registered
+/// ([`Sapi::additional_functions`]).
+pub fn set_additional_functions(on: bool) {
+    ADDITIONAL.with(|a| a.set(on));
+}
+
+/// Whether `name` is one of the running SAPI's `additional_functions` and
+/// the SAPI left them out.
+pub(crate) fn additional_left_out(name: &str) -> bool {
+    !ADDITIONAL.with(|a| a.get())
+        && sapi_module().is_some_and(|d| d.functions.iter().any(|(n, _)| *n == name))
 }
 
 /// Install the running engine's SAPI name and ini defaults (per thread: one
@@ -355,6 +376,7 @@ pub(crate) fn sapi_ini_default(name: &str) -> Option<Vec<u8>> {
 
 pub(crate) fn reset_state() {
     set_sapi("cli", &[]);
+    set_additional_functions(true);
 }
 
 /// The running SAPI's module (sapi/), if rhp has one for it.

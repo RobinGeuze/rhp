@@ -49,6 +49,7 @@ impl Vm {
         rhp_values::mem::end_request();
         let name = sapi.name().to_string();
         builtins::main::sapi::set_sapi(&name, &sapi.ini_defaults());
+        builtins::main::sapi::set_additional_functions(sapi.additional_functions());
         let mut constants = HashMap::new();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);

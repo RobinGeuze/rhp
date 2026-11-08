@@ -257,7 +257,7 @@ fn multipart(value: &[u8]) -> Vec<u8> {
 }
 
 /// GHSA-2cv3-554h-jpmh (tests/basic/GHSA-2cv3-554h-jpmh_urlencoded.phpt):
-/// `sapi_read_standard_form_data` stops after the 256 KiB block that takes
+/// `sapi_read_standard_form_data` stops after the 16 KiB block that takes
 /// the bytes read past post_max_size, warns, and `$_POST` holds what was
 /// read.
 #[test]
@@ -276,7 +276,7 @@ fn urlencoded_body_longer_than_content_length_stops_at_post_max_size() {
         ev.contains(&"log:PHP Warning:  PHP Request Startup: Actual POST length does not match Content-Length, and exceeds 102400 bytes in Unknown on line 0".to_string()),
         "{ev:?}"
     );
-    assert_eq!(body(&ev), "bool(true)\nint(262142)\nint(262144)\n");
+    assert_eq!(body(&ev), "bool(true)\nint(114686)\nint(114688)\n");
 }
 
 /// GHSA-2cv3-554h-jpmh (tests/basic/GHSA-2cv3-554h-jpmh_multipart.phpt):
@@ -319,7 +319,7 @@ fn request_parse_body_stops_at_post_max_size() {
     );
     assert_eq!(
         body(&ev),
-        "\nWarning: request_parse_body(): Actual POST length does not match Content-Length, and exceeds 102400 bytes in Command line code on line 1\nint(262142)\n"
+        "\nWarning: request_parse_body(): Actual POST length does not match Content-Length, and exceeds 102400 bytes in Command line code on line 1\nint(114686)\n"
     );
 
     let (ev, _) = run(

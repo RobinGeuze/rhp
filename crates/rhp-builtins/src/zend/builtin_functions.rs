@@ -733,7 +733,7 @@ fn fn_get_extension_funcs(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
     names.retain(|n| host.internal_function_exists(n.as_bytes()));
     if module == "standard" {
         for (n, _) in sapi.map_or(&[][..], |d| d.functions) {
-            if !names.contains(n) {
+            if !names.contains(n) && !crate::main::sapi::additional_left_out(n) {
                 names.push(n);
             }
         }

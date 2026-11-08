@@ -141,6 +141,16 @@ fn run(bin: &Path, pre: &[&str], s: &Spec) -> Ran {
         spawn(&mut cmd, Some(&s.stdin))
     };
     let mut ran = spawned.unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
+    // `-T`'s timing.
+    let tag = b"Elapsed time: ";
+    if let Some(at) = ran.stderr.windows(tag.len()).position(|w| w == tag) {
+        let from = at + tag.len();
+        let to = ran.stderr[from..]
+            .iter()
+            .position(|&b| b == b' ')
+            .map_or(ran.stderr.len(), |n| from + n);
+        ran.stderr.splice(from..to, b"N".iter().copied());
+    }
     if let Some(p) = log {
         ran.stdout.extend_from_slice(b"\n--- CGI_LOG\n");
         ran.stdout
@@ -402,6 +412,56 @@ fn uploads_are_deleted_after_the_request() {
         left.sort();
         assert_eq!(left, ["kept.txt"], "{}", bin.display());
         std::fs::remove_file(tmp.join("kept.txt")).unwrap();
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// A form body of 16 KiB or more goes to a temporary file in
+/// `upload_tmp_dir` while the request runs (php's `php://temp` request
+/// body), deleted when it ends; a smaller one stays in memory.
+#[test]
+fn post_bodies_spill_to_a_temporary_file() {
+    let base = std::env::temp_dir().join(format!("rhp-cgi-spill-{}", std::process::id()));
+    let tmp = base.join("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let script = base.join("spill.php");
+    std::fs::write(
+        &script,
+        "<?php\necho strlen($_POST['a']), ' ', count(glob(__DIR__ . '/tmp/php*')), \"\\n\";\n",
+    )
+    .unwrap();
+    let mut engines: Vec<(PathBuf, Vec<&str>)> =
+        vec![(PathBuf::from(env!("CARGO_BIN_EXE_rhp")), vec!["--cgi"])];
+    if let Some(php) = php_cgi() {
+        engines.push((php, vec![]));
+    }
+    for (len, files) in [(16383, 0), (16384, 1), (40000, 1)] {
+        let body = format!("a={}", "x".repeat(len - 2));
+        let s = Spec {
+            env: vec![
+                ("REDIRECT_STATUS".into(), "1".into()),
+                ("REQUEST_METHOD".into(), "POST".into()),
+                (
+                    "SCRIPT_FILENAME".into(),
+                    script.to_string_lossy().into_owned(),
+                ),
+                (
+                    "CONTENT_TYPE".into(),
+                    "application/x-www-form-urlencoded".into(),
+                ),
+                ("CONTENT_LENGTH".into(), body.len().to_string()),
+            ],
+            ini: vec![format!("upload_tmp_dir={}", tmp.display())],
+            stdin: body.into_bytes(),
+            ..Spec::default()
+        };
+        for (bin, pre) in &engines {
+            let r = run(bin, pre, &s);
+            let out = String::from_utf8_lossy(&r.stdout).into_owned();
+            let want = format!("{} {files}\n", len - 2);
+            assert!(out.ends_with(&want), "{} {len}: {out}", bin.display());
+            assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+        }
     }
     std::fs::remove_dir_all(&base).unwrap();
 }

@@ -381,9 +381,18 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             )?;
             return Ok(false);
         }
+        let mut diags = Vec::new();
         let over = host
             .body_state()
-            .is_some_and(|s| s.read_standard(&body, lim.post_max_size));
+            .is_some_and(|s| s.read_standard(&body, lim.post_max_size, &mut diags));
+        for d in diags {
+            match d {
+                Diag::Notice(m) => crate::notice(host, "request_parse_body", &m)?,
+                Diag::Emit(m) | Diag::Warning(m) | Diag::Sapi(m) => {
+                    crate::warn(host, "request_parse_body", &m)?
+                }
+            }
+        }
         if over {
             crate::warn(
                 host,
@@ -440,6 +449,7 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
                         }
                     }
                     Diag::Notice(m) => crate::notice(host, "request_parse_body", &m)?,
+                    Diag::Warning(m) => crate::warn(host, "request_parse_body", &m)?,
                     Diag::Sapi(m) => host.emit_diagnostic(crate::E_WARNING, m.as_bytes())?,
                 }
             }

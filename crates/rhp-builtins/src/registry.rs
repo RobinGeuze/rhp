@@ -258,7 +258,9 @@ pub fn registry() -> &'static HashMap<&'static str, Builtin> {
 
 /// Whether the running SAPI has builtin `b`, and disable_functions left it.
 fn available(b: &Builtin) -> bool {
-    (b.sapis == 0 || b.sapis & main::sapi::sapi_bit() != 0) && !is_disabled(b.name)
+    (b.sapis == 0
+        || (b.sapis & main::sapi::sapi_bit() != 0 && !main::sapi::additional_left_out(b.name)))
+        && !is_disabled(b.name)
 }
 
 thread_local! {

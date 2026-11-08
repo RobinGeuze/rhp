@@ -162,6 +162,17 @@ impl Vm {
         self.startup_diag(2, &format!("PHP Request Startup: {msg}"));
     }
 
+    /// The request body readers' diagnostics, raised during startup.
+    fn body_diags(&mut self, diags: Vec<Diag>) {
+        for d in diags {
+            match d {
+                Diag::Emit(m) | Diag::Warning(m) => self.startup_warning(&m),
+                Diag::Notice(m) => self.startup_diag(8, &format!("PHP Request Startup: {m}")),
+                Diag::Sapi(m) => self.startup_diag(2, &m),
+            }
+        }
+    }
+
     /// php_error_cb for a warning, or an ini handler's E_ERROR, raised
     /// before the module finished starting up: never recorded for
     /// `error_get_last()` nor passed to a handler; displayed when
@@ -260,10 +271,12 @@ impl Vm {
             ));
             return;
         }
+        let mut diags = Vec::new();
         let over = match self.sapi.request.as_ref() {
-            Some(req) => self.sapi.body.read_standard(&req.body, max),
+            Some(req) => self.sapi.body.read_standard(&req.body, max, &mut diags),
             None => false,
         };
+        self.body_diags(diags);
         if over {
             self.startup_warning(&rfc1867::actual_length_exceeds(max));
         }
@@ -619,15 +632,7 @@ impl Vm {
                     files,
                 );
                 self.sapi.body.apply(&mut out);
-                for d in out.diags {
-                    match d {
-                        Diag::Emit(m) => self.startup_warning(&m),
-                        Diag::Notice(m) => {
-                            self.startup_diag(8, &format!("PHP Request Startup: {m}"))
-                        }
-                        Diag::Sapi(m) => self.startup_diag(2, &m),
-                    }
-                }
+                self.body_diags(std::mem::take(&mut out.diags));
             }
             _ => {}
         }

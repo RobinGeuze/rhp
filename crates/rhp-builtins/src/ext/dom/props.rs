@@ -795,6 +795,20 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
             Ok(Some(val)) => val,
             Ok(None) | Err(_) => continue,
         };
+        // The modern $children, $classList and $implementation live in a
+        // property slot that php's read handler fills (later dumps list
+        // them first, and the same object comes back).
+        if let (Value::Object(_), Value::Object(h)) = (&val, v) {
+            if p.decl.starts_with("Dom\\")
+                && matches!(p.name, "children" | "classList" | "implementation")
+            {
+                let key = PhpStr::from_bytes(p.name.as_bytes());
+                let mut b = h.borrow_mut();
+                if b.props().slot_of(&key).is_some() && !b.props().contains_key(&key) {
+                    b.props_mut().insert(key, val.clone());
+                }
+            }
+        }
         let val = match val {
             Value::Object(_) => Value::str("(object value omitted)"),
             other => other,

@@ -35,3 +35,5 @@ autoload Z
 TypeError: r(): Return value must be of type callable, string returned
 autoload Y
 TypeError: v(): Argument #2 must be of type callable, string given, called in callable_autoload.php on line 49
+autoload Gone
+TypeError: reg(): Argument #2 ($f) must be of type callable, array given, called in callable_autoload.php on line 51

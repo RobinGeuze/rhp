@@ -1518,8 +1518,11 @@ impl Vm {
             let lc = c.to_ascii_lowercase();
             if !matches!(lc.as_slice(), b"self" | b"parent" | b"static")
                 && self.resolve_class_by_name(&c).is_err()
+                && !self.try_autoload(&c)?
             {
-                self.try_autoload(&c)?;
+                // php stops at a class it can't find: `[C, "A::m"]` with no
+                // C never looks A up.
+                break;
             }
         }
         Ok(())

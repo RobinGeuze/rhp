@@ -47,4 +47,6 @@ try { reg('x', 'Boom::m'); } catch (Throwable $e) { show($e); }
 try { r(['Boom', 'm']); } catch (Throwable $e) { show($e); }
 try { r('Z::m'); } catch (Throwable $e) { show($e); }
 try { v('V::m', 'Y::m'); } catch (Throwable $e) { show($e); }
+// No Gone: php never looks the method half's class up.
+try { reg('x', ['Gone', 'Boom::m']); } catch (Throwable $e) { show($e); }
 }

@@ -17,7 +17,8 @@ class SplObjectStorage implements Countable, SeekableIterator, Serializable, Arr
     #[\Deprecated(since: '8.5', message: "use method SplObjectStorage::offsetExists() instead")]
     public function contains(object $object): bool { return self::offsetExists($object); }
     public function addAll(SplObjectStorage $storage): int {
-        foreach ($storage->__o as $h => $o) { $this->__o[$h] = $o; $this->__v[$h] = $storage->__v[$h]; }
+        // spl_object_storage_attach for each: this storage's own hash.
+        foreach ($storage->__o as $h => $o) { $inf = $storage->__v[$h]; $k = $this->__hash($o); $this->__o[$k] = $o; $this->__v[$k] = $inf; }
         return count($this->__o);
     }
     public function removeAll(SplObjectStorage $storage): int {

@@ -2,9 +2,15 @@ string(23) "insert into t values(1)"
 1 text
 2 integer
 1 integer
-object(SQLite3Result)#6 (0) {
+
+Warning: Object of class stdClass could not be converted to int in F on line 25
+array(1) {
+  [0]=>
+  int(1)
 }
-int(4)
+object(SQLite3Result)#7 (0) {
+}
+int(5)
 __call sqliteCreateFunction
 bool(false)
 A

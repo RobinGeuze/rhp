@@ -1,4 +1,5 @@
 <?php
+ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // bindParam without a type binds text; query() holds a hidden
 // SQLite3Stmt object (object handles); a PDO subclass's __call answers
 // before PDO's driver methods; IteratorIterator's $class checks.
@@ -17,6 +18,11 @@ $res = $db->query('select a, typeof(a) from t');
 while ($row = $res->fetchArray(SQLITE3_NUM)) {
     echo $row[0], ' ', $row[1], "\n";
 }
+// convert_to_long on bindValue's own copy: the warning, and the object
+// is released.
+$st = $db->prepare('select ?');
+$st->bindValue(1, new stdClass(), SQLITE3_INTEGER);
+var_dump($st->execute()->fetchArray(SQLITE3_NUM));
 $res = $db->query('select 1');
 var_dump($res, spl_object_id(new stdClass));
 

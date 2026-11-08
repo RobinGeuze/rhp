@@ -1505,7 +1505,7 @@ fn bind_params(cx: &mut Cx, s: &Stmt, d: &Db) -> Result<bool, Thrown> {
         None => return Ok(true),
     };
     let st = s.stmt.get();
-    for p in params {
+    for (pi, p) in params.into_iter().enumerate() {
         let n = p.number as c_int;
         let v = deref(&p.value);
         let fail = |cx: &mut Cx, rc: c_int| -> Result<(), Thrown> {
@@ -1522,13 +1522,13 @@ fn bind_params(cx: &mut Cx, s: &Stmt, d: &Db) -> Result<bool, Thrown> {
         match p.typ as c_int {
             sys::SQLITE_INTEGER => {
                 // convert_to_long(parameter): the bound variable changes.
-                let i = conv::to_int(&v);
-                set_param(&p.value, Value::Int(i));
+                let i = crate::zend::zpp::zval_get_long(cx.host, &v)?;
+                set_param(s, pi, &p, Value::Int(i));
                 fail(cx, unsafe { sys::sqlite3_bind_int64(st, n, i) })?;
             }
             sys::SQLITE_FLOAT => {
-                let f = conv::to_float(&v);
-                set_param(&p.value, Value::Float(f));
+                let f = crate::ext::standard::formatted_print::zval_get_double(cx.host, &v)?;
+                set_param(s, pi, &p, Value::Float(f));
                 fail(cx, unsafe { sys::sqlite3_bind_double(st, n, f) })?;
             }
             sys::SQLITE_BLOB => {
@@ -1593,10 +1593,19 @@ fn bind_params(cx: &mut Cx, s: &Stmt, d: &Db) -> Result<bool, Thrown> {
 
 /// Write a converted value back where a bound parameter lives (its
 /// reference, for bindParam).
-fn set_param(slot: &Value, v: Value) {
-    if let Value::Ref(r) = slot {
+/// convert_to_long/double on the bound parameter: bindParam's variable,
+/// else bindValue's own copy (`pi` is its index in the bound list).
+fn set_param(s: &Stmt, pi: usize, p: &Param, v: Value) {
+    if let Value::Ref(r) = &p.value {
         *r.borrow_mut() = v;
+        return;
     }
+    let old = match s.bound.borrow_mut().as_mut().and_then(|l| l.get_mut(pi)) {
+        Some((_, slot)) if slot.number == p.number => std::mem::replace(&mut slot.value, v),
+        _ => return,
+    };
+    // Freed outside the borrow (a destructor may run).
+    drop(old);
 }
 
 /// SQLite3Stmt::execute

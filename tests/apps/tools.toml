@@ -9,7 +9,14 @@
 #   name      the tool, also its work directory name
 #   package   the composer package (its version comes from composer.lock)
 #   bin       the entry script, relative to the project; run as `<engine> <bin> <args>`
-#   commands  one argument string per command (shell-split; no shell runs it)
+#   commands  one argument string per command (shell-split; no shell runs it),
+#             or { args = "...", unordered = true } for a parallel run whose
+#             per-file blocks come in worker completion order; a
+#             `known = "reason"` key marks a difference with a known cause in
+#             rhp (KNOWN, not a failure)
+#   big       the big tier (`tools.py diff --big`, nightly in CI): the same
+#             forms, on vendor code (symfony/console, nikic/php-parser) with
+#             the fixture's big-* configs; minutes per command under rhp
 
 [[tool]]
 name = "phpunit"
@@ -45,6 +52,19 @@ commands = [
     "--log-events-text php://stdout --no-output",
     "--coverage-text",
     "--no-configuration --bootstrap vendor/autoload.php tests",
+    # The synthetic suite (big/MockTest.php, 331 tests): mocks (eval'd code),
+    # failure diffs, error handling, separate processes, data providers.
+    "-c phpunit-big.xml",
+    "-c phpunit-big.xml --testdox",
+    "-c phpunit-big.xml --display-all-issues --fail-on-all-issues",
+    "-c phpunit-big.xml --order-by=random --random-order-seed=42",
+    "-c phpunit-big.xml --log-junit php://stdout --no-output",
+]
+big = [
+    "-c phpunit-big.xml --process-isolation",
+    "-c phpunit-big.xml --debug",
+    "-c phpunit-big.xml --teamcity",
+    "-c phpunit-big.xml --repeat 3",
 ]
 
 [[tool]]
@@ -78,6 +98,11 @@ commands = [
     "result-cache-info",
     "clear-result-cache",
 ]
+big = [
+    "analyse --no-progress -c big-phpstan.neon --error-format=raw",
+    "analyse --no-progress -c big-phpstan-1.neon --error-format=raw",
+    "analyse --no-progress -c big-phpstan-max.neon --error-format=json",
+]
 
 [[tool]]
 name = "psalm"
@@ -109,6 +134,12 @@ commands = [
     "--no-progress --threads=1 --alter --issues=MissingReturnType,MismatchingDocblockReturnType",
     "--clear-cache",
 ]
+big = [
+    { args = "-c big-psalm-console.xml --no-progress --threads=1", known = "no ext/fileinfo: finfo is undefined" },
+    { args = "-c big-psalm-console.xml --no-progress --threads=4", known = "no ext/fileinfo: finfo is undefined" },
+    "-c big-psalm-parser.xml --no-progress --threads=1",
+    "-c big-psalm-parser.xml --no-progress --threads=4",
+]
 
 [[tool]]
 name = "php-cs-fixer"
@@ -138,8 +169,13 @@ commands = [
     "fix --dry-run --format=gitlab",
     "fix --dry-run --format=xml",
     "fix --dry-run --format=txt",
-    "check --config=.php-cs-fixer.parallel.php",
-    "fix --config=.php-cs-fixer.parallel.php",
+    { args = "check --config=.php-cs-fixer.parallel.php", unordered = true },
+    { args = "fix --config=.php-cs-fixer.parallel.php", unordered = true },
+]
+big = [
+    "fix --dry-run --diff --config=big-cs-fixer.php",
+    { args = "fix --dry-run --diff --config=big-cs-fixer-parallel.php", unordered = true },
+    { args = "fix --dry-run --config=big-cs-fixer-parallel.php --format=json", unordered = true },
 ]
 
 [[tool]]
@@ -164,7 +200,12 @@ commands = [
     "process --dry-run --clear-cache",
     "process --dry-run src/Item.php",
     "process --dry-run --only=Rector\\Php84\\Rector\\MethodCall\\NewMethodCallWithoutParenthesesRector",
-    "process --dry-run --config=rector-parallel.php",
-    "process --config=rector-parallel.php",
+    { args = "process --dry-run --config=rector-parallel.php", unordered = true },
+    { args = "process --config=rector-parallel.php", unordered = true },
     "process --dry-run --no-progress-bar",
+]
+big = [
+    "process --dry-run --config=big-rector.php",
+    { args = "process --dry-run --config=big-rector-parallel.php", unordered = true },
+    { args = "process --dry-run --config=big-rector-parallel.php --output-format=json", unordered = true },
 ]

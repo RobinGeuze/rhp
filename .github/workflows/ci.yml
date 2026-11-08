@@ -409,3 +409,49 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s tests/suites -p 'test_*.py' -v
+
+  # The dev tools (tests/apps/tools.py): PHPUnit, PHPStan, Psalm,
+  # PHP-CS-Fixer and Rector on the fixture project under php and rhp, every
+  # command printing what php prints. The big tier runs nightly
+  # (tools-nightly.yml).
+  dev-tools:
+    name: dev tools
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: actions/cache@v6
+        with:
+          path: tests/apps/tools/project/vendor
+          key: tools-vendor-${{ hashFiles('tests/apps/tools/project/composer.lock') }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+      - run: tar -xf release.tar
+      - name: The harness's own tests (masks, parallel-order compare)
+        run: python3 tests/apps/harness_test.py
+      - run: python3 tests/apps/tools.py setup
+      - run: python3 tests/apps/tools.py diff
+
+  # Composer (tests/apps/composer_diff.py) under php and rhp: its commands,
+  # the stream and ZipArchive transports, and installs of the Symfony and
+  # Laravel fixtures (plugins, auto-scripts). Needs packagist.org.
+  composer:
+    name: composer
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-php
+        with:
+          php-version: '8.5'
+      - uses: ./.github/actions/native-deps
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+      - run: tar -xf release.tar
+      - run: python3 tests/apps/composer_diff.py --work "$RUNNER_TEMP/composer-diff"

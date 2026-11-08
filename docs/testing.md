@@ -177,6 +177,11 @@ Symfony components' and wordpress-develop's own PHPUnit suites under php
 and rhp, per test, in the nightly `suites` workflow: a test on a suite's
 `known-passing.txt` that php passes and rhp doesn't fails it.
 
+The dev tools (`tests/apps/tools.py`: PHPUnit, PHPStan, Psalm,
+PHP-CS-Fixer, Rector; a nightly big tier) and Composer
+(`tests/apps/composer_diff.py`) run command by command under php and rhp,
+each in its own CI job; `tests/apps/harness_test.py` tests their masks.
+
 ## Regenerating expectations
 
 - A golden: `rhp-difftest golden --write --filter NAME` with the reference

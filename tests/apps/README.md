@@ -355,6 +355,7 @@ cargo build --release -p rhp-cli
 python3 tests/apps/tools.py setup                  # composer install in tools/project
 python3 tests/apps/tools.py diff                   # every tool; or name some: diff phpstan psalm
 python3 tests/apps/tools.py diff rector --only 5,6 # selected command numbers
+python3 tests/apps/tools.py diff --big psalm       # the big tier (minutes per command)
 python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # self-check
 ```
 
@@ -367,34 +368,119 @@ python3 tests/apps/tools.py diff phpunit --candidate "$(command -v php)"   # sel
   `.php-cs-fixer.dist.php`, `rector.php`, plus `phpstan-parallel.neon`,
   `.php-cs-fixer.parallel.php` and `rector-parallel.php` for runs with 2
   parallel workers). All caches are configured into `var/`.
+- `tools/project/big/MockTest.php` (with `phpunit-big.xml`) is a synthetic
+  PHPUnit suite of 331 tests: mocks and stubs (generated code, `eval`),
+  `#[RunInSeparateProcess]`, `#[Depends]`, a 300-case data provider,
+  `#[TestWith]`, failure diffs of arrays, objects, strings, JSON, XML and
+  files, warnings, notices, deprecations, risky and incomplete tests, `Error`
+  and `TypeError`.
+- The `big-*` configurations are the big tier: PHPStan (level 6 in parallel
+  and in one process, level max) and Psalm (error level 1, 1 and 4 threads)
+  on `vendor/symfony/console` and `vendor/nikic/php-parser/lib`, Rector (the
+  PHP 8.4 set and five prepared sets) and PHP-CS-Fixer (`@Symfony`,
+  `@Symfony:risky`, `@PER-CS`, `@PHP8x4Migration` on four directories of
+  symfony/console), each sequential and with 4 workers, plus the synthetic
+  suite with `--process-isolation`. They analyse code that `vendor/` already
+  holds. Each command takes seconds under php and minutes under rhp, so they
+  run only with `--big`, and CI runs them nightly (`tools-nightly.yml`).
 - The tools are installed together: `composer.json` and `composer.lock` are
   committed, and the lock pins each version. `vendor/` and `tools/work/` are
   never committed.
 - `tools.toml` lists the commands per tool: `--version`, `list`/`help`, the
   main analyse/test/fix commands with common flags, each output format and a
-  parallel run where the tool has one.
+  parallel run where the tool has one; `big` lists the big tier. A command
+  with `known = "reason"` differs for a known cause in rhp: it prints `KNOWN`
+  and does not fail the run, or `FIXED` once it matches (drop the mark
+  then). Today: Psalm on symfony/console, which uses `finfo`.
 - Each command runs on a fresh copy of the fixture in `tools/work/<tool>/`
-  (a clone of `vendor/` stays there), first under php, then under rhp, with
-  a fixed environment: `HOME` and `TMPDIR` inside the run directory, `TZ=UTC`,
-  `LANG=LC_ALL=C`, `COLUMNS=120`, `NO_COLOR=1`, `TERM=dumb`, no CI variables,
-  stdin closed. A command is `SAME` when the exit code, stdout and stderr are
-  byte-identical after normalisation and the files it left in the project
-  (outside `vendor/` and `var/`) are identical too. Outputs and diffs are kept
-  in `tools/work/<tool>-out/`.
+  (`<tool>-big/` for the big tier; a clone of `vendor/` stays there), first
+  under php, then under rhp, with a fixed environment: `HOME` inside the
+  run directory, a short `TMPDIR` (`/tmp/rhp-tools-<uid>/<hash>-<run>`: Psalm's and
+  Rector's workers put unix sockets there, and macOS allows 104 bytes per
+  socket path), `TZ=UTC`, `LANG=LC_ALL=C`, `COLUMNS=120`,
+  `NO_COLOR=1`, `TERM=dumb`, no CI variables, stdin closed, and
+  `PHPRC=tools/php.ini` for both engines. A command is `SAME` when the exit
+  code, stdout and stderr are byte-identical after normalisation and the
+  files it left in the project (outside `vendor/` and `var/`) are identical
+  too. Outputs and diffs are kept in `tools/work/<tool>-out/`.
+- php runs as the executable `/proc/self/exe` names (its directory first
+  on PATH), not through CI's `php` shim, which runs php under the shim's
+  name and adds `-d extension=...` flags whenever a tool restarts itself
+  with `-n`.
+- The big tier's parallel configurations give each worker chunk 900 s and
+  each command 3600 s: rhp is several times slower than php, more so on a
+  loaded machine.
+- `tools/php.ini` is a distribution-like php.ini (php-src's
+  `php.ini-development` values), so neither engine falls back to its own
+  build's file or to none. It sets `max_execution_time = 30`, which the CLI
+  must override with 0, and `log_errors = On`, so every warning is also
+  logged to stderr.
+- Each line shows the CPU time (user + sys of the whole process tree,
+  workers included) and the peak RSS under php and under rhp, and each
+  tool's summary the CPU totals and their ratio, so speed is tracked too.
 
 Normalisation only masks what php itself varies from run to run (the
 self-check against php must report every command `SAME`), plus the engine's
-path:
+path and one ceiling:
 
 | rule | what it masks |
 |------|---------------|
-| `binary` | The engine binary's path (`PHP_BINARY`), which differs by construction |
+| `binary` | The engine binary's absolute path (`PHP_BINARY`), which differs by construction; never the bare name `php` |
+| `phpstan-worker` | `(the forked worker)` / `(the spawned worker)` in PHPStan's peak-memory line: PHPStan forks only with its native `phpstan_turbo` extension, which rhp cannot load |
 | `phpunit-time` | PHPUnit's `Time: 00:00.047, Memory: 18.00 MB` line |
 | `phpunit-event-time`, `phpunit-event-memory` | The timestamps and memory figures in `--log-events-text` |
 | `report-time`, `xml-time`, `xml-memory`, `json-time`, `json-memory` | Durations and memory figures in JUnit, TeamCity, XML and JSON reports |
 | `teamcity-flow` | TeamCity's `flowId`, the process id |
 | `progress-steps` | The intermediate steps of a Symfony progress bar (it redraws at most every 0.1 s); the first and last step are kept |
 | `elapsed`, `memory` | Any other `<number> s/ms/seconds` and `<number> MB/MiB/...`, as in "in 0.088 seconds, 18.00 MB memory used" |
+
+Commands marked `unordered` in `tools.toml` are parallel runs: PHP-CS-Fixer
+and Rector print one block per file in the order the workers finish, which
+php does not keep from one run to the next. Their output is put in a fixed
+order before normalisation: JSON lists of per-file objects are sorted by
+file name (and re-printed), and text blocks (`   1) src/Item.php`, up to the
+next block or the closing `[OK]`/`Found ... of ... files` line) are sorted
+and their numbers replaced with `#`. Everything else in the output is
+compared as is. (PHPStan and Psalm sort their own output.)
+
+## Composer (`composer_diff.py`)
+
+```sh
+cargo build --release -p rhp-cli
+python3 tests/apps/composer_diff.py                          # every suite
+python3 tests/apps/composer_diff.py --suite basic,stream     # some suites
+python3 tests/apps/composer_diff.py --suite basic install show   # some commands
+```
+
+Each suite runs its commands through `php composer`, then `rhp composer`, in
+the same directory with the same (emptied) `COMPOSER_HOME` and cache, and
+compares exit code and output; then the files it lists as the two runs left
+them (`composer.lock`, `vendor/`, ...). Needs network access.
+
+| suite | what it runs |
+|-------|--------------|
+| `basic` | A project requiring monolog/monolog and psr/container: 29 commands from `about` to `install`, `require`, `update`, `audit`, `archive` and `init` |
+| `stream` | The same project with `curl_multi_*` disabled, so Composer downloads over https through the stream layer and openssl: `install --no-cache`, `create-project` |
+| `ziparchive` | The same with no `unzip`/`7z` on PATH, so Composer extracts with ZipArchive (as on a minimal CI image) |
+| `symfony-7.4` | The fixture app's `composer.json` and lock: `install` runs Symfony Flex (a plugin) and the auto-scripts (`cache:clear`) under the engine; `dump-autoload -o`, `run-script auto-scripts` |
+| `laravel-13` | The same for Laravel: `install`, `dump-autoload -o`, `run-script post-autoload-dump` (`artisan package:discover`), comparing `bootstrap/cache/{packages,services}.php` too |
+
+- Both engines run as the same path, `WORK/bin/php`, a hard link to (or
+  copy of) the engine: a symlink would not do, as both resolve `PHP_BINARY`
+  through `realpath()`. So `PHP_BINARY` is the same, and so is the text
+  Symfony Console wraps into its error blocks.
+- Masks: timings, memory figures and dates; the OpenSSL and zlib versions
+  (`diagnose`'s `OpenSSL version:` line, `lib-openssl` and `lib-zlib` in
+  `show --platform`): each engine reports the headers it was built with,
+  a fact of the build, not of the engine; the path of `WORK/bin/php` (a
+  distribution php may still report its installed path); the secrets a recipe writes
+  (`APP_SECRET`, `APP_KEY`) and Flex's session id.
+- `show --platform` is compared on the extensions both engines load (an
+  `ext-*` entry, and the `lib-*` entries its extension reports), with the
+  column padding collapsed: Homebrew's php has 60-odd extensions, rhp fewer.
+- `KNOWN` in the script lists differences with a known cause in rhp; they
+  print `KNOWN` and do not fail the run. One that matches prints `FIXED`:
+  remove it then.
 
 ## Findings recorded when the fixtures were created
 

@@ -139,7 +139,14 @@ impl Vm {
                     return c.clone();
                 }
                 match &a.callee {
-                    Callee::Closure(cd) => Value::Closure(cd.clone()),
+                    // Given as `[$closure, '__invoke']`: php lists the
+                    // method (its function has a scope, no alfi->closure).
+                    Callee::Closure(cd) => {
+                        let mut a = PhpArray::new();
+                        a.push(Value::Closure(cd.clone()));
+                        a.push(Value::str(b"__invoke".to_vec()));
+                        Value::Array(a)
+                    }
                     Callee::Function(f) => Value::Str(f.proto.name.clone()),
                     Callee::Builtin(n) => Value::str(n.as_bytes().to_vec()),
                     Callee::Method(m, this, called) => {

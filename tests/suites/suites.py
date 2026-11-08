@@ -330,7 +330,12 @@ def compare(suite_name, refs, cand, known, flaky):
     ct = flat(cand)
     flaky = set(flaky)
     all_ref = set().union(*rt) if rt else set()
-    unstable = sorted(k for k in all_ref if len({(t.get(k) or ("missing",))[0] for t in rt}) > 1)
+    # Unstable: outcomes differ between the php runs that ran the test. A test
+    # missing from a run (its part crashed or timed out) is only incomplete:
+    # it isn't passing, but it isn't flaky either (--write-flaky would park it
+    # for good).
+    unstable = sorted(k for k in all_ref if len({t[k][0] for t in rt if k in t}) > 1)
+    incomplete = sorted(k for k in all_ref if any(k not in t for t in rt) and k not in unstable)
     skip = flaky | set(unstable)
     ref_pass = {k for k in rt[0] if all(t.get(k, ("x",))[0] == "pass" for t in rt)} - skip if rt else set()
     cand_pass = {k for k, v in ct.items() if v[0] == "pass"} - skip
@@ -364,7 +369,7 @@ def compare(suite_name, refs, cand, known, flaky):
     }
     return {
         "suite": suite_name, "ref_pass": len(ref_pass), "cand_pass": len(cand_pass), "passing": sorted(passing),
-        "regressions": regressions, "env": env, "new": new, "unstable": unstable,
+        "regressions": regressions, "env": env, "new": new, "unstable": unstable, "incomplete": incomplete,
         "reasons": reasons.most_common(), "example": example, "counts": counts,
         "ref_total": len(rt[0]) if rt else 0, "cand_total": len(ct),
     }
@@ -390,7 +395,8 @@ def cmd_compare(s, refs, cand, check_known, write_known, write_flaky, summary, t
         "  rhp: " + " ".join(f"{k}={cc[k]}" for k in STATUSES if cc[k]) + f" (of {c['cand_total']})",
     ]
     if len(refs) > 1:
-        lines.append(f"  unstable under php across {len(refs)} runs: {len(c['unstable'])}")
+        lines.append(f"  unstable under php across {len(refs)} runs: {len(c['unstable'])}, "
+                     f"missing from some run: {len(c['incomplete'])}")
     if check_known:
         lines.append(f"  known-passing: {len(read_list(known_p))}, regressions: {len(c['regressions'])}, "
                      f"not passing under php either: {len(c['env'])}, newly passing: {len(c['new'])}")

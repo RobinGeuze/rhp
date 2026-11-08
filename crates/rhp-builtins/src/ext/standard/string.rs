@@ -102,7 +102,7 @@ fn clamp_start(start: i64, len: usize) -> usize {
 }
 
 fn fn_substr(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let s = conv::to_string_bytes(&args[0]);
+    let s = conv::str_bytes(&args[0]);
     let len = s.len();
     let start = clamp_start(conv::to_int(&deref(&args[1])), len);
     // remaining length after start
@@ -1160,11 +1160,11 @@ fn spn_window(subject_len: usize, args: &[Value]) -> (usize, usize) {
 }
 
 fn fn_strspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = conv::to_string_bytes(&args[0]);
-    let mask = conv::to_string_bytes(&args[1]);
+    let subject = conv::str_bytes(&args[0]);
+    let mask = conv::str_bytes(&args[1]);
     let (start, len) = spn_window(subject.len(), args);
     let mut set = [false; 256];
-    for &c in &mask {
+    for &c in mask.iter() {
         set[c as usize] = true;
     }
     let window = &subject[start..start + len];
@@ -1173,11 +1173,11 @@ fn fn_strspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 fn fn_strcspn(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let subject = conv::to_string_bytes(&args[0]);
-    let mask = conv::to_string_bytes(&args[1]);
+    let subject = conv::str_bytes(&args[0]);
+    let mask = conv::str_bytes(&args[1]);
     let (start, len) = spn_window(subject.len(), args);
     let mut set = [false; 256];
-    for &c in &mask {
+    for &c in mask.iter() {
         set[c as usize] = true;
     }
     let window = &subject[start..start + len];

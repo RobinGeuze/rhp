@@ -276,6 +276,8 @@ void rhp_sodium_##v##_keygen(unsigned char *k) { if (have) AEGIS_KEYGEN(v, k); }
 AEGIS(aegis128l, 1)
 AEGIS(aegis256, 1)
 #else
+/* An older libsodium: the wrappers exist but are never called. */
+# pragma GCC diagnostic ignored "-Wunused-parameter"
 # define AEGIS_CALL(v, f, ...) -1
 # define AEGIS_KEYGEN(v, k) (void) (k)
 AEGIS(aegis128l, 0)

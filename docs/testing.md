@@ -255,7 +255,8 @@ avoided.
 
 Generated tables have their own `--check`: `rhp-difftest gen signatures`,
 `gen html-tables`, `gen parser`, `gen intl-consts`, `gen curl-consts`,
-`gen zip-consts`, `gen readme` (see `tools/rhp-difftest/src/gen/`).
+`gen zip-consts`, `gen sockets-consts`, `gen readme` (see
+`tools/rhp-difftest/src/gen/`).
 `gen readme` writes README.md's PHP test table from `tests/phpt`; `cargo
 test` checks it, and `gen readme --php-src` also recounts
 `tests/phpt/totals.txt`.

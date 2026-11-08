@@ -1,14 +1,16 @@
-//! The part of php's `sockets` extension (php-src `ext/sockets`) that
-//! stream-socket libraries use next to stream sockets: `socket_import_stream`
-//! (a `Socket` over a socket stream's descriptor), `socket_get_option` /
-//! `socket_set_option`, `socket_strerror`, `socket_last_error` /
-//! `socket_clear_error`, and the extension's constants. react/socket uses
-//! these (when present) to read `SO_ERROR` after a failed async connect.
+//! php's `sockets` extension (php-src ext/sockets): the `Socket` and
+//! `AddressInfo` classes, the socket calls (core.rs), the options, errors
+//! and constants. The constants come from sockets.stub.php
+//! (`gen sockets-consts`), evaluated against the system headers by shim.c.
 //!
-//! `socket_create` & co. are not implemented, so the extension is not
-//! reported as loaded (`extension_loaded('sockets')` stays false).
+//! Not ported: socket_sendmsg/socket_recvmsg/socket_cmsg_space
+//! (sendrecvmsg.c, conversions.c) and the multicast and other structured
+//! options of socket_get_option/socket_set_option (multicast.c), which
+//! fall back to the int case.
 
-use std::cell::Cell;
+mod core;
+
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rhp_values::ops::deref;
@@ -19,24 +21,40 @@ use crate::zend::object_handlers::{ClassHandlers, ObjectHandlers};
 use crate::zend::zpp::{zpp_long, zval_value_name};
 use crate::{Host, Thrown};
 
-/// `Socket`'s handlers: no clone, not comparable.
-pub(crate) const CLASSES: &[ClassHandlers] = &[ClassHandlers {
-    class: "Socket",
-    handlers: &ObjectHandlers::OPAQUE,
-    create_object: true,
-}];
+/// `Socket`'s and `AddressInfo`'s handlers: no clone, not comparable.
+pub(crate) const CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "Socket",
+        handlers: &ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "AddressInfo",
+        handlers: &ObjectHandlers::OPAQUE,
+        create_object: true,
+    },
+];
 
-/// A `Socket` object's payload (php's `php_socket`): the stream it was
-/// imported from and its last error.
-struct Sock {
-    /// Held so the resource stays alive, as php's `zstream` reference does;
-    /// released with the object.
-    #[allow(dead_code)]
-    stream: Value,
-    /// php's `bsd_socket`: the stream's descriptor number at import time
-    /// (still used after an `fclose` of the stream, as php does).
-    fd: i32,
+/// A `Socket` object's payload (php's `php_socket`).
+pub(crate) struct Sock {
+    /// php's `bsd_socket` (-1 once closed).
+    fd: Cell<i32>,
+    /// php's `type`: the address family.
+    family: Cell<i32>,
     error: Cell<i32>,
+    blocking: Cell<bool>,
+    /// php's `zstream`: the stream the socket was imported from or
+    /// exported to, which owns the descriptor.
+    stream: RefCell<Option<Value>>,
+}
+
+impl Drop for Sock {
+    /// socket_free_obj: close the descriptor unless a stream owns it.
+    fn drop(&mut self) {
+        if self.stream.get_mut().is_none() && self.fd.get() >= 0 {
+            unsafe { libc::close(self.fd.get()) };
+        }
+    }
 }
 
 thread_local! {
@@ -71,6 +89,36 @@ fn socket_arg(
     )))
 }
 
+/// `ENSURE_SOCKET_VALID`.
+fn closed_check(s: &Sock, fname: &str) -> Result<(), Thrown> {
+    if s.fd.get() < 0 {
+        return Err(Thrown::error(
+            "Error",
+            format!("{fname}(): Argument #1 ($socket) has already been closed"),
+        ));
+    }
+    Ok(())
+}
+
+/// `object_init_ex(return_value, socket_ce)`: a new `Socket` with no
+/// descriptor yet.
+fn new_socket(host: &mut dyn Host, fname: &str) -> Result<(Value, Rc<Sock>), Thrown> {
+    let v = host
+        .instantiate(b"Socket", Vec::new())
+        .ok_or_else(|| Thrown::unsupported(fname, "cannot instantiate Socket"))?;
+    let h = crate::zend::object_handlers::object_of(&v)
+        .ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
+    let s = Rc::new(Sock {
+        fd: Cell::new(-1),
+        family: Cell::new(libc::AF_UNSPEC),
+        error: Cell::new(0),
+        blocking: Cell::new(true),
+        stream: RefCell::new(None),
+    });
+    crate::zend::object_handlers::set_payload(&h, s.clone());
+    Ok((v, s))
+}
+
 /// php's `PHP_SOCKET_ERROR`: record the error on the socket and globally,
 /// and warn unless it is a would-block / in-progress condition.
 fn socket_error(
@@ -96,17 +144,26 @@ fn socket_error(
 /// negative (h_errno) codes.
 fn sockets_strerror(e: i32) -> String {
     if e < -10000 {
-        let h = -e - 10000;
+        let h = if e == i32::MIN {
+            2147473648u32 as i32
+        } else {
+            -e - 10000
+        };
         let p = unsafe { hstrerror(h) };
         if !p.is_null() {
             return unsafe { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
         }
+        return String::new();
     }
     crate::main::streams::strerror(e)
 }
 
 extern "C" {
     fn hstrerror(err: libc::c_int) -> *const libc::c_char;
+    fn rhp_sockets_constants(
+        cb: extern "C" fn(*mut libc::c_void, *const libc::c_char, i64),
+        ctx: *mut libc::c_void,
+    );
 }
 
 fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -126,19 +183,47 @@ fn fn_socket_import_stream(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     let Some(fd) = host.stream_fd(&stream) else {
         return Ok(Value::Bool(false));
     };
-    let v = host
-        .instantiate(b"Socket", Vec::new())
-        .ok_or_else(|| Thrown::unsupported(fname, "cannot instantiate Socket"))?;
-    let h = crate::zend::object_handlers::object_of(&v)
-        .ok_or_else(|| Thrown::error("Error", "sockets: bad object"))?;
-    crate::zend::object_handlers::set_payload(
-        &h,
-        Rc::new(Sock {
-            stream,
-            fd,
-            error: Cell::new(0),
-        }),
-    );
+    let (v, s) = new_socket(host, fname)?;
+    // socket_import_file_descriptor: the family and blocking state.
+    s.fd.set(fd);
+    let mut family: libc::c_int = -1;
+    #[cfg(target_os = "linux")]
+    {
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let r = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_DOMAIN,
+                &mut family as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if r != 0 {
+            family = -1;
+        }
+    }
+    if family < 0 {
+        let mut st: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        if unsafe { libc::getsockname(fd, &mut st as *mut _ as *mut libc::sockaddr, &mut len) } == 0
+        {
+            family = st.ss_family as libc::c_int;
+        } else {
+            socket_error(host, &s, fname, "Unable to obtain socket family", errno())?;
+            s.fd.set(-1);
+            return Ok(Value::Bool(false));
+        }
+    }
+    s.family.set(family);
+    let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if fl == -1 {
+        socket_error(host, &s, fname, "Unable to obtain blocking state", errno())?;
+        s.fd.set(-1);
+        return Ok(Value::Bool(false));
+    }
+    s.blocking.set(fl & libc::O_NONBLOCK == 0);
+    *s.stream.borrow_mut() = Some(stream);
     Ok(v)
 }
 
@@ -163,7 +248,8 @@ fn getsockopt_raw<T>(fd: i32, level: i32, name: i32, val: &mut T) -> Result<(), 
 fn fn_socket_get_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let fname = "socket_get_option";
     let sock = socket_arg(host, args, 0, fname, false)?;
-    let fd = sock.fd;
+    closed_check(&sock, fname)?;
+    let fd = sock.fd.get();
     let level = zpp_long(host, args, 1, fname, "level")? as i32;
     let opt = zpp_long(host, args, 2, fname, "option")? as i32;
     let fail = |host: &mut dyn Host, e: i32| -> Result<Value, Thrown> {
@@ -252,7 +338,8 @@ fn fn_socket_set_option(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     use crate::ext::curl::zval_get_long;
     let fname = "socket_set_option";
     let sock = socket_arg(host, args, 0, fname, false)?;
-    let fd = sock.fd;
+    closed_check(&sock, fname)?;
+    let fd = sock.fd.get();
     let level = zpp_long(host, args, 1, fname, "level")?;
     let opt = zpp_long(host, args, 2, fname, "option")?;
     let value = args.get(3).map(deref).unwrap_or(Value::Null);
@@ -345,6 +432,7 @@ fn fn_socket_last_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         None | Some(Value::Null) => Ok(Value::Int(LAST_ERROR.with(Cell::get) as i64)),
         Some(_) => {
             let sock = socket_arg(host, args, 0, "socket_last_error", true)?;
+            closed_check(&sock, "socket_last_error")?;
             Ok(Value::Int(sock.error.get() as i64))
         }
     }
@@ -355,6 +443,7 @@ fn fn_socket_clear_error(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         None | Some(Value::Null) => LAST_ERROR.with(|e| e.set(0)),
         Some(_) => {
             let sock = socket_arg(host, args, 0, "socket_clear_error", true)?;
+            closed_check(&sock, "socket_clear_error")?;
             sock.error.set(0);
         }
     }
@@ -365,6 +454,32 @@ pub fn register(m: &mut crate::Registry) {
     crate::register(
         m,
         &[
+            ("socket_select", core::fn_socket_select),
+            ("socket_create_listen", core::fn_socket_create_listen),
+            ("socket_accept", core::fn_socket_accept),
+            ("socket_set_nonblock", core::fn_socket_set_nonblock),
+            ("socket_set_block", core::fn_socket_set_block),
+            ("socket_listen", core::fn_socket_listen),
+            ("socket_close", core::fn_socket_close),
+            ("socket_write", core::fn_socket_write),
+            ("socket_read", core::fn_socket_read),
+            ("socket_getsockname", core::fn_socket_getsockname),
+            ("socket_getpeername", core::fn_socket_getpeername),
+            ("socket_create", core::fn_socket_create),
+            ("socket_connect", core::fn_socket_connect),
+            ("socket_bind", core::fn_socket_bind),
+            ("socket_recv", core::fn_socket_recv),
+            ("socket_send", core::fn_socket_send),
+            ("socket_recvfrom", core::fn_socket_recvfrom),
+            ("socket_sendto", core::fn_socket_sendto),
+            ("socket_create_pair", core::fn_socket_create_pair),
+            ("socket_shutdown", core::fn_socket_shutdown),
+            ("socket_atmark", core::fn_socket_atmark),
+            ("socket_export_stream", core::fn_socket_export_stream),
+            ("socket_addrinfo_lookup", core::fn_socket_addrinfo_lookup),
+            ("socket_addrinfo_bind", core::fn_socket_addrinfo_bind),
+            ("socket_addrinfo_connect", core::fn_socket_addrinfo_connect),
+            ("socket_addrinfo_explain", core::fn_socket_addrinfo_explain),
             ("socket_import_stream", fn_socket_import_stream),
             ("socket_get_option", fn_socket_get_option),
             ("socket_getopt", fn_socket_get_option),
@@ -379,131 +494,17 @@ pub fn register(m: &mut crate::Registry) {
 
 pub const PRELUDE_PHP: &str = include_str!("prelude.php");
 
-/// The extension's constants, with the host platform's numbers.
+/// The extension's constants: sockets.stub.php's, with the platform's
+/// values and guards (shim.c, consts.h).
 pub fn constants() -> Vec<(&'static str, Value)> {
-    let i = |n: i32| Value::Int(n as i64);
-    vec![
-        ("AF_UNIX", i(libc::AF_UNIX)),
-        ("AF_INET", i(libc::AF_INET)),
-        ("AF_INET6", i(libc::AF_INET6)),
-        ("SOCK_STREAM", i(libc::SOCK_STREAM)),
-        ("SOCK_DGRAM", i(libc::SOCK_DGRAM)),
-        ("SOCK_RAW", i(libc::SOCK_RAW)),
-        ("SOCK_SEQPACKET", i(libc::SOCK_SEQPACKET)),
-        ("SOCK_RDM", i(libc::SOCK_RDM)),
-        ("MSG_OOB", i(libc::MSG_OOB)),
-        ("MSG_WAITALL", i(libc::MSG_WAITALL)),
-        ("MSG_CTRUNC", i(libc::MSG_CTRUNC)),
-        ("MSG_TRUNC", i(libc::MSG_TRUNC)),
-        ("MSG_PEEK", i(libc::MSG_PEEK)),
-        ("MSG_DONTROUTE", i(libc::MSG_DONTROUTE)),
-        ("MSG_EOR", i(libc::MSG_EOR)),
-        ("MSG_NOSIGNAL", i(libc::MSG_NOSIGNAL)),
-        ("MSG_DONTWAIT", i(libc::MSG_DONTWAIT)),
-        ("SO_DEBUG", i(libc::SO_DEBUG)),
-        ("SO_REUSEADDR", i(libc::SO_REUSEADDR)),
-        ("SO_REUSEPORT", i(libc::SO_REUSEPORT)),
-        ("SO_KEEPALIVE", i(libc::SO_KEEPALIVE)),
-        ("SO_DONTROUTE", i(libc::SO_DONTROUTE)),
-        ("SO_LINGER", i(libc::SO_LINGER)),
-        ("SO_BROADCAST", i(libc::SO_BROADCAST)),
-        ("SO_OOBINLINE", i(libc::SO_OOBINLINE)),
-        ("SO_SNDBUF", i(libc::SO_SNDBUF)),
-        ("SO_RCVBUF", i(libc::SO_RCVBUF)),
-        ("SO_SNDLOWAT", i(libc::SO_SNDLOWAT)),
-        ("SO_RCVLOWAT", i(libc::SO_RCVLOWAT)),
-        ("SO_SNDTIMEO", i(libc::SO_SNDTIMEO)),
-        ("SO_RCVTIMEO", i(libc::SO_RCVTIMEO)),
-        ("SO_TYPE", i(libc::SO_TYPE)),
-        ("SO_ERROR", i(libc::SO_ERROR)),
-        ("SOL_SOCKET", i(libc::SOL_SOCKET)),
-        ("SOMAXCONN", i(libc::SOMAXCONN)),
-        ("TCP_NODELAY", i(libc::TCP_NODELAY)),
-        ("PHP_NORMAL_READ", i(1)),
-        ("PHP_BINARY_READ", i(2)),
-        ("IPV6_V6ONLY", i(libc::IPV6_V6ONLY)),
-        ("SOCKET_EPERM", i(libc::EPERM)),
-        ("SOCKET_ENOENT", i(libc::ENOENT)),
-        ("SOCKET_EINTR", i(libc::EINTR)),
-        ("SOCKET_EIO", i(libc::EIO)),
-        ("SOCKET_ENXIO", i(libc::ENXIO)),
-        ("SOCKET_E2BIG", i(libc::E2BIG)),
-        ("SOCKET_EBADF", i(libc::EBADF)),
-        ("SOCKET_EAGAIN", i(libc::EAGAIN)),
-        ("SOCKET_ENOMEM", i(libc::ENOMEM)),
-        ("SOCKET_EACCES", i(libc::EACCES)),
-        ("SOCKET_EFAULT", i(libc::EFAULT)),
-        ("SOCKET_ENOTBLK", i(libc::ENOTBLK)),
-        ("SOCKET_EBUSY", i(libc::EBUSY)),
-        ("SOCKET_EEXIST", i(libc::EEXIST)),
-        ("SOCKET_EXDEV", i(libc::EXDEV)),
-        ("SOCKET_ENODEV", i(libc::ENODEV)),
-        ("SOCKET_ENOTDIR", i(libc::ENOTDIR)),
-        ("SOCKET_EISDIR", i(libc::EISDIR)),
-        ("SOCKET_EINVAL", i(libc::EINVAL)),
-        ("SOCKET_ENFILE", i(libc::ENFILE)),
-        ("SOCKET_EMFILE", i(libc::EMFILE)),
-        ("SOCKET_ENOTTY", i(libc::ENOTTY)),
-        ("SOCKET_ENOSPC", i(libc::ENOSPC)),
-        ("SOCKET_ESPIPE", i(libc::ESPIPE)),
-        ("SOCKET_EROFS", i(libc::EROFS)),
-        ("SOCKET_EMLINK", i(libc::EMLINK)),
-        ("SOCKET_EPIPE", i(libc::EPIPE)),
-        ("SOCKET_ENAMETOOLONG", i(libc::ENAMETOOLONG)),
-        ("SOCKET_ENOLCK", i(libc::ENOLCK)),
-        ("SOCKET_ENOSYS", i(libc::ENOSYS)),
-        ("SOCKET_ENOTEMPTY", i(libc::ENOTEMPTY)),
-        ("SOCKET_ELOOP", i(libc::ELOOP)),
-        ("SOCKET_EWOULDBLOCK", i(libc::EWOULDBLOCK)),
-        ("SOCKET_ENOMSG", i(libc::ENOMSG)),
-        ("SOCKET_EIDRM", i(libc::EIDRM)),
-        ("SOCKET_ENOSTR", i(libc::ENOSTR)),
-        ("SOCKET_ENODATA", i(libc::ENODATA)),
-        ("SOCKET_ETIME", i(libc::ETIME)),
-        ("SOCKET_ENOSR", i(libc::ENOSR)),
-        ("SOCKET_EREMOTE", i(libc::EREMOTE)),
-        ("SOCKET_ENOLINK", i(libc::ENOLINK)),
-        ("SOCKET_EPROTO", i(libc::EPROTO)),
-        ("SOCKET_EMULTIHOP", i(libc::EMULTIHOP)),
-        ("SOCKET_EBADMSG", i(libc::EBADMSG)),
-        ("SOCKET_EUSERS", i(libc::EUSERS)),
-        ("SOCKET_ENOTSOCK", i(libc::ENOTSOCK)),
-        ("SOCKET_EDESTADDRREQ", i(libc::EDESTADDRREQ)),
-        ("SOCKET_EMSGSIZE", i(libc::EMSGSIZE)),
-        ("SOCKET_EPROTOTYPE", i(libc::EPROTOTYPE)),
-        ("SOCKET_ENOPROTOOPT", i(libc::ENOPROTOOPT)),
-        ("SOCKET_EPROTONOSUPPORT", i(libc::EPROTONOSUPPORT)),
-        ("SOCKET_ESOCKTNOSUPPORT", i(libc::ESOCKTNOSUPPORT)),
-        ("SOCKET_EOPNOTSUPP", i(libc::EOPNOTSUPP)),
-        ("SOCKET_EPFNOSUPPORT", i(libc::EPFNOSUPPORT)),
-        ("SOCKET_EAFNOSUPPORT", i(libc::EAFNOSUPPORT)),
-        ("SOCKET_EADDRINUSE", i(libc::EADDRINUSE)),
-        ("SOCKET_EADDRNOTAVAIL", i(libc::EADDRNOTAVAIL)),
-        ("SOCKET_ENETDOWN", i(libc::ENETDOWN)),
-        ("SOCKET_ENETUNREACH", i(libc::ENETUNREACH)),
-        ("SOCKET_ENETRESET", i(libc::ENETRESET)),
-        ("SOCKET_ECONNABORTED", i(libc::ECONNABORTED)),
-        ("SOCKET_ECONNRESET", i(libc::ECONNRESET)),
-        ("SOCKET_ENOBUFS", i(libc::ENOBUFS)),
-        ("SOCKET_EISCONN", i(libc::EISCONN)),
-        ("SOCKET_ENOTCONN", i(libc::ENOTCONN)),
-        ("SOCKET_ESHUTDOWN", i(libc::ESHUTDOWN)),
-        ("SOCKET_ETOOMANYREFS", i(libc::ETOOMANYREFS)),
-        ("SOCKET_ETIMEDOUT", i(libc::ETIMEDOUT)),
-        ("SOCKET_ECONNREFUSED", i(libc::ECONNREFUSED)),
-        ("SOCKET_EHOSTDOWN", i(libc::EHOSTDOWN)),
-        ("SOCKET_EHOSTUNREACH", i(libc::EHOSTUNREACH)),
-        ("SOCKET_EALREADY", i(libc::EALREADY)),
-        ("SOCKET_EINPROGRESS", i(libc::EINPROGRESS)),
-        ("SOCKET_EDQUOT", i(libc::EDQUOT)),
-        ("IPPROTO_IP", i(libc::IPPROTO_IP)),
-        ("IPPROTO_IPV6", i(libc::IPPROTO_IPV6)),
-        ("SOL_TCP", i(libc::IPPROTO_TCP)),
-        ("SOL_UDP", i(libc::IPPROTO_UDP)),
-        ("IPPROTO_ICMP", i(libc::IPPROTO_ICMP)),
-        ("IPPROTO_ICMPV6", i(libc::IPPROTO_ICMPV6)),
-        ("SHUT_RD", i(libc::SHUT_RD)),
-        ("SHUT_WR", i(libc::SHUT_WR)),
-        ("SHUT_RDWR", i(libc::SHUT_RDWR)),
-    ]
+    extern "C" fn add(ctx: *mut libc::c_void, name: *const libc::c_char, v: i64) {
+        let out = unsafe { &mut *(ctx as *mut Vec<(&'static str, Value)>) };
+        let name = unsafe { std::ffi::CStr::from_ptr(name) };
+        // The names are string literals of the static C table.
+        let name: &'static std::ffi::CStr = unsafe { &*(name as *const std::ffi::CStr) };
+        out.push((name.to_str().unwrap_or(""), Value::Int(v)));
+    }
+    let mut out: Vec<(&'static str, Value)> = Vec::new();
+    unsafe { rhp_sockets_constants(add, &mut out as *mut _ as *mut libc::c_void) };
+    out
 }

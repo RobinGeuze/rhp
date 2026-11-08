@@ -116,6 +116,15 @@ fn main() {
     }
     intl.compile("rhp_gettext_shim");
 
+    // ext/sockets' constants (consts.h) against the system's headers.
+    for f in ["src/ext/sockets/shim.c", "src/ext/sockets/consts.h"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/sockets/shim.c")
+        .warnings(true)
+        .compile("rhp_sockets_shim");
+
     // ext/gd's struct access, constants and error callback against gd.h,
     // and the formats php's configure finds in the library.
     let gd = linked.iter().find(|l| l.name == "LIBGD").expect("LIBGD");

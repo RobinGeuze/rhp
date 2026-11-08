@@ -644,6 +644,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "readline",
     "Reflection",
     "SimpleXML",
+    "sockets",
     "sodium",
     "tokenizer",
     "dom",

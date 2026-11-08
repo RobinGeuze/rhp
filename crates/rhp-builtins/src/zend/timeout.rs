@@ -146,6 +146,8 @@ pub fn take_timed_out() -> Option<String> {
     if !TIMED_OUT.swap(false, Ordering::Relaxed) {
         return None;
     }
+    // php_on_timeout.
+    crate::main::set_connection_timeout();
     let secs = SECONDS.load(Ordering::Relaxed);
     let s = if secs == 1 { "" } else { "s" };
     Some(format!(

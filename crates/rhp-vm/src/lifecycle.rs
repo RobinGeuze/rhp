@@ -939,7 +939,7 @@ impl Vm {
             .and_then(|_| self.run_loop())
             .and_then(|_| self.oom_interrupt())
         {
-            Ok(()) => Ok(self.sapi.startup_status),
+            Ok(()) => Ok(self.sapi.exit_status),
             Err(Thrown::Exit(code)) => Ok(code),
             Err(other) => Err(other),
         }

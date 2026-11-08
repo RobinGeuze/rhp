@@ -68,9 +68,9 @@ struct MySapi { /* the connection, a response builder, … (may hold Rc) */ }
 
 impl Sapi for MySapi {
     fn name(&self) -> &str { "my-server" }                     // php_sapi_name()
-    fn ub_write(&mut self, body: &[u8]) { /* send body bytes */ }
+    fn ub_write(&mut self, body: &[u8]) -> bool { /* send body bytes; false: client gone */ }
     fn send_headers(&mut self, r: &Response) { /* r.code, r.status_line, r.headers */ }
-    fn flush(&mut self) { /* push buffered bytes to the client */ }
+    fn flush(&mut self) -> bool { /* push buffered bytes to the client */ }
     fn log_message(&mut self, line: &[u8]) { /* error_log / log_errors */ }
 }
 
@@ -102,8 +102,9 @@ let outcome = run_request(
 | `ini_entries` | `sapi_module.ini_entries`: set after php.ini, before `-d` (php-cli's `HARDCODED_INI`: html_errors, implicit_flush, output_buffering, max_execution_time, max_input_time) | none |
 | `stores_headers` | `header_handler`: false keeps `headers_list()` empty (php-cli) | `true` |
 | `initial_response_code` | status before any `header()`: 0 for cli, 200 for web | `200` |
-| `ub_write` | unbuffered body writer, called with what leaves the bottom of the output-buffer stack | required |
-| `flush` | `flush()`, `implicit_flush`, request end | no-op |
+| `ub_write` | unbuffered body writer, called with what leaves the bottom of the output-buffer stack. Returns false when the client went away: the engine then runs `php_handle_aborted_connection` (`connection_status()` aborted, output off, and unless `ignore_user_abort` the script ends as if by `exit`; shutdown functions still run) | required |
+| `flush` | `flush()`, `implicit_flush`, request end; false is a client abort, as for `ub_write` | `true` |
+| `aborted_exit_status` | the exit status a failed write sets (`EG(exit_status)`: php-cli's 255) | `None` |
 | `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included) | no-op |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
@@ -111,7 +112,10 @@ let outcome = run_request(
 | `exits_on_hard_limit` | whether the hard memory limit ends the process (php-cli: exit 137) rather than just the request | `false` |
 
 The SAPI decides the wire format. `CgiSapi` writes `Status:` (when not
-200) + header lines + a blank line + the body to stdout; an HTTP server
+200) + header lines + a blank line + the body to stdout, each write as it
+comes (php-cgi's `write(2)` per `ub_write`, so a client sees output while
+the script runs); `CliSapi` writes descriptor 1 the same way. Both report
+a failed write (EPIPE, a closed client) as an abort; an HTTP server
 writes a status line and headers to its connection; a FrankenPHP-style
 embedding hands them to the host server's response writer.
 
@@ -420,9 +424,11 @@ Limits of the model:
   Caddy (through a C ABI shim over `run_request`) or a Rust server (hyper /
   axum, calling `run_request` directly from a worker pool). The pieces
   needed beyond today's API: a streaming body reader (`Sapi::read_body`,
-  so uploads don't have to be buffered first), `max_execution_time`
-  enforcement with an interrupt flag the server can also set when a client
-  disconnects (`connection_aborted()`).
+  so uploads don't have to be buffered first) and per-thread
+  `max_execution_time` enforcement. A client that disconnects is reported
+  by the next `ub_write`/`flush` returning false, as php's SAPIs do; a
+  server that learns of it earlier has no way to interrupt the script
+  yet.
 - **FastCGI.** A `cgi-fcgi` front end that reads FastCGI records, builds a
   `RequestInfo` from the params, and writes stdout records through a
   `Sapi`. It reuses `cgi::CgiSapi`'s header logic and `php_sapi_name()`
@@ -447,7 +453,8 @@ Limits of the model:
 ## Testing
 
 - `crates/rhp-cli/tests/cgi.rs` runs every `tests/cgi/*.php` (with an
-  optional `.cgi` file of `env` / `ini` / `stdin` / `arg` directives)
+  optional `.cgi` file of `env` / `ini` / `stdin` / `arg` directives, and
+  `closeafter N` / `ttfb` / `log` for client aborts and unbuffered writes)
   under php-cgi and `rhp --cgi` and requires identical stdout, stderr and
   exit status. It is skipped when php-cgi is absent or isn't 8.5.
 - `crates/rhp-sapi/tests/` covers the embedding contract (call order,

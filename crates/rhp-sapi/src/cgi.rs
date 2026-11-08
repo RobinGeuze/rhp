@@ -15,11 +15,12 @@ use rhp_builtins::main::sapi::{cgi_request_headers, RequestInfo, Response, Sapi}
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, REQUIRED};
 use crate::{run_request, Outcome, Request, Script};
 
-/// php-cgi's response writer: body bytes buffered like stdio's `stdout`
-/// and flushed at `flush()` / request end.
+/// php-cgi's response writer: every write goes straight to stdout
+/// (`sapi_cgi_ub_write`), so the client sees output as it is produced.
 #[derive(Default)]
 pub struct CgiSapi {
-    buf: Vec<u8>,
+    /// A header write failed: the next body write or flush reports it.
+    failed: bool,
 }
 
 impl CgiSapi {
@@ -28,11 +29,11 @@ impl CgiSapi {
         Self::default()
     }
 
-    fn put(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-        if self.buf.len() >= 1 << 16 {
-            self.flush();
+    fn put(&mut self, data: &[u8]) -> bool {
+        if !self.failed && !crate::write_fd(1, data) {
+            self.failed = true;
         }
+        !self.failed
     }
 }
 
@@ -63,15 +64,14 @@ impl Sapi for CgiSapi {
         CGI_INI_DEFAULTS.to_vec()
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
-        self.put(data);
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        self.put(data)
     }
 
-    fn flush(&mut self) {
-        let mut so = std::io::stdout().lock();
-        let _ = so.write_all(&self.buf);
-        let _ = so.flush();
-        self.buf.clear();
+    /// `sapi_cgi_flush`: fflush(stdout), which holds nothing of the body.
+    fn flush(&mut self) -> bool {
+        let _ = std::io::stdout().flush();
+        !self.failed
     }
 
     /// `sapi_cgi_send_headers`.
@@ -142,14 +142,6 @@ impl Sapi for CgiSapi {
         }
         out.extend_from_slice(b"\r\n");
         self.put(&out);
-    }
-}
-
-impl Drop for CgiSapi {
-    fn drop(&mut self) {
-        if !self.buf.is_empty() {
-            self.flush();
-        }
     }
 }
 

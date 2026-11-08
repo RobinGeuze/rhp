@@ -64,11 +64,24 @@ pub trait Sapi {
         200
     }
 
-    /// `ub_write`: response body bytes, after the headers went out.
-    fn ub_write(&mut self, data: &[u8]);
+    /// `ub_write`: response body bytes, after the headers went out. False:
+    /// the client went away (the write failed), and the engine runs
+    /// `php_handle_aborted_connection`: `connection_status()` becomes
+    /// aborted, output stops, and unless `ignore_user_abort` is on the
+    /// script ends as if by `exit` (shutdown functions still run).
+    fn ub_write(&mut self, data: &[u8]) -> bool;
 
-    /// `flush` (`flush()`, implicit_flush, request end).
-    fn flush(&mut self) {}
+    /// `flush` (`flush()`, implicit_flush, request end). False: the client
+    /// went away, as for [`Sapi::ub_write`].
+    fn flush(&mut self) -> bool {
+        true
+    }
+
+    /// The exit status a failed body write sets before the abort
+    /// (`EG(exit_status)`: php-cli's 255); `None` leaves it.
+    fn aborted_exit_status(&self) -> Option<i32> {
+        None
+    }
 
     /// `send_headers`: called once, right before the first body byte (or at
     /// request end when there is no body) unless the request has
@@ -96,7 +109,7 @@ pub trait Sapi {
     /// first.
     fn write_raw_stdout(&mut self, data: &[u8]) {
         use std::io::Write;
-        self.flush();
+        let _ = self.flush();
         let mut so = std::io::stdout().lock();
         let _ = so.write_all(data);
         let _ = so.flush();

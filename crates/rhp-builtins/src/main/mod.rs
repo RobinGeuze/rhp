@@ -43,6 +43,33 @@ pub(crate) fn reset_state() {
     ini::reset_state();
     fopen_wrappers::reset_state();
     sapi::reset_state();
+    CONNECTION_STATUS.with(|c| c.set(0));
+}
+
+/// `PHP_CONNECTION_ABORTED`: the client went away.
+pub const CONNECTION_ABORTED: i64 = 1;
+/// `PHP_CONNECTION_TIMEOUT`: max_execution_time ran out.
+pub const CONNECTION_TIMEOUT: i64 = 2;
+
+thread_local! {
+    /// `PG(connection_status)`.
+    static CONNECTION_STATUS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// `PG(connection_status)` (`connection_status()`).
+pub fn connection_status() -> i64 {
+    CONNECTION_STATUS.with(|c| c.get())
+}
+
+/// php_handle_aborted_connection's first step: the status becomes
+/// aborted (php assigns, dropping a timeout bit).
+pub fn set_connection_aborted() {
+    CONNECTION_STATUS.with(|c| c.set(CONNECTION_ABORTED));
+}
+
+/// php_on_timeout: the timeout bit joins the status.
+pub fn set_connection_timeout() {
+    CONNECTION_STATUS.with(|c| c.set(c.get() | CONNECTION_TIMEOUT));
 }
 
 /// `(PHP_OS, PHP_OS_FAMILY)` for the platform this engine was built for.

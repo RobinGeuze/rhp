@@ -14,6 +14,8 @@ static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
 #[derive(Clone, Default)]
 struct Recorder {
     events: Rc<RefCell<Vec<String>>>,
+    /// The client goes away after this many body writes.
+    writes_left: Option<usize>,
 }
 
 impl Sapi for Recorder {
@@ -21,9 +23,16 @@ impl Sapi for Recorder {
         "embed-test"
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        if let Some(n) = &mut self.writes_left {
+            if *n == 0 {
+                return false;
+            }
+            *n -= 1;
+        }
         let s = String::from_utf8_lossy(data).into_owned();
         self.events.borrow_mut().push(format!("body:{s}"));
+        true
     }
 
     fn send_headers(&mut self, r: &Response) {
@@ -42,7 +51,15 @@ impl Sapi for Recorder {
 }
 
 fn run(code: &str, ini: &[(&str, &str)], info: RequestInfo) -> (Vec<String>, Outcome) {
-    let rec = Recorder::default();
+    run_with(Recorder::default(), code, ini, info)
+}
+
+fn run_with(
+    rec: Recorder,
+    code: &str,
+    ini: &[(&str, &str)],
+    info: RequestInfo,
+) -> (Vec<String>, Outcome) {
     let outcome = run_request(
         Box::new(rec.clone()),
         Request {
@@ -316,5 +333,55 @@ fn request_parse_body_stops_at_post_max_size() {
     assert_eq!(
         body(&ev),
         "\nWarning: Actual POST length does not match Content-Length, and exceeds 102400 bytes in Command line code on line 1\nbool(true)\n"
+    );
+}
+
+/// A failed body write is a client abort (php_handle_aborted_connection):
+/// the script stops at that write, shutdown functions still run with
+/// output off, and they see the aborted status.
+#[test]
+fn a_failed_write_aborts_the_script() {
+    let rec = Recorder {
+        writes_left: Some(2),
+        ..Recorder::default()
+    };
+    let code = "register_shutdown_function(function () { \
+                error_log('shutdown ' . connection_status() . connection_aborted()); echo 'lost'; }); \
+                for ($i = 0; $i < 5; $i++) { echo $i; error_log(\"i=$i\"); }";
+    let (ev, o) = run_with(rec, code, &[("log_errors", "1")], get());
+    assert_eq!(o, Outcome::Exit(0));
+    assert_eq!(
+        ev,
+        [
+            "headers:200",
+            "body:0",
+            "log:i=0",
+            "body:1",
+            "log:i=1",
+            "log:shutdown 11"
+        ]
+    );
+}
+
+/// With `ignore_user_abort` the script runs on; output stays off.
+#[test]
+fn ignore_user_abort_keeps_the_script_running() {
+    let rec = Recorder {
+        writes_left: Some(1),
+        ..Recorder::default()
+    };
+    let code = "ignore_user_abort(true); for ($i = 0; $i < 3; $i++) { echo $i; \
+                error_log(\"i=$i \" . connection_status()); }";
+    let (ev, o) = run_with(rec, code, &[("log_errors", "1")], get());
+    assert_eq!(o, Outcome::Exit(0));
+    assert_eq!(
+        ev,
+        [
+            "headers:200",
+            "body:0",
+            "log:i=0 0",
+            "log:i=1 1",
+            "log:i=2 1"
+        ]
     );
 }

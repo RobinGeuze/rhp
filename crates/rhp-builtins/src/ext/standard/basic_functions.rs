@@ -1232,8 +1232,8 @@ fn fn_time_sleep_until(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     Ok(Value::Bool(true))
 }
 
-/// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
-/// never sees the client go away, so the setting has no other effect.
+/// `ignore_user_abort(?bool $enable = null)`: the old setting (the engine
+/// reads it when a write finds the client gone).
 fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = crate::main::ini::ini_value(b"ignore_user_abort")
         .flatten()
@@ -1252,10 +1252,16 @@ fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     Ok(Value::Int(old))
 }
 
-/// `connection_status()` / `connection_aborted()`: always CONNECTION_NORMAL
-/// (no abort detection yet).
+/// `connection_status()`: `PG(connection_status)`.
 fn fn_connection_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
+    Ok(Value::Int(crate::main::connection_status()))
+}
+
+/// `connection_aborted()`: its aborted bit.
+fn fn_connection_aborted(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(
+        crate::main::connection_status() & crate::main::CONNECTION_ABORTED,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,7 +1716,7 @@ pub fn register(m: &mut crate::Registry) {
             ("sleep", fn_sleep),
             ("ignore_user_abort", fn_ignore_user_abort),
             ("connection_status", fn_connection_status),
-            ("connection_aborted", fn_connection_status),
+            ("connection_aborted", fn_connection_aborted),
             ("is_uploaded_file", fn_is_uploaded_file),
             ("move_uploaded_file", fn_move_uploaded_file),
             ("parse_ini_string", fn_parse_ini_string),

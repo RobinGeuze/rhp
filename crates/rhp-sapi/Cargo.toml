@@ -8,6 +8,7 @@ license = "(MIT OR Apache-2.0) AND PHP-3.01"
 publish.workspace = true
 
 [dependencies]
+libc = "0.2"
 rhp-builtins = { path = "../rhp-builtins" }
 rhp-bytecode = { path = "../rhp-bytecode" }
 rhp-compiler = { path = "../rhp-compiler" }

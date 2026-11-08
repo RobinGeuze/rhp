@@ -27,9 +27,10 @@ pub(crate) struct SapiState {
     /// php-cgi: module-startup diagnostics (level, message) shown after the
     /// response body.
     pub(crate) deferred_startup_diags: Vec<(i64, String)>,
-    /// The exit status when the script ends without `exit`: 255 after an
-    /// E_ERROR at module startup (`EG(exit_status)`).
-    pub(crate) startup_status: i32,
+    /// The exit status when the script ends without `exit`
+    /// (`EG(exit_status)`): 255 after an E_ERROR at module startup, or
+    /// after php-cli failed to write the output.
+    pub(crate) exit_status: i32,
     /// Module startup failed (an E_CORE_ERROR): the request doesn't run.
     pub(crate) startup_failed: bool,
     /// What has been read of the request body, and this request's uploads
@@ -53,7 +54,7 @@ impl SapiState {
             startup: false,
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
-            startup_status: 0,
+            exit_status: 0,
             startup_failed: false,
             body: BodyState::default(),
         }
@@ -90,20 +91,26 @@ impl Vm {
             self.write_accel_log(&line, &dest);
         }
         // Warnings from applying the -d values (module startup): php-cli
-        // shows them before anything else; php-cgi's reach the client only
-        // after the response body.
+        // shows them before anything else; php-cgi logs them at once
+        // (stderr) but displays them only after the response body.
         let diags = builtins::take_startup_diagnostics();
         // php_error_cb: an E_ERROR before the module is up sets the exit
         // status but does not bail out; the script still runs.
         if diags.iter().any(|d| d.0 == 1) {
-            self.sapi.startup_status = 255;
+            self.sapi.exit_status = 255;
         }
         // An E_CORE_ERROR fails module startup: nothing runs.
         if diags.iter().any(|d| d.0 == rhp_builtins::E_CORE_ERROR) {
             self.sapi.startup_failed = true;
         }
         if builtins::main::sapi::is_cgi() {
-            self.sapi.deferred_startup_diags = diags;
+            if self.startup_diags_shown() {
+                self.sapi.deferred_startup_diags = diags;
+            } else {
+                for (level, msg) in diags {
+                    self.module_startup_diag(level, &msg);
+                }
+            }
         } else {
             // Shown before the request starts: the headers are not sent by
             // them (sapi_activate starts the response afresh).
@@ -164,10 +171,7 @@ impl Vm {
     /// under html_errors (and escaped again when displayed, as in php).
     fn module_startup_diag(&mut self, level: i64, msg: &str) {
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
-        let shown = !matches!(
-            crate::errors::display_errors_mode(&ini(self, b"display_errors")),
-            crate::errors::DisplayErrors::Off
-        ) && crate::ini_bool(&ini(self, b"display_startup_errors"));
+        let shown = self.startup_diags_shown();
         if level != rhp_builtins::E_ERROR && level != rhp_builtins::E_CORE_ERROR {
             let (level, label) = if level == rhp_builtins::E_DEPRECATED {
                 (level, "Deprecated")
@@ -207,6 +211,15 @@ impl Vm {
             }
             self.write_stderr(&line);
         }
+    }
+
+    /// Whether module-startup diagnostics are displayed (else logged).
+    fn startup_diags_shown(&self) -> bool {
+        let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
+        !matches!(
+            crate::errors::display_errors_mode(&ini(self, b"display_errors")),
+            crate::errors::DisplayErrors::Off
+        ) && crate::ini_bool(&ini(self, b"display_startup_errors"))
     }
 
     /// A diagnostic raised during request startup (in Unknown on line 0).
@@ -276,7 +289,11 @@ impl Vm {
             self.display_error(level, label, d.as_bytes(), b"Unknown", 0);
         }
         self.sapi_send_headers();
-        self.sapi.sapi.flush();
+        // sapi_deactivate: the SAPI's last flush (a failure only marks the
+        // connection aborted now).
+        if !self.sapi.sapi.flush() {
+            builtins::main::set_connection_aborted();
+        }
         // sapi_deactivate_destroy: uploads not moved away are deleted.
         self.sapi.body.cleanup();
         rhp_values::mem::end_request();
@@ -314,8 +331,30 @@ impl Vm {
         if !self.sapi.response.sent {
             self.php_output_header();
         }
-        if !self.sapi.response.output_disabled {
-            self.sapi.sapi.ub_write(data);
+        if !self.sapi.response.output_disabled && !self.sapi.sapi.ub_write(data) {
+            if let Some(code) = self.sapi.sapi.aborted_exit_status() {
+                self.sapi.exit_status = code;
+            }
+            self.handle_aborted_connection();
+        }
+    }
+
+    /// `sapi_flush`: the SAPI's `flush`; a failure is a client abort.
+    pub(crate) fn sapi_flush(&mut self) {
+        if !self.sapi.sapi.flush() {
+            self.handle_aborted_connection();
+        }
+    }
+
+    /// php_handle_aborted_connection: the status becomes aborted, output
+    /// stops, and unless `ignore_user_abort` is on the script bails out
+    /// (shutdown functions and destructors still run, with output off).
+    pub(crate) fn handle_aborted_connection(&mut self) {
+        builtins::main::set_connection_aborted();
+        self.output_set_disabled();
+        let ignore = self.ini_get(b"ignore_user_abort").unwrap_or_default();
+        if !builtins::ini_parse_bool(&ignore) && self.pending_throw.is_none() {
+            self.pending_throw = Some(rhp_values::Thrown::Exit(self.sapi.exit_status));
         }
     }
 

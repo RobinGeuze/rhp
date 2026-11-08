@@ -224,6 +224,8 @@ pub unsafe extern "C" fn rhp_csrc_safe_ferealloc(
 /// # Safety
 ///
 /// `buf` holds `cap` writable bytes, `cap > 0`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 unsafe fn put_c(bytes: &[u8], buf: *mut c_char, cap: usize) -> usize {
     let n = bytes.len().min(cap - 1);
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
@@ -237,6 +239,8 @@ unsafe fn put_c(bytes: &[u8], buf: *mut c_char, cap: usize) -> usize {
 /// # Safety
 ///
 /// `buf` holds `cap` writable bytes, `cap > 0`; `is_negative` is writable.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 #[no_mangle]
 pub unsafe extern "C" fn rhp_csrc_conv_fp(
     format: c_char,
@@ -264,6 +268,8 @@ pub unsafe extern "C" fn rhp_csrc_conv_fp(
 /// # Safety
 ///
 /// `buf` holds `cap` writable bytes, `cap > 0`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 #[no_mangle]
 pub unsafe extern "C" fn rhp_csrc_gcvt(
     value: f64,

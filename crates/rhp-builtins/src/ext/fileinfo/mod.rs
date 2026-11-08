@@ -279,6 +279,8 @@ fn identify_failed(host: &mut dyn Host, fname: &str, magic: &Magic) -> Result<()
 
 /// php_fileinfo_from_path: "directory" for a directory, else the stream's
 /// type. `None`: the open, stat or identification failed.
+// mode_t is u16 on macOS, u32 on Linux.
+#[allow(clippy::unnecessary_cast)]
 fn from_path(
     host: &mut dyn Host,
     fname: &str,

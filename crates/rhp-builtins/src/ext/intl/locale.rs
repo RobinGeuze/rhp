@@ -844,6 +844,8 @@ fn lookup(host: &mut dyn Host, f: &str, args: &[Value]) -> Result<Value, Thrown>
     }
 }
 
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 fn accept_from_http(host: &mut dyn Host, f: &str, args: &[Value]) -> Result<Value, Thrown> {
     let header = zpp::str_arg(host, args, 0, f, "header")?;
     if header.len() > sys::ULOC_FULLNAME_CAPACITY
@@ -896,6 +898,8 @@ fn accept_from_http(host: &mut dyn Host, f: &str, args: &[Value]) -> Result<Valu
 }
 
 /// `locale_add_likely_subtags` / `locale_minimize_subtags`.
+// c_char is i8 or u8 depending on the target.
+#[allow(clippy::unnecessary_cast)]
 fn subtags(host: &mut dyn Host, f: &str, args: &[Value], add: bool) -> Result<Value, Thrown> {
     let loc = c_string(&or_default(path(host, args, 0, f, "locale")?));
     let mut buf = [0 as c_char; sys::ULOC_FULLNAME_CAPACITY];

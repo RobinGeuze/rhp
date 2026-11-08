@@ -483,25 +483,39 @@ fn throws(f: crate::NativeFn, args: &[Value]) -> bool {
     f(&mut TestHost::new(), args).is_err()
 }
 
+/// What the C library's memcmp returns for a differing pair: php returns it
+/// as is, and its magnitude depends on the libc (and, in glibc, on the CPU:
+/// one implementation returns the byte difference, another -1/1).
+fn libc_memcmp(a: &[u8], b: &[u8]) -> i64 {
+    let n = a.len().min(b.len());
+    // SAFETY: both slices hold at least `n` bytes.
+    (unsafe { libc::memcmp(a.as_ptr().cast(), b.as_ptr().cast(), n) }) as i64
+}
+
 #[test]
 fn strcmp_cases() {
     assert_eq!(call_int(fn_strcmp, &[s("a"), s("b")]), -1);
     assert_eq!(call_int(fn_strcmp, &[s("b"), s("a")]), 1);
     assert_eq!(call_int(fn_strcmp, &[s("a"), s("a")]), 0);
     assert_eq!(call_int(fn_strcmp, &[s("abc"), s("abd")]), -1);
-    assert_eq!(call_int(fn_strcmp, &[s("Hello"), s("hello")]), -32);
+    assert_eq!(
+        call_int(fn_strcmp, &[s("Hello"), s("hello")]),
+        libc_memcmp(b"Hello", b"hello")
+    );
     assert_eq!(call_int(fn_strcmp, &[s("a"), s("ab")]), -1);
     assert_eq!(call_int(fn_strcmp, &[s("abc"), s("abcde")]), -1);
     assert_eq!(call_int(fn_strcmp, &[s("abcde"), s("abc")]), 1);
-    assert_eq!(call_int(fn_strcmp, &[s("10"), s("9")]), -8);
-    // raw byte diff on single high byte: 0xff - 0x01 = 254
     assert_eq!(
-        call_int(
-            fn_strcmp,
-            &[Value::str(vec![0xffu8]), Value::str(vec![0x01u8])]
-        ),
-        254
+        call_int(fn_strcmp, &[s("10"), s("9")]),
+        libc_memcmp(b"10", b"9")
     );
+    // A high byte compares unsigned (0xff > 0x01) whatever the magnitude.
+    let high = call_int(
+        fn_strcmp,
+        &[Value::str(vec![0xffu8]), Value::str(vec![0x01u8])],
+    );
+    assert_eq!(high, libc_memcmp(&[0xff], &[0x01]));
+    assert!(high > 0);
 }
 
 #[test]
@@ -522,7 +536,7 @@ fn strncmp_cases() {
     );
     assert_eq!(
         call_int(fn_strncmp, &[s("Hello"), s("Help"), Value::Int(4)]),
-        -4
+        libc_memcmp(b"Hell", b"Help")
     );
     assert_eq!(
         call_int(fn_strncmp, &[s("abc"), s("abd"), Value::Int(0)]),

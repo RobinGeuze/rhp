@@ -65,7 +65,9 @@ rather than linking dynamically quietly.
   library too. rhp does not link it but opens it with `dlopen` the first
   time a script uses ext/gd (`Mode::Loaded`; `ext/gd/sys.rs`): loading its
   dependency closure costs about 55M instructions, a quarter of an empty
-  `rhp -r ''`, which every process would pay. build.rs runs php's
+  `rhp -r ''`, which every process would pay. A libgd that cannot be
+  opened (or lacks a function rhp calls) is a fatal error of the gd
+  function that needed it. build.rs runs php's
   configure probe for the formats (`PHP_GD_CHECK_FORMAT`) against it, so
   registering ext/gd's functions needs no library.
 - libedit (ext/readline) on Linux: php's readline extension loads the

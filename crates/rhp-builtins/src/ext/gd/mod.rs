@@ -3215,38 +3215,58 @@ fn fn_imageresolution(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 // registration
 // ---------------------------------------------------------------------------
 
+/// gd's builtins, each opening libgd first: a libgd that cannot be loaded
+/// is a fatal error of the function that needed it (php links libgd, so
+/// it has no such case).
+macro_rules! gd_fns {
+    ($(($name:literal, $f:ident)),* $(,)?) => {
+        &[$(($name, {
+            fn checked(h: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+                if let Err(e) = sys::open() {
+                    return Err(h.fatal_error(format!(concat!($name, "(): {}"), e).as_bytes()));
+                }
+                $f(h, args)
+            }
+            checked as crate::NativeFn
+        })),*]
+    };
+}
+
 pub fn register(m: &mut crate::Registry) {
     // The format functions php's build has (HAVE_GD_*).
     let optional: [(i32, &[(&'static str, crate::NativeFn)]); 5] = [
         (
             HAVE_AVIF,
-            &[
+            gd_fns![
                 ("imagecreatefromavif", fn_imagecreatefromavif),
                 ("imageavif", fn_imageavif),
             ],
         ),
         (
             HAVE_JPG,
-            &[
+            gd_fns![
                 ("imagecreatefromjpeg", fn_imagecreatefromjpeg),
                 ("imagejpeg", fn_imagejpeg),
             ],
         ),
         (
             HAVE_PNG,
-            &[
+            gd_fns![
                 ("imagecreatefrompng", fn_imagecreatefrompng),
                 ("imagepng", fn_imagepng),
             ],
         ),
         (
             HAVE_WEBP,
-            &[
+            gd_fns![
                 ("imagecreatefromwebp", fn_imagecreatefromwebp),
                 ("imagewebp", fn_imagewebp),
             ],
         ),
-        (HAVE_XPM, &[("imagecreatefromxpm", fn_imagecreatefromxpm)]),
+        (
+            HAVE_XPM,
+            gd_fns![("imagecreatefromxpm", fn_imagecreatefromxpm)],
+        ),
     ];
     for (bit, fns) in optional {
         if have(bit) {
@@ -3255,7 +3275,7 @@ pub fn register(m: &mut crate::Registry) {
     }
     crate::register(
         m,
-        &[
+        gd_fns![
             ("gd_info", fn_gd_info),
             ("imageloadfont", fn_imageloadfont),
             ("imagesetstyle", fn_imagesetstyle),

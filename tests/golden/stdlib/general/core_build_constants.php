@@ -24,4 +24,5 @@ phpinfo(INFO_GENERAL);
 $info = ob_get_clean();
 var_dump(str_contains($info, "\nBuild Provider => " . PHP_BUILD_PROVIDER . "\n"));
 var_dump(str_contains($info, "\nConfiguration File (php.ini) Path => " . PHP_CONFIG_FILE_PATH . "\n"));
-var_dump(ZLIB_VERSION === sprintf('%d.%d.%d', ZLIB_VERNUM >> 12, (ZLIB_VERNUM >> 8) & 15, (ZLIB_VERNUM >> 4) & 15));
+$z = array_map('intval', explode('.', ZLIB_VERSION)) + [0, 0, 0, 0];
+var_dump(ZLIB_VERNUM === ($z[0] << 12 | ($z[1] & 15) << 8 | ($z[2] & 15) << 4 | ($z[3] & 15)));

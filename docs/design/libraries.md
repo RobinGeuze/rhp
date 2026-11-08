@@ -122,6 +122,9 @@ links. libz-sys would build its bundled zlib when it finds no system one;
 rhp-builtins' build.rs fails instead (libz-sys reports the bundled build as
 `DEP_Z_ROOT`), and the `zraw` test `links_the_library_php_links` checks
 with `dladdr` that `zlibVersion` comes from the system library.
+`ZLIB_VERSION`/`ZLIB_VERNUM` (php's compile-time zlib.h) are that library's
+`zlibVersion()`, so they match php on each platform (1.2.12 on macOS,
+zlib1g's release on Linux).
 rhp-csrc's and rhp-mbfl-sys's code is the same on every machine, so it
 needs no row in `native.rs` or the native-deps action, only a C compiler
 (and `nm` for their tests).

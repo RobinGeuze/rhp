@@ -16,13 +16,9 @@ fn derived_values() {
     assert_eq!(ZEND_VERSION, format!("4.5.{PHP_RELEASE_VERSION}"));
     assert!(EXTENSION_DIR.ends_with(PHP_API));
     // ZLIB_VERNUM packs the dotted version one hex digit per component.
-    let z: Vec<i64> = ZLIB_VERSION
-        .split('.')
-        .map(|p| p.parse().unwrap())
-        .collect();
-    let at = |i: usize| z.get(i).copied().unwrap_or(0) & 0xF;
-    assert_eq!(
-        ZLIB_VERNUM,
-        (at(0) << 12) | (at(1) << 8) | (at(2) << 4) | at(3)
-    );
+    assert_eq!(vernum("1.2.12"), 0x12c0);
+    assert_eq!(vernum("1.3.1"), 0x1310);
+    assert_eq!(vernum("1.3"), 0x1300);
+    assert_eq!(vernum("1.2.11.1-motley"), 0x12b1);
+    assert!(zlib_vernum() >= 0x1200, "{}", zlib_version());
 }

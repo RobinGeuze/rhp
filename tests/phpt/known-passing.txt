@@ -14387,7 +14387,9 @@ ext/zlib/tests/zlib_wrapper_fstat_basic.phpt
 sapi/cgi/tests/auto_globals_no_jit.phpt
 sapi/cgi/tests/bug60677.phpt
 sapi/cgi/tests/bug61605.phpt
+sapi/cgi/tests/bug69487.phpt
 sapi/cgi/tests/bug80849-cgi.phpt
+sapi/cgi/tests/bug81518a.phpt
 sapi/cgi/tests/bug81518b.phpt
 sapi/cli/tests/001.phpt
 sapi/cli/tests/002-unix.phpt

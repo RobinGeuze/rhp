@@ -308,7 +308,8 @@ threads, never from sharing an engine:
   (rhp-builtins `sapi/`, a `SapiDef` per SAPI name). An embedding SAPI
   has none of them. `function_exists()`, `get_extension_funcs()`,
   `get_defined_functions()` and Reflection see the running SAPI's set.
-  php-cli and php-cgi also have `dl()`, with php's checks and warnings;
+  php-cli and php-cgi also have `dl()` (php-cgi only when run from a
+  shell, not for a CGI request), with php's checks and warnings;
   rhp cannot load php's C extensions, so a library that does load is
   refused as unsupported.
 - **pcntl only under the CLI and CGI.** pcntl is a `cli_only` module
@@ -448,7 +449,9 @@ Limits of the model:
   files in `$PHP_INI_SCAN_DIR` (`Request::ini_files`); rhp has no built-in
   search path or scan directory, and php-cgi and embedders load none.
 - The php-cgi front end cannot read the script from stdin and doesn't
-  support `-v -i -m -l -s -w -a`.
+  support `-v -i -m -l -s -w -a`. `-T [warmup,]count` runs the request
+  that many times in one process and prints php's `Elapsed time` line;
+  `-b` (FastCGI) is refused.
 - Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.
 
 ## Testing

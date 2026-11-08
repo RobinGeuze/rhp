@@ -4,7 +4,7 @@
 // codec builds differ between the reference machines (and Homebrew's libgd
 // is built without the GD formats).
 ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
-$dir = sys_get_temp_dir() . '/rhp_gd_io';
+$dir = sys_get_temp_dir() . '/rhp_gd_io_' . getmypid();
 @mkdir($dir);
 $im = imagecreatetruecolor(20, 10);
 imagefilledrectangle($im, 0, 0, 19, 9, imagecolorallocate($im, 10, 20, 30));
@@ -51,4 +51,5 @@ try { imagepng($im, 1.5); } catch (TypeError $e) { echo $e->getMessage(), "\n"; 
 try { imagepng($im, null, 10); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }
 var_dump(imagecreatefromstring(str_repeat("x", 20)));
 var_dump(imagecreatefrompng(__FILE__));
+array_map('unlink', glob("$dir/*"));
 rmdir($dir);

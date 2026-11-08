@@ -22,7 +22,7 @@ var_dump(getimagesizefromstring($upload)['mime']);
 $src = imagecreatefromstring($upload);
 imagealphablending($src, false);
 imagefilledrectangle($src, 0, 0, 19, 29, imagecolorallocatealpha($src, 255, 0, 0, 127));
-$dir = sys_get_temp_dir() . '/rhp_gd_media';
+$dir = sys_get_temp_dir() . '/rhp_gd_media_' . getmypid();
 @mkdir($dir);
 foreach ([[20, 15], [10, 8], [4, 3]] as [$w, $h]) {
     $dst = imagecreatetruecolor($w, $h);

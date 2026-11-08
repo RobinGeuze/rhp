@@ -36,6 +36,7 @@ pub mod reflection;
 pub mod session;
 pub mod simplexml;
 pub mod sockets;
+pub mod sodium;
 pub mod spl;
 pub mod sqlite3;
 pub mod standard;
@@ -198,6 +199,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: bz2::wrappers,
             reset: bz2::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "sodium",
+            cli_only: false,
+            functions: sodium::register,
+            constants: sodium::constants,
+            prelude_php: sodium::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {

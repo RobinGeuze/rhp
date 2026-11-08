@@ -95,6 +95,15 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_gmp_shim");
 
+    // ext/sodium's constants and optional parts against the linked sodium.h.
+    println!("cargo:rerun-if-changed=src/ext/sodium/shim.c");
+    cc::Build::new()
+        .file("src/ext/sodium/shim.c")
+        .include(include("LIBSODIUM"))
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_sodium_shim");
+
     // ext/gd's struct access, constants and error callback against gd.h,
     // and the formats php's configure finds in the library.
     let gd = linked.iter().find(|l| l.name == "LIBGD").expect("LIBGD");

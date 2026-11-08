@@ -227,6 +227,23 @@ pub const LIBS: &[Lib] = &[
         ),
         install: "macOS: brew install gd; Debian/Ubuntu: apt install pkg-config libgd-dev",
     },
+    // php's ext/sodium links Homebrew's libsodium on macOS and the distro's
+    // on Linux. ISC.
+    Lib {
+        name: "LIBSODIUM",
+        pkg: "libsodium",
+        brew: Some("libsodium"),
+        macos_sdk: false,
+        link: "sodium",
+        incdir: "",
+        header: "sodium/version.h",
+        macros: &["SODIUM_VERSION_STRING"],
+        version: &["SODIUM_VERSION_STRING"],
+        macos: Mode::Static,
+        linux: Mode::Static,
+        install:
+            "macOS: brew install libsodium; Debian/Ubuntu: apt install pkg-config libsodium-dev",
+    },
     // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
     Lib {
         name: "GMP",

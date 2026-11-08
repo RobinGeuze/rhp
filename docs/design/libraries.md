@@ -29,6 +29,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
   `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
   `GMP_VERSION` from libgmp's `gmp_version`;
+  `SODIUM_LIBRARY_VERSION` from `sodium_version_string()` and phpinfo's
+  "libsodium headers version" from version.h;
   `ZipArchive::LIBZIP_VERSION` from `zip_libzip_version()`, phpinfo's
   "Libzip version" from zipconf.h; `GD_VERSION` and phpinfo's "GD headers
   Version" from gd.h, "GD library Version" from `gdVersionString()`.
@@ -40,7 +42,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, libavifinfo, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libxml2 on Linux |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libsodium, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package

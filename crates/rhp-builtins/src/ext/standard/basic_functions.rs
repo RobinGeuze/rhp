@@ -733,9 +733,13 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
             Ok(Value::Bool(ok))
         }
-        // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
+        // 0 / 4: php_log_err_with_severity. The error_log file when it
+        // opens, else the SAPI's logger (the CLI's writes "msg\n" to
+        // stderr). syslog goes to the SAPI's logger too, as in errors.rs.
         _ => {
-            let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
+            let log_target = ini_value(b"error_log")
+                .flatten()
+                .filter(|v| !v.is_empty() && v.as_slice() != b"syslog");
             match log_target {
                 Some(path) if ty == 0 => {
                     // php_log_err: "[d-M-Y H:i:s e] message\n".
@@ -753,7 +757,9 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
                     let mode = crate::main::ini::error_log_mode();
-                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, mode);
+                    if crate::zend::virtual_cwd::append_file(&path, &line, mode).is_err() {
+                        host.log_message(&msg);
+                    }
                 }
                 _ => host.log_message(&msg),
             }

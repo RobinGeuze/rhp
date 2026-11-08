@@ -53,6 +53,16 @@ route-list-v
 schedule-list
 storage-link
 stub-publish
+tinker-01
+tinker-02
+tinker-03
+tinker-04
+tinker-05
+tinker-06
+tinker-07
+tinker-08
+tinker-09
+tinker-10
 vendor-publish-laravel-errors
 version
 view-cache
@@ -63,5 +73,6 @@ w-mail
 w-queue
 w-security
 w-storage
+w-support
 w-validation
 w-view

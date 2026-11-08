@@ -5,9 +5,7 @@ IMG_GIF yes
 IMG_JPEG yes
 IMG_PNG yes
 IMG_WEBP yes
-IMG_AVIF yes
 IMG_BMP yes
-bool(true)
 bool(true)
 string(9) "image/png"
 bool(true)

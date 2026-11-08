@@ -4,10 +4,11 @@
 // upload, then thumbnails resized with alpha kept and written to files.
 var_dump(extension_loaded('gd'), function_exists('gd_info'), function_exists('imagerotate'));
 $types = imagetypes();
-foreach (['IMG_GIF', 'IMG_JPEG', 'IMG_PNG', 'IMG_WEBP', 'IMG_AVIF', 'IMG_BMP'] as $c) {
+// Not AVIF: whether libgd has it depends on the build (Ubuntu's doesn't).
+foreach (['IMG_GIF', 'IMG_JPEG', 'IMG_PNG', 'IMG_WEBP', 'IMG_BMP'] as $c) {
     printf("%s %s\n", $c, ($types & constant($c)) ? 'yes' : 'no');
 }
-var_dump(function_exists('imageavif'), function_exists('imagewebp'));
+var_dump(function_exists('imagewebp'));
 
 // The fake upload: a truecolor image written to a temporary stream.
 $fake = imagecreatetruecolor(40, 30);

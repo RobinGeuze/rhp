@@ -35,6 +35,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("Zend", "Core"),
     ("ext/bcmath", "bcmath"),
     ("ext/bz2", "bz2"),
+    ("ext/calendar", "calendar"),
     ("ext/ctype", "ctype"),
     ("ext/curl", "curl"),
     ("ext/date", "date"),

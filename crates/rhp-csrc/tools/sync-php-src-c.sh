@@ -68,6 +68,12 @@ ext/standard/libavifinfo/LICENSE
 ext/standard/libavifinfo/PATENTS
 ext/standard/libavifinfo/avifinfo.c
 ext/standard/libavifinfo/avifinfo.h
+ext/calendar/dow.c
+ext/calendar/french.c
+ext/calendar/gregor.c
+ext/calendar/jewish.c
+ext/calendar/julian.c
+ext/calendar/sdncal.h
 '
 
 # rhp-mbfl-sys: every C file and header of libmbfl (found below, so files a

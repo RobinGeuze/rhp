@@ -59,6 +59,7 @@ software is linked into rhp or distributed with it.
 32. Apache printf   Apache Group licence 1.0-style (php's main/snprintf.c)
 33. libgd           GD licence (permissive, credit required)
 34. libedit         BSD-3-Clause
+35. SDN calendar    keep-the-notice permission (Scott E. Lee)
 
 
 ------------------------------------------------------------------------------
@@ -307,8 +308,8 @@ engine (section 24) and the email regexes of ext/filter/logical_filters.c
 (section 25).
 
 crates/rhp-csrc also compiles some php-src C files unmodified (its
-vendor/php-src). Their original authors' terms are in sections 5 to 7 and
-19; php-src's changes to them come under the PHP License.
+vendor/php-src). Their original authors' terms are in sections 5 to 7, 19
+and 35; php-src's changes to them come under the PHP License.
 
 crates/rhp-mbfl-sys compiles php-src's ext/mbstring/php_unicode.c with its
 generated tables (unicode_data.h, rare_cp_bitvec.h) unmodified, next to
@@ -2954,3 +2955,16 @@ declares the functions it calls.
   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
   OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
   SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+35. SDN calendar
+------------------------------------------------------------------------------
+
+php-src's ext/calendar date conversions (dow.c, french.c, gregor.c,
+jewish.c, julian.c, sdncal.h), compiled unmodified by crates/rhp-csrc.
+
+  Copyright 1993-1995, Scott E. Lee, all rights reserved.
+  Permission granted to use, copy, modify, distribute and sell so long as
+  the above copyright and this permission statement are retained in all
+  copies.  THERE IS NO WARRANTY - USE AT YOUR OWN RISK.

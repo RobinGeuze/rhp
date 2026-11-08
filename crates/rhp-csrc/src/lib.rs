@@ -14,6 +14,8 @@
 pub mod argon2;
 #[cfg(feature = "avifinfo")]
 pub mod avifinfo;
+#[cfg(feature = "calendar")]
+pub mod calendar;
 #[cfg(feature = "crypt")]
 pub mod crypt;
 #[cfg(feature = "fileinfo")]

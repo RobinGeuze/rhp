@@ -6,6 +6,7 @@ use crate::module::{no_constants, no_state, no_wrappers, ModuleDef};
 
 pub mod bcmath;
 pub mod bz2;
+pub mod calendar;
 pub mod ctype;
 pub mod curl;
 pub mod date;
@@ -106,6 +107,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: bcmath::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "calendar",
+            cli_only: false,
+            functions: calendar::register,
+            constants: calendar::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {

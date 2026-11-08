@@ -18,7 +18,7 @@ The crates are in `crates/`, the test tooling in `tools/`.
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
   out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv, and opens libgd on first use.
-- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
+- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the calendar conversions, libmagic with its
   magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
   symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
@@ -51,6 +51,7 @@ passing, so the percentages are of all php-src tests.
 | ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
+| ext/calendar | 48 | 54 | 88.9% | php-src's calendar conversions, compiled in (rhp-csrc); the 6 others skip (32-bit) |
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
@@ -58,6 +59,7 @@ passing, so the percentages are of all php-src tests.
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
 | ext/gd | 278 | 336 | 82.7% | on libgd; php skips the others (bundled libgd, GD formats, 32-bit) |
+| ext/gettext | 0 | 19 | 0.0% | |
 | ext/gmp | 96 | 99 | 97.0% | on libgmp |
 | ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 80 | 82 | 97.6% | the system iconv |
@@ -79,6 +81,7 @@ passing, so the percentages are of all php-src tests.
 | ext/session | 249 | 269 | 92.6% | |
 | ext/simplexml | 156 | 165 | 94.5% | on libxml2 |
 | ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
+| ext/sodium | 2 | 31 | 6.5% | |
 | ext/spl | 645 | 796 | 81.0% | |
 | ext/sqlite3 | 93 | 101 | 92.1% | `SQLite3` on the libsqlite3 pdo_sqlite links |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
@@ -87,11 +90,11 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 2,962 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 1 | 2,858 | 0.0% | the 2 passing are ext/sodium tests that need none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,185** | **22,219** | **72.8%** | |
+| **total** | **16,233** | **22,219** | **73.1%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support

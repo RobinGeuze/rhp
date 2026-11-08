@@ -614,6 +614,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "zlib",
     "bcmath",
     "bz2",
+    "calendar",
     "ctype",
     "curl",
     "json",

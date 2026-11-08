@@ -14,6 +14,7 @@ pub mod dom;
 pub mod fileinfo;
 pub mod filter;
 pub mod gd;
+pub mod gettext;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
@@ -138,6 +139,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: gd::PRELUDE_PHP,
             wrappers: no_wrappers,
             reset: gd::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "gettext",
+            cli_only: false,
+            functions: gettext::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {

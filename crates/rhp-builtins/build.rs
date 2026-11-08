@@ -104,6 +104,18 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_sodium_shim");
 
+    // ext/gettext's calls through libintl.h (Homebrew's renames them).
+    println!("cargo:rerun-if-changed=src/ext/gettext/shim.c");
+    let mut intl = cc::Build::new();
+    intl.file("src/ext/gettext/shim.c")
+        .warnings(true)
+        .extra_warnings(true);
+    let intl_include = include("LIBINTL");
+    if !intl_include.as_os_str().is_empty() {
+        intl.include(intl_include);
+    }
+    intl.compile("rhp_gettext_shim");
+
     // ext/gd's struct access, constants and error callback against gd.h,
     // and the formats php's configure finds in the library.
     let gd = linked.iter().find(|l| l.name == "LIBGD").expect("LIBGD");

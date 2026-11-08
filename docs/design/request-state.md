@@ -59,6 +59,7 @@ Kinds:
 | `ext/standard/basic_functions.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `basic_functions::reset_state` |
 | `ext/standard/basic_functions.rs` | `TICK_FUNCS` (`register_tick_function`) | request | `basic_functions::reset_state` |
 | `ext/standard/basic_functions.rs` | `ORIG_TZ` (the TZ `putenv` replaced in the process environment) | process, as in php | `basic_functions::reset_state` restores it |
+| `ext/standard/basic_functions.rs` | `ORIG_LOCALE_VARS` (the `LC_*`/`LANG`/`LANGUAGE` values `putenv` replaced in the process environment, for gettext) | process, as in php | `basic_functions::reset_state` restores them |
 | `ext/standard/string.rs` | `LOCALE_CHANGED` (the C library's locale, set by `setlocale`) | process, as in php | `string::reset_state` resets the locale |
 | `ext/standard/url_scanner_ex.rs` | `STATE`, `SESSION_STATE` (the URL rewriters of `output_add_rewrite_var` and of trans-sid) | request | `url_scanner_ex::reset_state` |
 | `ext/standard/browscap.rs` | `DATA` (the parsed browscap file) | thread (php: process) | — |

@@ -35,6 +35,9 @@ pub enum Mode {
     /// The shared library of an LGPL library, which may not be linked
     /// statically: `RHP_<NAME>_LINK=static` is refused.
     Lgpl,
+    /// Part of the C library (glibc's gettext): nothing to find or link;
+    /// C code includes the system header.
+    Libc,
     /// The shared library, not linked: the crate opens it with dlopen on
     /// first use (`env!("RHP_<NAME>_DLOPEN")` is its path). Only for the
     /// exceptions in libraries.md; the string says why.
@@ -244,6 +247,22 @@ pub const LIBS: &[Lib] = &[
         install:
             "macOS: brew install libsodium; Debian/Ubuntu: apt install pkg-config libsodium-dev",
     },
+    // ext/gettext: php links Homebrew's libintl (gettext, LGPL-2.1+) on
+    // macOS; glibc has gettext built in.
+    Lib {
+        name: "LIBINTL",
+        pkg: "intl",
+        brew: Some("gettext"),
+        macos_sdk: false,
+        link: "intl",
+        incdir: "",
+        header: "libintl.h",
+        macros: &[],
+        version: &[],
+        macos: Mode::Lgpl,
+        linux: Mode::Libc,
+        install: "macOS: brew install gettext; Linux: part of glibc",
+    },
     // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
     Lib {
         name: "GMP",
@@ -367,6 +386,10 @@ fn link(lib: &Lib) -> Result<(PathBuf, PathBuf), String> {
         Err(_) => {}
     }
 
+    if mode == Mode::Libc {
+        println!("cargo:rustc-env=RHP_{}_LINK_MODE=libc", lib.name);
+        return Ok((PathBuf::new(), PathBuf::new()));
+    }
     let found = find(lib, &os)?;
     let mut include = found.include.join(lib.incdir);
     if !include.join(lib.header).is_file() {
@@ -417,6 +440,7 @@ fn link(lib: &Lib) -> Result<(PathBuf, PathBuf), String> {
         Mode::Static => "static",
         Mode::Loaded(_) => "loaded",
         Mode::Dynamic(_) | Mode::Lgpl => "dynamic",
+        Mode::Libc => unreachable!("returned above"),
     };
     println!("cargo:rustc-env=RHP_{}_LINK_MODE={mode_name}", lib.name);
     match mode {
@@ -460,6 +484,7 @@ fn link(lib: &Lib) -> Result<(PathBuf, PathBuf), String> {
                 found.libdir.display()
             );
         }
+        Mode::Libc => {}
     }
     // Also under RHP_<NAME>_LINK=dynamic: the crate opens it either way.
     if matches!(row_mode, Mode::Loaded(_)) {

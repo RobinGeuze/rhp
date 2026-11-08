@@ -43,6 +43,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/fileinfo", "fileinfo"),
     ("ext/filter", "filter"),
     ("ext/gd", "gd"),
+    ("ext/gettext", "gettext"),
     ("ext/gmp", "gmp"),
     ("ext/hash", "hash"),
     ("ext/iconv", "iconv"),

@@ -71,6 +71,9 @@ rather than linking dynamically quietly.
 - libedit (ext/readline) on Linux: php's readline extension loads the
   distro's libedit.so; libedit-dev's archive would also need libtinfo's.
   On macOS it is the SDK's /usr/lib/libedit, as listed above.
+- libintl (ext/gettext) on macOS: Homebrew's gettext, LGPL-2.1+, as php
+  links it. On Linux gettext is part of glibc (`Mode::Libc`: nothing to
+  link).
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -482,6 +485,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   per-thread document tables. Trees never leave their VM's thread.
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no `putenv("TZ=…")`, no chdir(2) or umask(2).
+  The exceptions are the script's own requests, as in php: `setlocale()`,
+  and `putenv()` of `TZ` and the locale variables (`LC_*`, `LANG`,
+  `LANGUAGE`, which libintl reads), each restored at request end.
   A path handed to a library that opens files itself goes through
   `rhp_builtins::zend::virtual_cwd` first (`resolve`, `absolute` or `expand_filepath`,
   as the php code being ported does), and a file the library creates gets

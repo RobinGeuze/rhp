@@ -1333,9 +1333,7 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     let r = match deref(&a) {
-                        Value::Object(h)
-                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
-                        {
+                        Value::Object(h) if self.offset_object(&h) => {
                             let step = CursorStep::Key(k.clone());
                             let cell = self.aa_fetch_w(&h, &step, k, DimFetch::W)?;
                             let v = cell.borrow().clone();
@@ -2204,7 +2202,7 @@ impl Vm {
                             self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
-                        if self.class_implements(h.borrow().class, b"ArrayAccess") {
+                        if self.offset_object(h) {
                             let r = self.aa_offset_exists(h, k)?;
                             self.reg_set(top, dst, Value::Bool(r));
                             continue;

@@ -26,10 +26,12 @@ use rhp_values::Value;
 
 use crate::{Host, Thrown};
 
+mod breakiterator;
 mod calendar;
 mod collator;
 mod common;
 mod cpp;
+mod dateformat;
 mod dates;
 mod error;
 mod formatter;
@@ -39,10 +41,12 @@ mod iterator;
 mod locale;
 mod msgformat;
 mod normalizer;
+mod resourcebundle;
 mod spoofchecker;
 mod sys;
 mod timezone;
 mod transliterator;
+mod uchar;
 
 pub(crate) use error::ERROR_LEVEL_DEPRECATION;
 pub(crate) use error::{error_reset, error_set, error_set_code, error_set_msg, u_error_name};
@@ -537,13 +541,21 @@ pub fn register(m: &mut crate::Registry) {
             ("__collator", collator::fn_method, 2, None),
             ("__numfmt", formatter::fn_method, 2, None),
             ("__locale", locale::fn_method, 1, None),
+            ("__resbundle", resourcebundle::fn_helper, 3, None),
             ("__translit", transliterator::fn_helper, 3, None),
+            ("__intlchar", uchar::fn_helper, 3, None),
             ("__spoof", spoofchecker::fn_helper, 3, None),
             ("__msgfmt", msgformat::fn_helper, 3, None),
+            ("__datefmt", dateformat::fn_helper, 3, None),
+            ("__datepatgen", dateformat::fn_dtpg_helper, 3, None),
             ("__intltz", timezone::fn_helper, 3, None),
             ("__intlcal", calendar::fn_helper, 3, None),
             ("__intlgregcal", calendar::fn_greg_helper, 3, None),
             ("__intliter", iterator::fn_helper, 3, None),
+            ("__partsiter", iterator::fn_parts_helper, 3, None),
+            ("__breakiter", breakiterator::fn_helper, 3, None),
+            ("__rbbiter", breakiterator::fn_rbbi_helper, 3, None),
+            ("__cpbiter", breakiterator::fn_cpbi_helper, 3, None),
         ],
     );
 }
@@ -566,6 +578,21 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
         create_object: true,
     },
     crate::zend::object_handlers::ClassHandlers {
+        class: "IntlDateFormatter",
+        handlers: &dateformat::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlDatePatternGenerator",
+        handlers: &dateformat::DTPG_HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "ResourceBundle",
+        handlers: &resourcebundle::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
         class: "IntlTimeZone",
         handlers: &timezone::HANDLERS,
         create_object: true,
@@ -578,6 +605,11 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
     crate::zend::object_handlers::ClassHandlers {
         class: "IntlIterator",
         handlers: &iterator::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlBreakIterator",
+        handlers: &breakiterator::HANDLERS,
         create_object: true,
     },
     crate::zend::object_handlers::ClassHandlers {
@@ -596,6 +628,9 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
 /// order, with their procedural aliases.
 const CLASSES_BEFORE: &[(&common::ClassSpec, &[(&str, &str)])] = &[
     (&msgformat::SPEC, msgformat::ALIASES),
+    (&dateformat::SPEC, dateformat::ALIASES),
+    (&dateformat::DTPG_SPEC, &[]),
+    (&resourcebundle::SPEC, resourcebundle::ALIASES),
     (&transliterator::SPEC, transliterator::ALIASES),
     (&timezone::SPEC, timezone::ALIASES),
     (&calendar::SPEC, calendar::ALIASES),
@@ -604,7 +639,14 @@ const CLASSES_BEFORE: &[(&common::ClassSpec, &[(&str, &str)])] = &[
 ];
 
 /// The generated classes after IntlException.
-const CLASSES_AFTER: &[(&common::ClassSpec, &[(&str, &str)])] = &[(&iterator::SPEC, &[])];
+const CLASSES_AFTER: &[(&common::ClassSpec, &[(&str, &str)])] = &[
+    (&iterator::SPEC, &[]),
+    (&breakiterator::SPEC, &[]),
+    (&breakiterator::RBBI_SPEC, &[]),
+    (&breakiterator::CPBI_SPEC, &[]),
+    (&iterator::PARTS_SPEC, &[]),
+    (&uchar::SPEC, &[]),
+];
 
 /// The intl classes, in php_intl.c's MINIT order: their constants from
 /// the linked ICU, their methods calling the procedural functions' code

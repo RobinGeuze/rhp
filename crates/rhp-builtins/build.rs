@@ -38,7 +38,13 @@ fn main() {
     icu_checks(&icu);
     // C++: some of php's constants are ICU class members, and the
     // MessageFormat, Calendar and TimeZone parts have no C API.
-    for f in ["shim.cpp", "icu.cpp", "consts.h", "class_consts.h"] {
+    for f in [
+        "shim.cpp",
+        "icu.cpp",
+        "breakiter.cpp",
+        "consts.h",
+        "class_consts.h",
+    ] {
         println!("cargo:rerun-if-changed=src/ext/intl/{f}");
     }
     cc::Build::new()
@@ -47,6 +53,7 @@ fn main() {
         .cpp_link_stdlib(None)
         .file("src/ext/intl/shim.cpp")
         .file("src/ext/intl/icu.cpp")
+        .file("src/ext/intl/breakiter.cpp")
         .include(&icu)
         .warnings(true)
         .extra_warnings(true)

@@ -220,6 +220,32 @@ unsafe extern "C" {
     pub fn rhp_gcal_is_leap(c: *const c_void, y: i32) -> i32;
 }
 
+unsafe extern "C" {
+    pub fn rhp_locale_iso3_len(name: *const c_char) -> i32;
+    pub fn rhp_datefmt_new_calendar(
+        traditional: i32,
+        locale: *const c_char,
+        status: *mut UErrorCode,
+    ) -> *mut c_void;
+    pub fn rhp_datefmt_adopt_calendar(df: *mut c_void, cal: *mut c_void);
+    pub fn rhp_datefmt_set_calendar(df: *mut c_void, cal: *const c_void);
+    pub fn rhp_datefmt_adopt_tz(df: *mut c_void, tz: *mut c_void);
+    pub fn rhp_datefmt_get_tz(df: *const c_void) -> *const c_void;
+    pub fn rhp_datefmt_get_calendar(df: *const c_void) -> *const c_void;
+    pub fn rhp_datefmt_format_object(
+        cal: *mut c_void,
+        tz: *mut c_void,
+        date: f64,
+        pattern: *const c_char,
+        date_style: i32,
+        time_style: i32,
+        locale: *const c_char,
+        len: *mut i32,
+        which: *mut i32,
+        status: *mut UErrorCode,
+    ) -> *mut UChar;
+}
+
 /// The UTF-16 a shim function returned (malloc'd, `len` units), freed.
 pub fn take_ustr(p: *mut UChar, len: i32) -> Option<Vec<UChar>> {
     if p.is_null() {

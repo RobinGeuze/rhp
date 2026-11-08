@@ -721,7 +721,9 @@ impl Vm {
                 }
                 (Value::Object(h), CursorStep::Key(_) | CursorStep::Append) => {
                     let cls = h.borrow().class;
-                    return if self.class_implements(cls, b"ArrayAccess") {
+                    return if self.class_implements(cls, b"ArrayAccess")
+                        || self.handlers_of(&h).is_some_and(|t| t.dimension.is_some())
+                    {
                         MagicSplit::Offset(i, h)
                     } else {
                         MagicSplit::Plain
@@ -1802,6 +1804,13 @@ impl Vm {
         Ok(())
     }
 
+    /// Whether `$h[k]` goes through the object's dimension handlers: an
+    /// ArrayAccess class, or one with native ones (ResourceBundle).
+    pub(crate) fn offset_object(&self, h: &ObjectHandle) -> bool {
+        self.class_implements(h.borrow().class, b"ArrayAccess")
+            || self.handlers_of(h).is_some_and(|t| t.dimension.is_some())
+    }
+
     /// `offsetGet($key)` on an ArrayAccess object.
     pub(crate) fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
         if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
@@ -2570,6 +2579,12 @@ impl Vm {
                 }
             }
             Value::Object(h) => {
+                // A native read_dimension (WeakMap, ResourceBundle) answers
+                // BP_VAR_IS itself.
+                if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+                    let ty = if quiet { DimType::Is } else { DimType::R };
+                    return Ok((d.read)(self, h, Some(key), ty)?.unwrap_or(Value::Null));
+                }
                 let cls = h.borrow().class;
                 if self.class_implements(cls, b"ArrayAccess") {
                     if let (true, Some(base)) = (quiet, self.spl_array_base(h)) {

@@ -137,8 +137,11 @@ fn params(ps: &[Param], name: &str) -> String {
     let mut out = Vec::new();
     for p in ps {
         let mut s = String::new();
-        if !p.ty.is_empty() {
-            s.push_str(p.ty);
+        if name == "getPartsIterator" {
+            // the stub says string; php's zpp takes an int
+            s.push_str("int ");
+        } else if !p.ty.is_empty() {
+            s.push_str(zpp_type(p.ty));
             s.push(' ');
         }
         if p.by_ref() || p.prefer_ref() {
@@ -161,6 +164,15 @@ fn params(ps: &[Param], name: &str) -> String {
         out.push("...$__more".into());
     }
     out.join(", ")
+}
+
+/// The type php's zpp checks where it is wider than the stub's
+/// (`Z_PARAM_OBJ_OR_STR_OR_NULL` for a time zone).
+fn zpp_type(ty: &str) -> &str {
+    match ty {
+        "IntlTimeZone|DateTimeZone|string|null" => "object|string|null",
+        t => t,
+    }
 }
 
 /// A default of the parameter's type for an UNKNOWN default.

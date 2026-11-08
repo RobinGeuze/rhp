@@ -19,6 +19,8 @@
 #include <unicode/basictz.h>
 #include <unicode/calendar.h>
 #include <unicode/datefmt.h>
+#include <unicode/smpdtfmt.h>
+#include <unicode/utf8.h>
 #include <unicode/gregocal.h>
 #include <unicode/locid.h>
 #include <unicode/messagepattern.h>
@@ -615,5 +617,71 @@ void rhp_gcal_set_change(void *c, double date, UErrorCode *status) {
 }
 double rhp_gcal_get_change(const void *c) { return ((const GregorianCalendar *) c)->getGregorianChange(); }
 int32_t rhp_gcal_is_leap(const void *c, int32_t y) { return ((const GregorianCalendar *) c)->isLeapYear(y); }
+
+/* --- DateFormat (dateformat/) ---------------------------------------- */
+
+/* The locale `datefmt_ctor` checks: -1 bogus, else the length of its ISO3
+ * language. */
+int32_t rhp_locale_iso3_len(const char *name) {
+	Locale l = Locale::createFromName(name);
+	if (l.isBogus()) {
+		return -1;
+	}
+	return (int32_t) strlen(l.getISO3Language());
+}
+/* `datefmt_process_calendar_arg`'s calendars: 0 gregorian, 1 the locale's. */
+void *rhp_datefmt_new_calendar(int32_t traditional, const char *locale, UErrorCode *status) {
+	Locale l = Locale::createFromName(locale);
+	if (traditional) {
+		return Calendar::createInstance(l, *status);
+	}
+	return new GregorianCalendar(l, *status);
+}
+void rhp_datefmt_adopt_calendar(void *df, void *cal) { ((DateFormat *) df)->adoptCalendar((Calendar *) cal); }
+void rhp_datefmt_set_calendar(void *df, const void *cal) { ((DateFormat *) df)->setCalendar(*(const Calendar *) cal); }
+void rhp_datefmt_adopt_tz(void *df, void *tz) { ((DateFormat *) df)->adoptTimeZone((TimeZone *) tz); }
+const void *rhp_datefmt_get_tz(const void *df) { return &((const DateFormat *) df)->getTimeZone(); }
+const void *rhp_datefmt_get_calendar(const void *df) { return ((const DateFormat *) df)->getCalendar(); }
+
+/* `datefmt_format_object`'s formatting: `cal` and `tz` adopted; a pattern
+ * (UTF-8, NULL for none) or the two styles. */
+UChar *rhp_datefmt_format_object(void *cal, void *tz, double date, const char *pattern,
+		int32_t date_style, int32_t time_style, const char *locale, int32_t *len, int32_t *which, UErrorCode *status) {
+	std::unique_ptr<Calendar> c((Calendar *) cal);
+	std::unique_ptr<TimeZone> z((TimeZone *) tz);
+	std::unique_ptr<DateFormat> df;
+	*which = 0;
+	if (pattern) {
+		df.reset(new icu::SimpleDateFormat(UnicodeString::fromUTF8(icu::StringPiece(pattern)),
+			Locale::createFromName(locale), *status));
+		if (U_FAILURE(*status)) {
+			*which = 1;
+			return NULL;
+		}
+	} else {
+		df.reset(DateFormat::createDateTimeInstance((DateFormat::EStyle) date_style,
+			(DateFormat::EStyle) time_style, Locale::createFromName(locale)));
+		if (!df) {
+			*which = 2;
+			return NULL;
+		}
+	}
+	df->adoptCalendar(c.release());
+	df->adoptTimeZone(z.release());
+	UnicodeString result;
+	df->format((UDate) date, result);
+	return copy_ustr(result, len);
+}
+
+/* --- IntlChar (uchar/) ------------------------------------------------ */
+
+/* `convert_cp`'s U8_NEXT from index 0; the index after. */
+int32_t rhp_u8_next(const uint8_t *s, int32_t len, UChar32 *cp) {
+	int32_t i = 0;
+	UChar32 c;
+	U8_NEXT(s, i, len, c);
+	*cp = c;
+	return i;
+}
 
 } /* extern "C" */

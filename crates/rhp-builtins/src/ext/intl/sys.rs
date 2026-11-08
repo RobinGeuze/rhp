@@ -56,6 +56,7 @@ pub const U_UNSUPPORTED_ERROR: UErrorCode = 16;
 pub const U_STRING_NOT_TERMINATED_WARNING: UErrorCode = -124;
 pub const U_INTERNAL_PROGRAM_ERROR: UErrorCode = 5;
 pub const U_MEMORY_ALLOCATION_ERROR: UErrorCode = 7;
+pub const U_INVALID_STATE_ERROR: UErrorCode = 27;
 pub const U_PATTERN_SYNTAX_ERROR: UErrorCode = 65799;
 
 /// `U_FAILURE(code)`.
@@ -129,6 +130,7 @@ macro_rules! icu {
         )* }
     };
 }
+pub(crate) use icu;
 
 icu! {
     pub fn u_errorName(code: UErrorCode) -> *const c_char;
@@ -362,6 +364,51 @@ icu! {
         status: *mut UErrorCode,
     ) -> *mut std::ffi::c_void;
     pub fn umsg_close(f: *mut std::ffi::c_void);
+
+    pub fn udat_open(
+        time_style: i32, date_style: i32, locale: *const c_char, tz: *const UChar, tz_len: i32,
+        pattern: *const UChar, pattern_len: i32, status: *mut UErrorCode,
+    ) -> *mut std::ffi::c_void;
+    pub fn udat_close(f: *mut std::ffi::c_void);
+    pub fn udat_clone(f: *const std::ffi::c_void, status: *mut UErrorCode) -> *mut std::ffi::c_void;
+    pub fn udat_format(
+        f: *const std::ffi::c_void, date: f64, buf: *mut UChar, cap: i32, pos: *mut UFieldPosition,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn udat_parse(
+        f: *const std::ffi::c_void, text: *const UChar, len: i32, pos: *mut i32, status: *mut UErrorCode,
+    ) -> f64;
+    pub fn udat_parseCalendar(
+        f: *const std::ffi::c_void, cal: *mut std::ffi::c_void, text: *const UChar, len: i32,
+        pos: *mut i32, status: *mut UErrorCode,
+    );
+    pub fn udat_getCalendar(f: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    pub fn udat_toPattern(
+        f: *const std::ffi::c_void, localized: UBool, buf: *mut UChar, cap: i32, status: *mut UErrorCode,
+    ) -> i32;
+    pub fn udat_applyPattern(f: *mut std::ffi::c_void, localized: UBool, pattern: *const UChar, len: i32);
+    pub fn udat_getLocaleByType(f: *const std::ffi::c_void, ty: i32, status: *mut UErrorCode) -> *const c_char;
+    pub fn udat_isLenient(f: *const std::ffi::c_void) -> UBool;
+    pub fn udat_setLenient(f: *mut std::ffi::c_void, lenient: UBool);
+    pub fn udatpg_open(locale: *const c_char, status: *mut UErrorCode) -> *mut std::ffi::c_void;
+    pub fn udatpg_close(g: *mut std::ffi::c_void);
+    pub fn udatpg_clone(g: *const std::ffi::c_void, status: *mut UErrorCode) -> *mut std::ffi::c_void;
+    pub fn udatpg_getSkeleton(
+        g: *mut std::ffi::c_void, pattern: *const UChar, len: i32, buf: *mut UChar, cap: i32,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn udatpg_getBestPattern(
+        g: *mut std::ffi::c_void, skeleton: *const UChar, len: i32, buf: *mut UChar, cap: i32,
+        status: *mut UErrorCode,
+    ) -> i32;
+    pub fn ucal_clone(c: *const std::ffi::c_void, status: *mut UErrorCode) -> *mut std::ffi::c_void;
+    pub fn ucal_close(c: *mut std::ffi::c_void);
+    pub fn ucal_setDateTime(
+        c: *mut std::ffi::c_void, y: i32, m: i32, d: i32, h: i32, i: i32, s: i32, status: *mut UErrorCode,
+    );
+    pub fn ucal_getMillis(c: *const std::ffi::c_void, status: *mut UErrorCode) -> f64;
+    pub fn ucal_get(c: *const std::ffi::c_void, field: i32, status: *mut UErrorCode) -> i32;
+    pub fn ucal_inDaylightTime(c: *const std::ffi::c_void, status: *mut UErrorCode) -> UBool;
     pub fn umsg_clone(f: *const std::ffi::c_void, status: *mut UErrorCode) -> *mut std::ffi::c_void;
     pub fn umsg_getLocale(f: *const std::ffi::c_void) -> *const c_char;
     pub fn umsg_applyPattern(
@@ -401,4 +448,38 @@ unsafe extern "C" {
     pub fn rhp_intl_class_constants() -> *const IntlClassConst;
     /// `UNUM_FORMAT_SYMBOL_COUNT` (it grows with ICU).
     pub fn rhp_intl_unum_format_symbol_count() -> i32;
+}
+
+opaque!(UResourceBundle);
+
+/// `UResType` values.
+pub const URES_STRING: i32 = 0;
+pub const URES_BINARY: i32 = 1;
+pub const URES_TABLE: i32 = 2;
+pub const URES_INT: i32 = 7;
+pub const URES_ARRAY: i32 = 8;
+pub const URES_INT_VECTOR: i32 = 14;
+/// `U_USING_FALLBACK_WARNING`, `U_USING_DEFAULT_WARNING`.
+pub const U_USING_FALLBACK_WARNING: UErrorCode = -128;
+pub const U_USING_DEFAULT_WARNING: UErrorCode = -127;
+
+icu! {
+    pub fn ures_open(path: *const c_char, locale: *const c_char, status: *mut UErrorCode) -> *mut UResourceBundle;
+    pub fn ures_openDirect(path: *const c_char, locale: *const c_char, status: *mut UErrorCode) -> *mut UResourceBundle;
+    pub fn ures_close(r: *mut UResourceBundle);
+    pub fn ures_getByKey(
+        r: *const UResourceBundle, key: *const c_char, fill: *mut UResourceBundle, status: *mut UErrorCode,
+    ) -> *mut UResourceBundle;
+    pub fn ures_getByIndex(
+        r: *const UResourceBundle, i: i32, fill: *mut UResourceBundle, status: *mut UErrorCode,
+    ) -> *mut UResourceBundle;
+    pub fn ures_getType(r: *const UResourceBundle) -> i32;
+    pub fn ures_getSize(r: *const UResourceBundle) -> i32;
+    pub fn ures_getKey(r: *const UResourceBundle) -> *const c_char;
+    pub fn ures_getString(r: *const UResourceBundle, len: *mut i32, status: *mut UErrorCode) -> *const UChar;
+    pub fn ures_getBinary(r: *const UResourceBundle, len: *mut i32, status: *mut UErrorCode) -> *const u8;
+    pub fn ures_getInt(r: *const UResourceBundle, status: *mut UErrorCode) -> i32;
+    pub fn ures_getIntVector(r: *const UResourceBundle, len: *mut i32, status: *mut UErrorCode) -> *const i32;
+    pub fn ures_getLocaleByType(r: *const UResourceBundle, ty: i32, status: *mut UErrorCode) -> *const c_char;
+    pub fn uenum_reset(e: *mut UEnumeration, status: *mut UErrorCode);
 }

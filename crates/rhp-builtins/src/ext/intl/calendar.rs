@@ -422,10 +422,12 @@ use either IntlGregorianCalendar::createFromDate() or IntlGregorianCalendar::cre
             {
                 let _ = v;
             }
-            Some(v) => return Err(Thrown::type_error(format!(
+            Some(v) => {
+                return Err(Thrown::type_error(format!(
                 "{f}(): Argument #1 ($timezoneOrYear) must be of type object|string|null, {} given",
                 crate::zend::zpp::zval_value_name(host, &v)
-            ))),
+            )))
+            }
         }
         if let Some(v) = call.arg(1) {
             if !matches!(
@@ -461,8 +463,7 @@ use either IntlGregorianCalendar::createFromDate() or IntlGregorianCalendar::cre
             "IntlGregorianCalendar object is already constructed",
         ));
     }
-    let gcal;
-    if variant <= 2 {
+    let gcal = if variant <= 2 {
         let tzarg = call.arg(0);
         let tzarg = match &tzarg {
             Some(Value::Null) | None => None,
@@ -498,7 +499,7 @@ use either IntlGregorianCalendar::createFromDate() or IntlGregorianCalendar::cre
             )?;
             return Ok(Value::Null);
         }
-        gcal = c;
+        c
     } else {
         for (i, v) in largs.iter().enumerate().take(variant) {
             if *v < i32::MIN as i64 || *v > i32::MAX as i64 {
@@ -531,8 +532,8 @@ use either IntlGregorianCalendar::createFromDate() or IntlGregorianCalendar::cre
             unsafe { cpp::rhp_cal_delete(c) };
             return Ok(Value::Null);
         }
-        gcal = c;
-    }
+        c
+    };
     match co {
         Some(co) => {
             co.set(gcal);

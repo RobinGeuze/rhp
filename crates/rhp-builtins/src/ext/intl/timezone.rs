@@ -430,13 +430,6 @@ pub(super) fn to_datetimezone(
     }
 }
 
-/// A zone's id in UTF-8 (empty when it cannot be converted).
-pub(super) fn id_utf8(zone: &Zone) -> Vec<u8> {
-    zone.id16()
-        .and_then(|u| super::utf16_to_utf8(&u).ok())
-        .unwrap_or_default()
-}
-
 // --- the methods ----------------------------------------------------------------
 
 /// `__intltz(method, argc, $this, ...args)`.
@@ -857,12 +850,4 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
         other => unreachable!("IntlTimeZone::{other}"),
     }
-}
-
-/// An IntlTimeZone's zone, when `v` is a constructed one.
-pub(super) fn zone_of(v: &Value) -> Option<Zone> {
-    let h = object_handlers::object_of(v)?;
-    let to = object_handlers::payload_of::<TzObj>(&h)?;
-    let z = to.zone.borrow();
-    z.as_ref().map(Zone::clone_zone)
 }

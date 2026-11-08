@@ -1,0 +1,161 @@
+Dom\Text::nodeType virtual = 3
+Dom\Text::nodeName virtual = '#text'
+Dom\Text::baseURI virtual = 'about:blank'
+Dom\Text::isConnected virtual = false
+Dom\Text::ownerDocument virtual = Dom\HTMLDocument
+Dom\Text::parentNode virtual = NULL
+Dom\Text::parentElement virtual = NULL
+Dom\Text::childNodes virtual = Dom\NodeList
+Dom\Text::firstChild virtual = NULL
+Dom\Text::lastChild virtual = NULL
+Dom\Text::previousSibling virtual = NULL
+Dom\Text::nextSibling virtual = NULL
+Dom\Text::nodeValue virtual = 'foo'
+Dom\Text::textContent virtual = 'foo'
+Dom\Text::previousElementSibling virtual = NULL
+Dom\Text::nextElementSibling virtual = NULL
+Dom\Text::data virtual = 'foo'
+Dom\Text::length virtual = 3
+Dom\Text::wholeText virtual = 'foo'
+Dom\Attr::nodeType virtual = 2
+Dom\Attr::nodeName virtual = 'attr'
+Dom\Attr::baseURI virtual = 'about:blank'
+Dom\Attr::isConnected virtual = false
+Dom\Attr::ownerDocument virtual = Dom\HTMLDocument
+Dom\Attr::parentNode virtual = NULL
+Dom\Attr::parentElement virtual = NULL
+Dom\Attr::childNodes virtual = Dom\NodeList
+Dom\Attr::firstChild virtual = NULL
+Dom\Attr::lastChild virtual = NULL
+Dom\Attr::previousSibling virtual = NULL
+Dom\Attr::nextSibling virtual = NULL
+Dom\Attr::nodeValue virtual = ''
+Dom\Attr::textContent virtual = ''
+Dom\Attr::namespaceURI virtual = NULL
+Dom\Attr::prefix virtual = NULL
+Dom\Attr::localName virtual = 'attr'
+Dom\Attr::name virtual = 'attr'
+Dom\Attr::value virtual = ''
+Dom\Attr::ownerElement virtual = NULL
+Dom\Attr::specified virtual = true
+Dom\HTMLElement::nodeType virtual = 1
+Dom\HTMLElement::nodeName virtual = 'FOO'
+Dom\HTMLElement::baseURI virtual = 'about:blank'
+Dom\HTMLElement::isConnected virtual = false
+Dom\HTMLElement::ownerDocument virtual = Dom\HTMLDocument
+Dom\HTMLElement::parentNode virtual = NULL
+Dom\HTMLElement::parentElement virtual = NULL
+Dom\HTMLElement::childNodes virtual = Dom\NodeList
+Dom\HTMLElement::firstChild virtual = NULL
+Dom\HTMLElement::lastChild virtual = NULL
+Dom\HTMLElement::previousSibling virtual = NULL
+Dom\HTMLElement::nextSibling virtual = NULL
+Dom\HTMLElement::nodeValue virtual = NULL
+Dom\HTMLElement::textContent virtual = ''
+Dom\HTMLElement::namespaceURI virtual = 'http://www.w3.org/1999/xhtml'
+Dom\HTMLElement::prefix virtual = NULL
+Dom\HTMLElement::localName virtual = 'foo'
+Dom\HTMLElement::tagName virtual = 'FOO'
+Dom\HTMLElement::children slot = Dom\HTMLCollection
+Dom\HTMLElement::firstElementChild virtual = NULL
+Dom\HTMLElement::lastElementChild virtual = NULL
+Dom\HTMLElement::childElementCount virtual = 0
+Dom\HTMLElement::previousElementSibling virtual = NULL
+Dom\HTMLElement::nextElementSibling virtual = NULL
+Dom\HTMLElement::id virtual = ''
+Dom\HTMLElement::className virtual = ''
+Dom\HTMLElement::classList slot = Dom\TokenList
+Dom\HTMLElement::attributes virtual = Dom\NamedNodeMap
+Dom\HTMLElement::innerHTML virtual = ''
+Dom\HTMLElement::outerHTML virtual = '<foo></foo>'
+Dom\HTMLElement::substitutedNodeValue virtual = ''
+Dom\DocumentType::nodeType virtual = 10
+Dom\DocumentType::nodeName virtual = 'html'
+Dom\DocumentType::baseURI virtual = 'about:blank'
+Dom\DocumentType::isConnected virtual = false
+Dom\DocumentType::ownerDocument virtual = NULL
+Dom\DocumentType::parentNode virtual = NULL
+Dom\DocumentType::parentElement virtual = NULL
+Dom\DocumentType::childNodes virtual = Dom\NodeList
+Dom\DocumentType::firstChild virtual = NULL
+Dom\DocumentType::lastChild virtual = NULL
+Dom\DocumentType::previousSibling virtual = NULL
+Dom\DocumentType::nextSibling virtual = NULL
+Dom\DocumentType::nodeValue virtual = NULL
+Dom\DocumentType::textContent virtual = ''
+Dom\DocumentType::name virtual = 'html'
+Dom\DocumentType::entities virtual = Dom\DtdNamedNodeMap
+Dom\DocumentType::notations virtual = Dom\DtdNamedNodeMap
+Dom\DocumentType::publicId virtual = 'publicId'
+Dom\DocumentType::systemId virtual = 'systemId'
+Dom\DocumentType::internalSubset virtual = NULL
+Dom\ProcessingInstruction::nodeType virtual = 7
+Dom\ProcessingInstruction::nodeName virtual = 'target'
+Dom\ProcessingInstruction::baseURI virtual = 'about:blank'
+Dom\ProcessingInstruction::isConnected virtual = false
+Dom\ProcessingInstruction::ownerDocument virtual = Dom\HTMLDocument
+Dom\ProcessingInstruction::parentNode virtual = NULL
+Dom\ProcessingInstruction::parentElement virtual = NULL
+Dom\ProcessingInstruction::childNodes virtual = Dom\NodeList
+Dom\ProcessingInstruction::firstChild virtual = NULL
+Dom\ProcessingInstruction::lastChild virtual = NULL
+Dom\ProcessingInstruction::previousSibling virtual = NULL
+Dom\ProcessingInstruction::nextSibling virtual = NULL
+Dom\ProcessingInstruction::nodeValue virtual = 'data'
+Dom\ProcessingInstruction::textContent virtual = 'data'
+Dom\ProcessingInstruction::previousElementSibling virtual = NULL
+Dom\ProcessingInstruction::nextElementSibling virtual = NULL
+Dom\ProcessingInstruction::data virtual = 'data'
+Dom\ProcessingInstruction::length virtual = 4
+Dom\ProcessingInstruction::target virtual = 'target'
+Dom\XPath::document virtual = Dom\HTMLDocument
+Dom\XPath::registerNodeNamespaces virtual = true
+Dom\HTMLDocument::nodeType virtual = 13
+Dom\HTMLDocument::nodeName virtual = '#document'
+Dom\HTMLDocument::baseURI virtual = 'about:blank'
+Dom\HTMLDocument::isConnected virtual = true
+Dom\HTMLDocument::ownerDocument virtual = NULL
+Dom\HTMLDocument::parentNode virtual = NULL
+Dom\HTMLDocument::parentElement virtual = NULL
+Dom\HTMLDocument::childNodes virtual = Dom\NodeList
+Dom\HTMLDocument::firstChild virtual = NULL
+Dom\HTMLDocument::lastChild virtual = NULL
+Dom\HTMLDocument::previousSibling virtual = NULL
+Dom\HTMLDocument::nextSibling virtual = NULL
+Dom\HTMLDocument::nodeValue virtual = NULL
+Dom\HTMLDocument::textContent virtual = NULL
+Dom\HTMLDocument::children slot = Dom\HTMLCollection
+Dom\HTMLDocument::firstElementChild virtual = NULL
+Dom\HTMLDocument::lastElementChild virtual = NULL
+Dom\HTMLDocument::childElementCount virtual = 0
+Dom\HTMLDocument::implementation slot = Dom\Implementation
+Dom\HTMLDocument::URL virtual = 'about:blank'
+Dom\HTMLDocument::documentURI virtual = 'about:blank'
+Dom\HTMLDocument::characterSet virtual = 'UTF-8'
+Dom\HTMLDocument::charset virtual = 'UTF-8'
+Dom\HTMLDocument::inputEncoding virtual = 'UTF-8'
+Dom\HTMLDocument::doctype virtual = NULL
+Dom\HTMLDocument::documentElement virtual = NULL
+Dom\HTMLDocument::body virtual = NULL
+Dom\HTMLDocument::head virtual = NULL
+Dom\HTMLDocument::title virtual = ''
+<?xml version="1.0" encoding="UTF-8"?>
+<foo xmlns:a="urn:a">
+  <bar a:x="1"/>
+  <!-- c -->
+</foo>
+string(1) "1"
+bool(true)
+<!DOCTYPE html><html><head><title> A  b </title></head><body><p class="x y" id="i">one<br>two</p><template><i>t</i></template></body></html>
+string(3) "A b"
+string(4) "BODY"
+bool(true)
+int(2)
+string(2) "BR"
+<p class="x y" id="i"><b>bold</b> &amp; text</p>
+0: x
+1: y
+NULL
+string(11) "Dom\Element"
+<?xml version="1.0" encoding="UTF-8"?>
+<HTML><HEAD><TITLE> A  b </TITLE></HEAD><BODY><P class="x y" id="i"><B>bold</B> &amp; text</P><TEMPLATE/></BODY></HTML>
